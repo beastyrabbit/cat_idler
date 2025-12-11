@@ -802,17 +802,68 @@ If after 3 attempts the issue persists, escalate to PROJECT MANAGER for human re
 
 ## Getting Started
 
-To begin building this project:
+**This file (`run.md`) is the orchestration guide. Goose should read this entire file first.**
 
-1. Ensure dependencies are installed: `npm install`
-2. Start with PROJECT MANAGER AGENT
-3. It will select the first task (likely SETUP-001)
-4. Follow the workflow for that task type
-5. Repeat until all tasks in docs/TASKS.md are complete
+### For Goose - How to Use This File
 
-**First command for Goose:**
+1. **Read this entire `run.md` file** - It contains all agent prompts and workflows
+2. **Read `docs/TASKS.md`** - Contains the task backlog with dependencies
+3. **Read `docs/plan.md`** - Contains game design for context
+4. **Start the PROJECT MANAGER AGENT** with the prompt from section 1 above
+
+### Initial Setup (Before First Task)
+
+```bash
+# Install dependencies
+npm install
+
+# Initialize Convex (follow prompts)
+npx convex dev
 ```
-Invoke PROJECT MANAGER AGENT to begin the Cat Colony Idle Game build process.
-Read docs/TASKS.md and start with the first pending task.
+
+### Begin Build Process
+
+Use this prompt to start:
+
+```
+You are orchestrating the Cat Colony Idle Game project using multiple specialized sub-agents.
+
+YOUR FIRST STEPS:
+1. You have read run.md (this file) - it contains all agent prompts and workflows
+2. Read docs/TASKS.md to see all pending tasks organized by phase
+3. Read docs/plan.md to understand the game design
+4. Become the PROJECT MANAGER AGENT (use the prompt from run.md section 1)
+5. Select the first pending task from Phase 1 (SETUP-001)
+6. Execute the appropriate workflow (Workflow D for SETUP tasks)
+7. Spawn the required sub-agents with their prompts from run.md
+8. Continue until all tasks are complete
+
+IMPORTANT:
+- Each agent prompt is defined in run.md sections 1-8
+- Use the workflows defined in run.md to know execution order
+- Run agents in parallel where the workflow allows (marked in brackets)
+- Track progress by checking off tasks in docs/TASKS.md
+```
+
+### Execution Loop
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  PROJECT MANAGER reads docs/TASKS.md                    │
+│         ↓                                               │
+│  Select next pending task                               │
+│         ↓                                               │
+│  Determine workflow type (A, B, C, or D)                │
+│         ↓                                               │
+│  Spawn sub-agents in order (use prompts from run.md)    │
+│         ↓                                               │
+│  Each agent completes their work                        │
+│         ↓                                               │
+│  CODE REVIEW commits changes                            │
+│         ↓                                               │
+│  Mark task complete in docs/TASKS.md                    │
+│         ↓                                               │
+│  Loop back to select next task                          │
+└─────────────────────────────────────────────────────────┘
 ```
 
