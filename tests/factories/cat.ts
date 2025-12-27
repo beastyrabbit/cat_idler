@@ -219,3 +219,7 @@ export function resetCatIdCounter(): void {
   catIdCounter = 0
 }
 
+
+
+
+

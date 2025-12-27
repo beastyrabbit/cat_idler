@@ -16,7 +16,7 @@ A real-time idle game where a cat colony runs autonomously. Built with Next.js, 
 ```
 Frontend: Next.js 14 (App Router) + Tailwind CSS
 Backend: Convex (serverless functions + real-time database)
-Testing: Vitest + React Testing Library
+Testing: Vitest (unit) + Selenium (E2E)
 ```
 
 ## Directory Structure
@@ -34,6 +34,7 @@ cat_idler/
 ├── tests/                # All tests
 │   ├── unit/             # Unit tests
 │   ├── integration/      # Integration tests
+│   ├── e2e/              # Selenium E2E tests
 │   └── factories/        # Test data factories
 ├── types/                # TypeScript types
 └── docs/                 # Documentation
@@ -70,10 +71,10 @@ Pure functions in `lib/game/`:
 ## Commands
 
 ```bash
-npm run dev          # Start development
-npm test             # Run tests
-npm run test:watch   # Tests in watch mode
-npx convex dev       # Start Convex backend
+bun run dev          # Start development
+bun run test:unit    # Run unit tests
+bun run test:e2e     # Run Selenium E2E tests
+bun run convex:dev   # Start Convex backend
 ```
 
 ## Important Notes

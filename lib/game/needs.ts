@@ -27,8 +27,12 @@ import { NEEDS_DECAY_RATES, NEEDS_RESTORE_AMOUNTS } from '@/types/game'
  * @returns New needs state after decay
  */
 export function decayNeeds(currentNeeds: CatNeeds, tickCount: number): CatNeeds {
-  // TODO: Implement (LOGIC-001)
-  throw new Error('Not implemented')
+  return {
+    hunger: Math.max(0, currentNeeds.hunger - NEEDS_DECAY_RATES.hunger * tickCount),
+    thirst: Math.max(0, currentNeeds.thirst - NEEDS_DECAY_RATES.thirst * tickCount),
+    rest: Math.max(0, currentNeeds.rest - NEEDS_DECAY_RATES.rest * tickCount),
+    health: currentNeeds.health, // Health doesn't decay naturally
+  }
 }
 
 /**
@@ -43,8 +47,10 @@ export function decayNeeds(currentNeeds: CatNeeds, tickCount: number): CatNeeds 
  * @returns New needs state
  */
 export function restoreHunger(needs: CatNeeds, amount: number = NEEDS_RESTORE_AMOUNTS.eating): CatNeeds {
-  // TODO: Implement (LOGIC-002)
-  throw new Error('Not implemented')
+  return {
+    ...needs,
+    hunger: Math.min(100, needs.hunger + amount),
+  }
 }
 
 /**
@@ -59,8 +65,10 @@ export function restoreHunger(needs: CatNeeds, amount: number = NEEDS_RESTORE_AM
  * @returns New needs state
  */
 export function restoreThirst(needs: CatNeeds, amount: number = NEEDS_RESTORE_AMOUNTS.drinking): CatNeeds {
-  // TODO: Implement (LOGIC-002)
-  throw new Error('Not implemented')
+  return {
+    ...needs,
+    thirst: Math.min(100, needs.thirst + amount),
+  }
 }
 
 /**
@@ -76,8 +84,11 @@ export function restoreThirst(needs: CatNeeds, amount: number = NEEDS_RESTORE_AM
  * @returns New needs state
  */
 export function restoreRest(needs: CatNeeds, amount: number, hasBeds: boolean): CatNeeds {
-  // TODO: Implement (LOGIC-002)
-  throw new Error('Not implemented')
+  const restoreAmount = hasBeds ? NEEDS_RESTORE_AMOUNTS.sleepingWithBeds : amount
+  return {
+    ...needs,
+    rest: Math.min(100, needs.rest + restoreAmount),
+  }
 }
 
 /**
@@ -92,8 +103,10 @@ export function restoreRest(needs: CatNeeds, amount: number, hasBeds: boolean): 
  * @returns New needs state
  */
 export function restoreHealth(needs: CatNeeds, amount: number): CatNeeds {
-  // TODO: Implement (LOGIC-002)
-  throw new Error('Not implemented')
+  return {
+    ...needs,
+    health: Math.min(100, needs.health + amount),
+  }
 }
 
 /**
@@ -109,8 +122,38 @@ export function restoreHealth(needs: CatNeeds, amount: number): CatNeeds {
  * @returns New needs state with damage applied
  */
 export function applyNeedsDamage(needs: CatNeeds): CatNeeds {
-  // TODO: Implement (LOGIC-003)
-  throw new Error('Not implemented')
+  let damage = 0
+  if (needs.hunger === 0) {
+    damage += 5
+  }
+  if (needs.thirst === 0) {
+    damage += 3
+  }
+  return {
+    ...needs,
+    health: Math.max(0, needs.health - damage),
+  }
+}
+
+/**
+ * Apply starvation/dehydration damage over time.
+ *
+ * This is the same rule as applyNeedsDamage, but scaled by a fractional
+ * tickCount so Convex's 10s cron doesn't kill cats in minutes.
+ */
+export function applyNeedsDamageOverTime(needs: CatNeeds, tickCount: number): CatNeeds {
+  if (tickCount <= 0) return needs
+  let damage = 0
+  if (needs.hunger === 0) {
+    damage += 5 * tickCount
+  }
+  if (needs.thirst === 0) {
+    damage += 3 * tickCount
+  }
+  return {
+    ...needs,
+    health: Math.max(0, needs.health - damage),
+  }
 }
 
 /**
@@ -121,8 +164,12 @@ export function applyNeedsDamage(needs: CatNeeds): CatNeeds {
  * @returns True if any need is below threshold
  */
 export function hasNeedsCritical(needs: CatNeeds, threshold: number = 15): boolean {
-  // TODO: Implement
-  throw new Error('Not implemented')
+  return (
+    needs.hunger < threshold ||
+    needs.thirst < threshold ||
+    needs.rest < threshold ||
+    needs.health < threshold
+  )
 }
 
 /**
@@ -132,7 +179,7 @@ export function hasNeedsCritical(needs: CatNeeds, threshold: number = 15): boole
  * @returns True if health is 0
  */
 export function isDead(needs: CatNeeds): boolean {
-  // TODO: Implement
-  throw new Error('Not implemented')
+  return needs.health === 0
 }
+
 

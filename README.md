@@ -1,238 +1,102 @@
 # Cat Colony Idle Game
 
-A real-time idle game where a cat colony runs autonomously. Users can help by providing food, defending against intruders, voting on leaders, and building upgrades. The colony lives and dies based on how well it's managed - but it also runs completely on its own when no one is watching.
+A real-time idle game where a cat colony runs autonomously. Users can help by providing food, defending against intruders, and building upgrades. The colony lives and dies based on how well it's managed - but it also runs completely on its own when no one is watching.
 
-## Quick Links
+## Quick Start
 
-- [Game Design Document](./docs/plan.md) - Full game mechanics and design
-- [Task Breakdown](./docs/TASKS.md) - Development tasks for the team
-- [Testing Guide](./docs/TESTING.md) - How to write and run tests
-- [API Reference](./docs/API.md) - Backend API documentation (generated)
+```bash
+# Install dependencies
+bun install
+
+# Set up Convex (Terminal 1)
+bun run convex:dev
+
+# Start frontend (Terminal 2)
+bun run dev
+
+# Run tests (Terminal 3)
+bun run test:unit        # Unit tests
+bun run test:e2e         # E2E tests (Selenium)
+```
+
+## Documentation
+
+- **[Game Design](./docs/plan.md)** - Complete game mechanics
+- **[Development Tasks](./docs/TASKS.md)** - Task breakdown
+- **[Testing Guide](./docs/TESTING.md)** - How to write tests
+
+## Testing
+
+### Unit Tests
+```bash
+bun run test:unit
+```
+Tests all pure game logic functions.
+
+### E2E Tests (Selenium)
+```bash
+bun run test:e2e
+```
+Tests the actual GUI in a real browser.
 
 ## Tech Stack
 
-| Layer | Technology | Purpose |
-|-------|------------|---------|
-| Frontend | Next.js 14 | React framework with App Router |
-| Styling | Tailwind CSS | Utility-first CSS |
-| Backend | Convex | Real-time database + serverless functions |
-| Real-time | Convex Subscriptions | Live updates without polling |
-| Sprites | External Renderer Service | Cat sprite generation (optional) |
-| Testing | Vitest + Testing Library | Unit and integration tests |
+- **Frontend:** Next.js 14, React, Tailwind CSS
+- **Backend:** Convex (serverless + real-time database)
+- **Testing:** Vitest (unit), Selenium (E2E)
+- **Language:** TypeScript
+
+## Features
+
+- Autonomous cat colony (runs 24/7)
+- Real-time updates
+- Task queue system
+- Building placement
+- World map exploration
+- Combat and encounters
+- Breeding system
+- Skill progression
+- Age-based life stages
+- User interactions (feed, heal, build)
+
+## Game Loop
+
+The game runs automatically every 10 seconds:
+1. Decay cat needs
+2. Process autonomous behaviors
+3. Progress tasks
+4. Check encounters
+5. Update ages
+6. Process births
+7. Building effects
+8. Update colony status
 
 ## Project Structure
 
 ```
 cat_idler/
-├── app/                      # Next.js App Router pages
-│   ├── page.tsx              # Landing/colony selection
-│   ├── colony/
-│   │   └── [id]/
-│   │       └── page.tsx      # Main colony view
-│   └── layout.tsx
-│
-├── components/               # React components
-│   ├── colony/               # Colony-specific components
-│   │   ├── ColonyGrid.tsx    # Interior building grid
-│   │   ├── WorldMap.tsx      # Exterior exploration map
-│   │   ├── TaskQueue.tsx     # Sims-style task list
-│   │   ├── CatSprite.tsx     # Cat rendering
-│   │   ├── EncounterPopup.tsx
-│   │   └── ...
-│   ├── ui/                   # Reusable UI components
-│   └── providers/            # Context providers
-│
-├── convex/                   # Convex backend
-│   ├── schema.ts             # Database schema
-│   ├── colonies.ts           # Colony mutations/queries
-│   ├── cats.ts               # Cat logic
-│   ├── buildings.ts          # Construction system
-│   ├── worldMap.ts           # World tiles and paths
-│   ├── tasks.ts              # Task queue system
-│   ├── encounters.ts         # Combat/events
-│   ├── gameTick.ts           # Main game loop
-│   └── crons.ts              # Scheduled jobs
-│
-├── lib/                      # Shared utilities
-│   ├── game/                 # Game logic (pure functions)
-│   │   ├── catAI.ts          # Cat decision making
-│   │   ├── combat.ts         # Combat calculations
-│   │   ├── needs.ts          # Needs decay/restore
-│   │   └── skills.ts         # Skill progression
-│   └── utils/                # General utilities
-│
-├── tests/                    # Test files
-│   ├── unit/                 # Unit tests
-│   │   ├── game/             # Game logic tests
-│   │   └── components/       # Component tests
-│   ├── integration/          # Integration tests
-│   └── e2e/                  # End-to-end tests
-│
-├── docs/                     # Documentation
-│   ├── plan.md               # Game design document
-│   ├── TASKS.md              # Development tasks
-│   ├── TESTING.md            # Testing guide
-│   └── API.md                # API documentation
-│
-├── public/                   # Static assets
-│   └── sprites/              # Fallback cat sprites
-│
-└── types/                    # TypeScript types
-    └── game.ts               # Game-specific types
+├── app/              # Next.js pages
+├── components/       # React components
+│   ├── colony/       # Game-specific components
+│   └── ui/           # Reusable UI components
+├── convex/           # Backend (Convex)
+├── lib/game/         # Pure game logic
+├── tests/            # All tests
+│   ├── unit/         # Unit tests
+│   └── e2e/          # Selenium E2E tests
+├── types/            # TypeScript types
+└── docs/             # Documentation
 ```
 
-## Getting Started
+## How to Play
 
-### Prerequisites
+1. **Create a Colony** - Enter a name and click "Create Colony"
+2. **Select a Leader** - Choose a cat with high leadership
+3. **Watch the Colony** - Cats autonomously manage their needs
+4. **Help Your Colony** - Click "Give Food", "Give Water", or heal cats
+5. **Build and Expand** - Place buildings to improve efficiency
+6. **Explore the World** - Switch to "World Map" to see exploration
 
-- Node.js 18+ 
-- npm or bun
-- A Convex account (free at https://convex.dev)
+---
 
-### Installation
-
-```bash
-# Clone the repository
-git clone <repo-url>
-cd cat_idler
-
-# Install dependencies
-npm install
-
-# Set up Convex
-npx convex dev
-# This will prompt you to log in and create a project
-
-# In a new terminal, start the frontend
-npm run dev
-```
-
-### Environment Variables
-
-Create a `.env.local` file:
-
-```env
-# Convex (auto-generated by `npx convex dev`)
-CONVEX_DEPLOYMENT=your-deployment-name
-NEXT_PUBLIC_CONVEX_URL=https://your-project.convex.cloud
-
-# Optional: Cat Renderer Service
-NEXT_PUBLIC_RENDERER_URL=http://localhost:8001
-```
-
-## Development Workflow
-
-### Running Tests (Test-Driven Development)
-
-We follow TDD. Write tests FIRST, then implement.
-
-```bash
-# Run all tests
-npm test
-
-# Run tests in watch mode
-npm run test:watch
-
-# Run specific test file
-npm test -- tests/unit/game/catAI.test.ts
-
-# Run with coverage
-npm run test:coverage
-```
-
-### Starting Development
-
-```bash
-# Terminal 1: Convex backend (hot reload)
-npx convex dev
-
-# Terminal 2: Next.js frontend
-npm run dev
-
-# Terminal 3: Tests in watch mode
-npm run test:watch
-```
-
-### Code Quality
-
-```bash
-# Lint
-npm run lint
-
-# Type check
-npm run typecheck
-
-# Format
-npm run format
-```
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        FRONTEND                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │ Colony   │  │ World    │  │ Task     │  │ Encounter│    │
-│  │ Grid     │  │ Map      │  │ Queue    │  │ Popups   │    │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘    │
-│       │             │             │             │           │
-│       └─────────────┴─────────────┴─────────────┘           │
-│                           │                                  │
-│                    Convex React Hooks                        │
-│                    (useQuery, useMutation)                   │
-└───────────────────────────┬─────────────────────────────────┘
-                            │ Real-time Subscriptions
-┌───────────────────────────┴─────────────────────────────────┐
-│                     CONVEX BACKEND                           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │ Queries  │  │ Mutations│  │ Actions  │  │ Crons    │    │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘    │
-│       │             │             │             │           │
-│       └─────────────┴─────────────┴─────────────┘           │
-│                           │                                  │
-│                    Convex Database                           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │ Colonies │  │ Cats     │  │ Buildings│  │ Events   │    │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Game Loop
-
-The game runs on a 10-second tick cycle:
-
-```
-Every 10 seconds:
-  1. Decay cat needs (hunger, thirst, rest)
-  2. Process autonomous cat behaviors
-  3. Progress active tasks
-  4. Check for random encounters
-  5. Update cat health and age
-  6. Check for deaths
-  7. Process breeding
-  8. Regenerate world resources (slower)
-  9. Decay unused paths (even slower)
-```
-
-## Contributing
-
-1. Pick a task from [TASKS.md](./docs/TASKS.md)
-2. Create a branch: `git checkout -b feature/task-id-description`
-3. Write tests first (TDD)
-4. Implement the feature
-5. Ensure all tests pass
-6. Create a pull request
-
-## Team Roles
-
-| Role | Responsibility |
-|------|----------------|
-| Backend Dev | Convex schema, mutations, game logic |
-| Frontend Dev | React components, UI/UX |
-| Game Logic Dev | Pure functions in `lib/game/` |
-| QA/Test Dev | Write tests, ensure coverage |
-
-## License
-
-MIT
-
+**Ready to play!** Create a colony and watch it thrive! 🐱

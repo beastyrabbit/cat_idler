@@ -38,6 +38,19 @@ export type TileType =
   | 'dense_woods'
   | 'river'
   | 'enemy_territory'
+  | 'oak_forest'
+  | 'pine_forest'
+  | 'jungle'
+  | 'dead_forest'
+  | 'mountains'
+  | 'swamp'
+  | 'desert'
+  | 'tundra'
+  | 'meadow'
+  | 'cave_entrance'
+  | 'enemy_lair'
+
+export type OverlayFeature = 'river' | 'ancient_road' | 'game_trail' | 'trade_route' | null
 
 export type TaskType =
   | 'hunt'
@@ -130,13 +143,15 @@ export interface Colony {
   createdAt: number
   lastTick: number
   lastAttack: number
+  worldSeed?: number // Seed for procedural world generation
 }
 
 export interface Cat {
   _id: Id<'cats'>
   colonyId: Id<'colonies'>
   name: string
-  parentIds: [Id<'cats'> | null, Id<'cats'> | null]
+  // Stored in Convex as an array; usually length 2.
+  parentIds: (Id<'cats'> | null)[]
   birthTime: number
   deathTime: number | null
   stats: CatStats
@@ -168,6 +183,7 @@ export interface WorldTile {
   dangerLevel: number
   pathWear: number
   lastDepleted: number
+  overlayFeature?: OverlayFeature // Optional overlay (river, path, etc.)
 }
 
 export interface Task {
@@ -241,7 +257,7 @@ export interface CatSpriteProps {
 export interface ResourceBarProps {
   value: number
   max: number
-  color?: 'green' | 'blue' | 'red' | 'yellow'
+  color?: 'green' | 'blue' | 'red' | 'yellow' | 'gray' | 'purple'
   showLabel?: boolean
   label?: string
 }
@@ -324,4 +340,3 @@ export const TASK_TO_SKILL: Record<TaskType, keyof CatStats> = {
   teach: 'leadership',
   rest: 'defense', // No skill gain for rest, but needs a mapping
 }
-

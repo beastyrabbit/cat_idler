@@ -3,7 +3,11 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react({
+      jsxRuntime: 'automatic',
+    }),
+  ],
   test: {
     // Use jsdom for React component testing
     environment: 'jsdom',
@@ -24,6 +28,8 @@ export default defineConfig({
       include: ['lib/**/*.ts', 'components/**/*.tsx'],
       exclude: ['**/*.test.ts', '**/*.test.tsx', '**/index.ts'],
     },
+
+    // Pool settings are optional; defaults work fine here.
   },
   resolve: {
     alias: {
@@ -32,4 +38,5 @@ export default defineConfig({
     },
   },
 })
+
 
