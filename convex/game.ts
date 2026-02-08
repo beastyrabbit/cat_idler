@@ -56,6 +56,12 @@ function getRuntimeConfig(colony: any): RuntimeConfig {
   };
 }
 
+const DEFAULT_ROLE_XP = { hunter: 0, architect: 0, ritualist: 0 };
+
+function defaultRoleXp(cat: any): { hunter: number; architect: number; ritualist: number } {
+  return cat.roleXp ?? { ...DEFAULT_ROLE_XP };
+}
+
 function randomStat(min: number, max: number): number {
   return min + Math.floor(Math.random() * (max - min + 1));
 }
@@ -90,11 +96,7 @@ async function createStarterCats(ctx: Ctx, colonyId: any) {
       pregnancyDueTime: null,
       spriteParams: traitsToSpriteParams(inheritTraits(null, null)) as Record<string, unknown>,
       specialization: null,
-      roleXp: {
-        hunter: 0,
-        architect: 0,
-        ritualist: 0,
-      },
+      roleXp: { ...DEFAULT_ROLE_XP },
     });
   }
 }
@@ -116,7 +118,7 @@ async function ensureAliveCatDefaults(ctx: Ctx, colonyId: any) {
     }
 
     if (!cat.roleXp) {
-      patch.roleXp = { hunter: 0, architect: 0, ritualist: 0 };
+      patch.roleXp = { ...DEFAULT_ROLE_XP };
       needsPatch = true;
     }
 
@@ -277,6 +279,12 @@ async function chooseLeader(ctx: Ctx, colonyId: any) {
   return best;
 }
 
+const SPECIALIZATION_STAT: Record<Exclude<CatSpecialization, null>, string> = {
+  hunter: 'hunting',
+  architect: 'building',
+  ritualist: 'leadership',
+};
+
 async function selectBestCat(ctx: Ctx, colonyId: any, specialization: CatSpecialization) {
   const aliveCats = await ctx.db
     .query('cats')
@@ -291,15 +299,11 @@ async function selectBestCat(ctx: Ctx, colonyId: any, specialization: CatSpecial
   const preferred = aliveCats.filter((cat: any) => (cat.specialization ?? null) === specialization);
   const pool = preferred.length > 0 ? preferred : aliveCats;
 
+  const statKey = specialization ? SPECIALIZATION_STAT[specialization] : 'leadership';
+
   let best = pool[0];
   for (const cat of pool) {
-    if (specialization === 'hunter' && cat.stats.hunting > best.stats.hunting) {
-      best = cat;
-    }
-    if (specialization === 'architect' && cat.stats.building > best.stats.building) {
-      best = cat;
-    }
-    if (specialization === 'ritualist' && cat.stats.leadership > best.stats.leadership) {
+    if (cat.stats[statKey] > best.stats[statKey]) {
       best = cat;
     }
   }
@@ -543,8 +547,9 @@ export const requestJob = mutation({
     const upgrades = upgradesToLevels(await getUpgradeRows(ctx, colony._id));
     const runtime = getRuntimeConfig(colony);
 
-    // Prevent duplicate strategic jobs.
-    if (args.kind !== 'supply_food' && args.kind !== 'supply_water') {
+    // Fetch active+queued jobs once for conflict checks on strategic kinds.
+    const isStrategicKind = args.kind !== 'supply_food' && args.kind !== 'supply_water';
+    if (isStrategicKind) {
       const existingActive = await ctx.db
         .query('jobs')
         .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'active'))
@@ -553,34 +558,30 @@ export const requestJob = mutation({
         .query('jobs')
         .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'queued'))
         .collect();
-      const all = [...existingActive, ...existingQueued];
-      if (hasConflictingStrategicJob(args.kind as JobKind, all)) {
+      const allJobs = [...existingActive, ...existingQueued];
+
+      if (hasConflictingStrategicJob(args.kind as JobKind, allJobs)) {
         return {
           ok: false,
           reason: 'already_in_progress',
           message: 'That request is already in progress.',
         };
       }
+
+      if (args.kind === 'ritual') {
+        const alreadyRequested = ritualRequestIsFresh(colony.ritualRequestedAt, now);
+        const activeRitual = allJobs.some((job: any) => job.kind === 'ritual');
+        if (alreadyRequested || activeRitual) {
+          return {
+            ok: false,
+            reason: 'ritual_pending',
+            message: 'Ritual request already pending or active.',
+          };
+        }
+      }
     }
 
     if (args.kind === 'ritual') {
-      const alreadyRequested = ritualRequestIsFresh(colony.ritualRequestedAt, now);
-      const activeJobs = await ctx.db
-        .query('jobs')
-        .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'active'))
-        .collect();
-      const queuedJobs = await ctx.db
-        .query('jobs')
-        .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'queued'))
-        .collect();
-      const activeRitual = [...activeJobs, ...queuedJobs].some((job: any) => job.kind === 'ritual');
-      if (alreadyRequested || activeRitual) {
-        return {
-          ok: false,
-          reason: 'ritual_pending',
-          message: 'Ritual request already pending or active.',
-        };
-      }
 
       await ctx.db.patch(colony._id, {
         lastPlayerActivityAt: now,
@@ -884,30 +885,17 @@ export const workerTick = mutation({
     for (const job of dueJobs) {
       const assignedCat = job.assignedCatId ? await ctx.db.get(job.assignedCatId) : null;
 
-      if (job.kind === 'supply_food') {
-        patchedResources.food += 8;
-        if (job.requestedByPlayerId) {
-          const player = await ctx.db.get(job.requestedByPlayerId);
-          if (player) {
-            await ctx.db.patch(player._id, {
-              lifetimeContribution: {
-                ...player.lifetimeContribution,
-                food: player.lifetimeContribution.food + 8,
-              },
-            });
-          }
-        }
-      }
+      if (job.kind === 'supply_food' || job.kind === 'supply_water') {
+        const resourceKey = job.kind === 'supply_food' ? 'food' : 'water';
+        patchedResources[resourceKey] += 8;
 
-      if (job.kind === 'supply_water') {
-        patchedResources.water += 8;
         if (job.requestedByPlayerId) {
           const player = await ctx.db.get(job.requestedByPlayerId);
           if (player) {
             await ctx.db.patch(player._id, {
               lifetimeContribution: {
                 ...player.lifetimeContribution,
-                water: player.lifetimeContribution.water + 8,
+                [resourceKey]: player.lifetimeContribution[resourceKey] + 8,
               },
             });
           }
@@ -925,7 +913,7 @@ export const workerTick = mutation({
       }
 
       if (job.kind === 'hunt_expedition' && assignedCat) {
-        const roleXp = assignedCat.roleXp ?? { hunter: 0, architect: 0, ritualist: 0 };
+        const roleXp = defaultRoleXp(assignedCat);
         const reward = getHuntReward(assignedCat.stats.hunting, assignedCat.specialization ?? null, roleXp.hunter, upgrades);
         patchedResources.food += reward;
 
@@ -944,7 +932,7 @@ export const workerTick = mutation({
         patchedResources.materials += 12;
         automationTier = Math.min(10, automationTier + 0.05);
 
-        const roleXp = assignedCat.roleXp ?? { hunter: 0, architect: 0, ritualist: 0 };
+        const roleXp = defaultRoleXp(assignedCat);
         const nextRoleXp = { ...roleXp, architect: roleXp.architect + 1 };
         await ctx.db.patch(assignedCat._id, {
           roleXp: nextRoleXp,
@@ -959,7 +947,7 @@ export const workerTick = mutation({
       if (job.kind === 'ritual' && assignedCat) {
         globalUpgradePoints += 1 + Math.floor(upgrades.ritual_mastery / 3);
 
-        const roleXp = assignedCat.roleXp ?? { hunter: 0, architect: 0, ritualist: 0 };
+        const roleXp = defaultRoleXp(assignedCat);
         const nextRoleXp = { ...roleXp, ritualist: roleXp.ritualist + 1 };
         await ctx.db.patch(assignedCat._id, {
           roleXp: nextRoleXp,

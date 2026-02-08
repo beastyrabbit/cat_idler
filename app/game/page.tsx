@@ -109,74 +109,52 @@ export default function GamePage() {
     return presetFromTimeScale(colony?.testTimeScale);
   }, [colony?.testTimeScale]);
 
-  const submitJob = async (kind: 'supply_food' | 'supply_water' | 'leader_plan_hunt' | 'leader_plan_house' | 'ritual') => {
-    if (!sessionId || !nickname) {
-      return;
-    }
-
+  async function runAction<T>(actionKey: string, fn: () => Promise<T>): Promise<T | undefined> {
     setError(null);
-    setBusyAction(kind);
+    setBusyAction(actionKey);
     try {
-      const result = await requestJob({ sessionId, nickname, kind });
+      const result = await fn();
       if (
         typeof result === 'object' &&
         result !== null &&
         'ok' in result &&
-        (result as { ok?: boolean }).ok === false &&
-        'message' in result &&
-        typeof (result as { message?: unknown }).message === 'string'
+        (result as Record<string, unknown>).ok === false &&
+        typeof (result as Record<string, unknown>).message === 'string'
       ) {
-        setError((result as { message: string }).message);
+        setError((result as Record<string, unknown>).message as string);
       }
+      return result;
     } catch (err) {
       setError(cleanErrorMessage(err));
+      return undefined;
     } finally {
       setBusyAction(null);
     }
+  }
+
+  const submitJob = async (kind: 'supply_food' | 'supply_water' | 'leader_plan_hunt' | 'leader_plan_house' | 'ritual') => {
+    if (!sessionId || !nickname) {
+      return;
+    }
+    await runAction(kind, () => requestJob({ sessionId, nickname, kind }));
   };
 
   const onBoostJob = async (jobId: string) => {
     if (!sessionId || !nickname) {
       return;
     }
-
-    setError(null);
-    setBusyAction(jobId);
-    try {
-      await clickBoostJob({ sessionId, nickname, jobId });
-    } catch (err) {
-      setError(cleanErrorMessage(err));
-    } finally {
-      setBusyAction(null);
-    }
+    await runAction(jobId, () => clickBoostJob({ sessionId, nickname, jobId }));
   };
 
   const onBuyUpgrade = async (key: string) => {
     if (!sessionId || !nickname) {
       return;
     }
-
-    setError(null);
-    setBusyAction(`upgrade:${key}`);
-    try {
-      await purchaseUpgrade({ sessionId, nickname, key });
-    } catch (err) {
-      setError(cleanErrorMessage(err));
-    } finally {
-      setBusyAction(null);
-    }
+    await runAction(`upgrade:${key}`, () => purchaseUpgrade({ sessionId, nickname, key }));
   };
 
   const onSetAcceleration = async (preset: 'off' | 'fast' | 'turbo') => {
-    setError(null);
-    setBusyAction(`accel:${preset}`);
-    try {
-      await setTestAcceleration({ preset });
-    } catch (err) {
-      setError(cleanErrorMessage(err));
-    } finally {
-      setBusyAction(null);
-    }
+    await runAction(`accel:${preset}`, () => setTestAcceleration({ preset }));
   };
 
   const updateNickname = (value: string) => {
@@ -358,29 +336,25 @@ export default function GamePage() {
               <p className="muted">Leader will be auto-selected.</p>
             )}
             <div className="cat-list">
-              {cats.map((cat: any) => (
+              {cats.map((cat: any) => {
+                const appearance = summarizeCatIdentity(cat.spriteParams as Record<string, unknown> | null);
+                const roleXp = cat.roleXp ?? { hunter: 0, architect: 0, ritualist: 0 };
+
+                return (
                 <article key={cat._id} className="cat-item cat-item-rich">
                   <div className="cat-main">
                     <strong>{cat.name}</strong>
                     <p className="muted">Spec: {cat.specialization ?? 'none'}</p>
-                    {(() => {
-                      const appearance = summarizeCatIdentity(cat.spriteParams as Record<string, unknown> | null);
-                      const roleXp = cat.roleXp ?? { hunter: 0, architect: 0, ritualist: 0 };
-                      return (
-                        <>
-                          <p className="muted cat-species">Species {appearance.species} · Sprite {appearance.sprite}</p>
-                          <p className="muted cat-traits">
-                            Lineage {appearance.lineage} · Coat {appearance.coat} · Eyes {appearance.eyes} · Marks {appearance.markings}
-                          </p>
-                          <p className="muted cat-appearance-extra">
-                            Skin {appearance.skin} · Accessories {appearance.accessories} · Scars {appearance.scars}
-                          </p>
-                          <p className="muted cat-role-xp">
-                            Role XP H {roleXp.hunter} · A {roleXp.architect} · R {roleXp.ritualist}
-                          </p>
-                        </>
-                      );
-                    })()}
+                    <p className="muted cat-species">Species {appearance.species} · Sprite {appearance.sprite}</p>
+                    <p className="muted cat-traits">
+                      Lineage {appearance.lineage} · Coat {appearance.coat} · Eyes {appearance.eyes} · Marks {appearance.markings}
+                    </p>
+                    <p className="muted cat-appearance-extra">
+                      Skin {appearance.skin} · Accessories {appearance.accessories} · Scars {appearance.scars}
+                    </p>
+                    <p className="muted cat-role-xp">
+                      Role XP H {roleXp.hunter} · A {roleXp.architect} · R {roleXp.ritualist}
+                    </p>
                   </div>
                   <div className="cat-stats cat-stats-grid">
                     <span>ATK {Math.floor(cat.stats.attack)}</span>
@@ -393,7 +367,8 @@ export default function GamePage() {
                     <span>VIS {Math.floor(cat.stats.vision)}</span>
                   </div>
                 </article>
-              ))}
+                );
+              })}
             </div>
           </section>
 

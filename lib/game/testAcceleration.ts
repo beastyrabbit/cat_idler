@@ -35,10 +35,12 @@ export function configForPreset(preset: TestAccelerationPreset): TestAcceleratio
 }
 
 export function presetFromTimeScale(timeScale: number | null | undefined): TestAccelerationPreset {
-  if ((timeScale ?? 1) >= 120) {
+  const scale = timeScale ?? 1;
+
+  if (scale >= 120) {
     return 'turbo';
   }
-  if ((timeScale ?? 1) >= 20) {
+  if (scale >= 20) {
     return 'fast';
   }
   return 'off';
