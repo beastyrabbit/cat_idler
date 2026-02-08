@@ -1,11 +1,11 @@
-'use client';
+"use client";
 
-import { useEffect, useMemo, useState } from 'react';
-import { useMutation, useQuery } from 'convex/react';
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "convex/react";
 
-import { api } from '@/convex/_generated/api';
-import { summarizeCatIdentity } from '@/lib/game/catTraits';
-import { presetFromTimeScale } from '@/lib/game/testAcceleration';
+import { api } from "@/convex/_generated/api";
+import { summarizeCatIdentity } from "@/lib/game/catTraits";
+import { presetFromTimeScale } from "@/lib/game/testAcceleration";
 
 const anyApi = api as any;
 
@@ -21,7 +21,7 @@ function cleanErrorMessage(err: unknown): string {
 
 function formatDuration(ms: number): string {
   if (ms <= 0) {
-    return 'done';
+    return "done";
   }
 
   const totalSeconds = Math.ceil(ms / 1000);
@@ -50,8 +50,8 @@ export default function GamePage() {
   const purchaseUpgrade = useMutation(anyApi.game.purchaseUpgrade);
   const setTestAcceleration = useMutation(anyApi.game.setTestAcceleration);
 
-  const [sessionId, setSessionId] = useState('');
-  const [nickname, setNickname] = useState('');
+  const [sessionId, setSessionId] = useState("");
+  const [nickname, setNickname] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -64,15 +64,16 @@ export default function GamePage() {
   }, [error]);
 
   useEffect(() => {
-    const storedSession = localStorage.getItem('cat_idle_session') || createSessionId();
-    const storedName = localStorage.getItem('cat_idle_nickname') || 'Guest Cat';
+    const storedSession =
+      localStorage.getItem("cat_idle_session") || createSessionId();
+    const storedName = localStorage.getItem("cat_idle_nickname") || "Guest Cat";
 
-    localStorage.setItem('cat_idle_session', storedSession);
-    localStorage.setItem('cat_idle_nickname', storedName);
+    localStorage.setItem("cat_idle_session", storedSession);
+    localStorage.setItem("cat_idle_nickname", storedName);
 
     setSessionId(storedSession);
     setNickname(storedName);
-    setShowTestControls(window.location.search.includes('test=1'));
+    setShowTestControls(window.location.search.includes("test=1"));
   }, []);
 
   useEffect(() => {
@@ -109,22 +110,28 @@ export default function GamePage() {
     return presetFromTimeScale(colony?.testTimeScale);
   }, [colony?.testTimeScale]);
 
-  async function runAction<T>(actionKey: string, fn: () => Promise<T>): Promise<T | undefined> {
+  async function runAction<T>(
+    actionKey: string,
+    fn: () => Promise<T>,
+  ): Promise<T | undefined> {
     setError(null);
     setBusyAction(actionKey);
     try {
       const result = await fn();
-      if (
-        typeof result === 'object' &&
-        result !== null &&
-        'ok' in result &&
-        (result as Record<string, unknown>).ok === false &&
-        typeof (result as Record<string, unknown>).message === 'string'
-      ) {
-        setError((result as Record<string, unknown>).message as string);
+      const asRecord =
+        typeof result === "object" && result !== null
+          ? (result as Record<string, unknown>)
+          : null;
+      if (asRecord && asRecord.ok === false) {
+        setError(
+          typeof asRecord.message === "string"
+            ? (asRecord.message as string)
+            : "The action failed. Please try again.",
+        );
       }
       return result;
     } catch (err) {
+      console.error(`Action ${actionKey} failed:`, err);
       setError(cleanErrorMessage(err));
       return undefined;
     } finally {
@@ -132,7 +139,14 @@ export default function GamePage() {
     }
   }
 
-  const submitJob = async (kind: 'supply_food' | 'supply_water' | 'leader_plan_hunt' | 'leader_plan_house' | 'ritual') => {
+  const submitJob = async (
+    kind:
+      | "supply_food"
+      | "supply_water"
+      | "leader_plan_hunt"
+      | "leader_plan_house"
+      | "ritual",
+  ) => {
     if (!sessionId || !nickname) {
       return;
     }
@@ -150,28 +164,30 @@ export default function GamePage() {
     if (!sessionId || !nickname) {
       return;
     }
-    await runAction(`upgrade:${key}`, () => purchaseUpgrade({ sessionId, nickname, key }));
+    await runAction(`upgrade:${key}`, () =>
+      purchaseUpgrade({ sessionId, nickname, key }),
+    );
   };
 
-  const onSetAcceleration = async (preset: 'off' | 'fast' | 'turbo') => {
+  const onSetAcceleration = async (preset: "off" | "fast" | "turbo") => {
     await runAction(`accel:${preset}`, () => setTestAcceleration({ preset }));
   };
 
   const updateNickname = (value: string) => {
-    const trimmed = value.trim() || 'Guest Cat';
+    const trimmed = value.trim() || "Guest Cat";
     setNickname(trimmed);
-    localStorage.setItem('cat_idle_nickname', trimmed);
+    localStorage.setItem("cat_idle_nickname", trimmed);
     if (sessionId) {
       void upsertPresence({ sessionId, nickname: trimmed });
     }
   };
 
   const statusTone = useMemo(() => {
-    const status = colony?.status ?? 'starting';
-    if (status === 'thriving') return 'status-thriving';
-    if (status === 'struggling') return 'status-struggling';
-    if (status === 'dead') return 'status-dead';
-    return 'status-starting';
+    const status = colony?.status ?? "starting";
+    if (status === "thriving") return "status-thriving";
+    if (status === "struggling") return "status-struggling";
+    if (status === "dead") return "status-dead";
+    return "status-starting";
   }, [colony?.status]);
 
   if (dashboard === undefined) {
@@ -190,7 +206,10 @@ export default function GamePage() {
       <main className="idle-shell">
         <section className="idle-hero card">
           <h1>Global Colony Not Ready</h1>
-          <button className="btn btn-primary" onClick={() => void ensureGlobalState({})}>
+          <button
+            className="btn btn-primary"
+            onClick={() => void ensureGlobalState({})}
+          >
             Initialize Colony
           </button>
         </section>
@@ -204,11 +223,15 @@ export default function GamePage() {
         <div>
           <p className="eyebrow">Shared Idle World</p>
           <h1>{colony.name}</h1>
-          <p className={`status-pill ${statusTone}`}>Run #{colony.runNumber ?? 1} · {colony.status}</p>
+          <p className={`status-pill ${statusTone}`}>
+            Run #{colony.runNumber ?? 1} · {colony.status}
+          </p>
         </div>
 
         <div className="presence">
-          <label htmlFor="nickname" className="presence-label">Nickname</label>
+          <label htmlFor="nickname" className="presence-label">
+            Nickname
+          </label>
           <input
             id="nickname"
             className="input"
@@ -250,23 +273,43 @@ export default function GamePage() {
             <h2>Player Actions</h2>
             <p className="muted">Short jobs for immediate support.</p>
             <div className="action-row">
-              <button className="btn btn-primary" disabled={busyAction === 'supply_food'} onClick={() => void submitJob('supply_food')}>
+              <button
+                className="btn btn-primary"
+                disabled={busyAction === "supply_food"}
+                onClick={() => void submitJob("supply_food")}
+              >
                 + Supply Food (20s)
               </button>
-              <button className="btn btn-primary" disabled={busyAction === 'supply_water'} onClick={() => void submitJob('supply_water')}>
+              <button
+                className="btn btn-primary"
+                disabled={busyAction === "supply_water"}
+                onClick={() => void submitJob("supply_water")}
+              >
                 + Supply Water (15s)
               </button>
             </div>
 
             <p className="muted">Leader-planned long jobs.</p>
             <div className="action-row">
-              <button className="btn btn-secondary" disabled={busyAction === 'leader_plan_hunt'} onClick={() => void submitJob('leader_plan_hunt')}>
+              <button
+                className="btn btn-secondary"
+                disabled={busyAction === "leader_plan_hunt"}
+                onClick={() => void submitJob("leader_plan_hunt")}
+              >
                 Request Hunt (plan + expedition)
               </button>
-              <button className="btn btn-secondary" disabled={busyAction === 'leader_plan_house'} onClick={() => void submitJob('leader_plan_house')}>
+              <button
+                className="btn btn-secondary"
+                disabled={busyAction === "leader_plan_house"}
+                onClick={() => void submitJob("leader_plan_house")}
+              >
                 Request House Build
               </button>
-              <button className="btn btn-secondary" disabled={busyAction === 'ritual'} onClick={() => void submitJob('ritual')}>
+              <button
+                className="btn btn-secondary"
+                disabled={busyAction === "ritual"}
+                onClick={() => void submitJob("ritual")}
+              >
                 Request Ritual
               </button>
             </div>
@@ -275,13 +318,25 @@ export default function GamePage() {
               <>
                 <p className="muted">Test acceleration mode (for QA).</p>
                 <div className="action-row">
-                  <button className="btn btn-secondary" disabled={busyAction === 'accel:off'} onClick={() => void onSetAcceleration('off')}>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busyAction === "accel:off"}
+                    onClick={() => void onSetAcceleration("off")}
+                  >
                     Speed: Off
                   </button>
-                  <button className="btn btn-secondary" disabled={busyAction === 'accel:fast'} onClick={() => void onSetAcceleration('fast')}>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busyAction === "accel:fast"}
+                    onClick={() => void onSetAcceleration("fast")}
+                  >
                     Speed: Fast
                   </button>
-                  <button className="btn btn-secondary" disabled={busyAction === 'accel:turbo'} onClick={() => void onSetAcceleration('turbo')}>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busyAction === "accel:turbo"}
+                    onClick={() => void onSetAcceleration("turbo")}
+                  >
                     Speed: Turbo
                   </button>
                 </div>
@@ -293,10 +348,15 @@ export default function GamePage() {
           <section className="card panel">
             <h2>Active Jobs</h2>
             <div className="job-list">
-              {jobs.length === 0 ? <p className="muted">No queued or active jobs.</p> : null}
+              {jobs.length === 0 ? (
+                <p className="muted">No queued or active jobs.</p>
+              ) : null}
               {jobs.map((job: any) => {
                 const totalMs = Math.max(1, job.endsAt - job.startedAt);
-                const doneMs = Math.max(0, Math.min(totalMs, now - job.startedAt));
+                const doneMs = Math.max(
+                  0,
+                  Math.min(totalMs, now - job.startedAt),
+                );
                 const pct = Math.floor((doneMs / totalMs) * 100);
                 const remaining = formatDuration(job.endsAt - now);
 
@@ -304,19 +364,26 @@ export default function GamePage() {
                   <article key={job._id} className="job-item">
                     <div className="job-head">
                       <div>
-                        <h3>{job.kind.replace(/_/g, ' ')}</h3>
-                        <p className="muted">{job.status} · ETA {remaining}</p>
+                        <h3>{job.kind.replace(/_/g, " ")}</h3>
+                        <p className="muted">
+                          {job.status} · ETA {remaining}
+                        </p>
                       </div>
                       <button
                         className="btn btn-secondary"
-                        disabled={busyAction === job._id || job.status === 'completed'}
+                        disabled={
+                          busyAction === job._id || job.status === "completed"
+                        }
                         onClick={() => void onBoostJob(job._id)}
                       >
                         Boost -10s
                       </button>
                     </div>
                     <div className="progress-rail">
-                      <div className="progress-fill" style={{ width: `${pct}%` }} />
+                      <div
+                        className="progress-fill"
+                        style={{ width: `${pct}%` }}
+                      />
                     </div>
                   </article>
                 );
@@ -330,43 +397,58 @@ export default function GamePage() {
             <h2>Leader + Cats</h2>
             {dashboard.leader ? (
               <p className="muted">
-                Leader: <strong>{dashboard.leader.name}</strong> · leadership {Math.floor(dashboard.leader.stats.leadership)}
+                Leader: <strong>{dashboard.leader.name}</strong> · leadership{" "}
+                {Math.floor(dashboard.leader.stats.leadership)}
               </p>
             ) : (
               <p className="muted">Leader will be auto-selected.</p>
             )}
             <div className="cat-list">
               {cats.map((cat: any) => {
-                const appearance = summarizeCatIdentity(cat.spriteParams as Record<string, unknown> | null);
-                const roleXp = cat.roleXp ?? { hunter: 0, architect: 0, ritualist: 0 };
+                const appearance = summarizeCatIdentity(
+                  cat.spriteParams as Record<string, unknown> | null,
+                );
+                const roleXp = cat.roleXp ?? {
+                  hunter: 0,
+                  architect: 0,
+                  ritualist: 0,
+                };
 
                 return (
-                <article key={cat._id} className="cat-item cat-item-rich">
-                  <div className="cat-main">
-                    <strong>{cat.name}</strong>
-                    <p className="muted">Spec: {cat.specialization ?? 'none'}</p>
-                    <p className="muted cat-species">Species {appearance.species} · Sprite {appearance.sprite}</p>
-                    <p className="muted cat-traits">
-                      Lineage {appearance.lineage} · Coat {appearance.coat} · Eyes {appearance.eyes} · Marks {appearance.markings}
-                    </p>
-                    <p className="muted cat-appearance-extra">
-                      Skin {appearance.skin} · Accessories {appearance.accessories} · Scars {appearance.scars}
-                    </p>
-                    <p className="muted cat-role-xp">
-                      Role XP H {roleXp.hunter} · A {roleXp.architect} · R {roleXp.ritualist}
-                    </p>
-                  </div>
-                  <div className="cat-stats cat-stats-grid">
-                    <span>ATK {Math.floor(cat.stats.attack)}</span>
-                    <span>DEF {Math.floor(cat.stats.defense)}</span>
-                    <span>HUNT {Math.floor(cat.stats.hunting)}</span>
-                    <span>MED {Math.floor(cat.stats.medicine)}</span>
-                    <span>CLEAN {Math.floor(cat.stats.cleaning)}</span>
-                    <span>BUILD {Math.floor(cat.stats.building)}</span>
-                    <span>LEAD {Math.floor(cat.stats.leadership)}</span>
-                    <span>VIS {Math.floor(cat.stats.vision)}</span>
-                  </div>
-                </article>
+                  <article key={cat._id} className="cat-item cat-item-rich">
+                    <div className="cat-main">
+                      <strong>{cat.name}</strong>
+                      <p className="muted">
+                        Spec: {cat.specialization ?? "none"}
+                      </p>
+                      <p className="muted cat-species">
+                        Species {appearance.species} · Sprite{" "}
+                        {appearance.sprite}
+                      </p>
+                      <p className="muted cat-traits">
+                        Lineage {appearance.lineage} · Coat {appearance.coat} ·
+                        Eyes {appearance.eyes} · Marks {appearance.markings}
+                      </p>
+                      <p className="muted cat-appearance-extra">
+                        Skin {appearance.skin} · Accessories{" "}
+                        {appearance.accessories} · Scars {appearance.scars}
+                      </p>
+                      <p className="muted cat-role-xp">
+                        Role XP H {roleXp.hunter} · A {roleXp.architect} · R{" "}
+                        {roleXp.ritualist}
+                      </p>
+                    </div>
+                    <div className="cat-stats cat-stats-grid">
+                      <span>ATK {Math.floor(cat.stats.attack)}</span>
+                      <span>DEF {Math.floor(cat.stats.defense)}</span>
+                      <span>HUNT {Math.floor(cat.stats.hunting)}</span>
+                      <span>MED {Math.floor(cat.stats.medicine)}</span>
+                      <span>CLEAN {Math.floor(cat.stats.cleaning)}</span>
+                      <span>BUILD {Math.floor(cat.stats.building)}</span>
+                      <span>LEAD {Math.floor(cat.stats.leadership)}</span>
+                      <span>VIS {Math.floor(cat.stats.vision)}</span>
+                    </div>
+                  </article>
                 );
               })}
             </div>
@@ -374,7 +456,9 @@ export default function GamePage() {
 
           <section className="card panel">
             <h2>Global Upgrades</h2>
-            <p className="muted">Any player can spend ritual points for permanent run bonuses.</p>
+            <p className="muted">
+              Any player can spend ritual points for permanent run bonuses.
+            </p>
             <div className="upgrade-list">
               {upgrades.map((upgrade: any) => {
                 const cost = upgrade.baseCost * (upgrade.level + 1);
@@ -382,15 +466,21 @@ export default function GamePage() {
                 return (
                   <article key={upgrade._id} className="upgrade-item">
                     <div>
-                      <h3>{upgrade.key.replace(/_/g, ' ')}</h3>
-                      <p className="muted">Lv {upgrade.level}/{upgrade.maxLevel} · Cost {cost}</p>
+                      <h3>{upgrade.key.replace(/_/g, " ")}</h3>
+                      <p className="muted">
+                        Lv {upgrade.level}/{upgrade.maxLevel} · Cost {cost}
+                      </p>
                     </div>
                     <button
                       className="btn btn-primary"
-                      disabled={maxed || ritualPoints < cost || busyAction === `upgrade:${upgrade.key}`}
+                      disabled={
+                        maxed ||
+                        ritualPoints < cost ||
+                        busyAction === `upgrade:${upgrade.key}`
+                      }
                       onClick={() => void onBuyUpgrade(upgrade.key)}
                     >
-                      {maxed ? 'Maxed' : 'Upgrade'}
+                      {maxed ? "Maxed" : "Upgrade"}
                     </button>
                   </article>
                 );
@@ -401,7 +491,9 @@ export default function GamePage() {
           <section className="card panel">
             <h2>Event Feed</h2>
             <div className="event-list">
-              {events.length === 0 ? <p className="muted">No events yet.</p> : null}
+              {events.length === 0 ? (
+                <p className="muted">No events yet.</p>
+              ) : null}
               {events.map((event: any) => (
                 <article key={event._id} className="event-item">
                   <span>{new Date(event.timestamp).toLocaleTimeString()}</span>

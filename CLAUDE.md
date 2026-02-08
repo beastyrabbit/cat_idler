@@ -45,6 +45,7 @@ worker/index.ts (always-on tick loop via ConvexHttpClient)
 ### Dual Tick Systems
 
 There are two independent tick codepaths:
+
 - **`convex/game.ts:workerTick`** — Browser-idle v2 job system. Handles resource consumption, job completion, auto-queuing hunts/builds/rituals, specialization XP, critical state, and colony resets. Called by the worker process.
 - **`convex/gameTick.ts:tickColony`** — Legacy system. Handles needs decay, autonomous cat AI, task assignment/progression, combat encounters, aging/death, breeding. Called as `internalMutation`.
 
@@ -58,10 +59,11 @@ There are two independent tick codepaths:
 ### Browser Idle v2 Job System
 
 The game operates on a **job-based system** (`convex/schema.ts:jobs` table, `lib/game/idleEngine.ts`):
+
 - Short player actions: `supply_food` (20s), `supply_water` (15s)
 - Long cat jobs: `hunt_expedition` (8h), `build_house` (8h), `ritual` (6h)
 - Leader planning: `leader_plan_hunt` (30min), `leader_plan_house` (20h)
-- Cat specializations (`hunter`/`architect`/`ritualist`) halve relevant job durations
+- Cat specializations reduce relevant job durations (50% for hunter/architect, 40% for ritualist)
 - Click boosting reduces active job time (diminishing returns above 30 clicks/min)
 - Global upgrades persist across colony resets (`globalUpgrades` table)
 - Colonies auto-reset after extended critical state (configurable via `testCriticalMsOverride`)
@@ -90,10 +92,12 @@ The game operates on a **job-based system** (`convex/schema.ts:jobs` table, `lib
 ## Environment
 
 Copy `.env.local` from an existing setup or create with:
+
 ```
 CONVEX_DEPLOYMENT=dev:<your-deployment>
 NEXT_PUBLIC_CONVEX_URL=https://<your-deployment>.convex.cloud
 ```
+
 The worker reads `CONVEX_URL` or `NEXT_PUBLIC_CONVEX_URL`. In worktrees, `.env.local` may not exist — check before starting servers.
 
 ## Gotchas

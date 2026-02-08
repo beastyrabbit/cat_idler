@@ -2,7 +2,6 @@
  * Event Log Operations
  *
  * Convex mutations and queries for event logging.
- * TASK: CONVEX-007
  */
 
 import { query, mutation, internalMutation } from "./_generated/server";
@@ -26,7 +25,7 @@ const eventTypeValidator = v.union(
   v.literal("job_completed"),
   v.literal("ritual_ready"),
   v.literal("upgrade_purchased"),
-  v.literal("run_reset")
+  v.literal("run_reset"),
 );
 
 const eventArgs = {

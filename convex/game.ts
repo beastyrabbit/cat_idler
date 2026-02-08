@@ -1,5 +1,5 @@
-import { mutation, query } from './_generated/server';
-import { v } from 'convex/values';
+import { mutation, query } from "./_generated/server";
+import { v } from "convex/values";
 
 import {
   applyClickBoostSeconds,
@@ -11,7 +11,7 @@ import {
   type UpgradeLevels,
   type JobKind,
   type CatSpecialization,
-} from '../lib/game/idleEngine';
+} from "../lib/game/idleEngine";
 import {
   consumptionForTick,
   hasConflictingStrategicJob,
@@ -22,20 +22,51 @@ import {
   shouldResetFromCritical,
   shouldStartRitual,
   shouldTrackCritical,
-} from '../lib/game/idleRules';
-import { inheritTraits, traitsToSpriteParams } from '../lib/game/genetics';
-import { configForPreset } from '../lib/game/testAcceleration';
+} from "../lib/game/idleRules";
+import { inheritTraits, traitsToSpriteParams } from "../lib/game/genetics";
+import { configForPreset } from "../lib/game/testAcceleration";
+import type { CatStats } from "../types/game";
 
 const UPGRADE_DEFAULTS = [
-  { key: 'click_power', maxLevel: 20, baseCost: 2, description: 'Increase click speed-up power.' },
-  { key: 'supply_speed', maxLevel: 10, baseCost: 3, description: 'Reduce player supply action time.' },
-  { key: 'hunt_mastery', maxLevel: 10, baseCost: 5, description: 'Improve hunting speed and yield.' },
-  { key: 'build_mastery', maxLevel: 10, baseCost: 5, description: 'Improve planning and build speed.' },
-  { key: 'ritual_mastery', maxLevel: 10, baseCost: 6, description: 'Improve ritual cadence and timing.' },
-  { key: 'resilience', maxLevel: 10, baseCost: 7, description: 'Survive unattended for longer.' },
+  {
+    key: "click_power",
+    maxLevel: 20,
+    baseCost: 2,
+    description: "Increase click speed-up power.",
+  },
+  {
+    key: "supply_speed",
+    maxLevel: 10,
+    baseCost: 3,
+    description: "Reduce player supply action time.",
+  },
+  {
+    key: "hunt_mastery",
+    maxLevel: 10,
+    baseCost: 5,
+    description: "Improve hunting speed and yield.",
+  },
+  {
+    key: "build_mastery",
+    maxLevel: 10,
+    baseCost: 5,
+    description: "Improve planning and build speed.",
+  },
+  {
+    key: "ritual_mastery",
+    maxLevel: 10,
+    baseCost: 6,
+    description: "Improve ritual cadence and timing.",
+  },
+  {
+    key: "resilience",
+    maxLevel: 10,
+    baseCost: 7,
+    description: "Survive unattended for longer.",
+  },
 ] as const;
 
-type UpgradeKey = (typeof UPGRADE_DEFAULTS)[number]['key'];
+type UpgradeKey = (typeof UPGRADE_DEFAULTS)[number]["key"];
 
 type Ctx = any;
 
@@ -49,16 +80,28 @@ interface RuntimeConfig {
 function getRuntimeConfig(colony: any): RuntimeConfig {
   return {
     timeScale: Math.max(1, colony.testTimeScale ?? 1),
-    resourceDecayMultiplier: Math.max(1, colony.testResourceDecayMultiplier ?? 1),
+    resourceDecayMultiplier: Math.max(
+      1,
+      colony.testResourceDecayMultiplier ?? 1,
+    ),
     resilienceHoursOverride:
-      typeof colony.testResilienceHoursOverride === 'number' ? colony.testResilienceHoursOverride : null,
-    criticalMsOverride: Math.max(1_000, colony.testCriticalMsOverride ?? 5 * 60 * 1000),
+      typeof colony.testResilienceHoursOverride === "number"
+        ? colony.testResilienceHoursOverride
+        : null,
+    criticalMsOverride: Math.max(
+      1_000,
+      colony.testCriticalMsOverride ?? 5 * 60 * 1000,
+    ),
   };
 }
 
-const DEFAULT_ROLE_XP = { hunter: 0, architect: 0, ritualist: 0 };
+const DEFAULT_ROLE_XP = { hunter: 0, architect: 0, ritualist: 0 } as const;
 
-function defaultRoleXp(cat: any): { hunter: number; architect: number; ritualist: number } {
+function defaultRoleXp(cat: any): {
+  hunter: number;
+  architect: number;
+  ritualist: number;
+} {
   return cat.roleXp ?? { ...DEFAULT_ROLE_XP };
 }
 
@@ -67,13 +110,13 @@ function randomStat(min: number, max: number): number {
 }
 
 function starterNames(): string[] {
-  return ['Whiskers', 'Shadow', 'Luna', 'Max', 'Bella'];
+  return ["Whiskers", "Shadow", "Luna", "Max", "Bella"];
 }
 
 async function createStarterCats(ctx: Ctx, colonyId: any) {
   const names = starterNames();
   for (let i = 0; i < 5; i += 1) {
-    await ctx.db.insert('cats', {
+    await ctx.db.insert("cats", {
       colonyId,
       name: names[i] ?? `Cat ${i + 1}`,
       parentIds: [null, null],
@@ -91,10 +134,13 @@ async function createStarterCats(ctx: Ctx, colonyId: any) {
       },
       needs: { hunger: 100, thirst: 100, rest: 100, health: 100 },
       currentTask: null,
-      position: { map: 'colony', x: 1, y: 1 },
+      position: { map: "colony", x: 1, y: 1 },
       isPregnant: false,
       pregnancyDueTime: null,
-      spriteParams: traitsToSpriteParams(inheritTraits(null, null)) as Record<string, unknown>,
+      spriteParams: traitsToSpriteParams(inheritTraits(null, null)) as Record<
+        string,
+        unknown
+      >,
       specialization: null,
       roleXp: { ...DEFAULT_ROLE_XP },
     });
@@ -103,9 +149,9 @@ async function createStarterCats(ctx: Ctx, colonyId: any) {
 
 async function ensureAliveCatDefaults(ctx: Ctx, colonyId: any) {
   const aliveCats = await ctx.db
-    .query('cats')
-    .withIndex('by_colony_alive', (q: any) => q.eq('colonyId', colonyId))
-    .filter((q: any) => q.eq(q.field('deathTime'), null))
+    .query("cats")
+    .withIndex("by_colony_alive", (q: any) => q.eq("colonyId", colonyId))
+    .filter((q: any) => q.eq(q.field("deathTime"), null))
     .collect();
 
   for (const cat of aliveCats) {
@@ -113,7 +159,9 @@ async function ensureAliveCatDefaults(ctx: Ctx, colonyId: any) {
     let needsPatch = false;
 
     if (!cat.spriteParams) {
-      patch.spriteParams = traitsToSpriteParams(inheritTraits(null, null)) as Record<string, unknown>;
+      patch.spriteParams = traitsToSpriteParams(
+        inheritTraits(null, null),
+      ) as Record<string, unknown>;
       needsPatch = true;
     }
 
@@ -122,7 +170,7 @@ async function ensureAliveCatDefaults(ctx: Ctx, colonyId: any) {
       needsPatch = true;
     }
 
-    if (!('specialization' in cat)) {
+    if (!("specialization" in cat)) {
       patch.specialization = null;
       needsPatch = true;
     }
@@ -135,15 +183,15 @@ async function ensureAliveCatDefaults(ctx: Ctx, colonyId: any) {
 
 async function getGlobalColony(ctx: Ctx) {
   return await ctx.db
-    .query('colonies')
-    .withIndex('by_is_global', (q: any) => q.eq('isGlobal', true))
+    .query("colonies")
+    .withIndex("by_is_global", (q: any) => q.eq("isGlobal", true))
     .first();
 }
 
 async function getUpgradeRows(ctx: Ctx, colonyId: any) {
   return await ctx.db
-    .query('globalUpgrades')
-    .withIndex('by_colony', (q: any) => q.eq('colonyId', colonyId))
+    .query("globalUpgrades")
+    .withIndex("by_colony", (q: any) => q.eq("colonyId", colonyId))
     .collect();
 }
 
@@ -171,7 +219,7 @@ async function ensureGlobalUpgrades(ctx: Ctx, colonyId: any) {
       continue;
     }
 
-    await ctx.db.insert('globalUpgrades', {
+    await ctx.db.insert("globalUpgrades", {
       colonyId,
       key: upgrade.key,
       level: 0,
@@ -187,10 +235,10 @@ async function ensureGlobalColony(ctx: Ctx) {
   let colony = await getGlobalColony(ctx);
 
   if (!colony) {
-    const colonyId = await ctx.db.insert('colonies', {
-      name: 'Global Cat Colony',
+    const colonyId = await ctx.db.insert("colonies", {
+      name: "Global Cat Colony",
       leaderId: null,
-      status: 'starting',
+      status: "starting",
       resources: {
         food: 24,
         water: 24,
@@ -225,7 +273,7 @@ async function ensureGlobalColony(ctx: Ctx) {
   } else {
     await ensureGlobalUpgrades(ctx, colony._id);
 
-    if (typeof colony.runNumber !== 'number') {
+    if (typeof colony.runNumber !== "number") {
       await ctx.db.patch(colony._id, {
         runNumber: 1,
         runStartedAt: colony.runStartedAt ?? now,
@@ -245,9 +293,9 @@ async function ensureGlobalColony(ctx: Ctx) {
   }
 
   const aliveCats = await ctx.db
-    .query('cats')
-    .withIndex('by_colony_alive', (q: any) => q.eq('colonyId', colony._id))
-    .filter((q: any) => q.eq(q.field('deathTime'), null))
+    .query("cats")
+    .withIndex("by_colony_alive", (q: any) => q.eq("colonyId", colony._id))
+    .filter((q: any) => q.eq(q.field("deathTime"), null))
     .collect();
 
   if (aliveCats.length === 0) {
@@ -261,9 +309,9 @@ async function ensureGlobalColony(ctx: Ctx) {
 
 async function chooseLeader(ctx: Ctx, colonyId: any) {
   const aliveCats = await ctx.db
-    .query('cats')
-    .withIndex('by_colony_alive', (q: any) => q.eq('colonyId', colonyId))
-    .filter((q: any) => q.eq(q.field('deathTime'), null))
+    .query("cats")
+    .withIndex("by_colony_alive", (q: any) => q.eq("colonyId", colonyId))
+    .filter((q: any) => q.eq(q.field("deathTime"), null))
     .collect();
 
   if (aliveCats.length === 0) {
@@ -279,27 +327,38 @@ async function chooseLeader(ctx: Ctx, colonyId: any) {
   return best;
 }
 
-const SPECIALIZATION_STAT: Record<Exclude<CatSpecialization, null>, string> = {
-  hunter: 'hunting',
-  architect: 'building',
-  ritualist: 'leadership',
+const SPECIALIZATION_STAT: Record<
+  Exclude<CatSpecialization, null>,
+  keyof CatStats
+> = {
+  hunter: "hunting",
+  architect: "building",
+  ritualist: "leadership",
 };
 
-async function selectBestCat(ctx: Ctx, colonyId: any, specialization: CatSpecialization) {
+async function selectBestCat(
+  ctx: Ctx,
+  colonyId: any,
+  specialization: CatSpecialization,
+) {
   const aliveCats = await ctx.db
-    .query('cats')
-    .withIndex('by_colony_alive', (q: any) => q.eq('colonyId', colonyId))
-    .filter((q: any) => q.eq(q.field('deathTime'), null))
+    .query("cats")
+    .withIndex("by_colony_alive", (q: any) => q.eq("colonyId", colonyId))
+    .filter((q: any) => q.eq(q.field("deathTime"), null))
     .collect();
 
   if (aliveCats.length === 0) {
     return null;
   }
 
-  const preferred = aliveCats.filter((cat: any) => (cat.specialization ?? null) === specialization);
+  const preferred = aliveCats.filter(
+    (cat: any) => (cat.specialization ?? null) === specialization,
+  );
   const pool = preferred.length > 0 ? preferred : aliveCats;
 
-  const statKey = specialization ? SPECIALIZATION_STAT[specialization] : 'leadership';
+  const statKey = specialization
+    ? SPECIALIZATION_STAT[specialization]
+    : "leadership";
 
   let best = pool[0];
   for (const cat of pool) {
@@ -311,8 +370,15 @@ async function selectBestCat(ctx: Ctx, colonyId: any, specialization: CatSpecial
   return best;
 }
 
-async function logEvent(ctx: Ctx, colonyId: any, type: any, message: string, involvedCatIds: any[] = [], metadata: any = {}) {
-  await ctx.db.insert('events', {
+async function logEvent(
+  ctx: Ctx,
+  colonyId: any,
+  type: any,
+  message: string,
+  involvedCatIds: any[] = [],
+  metadata: any = {},
+) {
+  await ctx.db.insert("events", {
     colonyId,
     catId: involvedCatIds[0],
     timestamp: Date.now(),
@@ -327,7 +393,7 @@ async function queueJob(
   ctx: Ctx,
   colonyId: any,
   kind: JobKind,
-  requestedByType: 'player' | 'leader' | 'system',
+  requestedByType: "player" | "leader" | "system",
   upgrades: UpgradeLevels,
   runtime: RuntimeConfig,
   requestedByPlayerId: any,
@@ -335,13 +401,18 @@ async function queueJob(
   metadata: any = {},
 ) {
   const specialization: CatSpecialization = assignedCat?.specialization ?? null;
-  const duration = getScaledDurationSeconds(kind, specialization, upgrades, runtime.timeScale);
+  const duration = getScaledDurationSeconds(
+    kind,
+    specialization,
+    upgrades,
+    runtime.timeScale,
+  );
   const now = Date.now();
 
-  const jobId = await ctx.db.insert('jobs', {
+  const jobId = await ctx.db.insert("jobs", {
     colonyId,
     kind,
-    status: 'queued',
+    status: "queued",
     requestedByType,
     requestedByPlayerId: requestedByPlayerId ?? undefined,
     assignedCatId: assignedCat?._id ?? null,
@@ -355,10 +426,17 @@ async function queueJob(
     metadata,
   });
 
-  await logEvent(ctx, colonyId, 'job_queued', `Queued ${kind.replace(/_/g, ' ')}`, assignedCat ? [assignedCat._id] : [], {
-    jobId,
-    kind,
-  });
+  await logEvent(
+    ctx,
+    colonyId,
+    "job_queued",
+    `Queued ${kind.replace(/_/g, " ")}`,
+    assignedCat ? [assignedCat._id] : [],
+    {
+      jobId,
+      kind,
+    },
+  );
 
   return jobId;
 }
@@ -367,32 +445,35 @@ async function resetGlobalRun(ctx: Ctx, colony: any, reason: string) {
   const now = Date.now();
 
   const activePlayers = await ctx.db
-    .query('players')
-    .withIndex('by_last_seen', (q: any) => q.gte('lastSeenAt', now - 5 * 60 * 1000))
+    .query("players")
+    .withIndex("by_last_seen", (q: any) =>
+      q.gte("lastSeenAt", now - 5 * 60 * 1000),
+    )
     .collect();
 
-  await ctx.db.insert('runHistory', {
+  await ctx.db.insert("runHistory", {
     colonyId: colony._id,
     runNumber: colony.runNumber ?? 1,
     startedAt: colony.runStartedAt ?? colony.createdAt,
     endedAt: now,
-    durationSec: Math.max(1, Math.floor((now - (colony.runStartedAt ?? colony.createdAt)) / 1000)),
+    durationSec: Math.max(
+      1,
+      Math.floor((now - (colony.runStartedAt ?? colony.createdAt)) / 1000),
+    ),
     reason,
     finalResources: colony.resources,
     activePlayers: activePlayers.length,
   });
 
-  const statuses: Array<'queued' | 'active' | 'completed' | 'failed' | 'cancelled'> = [
-    'queued',
-    'active',
-    'completed',
-    'failed',
-    'cancelled',
-  ];
+  const statuses: Array<
+    "queued" | "active" | "completed" | "failed" | "cancelled"
+  > = ["queued", "active", "completed", "failed", "cancelled"];
   for (const status of statuses) {
     const jobs = await ctx.db
-      .query('jobs')
-      .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', status))
+      .query("jobs")
+      .withIndex("by_colony_status", (q: any) =>
+        q.eq("colonyId", colony._id).eq("status", status),
+      )
       .collect();
     for (const job of jobs) {
       await ctx.db.delete(job._id);
@@ -400,9 +481,9 @@ async function resetGlobalRun(ctx: Ctx, colony: any, reason: string) {
   }
 
   const aliveCats = await ctx.db
-    .query('cats')
-    .withIndex('by_colony_alive', (q: any) => q.eq('colonyId', colony._id))
-    .filter((q: any) => q.eq(q.field('deathTime'), null))
+    .query("cats")
+    .withIndex("by_colony_alive", (q: any) => q.eq("colonyId", colony._id))
+    .filter((q: any) => q.eq(q.field("deathTime"), null))
     .collect();
 
   if (aliveCats.length === 0) {
@@ -412,13 +493,13 @@ async function resetGlobalRun(ctx: Ctx, colony: any, reason: string) {
       await ctx.db.patch(cat._id, {
         needs: { hunger: 100, thirst: 100, rest: 100, health: 100 },
         currentTask: null,
-        position: { map: 'colony', x: 1, y: 1 },
+        position: { map: "colony", x: 1, y: 1 },
       });
     }
   }
 
   await ctx.db.patch(colony._id, {
-    status: 'starting',
+    status: "starting",
     resources: {
       food: 24,
       water: 24,
@@ -434,9 +515,16 @@ async function resetGlobalRun(ctx: Ctx, colony: any, reason: string) {
     ritualRequestedAt: null,
   });
 
-  await logEvent(ctx, colony._id, 'run_reset', `The colony collapsed and started run ${(colony.runNumber ?? 1) + 1}.`, [], {
-    reason,
-  });
+  await logEvent(
+    ctx,
+    colony._id,
+    "run_reset",
+    `The colony collapsed and started run ${(colony.runNumber ?? 1) + 1}.`,
+    [],
+    {
+      reason,
+    },
+  );
 }
 
 export const ensureGlobalState = mutation({
@@ -449,12 +537,12 @@ export const ensureGlobalState = mutation({
 
 export const setTestAcceleration = mutation({
   args: {
-    preset: v.union(v.literal('off'), v.literal('fast'), v.literal('turbo')),
+    preset: v.union(v.literal("off"), v.literal("fast"), v.literal("turbo")),
   },
   handler: async (ctx, args) => {
     const colony = await ensureGlobalColony(ctx);
     if (!colony) {
-      throw new Error('Global colony unavailable');
+      throw new Error("Global colony unavailable");
     }
 
     const config = configForPreset(args.preset);
@@ -479,42 +567,54 @@ export const getGlobalDashboard = query({
     const now = Date.now();
 
     const cats = await ctx.db
-      .query('cats')
-      .withIndex('by_colony_alive', (q: any) => q.eq('colonyId', colony._id))
-      .filter((q: any) => q.eq(q.field('deathTime'), null))
+      .query("cats")
+      .withIndex("by_colony_alive", (q: any) => q.eq("colonyId", colony._id))
+      .filter((q: any) => q.eq(q.field("deathTime"), null))
       .collect();
 
     const jobsQueued = await ctx.db
-      .query('jobs')
-      .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'queued'))
+      .query("jobs")
+      .withIndex("by_colony_status", (q: any) =>
+        q.eq("colonyId", colony._id).eq("status", "queued"),
+      )
       .collect();
     const jobsActive = await ctx.db
-      .query('jobs')
-      .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'active'))
+      .query("jobs")
+      .withIndex("by_colony_status", (q: any) =>
+        q.eq("colonyId", colony._id).eq("status", "active"),
+      )
       .collect();
 
-    const jobs = [...jobsActive, ...jobsQueued].sort((a, b) => a.endsAt - b.endsAt);
+    const jobs = [...jobsActive, ...jobsQueued].sort(
+      (a, b) => a.endsAt - b.endsAt,
+    );
 
     const events = await ctx.db
-      .query('events')
-      .withIndex('by_colony_time', (q: any) => q.eq('colonyId', colony._id))
-      .order('desc')
+      .query("events")
+      .withIndex("by_colony_time", (q: any) => q.eq("colonyId", colony._id))
+      .order("desc")
       .take(30);
 
     const upgrades = await getUpgradeRows(ctx, colony._id);
 
     const onlinePlayers = await ctx.db
-      .query('players')
-      .withIndex('by_last_seen', (q: any) => q.gte('lastSeenAt', now - 5 * 60 * 1000))
+      .query("players")
+      .withIndex("by_last_seen", (q: any) =>
+        q.gte("lastSeenAt", now - 5 * 60 * 1000),
+      )
       .collect();
 
-    const leader = colony.leaderId ? cats.find((cat: any) => cat._id === colony.leaderId) ?? null : null;
+    const leader = colony.leaderId
+      ? (cats.find((cat: any) => cat._id === colony.leaderId) ?? null)
+      : null;
 
     return {
       now,
       colony,
       leader,
-      cats: cats.sort((a: any, b: any) => b.stats.leadership - a.stats.leadership),
+      cats: cats.sort(
+        (a: any, b: any) => b.stats.leadership - a.stats.leadership,
+      ),
       jobs,
       upgrades: upgrades.sort((a: any, b: any) => a.key.localeCompare(b.key)),
       events,
@@ -528,17 +628,17 @@ export const requestJob = mutation({
     sessionId: v.string(),
     nickname: v.string(),
     kind: v.union(
-      v.literal('supply_food'),
-      v.literal('supply_water'),
-      v.literal('leader_plan_hunt'),
-      v.literal('leader_plan_house'),
-      v.literal('ritual'),
+      v.literal("supply_food"),
+      v.literal("supply_water"),
+      v.literal("leader_plan_hunt"),
+      v.literal("leader_plan_house"),
+      v.literal("ritual"),
     ),
   },
   handler: async (ctx, args) => {
     const colony = await ensureGlobalColony(ctx);
     if (!colony) {
-      throw new Error('Global colony unavailable');
+      throw new Error("Global colony unavailable");
     }
 
     const now = Date.now();
@@ -548,41 +648,48 @@ export const requestJob = mutation({
     const runtime = getRuntimeConfig(colony);
 
     // Fetch active+queued jobs once for conflict checks on strategic kinds.
-    const isStrategicKind = args.kind !== 'supply_food' && args.kind !== 'supply_water';
+    const isStrategicKind =
+      args.kind !== "supply_food" && args.kind !== "supply_water";
     if (isStrategicKind) {
       const existingActive = await ctx.db
-        .query('jobs')
-        .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'active'))
+        .query("jobs")
+        .withIndex("by_colony_status", (q: any) =>
+          q.eq("colonyId", colony._id).eq("status", "active"),
+        )
         .collect();
       const existingQueued = await ctx.db
-        .query('jobs')
-        .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'queued'))
+        .query("jobs")
+        .withIndex("by_colony_status", (q: any) =>
+          q.eq("colonyId", colony._id).eq("status", "queued"),
+        )
         .collect();
       const allJobs = [...existingActive, ...existingQueued];
 
       if (hasConflictingStrategicJob(args.kind as JobKind, allJobs)) {
         return {
           ok: false,
-          reason: 'already_in_progress',
-          message: 'That request is already in progress.',
+          reason: "already_in_progress",
+          message: "That request is already in progress.",
         };
       }
 
-      if (args.kind === 'ritual') {
-        const alreadyRequested = ritualRequestIsFresh(colony.ritualRequestedAt, now);
-        const activeRitual = allJobs.some((job: any) => job.kind === 'ritual');
+      if (args.kind === "ritual") {
+        const alreadyRequested = ritualRequestIsFresh(
+          colony.ritualRequestedAt,
+          now,
+        );
+        const activeRitual = allJobs.some((job: any) => job.kind === "ritual");
         if (alreadyRequested || activeRitual) {
           return {
             ok: false,
-            reason: 'ritual_pending',
-            message: 'Ritual request already pending or active.',
+            reason: "ritual_pending",
+            message: "Ritual request already pending or active.",
           };
         }
       }
     }
 
-    if (args.kind === 'ritual') {
-
+    if (args.kind === "ritual") {
       await ctx.db.patch(colony._id, {
         lastPlayerActivityAt: now,
         ritualRequestedAt: now,
@@ -595,7 +702,12 @@ export const requestJob = mutation({
         },
       });
 
-      await logEvent(ctx, colony._id, 'ritual_ready', `${args.nickname} requested a ritual. Leader will schedule it when conditions are safe.`);
+      await logEvent(
+        ctx,
+        colony._id,
+        "ritual_ready",
+        `${args.nickname} requested a ritual. Leader will schedule it when conditions are safe.`,
+      );
 
       return { requested: true };
     }
@@ -604,7 +716,7 @@ export const requestJob = mutation({
       ctx,
       colony._id,
       args.kind as JobKind,
-      'player',
+      "player",
       upgrades,
       runtime,
       player._id,
@@ -628,10 +740,15 @@ export const requestJob = mutation({
   },
 });
 
-async function upsertPlayer(ctx: Ctx, sessionId: string, nickname: string, now: number) {
+async function upsertPlayer(
+  ctx: Ctx,
+  sessionId: string,
+  nickname: string,
+  now: number,
+) {
   const existing = await ctx.db
-    .query('players')
-    .withIndex('by_session', (q: any) => q.eq('sessionId', sessionId))
+    .query("players")
+    .withIndex("by_session", (q: any) => q.eq("sessionId", sessionId))
     .first();
 
   if (existing) {
@@ -642,7 +759,7 @@ async function upsertPlayer(ctx: Ctx, sessionId: string, nickname: string, now: 
     return await ctx.db.get(existing._id);
   }
 
-  const playerId = await ctx.db.insert('players', {
+  const playerId = await ctx.db.insert("players", {
     sessionId,
     nickname,
     lastSeenAt: now,
@@ -664,18 +781,18 @@ export const clickBoostJob = mutation({
   args: {
     sessionId: v.string(),
     nickname: v.string(),
-    jobId: v.id('jobs'),
+    jobId: v.id("jobs"),
   },
   handler: async (ctx, args) => {
     const now = Date.now();
     const job = await ctx.db.get(args.jobId);
-    if (!job || (job.status !== 'active' && job.status !== 'queued')) {
-      throw new Error('This job cannot be boosted.');
+    if (!job || (job.status !== "active" && job.status !== "queued")) {
+      throw new Error("This job cannot be boosted.");
     }
 
     const colony = await ensureGlobalColony(ctx);
     if (!colony || colony._id !== job.colonyId) {
-      throw new Error('Invalid colony');
+      throw new Error("Invalid colony");
     }
 
     const player = await upsertPlayer(ctx, args.sessionId, args.nickname, now);
@@ -684,7 +801,10 @@ export const clickBoostJob = mutation({
     const inSameWindow = now - player.clickWindowStart < 60_000;
     const clicksInWindow = inSameWindow ? player.clicksInWindow + 1 : 1;
     const windowStart = inSameWindow ? player.clickWindowStart : now;
-    const reduceSeconds = applyClickBoostSeconds(clicksInWindow, upgrades.click_power);
+    const reduceSeconds = applyClickBoostSeconds(
+      clicksInWindow,
+      upgrades.click_power,
+    );
 
     const minEnd = now + 5_000;
     const nextEnd = Math.max(minEnd, job.endsAt - reduceSeconds * 1000);
@@ -698,7 +818,7 @@ export const clickBoostJob = mutation({
     await ctx.db.patch(job._id, {
       endsAt: nextEnd,
       clickTimeReducedSec: (job.clickTimeReducedSec ?? 0) + reduceSeconds,
-      status: 'active',
+      status: "active",
     });
 
     await ctx.db.patch(colony._id, {
@@ -717,40 +837,42 @@ export const purchaseUpgrade = mutation({
     sessionId: v.string(),
     nickname: v.string(),
     key: v.union(
-      v.literal('click_power'),
-      v.literal('supply_speed'),
-      v.literal('hunt_mastery'),
-      v.literal('build_mastery'),
-      v.literal('ritual_mastery'),
-      v.literal('resilience'),
+      v.literal("click_power"),
+      v.literal("supply_speed"),
+      v.literal("hunt_mastery"),
+      v.literal("build_mastery"),
+      v.literal("ritual_mastery"),
+      v.literal("resilience"),
     ),
   },
   handler: async (ctx, args) => {
     const colony = await ensureGlobalColony(ctx);
     if (!colony) {
-      throw new Error('Global colony unavailable');
+      throw new Error("Global colony unavailable");
     }
 
     const now = Date.now();
     const player = await upsertPlayer(ctx, args.sessionId, args.nickname, now);
 
     const upgrade = await ctx.db
-      .query('globalUpgrades')
-      .withIndex('by_colony_key', (q: any) => q.eq('colonyId', colony._id).eq('key', args.key))
+      .query("globalUpgrades")
+      .withIndex("by_colony_key", (q: any) =>
+        q.eq("colonyId", colony._id).eq("key", args.key),
+      )
       .first();
 
     if (!upgrade) {
-      throw new Error('Upgrade not found.');
+      throw new Error("Upgrade not found.");
     }
 
     if (upgrade.level >= upgrade.maxLevel) {
-      throw new Error('Upgrade already maxed.');
+      throw new Error("Upgrade already maxed.");
     }
 
     const cost = getUpgradeCost(upgrade.baseCost, upgrade.level);
     const points = colony.globalUpgradePoints ?? 0;
     if (points < cost) {
-      throw new Error('Not enough ritual points.');
+      throw new Error("Not enough ritual points.");
     }
 
     await ctx.db.patch(upgrade._id, {
@@ -769,7 +891,12 @@ export const purchaseUpgrade = mutation({
       },
     });
 
-    await logEvent(ctx, colony._id, 'upgrade_purchased', `${args.nickname} upgraded ${args.key.replace(/_/g, ' ')} to level ${upgrade.level + 1}.`);
+    await logEvent(
+      ctx,
+      colony._id,
+      "upgrade_purchased",
+      `${args.nickname} upgraded ${args.key.replace(/_/g, " ")} to level ${upgrade.level + 1}.`,
+    );
 
     return { level: upgrade.level + 1, remainingPoints: points - cost };
   },
@@ -793,13 +920,19 @@ export const workerTick = mutation({
     const bestLeader = await chooseLeader(ctx, colony._id);
     if (bestLeader && colony.leaderId !== bestLeader._id) {
       await ctx.db.patch(colony._id, { leaderId: bestLeader._id });
-      await logEvent(ctx, colony._id, 'leader_change', `${bestLeader.name} is now leading the colony.`, [bestLeader._id]);
+      await logEvent(
+        ctx,
+        colony._id,
+        "leader_change",
+        `${bestLeader.name} is now leading the colony.`,
+        [bestLeader._id],
+      );
     }
 
     const aliveCats = await ctx.db
-      .query('cats')
-      .withIndex('by_colony_alive', (q: any) => q.eq('colonyId', colony._id))
-      .filter((q: any) => q.eq(q.field('deathTime'), null))
+      .query("cats")
+      .withIndex("by_colony_alive", (q: any) => q.eq("colonyId", colony._id))
+      .filter((q: any) => q.eq(q.field("deathTime"), null))
       .collect();
 
     const { foodUse, waterUse } = consumptionForTick(
@@ -816,33 +949,37 @@ export const workerTick = mutation({
 
     // Promote queued jobs to active.
     const queuedJobs = await ctx.db
-      .query('jobs')
-      .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'queued'))
+      .query("jobs")
+      .withIndex("by_colony_status", (q: any) =>
+        q.eq("colonyId", colony._id).eq("status", "queued"),
+      )
       .collect();
 
     for (const job of queuedJobs) {
       await ctx.db.patch(job._id, {
-        status: 'active',
+        status: "active",
         startedAt: job.startedAt || now,
       });
     }
 
     // Auto-plan hunt/build when resources are low.
     const activeJobs = await ctx.db
-      .query('jobs')
-      .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'active'))
+      .query("jobs")
+      .withIndex("by_colony_status", (q: any) =>
+        q.eq("colonyId", colony._id).eq("status", "active"),
+      )
       .collect();
 
     if (shouldAutoQueueHunt(nextResources.food, activeJobs)) {
       await queueJob(
         ctx,
         colony._id,
-        'leader_plan_hunt',
-        'leader',
+        "leader_plan_hunt",
+        "leader",
         upgrades,
         runtime,
         null,
-        await selectBestCat(ctx, colony._id, 'hunter'),
+        await selectBestCat(ctx, colony._id, "hunter"),
       );
     }
 
@@ -850,29 +987,36 @@ export const workerTick = mutation({
       await queueJob(
         ctx,
         colony._id,
-        'leader_plan_house',
-        'leader',
+        "leader_plan_house",
+        "leader",
         upgrades,
         runtime,
         null,
-        await selectBestCat(ctx, colony._id, 'architect'),
+        await selectBestCat(ctx, colony._id, "architect"),
       );
     }
 
     // Ritual from player request only if stable.
-    if (shouldStartRitual(colony.ritualRequestedAt, nextResources, activeJobs)) {
+    if (
+      shouldStartRitual(colony.ritualRequestedAt, nextResources, activeJobs)
+    ) {
       await queueJob(
         ctx,
         colony._id,
-        'ritual',
-        'leader',
+        "ritual",
+        "leader",
         upgrades,
         runtime,
         null,
-        await selectBestCat(ctx, colony._id, 'ritualist'),
+        await selectBestCat(ctx, colony._id, "ritualist"),
       );
       await ctx.db.patch(colony._id, { ritualRequestedAt: null });
-      await logEvent(ctx, colony._id, 'ritual_ready', 'Leader approved a ritual window.');
+      await logEvent(
+        ctx,
+        colony._id,
+        "ritual_ready",
+        "Leader approved a ritual window.",
+      );
     }
 
     // Complete due jobs.
@@ -883,10 +1027,12 @@ export const workerTick = mutation({
     let globalUpgradePoints = colony.globalUpgradePoints ?? 0;
 
     for (const job of dueJobs) {
-      const assignedCat = job.assignedCatId ? await ctx.db.get(job.assignedCatId) : null;
+      const assignedCat = job.assignedCatId
+        ? await ctx.db.get(job.assignedCatId)
+        : null;
 
-      if (job.kind === 'supply_food' || job.kind === 'supply_water') {
-        const resourceKey = job.kind === 'supply_food' ? 'food' : 'water';
+      if (job.kind === "supply_food" || job.kind === "supply_water") {
+        const resourceKey = job.kind === "supply_food" ? "food" : "water";
         patchedResources[resourceKey] += 8;
 
         if (job.requestedByPlayerId) {
@@ -902,25 +1048,52 @@ export const workerTick = mutation({
         }
       }
 
-      if (job.kind === 'leader_plan_hunt') {
-        const hunter = await selectBestCat(ctx, colony._id, 'hunter');
-        await queueJob(ctx, colony._id, 'hunt_expedition', 'leader', upgrades, runtime, null, hunter);
+      if (job.kind === "leader_plan_hunt") {
+        const hunter = await selectBestCat(ctx, colony._id, "hunter");
+        await queueJob(
+          ctx,
+          colony._id,
+          "hunt_expedition",
+          "leader",
+          upgrades,
+          runtime,
+          null,
+          hunter,
+        );
       }
 
-      if (job.kind === 'leader_plan_house') {
-        const architect = await selectBestCat(ctx, colony._id, 'architect');
-        await queueJob(ctx, colony._id, 'build_house', 'leader', upgrades, runtime, null, architect);
+      if (job.kind === "leader_plan_house") {
+        const architect = await selectBestCat(ctx, colony._id, "architect");
+        await queueJob(
+          ctx,
+          colony._id,
+          "build_house",
+          "leader",
+          upgrades,
+          runtime,
+          null,
+          architect,
+        );
       }
 
-      if (job.kind === 'hunt_expedition' && assignedCat) {
+      if (job.kind === "hunt_expedition" && assignedCat) {
         const roleXp = defaultRoleXp(assignedCat);
-        const reward = getHuntReward(assignedCat.stats.hunting, assignedCat.specialization ?? null, roleXp.hunter, upgrades);
+        const reward = getHuntReward(
+          assignedCat.stats.hunting,
+          assignedCat.specialization ?? null,
+          roleXp.hunter,
+          upgrades,
+        );
         patchedResources.food += reward;
 
         const nextRoleXp = { ...roleXp, hunter: roleXp.hunter + 1 };
         await ctx.db.patch(assignedCat._id, {
           roleXp: nextRoleXp,
-          specialization: nextSpecialization('hunter', nextRoleXp.hunter, assignedCat.specialization ?? null),
+          specialization: nextSpecialization(
+            "hunter",
+            nextRoleXp.hunter,
+            assignedCat.specialization ?? null,
+          ),
           stats: {
             ...assignedCat.stats,
             hunting: Math.min(100, assignedCat.stats.hunting + 0.4),
@@ -928,7 +1101,7 @@ export const workerTick = mutation({
         });
       }
 
-      if (job.kind === 'build_house' && assignedCat) {
+      if (job.kind === "build_house" && assignedCat) {
         patchedResources.materials += 12;
         automationTier = Math.min(10, automationTier + 0.05);
 
@@ -936,7 +1109,11 @@ export const workerTick = mutation({
         const nextRoleXp = { ...roleXp, architect: roleXp.architect + 1 };
         await ctx.db.patch(assignedCat._id, {
           roleXp: nextRoleXp,
-          specialization: nextSpecialization('architect', nextRoleXp.architect, assignedCat.specialization ?? null),
+          specialization: nextSpecialization(
+            "architect",
+            nextRoleXp.architect,
+            assignedCat.specialization ?? null,
+          ),
           stats: {
             ...assignedCat.stats,
             building: Math.min(100, assignedCat.stats.building + 0.4),
@@ -944,48 +1121,63 @@ export const workerTick = mutation({
         });
       }
 
-      if (job.kind === 'ritual' && assignedCat) {
+      if (job.kind === "ritual" && assignedCat) {
         globalUpgradePoints += 1 + Math.floor(upgrades.ritual_mastery / 3);
 
         const roleXp = defaultRoleXp(assignedCat);
         const nextRoleXp = { ...roleXp, ritualist: roleXp.ritualist + 1 };
         await ctx.db.patch(assignedCat._id, {
           roleXp: nextRoleXp,
-          specialization: nextSpecialization('ritualist', nextRoleXp.ritualist, assignedCat.specialization ?? null),
+          specialization: nextSpecialization(
+            "ritualist",
+            nextRoleXp.ritualist,
+            assignedCat.specialization ?? null,
+          ),
         });
       }
 
       await ctx.db.patch(job._id, {
-        status: 'completed',
+        status: "completed",
         completedAt: now,
       });
 
       await logEvent(
         ctx,
         colony._id,
-        'job_completed',
-        `Completed ${job.kind.replace(/_/g, ' ')}.`,
+        "job_completed",
+        `Completed ${job.kind.replace(/_/g, " ")}.`,
         assignedCat ? [assignedCat._id] : [],
       );
     }
 
-    const unattendedHours = (now - (colony.lastPlayerActivityAt ?? now)) / 3_600_000;
-    const resilienceHours = runtime.resilienceHoursOverride ?? getResilienceHours(upgrades, automationTier);
+    const unattendedHours =
+      (now - (colony.lastPlayerActivityAt ?? now)) / 3_600_000;
+    const resilienceHours =
+      runtime.resilienceHoursOverride ??
+      getResilienceHours(upgrades, automationTier);
 
     let criticalSince = colony.criticalSince ?? null;
-    if (shouldTrackCritical(patchedResources, unattendedHours, resilienceHours)) {
+    if (
+      shouldTrackCritical(patchedResources, unattendedHours, resilienceHours)
+    ) {
       if (!criticalSince) {
         criticalSince = now;
       }
 
-      // Collapse if critical state lasts 5 minutes after unattended threshold.
-      if (shouldResetFromCritical(criticalSince, now, runtime.criticalMsOverride)) {
-        await resetGlobalRun(ctx, {
-          ...colony,
-          resources: patchedResources,
-          automationTier,
-          runStartedAt: colony.runStartedAt ?? colony.createdAt,
-        }, 'unattended-collapse');
+      // Collapse if critical state exceeds configured threshold (default 5 min).
+      if (
+        shouldResetFromCritical(criticalSince, now, runtime.criticalMsOverride)
+      ) {
+        await resetGlobalRun(
+          ctx,
+          {
+            ...colony,
+            resources: patchedResources,
+            automationTier,
+            runStartedAt: colony.runStartedAt ?? colony.createdAt,
+          },
+          "unattended-collapse",
+        );
         return { ok: true, reset: true };
       }
     } else {
