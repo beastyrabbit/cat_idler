@@ -105,9 +105,18 @@ The worker reads `CONVEX_URL` or `NEXT_PUBLIC_CONVEX_URL`. In worktrees, `.env.l
 - `convex/game.ts` uses `type Ctx = any` to bypass Convex's strict handler typing — this is intentional, not a code smell
 - `bun run build` uses `next build --webpack` (not the default Turbopack)
 - The `convex/` directory has auto-generated files in `_generated/` — never edit those
+- Next.js dev server may already be running from another worktree or terminal — check `ss -tlnp | grep 300` before starting. If port 3000 is taken, kill the process or use `PORT=3002 bun run dev`
+- If `next dev` fails with "Unable to acquire lock", delete `.next/dev/lock` first
+- Convex backend (`bun run convex:dev`) must be running for the game UI to load data — without it, the page shows "Preparing Global Colony..."
+- Greptile MCP `addressed: false` may persist even after GitHub review threads are resolved — verify with `pull_request_read get_review_comments` (check `IsResolved` field) as the source of truth
 
 ## Key Documentation
 
 - `docs/plan.md` — Full game design document with architecture diagrams
 - `docs/TASKS.md` — Development tasks with TDD instructions
 - `docs/TESTING.md` — Testing guide, patterns, and mocking strategies
+
+## Releases
+
+- First release: `v0.1.0` (pre-1.0, semver)
+- No CI/CD pipeline — tests enforced locally via lefthook
