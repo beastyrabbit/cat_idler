@@ -12,6 +12,17 @@ import {
   type JobKind,
   type CatSpecialization,
 } from '../lib/game/idleEngine';
+import {
+  consumptionForTick,
+  hasConflictingStrategicJob,
+  nextColonyStatus,
+  ritualRequestIsFresh,
+  shouldAutoQueueBuild,
+  shouldAutoQueueHunt,
+  shouldResetFromCritical,
+  shouldStartRitual,
+  shouldTrackCritical,
+} from '../lib/game/idleRules';
 
 const UPGRADE_DEFAULTS = [
   { key: 'click_power', maxLevel: 20, baseCost: 2, description: 'Increase click speed-up power.' },
@@ -459,20 +470,13 @@ export const requestJob = mutation({
         .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'queued'))
         .collect();
       const all = [...existingActive, ...existingQueued];
-      const blockedKinds =
-        args.kind === 'leader_plan_hunt'
-          ? ['leader_plan_hunt', 'hunt_expedition']
-          : args.kind === 'leader_plan_house'
-            ? ['leader_plan_house', 'build_house']
-            : ['ritual'];
-
-      if (all.some((job: any) => blockedKinds.includes(job.kind))) {
+      if (hasConflictingStrategicJob(args.kind as JobKind, all)) {
         throw new Error('That request is already in progress.');
       }
     }
 
     if (args.kind === 'ritual') {
-      const alreadyRequested = colony.ritualRequestedAt && now - colony.ritualRequestedAt < 12 * 60 * 60 * 1000;
+      const alreadyRequested = ritualRequestIsFresh(colony.ritualRequestedAt, now);
       const activeJobs = await ctx.db
         .query('jobs')
         .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'active'))
@@ -703,9 +707,7 @@ export const workerTick = mutation({
       .filter((q: any) => q.eq(q.field('deathTime'), null))
       .collect();
 
-    const resilienceScale = Math.max(0.45, 1 - upgrades.resilience * 0.08);
-    const foodUse = (aliveCats.length * elapsedSec) / 3600 * resilienceScale;
-    const waterUse = (aliveCats.length * elapsedSec) / 3000 * resilienceScale;
+    const { foodUse, waterUse } = consumptionForTick(aliveCats.length, elapsedSec, upgrades);
 
     const nextResources = {
       ...colony.resources,
@@ -733,21 +735,16 @@ export const workerTick = mutation({
       .collect();
 
     const activeKinds = new Set(activeJobs.map((job: any) => job.kind));
-    if (nextResources.food < 12 && !activeKinds.has('leader_plan_hunt') && !activeKinds.has('hunt_expedition')) {
+    if (shouldAutoQueueHunt(nextResources.food, activeJobs)) {
       await queueJob(ctx, colony._id, 'leader_plan_hunt', 'leader', upgrades, null, await selectBestCat(ctx, colony._id, 'hunter'));
     }
 
-    if (nextResources.materials < 8 && !activeKinds.has('leader_plan_house') && !activeKinds.has('build_house')) {
+    if (shouldAutoQueueBuild(nextResources.materials, activeJobs)) {
       await queueJob(ctx, colony._id, 'leader_plan_house', 'leader', upgrades, null, await selectBestCat(ctx, colony._id, 'architect'));
     }
 
     // Ritual from player request only if stable.
-    if (
-      colony.ritualRequestedAt &&
-      nextResources.food >= 16 &&
-      nextResources.water >= 16 &&
-      !activeKinds.has('ritual')
-    ) {
+    if (shouldStartRitual(colony.ritualRequestedAt, nextResources, activeJobs)) {
       await queueJob(
         ctx,
         colony._id,
@@ -870,16 +867,15 @@ export const workerTick = mutation({
 
     const unattendedHours = (now - (colony.lastPlayerActivityAt ?? now)) / 3_600_000;
     const resilienceHours = getResilienceHours(upgrades, automationTier);
-    const criticallyLow = patchedResources.food <= 0 || patchedResources.water <= 0;
 
     let criticalSince = colony.criticalSince ?? null;
-    if (criticallyLow && unattendedHours >= resilienceHours) {
+    if (shouldTrackCritical(patchedResources, unattendedHours, resilienceHours)) {
       if (!criticalSince) {
         criticalSince = now;
       }
 
       // Collapse if critical state lasts 5 minutes after unattended threshold.
-      if (now - criticalSince >= 5 * 60 * 1000) {
+      if (shouldResetFromCritical(criticalSince, now)) {
         await resetGlobalRun(ctx, {
           ...colony,
           resources: patchedResources,
@@ -892,8 +888,7 @@ export const workerTick = mutation({
       criticalSince = null;
     }
 
-    const totalSupply = patchedResources.food + patchedResources.water + patchedResources.herbs;
-    const nextStatus = totalSupply < 20 ? 'struggling' : totalSupply > 70 ? 'thriving' : 'starting';
+    const nextStatus = nextColonyStatus(patchedResources);
 
     await ctx.db.patch(colony._id, {
       resources: patchedResources,
