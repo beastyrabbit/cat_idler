@@ -318,11 +318,27 @@ h6 {
   max-width: 42ch;
 }
 
+.cat-species,
+.cat-appearance-extra,
+.cat-role-xp {
+  font-size: 0.72rem;
+  line-height: 1.25;
+  max-width: 42ch;
+}
+
 .cat-stats {
   display: flex;
   gap: 8px;
   font-size: 0.78rem;
   color: var(--muted);
+}
+
+.cat-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 12px;
+  text-align: right;
+  min-width: 170px;
 }
 
 .upgrade-item {
@@ -368,6 +384,12 @@ h6 {
   }
 
   .resource-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .cat-stats-grid {
+    min-width: 0;
+    text-align: left;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

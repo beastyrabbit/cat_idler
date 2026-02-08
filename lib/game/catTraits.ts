@@ -5,6 +5,14 @@ export interface CatTraitSummary {
   markings: string;
 }
 
+export interface CatIdentitySummary extends CatTraitSummary {
+  species: string;
+  skin: string;
+  sprite: string;
+  accessories: string;
+  scars: string;
+}
+
 export function summarizeCatTraits(spriteParams: Record<string, unknown> | null | undefined): CatTraitSummary {
   const p = (spriteParams ?? {}) as Record<string, unknown>;
 
@@ -34,5 +42,32 @@ export function summarizeCatTraits(spriteParams: Record<string, unknown> | null 
     coat,
     eyes,
     markings: marks.length > 0 ? marks.join(', ') : 'None',
+  };
+}
+
+function valueOrFallback(params: Record<string, unknown>, key: string, fallback: string): string {
+  const value = params[key];
+  return typeof value === 'string' && value.trim() ? value : fallback;
+}
+
+export function summarizeCatIdentity(spriteParams: Record<string, unknown> | null | undefined): CatIdentitySummary {
+  const p = (spriteParams ?? {}) as Record<string, unknown>;
+  const traits = summarizeCatTraits(p);
+
+  const spriteNumber =
+    typeof p.spriteNumber === 'number' && Number.isFinite(p.spriteNumber)
+      ? `#${Math.floor(p.spriteNumber)}`
+      : 'Unknown';
+
+  const accessoriesRaw = Array.isArray(p.accessories) ? p.accessories.filter((item) => typeof item === 'string') : [];
+  const scarsRaw = Array.isArray(p.scars) ? p.scars.filter((item) => typeof item === 'string') : [];
+
+  return {
+    species: 'Domestic Cat',
+    ...traits,
+    skin: valueOrFallback(p, 'skinColour', 'Unknown'),
+    sprite: spriteNumber,
+    accessories: accessoriesRaw.length > 0 ? accessoriesRaw.join(', ') : 'None',
+    scars: scarsRaw.length > 0 ? scarsRaw.join(', ') : 'None',
   };
 }

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from 'convex/react';
 
 import { api } from '@/convex/_generated/api';
-import { summarizeCatTraits } from '@/lib/game/catTraits';
+import { summarizeCatIdentity } from '@/lib/game/catTraits';
 import { presetFromTimeScale } from '@/lib/game/testAcceleration';
 
 const anyApi = api as any;
@@ -354,18 +354,33 @@ export default function GamePage() {
                     <strong>{cat.name}</strong>
                     <p className="muted">Spec: {cat.specialization ?? 'none'}</p>
                     {(() => {
-                      const traits = summarizeCatTraits(cat.spriteParams as Record<string, unknown> | null);
+                      const appearance = summarizeCatIdentity(cat.spriteParams as Record<string, unknown> | null);
+                      const roleXp = cat.roleXp ?? { hunter: 0, architect: 0, ritualist: 0 };
                       return (
-                        <p className="muted cat-traits">
-                          Lineage {traits.lineage} · Coat {traits.coat} · Eyes {traits.eyes} · Marks {traits.markings}
-                        </p>
+                        <>
+                          <p className="muted cat-species">Species {appearance.species} · Sprite {appearance.sprite}</p>
+                          <p className="muted cat-traits">
+                            Lineage {appearance.lineage} · Coat {appearance.coat} · Eyes {appearance.eyes} · Marks {appearance.markings}
+                          </p>
+                          <p className="muted cat-appearance-extra">
+                            Skin {appearance.skin} · Accessories {appearance.accessories} · Scars {appearance.scars}
+                          </p>
+                          <p className="muted cat-role-xp">
+                            Role XP H {roleXp.hunter} · A {roleXp.architect} · R {roleXp.ritualist}
+                          </p>
+                        </>
                       );
                     })()}
                   </div>
-                  <div className="cat-stats">
-                    <span>H {Math.floor(cat.stats.hunting)}</span>
-                    <span>B {Math.floor(cat.stats.building)}</span>
-                    <span>L {Math.floor(cat.stats.leadership)}</span>
+                  <div className="cat-stats cat-stats-grid">
+                    <span>ATK {Math.floor(cat.stats.attack)}</span>
+                    <span>DEF {Math.floor(cat.stats.defense)}</span>
+                    <span>HUNT {Math.floor(cat.stats.hunting)}</span>
+                    <span>MED {Math.floor(cat.stats.medicine)}</span>
+                    <span>CLEAN {Math.floor(cat.stats.cleaning)}</span>
+                    <span>BUILD {Math.floor(cat.stats.building)}</span>
+                    <span>LEAD {Math.floor(cat.stats.leadership)}</span>
+                    <span>VIS {Math.floor(cat.stats.vision)}</span>
                   </div>
                 </article>
               ))}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { summarizeCatTraits } from '@/lib/game/catTraits';
+import { summarizeCatIdentity, summarizeCatTraits } from '@/lib/game/catTraits';
 
 describe('cat trait summary', () => {
   it('returns useful defaults when sprite params are missing', () => {
@@ -40,5 +40,34 @@ describe('cat trait summary', () => {
     });
 
     expect(summary.eyes).toBe('BLUE/YELLOW');
+  });
+
+  it('builds full identity details including species and extras', () => {
+    const identity = summarizeCatIdentity({
+      spriteNumber: 12,
+      peltName: 'Classic',
+      colour: 'BROWN',
+      skinColour: 'PINK',
+      eyeColour: 'HAZEL',
+      accessories: ['feather', 'leaf'],
+      scars: ['ear nick'],
+    });
+
+    expect(identity.species).toBe('Domestic Cat');
+    expect(identity.sprite).toBe('#12');
+    expect(identity.lineage).toBe('Classic');
+    expect(identity.skin).toBe('PINK');
+    expect(identity.accessories).toBe('feather, leaf');
+    expect(identity.scars).toBe('ear nick');
+  });
+
+  it('uses fallbacks for missing identity values', () => {
+    const identity = summarizeCatIdentity(null);
+
+    expect(identity.species).toBe('Domestic Cat');
+    expect(identity.sprite).toBe('Unknown');
+    expect(identity.skin).toBe('Unknown');
+    expect(identity.accessories).toBe('None');
+    expect(identity.scars).toBe('None');
   });
 });
