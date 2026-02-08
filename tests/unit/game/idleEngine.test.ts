@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BASE_JOB_SECONDS,
   applyClickBoostSeconds,
   getDurationSeconds,
   getHuntReward,
@@ -20,16 +21,40 @@ const baseUpgrades: UpgradeLevels = {
 };
 
 describe('idle engine', () => {
+  it('uses real-time baseline durations for short player actions and long cat actions', () => {
+    expect(BASE_JOB_SECONDS.supply_water).toBe(15);
+    expect(BASE_JOB_SECONDS.supply_food).toBe(20);
+    expect(BASE_JOB_SECONDS.hunt_expedition).toBe(8 * 60 * 60);
+    expect(BASE_JOB_SECONDS.leader_plan_house).toBe(20 * 60 * 60);
+    expect(BASE_JOB_SECONDS.build_house).toBe(8 * 60 * 60);
+  });
+
   it('applies click boost diminishing returns tiers', () => {
     expect(applyClickBoostSeconds(1, 0)).toBe(10);
     expect(applyClickBoostSeconds(31, 0)).toBe(5);
     expect(applyClickBoostSeconds(61, 0)).toBe(2);
   });
 
+  it('increases click boost power through upgrades', () => {
+    expect(applyClickBoostSeconds(1, 0)).toBe(10);
+    expect(applyClickBoostSeconds(1, 3)).toBe(16);
+  });
+
   it('reduces hunt duration for hunter specialization', () => {
     const normal = getDurationSeconds('hunt_expedition', null, baseUpgrades);
     const specialized = getDurationSeconds('hunt_expedition', 'hunter', baseUpgrades);
     expect(specialized).toBeLessThan(normal);
+  });
+
+  it('reduces build duration for architect specialization', () => {
+    const normal = getDurationSeconds('build_house', null, baseUpgrades);
+    const specialized = getDurationSeconds('build_house', 'architect', baseUpgrades);
+    expect(specialized).toBeLessThan(normal);
+  });
+
+  it('keeps planner job long even with no specialization', () => {
+    const duration = getDurationSeconds('leader_plan_house', null, baseUpgrades);
+    expect(duration).toBe(BASE_JOB_SECONDS.leader_plan_house);
   });
 
   it('increases hunt rewards for high-xp hunter and upgrades', () => {
