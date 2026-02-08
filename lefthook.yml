@@ -1,0 +1,17 @@
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      glob: "*.{ts,tsx,js,jsx,json,env,yaml,yml,toml}"
+      run: gitleaks protect --staged --no-banner
+    lint:
+      glob: "*.{ts,tsx,js,jsx,mjs}"
+      run: bun run lint
+    typecheck:
+      run: bun run typecheck
+
+pre-push:
+  parallel: true
+  commands:
+    test:
+      run: bun run test

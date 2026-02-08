@@ -1,14 +1,11 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import "./globals.css";
 import { ConvexProvider } from "@/components/providers/ConvexProvider";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
-const inter = Inter({ subsets: ["latin"] });
-
 export const metadata: Metadata = {
-  title: "Cat Colony Idle Game",
-  description: "A real-time idle game where a cat colony runs autonomously",
+  title: "Global Cat Colony Idle",
+  description: "A shared browser idle game with an always-on backend simulation",
 };
 
 export default function RootLayout({
@@ -18,7 +15,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full">
-      <body className={`${inter.className} min-h-screen bg-meadow`}>
+      <body className="min-h-screen bg-meadow">
         <ErrorBoundary>
           <ConvexProvider>{children}</ConvexProvider>
         </ErrorBoundary>
@@ -26,6 +23,4 @@ export default function RootLayout({
     </html>
   );
 }
-
-
 

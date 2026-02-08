@@ -1,85 +1,113 @@
-# Cat Colony Idle Game - AI Assistant Guide
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-A real-time idle game where a cat colony runs autonomously. Built with Next.js, Convex, and TypeScript.
-
-## Key Documentation
-
-- **[README.md](./README.md)** - Project overview and setup
-- **[docs/plan.md](./docs/plan.md)** - Complete game design document
-- **[docs/TASKS.md](./docs/TASKS.md)** - Development tasks with TDD instructions
-- **[docs/TESTING.md](./docs/TESTING.md)** - Testing guide and patterns
-
-## Architecture
-
-```
-Frontend: Next.js 14 (App Router) + Tailwind CSS
-Backend: Convex (serverless functions + real-time database)
-Testing: Vitest (unit) + Selenium (E2E)
-```
-
-## Directory Structure
-
-```
-cat_idler/
-├── app/                  # Next.js pages
-├── components/           # React components
-│   ├── colony/           # Game-specific components
-│   └── ui/               # Reusable UI components
-├── convex/               # Convex backend
-│   ├── schema.ts         # Database schema
-│   └── *.ts              # Mutations, queries, actions
-├── lib/game/             # Pure game logic (no DB access)
-├── tests/                # All tests
-│   ├── unit/             # Unit tests
-│   ├── integration/      # Integration tests
-│   ├── e2e/              # Selenium E2E tests
-│   └── factories/        # Test data factories
-├── types/                # TypeScript types
-└── docs/                 # Documentation
-```
-
-## Development Workflow (TDD)
-
-1. Pick a task from `docs/TASKS.md`
-2. Write failing tests first
-3. Implement to make tests pass
-4. Refactor
-
-## Key Types
-
-All game types are in `types/game.ts`:
-- `Cat` - Cat entity with stats, needs, position
-- `Colony` - Colony with resources and settings
-- `Task` - Task queue items
-- `Encounter` - Combat/event encounters
-- `Building` - Colony buildings
-
-## Game Logic
-
-Pure functions in `lib/game/`:
-- `needs.ts` - Hunger, thirst, rest, health
-- `age.ts` - Life stages, death chance
-- `skills.ts` - Skill learning
-- `combat.ts` - Combat resolution
-- `catAI.ts` - Autonomous cat behavior
-- `tasks.ts` - Task assignment logic
-- `paths.ts` - World map paths
-- `worldResources.ts` - Resource harvesting
+Cat Colony Idle Game — a real-time idle game where a shared cat colony runs autonomously. Players can boost jobs with clicks, but the colony self-sustains. Built with Next.js 16, Convex (real-time serverless backend), and TypeScript.
 
 ## Commands
 
 ```bash
-bun run dev          # Start development
-bun run test:unit    # Run unit tests
-bun run test:e2e     # Run Selenium E2E tests
-bun run convex:dev   # Start Convex backend
+# Development (run in separate terminals)
+bun run convex:dev          # Terminal 1: Convex backend
+bun run dev                 # Terminal 2: Next.js frontend (localhost:3000)
+bun run dev:worker          # Terminal 3: Worker simulation loop (tsx watch)
+
+# Testing
+bun run test                # Run all unit tests once (vitest run)
+bun run test:watch          # Vitest watch mode
+bun test tests/unit/game/needs.test.ts   # Single test file
+bun test -- --grep "pattern"             # Filter by test name
+bun run test:coverage       # Coverage report (v8)
+bun run test:e2e            # Selenium E2E tests
+
+# Quality
+bun run lint                # ESLint
+bun run typecheck           # tsc --noEmit
+bun run format              # Prettier
 ```
 
-## Important Notes
+## Architecture
 
-- Game tick runs every 10 seconds (Convex cron)
-- Cats have needs that decay over time
-- Colony can die if all cats die
-- User interactions are optional (game is idle-capable)
+```
+Browser (Next.js + React 19)
+  ↕ real-time subscriptions (useQuery/useMutation)
+Convex Backend (mutations, queries, schema)
+  ↕ calls pure functions
+lib/game/ (pure game logic, NO side effects)
+  ↑ driven by
+worker/index.ts (always-on tick loop via ConvexHttpClient)
+```
+
+**The worker drives the game, not Convex crons.** `convex/crons.ts` is intentionally empty. The worker (`bun run dev:worker`) calls `game.workerTick` every 1s (configurable via `WORKER_TICK_MS`).
+
+### Dual Tick Systems
+
+There are two independent tick codepaths:
+
+- **`convex/game.ts:workerTick`** — Browser-idle v2 job system. Handles resource consumption, job completion, auto-queuing hunts/builds/rituals, specialization XP, critical state, and colony resets. Called by the worker process.
+- **`convex/gameTick.ts:tickColony`** — Legacy system. Handles needs decay, autonomous cat AI, task assignment/progression, combat encounters, aging/death, breeding. Called as `internalMutation`.
+
+### Key Layers
+
+- **`lib/game/`** — All game logic as pure functions. No DB imports, no side effects. This is the core that gets unit tested.
+- **`convex/`** — Mutations/queries that read/write DB and call into `lib/game/`. The `game.ts` file handles initialization, leader assignment, and the `workerTick` entry point.
+- **`types/game.ts`** — All shared TypeScript types and constants (Cat, Colony, Building, Task, Encounter, etc.)
+- **`worker/index.ts`** — Lightweight Node process that calls `game.workerTick` on an interval. Needs `CONVEX_URL` or `NEXT_PUBLIC_CONVEX_URL`.
+
+### Browser Idle v2 Job System
+
+The game operates on a **job-based system** (`convex/schema.ts:jobs` table, `lib/game/idleEngine.ts`):
+
+- Short player actions: `supply_food` (20s), `supply_water` (15s)
+- Long cat jobs: `hunt_expedition` (8h), `build_house` (8h), `ritual` (6h)
+- Leader planning: `leader_plan_hunt` (30min), `leader_plan_house` (20h)
+- Cat specializations reduce relevant job durations (50% for hunter/architect, 40% for ritualist)
+- Click boosting reduces active job time (diminishing returns above 30 clicks/min)
+- Global upgrades persist across colony resets (`globalUpgrades` table)
+- Colonies auto-reset after extended critical state (configurable via `testCriticalMsOverride`)
+
+### Test Acceleration
+
+`lib/game/testAcceleration.ts` provides QA presets that scale time and resource decay for faster testing. Colony schema has `testTimeScale`, `testResourceDecayMultiplier`, and other override fields.
+
+## Database Schema
+
+11 tables in `convex/schema.ts`: `colonies`, `cats`, `buildings`, `worldTiles`, `tasks`, `encounters`, `events`, `players`, `jobs`, `globalUpgrades`, `runHistory`. Key indexes are defined inline. Cat lookup by colony uses `by_colony` and `by_colony_alive` (filters on `deathTime`).
+
+## Testing Patterns
+
+- **Vitest** with jsdom environment, globals enabled (no imports needed for `describe`/`it`/`expect`)
+- Test factories in `tests/factories/` for building test data
+- Path alias `@/` maps to repo root (matches tsconfig)
+- Coverage targets: game logic 90%+, components 80%+
+- TDD workflow: write failing tests first, then implement
+
+## Git Hooks (lefthook)
+
+- **pre-commit**: gitleaks (secret detection), lint, typecheck — all run in parallel
+- **pre-push**: unit tests must pass
+
+## Environment
+
+Copy `.env.local` from an existing setup or create with:
+
+```
+CONVEX_DEPLOYMENT=dev:<your-deployment>
+NEXT_PUBLIC_CONVEX_URL=https://<your-deployment>.convex.cloud
+```
+
+The worker reads `CONVEX_URL` or `NEXT_PUBLIC_CONVEX_URL`. In worktrees, `.env.local` may not exist — check before starting servers.
+
+## Gotchas
+
+- `convex/game.ts` uses `type Ctx = any` to bypass Convex's strict handler typing — this is intentional, not a code smell
+- `bun run build` uses `next build --webpack` (not the default Turbopack)
+- The `convex/` directory has auto-generated files in `_generated/` — never edit those
+
+## Key Documentation
+
+- `docs/plan.md` — Full game design document with architecture diagrams
+- `docs/TASKS.md` — Development tasks with TDD instructions
+- `docs/TESTING.md` — Testing guide, patterns, and mocking strategies

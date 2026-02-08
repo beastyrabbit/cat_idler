@@ -1,0 +1,125 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  BASE_JOB_SECONDS,
+  applyClickBoostSeconds,
+  getDurationSeconds,
+  getHuntReward,
+  getScaledDurationSeconds,
+  getResilienceHours,
+  getUpgradeCost,
+  normalizeTimeScale,
+  nextSpecialization,
+  type UpgradeLevels,
+} from "@/lib/game/idleEngine";
+
+const baseUpgrades: UpgradeLevels = {
+  click_power: 0,
+  supply_speed: 0,
+  hunt_mastery: 0,
+  build_mastery: 0,
+  ritual_mastery: 0,
+  resilience: 0,
+};
+
+describe("idle engine", () => {
+  it("uses real-time baseline durations for short player actions and long cat actions", () => {
+    expect(BASE_JOB_SECONDS.supply_water).toBe(15);
+    expect(BASE_JOB_SECONDS.supply_food).toBe(20);
+    expect(BASE_JOB_SECONDS.hunt_expedition).toBe(8 * 60 * 60);
+    expect(BASE_JOB_SECONDS.leader_plan_house).toBe(20 * 60 * 60);
+    expect(BASE_JOB_SECONDS.build_house).toBe(8 * 60 * 60);
+  });
+
+  it("applies click boost with smooth exponential decay after 30 clicks", () => {
+    expect(applyClickBoostSeconds(1, 0)).toBe(10);
+    // Smooth decay: excess=1 → decayFactor ≈ 0.995 → floor(9.95) = 9
+    expect(applyClickBoostSeconds(31, 0)).toBe(9);
+    // Smooth decay: excess=31 → decayFactor ≈ 0.856 → floor(8.56) = 8
+    expect(applyClickBoostSeconds(61, 0)).toBe(8);
+    // High click rate still returns at least 1
+    expect(applyClickBoostSeconds(200, 0)).toBeGreaterThanOrEqual(1);
+  });
+
+  it("increases click boost power through upgrades", () => {
+    expect(applyClickBoostSeconds(1, 0)).toBe(10);
+    expect(applyClickBoostSeconds(1, 3)).toBe(16);
+  });
+
+  it("reduces hunt duration for hunter specialization", () => {
+    const normal = getDurationSeconds("hunt_expedition", null, baseUpgrades);
+    const specialized = getDurationSeconds(
+      "hunt_expedition",
+      "hunter",
+      baseUpgrades,
+    );
+    expect(specialized).toBeLessThan(normal);
+  });
+
+  it("reduces build duration for architect specialization", () => {
+    const normal = getDurationSeconds("build_house", null, baseUpgrades);
+    const specialized = getDurationSeconds(
+      "build_house",
+      "architect",
+      baseUpgrades,
+    );
+    expect(specialized).toBeLessThan(normal);
+  });
+
+  it("keeps planner job long even with no specialization", () => {
+    const duration = getDurationSeconds(
+      "leader_plan_house",
+      null,
+      baseUpgrades,
+    );
+    expect(duration).toBe(BASE_JOB_SECONDS.leader_plan_house);
+  });
+
+  it("normalizes and applies duration time scale", () => {
+    expect(normalizeTimeScale(undefined)).toBe(1);
+    expect(normalizeTimeScale(0)).toBe(1);
+    expect(normalizeTimeScale(20)).toBe(20);
+
+    const normal = getScaledDurationSeconds(
+      "hunt_expedition",
+      null,
+      baseUpgrades,
+      1,
+    );
+    const fast = getScaledDurationSeconds(
+      "hunt_expedition",
+      null,
+      baseUpgrades,
+      20,
+    );
+    expect(fast).toBeLessThan(normal);
+  });
+
+  it("increases hunt rewards for high-xp hunter and upgrades", () => {
+    const noBonus = getHuntReward(40, null, 0, baseUpgrades);
+    const withBonus = getHuntReward(40, "hunter", 35, {
+      ...baseUpgrades,
+      hunt_mastery: 2,
+    });
+    expect(withBonus).toBeGreaterThan(noBonus);
+  });
+
+  it("computes resilience hours with cap", () => {
+    expect(getResilienceHours(baseUpgrades, 0)).toBe(2);
+    expect(getResilienceHours({ ...baseUpgrades, resilience: 3 }, 1)).toBe(26);
+    expect(getResilienceHours({ ...baseUpgrades, resilience: 20 }, 20)).toBe(
+      96,
+    );
+  });
+
+  it("scales upgrade cost by current level", () => {
+    expect(getUpgradeCost(5, 0)).toBe(5);
+    expect(getUpgradeCost(5, 2)).toBe(15);
+  });
+
+  it("unlocks specialization after threshold", () => {
+    expect(nextSpecialization("hunter", 9, null)).toBeNull();
+    expect(nextSpecialization("hunter", 10, null)).toBe("hunter");
+    expect(nextSpecialization("hunter", 40, "architect")).toBe("architect");
+  });
+});

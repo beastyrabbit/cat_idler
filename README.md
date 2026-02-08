@@ -1,6 +1,6 @@
 # Cat Colony Idle Game
 
-A real-time idle game where a cat colony runs autonomously. Users can help by providing food, defending against intruders, and building upgrades. The colony lives and dies based on how well it's managed - but it also runs completely on its own when no one is watching.
+A shared browser idle game where everyone contributes to one global cat colony. The simulation runs continuously in a dedicated backend worker, so time passes even when nobody has the browser open.
 
 ## Quick Start
 
@@ -8,95 +8,46 @@ A real-time idle game where a cat colony runs autonomously. Users can help by pr
 # Install dependencies
 bun install
 
-# Set up Convex (Terminal 1)
+# Start Convex backend (Terminal 1)
 bun run convex:dev
 
-# Start frontend (Terminal 2)
+# Start web app (Terminal 2)
 bun run dev
 
-# Run tests (Terminal 3)
-bun run test:unit        # Unit tests
-bun run test:e2e         # E2E tests (Selenium)
-```
+# Start simulation worker (Terminal 3)
+bun run dev:worker
 
-## Documentation
-
-- **[Game Design](./docs/plan.md)** - Complete game mechanics
-- **[Development Tasks](./docs/TASKS.md)** - Task breakdown
-- **[Testing Guide](./docs/TESTING.md)** - How to write tests
-
-## Testing
-
-### Unit Tests
-```bash
+# Run tests (Terminal 4)
 bun run test:unit
 ```
-Tests all pure game logic functions.
 
-### E2E Tests (Selenium)
-```bash
-bun run test:e2e
-```
-Tests the actual GUI in a real browser.
+## Gameplay Overview
+
+- One global colony shared by all players
+- Real-time jobs with long cat timelines (hours) and short player support actions (seconds)
+- Leader auto-assigns strategic work based on colony health
+- Cats specialize over time (hunter, architect, ritualist)
+- Click boosting reduces active job time
+- Rituals grant shared upgrade points for global progression
+- Colony can collapse when unattended and automatically start a new run
 
 ## Tech Stack
 
-- **Frontend:** Next.js 14, React, Tailwind CSS
-- **Backend:** Convex (serverless + real-time database)
-- **Testing:** Vitest (unit), Selenium (E2E)
-- **Language:** TypeScript
-
-## Features
-
-- Autonomous cat colony (runs 24/7)
-- Real-time updates
-- Task queue system
-- Building placement
-- World map exploration
-- Combat and encounters
-- Breeding system
-- Skill progression
-- Age-based life stages
-- User interactions (feed, heal, build)
-
-## Game Loop
-
-The game runs automatically every 10 seconds:
-1. Decay cat needs
-2. Process autonomous behaviors
-3. Progress tasks
-4. Check encounters
-5. Update ages
-6. Process births
-7. Building effects
-8. Update colony status
+- Frontend: Next.js, React, Tailwind CSS
+- Backend: Convex
+- Simulation: dedicated Node worker (`worker/index.ts`)
+- Tests: Vitest + Selenium
+- Language: TypeScript
 
 ## Project Structure
 
-```
+```text
 cat_idler/
-├── app/              # Next.js pages
-├── components/       # React components
-│   ├── colony/       # Game-specific components
-│   └── ui/           # Reusable UI components
-├── convex/           # Backend (Convex)
-├── lib/game/         # Pure game logic
-├── tests/            # All tests
-│   ├── unit/         # Unit tests
-│   └── e2e/          # Selenium E2E tests
-├── types/            # TypeScript types
-└── docs/             # Documentation
+├── app/                  # Next.js routes (global dashboard at /game)
+├── components/           # React components
+├── convex/               # Convex functions and schema
+├── lib/game/             # Pure game mechanics
+├── worker/               # Always-on simulation loop
+├── tests/                # Unit and E2E tests
+└── types/                # Shared TypeScript types
 ```
-
-## How to Play
-
-1. **Create a Colony** - Enter a name and click "Create Colony"
-2. **Select a Leader** - Choose a cat with high leadership
-3. **Watch the Colony** - Cats autonomously manage their needs
-4. **Help Your Colony** - Click "Give Food", "Give Water", or heal cats
-5. **Build and Expand** - Place buildings to improve efficiency
-6. **Explore the World** - Switch to "World Map" to see exploration
-
----
-
-**Ready to play!** Create a colony and watch it thrive! 🐱
