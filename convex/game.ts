@@ -3,7 +3,7 @@ import { v } from 'convex/values';
 
 import {
   applyClickBoostSeconds,
-  getDurationSeconds,
+  getScaledDurationSeconds,
   getHuntReward,
   getResilienceHours,
   getUpgradeCost,
@@ -23,6 +23,8 @@ import {
   shouldStartRitual,
   shouldTrackCritical,
 } from '../lib/game/idleRules';
+import { inheritTraits, traitsToSpriteParams } from '../lib/game/genetics';
+import { configForPreset } from '../lib/game/testAcceleration';
 
 const UPGRADE_DEFAULTS = [
   { key: 'click_power', maxLevel: 20, baseCost: 2, description: 'Increase click speed-up power.' },
@@ -36,6 +38,23 @@ const UPGRADE_DEFAULTS = [
 type UpgradeKey = (typeof UPGRADE_DEFAULTS)[number]['key'];
 
 type Ctx = any;
+
+interface RuntimeConfig {
+  timeScale: number;
+  resourceDecayMultiplier: number;
+  resilienceHoursOverride: number | null;
+  criticalMsOverride: number;
+}
+
+function getRuntimeConfig(colony: any): RuntimeConfig {
+  return {
+    timeScale: Math.max(1, colony.testTimeScale ?? 1),
+    resourceDecayMultiplier: Math.max(1, colony.testResourceDecayMultiplier ?? 1),
+    resilienceHoursOverride:
+      typeof colony.testResilienceHoursOverride === 'number' ? colony.testResilienceHoursOverride : null,
+    criticalMsOverride: Math.max(1_000, colony.testCriticalMsOverride ?? 5 * 60 * 1000),
+  };
+}
 
 function randomStat(min: number, max: number): number {
   return min + Math.floor(Math.random() * (max - min + 1));
@@ -69,7 +88,7 @@ async function createStarterCats(ctx: Ctx, colonyId: any) {
       position: { map: 'colony', x: 1, y: 1 },
       isPregnant: false,
       pregnancyDueTime: null,
-      spriteParams: null,
+      spriteParams: traitsToSpriteParams(inheritTraits(null, null)) as Record<string, unknown>,
       specialization: null,
       roleXp: {
         hunter: 0,
@@ -77,6 +96,38 @@ async function createStarterCats(ctx: Ctx, colonyId: any) {
         ritualist: 0,
       },
     });
+  }
+}
+
+async function ensureAliveCatDefaults(ctx: Ctx, colonyId: any) {
+  const aliveCats = await ctx.db
+    .query('cats')
+    .withIndex('by_colony_alive', (q: any) => q.eq('colonyId', colonyId))
+    .filter((q: any) => q.eq(q.field('deathTime'), null))
+    .collect();
+
+  for (const cat of aliveCats) {
+    const patch: Record<string, unknown> = {};
+    let needsPatch = false;
+
+    if (!cat.spriteParams) {
+      patch.spriteParams = traitsToSpriteParams(inheritTraits(null, null)) as Record<string, unknown>;
+      needsPatch = true;
+    }
+
+    if (!cat.roleXp) {
+      patch.roleXp = { hunter: 0, architect: 0, ritualist: 0 };
+      needsPatch = true;
+    }
+
+    if (!('specialization' in cat)) {
+      patch.specialization = null;
+      needsPatch = true;
+    }
+
+    if (needsPatch) {
+      await ctx.db.patch(cat._id, patch);
+    }
   }
 }
 
@@ -159,6 +210,10 @@ async function ensureGlobalColony(ctx: Ctx) {
       globalUpgradePoints: 0,
       ritualRequestedAt: null,
       criticalSince: null,
+      testTimeScale: 1,
+      testResourceDecayMultiplier: 1,
+      testResilienceHoursOverride: null,
+      testCriticalMsOverride: 5 * 60 * 1000,
     });
 
     await createStarterCats(ctx, colonyId);
@@ -178,6 +233,10 @@ async function ensureGlobalColony(ctx: Ctx) {
         globalUpgradePoints: colony.globalUpgradePoints ?? 0,
         ritualRequestedAt: colony.ritualRequestedAt ?? null,
         criticalSince: colony.criticalSince ?? null,
+        testTimeScale: colony.testTimeScale ?? 1,
+        testResourceDecayMultiplier: colony.testResourceDecayMultiplier ?? 1,
+        testResilienceHoursOverride: colony.testResilienceHoursOverride ?? null,
+        testCriticalMsOverride: colony.testCriticalMsOverride ?? 5 * 60 * 1000,
       });
       colony = await ctx.db.get(colony._id);
     }
@@ -192,6 +251,8 @@ async function ensureGlobalColony(ctx: Ctx) {
   if (aliveCats.length === 0) {
     await createStarterCats(ctx, colony._id);
   }
+
+  await ensureAliveCatDefaults(ctx, colony._id);
 
   return await ctx.db.get(colony._id);
 }
@@ -264,12 +325,13 @@ async function queueJob(
   kind: JobKind,
   requestedByType: 'player' | 'leader' | 'system',
   upgrades: UpgradeLevels,
+  runtime: RuntimeConfig,
   requestedByPlayerId: any,
   assignedCat: any,
   metadata: any = {},
 ) {
   const specialization: CatSpecialization = assignedCat?.specialization ?? null;
-  const duration = getDurationSeconds(kind, specialization, upgrades);
+  const duration = getScaledDurationSeconds(kind, specialization, upgrades, runtime.timeScale);
   const now = Date.now();
 
   const jobId = await ctx.db.insert('jobs', {
@@ -381,6 +443,27 @@ export const ensureGlobalState = mutation({
   },
 });
 
+export const setTestAcceleration = mutation({
+  args: {
+    preset: v.union(v.literal('off'), v.literal('fast'), v.literal('turbo')),
+  },
+  handler: async (ctx, args) => {
+    const colony = await ensureGlobalColony(ctx);
+    if (!colony) {
+      throw new Error('Global colony unavailable');
+    }
+
+    const config = configForPreset(args.preset);
+    await ctx.db.patch(colony._id, {
+      testTimeScale: config.timeScale,
+      testResourceDecayMultiplier: config.resourceDecayMultiplier,
+      testResilienceHoursOverride: config.resilienceHoursOverride,
+      testCriticalMsOverride: config.criticalMsOverride,
+    });
+    return { preset: args.preset };
+  },
+});
+
 export const getGlobalDashboard = query({
   args: {},
   handler: async (ctx) => {
@@ -458,6 +541,7 @@ export const requestJob = mutation({
 
     const player = await upsertPlayer(ctx, args.sessionId, args.nickname, now);
     const upgrades = upgradesToLevels(await getUpgradeRows(ctx, colony._id));
+    const runtime = getRuntimeConfig(colony);
 
     // Prevent duplicate strategic jobs.
     if (args.kind !== 'supply_food' && args.kind !== 'supply_water') {
@@ -513,6 +597,7 @@ export const requestJob = mutation({
       args.kind as JobKind,
       'player',
       upgrades,
+      runtime,
       player._id,
       null,
       {},
@@ -693,6 +778,7 @@ export const workerTick = mutation({
     const elapsedSec = Math.max(1, Math.floor((now - colony.lastTick) / 1000));
 
     const upgrades = upgradesToLevels(await getUpgradeRows(ctx, colony._id));
+    const runtime = getRuntimeConfig(colony);
 
     // Ensure best leader.
     const bestLeader = await chooseLeader(ctx, colony._id);
@@ -707,7 +793,11 @@ export const workerTick = mutation({
       .filter((q: any) => q.eq(q.field('deathTime'), null))
       .collect();
 
-    const { foodUse, waterUse } = consumptionForTick(aliveCats.length, elapsedSec, upgrades);
+    const { foodUse, waterUse } = consumptionForTick(
+      aliveCats.length,
+      elapsedSec * runtime.resourceDecayMultiplier,
+      upgrades,
+    );
 
     const nextResources = {
       ...colony.resources,
@@ -734,13 +824,30 @@ export const workerTick = mutation({
       .withIndex('by_colony_status', (q: any) => q.eq('colonyId', colony._id).eq('status', 'active'))
       .collect();
 
-    const activeKinds = new Set(activeJobs.map((job: any) => job.kind));
     if (shouldAutoQueueHunt(nextResources.food, activeJobs)) {
-      await queueJob(ctx, colony._id, 'leader_plan_hunt', 'leader', upgrades, null, await selectBestCat(ctx, colony._id, 'hunter'));
+      await queueJob(
+        ctx,
+        colony._id,
+        'leader_plan_hunt',
+        'leader',
+        upgrades,
+        runtime,
+        null,
+        await selectBestCat(ctx, colony._id, 'hunter'),
+      );
     }
 
     if (shouldAutoQueueBuild(nextResources.materials, activeJobs)) {
-      await queueJob(ctx, colony._id, 'leader_plan_house', 'leader', upgrades, null, await selectBestCat(ctx, colony._id, 'architect'));
+      await queueJob(
+        ctx,
+        colony._id,
+        'leader_plan_house',
+        'leader',
+        upgrades,
+        runtime,
+        null,
+        await selectBestCat(ctx, colony._id, 'architect'),
+      );
     }
 
     // Ritual from player request only if stable.
@@ -751,6 +858,7 @@ export const workerTick = mutation({
         'ritual',
         'leader',
         upgrades,
+        runtime,
         null,
         await selectBestCat(ctx, colony._id, 'ritualist'),
       );
@@ -800,12 +908,12 @@ export const workerTick = mutation({
 
       if (job.kind === 'leader_plan_hunt') {
         const hunter = await selectBestCat(ctx, colony._id, 'hunter');
-        await queueJob(ctx, colony._id, 'hunt_expedition', 'leader', upgrades, null, hunter);
+        await queueJob(ctx, colony._id, 'hunt_expedition', 'leader', upgrades, runtime, null, hunter);
       }
 
       if (job.kind === 'leader_plan_house') {
         const architect = await selectBestCat(ctx, colony._id, 'architect');
-        await queueJob(ctx, colony._id, 'build_house', 'leader', upgrades, null, architect);
+        await queueJob(ctx, colony._id, 'build_house', 'leader', upgrades, runtime, null, architect);
       }
 
       if (job.kind === 'hunt_expedition' && assignedCat) {
@@ -866,7 +974,7 @@ export const workerTick = mutation({
     }
 
     const unattendedHours = (now - (colony.lastPlayerActivityAt ?? now)) / 3_600_000;
-    const resilienceHours = getResilienceHours(upgrades, automationTier);
+    const resilienceHours = runtime.resilienceHoursOverride ?? getResilienceHours(upgrades, automationTier);
 
     let criticalSince = colony.criticalSince ?? null;
     if (shouldTrackCritical(patchedResources, unattendedHours, resilienceHours)) {
@@ -875,7 +983,7 @@ export const workerTick = mutation({
       }
 
       // Collapse if critical state lasts 5 minutes after unattended threshold.
-      if (shouldResetFromCritical(criticalSince, now)) {
+      if (shouldResetFromCritical(criticalSince, now, runtime.criticalMsOverride)) {
         await resetGlobalRun(ctx, {
           ...colony,
           resources: patchedResources,

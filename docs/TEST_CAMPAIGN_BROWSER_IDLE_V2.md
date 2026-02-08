@@ -29,6 +29,10 @@ Open app at:
 - `http://localhost:3000/`
 - should redirect to `/game`
 
+For accelerated QA scenarios, open:
+- `http://localhost:3000/game?test=1`
+- then use `Speed: Fast` or `Speed: Turbo` in Player Actions panel
+
 ## Test Accounts
 
 Use at least 2 browser sessions:
@@ -89,10 +93,13 @@ Expected:
 
 ### S5: Specialization Progression
 1. Let hunt/build/ritual jobs complete repeatedly.
-2. Monitor cat specialization field in cat panel.
-3. Confirm specialization appears only after repeated role work.
+2. Verify each cat shows lineage/coat/eyes/markings in the cat panel.
+3. Monitor cat specialization field in cat panel.
+4. Confirm specialization appears only after repeated role work.
+5. If needed, enable `Speed: Fast` to shorten long jobs.
 
 Expected:
+- Lineage/attribute data is visible per cat.
 - Cats start unspecialized.
 - Hunter/Architect/Ritualist appears after enough role XP.
 - Specialization affects speed and/or rewards over time.
@@ -111,6 +118,7 @@ Expected:
 
 ### S7: Global Upgrade Economy
 1. After ritual completes, note ritual points.
+   - Use `Speed: Fast`/`Turbo` so ritual can complete quickly.
 2. In Session A, buy one upgrade.
 3. In Session B, verify upgrade level changed immediately.
 4. Verify points decrease globally.
@@ -130,6 +138,7 @@ Expected:
 
 ### S9: Unattended Collapse and Auto-Reset
 1. Allow colony to run unattended/under-supplied until collapse.
+   - Enable `Speed: Turbo` first to shorten depletion/resilience/critical windows.
 2. Verify run reset event is created.
 3. Verify run number increments.
 4. Verify baseline resources/cats reset for new run.

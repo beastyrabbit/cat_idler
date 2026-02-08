@@ -179,6 +179,10 @@ export interface Colony {
   globalUpgradePoints?: number
   ritualRequestedAt?: number | null
   criticalSince?: number | null
+  testTimeScale?: number
+  testResourceDecayMultiplier?: number
+  testResilienceHoursOverride?: number | null
+  testCriticalMsOverride?: number
 }
 
 export interface Cat {

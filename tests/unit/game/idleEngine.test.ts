@@ -5,8 +5,10 @@ import {
   applyClickBoostSeconds,
   getDurationSeconds,
   getHuntReward,
+  getScaledDurationSeconds,
   getResilienceHours,
   getUpgradeCost,
+  normalizeTimeScale,
   nextSpecialization,
   type UpgradeLevels,
 } from '@/lib/game/idleEngine';
@@ -55,6 +57,16 @@ describe('idle engine', () => {
   it('keeps planner job long even with no specialization', () => {
     const duration = getDurationSeconds('leader_plan_house', null, baseUpgrades);
     expect(duration).toBe(BASE_JOB_SECONDS.leader_plan_house);
+  });
+
+  it('normalizes and applies duration time scale', () => {
+    expect(normalizeTimeScale(undefined)).toBe(1);
+    expect(normalizeTimeScale(0)).toBe(1);
+    expect(normalizeTimeScale(20)).toBe(20);
+
+    const normal = getScaledDurationSeconds('hunt_expedition', null, baseUpgrades, 1);
+    const fast = getScaledDurationSeconds('hunt_expedition', null, baseUpgrades, 20);
+    expect(fast).toBeLessThan(normal);
   });
 
   it('increases hunt rewards for high-xp hunter and upgrades', () => {

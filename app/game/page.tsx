@@ -4,11 +4,19 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery } from 'convex/react';
 
 import { api } from '@/convex/_generated/api';
+import { summarizeCatTraits } from '@/lib/game/catTraits';
+import { presetFromTimeScale } from '@/lib/game/testAcceleration';
 
 const anyApi = api as any;
 
 function createSessionId(): string {
   return `session_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+}
+
+function cleanErrorMessage(err: unknown): string {
+  const raw = (err as Error).message ?? String(err);
+  const match = raw.match(/Uncaught Error: (.+?)(?:\s+at\s|$)/);
+  return match ? match[1].trim() : raw;
 }
 
 function formatDuration(ms: number): string {
@@ -40,12 +48,20 @@ export default function GamePage() {
   const requestJob = useMutation(anyApi.game.requestJob);
   const clickBoostJob = useMutation(anyApi.game.clickBoostJob);
   const purchaseUpgrade = useMutation(anyApi.game.purchaseUpgrade);
+  const setTestAcceleration = useMutation(anyApi.game.setTestAcceleration);
 
   const [sessionId, setSessionId] = useState('');
   const [nickname, setNickname] = useState('');
   const [now, setNow] = useState(() => Date.now());
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showTestControls, setShowTestControls] = useState(false);
+
+  useEffect(() => {
+    if (!error) return;
+    const t = setTimeout(() => setError(null), 4000);
+    return () => clearTimeout(t);
+  }, [error]);
 
   useEffect(() => {
     const storedSession = localStorage.getItem('cat_idle_session') || createSessionId();
@@ -56,6 +72,7 @@ export default function GamePage() {
 
     setSessionId(storedSession);
     setNickname(storedName);
+    setShowTestControls(window.location.search.includes('test=1'));
   }, []);
 
   useEffect(() => {
@@ -88,6 +105,9 @@ export default function GamePage() {
   const cats = dashboard?.cats ?? [];
 
   const ritualPoints = colony?.globalUpgradePoints ?? 0;
+  const accelerationPreset = useMemo(() => {
+    return presetFromTimeScale(colony?.testTimeScale);
+  }, [colony?.testTimeScale]);
 
   const submitJob = async (kind: 'supply_food' | 'supply_water' | 'leader_plan_hunt' | 'leader_plan_house' | 'ritual') => {
     if (!sessionId || !nickname) {
@@ -99,7 +119,7 @@ export default function GamePage() {
     try {
       await requestJob({ sessionId, nickname, kind });
     } catch (err) {
-      setError((err as Error).message);
+      setError(cleanErrorMessage(err));
     } finally {
       setBusyAction(null);
     }
@@ -115,7 +135,7 @@ export default function GamePage() {
     try {
       await clickBoostJob({ sessionId, nickname, jobId });
     } catch (err) {
-      setError((err as Error).message);
+      setError(cleanErrorMessage(err));
     } finally {
       setBusyAction(null);
     }
@@ -131,7 +151,19 @@ export default function GamePage() {
     try {
       await purchaseUpgrade({ sessionId, nickname, key });
     } catch (err) {
-      setError((err as Error).message);
+      setError(cleanErrorMessage(err));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const onSetAcceleration = async (preset: 'off' | 'fast' | 'turbo') => {
+    setError(null);
+    setBusyAction(`accel:${preset}`);
+    try {
+      await setTestAcceleration({ preset });
+    } catch (err) {
+      setError(cleanErrorMessage(err));
     } finally {
       setBusyAction(null);
     }
@@ -250,6 +282,24 @@ export default function GamePage() {
                 Request Ritual
               </button>
             </div>
+
+            {showTestControls ? (
+              <>
+                <p className="muted">Test acceleration mode (for QA).</p>
+                <div className="action-row">
+                  <button className="btn btn-secondary" disabled={busyAction === 'accel:off'} onClick={() => void onSetAcceleration('off')}>
+                    Speed: Off
+                  </button>
+                  <button className="btn btn-secondary" disabled={busyAction === 'accel:fast'} onClick={() => void onSetAcceleration('fast')}>
+                    Speed: Fast
+                  </button>
+                  <button className="btn btn-secondary" disabled={busyAction === 'accel:turbo'} onClick={() => void onSetAcceleration('turbo')}>
+                    Speed: Turbo
+                  </button>
+                </div>
+                <p className="muted">Current mode: {accelerationPreset}</p>
+              </>
+            ) : null}
           </section>
 
           <section className="card panel">
@@ -299,10 +349,18 @@ export default function GamePage() {
             )}
             <div className="cat-list">
               {cats.map((cat: any) => (
-                <article key={cat._id} className="cat-item">
-                  <div>
+                <article key={cat._id} className="cat-item cat-item-rich">
+                  <div className="cat-main">
                     <strong>{cat.name}</strong>
                     <p className="muted">Spec: {cat.specialization ?? 'none'}</p>
+                    {(() => {
+                      const traits = summarizeCatTraits(cat.spriteParams as Record<string, unknown> | null);
+                      return (
+                        <p className="muted cat-traits">
+                          Lineage {traits.lineage} · Coat {traits.coat} · Eyes {traits.eyes} · Marks {traits.markings}
+                        </p>
+                      );
+                    })()}
                   </div>
                   <div className="cat-stats">
                     <span>H {Math.floor(cat.stats.hunting)}</span>

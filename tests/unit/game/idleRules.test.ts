@@ -68,6 +68,7 @@ describe('idle rules', () => {
     const now = Date.now();
     expect(shouldResetFromCritical(now - 5 * 60 * 1000, now)).toBe(true);
     expect(shouldResetFromCritical(now - 4 * 60 * 1000, now)).toBe(false);
+    expect(shouldResetFromCritical(now - 15_000, now, 10_000)).toBe(true);
   });
 
   it('validates ritual request freshness window', () => {

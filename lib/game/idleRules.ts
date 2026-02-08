@@ -98,12 +98,16 @@ export function shouldTrackCritical(
   return criticallyLow && unattendedHours >= resilienceHours;
 }
 
-export function shouldResetFromCritical(criticalSince: number | null, now: number): boolean {
+export function shouldResetFromCritical(
+  criticalSince: number | null,
+  now: number,
+  criticalMs: number = 5 * 60 * 1000,
+): boolean {
   if (!criticalSince) {
     return false;
   }
 
-  return now - criticalSince >= 5 * 60 * 1000;
+  return now - criticalSince >= criticalMs;
 }
 
 export function ritualRequestIsFresh(

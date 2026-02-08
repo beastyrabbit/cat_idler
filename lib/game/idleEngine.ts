@@ -36,6 +36,13 @@ export const BASE_JOB_SECONDS: Record<JobKind, number> = {
   ritual: 6 * 60 * 60,
 };
 
+export function normalizeTimeScale(timeScale: number | null | undefined): number {
+  if (!timeScale || !Number.isFinite(timeScale)) {
+    return 1;
+  }
+  return Math.max(1, timeScale);
+}
+
 export function applyClickBoostSeconds(
   clicksInCurrentMinute: number,
   clickPowerLevel: number,
@@ -87,6 +94,17 @@ export function getDurationSeconds(
   }
 
   return Math.max(5, Math.floor(base * multiplier));
+}
+
+export function getScaledDurationSeconds(
+  kind: JobKind,
+  specialization: CatSpecialization,
+  upgrades: UpgradeLevels,
+  timeScale: number | null | undefined,
+): number {
+  const base = getDurationSeconds(kind, specialization, upgrades);
+  const scale = normalizeTimeScale(timeScale);
+  return Math.max(1, Math.floor(base / scale));
 }
 
 export function getHuntReward(

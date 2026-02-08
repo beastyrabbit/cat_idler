@@ -38,6 +38,10 @@ export default defineSchema({
     globalUpgradePoints: v.optional(v.number()),
     ritualRequestedAt: v.optional(v.union(v.number(), v.null())),
     criticalSince: v.optional(v.union(v.number(), v.null())),
+    testTimeScale: v.optional(v.number()),
+    testResourceDecayMultiplier: v.optional(v.number()),
+    testResilienceHoursOverride: v.optional(v.union(v.number(), v.null())),
+    testCriticalMsOverride: v.optional(v.number()),
   })
     .index('by_status', ['status'])
     .index('by_created', ['createdAt'])
