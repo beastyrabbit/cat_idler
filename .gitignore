@@ -41,3 +41,9 @@ next-env.d.ts
 # convex
 .convex/
 convex/_generated/
+
+# playwright mcp
+.playwright-mcp/
+
+# test artifacts
+artifacts/
