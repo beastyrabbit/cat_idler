@@ -130,9 +130,16 @@ export default function GamePage() {
         );
       }
       return result;
-    } catch (err) {
-      console.error(`Action ${actionKey} failed:`, err);
-      setError(cleanErrorMessage(err));
+    } catch (err: unknown) {
+      const isNetwork =
+        err instanceof TypeError && /fetch|network/i.test(err.message);
+      if (isNetwork) {
+        console.warn(`Action ${actionKey} network error:`, err);
+        setError("Network error — check your connection and try again.");
+      } else {
+        console.error(`Action ${actionKey} failed:`, err);
+        setError(cleanErrorMessage(err));
+      }
       return undefined;
     } finally {
       setBusyAction(null);

@@ -647,6 +647,9 @@ export const requestJob = mutation({
     const upgrades = upgradesToLevels(await getUpgradeRows(ctx, colony._id));
     const runtime = getRuntimeConfig(colony);
 
+    // Any job request counts as player activity for unattended-time tracking
+    await ctx.db.patch(colony._id, { lastPlayerActivityAt: now });
+
     // Fetch active+queued jobs once for conflict checks on strategic kinds.
     const isStrategicKind =
       args.kind !== "supply_food" && args.kind !== "supply_water";
@@ -691,7 +694,6 @@ export const requestJob = mutation({
 
     if (args.kind === "ritual") {
       await ctx.db.patch(colony._id, {
-        lastPlayerActivityAt: now,
         ritualRequestedAt: now,
       });
 
@@ -729,11 +731,6 @@ export const requestJob = mutation({
         ...player.lifetimeContribution,
         jobsRequested: player.lifetimeContribution.jobsRequested + 1,
       },
-    });
-
-    await ctx.db.patch(colony._id, {
-      lastPlayerActivityAt: now,
-      ritualRequestedAt: colony.ritualRequestedAt ?? null,
     });
 
     return jobId;
@@ -911,7 +908,12 @@ export const workerTick = mutation({
     }
 
     const now = Date.now();
-    const elapsedSec = Math.max(1, Math.floor((now - colony.lastTick) / 1000));
+    const elapsedSec = Math.max(0, Math.floor((now - colony.lastTick) / 1000));
+    if (elapsedSec === 0) {
+      // Sub-second tick — nothing to process yet
+      await ctx.db.patch(colony._id, { lastTick: now });
+      return { ok: true, skipped: true };
+    }
 
     const upgrades = upgradesToLevels(await getUpgradeRows(ctx, colony._id));
     const runtime = getRuntimeConfig(colony);
@@ -1103,7 +1105,8 @@ export const workerTick = mutation({
 
       if (job.kind === "build_house" && assignedCat) {
         patchedResources.materials += 12;
-        automationTier = Math.min(10, automationTier + 0.05);
+        automationTier =
+          Math.round(Math.min(10, automationTier + 0.05) * 100) / 100;
 
         const roleXp = defaultRoleXp(assignedCat);
         const nextRoleXp = { ...roleXp, architect: roleXp.architect + 1 };

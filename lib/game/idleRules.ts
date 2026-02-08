@@ -1,4 +1,4 @@
-import type { JobKind, UpgradeLevels } from './idleEngine';
+import type { JobKind, UpgradeLevels } from "./idleEngine";
 
 export interface ColonyResources {
   food: number;
@@ -12,19 +12,22 @@ export interface MinimalJob {
   kind: JobKind;
 }
 
-export function hasConflictingStrategicJob(kind: JobKind, jobs: MinimalJob[]): boolean {
+export function hasConflictingStrategicJob(
+  kind: JobKind,
+  jobs: MinimalJob[],
+): boolean {
   const kinds = new Set(jobs.map((job) => job.kind));
 
-  if (kind === 'leader_plan_hunt') {
-    return kinds.has('leader_plan_hunt') || kinds.has('hunt_expedition');
+  if (kind === "leader_plan_hunt") {
+    return kinds.has("leader_plan_hunt") || kinds.has("hunt_expedition");
   }
 
-  if (kind === 'leader_plan_house') {
-    return kinds.has('leader_plan_house') || kinds.has('build_house');
+  if (kind === "leader_plan_house") {
+    return kinds.has("leader_plan_house") || kinds.has("build_house");
   }
 
-  if (kind === 'ritual') {
-    return kinds.has('ritual');
+  if (kind === "ritual") {
+    return kinds.has("ritual");
   }
 
   return false;
@@ -35,20 +38,23 @@ export function shouldAutoQueueHunt(food: number, jobs: MinimalJob[]): boolean {
     return false;
   }
 
-  return !hasConflictingStrategicJob('leader_plan_hunt', jobs);
+  return !hasConflictingStrategicJob("leader_plan_hunt", jobs);
 }
 
-export function shouldAutoQueueBuild(materials: number, jobs: MinimalJob[]): boolean {
+export function shouldAutoQueueBuild(
+  materials: number,
+  jobs: MinimalJob[],
+): boolean {
   if (materials >= 8) {
     return false;
   }
 
-  return !hasConflictingStrategicJob('leader_plan_house', jobs);
+  return !hasConflictingStrategicJob("leader_plan_house", jobs);
 }
 
 export function shouldStartRitual(
   ritualRequestedAt: number | null | undefined,
-  resources: Pick<ColonyResources, 'food' | 'water'>,
+  resources: Pick<ColonyResources, "food" | "water">,
   jobs: MinimalJob[],
 ): boolean {
   if (!ritualRequestedAt) {
@@ -59,7 +65,7 @@ export function shouldStartRitual(
     return false;
   }
 
-  return !hasConflictingStrategicJob('ritual', jobs);
+  return !hasConflictingStrategicJob("ritual", jobs);
 }
 
 export function consumptionForTick(
@@ -67,30 +73,33 @@ export function consumptionForTick(
   elapsedSec: number,
   upgrades: UpgradeLevels,
 ): { foodUse: number; waterUse: number } {
+  // Resilience max level is 10 → minimum scale 0.20, clamped to 0.45 floor
   const resilienceScale = Math.max(0.45, 1 - upgrades.resilience * 0.08);
 
   return {
-    foodUse: (catCount * elapsedSec) / 3600 * resilienceScale,
-    waterUse: (catCount * elapsedSec) / 3000 * resilienceScale,
+    foodUse: ((catCount * elapsedSec) / 3600) * resilienceScale,
+    waterUse: ((catCount * elapsedSec) / 3000) * resilienceScale,
   };
 }
 
-export function nextColonyStatus(resources: Pick<ColonyResources, 'food' | 'water' | 'herbs'>): 'starting' | 'thriving' | 'struggling' {
+export function nextColonyStatus(
+  resources: Pick<ColonyResources, "food" | "water" | "herbs">,
+): "starting" | "thriving" | "struggling" {
   const totalSupply = resources.food + resources.water + resources.herbs;
 
   if (totalSupply < 20) {
-    return 'struggling';
+    return "struggling";
   }
 
   if (totalSupply > 70) {
-    return 'thriving';
+    return "thriving";
   }
 
-  return 'starting';
+  return "starting";
 }
 
 export function shouldTrackCritical(
-  resources: Pick<ColonyResources, 'food' | 'water'>,
+  resources: Pick<ColonyResources, "food" | "water">,
   unattendedHours: number,
   resilienceHours: number,
 ): boolean {
