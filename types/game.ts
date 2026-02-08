@@ -86,6 +86,32 @@ export type EventType =
   | 'cat_joined'
   | 'cat_left'
   | 'discovery'
+  | 'job_queued'
+  | 'job_completed'
+  | 'ritual_ready'
+  | 'upgrade_purchased'
+  | 'run_reset'
+
+export type CatSpecialization = 'hunter' | 'architect' | 'ritualist' | null
+
+export type JobKind =
+  | 'supply_food'
+  | 'supply_water'
+  | 'leader_plan_hunt'
+  | 'hunt_expedition'
+  | 'leader_plan_house'
+  | 'build_house'
+  | 'ritual'
+
+export type JobStatus = 'queued' | 'active' | 'completed' | 'failed' | 'cancelled'
+
+export type UpgradeKey =
+  | 'click_power'
+  | 'supply_speed'
+  | 'hunt_mastery'
+  | 'build_mastery'
+  | 'ritual_mastery'
+  | 'resilience'
 
 // =============================================================================
 // Value Objects (no ID, embedded in other objects)
@@ -144,6 +170,15 @@ export interface Colony {
   lastTick: number
   lastAttack: number
   worldSeed?: number // Seed for procedural world generation
+  isGlobal?: boolean
+  runNumber?: number
+  runStartedAt?: number
+  lastPlayerActivityAt?: number
+  lastResetAt?: number
+  automationTier?: number
+  globalUpgradePoints?: number
+  ritualRequestedAt?: number | null
+  criticalSince?: number | null
 }
 
 export interface Cat {
@@ -161,6 +196,12 @@ export interface Cat {
   isPregnant: boolean
   pregnancyDueTime: number | null
   spriteParams: Record<string, unknown> | null
+  specialization?: CatSpecialization
+  roleXp?: {
+    hunter: number
+    architect: number
+    ritualist: number
+  }
 }
 
 export interface Building {
@@ -221,6 +262,51 @@ export interface EventLog {
   message: string
   involvedCatIds: Id<'cats'>[]
   metadata: Record<string, unknown>
+}
+
+export interface Player {
+  _id: Id<'players'>
+  sessionId: string
+  nickname: string
+  lastSeenAt: number
+  clickWindowStart: number
+  clicksInWindow: number
+  lifetimeClicks: number
+  lifetimeContribution: {
+    food: number
+    water: number
+    jobsRequested: number
+    upgradesPurchased: number
+  }
+}
+
+export interface Job {
+  _id: Id<'jobs'>
+  colonyId: Id<'colonies'>
+  kind: JobKind
+  status: JobStatus
+  requestedByType: 'player' | 'leader' | 'system'
+  requestedByPlayerId?: Id<'players'>
+  assignedCatId: Id<'cats'> | null
+  baseDurationSec: number
+  speedMultiplier: number
+  yieldMultiplier: number
+  clickTimeReducedSec: number
+  createdAt: number
+  startedAt: number
+  endsAt: number
+  completedAt?: number
+  metadata?: Record<string, unknown>
+}
+
+export interface GlobalUpgrade {
+  _id: Id<'globalUpgrades'>
+  colonyId: Id<'colonies'>
+  key: UpgradeKey
+  level: number
+  maxLevel: number
+  baseCost: number
+  description: string
 }
 
 // =============================================================================

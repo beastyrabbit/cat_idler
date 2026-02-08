@@ -59,7 +59,12 @@ export const logEvent = mutation({
       v.literal("user_healed"),
       v.literal("cat_joined"),
       v.literal("cat_left"),
-      v.literal("discovery")
+      v.literal("discovery"),
+      v.literal("job_queued"),
+      v.literal("job_completed"),
+      v.literal("ritual_ready"),
+      v.literal("upgrade_purchased"),
+      v.literal("run_reset")
     ),
     message: v.string(),
     involvedCatIds: v.optional(v.array(v.id("cats"))),
@@ -97,7 +102,12 @@ export const logEventInternal = internalMutation({
       v.literal("user_healed"),
       v.literal("cat_joined"),
       v.literal("cat_left"),
-      v.literal("discovery")
+      v.literal("discovery"),
+      v.literal("job_queued"),
+      v.literal("job_completed"),
+      v.literal("ritual_ready"),
+      v.literal("upgrade_purchased"),
+      v.literal("run_reset")
     ),
     message: v.string(),
     involvedCatIds: v.optional(v.array(v.id("cats"))),
@@ -115,6 +125,5 @@ export const logEventInternal = internalMutation({
     });
   },
 });
-
 
 
