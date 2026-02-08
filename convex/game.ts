@@ -555,7 +555,11 @@ export const requestJob = mutation({
         .collect();
       const all = [...existingActive, ...existingQueued];
       if (hasConflictingStrategicJob(args.kind as JobKind, all)) {
-        throw new Error('That request is already in progress.');
+        return {
+          ok: false,
+          reason: 'already_in_progress',
+          message: 'That request is already in progress.',
+        };
       }
     }
 
@@ -571,7 +575,11 @@ export const requestJob = mutation({
         .collect();
       const activeRitual = [...activeJobs, ...queuedJobs].some((job: any) => job.kind === 'ritual');
       if (alreadyRequested || activeRitual) {
-        throw new Error('Ritual request already pending or active.');
+        return {
+          ok: false,
+          reason: 'ritual_pending',
+          message: 'Ritual request already pending or active.',
+        };
       }
 
       await ctx.db.patch(colony._id, {

@@ -117,7 +117,17 @@ export default function GamePage() {
     setError(null);
     setBusyAction(kind);
     try {
-      await requestJob({ sessionId, nickname, kind });
+      const result = await requestJob({ sessionId, nickname, kind });
+      if (
+        typeof result === 'object' &&
+        result !== null &&
+        'ok' in result &&
+        (result as { ok?: boolean }).ok === false &&
+        'message' in result &&
+        typeof (result as { message?: unknown }).message === 'string'
+      ) {
+        setError((result as { message: string }).message);
+      }
     } catch (err) {
       setError(cleanErrorMessage(err));
     } finally {
