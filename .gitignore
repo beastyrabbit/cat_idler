@@ -45,5 +45,8 @@ convex/_generated/
 # playwright mcp
 .playwright-mcp/
 
+# claude code
+.claude/
+
 # test artifacts
 artifacts/
