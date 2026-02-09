@@ -46,6 +46,7 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+<<<<<<< HEAD
 // Cat dream journal
 export * from "./dreamJournal";
 // Colony territory influence calculation
@@ -107,5 +108,7 @@ export * from "./crimeBlotter";
 export * from "./chronicle";
 // Resource trend analysis (moving averages, direction, percent change)
 export * from "./resourceTrends";
+// Weather system (deterministic, seed-based)
+export * from "./weather";
 // Resource spoilage system
 export * from "./spoilage";
