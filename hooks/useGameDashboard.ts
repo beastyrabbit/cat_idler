@@ -13,7 +13,8 @@ function createSessionId(): string {
 }
 
 function cleanErrorMessage(err: unknown): string {
-  const raw = (err as Error).message ?? String(err);
+  if (err == null) return "An unknown error occurred";
+  const raw = err instanceof Error ? err.message : String(err);
   const match = raw.match(/Uncaught Error: (.+?)(?:\s+at\s|$)/);
   return match ? match[1].trim() : raw;
 }
@@ -39,6 +40,7 @@ export function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
+/** Player-requestable job kinds only. `hunt_expedition` and `build_house` are auto-queued by the worker. */
 export type JobKind =
   | "supply_food"
   | "supply_water"
@@ -70,15 +72,22 @@ export function useGameDashboard() {
   }, [error]);
 
   useEffect(() => {
-    const storedSession =
-      localStorage.getItem("cat_idle_session") || createSessionId();
-    const storedName = localStorage.getItem("cat_idle_nickname") || "Guest Cat";
+    try {
+      const storedSession =
+        localStorage.getItem("cat_idle_session") || createSessionId();
+      const storedName =
+        localStorage.getItem("cat_idle_nickname") || "Guest Cat";
 
-    localStorage.setItem("cat_idle_session", storedSession);
-    localStorage.setItem("cat_idle_nickname", storedName);
+      localStorage.setItem("cat_idle_session", storedSession);
+      localStorage.setItem("cat_idle_nickname", storedName);
 
-    setSessionId(storedSession);
-    setNickname(storedName);
+      setSessionId(storedSession);
+      setNickname(storedName);
+    } catch {
+      // localStorage unavailable (private browsing, etc.) — use ephemeral session
+      setSessionId(createSessionId());
+      setNickname("Guest Cat");
+    }
     setShowTestControls(window.location.search.includes("test=1"));
   }, []);
 
@@ -87,11 +96,17 @@ export function useGameDashboard() {
       return;
     }
 
-    void ensureGlobalState({});
-    void upsertPresence({ sessionId, nickname });
+    ensureGlobalState({}).catch((err) =>
+      console.warn("ensureGlobalState failed:", err),
+    );
+    upsertPresence({ sessionId, nickname }).catch((err) =>
+      console.warn("upsertPresence failed:", err),
+    );
 
     const heartbeat = setInterval(() => {
-      void upsertPresence({ sessionId, nickname });
+      upsertPresence({ sessionId, nickname }).catch((err) =>
+        console.warn("upsertPresence heartbeat failed:", err),
+      );
     }, 30_000);
 
     return () => clearInterval(heartbeat);
@@ -182,9 +197,15 @@ export function useGameDashboard() {
   const updateNickname = (value: string) => {
     const trimmed = value.trim() || "Guest Cat";
     setNickname(trimmed);
-    localStorage.setItem("cat_idle_nickname", trimmed);
+    try {
+      localStorage.setItem("cat_idle_nickname", trimmed);
+    } catch {
+      // localStorage unavailable — nickname persists in memory only
+    }
     if (sessionId) {
-      void upsertPresence({ sessionId, nickname: trimmed });
+      upsertPresence({ sessionId, nickname: trimmed }).catch((err) =>
+        console.warn("upsertPresence failed:", err),
+      );
     }
   };
 

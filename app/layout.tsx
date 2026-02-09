@@ -85,16 +85,27 @@ export const metadata: Metadata = {
     "A shared browser idle game with an always-on backend simulation",
 };
 
+const fonts = [
+  jetbrainsMono,
+  pressStart2P,
+  vt323,
+  inter,
+  caveat,
+  nunito,
+  spaceGrotesk,
+  spaceMono,
+  playfairDisplay,
+  specialElite,
+];
+const fontVariables = fonts.map((f) => f.variable).join(" ");
+
 export default function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`h-full ${jetbrainsMono.variable} ${pressStart2P.variable} ${vt323.variable} ${inter.variable} ${caveat.variable} ${nunito.variable} ${spaceGrotesk.variable} ${spaceMono.variable} ${playfairDisplay.variable} ${specialElite.variable}`}
-    >
+    <html lang="en" className={`h-full ${fontVariables}`}>
       <body className="min-h-screen bg-meadow">
         <ErrorBoundary>
           <ConvexProvider>{children}</ConvexProvider>

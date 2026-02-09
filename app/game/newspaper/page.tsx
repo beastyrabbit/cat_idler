@@ -454,27 +454,44 @@ function getStoredSubscriber(): SubscriberData | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as SubscriberData;
-  } catch {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as SubscriberData).name === "string" &&
+      (parsed as SubscriberData).name.length > 0
+    ) {
+      return parsed as SubscriberData;
+    }
+    console.warn("catford-examiner: invalid subscriber data, ignoring");
+    return null;
+  } catch (err) {
+    console.warn("catford-examiner: failed to read subscriber data", err);
     return null;
   }
 }
 
-function storeSubscriber(data: SubscriberData) {
+function storeSubscriber(data: SubscriberData): boolean {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch {
-    // localStorage unavailable — silent fail
+    return true;
+  } catch (err) {
+    console.warn("catford-examiner: failed to persist subscriber data", err);
+    return false;
   }
 }
 
 async function fetchIpHash(): Promise<string> {
   try {
     const res = await fetch("/api/subscriber-hash");
-    if (!res.ok) return "unknown";
+    if (!res.ok) {
+      console.warn(`subscriber-hash: HTTP ${res.status}`);
+      return "unknown";
+    }
     const data = await res.json();
     return data.hash ?? "unknown";
-  } catch {
+  } catch (err) {
+    console.warn("subscriber-hash: fetch failed", err);
     return "unknown";
   }
 }
@@ -492,7 +509,7 @@ function SubscriptionModal({
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    // Focus input after mount animation
+    // Delay focus until ce-modalSlide animation (500ms) completes
     const timer = setTimeout(() => inputRef.current?.focus(), 500);
     return () => clearTimeout(timer);
   }, []);
@@ -716,14 +733,12 @@ export default function CatfordExaminerPage() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pendingScrollRef = useRef<string | null>(null);
 
-  // Check localStorage for existing subscription on mount
+  // Check localStorage for existing subscription on mount.
+  // Intentionally runs once — nickname/updateNickname are stable after first render.
   useEffect(() => {
     const existing = getStoredSubscriber();
     if (existing) {
-      // Already subscribed — apply stored name
-      if (existing.name && existing.name !== nickname) {
-        updateNickname(existing.name);
-      }
+      updateNickname(existing.name);
     } else {
       setShowSubscribeModal(true);
     }
@@ -779,7 +794,7 @@ export default function CatfordExaminerPage() {
 
   const morale = useMemo(() => {
     if (!colony) return 50;
-    // Estimate morale from resources and population
+    // Estimate morale from food and water supply levels
     const r = colony.resources as Record<string, number>;
     const foodPct = Math.min(100, ((r.food ?? 0) / maxFood) * 100);
     const waterPct = Math.min(100, ((r.water ?? 0) / maxWater) * 100);
@@ -1312,11 +1327,9 @@ export default function CatfordExaminerPage() {
         {/* Page-turn content wrapper — ::before pseudo sweeps across */}
         <div
           className={`ce-content-wrap${
-            pageTurnPhase === "out"
-              ? " ce-turning-out"
-              : pageTurnPhase === "in"
-                ? " ce-turning-in"
-                : ""
+            { out: " ce-turning-out", in: " ce-turning-in", idle: "" }[
+              pageTurnPhase
+            ]
           }`}
         >
           {/* ═══════════════════════════════════════
@@ -1364,11 +1377,14 @@ export default function CatfordExaminerPage() {
                       {(leader as any).name} continues to serve as Leader of{" "}
                       {colony.name}, guiding our colony of {population} souls
                       through{" "}
-                      {colony.status === "thriving"
-                        ? "a period of unprecedented prosperity"
-                        : colony.status === "struggling"
-                          ? "these difficult times with unwavering determination"
-                          : "the early stages of settlement with cautious optimism"}
+                      {(
+                        {
+                          thriving: "a period of unprecedented prosperity",
+                          struggling:
+                            "these difficult times with unwavering determination",
+                        } as Record<string, string>
+                      )[colony.status] ??
+                        "the early stages of settlement with cautious optimism"}
                       . The Leader reports{" "}
                       {activeJobs.length > 0
                         ? `${activeJobs.length} active operations currently underway`
@@ -2567,13 +2583,14 @@ export default function CatfordExaminerPage() {
                     color: INK.inkLight,
                   }}
                 >
-                  {colony.status === "thriving"
-                    ? `  /\\_/\\  \n ( o.o ) \n  > ^ <  \n "Purrfect!"`
-                    : colony.status === "struggling"
-                      ? `  /\\_/\\  \n ( T_T ) \n  > ~ <  \n  "Mrow..."`
-                      : colony.status === "dead"
-                        ? `  /\\_/\\  \n ( x_x ) \n  > - <  \n  "...zzz"`
-                        : `  /\\_/\\  \n ( ?.? ) \n  > ^ <  \n  "Hmm?"`}
+                  {(
+                    {
+                      thriving: `  /\\_/\\  \n ( o.o ) \n  > ^ <  \n "Purrfect!"`,
+                      struggling: `  /\\_/\\  \n ( T_T ) \n  > ~ <  \n  "Mrow..."`,
+                      dead: `  /\\_/\\  \n ( x_x ) \n  > - <  \n  "...zzz"`,
+                    } as Record<string, string>
+                  )[colony.status] ??
+                    `  /\\_/\\  \n ( ?.? ) \n  > ^ <  \n  "Hmm?"`}
                 </div>
               </div>
 
