@@ -8,7 +8,9 @@ export async function GET(req: NextRequest) {
     // SHA-256 hash of IP + salt, truncated to 16 hex chars.
     // Not used for security — just a stable anonymous subscriber ID.
     const encoder = new TextEncoder();
-    const data = encoder.encode(ip + "catford-examiner-salt-2026");
+    const salt =
+      process.env.SUBSCRIBER_HASH_SALT ?? "catford-examiner-salt-2026";
+    const data = encoder.encode(ip + salt);
     const hashBuffer = await crypto.subtle.digest("SHA-256", data);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     const hash = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");

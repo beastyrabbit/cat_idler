@@ -521,12 +521,7 @@ function SubscriptionModal({
   };
 
   return (
-    <div
-      className="ce-modal-backdrop"
-      onClick={(e) =>
-        e.target === e.currentTarget && name.trim() && onSubscribe(name.trim())
-      }
-    >
+    <div className="ce-modal-backdrop">
       <div className="ce-modal-card">
         {/* Top ornamental rule */}
         <div style={{ borderBottom: `4px solid ${INK.ink}`, padding: "2px 0" }}>
@@ -732,6 +727,7 @@ export default function CatfordExaminerPage() {
   const navSentinelRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const pendingScrollRef = useRef<string | null>(null);
+  const pageTurnTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // Check localStorage for existing subscription on mount.
   // Intentionally runs once — nickname/updateNickname are stable after first render.
@@ -758,6 +754,8 @@ export default function CatfordExaminerPage() {
     },
     [updateNickname],
   );
+
+  const hasData = !!dashboard;
 
   // Derived data
   const res = useMemo(() => {
@@ -812,24 +810,37 @@ export default function CatfordExaminerPage() {
       // If we're already at this section, do nothing
       if (activeSection === id) return;
 
+      // Clear any in-flight page turn timers
+      pageTurnTimersRef.current.forEach(clearTimeout);
+      pageTurnTimersRef.current = [];
+
       pendingScrollRef.current = id;
       setPageTurnPhase("out");
 
       // After the sweep-cover animation, scroll instantly and sweep-reveal
-      setTimeout(() => {
+      const t1 = setTimeout(() => {
         el.scrollIntoView({ behavior: "instant", block: "start" });
         setActiveSection(id);
         setPageTurnPhase("in");
 
         // After the sweep-reveal animation, return to idle
-        setTimeout(() => {
+        const t2 = setTimeout(() => {
           setPageTurnPhase("idle");
           pendingScrollRef.current = null;
         }, 360);
+        pageTurnTimersRef.current.push(t2);
       }, 400);
+      pageTurnTimersRef.current.push(t1);
     },
     [pageTurnPhase, activeSection],
   );
+
+  // Clean up page-turn timers on unmount
+  useEffect(() => {
+    return () => {
+      pageTurnTimersRef.current.forEach(clearTimeout);
+    };
+  }, []);
 
   // Track which section is in view (updates active nav item)
   useEffect(() => {
@@ -853,7 +864,7 @@ export default function CatfordExaminerPage() {
       if (el) observer.observe(el);
     });
     return () => observer.disconnect();
-  }, [dashboard]); // re-attach after data loads
+  }, [hasData]); // re-attach once after data loads
 
   // Detect when nav becomes sticky
   useEffect(() => {
@@ -866,7 +877,7 @@ export default function CatfordExaminerPage() {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [dashboard]);
+  }, [hasData]);
 
   // Reveal sections once on first scroll into view
   useEffect(() => {
@@ -894,7 +905,7 @@ export default function CatfordExaminerPage() {
       if (el) observer.observe(el);
     });
     return () => observer.disconnect();
-  }, [dashboard]);
+  }, [hasData]);
 
   /* ─── LOADING STATE ─── */
   if (dashboard === undefined) {
