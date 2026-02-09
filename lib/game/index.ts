@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Food critic — newspaper dining & cuisine column
+export * from "./foodCritic";
