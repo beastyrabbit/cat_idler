@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Weather system (deterministic, seed-based)
+export * from "./weather";
