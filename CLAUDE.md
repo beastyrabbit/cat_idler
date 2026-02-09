@@ -141,6 +141,6 @@ The worker reads `CONVEX_URL` or `NEXT_PUBLIC_CONVEX_URL`. In worktrees, `.env.l
 
 ## Releases
 
-- Latest release: `v0.2.0` — The Catford Examiner newspaper UI
+- Latest release: `v0.3.0` — Tick consolidation & game systems
 - Pre-1.0, semver
 - No CI/CD pipeline — tests enforced locally via lefthook
