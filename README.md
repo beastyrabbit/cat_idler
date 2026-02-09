@@ -10,7 +10,7 @@ _One colony. Everyone plays. The cats never sleep (even when you do)._
 ![React](https://img.shields.io/badge/React_19-58c4dc?style=flat-square&logo=react&logoColor=white)
 ![Convex](https://img.shields.io/badge/Convex-ff6b35?style=flat-square)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?style=flat-square&logo=typescript&logoColor=white)
-![Tests](https://img.shields.io/badge/216_tests-passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=flat-square)
 ![Version](https://img.shields.io/badge/v0.3.0-pre--release-yellow?style=flat-square)
 
 </div>
@@ -18,7 +18,7 @@ _One colony. Everyone plays. The cats never sleep (even when you do)._
 ---
 
 <div align="center">
-  <img src="docs/screenshots/newspaper-hero.png" alt="The Catford Examiner — newspaper UI with subscription modal" width="720" />
+  <img src="docs/screenshots/newspaper-viewport.png" alt="The Catford Examiner — newspaper UI with subscription modal" width="720" />
   <br />
   <em>"All the Mews That's Fit to Print"</em>
 </div>
@@ -36,63 +36,37 @@ The entire game is presented as **The Catford Examiner**, a broadsheet newspaper
 - **One shared colony** — every player sees and affects the same colony in real-time
 - **Always running** — a background worker ticks the simulation every second, even with zero players online
 - **Real consequences** — cats starve, dehydrate, and die. Neglected colonies collapse and auto-reset
-- **Player jobs** — supply food (20s), supply water (15s), or click-boost long-running cat jobs
+- **Player jobs** — supply food, supply water, or click-boost long-running cat jobs
 - **Cat autonomy** — a leader cat auto-assigns strategic work: hunts, builds, rituals
 - **Specialization** — cats develop as hunters, architects, or ritualists over time
-- **Rituals & upgrades** — earn shared points to unlock permanent global buffs that persist across colony resets
-
----
+- **Global upgrades** — earn ritual points to unlock permanent buffs that persist across colony resets
 
 ## Screenshots
 
 <table>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/newspaper-fullpage.png" alt="Newspaper UI — full page" width="360" />
-      <br />
-      <strong>The Catford Examiner</strong><br />
-      <sub>Broadsheet newspaper theme with headlines, market report, and classifieds</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/game-dashboard.png" alt="Game dashboard — colony overview" width="360" />
-      <br />
-      <strong>Colony Dashboard</strong><br />
-      <sub>Player actions, active jobs, leader assignments, and cat stat cards</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/newspaper-viewport.png" alt="Subscription modal" width="360" />
-      <br />
-      <strong>Subscribe to the Examiner</strong><br />
-      <sub>Anonymous identity via IP-hash — no accounts needed</sub>
-    </td>
-    <td align="center" width="50%">
-      <img src="docs/screenshots/cat-cards-upgrades.png" alt="Cat cards and global upgrades" width="360" />
-      <br />
-      <strong>Cat Cards & Global Upgrades</strong><br />
-      <sub>Individual cat stats, specializations, and permanent progression</sub>
-    </td>
-  </tr>
+<tr>
+  <td align="center"><img src="docs/screenshots/newspaper-fullpage.png" alt="Newspaper UI — full page" width="360" /><br /><b>The Catford Examiner</b><br /><sub>Headlines, market report, and classifieds</sub></td>
+  <td align="center"><img src="docs/screenshots/game-dashboard.png" alt="Colony dashboard" width="360" /><br /><b>Colony Dashboard</b><br /><sub>Player actions, active jobs, and cat stat cards</sub></td>
+</tr>
+<tr>
+  <td align="center"><img src="docs/screenshots/newspaper-viewport.png" alt="Newspaper viewport with subscription modal overlay" width="360" /><br /><b>Subscribe to the Examiner</b><br /><sub>Anonymous identity via IP-hash</sub></td>
+  <td align="center"><img src="docs/screenshots/cat-cards-upgrades.png" alt="Cat cards and global upgrades" width="360" /><br /><b>Cat Cards & Global Upgrades</b><br /><sub>Specializations and permanent progression</sub></td>
+</tr>
 </table>
 
----
-
 ## Quick Start
-
-You need three terminals running:
 
 ```bash
 # 1. Install dependencies
 bun install
 
-# 2. Start Convex backend
+# 2. Start Convex backend (terminal 1)
 bun run convex:dev
 
-# 3. Start Next.js frontend (new terminal)
+# 3. Start Next.js frontend (terminal 2)
 bun run dev
 
-# 4. Start the simulation worker (new terminal)
+# 4. Start the simulation worker (terminal 3)
 bun run dev:worker
 ```
 
@@ -109,20 +83,15 @@ CONVEX_DEPLOYMENT=dev:<your-deployment>
 NEXT_PUBLIC_CONVEX_URL=https://<your-deployment>.convex.cloud
 ```
 
----
-
 ## Architecture
 
 ```
 Browser (Next.js + React 19)
-  |  real-time subscriptions via useQuery / useMutation
-  v
+  ↕  real-time subscriptions (useQuery) + mutations (useMutation)
 Convex Backend (mutations, queries, schema)
-  |  calls pure functions
-  v
+  ↕  calls pure functions
 lib/game/ (pure game logic — zero side effects)
-  ^
-  |  driven by
+  ↑  driven by
 worker/index.ts (always-on tick loop, 1s interval)
 ```
 
@@ -135,15 +104,14 @@ cat_idler/
 ├── app/                  # Next.js routes (/game/newspaper is the main UI)
 ├── components/           # React components
 ├── convex/               # Convex functions, schema (11 tables)
+├── hooks/                # React hooks (useGameDashboard — shared game state)
 ├── lib/game/             # Pure game mechanics (heavily unit tested)
 ├── worker/               # Always-on simulation loop
-├── tests/                # 216 unit tests + Selenium E2E
+├── tests/                # Unit tests + Selenium E2E
 ├── types/                # Shared TypeScript types & constants
-├── public/images/        # Cat sprites, buildings, resources, UI icons
+├── public/images/        # Cat sprites, buildings, enemies, resources, tiles, UI icons
 └── docs/                 # Design docs, tasks, testing guide
 ```
-
----
 
 ## Tech Stack
 
@@ -152,12 +120,10 @@ cat_idler/
 | Frontend        | **Next.js 16**, React 19, Tailwind CSS 4, Radix UI     |
 | Backend         | **Convex** (real-time serverless database + functions) |
 | Simulation      | Dedicated **Node worker** via tsx watch                |
-| Testing         | **Vitest** (216 unit tests) + Selenium E2E             |
+| Testing         | **Vitest** + Selenium E2E                              |
 | Language        | TypeScript throughout                                  |
 | Package Manager | Bun                                                    |
 | Git Hooks       | Lefthook (gitleaks, eslint, typecheck, vitest)         |
-
----
 
 ## Game Systems
 
@@ -168,23 +134,19 @@ cat_idler/
 | **Needs & Decay**   | Cats have hunger, thirst, energy, health — all decay over time. Unmet needs cause suffering and death          |
 | **Specialization**  | Cats develop as hunters (50% faster hunts), architects (50% faster builds), or ritualists (40% faster rituals) |
 | **Click Boosting**  | Players can click-boost active jobs to reduce completion time (diminishing returns above 30 clicks/min)        |
-| **Global Upgrades** | Ritual points unlock permanent buffs (supply speed, hunt mastery, resilience) that survive colony resets       |
+| **Global Upgrades** | Ritual points unlock permanent buffs (e.g., supply speed, hunt mastery, resilience) that survive colony resets |
 | **Colony Reset**    | Colonies in extended critical state auto-collapse. A new run begins with upgrades intact                       |
-
----
 
 ## Testing
 
 ```bash
-bun run test              # Run all 216 unit tests
+bun run test              # All unit tests
 bun run test:watch        # Watch mode
 bun run test:coverage     # Coverage report
-bun run test:e2e          # Selenium E2E tests
+bun run test:e2e          # Selenium E2E
 ```
 
-Game logic in `lib/game/` is **pure functions** — no database, no side effects. Tests use deterministic RNG seeds and time advancement for reproducible simulation scenarios.
-
----
+All game logic is pure functions, tested with deterministic RNG seeds and time advancement for reproducible scenarios.
 
 ## Documentation
 
@@ -197,12 +159,6 @@ Game logic in `lib/game/` is **pure functions** — no database, no side effects
 
 ---
 
-## Status
-
-**Pre-release** — v0.3.0. No CI/CD pipeline; tests enforced locally via lefthook git hooks.
-
----
-
 <div align="center">
-  <sub>Built with human calories and mass GPU cycles.</sub>
+  <sub>Pre-release v0.3.0 — Built with human calories and mass GPU cycles.</sub>
 </div>
