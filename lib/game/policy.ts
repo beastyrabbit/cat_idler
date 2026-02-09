@@ -19,6 +19,7 @@ export interface PolicyConfig {
   houseMaterialsRequired: number;
 }
 
+// Weights must sum to 1.0 per bucket -- used as cumulative thresholds in pickPolicyTier
 const WEIGHTS_BY_BUCKET: Record<LeaderPolicyBucket, PolicyWeights> = {
   bad: { simple: 0.3, normal: 0.6, excellent: 0.1 },
   normal: { simple: 0.1, normal: 0.8, excellent: 0.1 },
@@ -88,5 +89,5 @@ export function pickPolicyTier(leadership: number, roll: number): PolicyTier {
 }
 
 export function configForTier(tier: PolicyTier): PolicyConfig {
-  return CONFIG_BY_TIER[tier];
+  return { ...CONFIG_BY_TIER[tier] };
 }

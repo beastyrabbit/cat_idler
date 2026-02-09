@@ -18,11 +18,7 @@ export interface SurvivalTickResult {
   died: boolean;
 }
 
-function clampNeed(value: number): number {
-  return Math.max(0, Math.min(100, value));
-}
-
-function clampHealth(value: number): number {
+function clamp0to100(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
@@ -32,6 +28,7 @@ export function applySurvivalTick(
   elapsedSec: number,
   config: SurvivalConfig,
 ): SurvivalTickResult {
+  // Normalize to 10-minute units -- all decay rates are calibrated per 10-min interval
   const tickUnits = Math.max(0, elapsedSec) / 600;
   const decayScale = Math.max(0.1, config.needsDecayMultiplier);
   const damageScale = Math.max(0.1, config.needsDamageMultiplier);
@@ -46,19 +43,24 @@ export function applySurvivalTick(
     ? NEEDS_DECAY_RATES.thirst * 0.2
     : NEEDS_DECAY_RATES.thirst;
 
-  let nextNeeds: CatNeeds = {
-    hunger: clampNeed(needs.hunger - hungerDecayPerUnit * tickUnits * decayScale),
-    thirst: clampNeed(needs.thirst - thirstDecayPerUnit * tickUnits * decayScale),
-    rest: clampNeed(needs.rest - NEEDS_DECAY_RATES.rest * tickUnits),
+  const nextNeeds: CatNeeds = {
+    hunger: clamp0to100(
+      needs.hunger - hungerDecayPerUnit * tickUnits * decayScale,
+    ),
+    thirst: clamp0to100(
+      needs.thirst - thirstDecayPerUnit * tickUnits * decayScale,
+    ),
+    // Rest decay is policy-independent (not scaled by decayScale)
+    rest: clamp0to100(needs.rest - NEEDS_DECAY_RATES.rest * tickUnits),
     health: needs.health,
   };
 
   if (foodAvailable && nextNeeds.hunger < 90) {
-    nextNeeds.hunger = clampNeed(nextNeeds.hunger + 5 * tickUnits);
+    nextNeeds.hunger = clamp0to100(nextNeeds.hunger + 5 * tickUnits);
   }
 
   if (waterAvailable && nextNeeds.thirst < 90) {
-    nextNeeds.thirst = clampNeed(nextNeeds.thirst + 8 * tickUnits);
+    nextNeeds.thirst = clamp0to100(nextNeeds.thirst + 8 * tickUnits);
   }
 
   let damage = 0;
@@ -70,7 +72,7 @@ export function applySurvivalTick(
   }
 
   if (damage > 0) {
-    nextNeeds.health = clampHealth(nextNeeds.health - damage * damageScale);
+    nextNeeds.health = clamp0to100(nextNeeds.health - damage * damageScale);
   }
 
   return {

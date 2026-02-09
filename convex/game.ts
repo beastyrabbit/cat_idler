@@ -95,8 +95,7 @@ function getRuntimeConfig(colony: any): RuntimeConfig {
       1_000,
       colony.testCriticalMsOverride ?? 5 * 60 * 1000,
     ),
-    rngSeed:
-      typeof colony.testRngSeed === "number" ? colony.testRngSeed : null,
+    rngSeed: typeof colony.testRngSeed === "number" ? colony.testRngSeed : null,
   };
 }
 
@@ -448,6 +447,52 @@ async function queueJob(
   return jobId;
 }
 
+async function queuePlannedHouseJobs(
+  ctx: Ctx,
+  colonyId: any,
+  patchedResources: { water: number; materials: number },
+  policy: { houseWaterRequired: number; houseMaterialsRequired: number },
+  activeOrQueuedJobs: any[],
+  upgrades: UpgradeLevels,
+  runtime: RuntimeConfig,
+  policyGate?: () => boolean,
+) {
+  const plannedJobs = planHousePipeline({
+    resources: {
+      water: patchedResources.water,
+      materials: patchedResources.materials,
+    },
+    activeOrQueuedJobs,
+    waterRequired: policy.houseWaterRequired,
+    materialsRequired: policy.houseMaterialsRequired,
+  });
+
+  for (const planned of plannedJobs) {
+    if (policyGate && !policyGate()) {
+      continue;
+    }
+    const architect =
+      planned.kind === "build_house"
+        ? await selectBestCat(ctx, colonyId, "architect")
+        : null;
+    await queueJob(
+      ctx,
+      colonyId,
+      planned.kind,
+      "leader",
+      upgrades,
+      runtime,
+      null,
+      architect,
+      planned.metadata,
+    );
+    activeOrQueuedJobs.push({
+      kind: planned.kind,
+      metadata: planned.metadata,
+    });
+  }
+}
+
 async function resetGlobalRun(ctx: Ctx, colony: any, reason: string) {
   const now = Date.now();
 
@@ -576,7 +621,9 @@ export const setTestRngSeed = mutation({
 
     await ctx.db.patch(colony._id, {
       testRngSeed:
-        typeof args.seed === "number" ? Math.max(1, Math.floor(args.seed)) : null,
+        typeof args.seed === "number"
+          ? Math.max(1, Math.floor(args.seed))
+          : null,
     });
 
     return { seed: args.seed };
@@ -987,7 +1034,10 @@ export const workerTick = mutation({
       );
     }
 
-    const policyTier = pickPolicyTier(bestLeader?.stats.leadership ?? 50, nextRoll());
+    const policyTier = pickPolicyTier(
+      bestLeader?.stats.leadership ?? 50,
+      nextRoll(),
+    );
     const policy = configForTier(policyTier);
     const canTakePolicyAction = () => nextRoll() <= policy.actionReliability;
 
@@ -1033,7 +1083,7 @@ export const workerTick = mutation({
       });
     }
 
-    // Auto-plan hunt/build when resources are low.
+    // Leader auto-plans hunt/build when resources are low, gated by policy reliability.
     const activeJobs = await ctx.db
       .query("jobs")
       .withIndex("by_colony_status", (q: any) =>
@@ -1075,7 +1125,7 @@ export const workerTick = mutation({
       );
     }
 
-    // Ritual from player request only if stable.
+    // Ritual from player request, only if resources are stable and policy roll passes.
     if (
       shouldStartRitual(colony.ritualRequestedAt, nextResources, activeJobs) &&
       canTakePolicyAction()
@@ -1148,7 +1198,7 @@ export const workerTick = mutation({
           ctx,
           colony._id,
           "death",
-          `${cat.name} died from dehydration.`,
+          `${cat.name} died from ${survival.nextNeeds.thirst === 0 && survival.nextNeeds.hunger === 0 ? "starvation and dehydration" : survival.nextNeeds.thirst === 0 ? "dehydration" : "starvation"}.`,
           [cat._id],
         );
       }
@@ -1216,37 +1266,16 @@ export const workerTick = mutation({
       }
 
       if (job.kind === "leader_plan_house") {
-        const plannedJobs = planHousePipeline({
-          resources: {
-            water: patchedResources.water,
-            materials: patchedResources.materials,
-          },
+        await queuePlannedHouseJobs(
+          ctx,
+          colony._id,
+          patchedResources,
+          policy,
           activeOrQueuedJobs,
-          waterRequired: policy.houseWaterRequired,
-          materialsRequired: policy.houseMaterialsRequired,
-        });
-
-        for (const planned of plannedJobs) {
-          if (!canTakePolicyAction()) {
-            continue;
-          }
-          const architect =
-            planned.kind === "build_house"
-              ? await selectBestCat(ctx, colony._id, "architect")
-              : null;
-          await queueJob(
-            ctx,
-            colony._id,
-            planned.kind,
-            "leader",
-            upgrades,
-            runtime,
-            null,
-            architect,
-            planned.metadata,
-          );
-          activeOrQueuedJobs.push({ kind: planned.kind, metadata: planned.metadata });
-        }
+          upgrades,
+          runtime,
+          canTakePolicyAction,
+        );
       }
 
       if (job.kind === "hunt_expedition" && assignedCat) {
@@ -1292,34 +1321,15 @@ export const workerTick = mutation({
             automationTier =
               Math.round(Math.min(10, automationTier + 0.05) * 100) / 100;
           } else {
-            const fallbackPlan = planHousePipeline({
-              resources: {
-                water: patchedResources.water,
-                materials: patchedResources.materials,
-              },
+            await queuePlannedHouseJobs(
+              ctx,
+              colony._id,
+              patchedResources,
+              policy,
               activeOrQueuedJobs,
-              waterRequired: policy.houseWaterRequired,
-              materialsRequired: policy.houseMaterialsRequired,
-            });
-            for (const planned of fallbackPlan) {
-              await queueJob(
-                ctx,
-                colony._id,
-                planned.kind,
-                "leader",
-                upgrades,
-                runtime,
-                null,
-                planned.kind === "build_house"
-                  ? await selectBestCat(ctx, colony._id, "architect")
-                  : null,
-                planned.metadata,
-              );
-              activeOrQueuedJobs.push({
-                kind: planned.kind,
-                metadata: planned.metadata,
-              });
-            }
+              upgrades,
+              runtime,
+            );
           }
         } else {
           patchedResources.materials += 12;

@@ -214,13 +214,11 @@ export function useGameDashboard() {
     }
   };
 
-  const statusTone = useMemo(() => {
-    const status = colony?.status ?? "starting";
-    if (status === "thriving") return "thriving" as const;
-    if (status === "struggling") return "struggling" as const;
-    if (status === "dead") return "dead" as const;
-    return "starting" as const;
-  }, [colony?.status]);
+  const statusTone = (colony?.status ?? "starting") as
+    | "thriving"
+    | "struggling"
+    | "dead"
+    | "starting";
 
   return {
     // Raw data

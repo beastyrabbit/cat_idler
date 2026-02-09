@@ -27,12 +27,7 @@ function hasMatchingJob(
   kind: JobKind,
   predicate: (job: PlannerJob) => boolean,
 ): boolean {
-  return jobs.some((job) => {
-    if (job.kind !== kind) {
-      return false;
-    }
-    return predicate(job);
-  });
+  return jobs.some((job) => job.kind === kind && predicate(job));
 }
 
 function hasMetadataValue(
@@ -40,11 +35,12 @@ function hasMetadataValue(
   key: string,
   expected: string,
 ): boolean {
-  return typeof job.metadata?.[key] === "string" && job.metadata[key] === expected;
+  return job.metadata?.[key] === expected;
 }
 
 export function planHousePipeline(input: HousePlanInput): PlannedJob[] {
-  const { resources, activeOrQueuedJobs, waterRequired, materialsRequired } = input;
+  const { resources, activeOrQueuedJobs, waterRequired, materialsRequired } =
+    input;
 
   const planned: PlannedJob[] = [];
 
