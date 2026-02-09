@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Cat naming system (warrior cats conventions)
+export * from "./naming";
