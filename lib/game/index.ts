@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Resource trend analysis (moving averages, direction, percent change)
+export * from "./resourceTrends";
