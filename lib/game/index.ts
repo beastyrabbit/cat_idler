@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Sports page — athletic event results for the newspaper
+export * from "./sportsPage";
