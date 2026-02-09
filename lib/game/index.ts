@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Newspaper birth announcements (lineage, omens, inherited traits)
+export * from "./birthAnnouncements";
