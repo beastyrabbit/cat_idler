@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Cat health diagnosis system
+export * from "./healthDiagnosis";
