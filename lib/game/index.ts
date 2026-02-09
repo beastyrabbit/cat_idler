@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Cat legacy score and Hall of Fame
+export * from "./legacyScore";
