@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Crime blotter / police gazette column
+export * from "./crimeBlotter";
