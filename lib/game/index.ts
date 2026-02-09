@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Exploration field dispatches for newspaper
+export * from "./explorationReports";
