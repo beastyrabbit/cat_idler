@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Dear Tabby advice column (newspaper agony-aunt Q&A)
+export * from "./adviceColumn";
