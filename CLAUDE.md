@@ -90,6 +90,7 @@ The game operates on a **job-based system** (`convex/schema.ts:jobs` table, `lib
 
 - Production UI: `app/game/newspaper/page.tsx` (The Catford Examiner — broadsheet newspaper theme)
 - Shared game hook: `hooks/useGameDashboard.ts` — all UI variants import this for game state, actions, and session management
+- README screenshots: `docs/screenshots/` — referenced by relative path from README.md
 - 13 UI concept variants documented in `docs/UI_CONCEPTS.md` (archived on `archive/ui-concepts-all` branch)
 - Subscriber identity: `app/api/subscriber-hash/route.ts` — IP-based anonymous hash, salt via `SUBSCRIBER_HASH_SALT` env var
 
