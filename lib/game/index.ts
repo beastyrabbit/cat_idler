@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Colony trade route system
+export * from "./tradeRoutes";
