@@ -49,6 +49,7 @@ export default function GamePage() {
   const clickBoostJob = useMutation(anyApi.game.clickBoostJob);
   const purchaseUpgrade = useMutation(anyApi.game.purchaseUpgrade);
   const setTestAcceleration = useMutation(anyApi.game.setTestAcceleration);
+  const advanceTime = useMutation(anyApi.game.advanceTime);
 
   const [sessionId, setSessionId] = useState("");
   const [nickname, setNickname] = useState("");
@@ -178,6 +179,10 @@ export default function GamePage() {
 
   const onSetAcceleration = async (preset: "off" | "fast" | "turbo") => {
     await runAction(`accel:${preset}`, () => setTestAcceleration({ preset }));
+  };
+
+  const onAdvanceTime = async (seconds: number) => {
+    await runAction(`advance:${seconds}`, () => advanceTime({ seconds }));
   };
 
   const updateNickname = (value: string) => {
@@ -345,6 +350,20 @@ export default function GamePage() {
                     onClick={() => void onSetAcceleration("turbo")}
                   >
                     Speed: Turbo
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busyAction === "advance:300"}
+                    onClick={() => void onAdvanceTime(300)}
+                  >
+                    Skip +5m
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={busyAction === "advance:3600"}
+                    onClick={() => void onAdvanceTime(3600)}
+                  >
+                    Skip +1h
                   </button>
                 </div>
                 <p className="muted">Current mode: {accelerationPreset}</p>

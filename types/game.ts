@@ -91,6 +91,10 @@ export type EventType =
   | 'ritual_ready'
   | 'upgrade_purchased'
   | 'run_reset'
+  | 'crisis'
+  | 'recovery'
+
+export type PolicyTier = 'simple' | 'normal' | 'excellent'
 
 export type CatSpecialization = 'hunter' | 'architect' | 'ritualist' | null
 
@@ -183,6 +187,7 @@ export interface Colony {
   testResourceDecayMultiplier?: number
   testResilienceHoursOverride?: number | null
   testCriticalMsOverride?: number
+  testRngSeed?: number | null
 }
 
 export interface Cat {

@@ -25,8 +25,23 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
-      include: ['lib/**/*.ts', 'components/**/*.tsx'],
+      include: [
+        'lib/game/needs.ts',
+        'lib/game/idleEngine.ts',
+        'lib/game/idleRules.ts',
+        'lib/game/testAcceleration.ts',
+        'lib/game/seededRng.ts',
+        'lib/game/policy.ts',
+        'lib/game/survival.ts',
+        'lib/game/housePlanner.ts',
+      ],
       exclude: ['**/*.test.ts', '**/*.test.tsx', '**/index.ts'],
+      thresholds: {
+        lines: 99,
+        statements: 99,
+        branches: 99,
+        functions: 99,
+      },
     },
 
     // Pool settings are optional; defaults work fine here.
@@ -38,5 +53,4 @@ export default defineConfig({
     },
   },
 })
-
 

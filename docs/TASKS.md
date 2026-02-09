@@ -1191,7 +1191,7 @@ mutation logEvent(colonyId, type, message, catIds?, metadata?): void
 
 ---
 
-## Phase 5: Backend - Game Loop
+## Phase 5: Backend - Game Loop (Worker-Driven)
 
 ### TICK-001: Main Game Tick
 **Assigned to:** Backend Developer  
@@ -1199,13 +1199,13 @@ mutation logEvent(colonyId, type, message, catIds?, metadata?): void
 **Dependencies:** All CONVEX tasks, All LOGIC tasks
 
 **Description:**
-Create the main game loop that runs every 10 seconds.
+Create the worker-driven main game loop.
 
-**File:** `convex/gameTick.ts`
+**File:** `convex/game.ts`
 
 **Function:**
 ```typescript
-mutation gameTick(colonyId: Id<"colonies">): void
+mutation workerTick(): { ok: boolean; reset?: boolean }
 ```
 
 **Order of operations:**
@@ -1229,27 +1229,14 @@ mutation gameTick(colonyId: Id<"colonies">): void
 
 ---
 
-### TICK-002: Scheduled Cron Job
+### TICK-002: Worker Interval
 **Assigned to:** Backend Developer  
 **Difficulty:** Easy  
 **Dependencies:** TICK-001
 
-**File:** `convex/crons.ts`
+**File:** `worker/index.ts`
 
-**Setup:**
-```typescript
-import { cronJobs } from "convex/server";
-
-const crons = cronJobs();
-
-crons.interval(
-  "game tick",
-  { seconds: 10 },
-  internal.gameTick.tickAllColonies
-);
-
-export default crons;
-```
+**Setup:** `worker/index.ts` runs `api.game.workerTick` on `WORKER_TICK_MS` (default 1000ms). `convex/crons.ts` remains intentionally empty.
 
 ---
 
@@ -1699,7 +1686,6 @@ Use this checklist to track progress:
 - [ ] POLISH-002: Error Handling
 - [ ] POLISH-003: Mobile
 - [ ] POLISH-004: Animations
-
 
 
 

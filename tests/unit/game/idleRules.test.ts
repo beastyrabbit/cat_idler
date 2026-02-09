@@ -28,6 +28,7 @@ describe('idle rules', () => {
     expect(hasConflictingStrategicJob('leader_plan_house', [{ kind: 'build_house' }])).toBe(true);
     expect(hasConflictingStrategicJob('ritual', [{ kind: 'ritual' }])).toBe(true);
     expect(hasConflictingStrategicJob('leader_plan_hunt', [{ kind: 'supply_food' }])).toBe(false);
+    expect(hasConflictingStrategicJob('supply_food', [{ kind: 'ritual' }])).toBe(false);
   });
 
   it('auto-queues hunt/build only when resources low and no conflicts', () => {
@@ -66,6 +67,7 @@ describe('idle rules', () => {
     expect(shouldTrackCritical({ food: 0, water: 10 }, 3, 4)).toBe(false);
 
     const now = Date.now();
+    expect(shouldResetFromCritical(null, now)).toBe(false);
     expect(shouldResetFromCritical(now - 5 * 60 * 1000, now)).toBe(true);
     expect(shouldResetFromCritical(now - 4 * 60 * 1000, now)).toBe(false);
     expect(shouldResetFromCritical(now - 15_000, now, 10_000)).toBe(true);

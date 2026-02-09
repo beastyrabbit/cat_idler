@@ -285,6 +285,7 @@ function statusHeadline(
   maxFood: number,
   population: number,
 ): string {
+  if (water < 5) return "CRISIS: WATER RESERVES DANGEROUSLY LOW";
   if (status === "dead") return "COLONY FALLS: ALL HOPE LOST";
   if (status === "struggling") {
     if (water < 20) return "CRISIS: WATER RESERVES DANGEROUSLY LOW";
@@ -709,6 +710,7 @@ export default function CatfordExaminerPage() {
     onBoostJob,
     onBuyUpgrade,
     onSetAcceleration,
+    onAdvanceTime,
     updateNickname,
     leader,
     onlineCount,
@@ -1210,6 +1212,22 @@ export default function CatfordExaminerPage() {
               style={{ fontSize: 10, padding: "3px 10px" }}
             >
               Turbo
+            </button>
+            <button
+              className="ce-btn ce-btn-green"
+              onClick={() => void onAdvanceTime(300)}
+              disabled={busyAction === "advance:300"}
+              style={{ fontSize: 10, padding: "3px 10px" }}
+            >
+              Skip +5m
+            </button>
+            <button
+              className="ce-btn ce-btn-green"
+              onClick={() => void onAdvanceTime(3600)}
+              disabled={busyAction === "advance:3600"}
+              style={{ fontSize: 10, padding: "3px 10px" }}
+            >
+              Skip +1h
             </button>
           </div>
         )}

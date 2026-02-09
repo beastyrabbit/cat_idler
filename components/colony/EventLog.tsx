@@ -55,6 +55,8 @@ export function EventLog({ colonyId }: EventLogProps) {
       cat_joined: "🐱",
       cat_left: "👋",
       discovery: "🗺️",
+      crisis: "🚨",
+      recovery: "🌊",
     };
     return icons[type] || "📋";
   };
@@ -105,6 +107,5 @@ export function EventLog({ colonyId }: EventLogProps) {
     </Card>
   );
 }
-
 
 

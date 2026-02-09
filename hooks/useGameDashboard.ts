@@ -57,6 +57,7 @@ export function useGameDashboard() {
   const clickBoostJob = useMutation(anyApi.game.clickBoostJob);
   const purchaseUpgrade = useMutation(anyApi.game.purchaseUpgrade);
   const setTestAcceleration = useMutation(anyApi.game.setTestAcceleration);
+  const advanceTime = useMutation(anyApi.game.advanceTime);
 
   const [sessionId, setSessionId] = useState("");
   const [nickname, setNickname] = useState("");
@@ -194,6 +195,10 @@ export function useGameDashboard() {
     await runAction(`accel:${preset}`, () => setTestAcceleration({ preset }));
   };
 
+  const onAdvanceTime = async (seconds: number) => {
+    await runAction(`advance:${seconds}`, () => advanceTime({ seconds }));
+  };
+
   const updateNickname = (value: string) => {
     const trimmed = value.trim() || "Guest Cat";
     setNickname(trimmed);
@@ -244,6 +249,7 @@ export function useGameDashboard() {
     onBoostJob,
     onBuyUpgrade,
     onSetAcceleration,
+    onAdvanceTime,
     updateNickname,
     ensureGlobalState,
 

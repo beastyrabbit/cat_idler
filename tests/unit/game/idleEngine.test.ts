@@ -66,6 +66,31 @@ describe("idle engine", () => {
     expect(specialized).toBeLessThan(normal);
   });
 
+  it("does not apply architect specialization to leader planning", () => {
+    const normal = getDurationSeconds("leader_plan_house", null, baseUpgrades);
+    const specialized = getDurationSeconds(
+      "leader_plan_house",
+      "architect",
+      baseUpgrades,
+    );
+    expect(specialized).toBe(normal);
+  });
+
+  it("reduces ritual duration for ritualist specialization", () => {
+    const normal = getDurationSeconds("ritual", null, baseUpgrades);
+    const specialized = getDurationSeconds("ritual", "ritualist", baseUpgrades);
+    expect(specialized).toBeLessThan(normal);
+  });
+
+  it("reduces supply durations with supply_speed upgrades", () => {
+    const normal = getDurationSeconds("supply_water", null, baseUpgrades);
+    const upgraded = getDurationSeconds("supply_water", null, {
+      ...baseUpgrades,
+      supply_speed: 4,
+    });
+    expect(upgraded).toBeLessThan(normal);
+  });
+
   it("keeps planner job long even with no specialization", () => {
     const duration = getDurationSeconds(
       "leader_plan_house",
@@ -78,6 +103,7 @@ describe("idle engine", () => {
   it("normalizes and applies duration time scale", () => {
     expect(normalizeTimeScale(undefined)).toBe(1);
     expect(normalizeTimeScale(0)).toBe(1);
+    expect(normalizeTimeScale(Number.NaN)).toBe(1);
     expect(normalizeTimeScale(20)).toBe(20);
 
     const normal = getScaledDurationSeconds(
