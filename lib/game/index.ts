@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Colony supply & demand market reports
+export * from "./supplyDemand";
