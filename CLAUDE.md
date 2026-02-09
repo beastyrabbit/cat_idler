@@ -141,6 +141,6 @@ The worker reads `CONVEX_URL` or `NEXT_PUBLIC_CONVEX_URL`. In worktrees, `.env.l
 
 ## Releases
 
-- Latest release: `v0.3.0` — Tick consolidation & game systems
+- Latest release: `v0.3.1` — Modernized README with screenshots & badges
 - Pre-1.0, semver
 - No CI/CD pipeline — tests enforced locally via lefthook
