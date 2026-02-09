@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Colony proverbs & wisdom system
+export * from "./proverbs";
