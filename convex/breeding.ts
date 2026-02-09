@@ -7,6 +7,7 @@
 import { mutation, query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import { calculateBreedingChance } from "../lib/game/breeding";
 
 /**
  * Check if two cats can breed (internal).
@@ -63,9 +64,11 @@ export const attemptBreeding = mutation({
       throw new Error("Cats cannot breed");
     }
 
-    // 30% base chance, increased by fertility blessing
+    // 30% base chance, increased by colony blessings
+    const colony = await ctx.db.get(cat1.colonyId);
+    const blessings = colony?.resources.blessings ?? 0;
     const baseChance = 0.3;
-    const chance = baseChance; // TODO: Add fertility blessing modifier
+    const chance = calculateBreedingChance(baseChance, blessings);
 
     if (Math.random() < chance) {
       // Success - make one cat pregnant
@@ -117,35 +120,35 @@ export const processBirths = internalMutation({
         const baseStats = {
           attack: Math.floor(
             (cat.stats.attack + (partner?.stats.attack || 50)) / 2 +
-              (Math.random() - 0.5) * 20
+              (Math.random() - 0.5) * 20,
           ),
           defense: Math.floor(
             (cat.stats.defense + (partner?.stats.defense || 50)) / 2 +
-              (Math.random() - 0.5) * 20
+              (Math.random() - 0.5) * 20,
           ),
           hunting: Math.floor(
             (cat.stats.hunting + (partner?.stats.hunting || 50)) / 2 +
-              (Math.random() - 0.5) * 20
+              (Math.random() - 0.5) * 20,
           ),
           medicine: Math.floor(
             (cat.stats.medicine + (partner?.stats.medicine || 50)) / 2 +
-              (Math.random() - 0.5) * 20
+              (Math.random() - 0.5) * 20,
           ),
           cleaning: Math.floor(
             (cat.stats.cleaning + (partner?.stats.cleaning || 50)) / 2 +
-              (Math.random() - 0.5) * 20
+              (Math.random() - 0.5) * 20,
           ),
           building: Math.floor(
             (cat.stats.building + (partner?.stats.building || 50)) / 2 +
-              (Math.random() - 0.5) * 20
+              (Math.random() - 0.5) * 20,
           ),
           leadership: Math.floor(
             (cat.stats.leadership + (partner?.stats.leadership || 50)) / 2 +
-              (Math.random() - 0.5) * 20
+              (Math.random() - 0.5) * 20,
           ),
           vision: Math.floor(
             (cat.stats.vision + (partner?.stats.vision || 50)) / 2 +
-              (Math.random() - 0.5) * 20
+              (Math.random() - 0.5) * 20,
           ),
         };
 
@@ -153,18 +156,21 @@ export const processBirths = internalMutation({
         Object.keys(baseStats).forEach((key) => {
           baseStats[key as keyof typeof baseStats] = Math.max(
             0,
-            Math.min(100, baseStats[key as keyof typeof baseStats])
+            Math.min(100, baseStats[key as keyof typeof baseStats]),
           );
         });
 
         const kittenName = `Kitten ${Math.floor(Math.random() * 1000)}`;
 
-        const kittenId = await ctx.runMutation(internal.cats.createCatInternal, {
-          colonyId: args.colonyId,
-          name: kittenName,
-          stats: baseStats,
-          parentIds: [cat._id, partnerId || null],
-        });
+        const kittenId = await ctx.runMutation(
+          internal.cats.createCatInternal,
+          {
+            colonyId: args.colonyId,
+            name: kittenName,
+            stats: baseStats,
+            parentIds: [cat._id, partnerId || null],
+          },
+        );
 
         // Reset pregnancy
         await ctx.db.patch(cat._id, {
@@ -182,6 +188,3 @@ export const processBirths = internalMutation({
     }
   },
 });
-
-
-
