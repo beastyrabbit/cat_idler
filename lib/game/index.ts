@@ -124,3 +124,6 @@ export * from "./horoscope";
 export * from "./adviceColumn";
 
 export * from "./foodCritic";
+
+// Sports page — athletic event results for the newspaper
+export * from "./sportsPage";
