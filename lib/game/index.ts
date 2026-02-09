@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Newspaper classified ads generator
+export * from "./classifiedAds";
