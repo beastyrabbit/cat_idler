@@ -46,3 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+
+// Cat ancestry and lineage tracking
+export * from "./ancestry";
