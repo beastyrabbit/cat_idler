@@ -1,0 +1,227 @@
+# Ralph Orchestrator Configuration
+# Feature loop: implement one small feature, validate, evidence, PR, then stop.
+
+cli:
+  backend: "claude"
+  prompt_mode: "arg"
+
+event_loop:
+  prompt_file: "PROMPT.md"
+  completion_promise: "PR_CREATED_LOOP_COMPLETE"
+  starting_event: "work.start"
+  max_iterations: 40
+  max_runtime_seconds: 14400
+  checkpoint_interval: 3
+
+core:
+  scratchpad: ".ralph/agent/scratchpad.md"
+  specs_dir: ".ralph/specs/"
+  guardrails:
+    - "One PR per run, one small feature slice only"
+    - "No destructive git commands (no reset --hard, no force-push)"
+    - "No PR creation until lint, typecheck, tests, and coverage pass"
+    - "No task closure without concrete evidence"
+    - "Fresh context each iteration; persist state via ralph tools task/memory"
+
+memories:
+  enabled: true
+  inject: auto
+  budget: 2000
+
+tasks:
+  enabled: true
+
+events:
+  work.start:
+    description: "Run bootstrap event"
+    on_trigger: "Create runtime task list and define a single small feature scope"
+    on_publish: "Signal initial planning can start"
+
+  feat.plan.ready:
+    description: "Feature scope and acceptance criteria are ready"
+    on_trigger: "Implement exactly the planned feature"
+    on_publish: "Signal coding work can begin"
+
+  feat.plan.blocked:
+    description: "Planner cannot define executable scope"
+    on_trigger: "Collect missing repo facts and recover"
+    on_publish: "Signal blocked planning with reason"
+
+  feat.code.ready:
+    description: "Implementation is complete for review"
+    on_trigger: "Perform code quality review"
+    on_publish: "Signal code is ready for reviewer"
+
+  feat.code.blocked:
+    description: "Coder is blocked"
+    on_trigger: "Inspect blocker and choose minimal recovery"
+    on_publish: "Signal coding blocker"
+
+  feat.review.pass:
+    description: "Code quality review passed"
+    on_trigger: "Start security review"
+    on_publish: "Signal security gate can start"
+
+  feat.review.fail:
+    description: "Code quality issues found"
+    on_trigger: "Return to coder to fix review findings"
+    on_publish: "Signal review failure details"
+
+  feat.security.pass:
+    description: "Security review passed"
+    on_trigger: "Start test and evidence gate"
+    on_publish: "Signal QA gate can start"
+
+  feat.security.fail:
+    description: "Security issues found"
+    on_trigger: "Return to coder for security remediations"
+    on_publish: "Signal security failure details"
+
+  feat.qa.pass:
+    description: "All tests and evidence requirements passed"
+    on_trigger: "Create PR"
+    on_publish: "Signal PR creation gate can start"
+
+  feat.qa.fail:
+    description: "Quality gate failed"
+    on_trigger: "Return to coder to resolve failing checks"
+    on_publish: "Signal QA failure details"
+
+  feat.pr.created:
+    description: "PR successfully created"
+    on_trigger: "Emit completion promise and stop"
+    on_publish: "Signal loop completion"
+
+  feat.pr.failed:
+    description: "PR creation failed"
+    on_trigger: "Return to coder to resolve branch/PR issues"
+    on_publish: "Signal PR failure with reason"
+
+hats:
+  planner:
+    name: "Planner"
+    description: "Creates one small feature scope and runtime task graph."
+    triggers: ["work.start", "feat.plan.blocked"]
+    publishes: ["feat.plan.ready", "feat.plan.blocked"]
+    default_publishes: "feat.plan.ready"
+    instructions: |
+      ## PLANNER MODE
+
+      Build a minimal, executable scope for one feature slice.
+
+      Required actions:
+      1. Load project skill: `ralph tools skill load feature-scope-small`.
+      2. Create runtime tasks with dependencies using `ralph tools task add`.
+      3. Record a decision memory using `ralph tools memory add` with tags `feature,plan`.
+      4. Keep scope small: no page rewrite, no broad refactor.
+      5. Publish `feat.plan.ready` with feature title, files likely touched, and acceptance criteria.
+
+      If blocked, publish `feat.plan.blocked` with exact blocker and recovery path.
+
+  coder:
+    name: "Coder"
+    description: "Implements planned feature with TDD and tight scope control."
+    triggers: ["feat.plan.ready", "feat.review.fail", "feat.security.fail", "feat.qa.fail", "feat.pr.failed", "feat.code.blocked"]
+    publishes: ["feat.code.ready", "feat.code.blocked"]
+    default_publishes: "feat.code.ready"
+    instructions: |
+      ## CODER MODE
+
+      Implement only the planner-approved slice.
+
+      Required actions:
+      1. Load project skill: `ralph tools skill load tdd-implement-slice`.
+      2. Follow RED -> GREEN -> REFACTOR.
+      3. Keep edits limited to files needed for this feature.
+      4. Update task progress (use `ralph tools task ready/list/show`).
+      5. Write/adjust tests to cover new behavior.
+      6. Record fix memories for non-trivial decisions via `ralph tools memory add --type fix`.
+
+      Publish `feat.code.ready` with summary + changed files.
+      If blocked, publish `feat.code.blocked` with root cause and attempted recovery.
+
+  reviewer:
+    name: "Reviewer"
+    description: "Reviews correctness, maintainability, regressions, and scope discipline."
+    triggers: ["feat.code.ready"]
+    publishes: ["feat.review.pass", "feat.review.fail"]
+    default_publishes: "feat.review.pass"
+    instructions: |
+      ## REVIEWER MODE
+
+      Review the actual diff and reject if quality/scope is off.
+
+      Checklist:
+      - Feature behavior matches acceptance criteria.
+      - No unrelated scope expansion.
+      - Tests target real behavior and edge cases.
+      - No obvious regression risks.
+
+      Do not edit code in this role.
+      Publish `feat.review.fail` with concrete required fixes when needed.
+
+  security_reviewer:
+    name: "Security Reviewer"
+    description: "Runs dedicated security and safety review before QA gate."
+    triggers: ["feat.review.pass"]
+    publishes: ["feat.security.pass", "feat.security.fail"]
+    default_publishes: "feat.security.pass"
+    instructions: |
+      ## SECURITY REVIEWER MODE
+
+      Run a focused security pass on changed files.
+
+      Checklist:
+      - No credential leakage or unsafe secret handling.
+      - No command injection or unsafe shell usage.
+      - No unsafe external IO introduced without validation.
+      - No untrusted content rendered unsafely.
+      - Git workflow safety preserved (no destructive commands).
+
+      Publish `feat.security.fail` with exact remediation items if issues are found.
+
+  test_checker:
+    name: "Test Checker"
+    description: "Runs required checks, captures screenshots, and prepares evidence links."
+    triggers: ["feat.security.pass"]
+    publishes: ["feat.qa.pass", "feat.qa.fail"]
+    default_publishes: "feat.qa.pass"
+    instructions: |
+      ## TEST CHECKER MODE
+
+      Execute mandatory checks and produce screenshot evidence.
+
+      Required actions:
+      1. Load project skill: `ralph tools skill load qa-evidence-pack`.
+      2. Run: `bun run lint`, `bun run typecheck`, `bun run test`, `bun run test:coverage`.
+      3. Capture at least two screenshots for the feature.
+      4. Upload screenshots to `0x0.st` via `curl -F'file=@<path>' https://0x0.st`.
+      5. If upload fails, keep local files under `docs/pr-assets/<branch>/` and use those paths.
+      6. Record QA evidence memory using tags `qa,screenshots,coverage`.
+
+      Publish `feat.qa.fail` immediately if any required gate fails.
+
+  pr_creator:
+    name: "PR Creator"
+    description: "Creates branch+PR with German explanation and evidence, then completes loop."
+    triggers: ["feat.qa.pass"]
+    publishes: ["feat.pr.created", "feat.pr.failed", "PR_CREATED_LOOP_COMPLETE"]
+    default_publishes: "feat.pr.created"
+    instructions: |
+      ## PR CREATOR MODE
+
+      Finalize changes into a pull request and stop loop only after success.
+
+      Required actions:
+      1. Load project skill: `ralph tools skill load pr-german-template`.
+      2. Ensure branch is based on `origin/main` and contains only in-scope changes.
+      3. Commit and push branch.
+      4. Create PR to `main`.
+      5. PR body must include:
+         - German explanation of what the feature does.
+         - Test/check command results.
+         - Screenshot links (0x0 URLs or fallback repo paths).
+      6. Publish `feat.pr.created` including PR URL.
+      7. Then emit literal completion token: `PR_CREATED_LOOP_COMPLETE`.
+
+      If PR cannot be created, publish `feat.pr.failed` with exact failure details.
