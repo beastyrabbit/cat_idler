@@ -50,8 +50,6 @@ export * from "./housePlanner";
 // Cat gossip network (rumor propagation)
 export * from "./gossipNetwork";
 export * from "./migration";
-
-export * from "./gossipNetwork";
 export * from "./nightWatch";
 export * from "./lifeMilestones";
 export * from "./sportsPage";
@@ -78,3 +76,5 @@ export * from "./crimeBlotter";
 
 // Colony chronicle historical retrospective system
 export * from "./chronicle";
+// Resource trend analysis (moving averages, direction, percent change)
+export * from "./resourceTrends";
