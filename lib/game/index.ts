@@ -83,3 +83,5 @@ export * from "./crimeBlotter";
 export * from "./chronicle";
 // Resource trend analysis (moving averages, direction, percent change)
 export * from "./resourceTrends";
+// Resource spoilage system
+export * from "./spoilage";
