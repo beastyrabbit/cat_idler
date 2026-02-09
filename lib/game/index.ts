@@ -119,3 +119,6 @@ export {
   getSkillSummary,
   formatRankingsColumn,
 } from "./skillRankings";
+
+// Colony horoscope (zodiac signs, daily fortunes, compatibility)
+export * from "./horoscope";
