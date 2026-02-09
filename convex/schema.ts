@@ -42,6 +42,7 @@ export default defineSchema({
     testResourceDecayMultiplier: v.optional(v.number()),
     testResilienceHoursOverride: v.optional(v.union(v.number(), v.null())),
     testCriticalMsOverride: v.optional(v.number()),
+    testRngSeed: v.optional(v.union(v.number(), v.null())),
   })
     .index('by_status', ['status'])
     .index('by_created', ['createdAt'])
@@ -241,6 +242,8 @@ export default defineSchema({
       v.literal('ritual_ready'),
       v.literal('upgrade_purchased'),
       v.literal('run_reset'),
+      v.literal('crisis'),
+      v.literal('recovery'),
     ),
     message: v.string(),
     involvedCatIds: v.array(v.id('cats')),

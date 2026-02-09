@@ -57,6 +57,7 @@ export function useGameDashboard() {
   const clickBoostJob = useMutation(anyApi.game.clickBoostJob);
   const purchaseUpgrade = useMutation(anyApi.game.purchaseUpgrade);
   const setTestAcceleration = useMutation(anyApi.game.setTestAcceleration);
+  const advanceTime = useMutation(anyApi.game.advanceTime);
 
   const [sessionId, setSessionId] = useState("");
   const [nickname, setNickname] = useState("");
@@ -194,6 +195,10 @@ export function useGameDashboard() {
     await runAction(`accel:${preset}`, () => setTestAcceleration({ preset }));
   };
 
+  const onAdvanceTime = async (seconds: number) => {
+    await runAction(`advance:${seconds}`, () => advanceTime({ seconds }));
+  };
+
   const updateNickname = (value: string) => {
     const trimmed = value.trim() || "Guest Cat";
     setNickname(trimmed);
@@ -209,13 +214,11 @@ export function useGameDashboard() {
     }
   };
 
-  const statusTone = useMemo(() => {
-    const status = colony?.status ?? "starting";
-    if (status === "thriving") return "thriving" as const;
-    if (status === "struggling") return "struggling" as const;
-    if (status === "dead") return "dead" as const;
-    return "starting" as const;
-  }, [colony?.status]);
+  const statusTone = (colony?.status ?? "starting") as
+    | "thriving"
+    | "struggling"
+    | "dead"
+    | "starting";
 
   return {
     // Raw data
@@ -244,6 +247,7 @@ export function useGameDashboard() {
     onBoostJob,
     onBuyUpgrade,
     onSetAcceleration,
+    onAdvanceTime,
     updateNickname,
     ensureGlobalState,
 

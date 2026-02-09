@@ -26,6 +26,8 @@ const eventTypeValidator = v.union(
   v.literal("ritual_ready"),
   v.literal("upgrade_purchased"),
   v.literal("run_reset"),
+  v.literal("crisis"),
+  v.literal("recovery"),
 );
 
 const eventArgs = {

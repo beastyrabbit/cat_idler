@@ -42,12 +42,10 @@ worker/index.ts (always-on tick loop via ConvexHttpClient)
 
 **The worker drives the game, not Convex crons.** `convex/crons.ts` is intentionally empty. The worker (`bun run dev:worker`) calls `game.workerTick` every 1s (configurable via `WORKER_TICK_MS`).
 
-### Dual Tick Systems
+### Tick System
 
-There are two independent tick codepaths:
-
-- **`convex/game.ts:workerTick`** — Browser-idle v2 job system. Handles resource consumption, job completion, auto-queuing hunts/builds/rituals, specialization XP, critical state, and colony resets. Called by the worker process.
-- **`convex/gameTick.ts:tickColony`** — Legacy system. Handles needs decay, autonomous cat AI, task assignment/progression, combat encounters, aging/death, breeding. Called as `internalMutation`.
+- **`convex/game.ts:workerTick`** is the single source of truth for simulation.
+- `convex/gameTick.ts` was removed. Do not reintroduce parallel tick paths.
 
 ### Key Layers
 
@@ -72,6 +70,29 @@ The game operates on a **job-based system** (`convex/schema.ts:jobs` table, `lib
 
 `lib/game/testAcceleration.ts` provides QA presets that scale time and resource decay for faster testing. Colony schema has `testTimeScale`, `testResourceDecayMultiplier`, and other override fields.
 
+`convex/game.ts:advanceTime` is available for deterministic skip-time testing (advance last tick by N seconds).
+
+## Testing Contract
+
+- Use deterministic tests for simulation logic:
+  - Seed RNG via `game.setTestRngSeed`
+  - Use `game.advanceTime` and `setTestAcceleration` for time-sensitive scenarios
+- Critical automated scenarios:
+  - Water depletion crisis headline/event
+  - Cat thirst decay after water depletion
+  - Dehydration start, dehydration death, and recovery after water restoration
+  - Build-request prerequisite chaining (`supply_water` / material gathering before construction)
+  - Upgrade validation (insufficient points, max-level rejection, correct cost progression)
+  - Leader-policy tier behavior (`simple`/`normal`/`excellent`) under seeded RNG
+- Any new simulation constant/limit must include boundary tests in `tests/unit/game/`.
+
+## Frontend
+
+- Production UI: `app/game/newspaper/page.tsx` (The Catford Examiner — broadsheet newspaper theme)
+- Shared game hook: `hooks/useGameDashboard.ts` — all UI variants import this for game state, actions, and session management
+- 13 UI concept variants documented in `docs/UI_CONCEPTS.md` (archived on `archive/ui-concepts-all` branch)
+- Subscriber identity: `app/api/subscriber-hash/route.ts` — IP-based anonymous hash, salt via `SUBSCRIBER_HASH_SALT` env var
+
 ## Database Schema
 
 11 tables in `convex/schema.ts`: `colonies`, `cats`, `buildings`, `worldTiles`, `tasks`, `encounters`, `events`, `players`, `jobs`, `globalUpgrades`, `runHistory`. Key indexes are defined inline. Cat lookup by colony uses `by_colony` and `by_colony_alive` (filters on `deathTime`).
@@ -81,7 +102,8 @@ The game operates on a **job-based system** (`convex/schema.ts:jobs` table, `lib
 - **Vitest** with jsdom environment, globals enabled (no imports needed for `describe`/`it`/`expect`)
 - Test factories in `tests/factories/` for building test data
 - Path alias `@/` maps to repo root (matches tsconfig)
-- Coverage targets: game logic 90%+, components 80%+
+- Coverage targets (gated): simulation-core modules 99%+
+- Avoid flaky assertions in browser E2E for simulation correctness; prefer unit/integration checks on deterministic modules.
 - TDD workflow: write failing tests first, then implement
 
 ## Git Hooks (lefthook)
@@ -109,6 +131,7 @@ The worker reads `CONVEX_URL` or `NEXT_PUBLIC_CONVEX_URL`. In worktrees, `.env.l
 - If `next dev` fails with "Unable to acquire lock", delete `.next/dev/lock` first
 - Convex backend (`bun run convex:dev`) must be running for the game UI to load data — without it, the page shows "Preparing Global Colony..."
 - Greptile MCP `addressed: false` may persist even after GitHub review threads are resolved — verify with `pull_request_read get_review_comments` (check `IsResolved` field) as the source of truth
+- `useQuery(anyApi.game.getGlobalDashboard)` returns `any` — use `as Record<string, T>` when indexing lookup objects by colony fields like `status`
 
 ## Key Documentation
 
@@ -118,5 +141,6 @@ The worker reads `CONVEX_URL` or `NEXT_PUBLIC_CONVEX_URL`. In worktrees, `.env.l
 
 ## Releases
 
-- First release: `v0.1.0` (pre-1.0, semver)
+- Latest release: `v0.2.0` — The Catford Examiner newspaper UI
+- Pre-1.0, semver
 - No CI/CD pipeline — tests enforced locally via lefthook

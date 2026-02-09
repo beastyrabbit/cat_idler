@@ -69,7 +69,7 @@ tests/
 │   ├── convex/               # Backend integration
 │   │   ├── colonies.test.ts
 │   │   ├── cats.test.ts
-│   │   └── gameTick.test.ts
+│   │   └── workerTick.test.ts
 │   │
 │   └── features/             # Feature integration
 │       ├── feedColony.test.ts
@@ -466,7 +466,6 @@ const element = screen.getByText('Loading...')
 // GOOD: waits for element to appear
 const element = await screen.findByText('Loaded!')
 ```
-
 
 
 

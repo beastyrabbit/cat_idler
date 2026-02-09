@@ -20,6 +20,7 @@ import {
   restoreRest,
   restoreHealth,
   applyNeedsDamage,
+  applyNeedsDamageOverTime,
   hasNeedsCritical,
   isDead,
 } from '@/lib/game/needs'
@@ -254,6 +255,38 @@ describe('applyNeedsDamage', () => {
   })
 })
 
+describe('applyNeedsDamageOverTime', () => {
+  it('returns unchanged needs when tickCount is 0', () => {
+    const needs = createNeeds({ hunger: 0, thirst: 0, health: 50 })
+    const result = applyNeedsDamageOverTime(needs, 0)
+    expect(result).toEqual(needs)
+  })
+
+  it('applies starvation and dehydration damage scaled by tickCount', () => {
+    const needs = createNeeds({ hunger: 0, thirst: 0, health: 100 })
+    const result = applyNeedsDamageOverTime(needs, 2)
+    expect(result.health).toBe(84) // (5 + 3) * 2
+  })
+
+  it('clamps health to 0', () => {
+    const needs = createNeeds({ hunger: 0, thirst: 0, health: 3 })
+    const result = applyNeedsDamageOverTime(needs, 1)
+    expect(result.health).toBe(0)
+  })
+
+  it('applies starvation-only damage branch', () => {
+    const needs = createNeeds({ hunger: 0, thirst: 10, health: 100 })
+    const result = applyNeedsDamageOverTime(needs, 2)
+    expect(result.health).toBe(90)
+  })
+
+  it('applies dehydration-only damage branch', () => {
+    const needs = createNeeds({ hunger: 10, thirst: 0, health: 100 })
+    const result = applyNeedsDamageOverTime(needs, 2)
+    expect(result.health).toBe(94)
+  })
+})
+
 // =============================================================================
 // hasNeedsCritical
 // =============================================================================
@@ -306,8 +339,6 @@ describe('isDead', () => {
     expect(isDead(needs)).toBe(true)
   })
 })
-
-
 
 
 

@@ -17,12 +17,14 @@ import {
   hasConflictingStrategicJob,
   nextColonyStatus,
   ritualRequestIsFresh,
-  shouldAutoQueueBuild,
-  shouldAutoQueueHunt,
   shouldResetFromCritical,
   shouldStartRitual,
   shouldTrackCritical,
 } from "../lib/game/idleRules";
+import { planHousePipeline } from "../lib/game/housePlanner";
+import { configForTier, pickPolicyTier } from "../lib/game/policy";
+import { rollSeeded } from "../lib/game/seededRng";
+import { applySurvivalTick } from "../lib/game/survival";
 import { inheritTraits, traitsToSpriteParams } from "../lib/game/genetics";
 import { configForPreset } from "../lib/game/testAcceleration";
 import type { CatStats } from "../types/game";
@@ -75,6 +77,7 @@ interface RuntimeConfig {
   resourceDecayMultiplier: number;
   resilienceHoursOverride: number | null;
   criticalMsOverride: number;
+  rngSeed: number | null;
 }
 
 function getRuntimeConfig(colony: any): RuntimeConfig {
@@ -92,6 +95,7 @@ function getRuntimeConfig(colony: any): RuntimeConfig {
       1_000,
       colony.testCriticalMsOverride ?? 5 * 60 * 1000,
     ),
+    rngSeed: typeof colony.testRngSeed === "number" ? colony.testRngSeed : null,
   };
 }
 
@@ -264,6 +268,7 @@ async function ensureGlobalColony(ctx: Ctx) {
       testResourceDecayMultiplier: 1,
       testResilienceHoursOverride: null,
       testCriticalMsOverride: 5 * 60 * 1000,
+      testRngSeed: null,
     });
 
     await createStarterCats(ctx, colonyId);
@@ -287,6 +292,7 @@ async function ensureGlobalColony(ctx: Ctx) {
         testResourceDecayMultiplier: colony.testResourceDecayMultiplier ?? 1,
         testResilienceHoursOverride: colony.testResilienceHoursOverride ?? null,
         testCriticalMsOverride: colony.testCriticalMsOverride ?? 5 * 60 * 1000,
+        testRngSeed: colony.testRngSeed ?? null,
       });
       colony = await ctx.db.get(colony._id);
     }
@@ -441,6 +447,52 @@ async function queueJob(
   return jobId;
 }
 
+async function queuePlannedHouseJobs(
+  ctx: Ctx,
+  colonyId: any,
+  patchedResources: { water: number; materials: number },
+  policy: { houseWaterRequired: number; houseMaterialsRequired: number },
+  activeOrQueuedJobs: any[],
+  upgrades: UpgradeLevels,
+  runtime: RuntimeConfig,
+  policyGate?: () => boolean,
+) {
+  const plannedJobs = planHousePipeline({
+    resources: {
+      water: patchedResources.water,
+      materials: patchedResources.materials,
+    },
+    activeOrQueuedJobs,
+    waterRequired: policy.houseWaterRequired,
+    materialsRequired: policy.houseMaterialsRequired,
+  });
+
+  for (const planned of plannedJobs) {
+    if (policyGate && !policyGate()) {
+      continue;
+    }
+    const architect =
+      planned.kind === "build_house"
+        ? await selectBestCat(ctx, colonyId, "architect")
+        : null;
+    await queueJob(
+      ctx,
+      colonyId,
+      planned.kind,
+      "leader",
+      upgrades,
+      runtime,
+      null,
+      architect,
+      planned.metadata,
+    );
+    activeOrQueuedJobs.push({
+      kind: planned.kind,
+      metadata: planned.metadata,
+    });
+  }
+}
+
 async function resetGlobalRun(ctx: Ctx, colony: any, reason: string) {
   const now = Date.now();
 
@@ -513,6 +565,7 @@ async function resetGlobalRun(ctx: Ctx, colony: any, reason: string) {
     lastTick: now,
     criticalSince: null,
     ritualRequestedAt: null,
+    testRngSeed: colony.testRngSeed ?? null,
   });
 
   await logEvent(
@@ -553,6 +606,46 @@ export const setTestAcceleration = mutation({
       testCriticalMsOverride: config.criticalMsOverride,
     });
     return { preset: args.preset };
+  },
+});
+
+export const setTestRngSeed = mutation({
+  args: {
+    seed: v.union(v.number(), v.null()),
+  },
+  handler: async (ctx, args) => {
+    const colony = await ensureGlobalColony(ctx);
+    if (!colony) {
+      throw new Error("Global colony unavailable");
+    }
+
+    await ctx.db.patch(colony._id, {
+      testRngSeed:
+        typeof args.seed === "number"
+          ? Math.max(1, Math.floor(args.seed))
+          : null,
+    });
+
+    return { seed: args.seed };
+  },
+});
+
+export const advanceTime = mutation({
+  args: {
+    seconds: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const colony = await ensureGlobalColony(ctx);
+    if (!colony) {
+      throw new Error("Global colony unavailable");
+    }
+
+    const seconds = Math.max(1, Math.floor(args.seconds));
+    await ctx.db.patch(colony._id, {
+      lastTick: colony.lastTick - seconds * 1000,
+    });
+
+    return { advancedSeconds: seconds };
   },
 });
 
@@ -918,6 +1011,16 @@ export const workerTick = mutation({
     const upgrades = upgradesToLevels(await getUpgradeRows(ctx, colony._id));
     const runtime = getRuntimeConfig(colony);
 
+    let rngSeed = runtime.rngSeed;
+    const nextRoll = () => {
+      if (rngSeed === null) {
+        return Math.random();
+      }
+      const roll = rollSeeded(rngSeed);
+      rngSeed = roll.nextSeed;
+      return roll.value;
+    };
+
     // Ensure best leader.
     const bestLeader = await chooseLeader(ctx, colony._id);
     if (bestLeader && colony.leaderId !== bestLeader._id) {
@@ -930,6 +1033,13 @@ export const workerTick = mutation({
         [bestLeader._id],
       );
     }
+
+    const policyTier = pickPolicyTier(
+      bestLeader?.stats.leadership ?? 50,
+      nextRoll(),
+    );
+    const policy = configForTier(policyTier);
+    const canTakePolicyAction = () => nextRoll() <= policy.actionReliability;
 
     const aliveCats = await ctx.db
       .query("cats")
@@ -949,6 +1059,15 @@ export const workerTick = mutation({
       water: Math.max(0, colony.resources.water - waterUse),
     };
 
+    if (colony.resources.water > 3 && nextResources.water <= 3) {
+      await logEvent(
+        ctx,
+        colony._id,
+        "crisis",
+        "CRISIS: WATER RESERVES DANGEROUSLY LOW",
+      );
+    }
+
     // Promote queued jobs to active.
     const queuedJobs = await ctx.db
       .query("jobs")
@@ -964,7 +1083,7 @@ export const workerTick = mutation({
       });
     }
 
-    // Auto-plan hunt/build when resources are low.
+    // Leader auto-plans hunt/build when resources are low, gated by policy reliability.
     const activeJobs = await ctx.db
       .query("jobs")
       .withIndex("by_colony_status", (q: any) =>
@@ -972,7 +1091,11 @@ export const workerTick = mutation({
       )
       .collect();
 
-    if (shouldAutoQueueHunt(nextResources.food, activeJobs)) {
+    if (
+      nextResources.food < policy.foodEmergencyThreshold &&
+      !hasConflictingStrategicJob("leader_plan_hunt", activeJobs) &&
+      canTakePolicyAction()
+    ) {
       await queueJob(
         ctx,
         colony._id,
@@ -985,7 +1108,11 @@ export const workerTick = mutation({
       );
     }
 
-    if (shouldAutoQueueBuild(nextResources.materials, activeJobs)) {
+    if (
+      nextResources.materials < policy.houseMaterialsRequired &&
+      !hasConflictingStrategicJob("leader_plan_house", activeJobs) &&
+      canTakePolicyAction()
+    ) {
       await queueJob(
         ctx,
         colony._id,
@@ -998,9 +1125,10 @@ export const workerTick = mutation({
       );
     }
 
-    // Ritual from player request only if stable.
+    // Ritual from player request, only if resources are stable and policy roll passes.
     if (
-      shouldStartRitual(colony.ritualRequestedAt, nextResources, activeJobs)
+      shouldStartRitual(colony.ritualRequestedAt, nextResources, activeJobs) &&
+      canTakePolicyAction()
     ) {
       await queueJob(
         ctx,
@@ -1021,12 +1149,84 @@ export const workerTick = mutation({
       );
     }
 
-    // Complete due jobs.
-    const dueJobs = activeJobs.filter((job: any) => job.endsAt <= now);
-
     let patchedResources = { ...nextResources };
     let automationTier = colony.automationTier ?? 0;
     let globalUpgradePoints = colony.globalUpgradePoints ?? 0;
+
+    for (const cat of aliveCats) {
+      const survival = applySurvivalTick(
+        cat.needs,
+        {
+          food: patchedResources.food,
+          water: patchedResources.water,
+        },
+        elapsedSec * runtime.resourceDecayMultiplier,
+        {
+          needsDecayMultiplier: policy.needsDecayMultiplier,
+          needsDamageMultiplier: policy.needsDamageMultiplier,
+        },
+      );
+
+      await ctx.db.patch(cat._id, { needs: survival.nextNeeds });
+
+      if (survival.dehydratingStarted) {
+        await logEvent(
+          ctx,
+          colony._id,
+          "crisis",
+          `${cat.name} started dehydrating.`,
+          [cat._id],
+        );
+      }
+
+      if (survival.recoveredFromDehydration) {
+        await logEvent(
+          ctx,
+          colony._id,
+          "recovery",
+          `${cat.name} recovered from dehydration.`,
+          [cat._id],
+        );
+      }
+
+      if (survival.died) {
+        await ctx.db.patch(cat._id, {
+          deathTime: now,
+          currentTask: null,
+        });
+        await logEvent(
+          ctx,
+          colony._id,
+          "death",
+          `${cat.name} died from ${survival.nextNeeds.thirst === 0 && survival.nextNeeds.hunger === 0 ? "starvation and dehydration" : survival.nextNeeds.thirst === 0 ? "dehydration" : "starvation"}.`,
+          [cat._id],
+        );
+      }
+    }
+
+    const livingCats = await ctx.db
+      .query("cats")
+      .withIndex("by_colony_alive", (q: any) => q.eq("colonyId", colony._id))
+      .filter((q: any) => q.eq(q.field("deathTime"), null))
+      .collect();
+
+    if (livingCats.length === 0) {
+      await resetGlobalRun(
+        ctx,
+        {
+          ...colony,
+          resources: patchedResources,
+          automationTier,
+          runStartedAt: colony.runStartedAt ?? colony.createdAt,
+        },
+        "all-cats-dead",
+      );
+      return { ok: true, reset: true };
+    }
+
+    // Complete due jobs.
+    const dueJobs = activeJobs.filter((job: any) => job.endsAt <= now);
+    const activeOrQueuedJobs: any[] = [...activeJobs, ...queuedJobs];
 
     for (const job of dueJobs) {
       const assignedCat = job.assignedCatId
@@ -1050,7 +1250,7 @@ export const workerTick = mutation({
         }
       }
 
-      if (job.kind === "leader_plan_hunt") {
+      if (job.kind === "leader_plan_hunt" && canTakePolicyAction()) {
         const hunter = await selectBestCat(ctx, colony._id, "hunter");
         await queueJob(
           ctx,
@@ -1062,19 +1262,19 @@ export const workerTick = mutation({
           null,
           hunter,
         );
+        activeOrQueuedJobs.push({ kind: "hunt_expedition" });
       }
 
       if (job.kind === "leader_plan_house") {
-        const architect = await selectBestCat(ctx, colony._id, "architect");
-        await queueJob(
+        await queuePlannedHouseJobs(
           ctx,
           colony._id,
-          "build_house",
-          "leader",
+          patchedResources,
+          policy,
+          activeOrQueuedJobs,
           upgrades,
           runtime,
-          null,
-          architect,
+          canTakePolicyAction,
         );
       }
 
@@ -1104,9 +1304,36 @@ export const workerTick = mutation({
       }
 
       if (job.kind === "build_house" && assignedCat) {
-        patchedResources.materials += 12;
-        automationTier =
-          Math.round(Math.min(10, automationTier + 0.05) * 100) / 100;
+        const phase = String(job.metadata?.phase ?? "gather_materials");
+        if (phase === "construct_house") {
+          if (
+            patchedResources.water >= policy.houseWaterRequired &&
+            patchedResources.materials >= policy.houseMaterialsRequired
+          ) {
+            patchedResources.water = Math.max(
+              0,
+              patchedResources.water - policy.houseWaterRequired,
+            );
+            patchedResources.materials = Math.max(
+              0,
+              patchedResources.materials - policy.houseMaterialsRequired,
+            );
+            automationTier =
+              Math.round(Math.min(10, automationTier + 0.05) * 100) / 100;
+          } else {
+            await queuePlannedHouseJobs(
+              ctx,
+              colony._id,
+              patchedResources,
+              policy,
+              activeOrQueuedJobs,
+              upgrades,
+              runtime,
+            );
+          }
+        } else {
+          patchedResources.materials += 12;
+        }
 
         const roleXp = defaultRoleXp(assignedCat);
         const nextRoleXp = { ...roleXp, architect: roleXp.architect + 1 };
@@ -1187,6 +1414,15 @@ export const workerTick = mutation({
       criticalSince = null;
     }
 
+    if (colony.resources.water <= 3 && patchedResources.water > 6) {
+      await logEvent(
+        ctx,
+        colony._id,
+        "recovery",
+        "Water reserves restored to safe levels.",
+      );
+    }
+
     const nextStatus = nextColonyStatus(patchedResources);
 
     await ctx.db.patch(colony._id, {
@@ -1196,6 +1432,7 @@ export const workerTick = mutation({
       globalUpgradePoints,
       criticalSince,
       lastTick: now,
+      testRngSeed: rngSeed,
     });
 
     return {
@@ -1204,6 +1441,7 @@ export const workerTick = mutation({
       resources: patchedResources,
       automationTier,
       globalUpgradePoints,
+      policyTier,
       reset: false,
     };
   },
