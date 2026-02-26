@@ -96,3 +96,4 @@ export * from "./mood";
 
 // Resource trend analysis (moving averages, direction, percent change)
 export * from "./resourceTrends";
+export * from "./relationships";
