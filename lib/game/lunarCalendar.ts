@@ -40,14 +40,6 @@ export interface LunarReport {
 const LUNAR_CYCLE_DAYS = 30;
 const FULL_MOON_START = 15;
 
-const ZERO_MODIFIERS: MoonModifiers = {
-  huntingBonus: 0,
-  stealthBonus: 0,
-  breedingBonus: 0,
-  moodBonus: 0,
-  restBonus: 0,
-};
-
 const PHASE_MODIFIERS: Record<MoonPhase, MoonModifiers> = {
   new_moon: {
     huntingBonus: -10,
@@ -63,7 +55,13 @@ const PHASE_MODIFIERS: Record<MoonPhase, MoonModifiers> = {
     moodBonus: 10,
     restBonus: 0,
   },
-  first_quarter: { ...ZERO_MODIFIERS },
+  first_quarter: {
+    huntingBonus: 0,
+    stealthBonus: 0,
+    breedingBonus: 0,
+    moodBonus: 0,
+    restBonus: 0,
+  },
   waxing_gibbous: {
     huntingBonus: 15,
     stealthBonus: 0,
@@ -85,7 +83,13 @@ const PHASE_MODIFIERS: Record<MoonPhase, MoonModifiers> = {
     moodBonus: 0,
     restBonus: 20,
   },
-  last_quarter: { ...ZERO_MODIFIERS },
+  last_quarter: {
+    huntingBonus: 0,
+    stealthBonus: 0,
+    breedingBonus: 0,
+    moodBonus: 0,
+    restBonus: 0,
+  },
   waning_crescent: {
     huntingBonus: 0,
     stealthBonus: 15,
@@ -114,13 +118,14 @@ export function calculateMoonDay(dayNumber: number): number {
 }
 
 export function getMoonPhase(dayInCycle: number): MoonPhase {
-  if (dayInCycle <= 3) return "new_moon";
-  if (dayInCycle <= 7) return "waxing_crescent";
-  if (dayInCycle <= 10) return "first_quarter";
-  if (dayInCycle <= 14) return "waxing_gibbous";
-  if (dayInCycle <= 18) return "full_moon";
-  if (dayInCycle <= 22) return "waning_gibbous";
-  if (dayInCycle <= 25) return "last_quarter";
+  const d = calculateMoonDay(dayInCycle);
+  if (d <= 3) return "new_moon";
+  if (d <= 7) return "waxing_crescent";
+  if (d <= 10) return "first_quarter";
+  if (d <= 14) return "waxing_gibbous";
+  if (d <= 18) return "full_moon";
+  if (d <= 22) return "waning_gibbous";
+  if (d <= 25) return "last_quarter";
   return "waning_crescent";
 }
 
