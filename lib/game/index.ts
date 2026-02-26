@@ -74,3 +74,5 @@ export * from "./healthDiagnosis";
 export * from "./workEthic";
 // Resource spoilage system
 export * from "./spoilage";
+// Cat mentorship and apprenticeship system
+export * from "./mentorship";
