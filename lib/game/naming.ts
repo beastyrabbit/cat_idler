@@ -126,8 +126,10 @@ export function generateLitterNames(
       attempts++;
     } while (usedNames.has(name) && attempts < 100);
 
-    usedNames.add(name);
-    names.push(name);
+    if (!usedNames.has(name) || attempts >= 100) {
+      usedNames.add(name);
+      names.push(name);
+    }
   }
 
   return names;
