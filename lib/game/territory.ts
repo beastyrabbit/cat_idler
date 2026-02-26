@@ -28,7 +28,7 @@ const GUARD_BONUS = 10;
 
 const ENEMY_PENALTIES: Record<string, number> = {
   enemy_territory: 20,
-  enemy_lair: 30,
+  enemy_lair: 20,
 };
 
 /**
