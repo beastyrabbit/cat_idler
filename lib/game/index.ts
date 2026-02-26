@@ -127,3 +127,5 @@ export * from "./census";
 export * from "./obituaries";
 // Cat personality profiles
 export * from "./personality";
+// Exploration field reports
+export * from "./explorationReports";
