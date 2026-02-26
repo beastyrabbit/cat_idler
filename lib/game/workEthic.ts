@@ -1,3 +1,5 @@
+import type { LifeStage } from "@/types/game";
+
 export type ProductivityTier =
   | "slacker"
   | "lazy"
@@ -20,8 +22,6 @@ export interface ProductivityReport {
   topWorker: string | null;
   dominantTier: ProductivityTier | null;
 }
-
-type LifeStage = "kitten" | "young" | "adult" | "elder";
 
 const AGE_MODIFIERS: Record<LifeStage, number> = {
   kitten: 0.5,
@@ -79,7 +79,9 @@ export function detectOverworked(
   workEthic: number,
   restLevel: number,
 ): boolean {
-  return workEthic > 70 && restLevel < 30;
+  const safeWorkEthic = Math.max(0, Math.min(100, workEthic));
+  const safeRestLevel = Math.max(0, Math.min(100, restLevel));
+  return safeWorkEthic > 70 && safeRestLevel < 30;
 }
 
 export function evaluateColonyProductivity(
