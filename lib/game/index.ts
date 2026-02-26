@@ -53,3 +53,4 @@ export * from "./migration";
 
 export * from "./gossipNetwork";
 export * from "./nightWatch";
+export * from "./lifeMilestones";
