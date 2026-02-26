@@ -55,7 +55,7 @@ export function calculateTrainingEffectiveness(
 
   // Skill gap bonus: larger gaps = faster learning, capped at 2x
   const gap = mentorSkill - apprenticeSkill;
-  const gapBonus = Math.min(gap / 50, 2);
+  const gapBonus = Math.min(1 + gap / 100, 2);
 
   let effectiveness = base * gapBonus;
 
@@ -66,7 +66,8 @@ export function calculateTrainingEffectiveness(
 
   // Fatigue penalty: -15% per extra student beyond the first
   const extraStudents = Math.max(0, apprenticeCount - 1);
-  effectiveness *= 1 - extraStudents * OVERLOAD_PENALTY;
+  const loadMultiplier = Math.max(0, 1 - extraStudents * OVERLOAD_PENALTY);
+  effectiveness *= loadMultiplier;
 
   // Cap at 2.0, floor at 0
   return Math.min(
