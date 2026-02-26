@@ -47,5 +47,7 @@ export * from "./survival";
 // House build prerequisite planner
 export * from "./housePlanner";
 
-// Crime blotter / police gazette column
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+
 export * from "./crimeBlotter";
