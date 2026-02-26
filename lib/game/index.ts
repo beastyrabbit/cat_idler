@@ -76,3 +76,5 @@ export * from "./workEthic";
 export * from "./spoilage";
 // Cat mentorship and apprenticeship system
 export * from "./mentorship";
+// Cat migration system
+export * from "./migration";
