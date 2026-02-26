@@ -60,4 +60,7 @@ export * from "./foodCritic";
 
 export * from "./adviceColumn";
 
+export * from "./crimeBlotter";
+
+// Colony chronicle historical retrospective system
 export * from "./chronicle";
