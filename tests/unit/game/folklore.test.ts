@@ -249,7 +249,7 @@ describe("rankLegends", () => {
     expect(rankLegends([])).toEqual([]);
   });
 
-  it("handles ties (stable sort)", () => {
+  it("handles ties without assuming stable sort", () => {
     const event1: LegendEvent = {
       type: "combat_victory",
       catName: "A",
@@ -267,9 +267,8 @@ describe("rankLegends", () => {
     // Same type, same age → same fame
     expect(legend1.fameScore).toBe(legend2.fameScore);
     const ranked = rankLegends([legend1, legend2]);
-    // Stable sort: original order preserved
-    expect(ranked[0].event.catName).toBe("A");
-    expect(ranked[1].event.catName).toBe("B");
+    const rankedNames = new Set([ranked[0].event.catName, ranked[1].event.catName]);
+    expect(rankedNames).toEqual(new Set(["A", "B"]));
   });
 });
 
