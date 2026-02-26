@@ -123,5 +123,7 @@ export {
 
 export * from "./horoscope";
 
-// Dear Tabby advice column (newspaper agony-aunt Q&A)
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+
 export * from "./adviceColumn";
