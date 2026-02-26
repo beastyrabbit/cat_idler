@@ -52,6 +52,9 @@ export * from "./territory";
 // Predator threat level assessment
 export * from "./threats";
 
+// Colony trade route system
+export * from "./tradeRoutes";
+
 // Cat legacy score and Hall of Fame
 export * from "./legacyScore";
 // Lunar calendar and moon phase system
