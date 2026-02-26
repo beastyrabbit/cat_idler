@@ -78,3 +78,6 @@ export * from "./spoilage";
 export * from "./mentorship";
 // Cat migration system
 export * from "./migration";
+
+// Night watch shift scheduling
+export * from "./nightWatch";
