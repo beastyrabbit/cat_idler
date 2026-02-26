@@ -87,7 +87,7 @@ export function assessTileDanger(tileDangerLevels: number[]): number {
 
 /**
  * Assess threat contribution from nearby enemy types.
- * Considers both frequency (count) and strength (from ENEMY_STATS).
+ * Considers both enemy-type diversity and average strength (from ENEMY_STATS).
  * Returns 0-40 scaled score.
  */
 export function assessEnemyThreat(enemyTypes: EnemyType[]): number {
@@ -98,18 +98,19 @@ export function assessEnemyThreat(enemyTypes: EnemyType[]): number {
   const frequencyScore =
     (Math.min(uniqueCount, MAX_ENEMY_TYPES) / MAX_ENEMY_TYPES) * 20;
 
-  // Strength component: average strength of all enemy types present
+  // Strength component: average strength of unique enemy types present
   const maxStrength = Math.max(
     ...Object.values(ENEMY_STATS).map(
       (s) => s.baseClicks + (s.damage[0] + s.damage[1]) / 2,
     ),
   );
 
-  const totalStrength = enemyTypes.reduce((sum, type) => {
+  const uniqueTypes = Array.from(new Set(enemyTypes));
+  const totalStrength = uniqueTypes.reduce((sum, type) => {
     const stats = ENEMY_STATS[type];
     return sum + stats.baseClicks + (stats.damage[0] + stats.damage[1]) / 2;
   }, 0);
-  const avgStrength = totalStrength / enemyTypes.length;
+  const avgStrength = totalStrength / uniqueTypes.length;
   const strengthScore = (avgStrength / maxStrength) * 20;
 
   return Math.min(MAX_ENEMY_THREAT, Math.round(frequencyScore + strengthScore));

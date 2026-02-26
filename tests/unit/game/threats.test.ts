@@ -141,8 +141,13 @@ describe("assessEnemyThreat", () => {
   it("handles duplicate enemy types (counts unique)", () => {
     const singleFox = assessEnemyThreat(["fox"]);
     const doubleFox = assessEnemyThreat(["fox", "fox"]);
-    // Duplicates should count as frequency but not add new types
+    // Duplicate enemies should not change threat if they don't add new types
     expect(doubleFox).toBe(singleFox);
+
+    const bearHawk = assessEnemyThreat(["bear", "hawk"]);
+    const bearBearHawk = assessEnemyThreat(["bear", "bear", "hawk"]);
+    // Mixed-type duplicates should also be deduplicated for strength averaging
+    expect(bearBearHawk).toBe(bearHawk);
   });
 });
 
