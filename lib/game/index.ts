@@ -120,5 +120,7 @@ export {
   formatRankingsColumn,
 } from "./skillRankings";
 
-// Colony horoscope (zodiac signs, daily fortunes, compatibility)
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+
 export * from "./horoscope";
