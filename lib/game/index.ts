@@ -46,6 +46,8 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
+// Colony territory influence calculation
+export * from "./territory";
 
 // Cat legacy score and Hall of Fame
 export * from "./legacyScore";
