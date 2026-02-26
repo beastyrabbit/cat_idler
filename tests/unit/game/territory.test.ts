@@ -86,9 +86,9 @@ describe("calculateTileInfluence", () => {
     expect(calculateTileInfluence(0, 0, 0, "enemy_territory")).toBe(80);
   });
 
-  it("subtracts enemy penalty for enemy_lair (-30)", () => {
-    // distance 0 → base 100, -30 lair = 70
-    expect(calculateTileInfluence(0, 0, 0, "enemy_lair")).toBe(70);
+  it("subtracts enemy penalty for enemy_lair (-20)", () => {
+    // distance 0 → base 100, -20 lair = 80
+    expect(calculateTileInfluence(0, 0, 0, "enemy_lair")).toBe(80);
   });
 
   it("clamps result to minimum 0", () => {
@@ -107,8 +107,8 @@ describe("calculateTileInfluence", () => {
   });
 
   it("handles zero cats and guards on enemy lair at distance", () => {
-    // distance 3 → base 25, -30 lair = negative → 0
-    expect(calculateTileInfluence(3, 0, 0, "enemy_lair")).toBe(0);
+    // distance 3 → base 25, -20 lair = 5 (clamped only if negative)
+    expect(calculateTileInfluence(3, 0, 0, "enemy_lair")).toBe(5);
   });
 });
 
