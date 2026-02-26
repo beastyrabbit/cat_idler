@@ -66,7 +66,7 @@ export const attemptBreeding = mutation({
 
     // 30% base chance, increased by colony blessings
     const colony = await ctx.db.get(cat1.colonyId);
-    const blessings = colony?.resources.blessings ?? 0;
+    const blessings = colony?.resources?.blessings ?? 0;
     const baseChance = 0.3;
     const chance = calculateBreedingChance(baseChance, blessings);
 
