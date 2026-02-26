@@ -57,3 +57,5 @@ export * from "./lifeMilestones";
 export * from "./sportsPage";
 
 export * from "./foodCritic";
+
+export * from "./adviceColumn";
