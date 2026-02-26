@@ -47,5 +47,5 @@ export * from "./survival";
 // House build prerequisite planner
 export * from "./housePlanner";
 
-// Colony emergency alert system
-export * from "./emergencyAlerts";
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
