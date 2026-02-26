@@ -81,3 +81,6 @@ export * from "./migration";
 
 // Night watch shift scheduling
 export * from "./nightWatch";
+
+// Colony chronicle — historical retrospective column
+export * from "./chronicle";
