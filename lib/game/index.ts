@@ -47,6 +47,8 @@ export * from "./survival";
 // House build prerequisite planner
 export * from "./housePlanner";
 
+// Cat legacy score and Hall of Fame
+export * from "./legacyScore";
 // Lunar calendar and moon phase system
 export * from "./lunarCalendar";
 // Cat popularity contest
