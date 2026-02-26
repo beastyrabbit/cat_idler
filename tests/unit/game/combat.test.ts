@@ -10,7 +10,7 @@ import {
   getClicksNeeded,
   calculateColonyDefense,
 } from "@/lib/game/combat";
-import type { Building } from "@/types/game";
+import type { BuildingForDefense } from "@/lib/game/combat";
 
 describe("calculateCombatResult", () => {
   it("should favor high stat cats", () => {
@@ -92,56 +92,107 @@ describe("getClicksNeeded", () => {
 });
 
 describe("calculateColonyDefense", () => {
-  function makeWall(
-    level: number,
-    constructionProgress: number,
-  ): Pick<Building, "type" | "level" | "constructionProgress"> {
-    return { type: "walls", level, constructionProgress };
-  }
-
-  it("should return 0 when no walls exist", () => {
+  it("should return 0 when no buildings provided", () => {
     expect(calculateColonyDefense([])).toBe(0);
   });
 
-  it("should return 20 for a level-1 wall at 100% construction", () => {
-    expect(calculateColonyDefense([makeWall(1, 100)])).toBe(20);
+  it("should return 0 when no wall buildings present", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "den", level: 3, constructionProgress: 100 },
+      { type: "food_storage", level: 2, constructionProgress: 100 },
+    ];
+    expect(calculateColonyDefense(buildings)).toBe(0);
   });
 
-  it("should return 40 for a level-2 wall at 100% construction", () => {
-    expect(calculateColonyDefense([makeWall(2, 100)])).toBe(40);
+  it("should ignore non-wall buildings", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "nursery", level: 5, constructionProgress: 100 },
+      { type: "herb_garden", level: 3, constructionProgress: 100 },
+      { type: "mouse_farm", level: 4, constructionProgress: 100 },
+    ];
+    expect(calculateColonyDefense(buildings)).toBe(0);
   });
 
-  it("should return 100 for a level-5 wall at 100% construction", () => {
-    expect(calculateColonyDefense([makeWall(5, 100)])).toBe(100);
+  it("should return level × 10 for a single fully-constructed wall", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "walls", level: 1, constructionProgress: 100 },
+    ];
+    expect(calculateColonyDefense(buildings)).toBe(10);
   });
 
-  it("should scale proportionally with construction progress", () => {
-    // level 3 * 20 = 60, at 50% = 30
-    expect(calculateColonyDefense([makeWall(3, 50)])).toBe(30);
+  it("should return level × 10 for level 3 wall", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "walls", level: 3, constructionProgress: 100 },
+    ];
+    expect(calculateColonyDefense(buildings)).toBe(30);
   });
 
-  it("should return 0 for a wall at 0% construction", () => {
-    expect(calculateColonyDefense([makeWall(2, 0)])).toBe(0);
+  it("should scale by constructionProgress", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "walls", level: 2, constructionProgress: 50 },
+    ];
+    // level 2 = 20 base, 50% progress = 10
+    expect(calculateColonyDefense(buildings)).toBe(10);
   });
 
-  it("should sum defense from multiple walls", () => {
-    // level 1 (20) + level 2 (40) = 60
-    expect(calculateColonyDefense([makeWall(1, 100), makeWall(2, 100)])).toBe(
-      60,
-    );
+  it("should handle 0% constructionProgress", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "walls", level: 5, constructionProgress: 0 },
+    ];
+    expect(calculateColonyDefense(buildings)).toBe(0);
   });
 
-  it("should cap total defense at 100", () => {
-    // level 3 (60) + level 3 (60) = 120 → capped at 100
-    expect(calculateColonyDefense([makeWall(3, 100), makeWall(3, 100)])).toBe(
-      100,
-    );
+  it("should stack multiple wall buildings", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "walls", level: 2, constructionProgress: 100 },
+      { type: "walls", level: 3, constructionProgress: 100 },
+    ];
+    // 20 + 30 = 50
+    expect(calculateColonyDefense(buildings)).toBe(50);
   });
 
-  it("should handle partial construction across multiple walls", () => {
-    // level 2 at 50% = 20, level 1 at 100% = 20 → total 40
-    expect(calculateColonyDefense([makeWall(2, 50), makeWall(1, 100)])).toBe(
-      40,
-    );
+  it("should stack walls with partial construction", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "walls", level: 2, constructionProgress: 50 },
+      { type: "walls", level: 4, constructionProgress: 75 },
+    ];
+    // (2*10*0.5) + (4*10*0.75) = 10 + 30 = 40
+    expect(calculateColonyDefense(buildings)).toBe(40);
+  });
+
+  it("should cap at 100", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "walls", level: 5, constructionProgress: 100 },
+      { type: "walls", level: 5, constructionProgress: 100 },
+      { type: "walls", level: 5, constructionProgress: 100 },
+    ];
+    // 50 + 50 + 50 = 150, but capped at 100
+    expect(calculateColonyDefense(buildings)).toBe(100);
+  });
+
+  it("should handle zero level", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "walls", level: 0, constructionProgress: 100 },
+    ];
+    expect(calculateColonyDefense(buildings)).toBe(0);
+  });
+
+  it("should mix walls with other buildings", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "den", level: 5, constructionProgress: 100 },
+      { type: "walls", level: 2, constructionProgress: 100 },
+      { type: "food_storage", level: 3, constructionProgress: 100 },
+      { type: "walls", level: 1, constructionProgress: 100 },
+    ];
+    // Only walls: 20 + 10 = 30
+    expect(calculateColonyDefense(buildings)).toBe(30);
+  });
+
+  it("should floor fractional defense values", () => {
+    const buildings: BuildingForDefense[] = [
+      { type: "walls", level: 1, constructionProgress: 33 },
+    ];
+    // 1*10*0.33 = 3.3, floored to 3
+    expect(calculateColonyDefense(buildings)).toBe(3);
   });
 });
