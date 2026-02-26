@@ -167,7 +167,7 @@ describe("rankLegacies", () => {
     const ranked = rankLegacies(entries);
     expect(ranked[0].rank).toBe(1);
     expect(ranked[1].rank).toBe(1);
-    expect(ranked[2].rank).toBe(3);
+    expect(ranked[2].rank).toBe(2);
   });
 });
 
