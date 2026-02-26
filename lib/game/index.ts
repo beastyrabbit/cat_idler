@@ -125,3 +125,5 @@ export * from "./reputation";
 export * from "./census";
 // Cat obituary generator
 export * from "./obituaries";
+// Cat personality profiles
+export * from "./personality";
