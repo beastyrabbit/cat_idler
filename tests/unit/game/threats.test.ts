@@ -142,7 +142,7 @@ describe("assessEnemyThreat", () => {
     const singleFox = assessEnemyThreat(["fox"]);
     const doubleFox = assessEnemyThreat(["fox", "fox"]);
     // Duplicates should count as frequency but not add new types
-    expect(doubleFox).toBeGreaterThanOrEqual(singleFox);
+    expect(doubleFox).toBe(singleFox);
   });
 });
 
