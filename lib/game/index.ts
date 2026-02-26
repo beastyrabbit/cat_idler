@@ -84,9 +84,7 @@ export * from "./adviceColumn";
 
 // Cat work ethic and productivity
 export * from "./workEthic";
- 
-// Cat health diagnosis system
-export * from "./healthDiagnosis";
+
 // Colony emergency alerts (selective exports to avoid `SeverityLevel` naming conflicts)
 export {
   calculateSeverity,
@@ -113,5 +111,5 @@ export * from "./weather";
 export * from "./spoilage";
 // Cat mood/happiness system
 export * from "./mood";
-// Cat mood/happiness system
-export * from "./mood";
+// Seasonal cycle system
+export * from "./seasons";
