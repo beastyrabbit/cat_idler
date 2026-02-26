@@ -55,3 +55,5 @@ export * from "./gossipNetwork";
 export * from "./nightWatch";
 export * from "./lifeMilestones";
 export * from "./sportsPage";
+
+export * from "./foodCritic";
