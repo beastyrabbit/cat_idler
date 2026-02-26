@@ -96,7 +96,7 @@ describe("healthDiagnosis", () => {
         health: 20,
       });
       expect(result).toEqual([
-        { condition: "injury", severity: "critical", value: 20 },
+        { condition: "injury", severity: "severe", value: 20 },
       ]);
     });
 
@@ -132,6 +132,18 @@ describe("healthDiagnosis", () => {
         exhaustion: "severe", // 5 < 10
         injury: "mild", // 40 < 50, >= 25
       });
+    });
+
+    it("supports critical injuries for deep trauma", () => {
+      const result = diagnoseCat({
+        hunger: 80,
+        thirst: 90,
+        rest: 70,
+        health: 5,
+      });
+      expect(result).toEqual([
+        { condition: "injury", severity: "critical", value: 5 },
+      ]);
     });
   });
 

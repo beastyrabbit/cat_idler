@@ -63,7 +63,7 @@ export function getConditionSeverity(
   value: number,
   mildThreshold: number,
   severeThreshold: number,
-  criticalThreshold = severeThreshold,
+  criticalThreshold = Number.NEGATIVE_INFINITY,
 ): Severity | null {
   if (value >= mildThreshold) return null;
   if (value < criticalThreshold) return "critical";
