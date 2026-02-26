@@ -103,3 +103,4 @@ export * from "./census";
 export * from "./obituaries";
 export * from "./personality";
 export * from "./explorationReports";
+export * from "./supplyDemand";
