@@ -133,3 +133,5 @@ export * from "./explorationReports";
 export * from "./supplyDemand";
 // Cat skill rankings
 export * from "./skillRankings";
+// Colony proverbs & wisdom
+export * from "./proverbs";
