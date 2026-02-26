@@ -31,6 +31,7 @@ export interface HallOfFameReport {
   legendaryCount: number;
   honoredCount: number;
   topCat: string | null;
+  topScore: number | null;
   averageScore: number;
   dominantContribution: ContributionType | null;
 }
@@ -123,7 +124,7 @@ export function rankLegacies(legacies: LegacyEntry[]): LegacyEntry[] {
 
   return sorted.map((entry, i) => {
     if (i > 0 && entry.score < sorted[i - 1].score) {
-      currentRank = i + 1;
+      currentRank += 1;
     }
     return { ...entry, rank: currentRank };
   });
@@ -139,6 +140,7 @@ export function evaluateHallOfFame(legacies: LegacyEntry[]): HallOfFameReport {
       legendaryCount: 0,
       honoredCount: 0,
       topCat: null,
+      topScore: null,
       averageScore: 0,
       dominantContribution: null,
     };
@@ -172,13 +174,14 @@ export function evaluateHallOfFame(legacies: LegacyEntry[]): HallOfFameReport {
   }
 
   return {
-    totalEntries: legacies.length,
-    legendaryCount,
-    honoredCount,
-    topCat: topEntry.catName,
-    averageScore,
-    dominantContribution,
-  };
+      totalEntries: legacies.length,
+      legendaryCount,
+      honoredCount,
+      topCat: topEntry.catName,
+      topScore: topEntry.score,
+      averageScore,
+      dominantContribution,
+    };
 }
 
 /**
@@ -219,7 +222,7 @@ export function generateHallOfFameColumn(
   if (report.topCat) {
     lines.push("");
     lines.push(
-      `The greatest of all: ${report.topCat}, with a legacy score of ${Math.round(report.averageScore)}.`,
+      `The greatest of all: ${report.topCat}, with a legacy score of ${Math.round(report.topScore ?? report.averageScore)}.`,
     );
   }
 

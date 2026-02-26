@@ -249,6 +249,7 @@ describe("generateHallOfFameColumn", () => {
       legendaryCount: 1,
       honoredCount: 0,
       topCat: "Whiskers",
+      topScore: 120,
       averageScore: 120,
       dominantContribution: "survival",
     };
@@ -262,6 +263,7 @@ describe("generateHallOfFameColumn", () => {
       legendaryCount: 0,
       honoredCount: 0,
       topCat: null,
+      topScore: null,
       averageScore: 0,
       dominantContribution: null,
     };
@@ -276,6 +278,7 @@ describe("generateHallOfFameColumn", () => {
       legendaryCount: 2,
       honoredCount: 1,
       topCat: "Alpha",
+      topScore: 85,
       averageScore: 85,
       dominantContribution: "tasks",
     };
@@ -290,6 +293,7 @@ describe("generateHallOfFameColumn", () => {
       legendaryCount: 2,
       honoredCount: 1,
       topCat: "Hero",
+      topScore: 110,
       averageScore: 110,
       dominantContribution: "leadership",
     };
