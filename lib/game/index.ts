@@ -49,3 +49,5 @@ export * from "./housePlanner";
 
 // Cat ancestry and lineage tracking
 export * from "./ancestry";
+// Cat popularity contest
+export * from "./popularity";
