@@ -90,6 +90,10 @@ export function getMilestoneDescription(
  */
 function getHighestStat(stats: CatStats): string {
   const entries = Object.entries(stats) as [keyof CatStats, number][];
+  if (entries.length === 0) {
+    return "attack";
+  }
+
   entries.sort((a, b) => {
     if (b[1] !== a[1]) return b[1] - a[1];
     return a[0].localeCompare(b[0]);
