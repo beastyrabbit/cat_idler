@@ -46,18 +46,17 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
-// Colony emergency alert system
-export * from "./emergencyAlerts";
-// Cat gossip network (rumor propagation)
-export * from "./gossipNetwork";
 // Cat dream journal
 export * from "./dreamJournal";
 // Colony territory influence calculation
 export * from "./territory";
+
 // Predator threat level assessment
 export * from "./threats";
+
 // Colony trade route system
 export * from "./tradeRoutes";
+
 // Cat legacy score and Hall of Fame
 export * from "./legacyScore";
 // Lunar calendar and moon phase system
@@ -68,66 +67,103 @@ export * from "./popularity";
 export * from "./ancestry";
 // Cat folklore and legends
 export * from "./folklore";
+
 // Cat health diagnosis system
 export * from "./healthDiagnosis";
-// Cat work ethic and productivity
-export * from "./workEthic";
-// Resource spoilage system
-export * from "./spoilage";
-// Cat mentorship and apprenticeship system
-export * from "./mentorship";
-// Cat migration system
-export * from "./migration";
-
-export * from "./nightWatch";
-
-// Colony chronicle — historical retrospective column
-export * from "./chronicle";
 
 // Cat gossip network (rumor propagation)
 export * from "./gossipNetwork";
-
+export * from "./migration";
+export * from "./nightWatch";
 export * from "./lifeMilestones";
-
-// Weather system (deterministic, seed-based)
-export * from "./weather";
-
-// Cat mood/happiness system
-export * from "./mood";
-
-// Resource trend analysis (moving averages, direction, percent change)
-export * from "./resourceTrends";
-export * from "./relationships";
-export * from "./achievements";
-export * from "./reputation";
-export * from "./census";
-export * from "./obituaries";
-export * from "./personality";
-export * from "./explorationReports";
-export * from "./supplyDemand";
-export {
-  type SkillDomain as RankingsSkillDomain,
-  type SkillTier,
-  type RankedCat,
-  type ColonyChampions,
-  type SkillSummary,
-  type RankingsColumn,
-  getSkillTier,
-  getSkillTitle,
-  rankCatsBySkill,
-  findColonyChampions,
-  generateRivalryReport,
-  getSkillSummary,
-  formatRankingsColumn,
-} from "./skillRankings";
-
-export * from "./horoscope";
-// Dear Tabby advice column (newspaper agony-aunt Q&A)
-export * from "./adviceColumn";
+export * from "./sportsPage";
 
 export * from "./foodCritic";
 
-// Cat gossip network (rumor propagation)
-export * from "./gossipNetwork";
+export * from "./adviceColumn";
 
-export * from "./sportsPage";
+// Cat work ethic and productivity
+export * from "./workEthic";
+
+// Colony emergency alerts (selective exports to avoid `SeverityLevel` naming conflicts)
+export {
+  calculateSeverity,
+  classifySeverityLevel,
+  detectEmergencies,
+  prioritizeAlerts,
+  generateEmergencyBulletin,
+} from "./emergencyAlerts";
+export type {
+  ColonyMetrics,
+  EmergencyType,
+  EmergencyAlert,
+} from "./emergencyAlerts";
+
+export * from "./crimeBlotter";
+
+// Colony chronicle historical retrospective system
+export * from "./chronicle";
+// Resource trend analysis (moving averages, direction, percent change)
+export * from "./resourceTrends";
+// Weather system (deterministic, seed-based)
+export * from "./weather";
+// Resource spoilage system
+export * from "./spoilage";
+// Cat mood/happiness system
+export * from "./mood";
+// Seasonal cycle system
+export * from "./seasons";
+// Cat naming system (warrior cats conventions)
+export * from "./naming";
+// Cat relationship / affinity tracking
+export * from "./relationships";
+// Colony achievement tracking
+export * from "./achievements";
+// Colony reputation system
+export * from "./reputation";
+// Colony census & demographics
+export * from "./census";
+// Cat obituary generator
+export * from "./obituaries";
+// Cat personality profiles
+export * from "./personality";
+// Exploration field reports
+export * from "./explorationReports";
+// Colony supply & demand market report
+export * from "./supplyDemand";
+// Cat skill rankings
+export * from "./skillRankings";
+// Colony proverbs & wisdom
+export * from "./proverbs";
+// Birth announcements
+export * from "./birthAnnouncements";
+// Newspaper classified ads
+export * from "./classifiedAds";
+// Colony horoscope (zodiac signs, daily fortunes, compatibility)
+// Selective exports to avoid `CompatibilityLevel` conflict with personality module
+export {
+  type ZodiacSign,
+  type FortuneSeverity,
+  type DailyFortune,
+  type CompatibilityLevel as HoroscopeCompatibilityLevel,
+  type Compatibility as HoroscopeCompatibility,
+  type HoroscopeColumn,
+  ZODIAC_SIGNS,
+  getCatZodiacSign,
+  getDailyFortune,
+  getSignCompatibility,
+  formatHoroscopeEntry,
+  formatHoroscopeColumn,
+} from "./horoscope";
+// Cat mentorship and apprenticeship system
+// Selective exports to avoid `SkillDomain` conflict with skillRankings module
+export {
+  type SkillDomain as MentorshipSkillDomain,
+  type CatForMentorship,
+  type MentorMatch,
+  canMentor,
+  calculateTrainingEffectiveness,
+  calculateMentorXPBonus,
+  findBestMentor,
+  generateAcademyReport,
+} from "./mentorship";

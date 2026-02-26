@@ -48,6 +48,7 @@ export function getMovingAverage(values: number[], windowSize: number): number {
  */
 export function getPercentChange(previous: number, current: number): number {
   if (previous === 0 && current === 0) return 0;
+  if (previous === 0 && current < 0) return -100;
   if (previous === 0) return 100;
   return ((current - previous) / previous) * 100;
 }

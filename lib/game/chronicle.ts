@@ -2,6 +2,8 @@
 // Types
 // ---------------------------------------------------------------------------
 
+import type { ColonyStatus } from "@/types/game";
+
 export type ColonyEra =
   | "founding"
   | "growth"
@@ -71,12 +73,10 @@ const ERA_DISPLAY: Record<ColonyEra, string> = {
 
 export function classifyEra(
   colonyAgeHours: number,
-  catCount: number,
-  buildingCount: number,
-  status: string,
+  status: ColonyStatus,
 ): ColonyEra {
-  // Decline overrides everything — critical or struggling colonies
-  if (status === "critical" || status === "struggling") {
+  // Decline overrides everything — struggling colonies, and dead colonies, are in decline.
+  if (status === "struggling" || status === "dead") {
     return "decline";
   }
 
@@ -188,7 +188,7 @@ export function getAnniversaries(
           message: event.message,
         },
         ageDescription: formatAge(expectedAge),
-        intervalMs: expectedAge,
+        intervalMs,
       });
     }
   }

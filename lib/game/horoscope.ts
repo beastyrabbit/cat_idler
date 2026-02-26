@@ -214,10 +214,10 @@ export function getCatZodiacSign(
   birthTime: number,
   colonyCreatedAt: number,
 ): ZodiacSign {
-  const daysSincColony = Math.floor(
+  const daysSinceColony = Math.floor(
     Math.max(0, birthTime - colonyCreatedAt) / MS_PER_DAY,
   );
-  const dayInYear = daysSincColony % (DAYS_PER_MONTH * MONTHS_PER_YEAR);
+  const dayInYear = daysSinceColony % (DAYS_PER_MONTH * MONTHS_PER_YEAR);
   const monthIndex = Math.floor(dayInYear / DAYS_PER_MONTH);
   return ZODIAC_SIGNS[monthIndex];
 }

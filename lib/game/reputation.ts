@@ -62,7 +62,7 @@ const DESCRIPTIONS: Record<ReputationLevel, string> = {
   local:
     "Word of the colony has spread among nearby territories — local cats speak of a small but determined settlement.",
   regional:
-    "The colony's name carries across the region, recognized for its growing strength and resilience by neighbouring communities.",
+    "The colony's name carries across the region, recognized for its growing strength and resilience by neighboring communities.",
   renowned:
     "Fame of the colony has reached distant lands — travellers bring tales of its prosperity, and ambitious cats seek it out.",
   legendary:

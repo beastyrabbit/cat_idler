@@ -172,6 +172,10 @@ describe("formatLeaderTitle", () => {
     expect(result).toContain("star");
   });
 
+  it("handles bare prefix names (e.g. just 'Shadow')", () => {
+    expect(formatLeaderTitle("Shadow")).toBe("Shadowstar");
+  });
+
   it("works with various warrior suffixes", () => {
     expect(formatLeaderTitle("Frostclaw")).toBe("Froststar");
     expect(formatLeaderTitle("Ivyheart")).toBe("Ivystar");
@@ -217,5 +221,16 @@ describe("generateLitterNames", () => {
     const a = generateLitterNames(1, 3);
     const b = generateLitterNames(999, 3);
     expect(a).not.toEqual(b);
+  });
+
+  it("handles pool exhaustion gracefully (more names than unique combinations)", () => {
+    // With 30 prefixes and "kit" suffix, there are only 30 unique kitten names
+    // Requesting 35 should still return 35 names (with duplicates as fallback)
+    const names = generateLitterNames(42, 35, "kitten");
+    expect(names).toHaveLength(35);
+    // First 30 should be mostly unique, then duplicates appear
+    for (const name of names) {
+      expect(name).toMatch(/kit$/);
+    }
   });
 });

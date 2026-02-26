@@ -35,6 +35,9 @@ const PREFIXES = [
   "Wren",
 ] as const;
 
+// Pre-sorted prefixes (longest first) for leader title matching
+const SORTED_PREFIXES = [...PREFIXES].sort((a, b) => b.length - a.length);
+
 // Warrior suffixes for adults and elders
 const WARRIOR_SUFFIXES = [
   "claw",
@@ -88,9 +91,8 @@ export function generateName(
 /** Replace the suffix of a cat name with "star" for leader titles. */
 export function formatLeaderTitle(name: string): string {
   // Find where the prefix ends by matching against known prefixes (longest match first)
-  const sorted = [...PREFIXES].sort((a, b) => b.length - a.length);
-  for (const prefix of sorted) {
-    if (name.startsWith(prefix) && name.length > prefix.length) {
+  for (const prefix of SORTED_PREFIXES) {
+    if (name.startsWith(prefix)) {
       return prefix + "star";
     }
   }
@@ -126,10 +128,9 @@ export function generateLitterNames(
       attempts++;
     } while (usedNames.has(name) && attempts < 100);
 
-    if (!usedNames.has(name) || attempts >= 100) {
-      usedNames.add(name);
-      names.push(name);
-    }
+    // Always add — after 100 attempts allow duplicate as fallback
+    usedNames.add(name);
+    names.push(name);
   }
 
   return names;
