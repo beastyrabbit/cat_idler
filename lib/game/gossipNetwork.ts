@@ -119,20 +119,22 @@ export function distortRumor(
   reliability: number,
   seed: number,
 ): Rumor {
+  const clampedReliability = Math.max(0, Math.min(100, reliability));
   const result: Rumor = {
     ...rumor,
     retellings: rumor.retellings + 1,
+    reliability: clampedReliability,
   };
 
   // High reliability: no distortion
-  if (reliability > DISTORTION_THRESHOLD) {
+  if (clampedReliability > DISTORTION_THRESHOLD) {
     return result;
   }
 
   // Low reliability: chance of type change proportional to unreliability
   const roll = rollSeeded(seed);
   const distortChance =
-    (DISTORTION_THRESHOLD - reliability) / DISTORTION_THRESHOLD;
+    (DISTORTION_THRESHOLD - clampedReliability) / DISTORTION_THRESHOLD;
 
   if (roll.value < distortChance) {
     // Pick a different type using next roll
