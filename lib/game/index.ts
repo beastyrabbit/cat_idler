@@ -87,3 +87,6 @@ export * from "./chronicle";
 
 // Life stage milestone detection
 export * from "./lifeMilestones";
+
+// Weather system (deterministic, seed-based)
+export * from "./weather";
