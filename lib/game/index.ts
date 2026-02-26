@@ -101,3 +101,4 @@ export * from "./achievements";
 export * from "./reputation";
 export * from "./census";
 export * from "./obituaries";
+export * from "./personality";
