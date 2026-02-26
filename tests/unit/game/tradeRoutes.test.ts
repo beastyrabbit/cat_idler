@@ -60,6 +60,16 @@ describe("calculateGoodsValue", () => {
     const materials = calculateGoodsValue("materials", 30, 100);
     expect(materials).toBe(60); // 30 * 2
   });
+
+  it("does not apply scarcity or surplus modifiers when capacity is zero", () => {
+    const value = calculateGoodsValue("herbs", 30, 0);
+    expect(value).toBe(90); // 30 * 3
+  });
+
+  it("treats exact 50% capacity as base value", () => {
+    const value = calculateGoodsValue("water", 50, 100);
+    expect(value).toBe(75); // 50 * 1.5
+  });
 });
 
 // ── scoreRouteProfitability ──────────────────────────────────────────
@@ -152,18 +162,10 @@ describe("simulateTradeRun", () => {
   it("loses goods proportionally to danger level on failure", () => {
     // Use high danger route
     const dangerRoute: TradeRoute = { ...baseRoute, dangerLevel: 100 };
-    // Try seeds until we find a failure
-    let failRun: TradeRunResult | null = null;
-    for (let seed = 1; seed < 1000; seed++) {
-      const run = simulateTradeRun(dangerRoute, seed);
-      if (!run.success) {
-        failRun = run;
-        break;
-      }
-    }
-    expect(failRun).not.toBeNull();
-    expect(failRun!.goodsArrived).toBeLessThan(dangerRoute.amount);
-    expect(failRun!.goodsSent).toBe(dangerRoute.amount);
+    const run = simulateTradeRun(dangerRoute, 42);
+    expect(run.success).toBe(false);
+    expect(run.goodsArrived).toBe(0);
+    expect(run.goodsSent).toBe(dangerRoute.amount);
   });
 });
 

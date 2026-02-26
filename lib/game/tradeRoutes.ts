@@ -58,7 +58,7 @@ export function calculateGoodsValue(
   if (amount === 0) return 0;
 
   const baseValue = BASE_VALUES[resource];
-  const ratio = capacity > 0 ? amount / capacity : 0;
+  const ratio = capacity > 0 ? amount / capacity : 1;
 
   let modifier = 1.0;
   if (ratio > SURPLUS_THRESHOLD) {
@@ -90,7 +90,7 @@ export function scoreRouteProfitability(
  */
 export function simulateTradeRun(
   route: TradeRoute,
-  rngSeed: number,
+  rngSeed: number | { value: number; nextSeed: number },
 ): TradeRunResult {
   const goodsValue = calculateGoodsValue(
     route.resource,
@@ -99,7 +99,8 @@ export function simulateTradeRun(
   );
   const dangerFraction = route.dangerLevel / 100;
 
-  const roll = rollSeeded(rngSeed);
+  const roll =
+    typeof rngSeed === "number" ? rollSeeded(rngSeed) : rngSeed;
   // Success if roll >= danger fraction (0 danger = always success)
   const success = roll.value >= dangerFraction;
 
@@ -146,11 +147,11 @@ export function evaluateTradeBatch(
   let currentSeed = rngSeed;
 
   for (const route of routes) {
-    const run = simulateTradeRun(route, currentSeed);
+    const roll = rollSeeded(currentSeed);
+    const run = simulateTradeRun(route, roll);
     runs.push(run);
     // Chain the seed for the next route
-    const nextRoll = rollSeeded(currentSeed);
-    currentSeed = nextRoll.nextSeed;
+    currentSeed = roll.nextSeed;
   }
 
   const totalProfit = runs.reduce((sum, r) => sum + r.profit, 0);
