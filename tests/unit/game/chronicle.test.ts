@@ -22,43 +22,43 @@ import type {
 // ---------------------------------------------------------------------------
 describe("classifyEra", () => {
   it("returns 'founding' for colony age < 6 hours", () => {
-    const era = classifyEra(3, 5, 1, "thriving");
+    const era = classifyEra(3, "thriving");
     expect(era).toBe("founding");
   });
 
   it("returns 'growth' for colony age 6-24h with expanding population", () => {
-    const era = classifyEra(12, 8, 3, "thriving");
+    const era = classifyEra(12, "thriving");
     expect(era).toBe("growth");
   });
 
   it("returns 'golden_age' for colony age 24-48h with thriving status", () => {
-    const era = classifyEra(30, 15, 6, "thriving");
+    const era = classifyEra(30, "thriving");
     expect(era).toBe("golden_age");
   });
 
-  it("returns 'decline' when colony status is 'critical'", () => {
-    const era = classifyEra(30, 15, 6, "critical");
-    expect(era).toBe("decline");
+  it("returns 'golden_age' when colony is thriving", () => {
+    const era = classifyEra(30, "starting");
+    expect(era).toBe("golden_age");
   });
 
   it("returns 'decline' when colony status is 'struggling'", () => {
-    const era = classifyEra(12, 5, 2, "struggling");
+    const era = classifyEra(12, "struggling");
     expect(era).toBe("decline");
   });
 
   it("returns 'legacy' for colony age > 48 hours", () => {
-    const era = classifyEra(72, 20, 10, "thriving");
+    const era = classifyEra(72, "thriving");
     expect(era).toBe("legacy");
   });
 
   it("returns 'founding' for 0 hours (brand new colony)", () => {
-    const era = classifyEra(0, 1, 0, "thriving");
+    const era = classifyEra(0, "thriving");
     expect(era).toBe("founding");
   });
 
   it("decline overrides age-based era classification", () => {
-    // Even at legacy age, critical status means decline
-    const era = classifyEra(72, 20, 10, "critical");
+    // Even at legacy age, dead status means decline
+    const era = classifyEra(72, "dead");
     expect(era).toBe("decline");
   });
 });

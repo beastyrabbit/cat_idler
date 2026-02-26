@@ -60,6 +60,20 @@ export * from "./foodCritic";
 
 export * from "./adviceColumn";
 
+// Colony emergency alerts (selective exports to avoid `SeverityLevel` naming conflicts)
+export {
+  calculateSeverity,
+  classifySeverityLevel,
+  detectEmergencies,
+  prioritizeAlerts,
+  generateEmergencyBulletin,
+} from "./emergencyAlerts";
+export type {
+  ColonyMetrics,
+  EmergencyType,
+  EmergencyAlert,
+} from "./emergencyAlerts";
+
 export * from "./crimeBlotter";
 
 // Colony chronicle historical retrospective system
