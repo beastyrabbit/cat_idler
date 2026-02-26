@@ -113,3 +113,5 @@ export * from "./spoilage";
 export * from "./mood";
 // Seasonal cycle system
 export * from "./seasons";
+// Cat naming system (warrior cats conventions)
+export * from "./naming";
