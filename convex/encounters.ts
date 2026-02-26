@@ -288,15 +288,12 @@ export const checkRandomEncounters = internalMutation({
           enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
 
         const baseClicks = ENEMY_STATS[enemyType].baseClicks;
-
-        // Query wall buildings for this colony
-        const walls = await ctx.db
+        const colony = await ctx.db.get(args.colonyId);
+        const buildings = await ctx.db
           .query("buildings")
           .withIndex("by_colony", (q) => q.eq("colonyId", args.colonyId))
-          .filter((q) => q.eq(q.field("type"), "walls"))
           .collect();
-        const colonyDefense = calculateColonyDefense(walls);
-
+        const colonyDefense = calculateColonyDefense(buildings);
         const clicksNeeded = getClicksNeeded(
           baseClicks,
           colonyDefense,
