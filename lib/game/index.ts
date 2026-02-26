@@ -53,3 +53,6 @@ export * from "./popularity";
 export * from "./ancestry";
 // Cat folklore and legends
 export * from "./folklore";
+
+// Cat health diagnosis system
+export * from "./healthDiagnosis";
