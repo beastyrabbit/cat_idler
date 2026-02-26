@@ -59,3 +59,5 @@ export * from "./sportsPage";
 export * from "./foodCritic";
 
 export * from "./adviceColumn";
+
+export * from "./crimeBlotter";
