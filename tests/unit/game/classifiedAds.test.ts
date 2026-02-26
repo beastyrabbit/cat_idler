@@ -24,11 +24,7 @@ import {
 
 describe("getVacantPositionAds", () => {
   it("generates hunter ad when food ≤ 30", () => {
-    const ads = getVacantPositionAds(
-      { food: 25, water: 80, herbs: 60 },
-      ["den"],
-      5,
-    );
+    const ads = getVacantPositionAds({ food: 25, water: 80, herbs: 60 }, 5);
     expect(ads.length).toBeGreaterThanOrEqual(1);
     const hunterAd = ads.find((a) => a.headline.toLowerCase().includes("hunt"));
     expect(hunterAd).toBeDefined();
@@ -36,63 +32,39 @@ describe("getVacantPositionAds", () => {
   });
 
   it("generates water fetcher ad when water ≤ 30", () => {
-    const ads = getVacantPositionAds(
-      { food: 80, water: 20, herbs: 60 },
-      ["den"],
-      5,
-    );
+    const ads = getVacantPositionAds({ food: 80, water: 20, herbs: 60 }, 5);
     const waterAd = ads.find((a) => a.headline.toLowerCase().includes("water"));
     expect(waterAd).toBeDefined();
     expect(waterAd!.category).toBe("situations_vacant");
   });
 
   it("generates herbalist ad when herbs ≤ 30", () => {
-    const ads = getVacantPositionAds(
-      { food: 80, water: 80, herbs: 15 },
-      ["den"],
-      5,
-    );
+    const ads = getVacantPositionAds({ food: 80, water: 80, herbs: 15 }, 5);
     const herbAd = ads.find((a) => a.headline.toLowerCase().includes("herb"));
     expect(herbAd).toBeDefined();
     expect(herbAd!.category).toBe("situations_vacant");
   });
 
   it("generates no ads when all resources are above 30", () => {
-    const ads = getVacantPositionAds(
-      { food: 80, water: 80, herbs: 60 },
-      ["den", "walls"],
-      5,
-    );
+    const ads = getVacantPositionAds({ food: 80, water: 80, herbs: 60 }, 5);
     expect(ads.length).toBe(0);
   });
 
   it("generates multiple ads when multiple resources are low", () => {
-    const ads = getVacantPositionAds(
-      { food: 10, water: 10, herbs: 10 },
-      ["den"],
-      3,
-    );
+    const ads = getVacantPositionAds({ food: 10, water: 10, herbs: 10 }, 3);
     expect(ads.length).toBe(3);
     const categories = ads.map((a) => a.category);
     expect(categories.every((c) => c === "situations_vacant")).toBe(true);
   });
 
   it("sets urgency to high when resource ≤ 10", () => {
-    const ads = getVacantPositionAds(
-      { food: 5, water: 80, herbs: 60 },
-      ["den"],
-      5,
-    );
+    const ads = getVacantPositionAds({ food: 5, water: 80, herbs: 60 }, 5);
     const hunterAd = ads.find((a) => a.headline.toLowerCase().includes("hunt"));
     expect(hunterAd!.urgency).toBe("high");
   });
 
   it("sets urgency to medium when resource between 11 and 30", () => {
-    const ads = getVacantPositionAds(
-      { food: 25, water: 80, herbs: 60 },
-      ["den"],
-      5,
-    );
+    const ads = getVacantPositionAds({ food: 25, water: 80, herbs: 60 }, 5);
     const hunterAd = ads.find((a) => a.headline.toLowerCase().includes("hunt"));
     expect(hunterAd!.urgency).toBe("medium");
   });

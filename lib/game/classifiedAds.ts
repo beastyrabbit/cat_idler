@@ -162,7 +162,6 @@ const LOST_AND_FOUND_ITEMS = [
 
 export function getVacantPositionAds(
   resources: { food: number; water: number; herbs: number },
-  buildingTypes: string[],
   catCount: number,
 ): ClassifiedAd[] {
   const ads: ClassifiedAd[] = [];
