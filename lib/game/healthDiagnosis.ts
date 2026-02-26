@@ -63,8 +63,10 @@ export function getConditionSeverity(
   value: number,
   mildThreshold: number,
   severeThreshold: number,
+  criticalThreshold = severeThreshold,
 ): Severity | null {
   if (value >= mildThreshold) return null;
+  if (value < criticalThreshold) return "critical";
   if (value < severeThreshold) return "severe";
   return "mild";
 }
@@ -121,11 +123,16 @@ export function diagnoseCat(needs: CatNeeds): Diagnosis[] {
     });
   }
 
-  const injury = getConditionSeverity(needs.health, INJURY_MILD, INJURY_SEVERE);
+  const injury = getConditionSeverity(
+    needs.health,
+    INJURY_MILD,
+    INJURY_SEVERE,
+    INJURY_SEVERE - 15,
+  );
   if (injury) {
     diagnoses.push({
       condition: "injury",
-      severity: injury === "severe" ? "critical" : injury,
+      severity: injury,
       value: needs.health,
     });
   }
@@ -213,11 +220,22 @@ export function assessColonyHealth(
 
   let mostCommonCondition: ConditionType | null = null;
   let maxCount = 0;
+  let tiedForTop = false;
   for (const condition of ALL_CONDITIONS) {
     if (conditionCounts[condition] > maxCount) {
       maxCount = conditionCounts[condition];
       mostCommonCondition = condition;
+      tiedForTop = false;
+    } else if (
+      conditionCounts[condition] === maxCount &&
+      maxCount > 0 &&
+      mostCommonCondition !== condition
+    ) {
+      tiedForTop = true;
     }
+  }
+  if (tiedForTop) {
+    mostCommonCondition = null;
   }
 
   const healthGrade = getHealthGrade(healthyPercent);
