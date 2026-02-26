@@ -58,6 +58,11 @@ export * from "./foodCritic";
 
 export * from "./adviceColumn";
 
+// Cat work ethic and productivity
+export * from "./workEthic";
+ 
+// Cat health diagnosis system
+export * from "./healthDiagnosis";
 // Colony emergency alerts (selective exports to avoid `SeverityLevel` naming conflicts)
 export {
   calculateSeverity,
