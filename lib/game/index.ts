@@ -49,6 +49,9 @@ export * from "./housePlanner";
 // Colony territory influence calculation
 export * from "./territory";
 
+// Predator threat level assessment
+export * from "./threats";
+
 // Cat legacy score and Hall of Fame
 export * from "./legacyScore";
 // Lunar calendar and moon phase system
