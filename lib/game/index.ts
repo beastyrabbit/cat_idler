@@ -47,5 +47,7 @@ export * from "./survival";
 // House build prerequisite planner
 export * from "./housePlanner";
 
-// Cat migration system
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+
 export * from "./migration";
