@@ -47,7 +47,9 @@ export * from "./survival";
 // House build prerequisite planner
 export * from "./housePlanner";
 
-// Cat ancestry and lineage tracking
-export * from "./ancestry";
 // Cat popularity contest
 export * from "./popularity";
+// Cat ancestry and lineage tracking
+export * from "./ancestry";
+// Cat folklore and legends
+export * from "./folklore";
