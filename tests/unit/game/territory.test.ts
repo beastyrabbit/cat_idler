@@ -87,12 +87,12 @@ describe("calculateTileInfluence", () => {
   });
 
   it("subtracts enemy penalty for enemy_lair (-20)", () => {
-    // distance 0 → base 100, -20 lair = 80
+    // distance 0 → base 100, enemy penalty = 80 (with alias normalization)
     expect(calculateTileInfluence(0, 0, 0, "enemy_lair")).toBe(80);
   });
 
   it("clamps result to minimum 0", () => {
-    // distance 9 → base 10, -30 lair = negative → clamped to 0
+    // distance 9 → base 10, -20 enemy_lair = negative → clamped to 0
     expect(calculateTileInfluence(9, 0, 0, "enemy_lair")).toBe(0);
   });
 

@@ -52,7 +52,8 @@ export function calculateTileInfluence(
   const base = getInfluenceDecay(distance);
   const patrolBonus = catCount * PATROL_BONUS;
   const guardBonus = guardCount * GUARD_BONUS;
-  const enemyPenalty = ENEMY_PENALTIES[tileType] ?? 0;
+  const normalizedTileType = tileType === "enemy_lair" ? "enemy_territory" : tileType;
+  const enemyPenalty = ENEMY_PENALTIES[normalizedTileType] ?? 0;
 
   const raw = base + patrolBonus + guardBonus - enemyPenalty;
   return Math.min(100, Math.max(0, Math.round(raw * 100) / 100));
