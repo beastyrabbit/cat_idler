@@ -137,3 +137,5 @@ export * from "./skillRankings";
 export * from "./proverbs";
 // Birth announcements
 export * from "./birthAnnouncements";
+// Newspaper classified ads
+export * from "./classifiedAds";
