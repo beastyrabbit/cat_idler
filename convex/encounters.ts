@@ -8,7 +8,7 @@
 import { query, mutation, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { getClicksNeeded } from "../lib/game/combat";
+import { getClicksNeeded, calculateColonyDefense } from "../lib/game/combat";
 import { ENEMY_STATS } from "../types/game";
 
 /**
@@ -50,7 +50,7 @@ export const createEncounter = mutation({
       v.literal("predator"),
       v.literal("rival"),
       v.literal("injury"),
-      v.literal("discovery")
+      v.literal("discovery"),
     ),
     enemyType: v.union(
       v.literal("fox"),
@@ -58,7 +58,7 @@ export const createEncounter = mutation({
       v.literal("badger"),
       v.literal("bear"),
       v.literal("rival_cat"),
-      v.null()
+      v.null(),
     ),
     position: v.object({
       x: v.number(),
@@ -101,7 +101,7 @@ export const addClicks = mutation({
 
     const newClicks = Math.min(
       encounter.clicksNeeded,
-      encounter.clicksReceived + args.clicks
+      encounter.clicksReceived + args.clicks,
     );
 
     await ctx.db.patch(args.encounterId, {
@@ -177,8 +177,8 @@ export const autoResolveExpired = internalMutation({
       .filter((q) =>
         q.and(
           q.eq(q.field("resolved"), false),
-          q.lt(q.field("expiresAt"), now)
-        )
+          q.lt(q.field("expiresAt"), now),
+        ),
       )
       .collect();
 
@@ -237,8 +237,8 @@ export const checkRandomEncounters = internalMutation({
       .filter((q) =>
         q.and(
           q.eq(q.field("position.map"), "world"),
-          q.eq(q.field("deathTime"), null)
-        )
+          q.eq(q.field("deathTime"), null),
+        ),
       )
       .collect();
 
@@ -259,7 +259,7 @@ export const checkRandomEncounters = internalMutation({
           q
             .eq("colonyId", args.colonyId)
             .eq("x", cat.position.x)
-            .eq("y", cat.position.y)
+            .eq("y", cat.position.y),
         )
         .first();
 
@@ -267,29 +267,40 @@ export const checkRandomEncounters = internalMutation({
 
       // Calculate encounter chance
       const baseChance = tile.dangerLevel / 100;
-      const pathSafety = tile.pathWear > 90 ? 0 : tile.pathWear > 60 ? 0.4 : tile.pathWear > 30 ? 0.25 : 0;
+      const pathSafety =
+        tile.pathWear > 90
+          ? 0
+          : tile.pathWear > 60
+            ? 0.4
+            : tile.pathWear > 30
+              ? 0.25
+              : 0;
       const visionReduction = cat.stats.vision / 200;
-      const encounterChance = baseChance * (1 - pathSafety) * (1 - visionReduction);
+      const encounterChance =
+        baseChance * (1 - pathSafety) * (1 - visionReduction);
 
       if (Math.random() < encounterChance) {
         // Create encounter
-        const enemyTypes: Array<"fox" | "hawk" | "badger" | "bear" | "rival_cat"> = [
-          "fox",
-          "hawk",
-          "badger",
-          "bear",
-          "rival_cat",
-        ];
+        const enemyTypes: Array<
+          "fox" | "hawk" | "badger" | "bear" | "rival_cat"
+        > = ["fox", "hawk", "badger", "bear", "rival_cat"];
         const enemyType =
           enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
 
         const baseClicks = ENEMY_STATS[enemyType].baseClicks;
-        const colony = await ctx.db.get(args.colonyId);
-        const colonyDefense = 0; // TODO: Calculate from walls
+
+        // Query wall buildings for this colony
+        const walls = await ctx.db
+          .query("buildings")
+          .withIndex("by_colony", (q) => q.eq("colonyId", args.colonyId))
+          .filter((q) => q.eq(q.field("type"), "walls"))
+          .collect();
+        const colonyDefense = calculateColonyDefense(walls);
+
         const clicksNeeded = getClicksNeeded(
           baseClicks,
           colonyDefense,
-          cat.stats.vision
+          cat.stats.vision,
         );
 
         await ctx.db.insert("encounters", {
@@ -309,6 +320,3 @@ export const checkRandomEncounters = internalMutation({
     }
   },
 });
-
-
-

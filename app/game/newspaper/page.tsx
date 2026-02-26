@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useGameDashboard, formatDuration } from "@/hooks/useGameDashboard";
 import { summarizeCatIdentity } from "@/lib/game/catTraits";
+import { computeColonyMorale } from "@/lib/game/morale";
 
 /* ================================================================
    THE CATFORD EXAMINER
@@ -792,15 +793,36 @@ export default function CatfordExaminerPage() {
     [jobs],
   );
 
-  const morale = useMemo(() => {
-    if (!colony) return 50;
-    // Estimate morale from food and water supply levels
-    const r = colony.resources as Record<string, number>;
-    const foodPct = Math.min(100, ((r.food ?? 0) / maxFood) * 100);
-    const waterPct = Math.min(100, ((r.water ?? 0) / maxWater) * 100);
-    return Math.round((foodPct + waterPct) / 2);
-  }, [colony]);
+  const moraleResult = useMemo(() => {
+    if (!colony) {
+      return computeColonyMorale({
+        catNeedsArray: [],
+        resources: { food: 0, water: 0, herbs: 0, materials: 0, blessings: 0 },
+        aliveCount: 0,
+        deadCount: 0,
+      });
+    }
+    const catNeedsArray = aliveCats.map((c: any) => ({
+      hunger: c.needs?.hunger ?? 50,
+      thirst: c.needs?.thirst ?? 50,
+      rest: c.needs?.rest ?? 50,
+      health: c.needs?.health ?? 100,
+    }));
+    return computeColonyMorale({
+      catNeedsArray,
+      resources: {
+        food: res.food,
+        water: res.water,
+        herbs: res.herbs,
+        materials: res.materials,
+        blessings: res.blessings,
+      },
+      aliveCount: aliveCats.length,
+      deadCount: deadCats.length,
+    });
+  }, [colony, aliveCats, deadCats, res]);
 
+  const morale = moraleResult.score;
   const forecast = moraleForecast(morale);
 
   const scrollToSection = useCallback(
@@ -2660,6 +2682,142 @@ export default function CatfordExaminerPage() {
                   }}
                 >
                   {ORNAMENT} The Editor
+                </div>
+              </div>
+            </div>
+
+            {/* ─── Morale Barometer ─── */}
+            <div style={{ marginTop: 12 }}>
+              <LightRule />
+              <div
+                style={{
+                  border: `2px solid ${INK.ink}`,
+                  padding: "10px 14px",
+                  marginTop: 8,
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily:
+                      "var(--font-playfair, Georgia, 'Times New Roman', serif)",
+                    fontWeight: 900,
+                    fontSize: 13,
+                    textTransform: "uppercase",
+                    textAlign: "center",
+                    letterSpacing: "0.15em",
+                    marginBottom: 6,
+                  }}
+                >
+                  Colony Morale Barometer
+                </div>
+                <LightRule />
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    marginTop: 8,
+                  }}
+                >
+                  {/* Barometer gauge */}
+                  <div
+                    style={{
+                      flex: 1,
+                      height: 14,
+                      background: INK.paperDark,
+                      border: `1px solid ${INK.rule}`,
+                      borderRadius: 2,
+                      overflow: "hidden",
+                      position: "relative",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${moraleResult.score}%`,
+                        height: "100%",
+                        background:
+                          moraleResult.score >= 80
+                            ? INK.green
+                            : moraleResult.score >= 60
+                              ? "#5A7D3A"
+                              : moraleResult.score >= 40
+                                ? INK.gold
+                                : moraleResult.score >= 20
+                                  ? "#B8601A"
+                                  : INK.red,
+                        transition: "width 600ms ease-out",
+                      }}
+                    />
+                  </div>
+                  {/* Score + Label */}
+                  <div
+                    style={{
+                      fontFamily:
+                        "var(--font-playfair, Georgia, 'Times New Roman', serif)",
+                      fontWeight: 900,
+                      fontSize: 16,
+                      color:
+                        moraleResult.score >= 60
+                          ? INK.green
+                          : moraleResult.score >= 40
+                            ? INK.gold
+                            : INK.red,
+                      minWidth: 40,
+                      textAlign: "right",
+                    }}
+                  >
+                    {moraleResult.score}
+                  </div>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "baseline",
+                    marginTop: 6,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily:
+                        "var(--font-playfair, Georgia, 'Times New Roman', serif)",
+                      fontWeight: 700,
+                      fontSize: 12,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      color:
+                        moraleResult.score >= 60
+                          ? INK.green
+                          : moraleResult.score >= 40
+                            ? INK.gold
+                            : INK.red,
+                    }}
+                  >
+                    {moraleResult.label}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontFamily:
+                        "var(--font-special-elite, 'Courier New', monospace)",
+                      color: INK.inkFaded,
+                    }}
+                  >
+                    Based on wellbeing, provisions &amp; losses
+                  </span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontStyle: "italic",
+                    color: INK.inkLight,
+                    lineHeight: 1.4,
+                    marginTop: 4,
+                    fontFamily:
+                      "var(--font-playfair, Georgia, 'Times New Roman', serif)",
+                  }}
+                >
+                  {moraleResult.description}
                 </div>
               </div>
             </div>
