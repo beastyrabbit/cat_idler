@@ -70,3 +70,5 @@ export * from "./folklore";
 export * from "./healthDiagnosis";
 // Cat work ethic and productivity
 export * from "./workEthic";
+// Resource spoilage system
+export * from "./spoilage";
