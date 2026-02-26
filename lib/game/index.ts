@@ -90,3 +90,6 @@ export * from "./lifeMilestones";
 
 // Weather system (deterministic, seed-based)
 export * from "./weather";
+
+// Cat mood/happiness system
+export * from "./mood";
