@@ -99,3 +99,4 @@ export * from "./resourceTrends";
 export * from "./relationships";
 export * from "./achievements";
 export * from "./reputation";
+export * from "./census";
