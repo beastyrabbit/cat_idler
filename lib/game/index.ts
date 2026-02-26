@@ -129,3 +129,5 @@ export * from "./obituaries";
 export * from "./personality";
 // Exploration field reports
 export * from "./explorationReports";
+// Colony supply & demand market report
+export * from "./supplyDemand";
