@@ -117,3 +117,5 @@ export * from "./seasons";
 export * from "./naming";
 // Cat relationship / affinity tracking
 export * from "./relationships";
+// Colony achievement tracking
+export * from "./achievements";
