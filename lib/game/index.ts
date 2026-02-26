@@ -123,3 +123,5 @@ export * from "./achievements";
 export * from "./reputation";
 // Colony census & demographics
 export * from "./census";
+// Cat obituary generator
+export * from "./obituaries";
