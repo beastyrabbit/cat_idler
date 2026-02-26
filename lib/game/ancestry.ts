@@ -66,14 +66,16 @@ export function getGenerationDepth(
   visited: Set<string> = new Set(),
 ): number {
   if (visited.has(catId)) return 0; // cycle protection
-  visited.add(catId);
+
+  const currentPath = new Set(visited);
+  currentPath.add(catId);
 
   const parents = parentMap.get(catId);
   if (!parents || parents.length === 0) return 0;
 
   let maxParentDepth = 0;
   for (const parentId of parents) {
-    const depth = getGenerationDepth(parentId, parentMap, visited);
+    const depth = getGenerationDepth(parentId, parentMap, currentPath);
     if (depth > maxParentDepth) maxParentDepth = depth;
   }
 
@@ -95,6 +97,9 @@ export function classifyLineageDepth(generation: number): LineageDepthTier {
     generation <= LINEAGE_THRESHOLDS.ESTABLISHED_MAX
   )
     return "established";
+  if (generation >= LINEAGE_THRESHOLDS.DEEP_ROOTS) {
+    return "deep_roots";
+  }
   return "deep_roots";
 }
 
@@ -132,6 +137,10 @@ export function findCommonAncestors(
   catId2: string,
   parentMap: Map<string, string[]>,
 ): string[] {
+  if (catId1 === catId2) {
+    return [catId1];
+  }
+
   const ancestors1 = collectAncestors(catId1, parentMap);
   const ancestors2 = collectAncestors(catId2, parentMap);
 
@@ -143,13 +152,13 @@ export function findCommonAncestors(
   }
 
   // Special case: if one cat IS an ancestor of the other
-  if (ancestors1.has(catId2) && catId1 !== catId2) {
+  if (ancestors1.has(catId2)) {
     // catId2 is an ancestor of catId1
-    if (!common.includes(catId2)) common.push(catId2);
+    common.push(catId2);
   }
-  if (ancestors2.has(catId1) && catId1 !== catId2) {
+  if (ancestors2.has(catId1)) {
     // catId1 is an ancestor of catId2
-    if (!common.includes(catId1)) common.push(catId1);
+    common.push(catId1);
   }
 
   return common;
