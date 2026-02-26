@@ -125,5 +125,7 @@ export * from "./adviceColumn";
 
 export * from "./foodCritic";
 
-// Sports page — athletic event results for the newspaper
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+
 export * from "./sportsPage";
