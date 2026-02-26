@@ -6,6 +6,7 @@
  */
 
 import { rollSeeded } from "@/lib/game/seededRng";
+import { EncounterType, EventType, TaskType } from "@/types/game";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -118,7 +119,7 @@ export function calculateVividness(restLevel: number): VividnessLevel {
 }
 
 export function classifyDreamType(
-  eventType: string,
+  eventType: TaskType | EncounterType | EventType,
   restLevel: number,
   seed: number,
 ): DreamType {
@@ -139,7 +140,7 @@ export function classifyDreamType(
 }
 
 export function generateDream(
-  eventType: string,
+  eventType: TaskType | EncounterType | EventType,
   catName: string,
   restLevel: number,
   seed: number,

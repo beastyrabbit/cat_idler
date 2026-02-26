@@ -69,14 +69,14 @@ describe("classifyDreamType", () => {
     // At low rest, should never be prophetic
     const results = new Set<string>();
     for (let seed = 1; seed <= 100; seed++) {
-      results.add(classifyDreamType("mystery", 40, seed));
+      results.add(classifyDreamType("rest", 40, seed));
     }
     expect(results.has("prophetic")).toBe(false);
 
     // At high rest, prophetic is possible
     const highRestResults = new Set<string>();
     for (let seed = 1; seed <= 200; seed++) {
-      highRestResults.add(classifyDreamType("mystery", 95, seed));
+      highRestResults.add(classifyDreamType("rest", 95, seed));
     }
     expect(highRestResults.has("prophetic")).toBe(true);
   });
@@ -92,7 +92,7 @@ describe("classifyDreamType", () => {
   it("produces absurd dreams with seeded randomness", () => {
     const results = new Set<string>();
     for (let seed = 1; seed <= 200; seed++) {
-      results.add(classifyDreamType("other", 50, seed));
+      results.add(classifyDreamType("rest", 50, seed));
     }
     expect(results.has("absurd")).toBe(true);
   });
