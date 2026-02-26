@@ -47,5 +47,7 @@ export * from "./survival";
 // House build prerequisite planner
 export * from "./housePlanner";
 
-// Cat obituary generation for newspaper
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+
 export * from "./obituaries";
