@@ -46,6 +46,27 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
-
 // Cat dream journal
 export * from "./dreamJournal";
+// Colony territory influence calculation
+export * from "./territory";
+
+// Predator threat level assessment
+export * from "./threats";
+
+// Colony trade route system
+export * from "./tradeRoutes";
+
+// Cat legacy score and Hall of Fame
+export * from "./legacyScore";
+// Lunar calendar and moon phase system
+export * from "./lunarCalendar";
+// Cat popularity contest
+export * from "./popularity";
+// Cat ancestry and lineage tracking
+export * from "./ancestry";
+// Cat folklore and legends
+export * from "./folklore";
+
+// Cat health diagnosis system
+export * from "./healthDiagnosis";
