@@ -119,3 +119,5 @@ export * from "./naming";
 export * from "./relationships";
 // Colony achievement tracking
 export * from "./achievements";
+// Colony reputation system
+export * from "./reputation";
