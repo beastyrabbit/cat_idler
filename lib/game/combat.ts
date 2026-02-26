@@ -5,7 +5,7 @@
  * See TASKS.md: LOGIC-007
  */
 
-import type { Building, CombatResult } from "@/types/game";
+import type { CombatResult } from "@/types/game";
 
 /**
  * Calculate combat outcome between cat and enemy.
@@ -111,21 +111,25 @@ export function getClicksNeeded(
   return Math.max(1, Math.round(clicks));
 }
 
+export interface BuildingForDefense {
+  type: string;
+  level: number;
+  constructionProgress: number;
+}
+
 /**
  * Calculate colony defense score from wall buildings.
  *
- * Each wall level adds 20 defense points. Incomplete walls contribute
- * proportionally based on constructionProgress (0-100%).
- * Total defense is capped at 100.
- *
- * @param walls - Array of wall buildings (type, level, constructionProgress)
- * @returns Defense score (0-100)
+ * Each wall contributes: level × 10, scaled by constructionProgress.
+ * Multiple walls stack. Total capped at 100. Non-wall buildings ignored.
  */
 export function calculateColonyDefense(
-  walls: Pick<Building, "type" | "level" | "constructionProgress">[],
+  buildings: BuildingForDefense[],
 ): number {
-  const raw = walls.reduce((sum, wall) => {
-    return sum + wall.level * 20 * (wall.constructionProgress / 100);
-  }, 0);
-  return Math.min(100, Math.round(raw));
+  let total = 0;
+  for (const b of buildings) {
+    if (b.type !== "walls") continue;
+    total += Math.floor(b.level * 10 * (b.constructionProgress / 100));
+  }
+  return Math.min(100, total);
 }
