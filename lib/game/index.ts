@@ -93,3 +93,6 @@ export * from "./weather";
 
 // Cat mood/happiness system
 export * from "./mood";
+
+// Resource trend analysis (moving averages, direction, percent change)
+export * from "./resourceTrends";
