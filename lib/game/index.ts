@@ -139,3 +139,31 @@ export * from "./proverbs";
 export * from "./birthAnnouncements";
 // Newspaper classified ads
 export * from "./classifiedAds";
+// Colony horoscope (zodiac signs, daily fortunes, compatibility)
+// Selective exports to avoid `CompatibilityLevel` conflict with personality module
+export {
+  type ZodiacSign,
+  type FortuneSeverity,
+  type DailyFortune,
+  type CompatibilityLevel as HoroscopeCompatibilityLevel,
+  type Compatibility as HoroscopeCompatibility,
+  type HoroscopeColumn,
+  ZODIAC_SIGNS,
+  getCatZodiacSign,
+  getDailyFortune,
+  getSignCompatibility,
+  formatHoroscopeEntry,
+  formatHoroscopeColumn,
+} from "./horoscope";
+// Cat mentorship and apprenticeship system
+// Selective exports to avoid `SkillDomain` conflict with skillRankings module
+export {
+  type SkillDomain as MentorshipSkillDomain,
+  type CatForMentorship,
+  type MentorMatch,
+  canMentor,
+  calculateTrainingEffectiveness,
+  calculateMentorXPBonus,
+  findBestMentor,
+  generateAcademyReport,
+} from "./mentorship";
