@@ -135,3 +135,5 @@ export * from "./supplyDemand";
 export * from "./skillRankings";
 // Colony proverbs & wisdom
 export * from "./proverbs";
+// Birth announcements
+export * from "./birthAnnouncements";
