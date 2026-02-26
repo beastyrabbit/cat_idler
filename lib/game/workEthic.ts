@@ -60,7 +60,7 @@ export function getEfficiencyMultiplier(workEthic: number): number {
   return 1.5;
 }
 
-export function getProductivityTier(workEthic: number): ProductivityTier {
+function getProductivityTier(workEthic: number): ProductivityTier {
   const clamped = Math.max(0, Math.min(100, workEthic));
   if (clamped <= 20) return "slacker";
   if (clamped <= 40) return "lazy";
@@ -70,7 +70,9 @@ export function getProductivityTier(workEthic: number): ProductivityTier {
 }
 
 export function detectSlacker(workEthic: number, restLevel: number): boolean {
-  return workEthic < 30 && restLevel > 70;
+  const safeWorkEthic = Math.max(0, Math.min(100, workEthic));
+  const safeRestLevel = Math.max(0, Math.min(100, restLevel));
+  return safeWorkEthic < 30 && safeRestLevel > 70;
 }
 
 export function detectOverworked(
@@ -158,19 +160,19 @@ export function generateWorkplaceColumn(
 
   if (report.topWorker) {
     lines.push(
-      `\nEmployee of the Day: ${report.topWorker} — leading by example with tireless dedication.`,
+      `Employee of the Day: ${report.topWorker} — leading by example with tireless dedication.`,
     );
   }
 
   if (report.slackerCount > 0) {
     lines.push(
-      `\nManagement Concern: ${report.slackerCount} well-rested cat${report.slackerCount > 1 ? "s" : ""} spotted napping on the job despite having plenty of energy.`,
+      `Management Concern: ${report.slackerCount} well-rested cat${report.slackerCount > 1 ? "s" : ""} spotted napping on the job despite having plenty of energy.`,
     );
   }
 
   if (report.overworkedCount > 0) {
     lines.push(
-      `\nWelfare Alert: ${report.overworkedCount} dedicated worker${report.overworkedCount > 1 ? "s" : ""} running on fumes. Mandatory rest recommended.`,
+      `Welfare Alert: ${report.overworkedCount} dedicated worker${report.overworkedCount > 1 ? "s" : ""} running on fumes. Mandatory rest recommended.`,
     );
   }
 
