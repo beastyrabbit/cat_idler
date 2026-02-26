@@ -79,7 +79,9 @@ export * from "./mentorship";
 // Cat migration system
 export * from "./migration";
 
-// Night watch shift scheduling
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+
 export * from "./nightWatch";
 
 // Colony chronicle — historical retrospective column
