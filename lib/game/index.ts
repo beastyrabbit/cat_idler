@@ -46,7 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
-<<<<<<< HEAD
 // Colony emergency alert system
 export * from "./emergencyAlerts";
 // Cat gossip network (rumor propagation)
@@ -123,8 +122,5 @@ export {
 export * from "./horoscope";
 // Dear Tabby advice column (newspaper agony-aunt Q&A)
 export * from "./adviceColumn";
-
-// Cat gossip network (rumor propagation)
-export * from "./gossipNetwork";
 
 export * from "./foodCritic";
