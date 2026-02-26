@@ -84,7 +84,9 @@ export * from "./nightWatch";
 // Colony chronicle — historical retrospective column
 export * from "./chronicle";
 
-// Life stage milestone detection
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+
 export * from "./lifeMilestones";
 
 // Weather system (deterministic, seed-based)
