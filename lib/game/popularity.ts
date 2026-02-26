@@ -116,7 +116,16 @@ export function getPopularityTier(score: number): PopularityTier {
 export function rankCatPopularity(
   entries: PopularityEntry[],
 ): PopularityEntry[] {
-  return [...entries].sort((a, b) => b.totalScore - a.totalScore);
+  return [...entries]
+    .map((entry, index) => ({ entry, index }))
+    .sort((a, b) => {
+      const scoreDelta = b.entry.totalScore - a.entry.totalScore;
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+      return a.index - b.index;
+    })
+    .map(({ entry }) => entry);
 }
 
 /**
