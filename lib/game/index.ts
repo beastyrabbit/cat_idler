@@ -46,7 +46,6 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
-<<<<<<< HEAD
 // Cat dream journal
 export * from "./dreamJournal";
 // Colony territory influence calculation
@@ -112,3 +111,7 @@ export * from "./resourceTrends";
 export * from "./weather";
 // Resource spoilage system
 export * from "./spoilage";
+// Cat mood/happiness system
+export * from "./mood";
+// Cat mood/happiness system
+export * from "./mood";
