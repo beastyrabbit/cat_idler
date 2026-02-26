@@ -47,5 +47,10 @@ export * from "./survival";
 // House build prerequisite planner
 export * from "./housePlanner";
 
-// Cat skill rankings and honorary titles
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+export * from "./migration";
+
+export * from "./gossipNetwork";
+export * from "./nightWatch";
 export * from "./skillRankings";
