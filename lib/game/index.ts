@@ -115,3 +115,5 @@ export * from "./mood";
 export * from "./seasons";
 // Cat naming system (warrior cats conventions)
 export * from "./naming";
+// Cat relationship / affinity tracking
+export * from "./relationships";
