@@ -121,3 +121,5 @@ export * from "./relationships";
 export * from "./achievements";
 // Colony reputation system
 export * from "./reputation";
+// Colony census & demographics
+export * from "./census";
