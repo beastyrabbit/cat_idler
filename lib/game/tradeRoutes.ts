@@ -56,6 +56,9 @@ export function calculateGoodsValue(
   capacity: number,
 ): number {
   if (amount === 0) return 0;
+  if (capacity <= 0) {
+    return Math.round(amount * BASE_VALUES[resource]);
+  }
 
   const baseValue = BASE_VALUES[resource];
   const ratio = capacity > 0 ? amount / capacity : 1;
