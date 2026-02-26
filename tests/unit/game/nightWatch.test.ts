@@ -10,7 +10,7 @@ import {
   identifyCoverageGaps,
   getWatchFatigueModifier,
 } from "@/lib/game/nightWatch";
-import type { WatchRoster, CoverageGap } from "@/lib/game/nightWatch";
+import type { WatchRoster } from "@/lib/game/nightWatch";
 
 // ---------- assignWatchShifts ----------
 
@@ -143,8 +143,7 @@ describe("calculateWatchScore", () => {
 
     const midScore = calculateWatchScore(midnightOnly);
     const duskScore = calculateWatchScore(duskOnly);
-    // Midnight coverage contributes more to total score
-    expect(midScore).toBeGreaterThan(duskScore);
+    expect(midScore).toBe(2 * duskScore);
   });
 
   it("returns 100 for fully covered roster", () => {
