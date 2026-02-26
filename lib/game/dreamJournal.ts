@@ -23,7 +23,7 @@ export interface Dream {
   catName: string;
   dreamType: DreamType;
   vividness: VividnessLevel;
-  eventSource: string;
+  eventSource: TaskType | EncounterType | EventType;
   message: string;
   restLevel: number;
 }
