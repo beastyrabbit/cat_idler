@@ -55,13 +55,15 @@ export function calculateGoodsValue(
   amount: number,
   capacity: number,
 ): number {
-  if (amount === 0) return 0;
   if (capacity <= 0) {
     return Math.round(amount * BASE_VALUES[resource]);
   }
+  if (amount === 0) {
+    return 0;
+  }
 
   const baseValue = BASE_VALUES[resource];
-  const ratio = capacity > 0 ? amount / capacity : 1;
+  const ratio = amount / capacity;
 
   let modifier = 1.0;
   if (ratio > SURPLUS_THRESHOLD) {
@@ -95,11 +97,6 @@ export function simulateTradeRun(
   route: TradeRoute,
   rngSeed: number | { value: number; nextSeed: number },
 ): TradeRunResult {
-  const goodsValue = calculateGoodsValue(
-    route.resource,
-    route.amount,
-    route.capacity,
-  );
   const dangerFraction = route.dangerLevel / 100;
 
   const roll =
