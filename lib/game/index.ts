@@ -46,29 +46,40 @@ export * from "./survival";
 
 // House build prerequisite planner
 export * from "./housePlanner";
-// Cat dream journal
-export * from "./dreamJournal";
-// Colony territory influence calculation
-export * from "./territory";
 
-// Predator threat level assessment
-export * from "./threats";
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+export * from "./migration";
+export * from "./nightWatch";
+export * from "./lifeMilestones";
+export * from "./sportsPage";
 
-// Colony trade route system
-export * from "./tradeRoutes";
+export * from "./foodCritic";
 
-// Cat legacy score and Hall of Fame
-export * from "./legacyScore";
-// Lunar calendar and moon phase system
-export * from "./lunarCalendar";
-// Cat popularity contest
-export * from "./popularity";
-// Cat ancestry and lineage tracking
-export * from "./ancestry";
-// Cat folklore and legends
-export * from "./folklore";
+export * from "./adviceColumn";
 
-// Cat health diagnosis system
-export * from "./healthDiagnosis";
 // Cat work ethic and productivity
 export * from "./workEthic";
+ 
+// Cat health diagnosis system
+export * from "./healthDiagnosis";
+// Colony emergency alerts (selective exports to avoid `SeverityLevel` naming conflicts)
+export {
+  calculateSeverity,
+  classifySeverityLevel,
+  detectEmergencies,
+  prioritizeAlerts,
+  generateEmergencyBulletin,
+} from "./emergencyAlerts";
+export type {
+  ColonyMetrics,
+  EmergencyType,
+  EmergencyAlert,
+} from "./emergencyAlerts";
+
+export * from "./crimeBlotter";
+
+// Colony chronicle historical retrospective system
+export * from "./chronicle";
+// Resource trend analysis (moving averages, direction, percent change)
+export * from "./resourceTrends";
