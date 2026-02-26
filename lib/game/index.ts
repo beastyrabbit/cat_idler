@@ -70,3 +70,5 @@ export * from "./folklore";
 
 // Cat health diagnosis system
 export * from "./healthDiagnosis";
+// Cat work ethic and productivity
+export * from "./workEthic";
