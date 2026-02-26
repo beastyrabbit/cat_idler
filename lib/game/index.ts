@@ -84,3 +84,6 @@ export * from "./nightWatch";
 
 // Colony chronicle — historical retrospective column
 export * from "./chronicle";
+
+// Life stage milestone detection
+export * from "./lifeMilestones";
