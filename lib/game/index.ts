@@ -50,3 +50,6 @@ export * from "./housePlanner";
 // Cat gossip network (rumor propagation)
 export * from "./gossipNetwork";
 export * from "./migration";
+
+export * from "./gossipNetwork";
+export * from "./nightWatch";
