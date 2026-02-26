@@ -138,7 +138,11 @@ export function distortRumor(
     // Pick a different type using next roll
     const typeRoll = rollSeeded(roll.nextSeed);
     const otherTypes = RUMOR_TYPES.filter((t) => t !== rumor.type);
-    const newType = otherTypes[Math.floor(typeRoll.value * otherTypes.length)];
+    const newTypeIndex = Math.min(
+      otherTypes.length - 1,
+      Math.floor(typeRoll.value * otherTypes.length),
+    );
+    const newType = otherTypes[newTypeIndex];
     result.type = newType;
     result.message = RUMOR_TEMPLATES[newType](rumor.sourceCatName);
   }
