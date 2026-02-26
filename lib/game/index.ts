@@ -124,5 +124,7 @@ export * from "./horoscope";
 // Dear Tabby advice column (newspaper agony-aunt Q&A)
 export * from "./adviceColumn";
 
-// Food critic — newspaper dining & cuisine column
+// Cat gossip network (rumor propagation)
+export * from "./gossipNetwork";
+
 export * from "./foodCritic";
