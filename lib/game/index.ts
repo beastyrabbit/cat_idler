@@ -131,3 +131,5 @@ export * from "./personality";
 export * from "./explorationReports";
 // Colony supply & demand market report
 export * from "./supplyDemand";
+// Cat skill rankings
+export * from "./skillRankings";
