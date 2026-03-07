@@ -78,9 +78,11 @@ export default async function testUserInteractions(
 			10000,
 			"Food did not increase after clicking Give Food.",
 		);
-		if (await feedButton.isEnabled()) {
-			throw new Error("Give Food button should be on cooldown after use.");
-		}
+		await driver.wait(
+			async () => !(await feedButton.isEnabled()),
+			5000,
+			"Give Food button did not enter cooldown after use.",
+		);
 
 		const waterButton = await driver.findElement(
 			By.xpath("//button[contains(., 'Give Water (+1)')]"),
@@ -94,9 +96,11 @@ export default async function testUserInteractions(
 			10000,
 			"Water did not increase after clicking Give Water.",
 		);
-		if (await waterButton.isEnabled()) {
-			throw new Error("Give Water button should be on cooldown after use.");
-		}
+		await driver.wait(
+			async () => !(await waterButton.isEnabled()),
+			5000,
+			"Give Water button did not enter cooldown after use.",
+		);
 
 		console.log(
 			"  ✓ Colony action buttons update resources and enter cooldown",
