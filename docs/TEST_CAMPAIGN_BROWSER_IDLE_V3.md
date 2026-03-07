@@ -23,12 +23,15 @@ Run in separate terminals:
 bun install
 bun run convex:dev
 bun run dev
+bun run dev:url
 bun run dev:worker
 ```
 
 Open:
-- `http://localhost:3000/` (must redirect to `/game`)
-- `http://localhost:3000/game?test=1` for acceleration controls
+- the printed `http://<name>.localhost:1355/` URL from `bun run dev` (must redirect to `/game`)
+- `http://<name>.localhost:1355/game?test=1` for acceleration controls
+
+If you need raw port-based Next.js dev temporarily, use `PORTLESS=skip bun run dev`.
 
 ## Test Accounts
 

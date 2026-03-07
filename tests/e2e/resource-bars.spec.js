@@ -1,127 +1,60 @@
 /**
  * E2E Tests: Resource Bars
  *
- * Tests resource bar display and updates.
+ * Tests resource bar display and values on the colony page.
  */
 
 import { By } from "selenium-webdriver";
-import { createDriver, waitForText } from "./selenium-setup.js";
+import {
+	ensureGlobalColony,
+	getColonyPageUrl,
+	readResourceFraction,
+	waitForBodyText,
+	waitForPathname,
+} from "./helpers.js";
+import { createDriver } from "./selenium-setup.js";
 
-async function waitForGameReady(driver, timeout = 10000) {
-	const expectedTextOptions = [
-		"Shared Idle World",
-		"Preparing Global Colony",
-		"Cat Colony Idle Game",
-		"Food",
-		"Water",
-	];
-
-	for (const text of expectedTextOptions) {
-		try {
-			await waitForText(driver, text, timeout);
-			return;
-		} catch (_error) {
-			// Try next option.
-		}
-	}
-
-	await driver.sleep(2000);
-}
-
-export default async function testResourceBars(headed = false, port = 3000) {
+export default async function testResourceBars(
+	headed = false,
+	baseUrl = process.env.TEST_BASE_URL ?? "http://localhost:3000",
+) {
 	const driver = await createDriver(headed);
-	const baseUrl = `http://localhost:${port}`;
 
 	try {
 		console.log("  Testing resource bars...");
 
-		// Navigate to colony
-		await driver.get(baseUrl);
-		await waitForGameReady(driver);
-
-		// Navigate to colony if needed
-		const createInput = await driver.findElements(
-			By.css('input[placeholder*="name"], input[type="text"]'),
+		const colony = await ensureGlobalColony({ ensureLeader: true });
+		await driver.get(getColonyPageUrl(baseUrl, colony._id));
+		await waitForPathname(
+			driver,
+			(pathname) => pathname === `/colony/${colony._id}`,
 		);
-		if (createInput.length > 0 && (await createInput[0].isDisplayed())) {
-			await createInput[0].clear();
-			await createInput[0].sendKeys(`Resource Test ${Date.now()}`);
-			// Find create button by xpath
-			const createButton = await driver.findElement(
-				By.xpath(
-					"//button[contains(text(), 'Create Colony') or contains(text(), 'Create')]",
-				),
+		await waitForBodyText(driver, "COZY COLONY");
+
+		for (const label of ["Food", "Water", "Herbs", "Materials", "Blessings"]) {
+			const progressBar = await driver.findElement(
+				By.css(`[data-testid="resource-progress"][aria-label="${label}"]`),
 			);
 			await driver.executeScript(
-				"arguments[0].scrollIntoView(true);",
-				createButton,
+				"arguments[0].scrollIntoView({block: 'center'});",
+				progressBar,
 			);
-			await driver.sleep(500);
-			await createButton.click();
-			await driver.sleep(3000);
 
-			// Handle leader selection
-			const leaderModal = await driver.findElements(
-				By.xpath("//*[contains(text(), 'Leader')]"),
-			);
-			if (leaderModal.length > 0) {
-				await driver.sleep(1000);
-				const candidates = await driver.findElements(
-					By.css('button, [role="button"]'),
+			const fraction = await readResourceFraction(driver, label);
+			if (!Number.isFinite(fraction.value) || !Number.isFinite(fraction.max)) {
+				throw new Error(
+					`Invalid resource fraction for ${label}: ${fraction.text}`,
 				);
-				if (candidates.length > 0) {
-					await candidates[0].click();
-					await driver.sleep(500);
-					const selectBtn = await driver.findElements(
-						By.xpath("//button[contains(text(), 'Select')]"),
-					);
-					if (selectBtn.length > 0) {
-						await selectBtn[0].click();
-						await driver.sleep(1000);
-					}
-				}
+			}
+
+			if (fraction.max <= 0) {
+				throw new Error(`${label} progress bar max must be positive.`);
 			}
 		}
 
-		// Wait for page to load and check URL
-		await driver.sleep(3000);
-		const currentUrl = await driver.getCurrentUrl();
-
-		// If we're still on home page, colony creation might have failed
-		if (!currentUrl.includes("/colony/")) {
-			console.log("  Note: Still on home page, checking if colony exists...");
-			// Maybe there's already a colony, try to navigate
-			const viewLinks = await driver.findElements(
-				By.xpath("//a[contains(text(), 'View') or contains(text(), 'Colony')]"),
-			);
-			if (viewLinks.length > 0) {
-				await viewLinks[0].click();
-				await driver.sleep(3000);
-			}
-		}
-
-		// Check for resource bars
-		const pageSource = await driver.getPageSource();
-		const hasFood = pageSource.includes("Food") || pageSource.includes("food");
-		const hasWater =
-			pageSource.includes("Water") || pageSource.includes("water");
-		const _hasHerbs =
-			pageSource.includes("Herb") || pageSource.includes("herb");
-		const _hasMaterials =
-			pageSource.includes("Material") || pageSource.includes("material");
-
-		if (hasFood || hasWater) {
-			console.log("  ✓ Resource bars displayed");
-		} else {
-			// More lenient - just log warning instead of failing
-			console.log(
-				"  ⚠ Resource bars not immediately visible (may need more time)",
-			);
-		}
-
+		console.log("  ✓ Resource bars and values are visible");
 		console.log("  ✓ Resource bars tests passed");
 	} catch (error) {
-		const _screenshot = await driver.takeScreenshot();
 		console.error("  ✗ Test failed");
 		throw error;
 	} finally {

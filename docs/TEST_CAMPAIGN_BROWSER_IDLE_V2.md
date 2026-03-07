@@ -22,16 +22,18 @@ Run in separate terminals:
 bun install
 bun run convex:dev
 bun run dev
+bun run dev:url
 bun run dev:worker
 ```
 
-Open app at:
-- `http://localhost:3000/`
-- should redirect to `/game`
+Open the printed `http://<name>.localhost:1355/` URL from `bun run dev`.
+- It should redirect to `/game`.
 
 For accelerated QA scenarios, open:
-- `http://localhost:3000/game?test=1`
+- `http://<name>.localhost:1355/game?test=1`
 - then use `Speed: Fast` or `Speed: Turbo` in Player Actions panel
+
+If you need raw port-based Next.js dev temporarily, use `PORTLESS=skip bun run dev`.
 
 ## Test Accounts
 

@@ -4,7 +4,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "next dev",
+		"dev": "node scripts/portless.mjs dev",
+		"dev:url": "node scripts/portless.mjs url",
 		"dev:worker": "tsx watch worker/index.ts",
 		"worker": "tsx worker/index.ts",
 		"build": "next build --webpack",

@@ -2,178 +2,131 @@
 
 /**
  * Selenium E2E Test Runner
- * 
+ *
  * Runs all E2E tests using Selenium WebDriver.
- * 
+ *
  * Usage:
  *   bun run test:e2e          # Headless
  *   bun run test:e2e:headed   # With browser visible
  */
 
-import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { getPortlessBaseUrl } from "../../scripts/portless.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const repoRoot = join(__dirname, "../..");
+const isHeaded = process.env.HEADED === "true";
+const baseUrl = process.env.TEST_BASE_URL || getPortlessBaseUrl();
+const maxWait = 60000;
 
-const isHeaded = process.env.HEADED === 'true';
-
-// Check if server is already running, if not start it
 let devServer = null;
 let serverStartedByUs = false;
 
-// First check if server is already running
-const checkExistingServer = async () => {
-  try {
-    const response = await fetch('http://localhost:3000');
-    if (response.ok) {
-      serverPort = 3000;
-      serverReady = true;
-      console.log('✓ Using existing dev server on port 3000');
-      runTests();
-      return true;
-    }
-  } catch (e) {
-    try {
-      const response = await fetch('http://localhost:3001');
-      if (response.ok) {
-        serverPort = 3001;
-        serverReady = true;
-        console.log('✓ Using existing dev server on port 3001');
-        runTests();
-        return true;
-      }
-    } catch (e2) {
-      // No server running, start one
-    }
-  }
-  return false;
-};
-
-// Check for existing server first
-const hasExistingServer = await checkExistingServer();
-
-if (!hasExistingServer) {
-  // Start Next.js dev server
-  console.log('Starting Next.js dev server...');
-  devServer = spawn('bun', ['run', 'dev'], {
-    cwd: join(__dirname, '../..'),
-    stdio: 'inherit',
-    shell: true,
-  });
-  serverStartedByUs = true;
+async function isServerReady() {
+	try {
+		const response = await fetch(baseUrl);
+		return response.ok;
+	} catch {
+		return false;
+	}
 }
 
-// Wait for server to be ready
-let serverReady = false;
-const maxWait = 60000; // 60 seconds
-const startTime = Date.now();
+function stopDevServer(signal = "SIGTERM") {
+	if (!serverStartedByUs || !devServer || devServer.killed) {
+		return;
+	}
 
-let serverPort = 3000;
-
-const checkServer = async () => {
-  // Try port 3000 first
-  try {
-    const response = await fetch('http://localhost:3000');
-    if (response.ok) {
-      serverPort = 3000;
-      serverReady = true;
-      console.log('✓ Dev server is ready on port 3000');
-      runTests();
-      return;
-    }
-  } catch (error) {
-    // Try port 3001 if 3000 fails
-    try {
-      const response = await fetch('http://localhost:3001');
-      if (response.ok) {
-        serverPort = 3001;
-        serverReady = true;
-        console.log('✓ Dev server is ready on port 3001');
-        runTests();
-        return;
-      }
-    } catch (e) {
-      // Continue waiting
-    }
-  }
-  
-  if (Date.now() - startTime < maxWait) {
-    setTimeout(checkServer, 1000);
-  } else {
-    console.error('✗ Dev server failed to start');
-    if (devServer && !devServer.killed) {
-      devServer.kill();
-    }
-    process.exit(1);
-  }
-};
-
-const runTests = async () => {
-  console.log('\nRunning E2E tests with Selenium...\n');
-  
-  // Import and run test files
-  const testFiles = [
-    './colony-lifecycle.spec.js',
-    './user-interactions.spec.js',
-    './building-placement.spec.js',
-    './resource-bars.spec.js',
-    './navigation.spec.js',
-  ];
-
-  let passed = 0;
-  let failed = 0;
-
-  // Set port as environment variable for tests
-  process.env.TEST_PORT = serverPort.toString();
-  
-  for (const testFile of testFiles) {
-    try {
-      const { default: testFn } = await import(testFile);
-      await testFn(isHeaded, serverPort);
-      passed++;
-      console.log(`✓ ${testFile} passed\n`);
-    } catch (error) {
-      failed++;
-      console.error(`✗ ${testFile} failed:`, error.message);
-      if (error.stack) {
-        console.error(error.stack);
-      }
-    }
-  }
-
-  console.log(`\n${'='.repeat(50)}`);
-  console.log(`Tests: ${passed} passed, ${failed} failed`);
-  console.log(`${'='.repeat(50)}\n`);
-
-  // Only kill server if we started it (not if it was already running)
-  if (serverStartedByUs && devServer && !devServer.killed) {
-    devServer.kill();
-  }
-  process.exit(failed > 0 ? 1 : 0);
-};
-
-// Start checking for server (only if we started one)
-if (!hasExistingServer) {
-  setTimeout(checkServer, 2000);
+	devServer.kill(signal);
 }
 
-// Cleanup on exit
-process.on('SIGINT', () => {
-  console.log('\nStopping dev server...');
-  if (serverStartedByUs && devServer && !devServer.killed) {
-    devServer.kill();
-  }
-  process.exit(0);
+async function waitForServerReady() {
+	const startedAt = Date.now();
+
+	while (Date.now() - startedAt < maxWait) {
+		if (await isServerReady()) {
+			console.log(`✓ Dev server is ready at ${baseUrl}`);
+			return;
+		}
+
+		await new Promise((resolve) => {
+			setTimeout(resolve, 1000);
+		});
+	}
+
+	throw new Error(`Dev server failed to start at ${baseUrl}`);
+}
+
+async function runTests() {
+	console.log("\nRunning E2E tests with Selenium...\n");
+
+	const testFiles = [
+		"./colony-lifecycle.spec.js",
+		"./user-interactions.spec.js",
+		"./building-placement.spec.js",
+		"./resource-bars.spec.js",
+		"./navigation.spec.js",
+	];
+
+	let passed = 0;
+	let failed = 0;
+
+	process.env.TEST_BASE_URL = baseUrl;
+
+	for (const testFile of testFiles) {
+		try {
+			const { default: testFn } = await import(testFile);
+			await testFn(isHeaded, baseUrl);
+			passed++;
+			console.log(`✓ ${testFile} passed\n`);
+		} catch (error) {
+			failed++;
+			console.error(`✗ ${testFile} failed:`, error.message);
+			if (error.stack) {
+				console.error(error.stack);
+			}
+		}
+	}
+
+	console.log(`\n${"=".repeat(50)}`);
+	console.log(`Tests: ${passed} passed, ${failed} failed`);
+	console.log(`${"=".repeat(50)}\n`);
+
+	stopDevServer();
+	process.exit(failed > 0 ? 1 : 0);
+}
+
+process.on("SIGINT", () => {
+	console.log("\nStopping dev server...");
+	stopDevServer("SIGINT");
+	process.exit(130);
 });
 
-process.on('SIGTERM', () => {
-  if (serverStartedByUs && devServer && !devServer.killed) {
-    devServer.kill();
-  }
-  process.exit(0);
+process.on("SIGTERM", () => {
+	stopDevServer("SIGTERM");
+	process.exit(143);
 });
 
+if (await isServerReady()) {
+	console.log(`✓ Using existing dev server at ${baseUrl}`);
+	await runTests();
+} else {
+	console.log("Starting Next.js dev server...");
+	devServer = spawn("bun", ["run", "dev"], {
+		cwd: repoRoot,
+		stdio: "inherit",
+	});
+	serverStartedByUs = true;
 
-
+	try {
+		await waitForServerReady();
+		await runTests();
+	} catch (error) {
+		console.error(`✗ ${error.message}`);
+		stopDevServer();
+		process.exit(1);
+	}
+}

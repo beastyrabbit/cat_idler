@@ -5,113 +5,103 @@
  */
 
 import { By } from "selenium-webdriver";
-import { createDriver, waitForText } from "./selenium-setup.js";
-
-async function waitForGameReady(driver, timeout = 10000) {
-	const expectedTextOptions = [
-		"Shared Idle World",
-		"Preparing Global Colony",
-		"Cat Colony Idle Game",
-		"Food",
-		"Water",
-	];
-
-	for (const text of expectedTextOptions) {
-		try {
-			await waitForText(driver, text, timeout);
-			return;
-		} catch (_error) {
-			// Try next option.
-		}
-	}
-
-	await driver.sleep(2000);
-}
+import {
+	ensureGlobalColony,
+	getColonyPageUrl,
+	waitForBodyText,
+	waitForPathname,
+} from "./helpers.js";
+import { createDriver } from "./selenium-setup.js";
 
 export default async function testBuildingPlacement(
 	headed = false,
-	port = 3000,
+	baseUrl = process.env.TEST_BASE_URL ?? "http://localhost:3000",
 ) {
 	const driver = await createDriver(headed);
-	const baseUrl = `http://localhost:${port}`;
 
 	try {
 		console.log("  Testing building placement...");
 
-		// Navigate to colony
-		await driver.get(baseUrl);
-		await waitForGameReady(driver);
-
-		// Navigate to colony if needed
-		const createInput = await driver.findElements(
-			By.css('input[placeholder*="name"], input[type="text"]'),
+		const colony = await ensureGlobalColony({
+			ensureLeader: true,
+			minimumMaterials: 3,
+		});
+		await driver.get(getColonyPageUrl(baseUrl, colony._id));
+		await waitForPathname(
+			driver,
+			(pathname) => pathname === `/colony/${colony._id}`,
 		);
-		if (createInput.length > 0 && (await createInput[0].isDisplayed())) {
-			await createInput[0].clear();
-			await createInput[0].sendKeys(`Building Test ${Date.now()}`);
-			// Find create button by xpath
-			const createButton = await driver.findElement(
-				By.xpath(
-					"//button[contains(text(), 'Create Colony') or contains(text(), 'Create')]",
-				),
-			);
-			await driver.executeScript(
-				"arguments[0].scrollIntoView(true);",
-				createButton,
-			);
-			await driver.sleep(500);
-			await createButton.click();
-			await driver.sleep(3000);
+		await waitForBodyText(driver, "COZY COLONY");
+		await waitForBodyText(driver, "Buildings");
 
-			// Handle leader selection
-			const leaderModal = await driver.findElements(
-				By.xpath("//*[contains(text(), 'Leader')]"),
-			);
-			if (leaderModal.length > 0) {
-				await driver.sleep(1000);
-				const candidates = await driver.findElements(
-					By.css('button, [role="button"]'),
+		const waterBowlButton = await driver.findElement(
+			By.xpath("//button[.//*[normalize-space()='Water Bowl']]"),
+		);
+		if (!(await waterBowlButton.isEnabled())) {
+			throw new Error("Water Bowl should be buildable after materials top-up.");
+		}
+
+		const existingBuildingRows = await driver.findElements(
+			By.xpath(
+				"//*[normalize-space()='Existing buildings']/following-sibling::div[1]//span[contains(., '(')]",
+			),
+		);
+		await waterBowlButton.click();
+		await waitForBodyText(
+			driver,
+			"Click on the colony grid to place: Water Bowl",
+		);
+
+		const placeTargets = await driver.findElements(
+			By.xpath("//button[.//*[contains(normalize-space(), 'Place here')]]"),
+		);
+		if (placeTargets.length === 0) {
+			throw new Error("No buildable colony tile was available for placement.");
+		}
+
+		const targetTile = placeTargets[0];
+		const tileText = await targetTile.getText();
+		const coordinateMatch = tileText.match(/(\d+),(\d+)/);
+		await driver.executeScript(
+			"arguments[0].scrollIntoView({block: 'center'});",
+			targetTile,
+		);
+		await driver.executeScript("arguments[0].click();", targetTile);
+
+		await driver.wait(
+			async () => {
+				const placementPrompts = await driver.findElements(
+					By.xpath(
+						"//*[contains(normalize-space(), 'Click on the colony grid to place: Water Bowl')]",
+					),
 				);
-				if (candidates.length > 0) {
-					await candidates[0].click();
-					await driver.sleep(500);
-					const selectBtn = await driver.findElements(
-						By.xpath("//button[contains(text(), 'Select')]"),
-					);
-					if (selectBtn.length > 0) {
-						await selectBtn[0].click();
-						await driver.sleep(1000);
-					}
-				}
-			}
-		}
-
-		await driver.sleep(2000);
-
-		// Test: Build menu visibility
-		console.log("  Testing build menu...");
-		const buildMenu = await driver.findElements(
-			By.xpath(
-				"//*[contains(text(), 'Building') or contains(text(), 'building')]",
-			),
+				return placementPrompts.length === 0;
+			},
+			5000,
+			"Placement prompt did not clear after placing the building.",
 		);
-		if (buildMenu.length > 0) {
-			console.log("  ✓ Build menu visible");
-		}
 
-		// Test: Building type buttons
-		const buildingButtons = await driver.findElements(
-			By.xpath(
-				"//button[contains(text(), 'Storage') or contains(text(), 'Bowl') or contains(text(), 'Bed')]",
-			),
+		await driver.wait(
+			async () => {
+				const currentBuildingRows = await driver.findElements(
+					By.xpath(
+						"//*[normalize-space()='Existing buildings']/following-sibling::div[1]//span[contains(., '(')]",
+					),
+				);
+				return currentBuildingRows.length === existingBuildingRows.length + 1;
+			},
+			10000,
+			"Existing buildings list did not grow after placement.",
 		);
-		if (buildingButtons.length > 0) {
-			console.log("  ✓ Building type buttons visible");
+
+		if (coordinateMatch) {
+			const [, x, y] = coordinateMatch;
+			await waitForBodyText(driver, `Water Bowl (${x}, ${y})`);
 		}
 
+		console.log("  ✓ Building selection and placement update the colony grid");
 		console.log("  ✓ Building placement tests passed");
 	} catch (error) {
-		const _screenshot = await driver.takeScreenshot();
 		console.error("  ✗ Test failed");
 		throw error;
 	} finally {

@@ -5,150 +5,77 @@
  */
 
 import { By } from "selenium-webdriver";
-import { createDriver, waitForText } from "./selenium-setup.js";
+import {
+	ensureGamePageReady,
+	ensureGlobalColony,
+	getColonyPageUrl,
+	waitForBodyText,
+	waitForPathname,
+} from "./helpers.js";
+import { createDriver } from "./selenium-setup.js";
 
-async function waitForGameReady(driver, timeout = 10000) {
-	const expectedTextOptions = [
-		"Shared Idle World",
-		"Preparing Global Colony",
-		"Cat Colony Idle Game",
-		"Food",
-		"Water",
-	];
-
-	for (const text of expectedTextOptions) {
-		try {
-			await waitForText(driver, text, timeout);
-			return;
-		} catch (_error) {
-			// Try next option.
-		}
-	}
-
-	await driver.sleep(2000);
-}
-
-export default async function testNavigation(headed = false, port = 3000) {
+export default async function testNavigation(
+	headed = false,
+	baseUrl = process.env.TEST_BASE_URL ?? "http://localhost:3000",
+) {
 	const driver = await createDriver(headed);
-	const baseUrl = `http://localhost:${port}`;
+	const expectedOrigin = new URL(baseUrl).origin;
 
 	try {
 		console.log("  Testing navigation...");
 
-		// Start at home page
+		const colony = await ensureGlobalColony({ ensureLeader: true });
 		await driver.get(baseUrl);
-		await waitForGameReady(driver);
+		await waitForPathname(driver, "/game");
+		await ensureGamePageReady(driver);
 
-		// Verify we're on home page
-		const currentUrl = await driver.getCurrentUrl();
-		if (!currentUrl.includes("localhost")) {
-			throw new Error("Not on home page");
+		const gameUrl = new URL(await driver.getCurrentUrl());
+		if (gameUrl.origin !== expectedOrigin || gameUrl.pathname !== "/game") {
+			throw new Error(
+				`Expected root navigation to land on /game, got ${gameUrl}`,
+			);
 		}
+		console.log("  ✓ Root route redirects to /game");
 
-		console.log("  ✓ Home page loaded");
-
-		// Navigate to colony (create if needed)
-		const createInput = await driver.findElements(
-			By.css('input[placeholder*="name"], input[type="text"]'),
+		await driver.get(getColonyPageUrl(baseUrl, colony._id));
+		await waitForPathname(
+			driver,
+			(pathname) => pathname === `/colony/${colony._id}`,
 		);
-		if (createInput.length > 0 && (await createInput[0].isDisplayed())) {
-			await createInput[0].clear();
-			await createInput[0].sendKeys(`Nav Test ${Date.now()}`);
-			// Find create button by xpath
-			const createButton = await driver.findElement(
-				By.xpath(
-					"//button[contains(text(), 'Create Colony') or contains(text(), 'Create')]",
-				),
-			);
-			await driver.executeScript(
-				"arguments[0].scrollIntoView(true);",
-				createButton,
-			);
-			await driver.sleep(500);
-			await createButton.click();
-			await driver.sleep(3000);
+		await waitForBodyText(driver, "COZY COLONY");
 
-			// Handle leader selection
-			const leaderModal = await driver.findElements(
-				By.xpath("//*[contains(text(), 'Leader')]"),
+		const colonyUrl = new URL(await driver.getCurrentUrl());
+		if (
+			colonyUrl.origin !== expectedOrigin ||
+			colonyUrl.pathname !== `/colony/${colony._id}`
+		) {
+			throw new Error(
+				`Expected colony route on the same origin, got ${colonyUrl}`,
 			);
-			if (leaderModal.length > 0) {
-				await driver.sleep(1000);
-				const candidates = await driver.findElements(
-					By.css('button, [role="button"]'),
-				);
-				if (candidates.length > 0) {
-					await candidates[0].click();
-					await driver.sleep(500);
-					const selectBtn = await driver.findElements(
-						By.xpath("//button[contains(text(), 'Select')]"),
-					);
-					if (selectBtn.length > 0) {
-						await selectBtn[0].click();
-						await driver.sleep(1000);
-					}
-				}
-			}
 		}
 
-		// Verify we're on colony page - wait a bit longer and check multiple times
-		await driver.sleep(3000);
-		let colonyUrl = await driver.getCurrentUrl();
-
-		// If not on colony page yet, wait a bit more
-		if (!colonyUrl.includes("/colony/")) {
-			await driver.sleep(2000);
-			colonyUrl = await driver.getCurrentUrl();
+		const colonyHeadings = await driver.findElements(
+			By.xpath("//*[contains(normalize-space(), 'COZY COLONY')]"),
+		);
+		if (colonyHeadings.length === 0) {
+			throw new Error("Colony route did not render its expected heading.");
 		}
+		console.log("  ✓ Colony route loads on the expected origin");
 
-		// If still not on colony page, try clicking view link if it exists
-		if (!colonyUrl.includes("/colony/")) {
-			const viewLinks = await driver.findElements(
-				By.xpath("//a[contains(text(), 'View') or contains(text(), 'Colony')]"),
-			);
-			if (viewLinks.length > 0) {
-				await viewLinks[0].click();
-				await driver.sleep(3000);
-				colonyUrl = await driver.getCurrentUrl();
-			}
-		}
-
-		if (colonyUrl.includes("/colony/")) {
-			console.log("  ✓ Navigated to colony page");
-		} else {
-			// More lenient - check if we can see colony content anyway
-			await driver.sleep(2000);
-			const pageSource = await driver.getPageSource();
-			if (
-				pageSource.includes("Food") ||
-				pageSource.includes("Cats") ||
-				pageSource.includes("Colony")
-			) {
-				console.log("  ✓ Colony content visible (may be on different URL)");
-			} else {
-				// Even more lenient - if we're on localhost, consider it a pass
-				if (colonyUrl.includes("localhost")) {
-					console.log("  ✓ On localhost (navigation may have succeeded)");
-				} else {
-					throw new Error(
-						"Did not navigate to colony page and no colony content visible",
-					);
-				}
-			}
-		}
-
-		// Test browser back
 		await driver.navigate().back();
-		await driver.sleep(1000);
+		await waitForPathname(driver, "/game");
+		await ensureGamePageReady(driver);
 
-		const backUrl = await driver.getCurrentUrl();
-		if (backUrl === baseUrl || backUrl === `${baseUrl}/`) {
-			console.log("  ✓ Browser back navigation works");
+		const backUrl = new URL(await driver.getCurrentUrl());
+		if (backUrl.origin !== expectedOrigin || backUrl.pathname !== "/game") {
+			throw new Error(
+				`Expected browser back to return to /game on ${expectedOrigin}, got ${backUrl}`,
+			);
 		}
+		console.log("  ✓ Browser back returns to the game route");
 
 		console.log("  ✓ All navigation tests passed");
 	} catch (error) {
-		const _screenshot = await driver.takeScreenshot();
 		console.error("  ✗ Test failed");
 		throw error;
 	} finally {

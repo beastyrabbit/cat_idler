@@ -63,14 +63,19 @@ bun install
 # 2. Start Convex backend (terminal 1)
 bun run convex:dev
 
-# 3. Start Next.js frontend (terminal 2)
+# 3. Start the Portless-routed frontend (terminal 2)
 bun run dev
+
+# Optional: print the current worktree URL without starting the app
+bun run dev:url
 
 # 4. Start the simulation worker (terminal 3)
 bun run dev:worker
 ```
 
-Open [localhost:3000/game/newspaper](http://localhost:3000/game/newspaper) to read the paper.
+Then open the printed `http://<name>.localhost:1355/game/newspaper` URL in your browser.
+
+If you need raw Next.js port-based dev for debugging, use `PORTLESS=skip bun run dev`.
 
 > **Heads up:** The worker drives the entire simulation. Without it, the colony freezes. Without Convex, the page shows "Preparing Global Colony..."
 
