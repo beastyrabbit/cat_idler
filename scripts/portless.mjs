@@ -3,7 +3,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { basename, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PORTLESS_PREFIX = "cat-idler-";
 const PORTLESS_PROXY_PORT = 1355;
@@ -148,7 +148,6 @@ function runCli() {
 	}
 
 	if (mode === "url") {
-		ensurePortlessInstalled();
 		console.log(getPortlessBaseUrl());
 		return;
 	}
@@ -157,6 +156,6 @@ function runCli() {
 	process.exit(1);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	runCli();
 }

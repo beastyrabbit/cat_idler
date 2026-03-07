@@ -4,8 +4,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"dev": "node scripts/portless.mjs dev",
-		"dev:url": "node scripts/portless.mjs url",
+		"dev": "bun scripts/portless.mjs dev",
+		"dev:url": "bun scripts/portless.mjs url",
 		"dev:worker": "tsx watch worker/index.ts",
 		"worker": "tsx worker/index.ts",
 		"build": "next build --webpack",
@@ -20,9 +20,9 @@
 		"test:coverage": "vitest run --coverage",
 		"test:changed": "vitest --changed",
 		"test:unit": "vitest run",
-		"test:e2e": "node tests/e2e/run-tests.js",
-		"test:e2e:headed": "HEADED=true node tests/e2e/run-tests.js",
-		"test:all": "vitest run && node tests/e2e/run-tests.js",
+		"test:e2e": "bun tests/e2e/run-tests.js",
+		"test:e2e:headed": "HEADED=true bun tests/e2e/run-tests.js",
+		"test:all": "vitest run && bun tests/e2e/run-tests.js",
 		"convex:dev": "convex dev",
 		"convex:deploy": "convex deploy"
 	},
