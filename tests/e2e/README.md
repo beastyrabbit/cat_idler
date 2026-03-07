@@ -19,9 +19,19 @@ bun run test:e2e:headed
    bun run convex:dev
    ```
 
-2. **Frontend will start automatically** when you run E2E tests (configured in `run-tests.js`)
+2. **Frontend will start automatically** through Portless when you run E2E tests.
+   ```bash
+   bun run dev:url
+   ```
+   The runner uses `TEST_BASE_URL` if provided, otherwise it targets the same computed `http://<name>.localhost:1355` URL as `bun run dev`.
 
 3. **Chrome/Chromium must be installed** on your system
+
+4. Optional escape hatches:
+   ```bash
+   TEST_BASE_URL=http://my-custom-name.localhost:1355 bun run test:e2e
+   PORTLESS=skip bun run dev
+   ```
 
 ## Test Files
 
@@ -36,11 +46,14 @@ bun run test:e2e:headed
 ```javascript
 import { createDriver, waitForText, safeClick } from './selenium-setup.js';
 
-export default async function testMyFeature(headed = false) {
+export default async function testMyFeature(
+  headed = false,
+  baseUrl = process.env.TEST_BASE_URL ?? 'http://localhost:3000'
+) {
   const driver = await createDriver(headed);
   
   try {
-    await driver.get('http://localhost:3000');
+    await driver.get(baseUrl);
     await waitForText(driver, 'Cat Colony Idle Game');
     // Your test code
   } finally {
@@ -52,8 +65,8 @@ export default async function testMyFeature(headed = false) {
 ## Debugging
 
 - Use `bun run test:e2e:headed` to see the browser
+- Run `bun run dev:url` to confirm the computed Portless target
 - Screenshots are saved on failure
 - Check console output for detailed error messages
-
 
 
