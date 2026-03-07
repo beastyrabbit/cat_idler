@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 /**
  * Selenium E2E Test Runner
@@ -120,9 +120,22 @@ if (await isServerReady()) {
 		stdio: "inherit",
 	});
 	serverStartedByUs = true;
+	let rejectStartupExit;
+	const startupExit = new Promise((_, reject) => {
+		rejectStartupExit = reject;
+	});
+	const handleStartupExit = (code, signal) => {
+		rejectStartupExit(
+			new Error(
+				`Dev server exited unexpectedly before becoming ready (${signal ? `signal ${signal}` : `code ${code ?? 1}`})`,
+			),
+		);
+	};
+	devServer.once("exit", handleStartupExit);
 
 	try {
-		await waitForServerReady();
+		await Promise.race([waitForServerReady(), startupExit]);
+		devServer.off("exit", handleStartupExit);
 		await runTests();
 	} catch (error) {
 		console.error(`✗ ${error.message}`);

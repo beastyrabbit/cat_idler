@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -152,7 +152,7 @@ function runCli() {
 		return;
 	}
 
-	console.error("Usage: node scripts/portless.mjs <dev|url>");
+	console.error("Usage: bun scripts/portless.mjs <dev|url>");
 	process.exit(1);
 }
 
