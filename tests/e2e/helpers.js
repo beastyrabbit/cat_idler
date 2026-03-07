@@ -15,7 +15,6 @@ const gameReadyMarkers = [
 	"Preparing Global Colony...",
 ];
 const loadedGameMarkers = [
-	"Shared Idle World",
 	"Food",
 	"Water",
 	"Request Hunt (plan + expedition)",
