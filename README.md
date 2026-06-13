@@ -8,7 +8,7 @@ _One colony. Everyone plays. The cats never sleep (even when you do)._
 
 ![Next.js](https://img.shields.io/badge/Next.js_16-black?style=flat-square&logo=next.js)
 ![React](https://img.shields.io/badge/React_19-58c4dc?style=flat-square&logo=react&logoColor=white)
-![Convex](https://img.shields.io/badge/Convex-ff6b35?style=flat-square)
+![SQLite](https://img.shields.io/badge/SQLite_+_Drizzle-003b57?style=flat-square&logo=sqlite&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178c6?style=flat-square&logo=typescript&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=flat-square)
 ![Version](https://img.shields.io/badge/v0.3.0-pre--release-yellow?style=flat-square)
@@ -60,16 +60,13 @@ The entire game is presented as **The Catford Examiner**, a broadsheet newspaper
 # 1. Install dependencies
 bun install
 
-# 2. Start Convex backend (terminal 1)
-bun run convex:dev
-
-# 3. Start the Portless-routed frontend (terminal 2)
+# 2. Start the Portless-routed frontend (terminal 1)
 bun run dev
 
 # Optional: print the current worktree URL without starting the app
 bun run dev:url
 
-# 4. Start the simulation worker (terminal 3)
+# 3. Start the simulation worker (terminal 2)
 bun run dev:worker
 ```
 
@@ -77,30 +74,30 @@ Then open the printed `http://<name>.localhost:1355/game/newspaper` URL in your 
 
 If you need raw Next.js port-based dev for debugging, use `PORTLESS=skip bun run dev`.
 
-> **Heads up:** The worker drives the entire simulation. Without it, the colony freezes. Without Convex, the page shows "Preparing Global Colony..."
+> **Heads up:** The worker drives the entire simulation. Without it, the colony freezes — the page loads but nothing ticks.
 
 ### Environment
 
-Copy `.env.local` from an existing setup or create one:
+No environment variables are required — the SQLite database (`data/game.db`) is created and migrated automatically on first run. Optional overrides:
 
 ```env
-CONVEX_DEPLOYMENT=dev:<your-deployment>
-NEXT_PUBLIC_CONVEX_URL=https://<your-deployment>.convex.cloud
+GAME_DB_PATH=data/game.db     # SQLite file location (default shown)
+WORKER_TICK_MS=1000           # Worker tick interval
 ```
 
 ## Architecture
 
 ```
 Browser (Next.js + React 19)
-  ↕  real-time subscriptions (useQuery) + mutations (useMutation)
-Convex Backend (mutations, queries, schema)
+  ↕  SSE stream (/api/game/stream) + POST actions (/api/game/actions)
+Next.js route handlers → server/ (game orchestration over Drizzle + SQLite)
   ↕  calls pure functions
 lib/game/ (pure game logic — zero side effects)
   ↑  driven by
-worker/index.ts (always-on tick loop, 1s interval)
+worker/index.ts (always-on tick loop, 1s interval, writes SQLite directly)
 ```
 
-**The worker drives the game, not Convex crons.** A lightweight Node process (`bun run dev:worker`) calls `game.workerTick` every second. `convex/crons.ts` is intentionally empty.
+**The worker drives the game.** A lightweight Node process (`bun run dev:worker`) calls `workerTick` every second. The web server and worker share one SQLite file (WAL mode).
 
 ### Project structure
 
@@ -108,7 +105,8 @@ worker/index.ts (always-on tick loop, 1s interval)
 cat_idler/
 ├── app/                  # Next.js routes (/game/newspaper is the main UI)
 ├── components/           # React components
-├── convex/               # Convex functions, schema (11 tables)
+├── db/                   # Drizzle schema, client, SQL migrations (9 tables)
+├── server/               # Game orchestration (workerTick, jobs, upgrades)
 ├── hooks/                # React hooks (useGameDashboard — shared game state)
 ├── lib/game/             # Pure game mechanics (heavily unit tested)
 ├── worker/               # Always-on simulation loop
@@ -123,7 +121,7 @@ cat_idler/
 | Layer           | Technology                                             |
 | --------------- | ------------------------------------------------------ |
 | Frontend        | **Next.js 16**, React 19, Tailwind CSS 4, Radix UI     |
-| Backend         | **Convex** (real-time serverless database + functions) |
+| Backend         | **Drizzle ORM + SQLite** (better-sqlite3), SSE realtime |
 | Simulation      | Dedicated **Node worker** via tsx watch                |
 | Testing         | **Vitest** + Selenium E2E                              |
 | Language        | TypeScript throughout                                  |

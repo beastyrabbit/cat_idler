@@ -23,8 +23,8 @@
 		"test:e2e": "bun tests/e2e/run-tests.js",
 		"test:e2e:headed": "HEADED=true bun tests/e2e/run-tests.js",
 		"test:all": "vitest run && bun tests/e2e/run-tests.js",
-		"convex:dev": "convex dev",
-		"convex:deploy": "convex deploy"
+		"db:generate": "drizzle-kit generate",
+		"db:studio": "drizzle-kit studio"
 	},
 	"dependencies": {
 		"@radix-ui/react-dialog": "^1.1.15",
@@ -34,14 +34,16 @@
 		"@radix-ui/react-slot": "^1.2.3",
 		"@radix-ui/react-tabs": "^1.1.13",
 		"@radix-ui/react-tooltip": "^1.2.8",
+		"better-sqlite3": "^12.10.0",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
+		"drizzle-orm": "^0.45.2",
 		"lucide-react": "^0.542.0",
+		"nanoid": "^5.1.11",
 		"next": "^16.0.10",
 		"react": "^19.2.3",
 		"react-dom": "^19.2.3",
-		"tailwind-merge": "^3.3.1",
-		"convex": "^1.0.0"
+		"tailwind-merge": "^3.3.1"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.4",
@@ -49,6 +51,7 @@
 		"@testing-library/jest-dom": "^6.1.0",
 		"@testing-library/react": "^16.3.0",
 		"@testing-library/user-event": "^14.6.1",
+		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^25.0.1",
 		"@types/react": "^19.2.7",
 		"@types/react-dom": "^19.2.3",
@@ -56,6 +59,7 @@
 		"@vitest/coverage-v8": "^4.0.15",
 		"autoprefixer": "^10.4.0",
 		"chromedriver": "^145.0.0",
+		"drizzle-kit": "^0.31.10",
 		"eslint": "^9.39.2",
 		"eslint-config-next": "^16.0.10",
 		"jsdom": "^27.3.0",

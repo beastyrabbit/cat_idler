@@ -38,9 +38,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# convex
-.convex/
-convex/_generated/
+# sqlite database
+/data/
 
 # playwright mcp
 .playwright-mcp/

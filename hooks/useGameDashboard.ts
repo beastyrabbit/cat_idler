@@ -1,258 +1,291 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
 
-import { api } from "@/convex/_generated/api";
 import { presetFromTimeScale } from "@/lib/game/testAcceleration";
 
-const anyApi = api as any;
-
 function createSessionId(): string {
-  return `session_${Math.random().toString(36).slice(2)}_${Date.now()}`;
-}
-
-function cleanErrorMessage(err: unknown): string {
-  if (err == null) return "An unknown error occurred";
-  const raw = err instanceof Error ? err.message : String(err);
-  const match = raw.match(/Uncaught Error: (.+?)(?:\s+at\s|$)/);
-  return match ? match[1].trim() : raw;
+	return `session_${Math.random().toString(36).slice(2)}_${Date.now()}`;
 }
 
 export function formatDuration(ms: number): string {
-  if (ms <= 0) {
-    return "done";
-  }
+	if (ms <= 0) {
+		return "done";
+	}
 
-  const totalSeconds = Math.ceil(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
+	const totalSeconds = Math.ceil(ms / 1000);
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
 
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
-  }
+	if (hours > 0) {
+		return `${hours}h ${minutes}m`;
+	}
 
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
+	if (minutes > 0) {
+		return `${minutes}m ${seconds}s`;
+	}
 
-  return `${seconds}s`;
+	return `${seconds}s`;
 }
 
 /** Player-requestable job kinds only. `hunt_expedition` and `build_house` are auto-queued by the worker. */
 export type JobKind =
-  | "supply_food"
-  | "supply_water"
-  | "leader_plan_hunt"
-  | "leader_plan_house"
-  | "ritual";
+	| "supply_food"
+	| "supply_water"
+	| "leader_plan_hunt"
+	| "leader_plan_house"
+	| "ritual";
+
+async function postAction<T = unknown>(
+	action: string,
+	payload: Record<string, unknown> = {},
+): Promise<T> {
+	const response = await fetch("/api/game/actions", {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ action, ...payload }),
+	});
+
+	const result = (await response.json().catch(() => null)) as T | null;
+
+	if (!response.ok) {
+		const message =
+			result && typeof result === "object" && "message" in result
+				? String((result as { message: unknown }).message)
+				: `Request failed (${response.status})`;
+		throw new Error(message);
+	}
+
+	return result as T;
+}
 
 export function useGameDashboard() {
-  const dashboard = useQuery(anyApi.game.getGlobalDashboard);
+	// undefined = loading, null = no colony yet, object = live data
+	const [dashboard, setDashboard] = useState<any>(undefined);
 
-  const ensureGlobalState = useMutation(anyApi.game.ensureGlobalState);
-  const upsertPresence = useMutation(anyApi.players.upsertPresence);
-  const requestJob = useMutation(anyApi.game.requestJob);
-  const clickBoostJob = useMutation(anyApi.game.clickBoostJob);
-  const purchaseUpgrade = useMutation(anyApi.game.purchaseUpgrade);
-  const setTestAcceleration = useMutation(anyApi.game.setTestAcceleration);
-  const advanceTime = useMutation(anyApi.game.advanceTime);
+	const [sessionId, setSessionId] = useState("");
+	const [nickname, setNickname] = useState("");
+	const [now, setNow] = useState(() => Date.now());
+	const [busyAction, setBusyAction] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const [showTestControls, setShowTestControls] = useState(false);
 
-  const [sessionId, setSessionId] = useState("");
-  const [nickname, setNickname] = useState("");
-  const [now, setNow] = useState(() => Date.now());
-  const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [showTestControls, setShowTestControls] = useState(false);
+	useEffect(() => {
+		if (!error) return;
+		const t = setTimeout(() => setError(null), 4000);
+		return () => clearTimeout(t);
+	}, [error]);
 
-  useEffect(() => {
-    if (!error) return;
-    const t = setTimeout(() => setError(null), 4000);
-    return () => clearTimeout(t);
-  }, [error]);
+	useEffect(() => {
+		try {
+			const storedSession =
+				localStorage.getItem("cat_idle_session") || createSessionId();
+			const storedName =
+				localStorage.getItem("cat_idle_nickname") || "Guest Cat";
 
-  useEffect(() => {
-    try {
-      const storedSession =
-        localStorage.getItem("cat_idle_session") || createSessionId();
-      const storedName =
-        localStorage.getItem("cat_idle_nickname") || "Guest Cat";
+			localStorage.setItem("cat_idle_session", storedSession);
+			localStorage.setItem("cat_idle_nickname", storedName);
 
-      localStorage.setItem("cat_idle_session", storedSession);
-      localStorage.setItem("cat_idle_nickname", storedName);
+			setSessionId(storedSession);
+			setNickname(storedName);
+		} catch {
+			// localStorage unavailable (private browsing, etc.) — use ephemeral session
+			setSessionId(createSessionId());
+			setNickname("Guest Cat");
+		}
+		setShowTestControls(window.location.search.includes("test=1"));
+	}, []);
 
-      setSessionId(storedSession);
-      setNickname(storedName);
-    } catch {
-      // localStorage unavailable (private browsing, etc.) — use ephemeral session
-      setSessionId(createSessionId());
-      setNickname("Guest Cat");
-    }
-    setShowTestControls(window.location.search.includes("test=1"));
-  }, []);
+	// Live dashboard via SSE; EventSource reconnects automatically on drops.
+	useEffect(() => {
+		const source = new EventSource("/api/game/stream");
 
-  useEffect(() => {
-    if (!sessionId || !nickname) {
-      return;
-    }
+		source.addEventListener("dashboard", (event) => {
+			try {
+				setDashboard(JSON.parse((event as MessageEvent).data));
+			} catch (err) {
+				console.warn("Failed to parse dashboard frame:", err);
+			}
+		});
 
-    ensureGlobalState({}).catch((err) =>
-      console.warn("ensureGlobalState failed:", err),
-    );
-    upsertPresence({ sessionId, nickname }).catch((err) =>
-      console.warn("upsertPresence failed:", err),
-    );
+		source.onerror = () => {
+			// keep last known state; EventSource retries on its own
+		};
 
-    const heartbeat = setInterval(() => {
-      upsertPresence({ sessionId, nickname }).catch((err) =>
-        console.warn("upsertPresence heartbeat failed:", err),
-      );
-    }, 30_000);
+		return () => source.close();
+	}, []);
 
-    return () => clearInterval(heartbeat);
-  }, [sessionId, nickname, ensureGlobalState, upsertPresence]);
+	useEffect(() => {
+		if (!sessionId || !nickname) {
+			return;
+		}
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
+		postAction("presence", { sessionId, nickname }).catch((err) =>
+			console.warn("presence failed:", err),
+		);
 
-    return () => clearInterval(interval);
-  }, []);
+		const heartbeat = setInterval(() => {
+			postAction("presence", { sessionId, nickname }).catch((err) =>
+				console.warn("presence heartbeat failed:", err),
+			);
+		}, 30_000);
 
-  const colony = dashboard?.colony;
-  const jobs = dashboard?.jobs ?? [];
-  const upgrades = dashboard?.upgrades ?? [];
-  const events = dashboard?.events ?? [];
-  const cats = dashboard?.cats ?? [];
+		return () => clearInterval(heartbeat);
+	}, [sessionId, nickname]);
 
-  const ritualPoints = colony?.globalUpgradePoints ?? 0;
-  const accelerationPreset = useMemo(() => {
-    return presetFromTimeScale(colony?.testTimeScale);
-  }, [colony?.testTimeScale]);
+	useEffect(() => {
+		const interval = setInterval(() => {
+			setNow(Date.now());
+		}, 1000);
 
-  async function runAction<T>(
-    actionKey: string,
-    fn: () => Promise<T>,
-  ): Promise<T | undefined> {
-    setError(null);
-    setBusyAction(actionKey);
-    try {
-      const result = await fn();
-      const asRecord =
-        typeof result === "object" && result !== null
-          ? (result as Record<string, unknown>)
-          : null;
-      if (asRecord && asRecord.ok === false) {
-        setError(
-          typeof asRecord.message === "string"
-            ? (asRecord.message as string)
-            : "The action failed. Please try again.",
-        );
-      }
-      return result;
-    } catch (err: unknown) {
-      const isNetwork =
-        err instanceof TypeError && /fetch|network/i.test(err.message);
-      if (isNetwork) {
-        console.warn(`Action ${actionKey} network error:`, err);
-        setError("Network error — check your connection and try again.");
-      } else {
-        console.error(`Action ${actionKey} failed:`, err);
-        setError(cleanErrorMessage(err));
-      }
-      return undefined;
-    } finally {
-      setBusyAction(null);
-    }
-  }
+		return () => clearInterval(interval);
+	}, []);
 
-  const submitJob = async (kind: JobKind) => {
-    if (!sessionId || !nickname) {
-      return;
-    }
-    await runAction(kind, () => requestJob({ sessionId, nickname, kind }));
-  };
+	const colony = dashboard?.colony;
+	const jobs = dashboard?.jobs ?? [];
+	const upgrades = dashboard?.upgrades ?? [];
+	const events = dashboard?.events ?? [];
+	const cats = dashboard?.cats ?? [];
 
-  const onBoostJob = async (jobId: string) => {
-    if (!sessionId || !nickname) {
-      return;
-    }
-    await runAction(jobId, () => clickBoostJob({ sessionId, nickname, jobId }));
-  };
+	const ritualPoints = colony?.globalUpgradePoints ?? 0;
+	const accelerationPreset = useMemo(() => {
+		return presetFromTimeScale(colony?.testTimeScale);
+	}, [colony?.testTimeScale]);
 
-  const onBuyUpgrade = async (key: string) => {
-    if (!sessionId || !nickname) {
-      return;
-    }
-    await runAction(`upgrade:${key}`, () =>
-      purchaseUpgrade({ sessionId, nickname, key }),
-    );
-  };
+	async function runAction<T>(
+		actionKey: string,
+		fn: () => Promise<T>,
+	): Promise<T | undefined> {
+		setError(null);
+		setBusyAction(actionKey);
+		try {
+			const result = await fn();
+			const asRecord =
+				typeof result === "object" && result !== null
+					? (result as Record<string, unknown>)
+					: null;
+			if (asRecord && asRecord.ok === false) {
+				setError(
+					typeof asRecord.message === "string"
+						? (asRecord.message as string)
+						: "The action failed. Please try again.",
+				);
+			}
+			return result;
+		} catch (err: unknown) {
+			const isNetwork =
+				err instanceof TypeError && /fetch|network/i.test(err.message);
+			if (isNetwork) {
+				console.warn(`Action ${actionKey} network error:`, err);
+				setError("Network error — check your connection and try again.");
+			} else {
+				console.error(`Action ${actionKey} failed:`, err);
+				setError(err instanceof Error ? err.message : String(err));
+			}
+			return undefined;
+		} finally {
+			setBusyAction(null);
+		}
+	}
 
-  const onSetAcceleration = async (preset: "off" | "fast" | "turbo") => {
-    await runAction(`accel:${preset}`, () => setTestAcceleration({ preset }));
-  };
+	const submitJob = async (kind: JobKind) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction(kind, () =>
+			postAction("requestJob", { sessionId, nickname, kind }),
+		);
+	};
 
-  const onAdvanceTime = async (seconds: number) => {
-    await runAction(`advance:${seconds}`, () => advanceTime({ seconds }));
-  };
+	const onBoostJob = async (jobId: string) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction(jobId, () =>
+			postAction("boost", { sessionId, nickname, jobId }),
+		);
+	};
 
-  const updateNickname = (value: string) => {
-    const trimmed = value.trim() || "Guest Cat";
-    setNickname(trimmed);
-    try {
-      localStorage.setItem("cat_idle_nickname", trimmed);
-    } catch {
-      // localStorage unavailable — nickname persists in memory only
-    }
-    if (sessionId) {
-      upsertPresence({ sessionId, nickname: trimmed }).catch((err) =>
-        console.warn("upsertPresence failed:", err),
-      );
-    }
-  };
+	const onBuyUpgrade = async (key: string) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction(`upgrade:${key}`, () =>
+			postAction("purchaseUpgrade", { sessionId, nickname, key }),
+		);
+	};
 
-  const statusTone = (colony?.status ?? "starting") as
-    | "thriving"
-    | "struggling"
-    | "dead"
-    | "starting";
+	const onSetAcceleration = async (preset: "off" | "fast" | "turbo") => {
+		await runAction(`accel:${preset}`, () =>
+			postAction("setTestAcceleration", { preset }),
+		);
+	};
 
-  return {
-    // Raw data
-    dashboard,
-    colony,
-    jobs,
-    upgrades,
-    events,
-    cats,
-    ritualPoints,
-    accelerationPreset,
-    statusTone,
-    now,
+	const onAdvanceTime = async (seconds: number) => {
+		await runAction(`advance:${seconds}`, () =>
+			postAction("advanceTime", { seconds }),
+		);
+	};
 
-    // Session
-    sessionId,
-    nickname,
-    showTestControls,
+	const updateNickname = (value: string) => {
+		const trimmed = value.trim() || "Guest Cat";
+		setNickname(trimmed);
+		try {
+			localStorage.setItem("cat_idle_nickname", trimmed);
+		} catch {
+			// localStorage unavailable — nickname persists in memory only
+		}
+		if (sessionId) {
+			postAction("presence", { sessionId, nickname: trimmed }).catch((err) =>
+				console.warn("presence failed:", err),
+			);
+		}
+	};
 
-    // State
-    busyAction,
-    error,
+	const ensureGlobalState = async () => {
+		return postAction("ensure");
+	};
 
-    // Actions
-    submitJob,
-    onBoostJob,
-    onBuyUpgrade,
-    onSetAcceleration,
-    onAdvanceTime,
-    updateNickname,
-    ensureGlobalState,
+	const statusTone = (colony?.status ?? "starting") as
+		| "thriving"
+		| "struggling"
+		| "dead"
+		| "starting";
 
-    // Leader
-    leader: dashboard?.leader ?? null,
-    onlineCount: dashboard?.onlineCount ?? 0,
-  };
+	return {
+		// Raw data
+		dashboard,
+		colony,
+		jobs,
+		upgrades,
+		events,
+		cats,
+		ritualPoints,
+		accelerationPreset,
+		statusTone,
+		now,
+
+		// Session
+		sessionId,
+		nickname,
+		showTestControls,
+
+		// State
+		busyAction,
+		error,
+
+		// Actions
+		submitJob,
+		onBoostJob,
+		onBuyUpgrade,
+		onSetAcceleration,
+		onAdvanceTime,
+		updateNickname,
+		ensureGlobalState,
+
+		// Leader
+		leader: dashboard?.leader ?? null,
+		onlineCount: dashboard?.onlineCount ?? 0,
+	};
 }

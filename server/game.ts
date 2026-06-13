@@ -1,0 +1,1401 @@
+/**
+ * Game server logic — 1:1 port of convex/game.ts onto Drizzle + SQLite.
+ *
+ * Pure game rules stay in lib/game/; this module reads/writes the DB and
+ * orchestrates. All entry points are synchronous (better-sqlite3) and the
+ * mutating ones run inside a transaction.
+ *
+ * The worker process calls `workerTick` every second; Next.js route
+ * handlers call the rest.
+ */
+
+import { and, desc, eq, gte, isNull } from "drizzle-orm";
+import { nanoid } from "nanoid";
+
+import type { GameDb } from "@/db/client";
+import {
+	type CatRow,
+	type ColonyRow,
+	cats,
+	colonies,
+	events,
+	globalUpgrades,
+	type JobRow,
+	jobs,
+	players,
+	runHistory,
+} from "@/db/schema";
+import { inheritTraits, traitsToSpriteParams } from "@/lib/game/genetics";
+import { planHousePipeline } from "@/lib/game/housePlanner";
+import {
+	applyClickBoostSeconds,
+	type CatSpecialization,
+	getHuntReward,
+	getResilienceHours,
+	getScaledDurationSeconds,
+	getUpgradeCost,
+	type JobKind,
+	nextSpecialization,
+	type UpgradeLevels,
+} from "@/lib/game/idleEngine";
+import {
+	consumptionForTick,
+	hasConflictingStrategicJob,
+	nextColonyStatus,
+	ritualRequestIsFresh,
+	shouldResetFromCritical,
+	shouldStartRitual,
+	shouldTrackCritical,
+} from "@/lib/game/idleRules";
+import { configForTier, pickPolicyTier } from "@/lib/game/policy";
+import { rollSeeded } from "@/lib/game/seededRng";
+import { applySurvivalTick } from "@/lib/game/survival";
+import { configForPreset } from "@/lib/game/testAcceleration";
+import type { CatStats } from "@/types/game";
+
+import { countOnlinePlayers, upsertPlayer } from "./players";
+
+const UPGRADE_DEFAULTS = [
+	{
+		key: "click_power",
+		maxLevel: 20,
+		baseCost: 2,
+		description: "Increase click speed-up power.",
+	},
+	{
+		key: "supply_speed",
+		maxLevel: 10,
+		baseCost: 3,
+		description: "Reduce player supply action time.",
+	},
+	{
+		key: "hunt_mastery",
+		maxLevel: 10,
+		baseCost: 5,
+		description: "Improve hunting speed and yield.",
+	},
+	{
+		key: "build_mastery",
+		maxLevel: 10,
+		baseCost: 5,
+		description: "Improve planning and build speed.",
+	},
+	{
+		key: "ritual_mastery",
+		maxLevel: 10,
+		baseCost: 6,
+		description: "Improve ritual cadence and timing.",
+	},
+	{
+		key: "resilience",
+		maxLevel: 10,
+		baseCost: 7,
+		description: "Survive unattended for longer.",
+	},
+] as const;
+
+type UpgradeKey = (typeof UPGRADE_DEFAULTS)[number]["key"];
+
+export type PlayerJobKind =
+	| "supply_food"
+	| "supply_water"
+	| "leader_plan_hunt"
+	| "leader_plan_house"
+	| "ritual";
+
+interface RuntimeConfig {
+	timeScale: number;
+	resourceDecayMultiplier: number;
+	resilienceHoursOverride: number | null;
+	criticalMsOverride: number;
+	rngSeed: number | null;
+}
+
+function getRuntimeConfig(colony: ColonyRow): RuntimeConfig {
+	return {
+		timeScale: Math.max(1, colony.testTimeScale ?? 1),
+		resourceDecayMultiplier: Math.max(
+			1,
+			colony.testResourceDecayMultiplier ?? 1,
+		),
+		resilienceHoursOverride:
+			typeof colony.testResilienceHoursOverride === "number"
+				? colony.testResilienceHoursOverride
+				: null,
+		criticalMsOverride: Math.max(
+			1_000,
+			colony.testCriticalMsOverride ?? 5 * 60 * 1000,
+		),
+		rngSeed: typeof colony.testRngSeed === "number" ? colony.testRngSeed : null,
+	};
+}
+
+const DEFAULT_ROLE_XP = { hunter: 0, architect: 0, ritualist: 0 } as const;
+
+function defaultRoleXp(cat: CatRow): {
+	hunter: number;
+	architect: number;
+	ritualist: number;
+} {
+	return cat.roleXp ?? { ...DEFAULT_ROLE_XP };
+}
+
+function randomStat(min: number, max: number): number {
+	return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+function starterNames(): string[] {
+	return ["Whiskers", "Shadow", "Luna", "Max", "Bella"];
+}
+
+function createStarterCats(db: GameDb, colonyId: string) {
+	const names = starterNames();
+	for (let i = 0; i < 5; i += 1) {
+		db.insert(cats)
+			.values({
+				_id: nanoid(),
+				colonyId,
+				name: names[i] ?? `Cat ${i + 1}`,
+				parentIds: [null, null],
+				birthTime: Date.now(),
+				deathTime: null,
+				stats: {
+					attack: randomStat(30, 60),
+					defense: randomStat(30, 60),
+					hunting: randomStat(30, 60),
+					medicine: randomStat(20, 50),
+					cleaning: randomStat(25, 55),
+					building: randomStat(20, 50),
+					leadership: randomStat(20, 60),
+					vision: randomStat(30, 60),
+				},
+				needs: { hunger: 100, thirst: 100, rest: 100, health: 100 },
+				currentTask: null,
+				position: { map: "colony", x: 1, y: 1 },
+				isPregnant: false,
+				pregnancyDueTime: null,
+				spriteParams: traitsToSpriteParams(inheritTraits(null, null)) as Record<
+					string,
+					unknown
+				>,
+				specialization: null,
+				roleXp: { ...DEFAULT_ROLE_XP },
+			})
+			.run();
+	}
+}
+
+function getGlobalColony(db: GameDb): ColonyRow | undefined {
+	return db.select().from(colonies).where(eq(colonies.isGlobal, true)).get();
+}
+
+function getColony(db: GameDb, colonyId: string): ColonyRow {
+	const colony = db
+		.select()
+		.from(colonies)
+		.where(eq(colonies._id, colonyId))
+		.get();
+	if (!colony) {
+		throw new Error("Colony not found");
+	}
+	return colony;
+}
+
+function getUpgradeRows(db: GameDb, colonyId: string) {
+	return db
+		.select()
+		.from(globalUpgrades)
+		.where(eq(globalUpgrades.colonyId, colonyId))
+		.all();
+}
+
+function upgradesToLevels(
+	rows: Array<{ key: string; level: number }>,
+): UpgradeLevels {
+	const map: Record<string, number> = {};
+	for (const row of rows) {
+		map[row.key] = row.level;
+	}
+	return {
+		click_power: map.click_power ?? 0,
+		supply_speed: map.supply_speed ?? 0,
+		hunt_mastery: map.hunt_mastery ?? 0,
+		build_mastery: map.build_mastery ?? 0,
+		ritual_mastery: map.ritual_mastery ?? 0,
+		resilience: map.resilience ?? 0,
+	};
+}
+
+function ensureGlobalUpgrades(db: GameDb, colonyId: string) {
+	const existing = getUpgradeRows(db, colonyId);
+	const existingKeys = new Set(existing.map((u) => u.key));
+
+	for (const upgrade of UPGRADE_DEFAULTS) {
+		if (existingKeys.has(upgrade.key)) {
+			continue;
+		}
+
+		db.insert(globalUpgrades)
+			.values({
+				_id: nanoid(),
+				colonyId,
+				key: upgrade.key,
+				level: 0,
+				maxLevel: upgrade.maxLevel,
+				baseCost: upgrade.baseCost,
+				description: upgrade.description,
+			})
+			.run();
+	}
+}
+
+export function ensureGlobalColony(db: GameDb): ColonyRow {
+	const now = Date.now();
+	let colony = getGlobalColony(db);
+
+	if (!colony) {
+		const colonyId = nanoid();
+		db.insert(colonies)
+			.values({
+				_id: colonyId,
+				name: "Global Cat Colony",
+				leaderId: null,
+				status: "starting",
+				resources: {
+					food: 24,
+					water: 24,
+					herbs: 8,
+					materials: 0,
+					blessings: 0,
+				},
+				gridSize: 3,
+				createdAt: now,
+				lastTick: now,
+				lastAttack: now,
+				worldSeed: now,
+				isGlobal: true,
+				runNumber: 1,
+				runStartedAt: now,
+				lastPlayerActivityAt: now,
+				lastResetAt: now,
+				automationTier: 0,
+				globalUpgradePoints: 0,
+				ritualRequestedAt: null,
+				criticalSince: null,
+				testTimeScale: 1,
+				testResourceDecayMultiplier: 1,
+				testResilienceHoursOverride: null,
+				testCriticalMsOverride: 5 * 60 * 1000,
+				testRngSeed: null,
+			})
+			.run();
+
+		createStarterCats(db, colonyId);
+		ensureGlobalUpgrades(db, colonyId);
+
+		colony = getColony(db, colonyId);
+	} else {
+		ensureGlobalUpgrades(db, colony._id);
+	}
+
+	const aliveCats = getAliveCats(db, colony._id);
+	if (aliveCats.length === 0) {
+		createStarterCats(db, colony._id);
+	}
+
+	return getColony(db, colony._id);
+}
+
+function getAliveCats(db: GameDb, colonyId: string): CatRow[] {
+	return db
+		.select()
+		.from(cats)
+		.where(and(eq(cats.colonyId, colonyId), isNull(cats.deathTime)))
+		.all();
+}
+
+function getJobsByStatus(
+	db: GameDb,
+	colonyId: string,
+	status: JobRow["status"],
+): JobRow[] {
+	return db
+		.select()
+		.from(jobs)
+		.where(and(eq(jobs.colonyId, colonyId), eq(jobs.status, status)))
+		.all();
+}
+
+function chooseLeader(db: GameDb, colonyId: string): CatRow | null {
+	const aliveCats = getAliveCats(db, colonyId);
+	if (aliveCats.length === 0) {
+		return null;
+	}
+
+	let best = aliveCats[0];
+	for (const cat of aliveCats) {
+		if (cat.stats.leadership > best.stats.leadership) {
+			best = cat;
+		}
+	}
+	return best;
+}
+
+const SPECIALIZATION_STAT: Record<
+	Exclude<CatSpecialization, null>,
+	keyof CatStats
+> = {
+	hunter: "hunting",
+	architect: "building",
+	ritualist: "leadership",
+};
+
+function selectBestCat(
+	db: GameDb,
+	colonyId: string,
+	specialization: CatSpecialization,
+): CatRow | null {
+	const aliveCats = getAliveCats(db, colonyId);
+	if (aliveCats.length === 0) {
+		return null;
+	}
+
+	const preferred = aliveCats.filter(
+		(cat) => (cat.specialization ?? null) === specialization,
+	);
+	const pool = preferred.length > 0 ? preferred : aliveCats;
+
+	const statKey = specialization
+		? SPECIALIZATION_STAT[specialization]
+		: "leadership";
+
+	let best = pool[0];
+	for (const cat of pool) {
+		if (cat.stats[statKey] > best.stats[statKey]) {
+			best = cat;
+		}
+	}
+
+	return best;
+}
+
+function logEvent(
+	db: GameDb,
+	colonyId: string,
+	type: string,
+	message: string,
+	involvedCatIds: string[] = [],
+	metadata: Record<string, unknown> = {},
+) {
+	db.insert(events)
+		.values({
+			_id: nanoid(),
+			colonyId,
+			catId: involvedCatIds[0] ?? null,
+			timestamp: Date.now(),
+			type,
+			message,
+			involvedCatIds,
+			metadata,
+		})
+		.run();
+}
+
+function queueJob(
+	db: GameDb,
+	colonyId: string,
+	kind: JobKind,
+	requestedByType: "player" | "leader" | "system",
+	upgrades: UpgradeLevels,
+	runtime: RuntimeConfig,
+	requestedByPlayerId: string | null,
+	assignedCat: CatRow | null,
+	metadata: Record<string, unknown> = {},
+): string {
+	const specialization: CatSpecialization = assignedCat?.specialization ?? null;
+	const duration = getScaledDurationSeconds(
+		kind,
+		specialization,
+		upgrades,
+		runtime.timeScale,
+	);
+	const now = Date.now();
+
+	const jobId = nanoid();
+	db.insert(jobs)
+		.values({
+			_id: jobId,
+			colonyId,
+			kind,
+			status: "queued",
+			requestedByType,
+			requestedByPlayerId: requestedByPlayerId ?? null,
+			assignedCatId: assignedCat?._id ?? null,
+			baseDurationSec: duration,
+			speedMultiplier: 1,
+			yieldMultiplier: 1,
+			clickTimeReducedSec: 0,
+			createdAt: now,
+			startedAt: now,
+			endsAt: now + duration * 1000,
+			metadata,
+		})
+		.run();
+
+	logEvent(
+		db,
+		colonyId,
+		"job_queued",
+		`Queued ${kind.replace(/_/g, " ")}`,
+		assignedCat ? [assignedCat._id] : [],
+		{ jobId, kind },
+	);
+
+	return jobId;
+}
+
+function queuePlannedHouseJobs(
+	db: GameDb,
+	colonyId: string,
+	patchedResources: { water: number; materials: number },
+	policy: { houseWaterRequired: number; houseMaterialsRequired: number },
+	activeOrQueuedJobs: Array<{
+		kind: JobKind;
+		metadata?: Record<string, unknown>;
+	}>,
+	upgrades: UpgradeLevels,
+	runtime: RuntimeConfig,
+	policyGate?: () => boolean,
+) {
+	const plannedJobs = planHousePipeline({
+		resources: {
+			water: patchedResources.water,
+			materials: patchedResources.materials,
+		},
+		activeOrQueuedJobs,
+		waterRequired: policy.houseWaterRequired,
+		materialsRequired: policy.houseMaterialsRequired,
+	});
+
+	for (const planned of plannedJobs) {
+		if (policyGate && !policyGate()) {
+			continue;
+		}
+		const architect =
+			planned.kind === "build_house"
+				? selectBestCat(db, colonyId, "architect")
+				: null;
+		queueJob(
+			db,
+			colonyId,
+			planned.kind,
+			"leader",
+			upgrades,
+			runtime,
+			null,
+			architect,
+			planned.metadata,
+		);
+		activeOrQueuedJobs.push({
+			kind: planned.kind,
+			metadata: planned.metadata,
+		});
+	}
+}
+
+function resetGlobalRun(db: GameDb, colony: ColonyRow, reason: string) {
+	const now = Date.now();
+
+	const activePlayers = countOnlinePlayers(db, now);
+
+	db.insert(runHistory)
+		.values({
+			_id: nanoid(),
+			colonyId: colony._id,
+			runNumber: colony.runNumber ?? 1,
+			startedAt: colony.runStartedAt ?? colony.createdAt,
+			endedAt: now,
+			durationSec: Math.max(
+				1,
+				Math.floor((now - (colony.runStartedAt ?? colony.createdAt)) / 1000),
+			),
+			reason,
+			finalResources: colony.resources,
+			activePlayers,
+		})
+		.run();
+
+	db.delete(jobs).where(eq(jobs.colonyId, colony._id)).run();
+
+	const aliveCats = getAliveCats(db, colony._id);
+	if (aliveCats.length === 0) {
+		createStarterCats(db, colony._id);
+	} else {
+		for (const cat of aliveCats) {
+			db.update(cats)
+				.set({
+					needs: { hunger: 100, thirst: 100, rest: 100, health: 100 },
+					currentTask: null,
+					position: { map: "colony", x: 1, y: 1 },
+				})
+				.where(eq(cats._id, cat._id))
+				.run();
+		}
+	}
+
+	db.update(colonies)
+		.set({
+			status: "starting",
+			resources: {
+				food: 24,
+				water: 24,
+				herbs: 8,
+				materials: 0,
+				blessings: colony.resources.blessings,
+			},
+			runNumber: (colony.runNumber ?? 1) + 1,
+			runStartedAt: now,
+			lastResetAt: now,
+			lastTick: now,
+			criticalSince: null,
+			ritualRequestedAt: null,
+			testRngSeed: colony.testRngSeed ?? null,
+		})
+		.where(eq(colonies._id, colony._id))
+		.run();
+
+	logEvent(
+		db,
+		colony._id,
+		"run_reset",
+		`The colony collapsed and started run ${(colony.runNumber ?? 1) + 1}.`,
+		[],
+		{ reason },
+	);
+}
+
+export function ensureGlobalState(db: GameDb): string {
+	return db.transaction((tx) => ensureGlobalColony(tx as unknown as GameDb))
+		._id;
+}
+
+export function setTestAcceleration(
+	db: GameDb,
+	preset: "off" | "fast" | "turbo",
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+
+		const config = configForPreset(preset);
+		tx.update(colonies)
+			.set({
+				testTimeScale: config.timeScale,
+				testResourceDecayMultiplier: config.resourceDecayMultiplier,
+				testResilienceHoursOverride: config.resilienceHoursOverride,
+				testCriticalMsOverride: config.criticalMsOverride,
+			})
+			.where(eq(colonies._id, colony._id))
+			.run();
+		return { preset };
+	});
+}
+
+export function setTestRngSeed(db: GameDb, seed: number | null) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+
+		tx.update(colonies)
+			.set({
+				testRngSeed:
+					typeof seed === "number" ? Math.max(1, Math.floor(seed)) : null,
+			})
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		return { seed };
+	});
+}
+
+export function advanceTime(db: GameDb, seconds: number) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+
+		const advance = Math.max(1, Math.floor(seconds));
+		tx.update(colonies)
+			.set({ lastTick: colony.lastTick - advance * 1000 })
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		return { advancedSeconds: advance };
+	});
+}
+
+export function getGlobalDashboard(db: GameDb) {
+	const colony = getGlobalColony(db);
+	if (!colony) {
+		return null;
+	}
+
+	const now = Date.now();
+
+	const aliveCats = getAliveCats(db, colony._id);
+
+	const jobsQueued = getJobsByStatus(db, colony._id, "queued");
+	const jobsActive = getJobsByStatus(db, colony._id, "active");
+	const allJobs = [...jobsActive, ...jobsQueued].sort(
+		(a, b) => a.endsAt - b.endsAt,
+	);
+
+	const recentEvents = db
+		.select()
+		.from(events)
+		.where(eq(events.colonyId, colony._id))
+		.orderBy(desc(events.timestamp))
+		.limit(30)
+		.all();
+
+	const upgrades = getUpgradeRows(db, colony._id);
+
+	const onlineCount = countOnlinePlayers(db, now);
+
+	const leader = colony.leaderId
+		? (aliveCats.find((cat) => cat._id === colony.leaderId) ?? null)
+		: null;
+
+	return {
+		now,
+		colony,
+		leader,
+		cats: aliveCats.sort((a, b) => b.stats.leadership - a.stats.leadership),
+		jobs: allJobs,
+		upgrades: [...upgrades].sort((a, b) => a.key.localeCompare(b.key)),
+		events: recentEvents,
+		onlineCount,
+	};
+}
+
+export function requestJob(
+	db: GameDb,
+	args: { sessionId: string; nickname: string; kind: PlayerJobKind },
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+		const now = Date.now();
+
+		const player = upsertPlayer(tx, args.sessionId, args.nickname, now);
+		const upgrades = upgradesToLevels(getUpgradeRows(tx, colony._id));
+		const runtime = getRuntimeConfig(colony);
+
+		// Any job request counts as player activity for unattended-time tracking
+		tx.update(colonies)
+			.set({ lastPlayerActivityAt: now })
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		// Fetch active+queued jobs once for conflict checks on strategic kinds.
+		const isStrategicKind =
+			args.kind !== "supply_food" && args.kind !== "supply_water";
+		if (isStrategicKind) {
+			const allJobs = [
+				...getJobsByStatus(tx, colony._id, "active"),
+				...getJobsByStatus(tx, colony._id, "queued"),
+			];
+
+			if (hasConflictingStrategicJob(args.kind as JobKind, allJobs)) {
+				return {
+					ok: false,
+					reason: "already_in_progress",
+					message: "That request is already in progress.",
+				};
+			}
+
+			if (args.kind === "ritual") {
+				const alreadyRequested = ritualRequestIsFresh(
+					colony.ritualRequestedAt,
+					now,
+				);
+				const activeRitual = allJobs.some((job) => job.kind === "ritual");
+				if (alreadyRequested || activeRitual) {
+					return {
+						ok: false,
+						reason: "ritual_pending",
+						message: "Ritual request already pending or active.",
+					};
+				}
+			}
+		}
+
+		const bumpJobsRequested = () => {
+			tx.update(players)
+				.set({
+					lifetimeContribution: {
+						...player.lifetimeContribution,
+						jobsRequested: player.lifetimeContribution.jobsRequested + 1,
+					},
+				})
+				.where(eq(players._id, player._id))
+				.run();
+		};
+
+		if (args.kind === "ritual") {
+			tx.update(colonies)
+				.set({ ritualRequestedAt: now })
+				.where(eq(colonies._id, colony._id))
+				.run();
+
+			bumpJobsRequested();
+
+			logEvent(
+				tx,
+				colony._id,
+				"ritual_ready",
+				`${args.nickname} requested a ritual. Leader will schedule it when conditions are safe.`,
+			);
+
+			return { requested: true };
+		}
+
+		const jobId = queueJob(
+			tx,
+			colony._id,
+			args.kind as JobKind,
+			"player",
+			upgrades,
+			runtime,
+			player._id,
+			null,
+			{},
+		);
+
+		bumpJobsRequested();
+
+		return { jobId };
+	});
+}
+
+export function clickBoostJob(
+	db: GameDb,
+	args: { sessionId: string; nickname: string; jobId: string },
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const now = Date.now();
+
+		const job = tx.select().from(jobs).where(eq(jobs._id, args.jobId)).get();
+		if (!job || (job.status !== "active" && job.status !== "queued")) {
+			throw new Error("This job cannot be boosted.");
+		}
+
+		const colony = ensureGlobalColony(tx);
+		if (colony._id !== job.colonyId) {
+			throw new Error("Invalid colony");
+		}
+
+		const player = upsertPlayer(tx, args.sessionId, args.nickname, now);
+		const upgrades = upgradesToLevels(getUpgradeRows(tx, colony._id));
+
+		const inSameWindow = now - player.clickWindowStart < 60_000;
+		const clicksInWindow = inSameWindow ? player.clicksInWindow + 1 : 1;
+		const windowStart = inSameWindow ? player.clickWindowStart : now;
+		const reduceSeconds = applyClickBoostSeconds(
+			clicksInWindow,
+			upgrades.click_power,
+		);
+
+		const minEnd = now + 5_000;
+		const nextEnd = Math.max(minEnd, job.endsAt - reduceSeconds * 1000);
+
+		tx.update(players)
+			.set({
+				clickWindowStart: windowStart,
+				clicksInWindow,
+				lifetimeClicks: player.lifetimeClicks + 1,
+			})
+			.where(eq(players._id, player._id))
+			.run();
+
+		tx.update(jobs)
+			.set({
+				endsAt: nextEnd,
+				clickTimeReducedSec: (job.clickTimeReducedSec ?? 0) + reduceSeconds,
+				status: "active",
+			})
+			.where(eq(jobs._id, job._id))
+			.run();
+
+		tx.update(colonies)
+			.set({ lastPlayerActivityAt: now })
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		return {
+			reducedBySec: reduceSeconds,
+			newEndsAt: nextEnd,
+		};
+	});
+}
+
+export function purchaseUpgrade(
+	db: GameDb,
+	args: { sessionId: string; nickname: string; key: UpgradeKey },
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+		const now = Date.now();
+		const player = upsertPlayer(tx, args.sessionId, args.nickname, now);
+
+		const upgrade = tx
+			.select()
+			.from(globalUpgrades)
+			.where(
+				and(
+					eq(globalUpgrades.colonyId, colony._id),
+					eq(globalUpgrades.key, args.key),
+				),
+			)
+			.get();
+
+		if (!upgrade) {
+			throw new Error("Upgrade not found.");
+		}
+
+		if (upgrade.level >= upgrade.maxLevel) {
+			throw new Error("Upgrade already maxed.");
+		}
+
+		const cost = getUpgradeCost(upgrade.baseCost, upgrade.level);
+		const points = colony.globalUpgradePoints ?? 0;
+		if (points < cost) {
+			throw new Error("Not enough ritual points.");
+		}
+
+		tx.update(globalUpgrades)
+			.set({ level: upgrade.level + 1 })
+			.where(eq(globalUpgrades._id, upgrade._id))
+			.run();
+
+		tx.update(colonies)
+			.set({
+				globalUpgradePoints: points - cost,
+				lastPlayerActivityAt: now,
+			})
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		tx.update(players)
+			.set({
+				lifetimeContribution: {
+					...player.lifetimeContribution,
+					upgradesPurchased: player.lifetimeContribution.upgradesPurchased + 1,
+				},
+			})
+			.where(eq(players._id, player._id))
+			.run();
+
+		logEvent(
+			tx,
+			colony._id,
+			"upgrade_purchased",
+			`${args.nickname} upgraded ${args.key.replace(/_/g, " ")} to level ${upgrade.level + 1}.`,
+		);
+
+		return { level: upgrade.level + 1, remainingPoints: points - cost };
+	});
+}
+
+export function upsertPresence(
+	db: GameDb,
+	sessionId: string,
+	nickname: string,
+): string {
+	return upsertPlayer(db, sessionId, nickname)._id;
+}
+
+export function workerTick(db: GameDb) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+
+		const now = Date.now();
+		const elapsedSec = Math.max(0, Math.floor((now - colony.lastTick) / 1000));
+		if (elapsedSec === 0) {
+			// Sub-second tick — nothing to process yet
+			tx.update(colonies)
+				.set({ lastTick: now })
+				.where(eq(colonies._id, colony._id))
+				.run();
+			return { ok: true, skipped: true };
+		}
+
+		const upgrades = upgradesToLevels(getUpgradeRows(tx, colony._id));
+		const runtime = getRuntimeConfig(colony);
+
+		let rngSeed = runtime.rngSeed;
+		const nextRoll = () => {
+			if (rngSeed === null) {
+				return Math.random();
+			}
+			const roll = rollSeeded(rngSeed);
+			rngSeed = roll.nextSeed;
+			return roll.value;
+		};
+
+		// Ensure best leader.
+		const bestLeader = chooseLeader(tx, colony._id);
+		if (bestLeader && colony.leaderId !== bestLeader._id) {
+			tx.update(colonies)
+				.set({ leaderId: bestLeader._id })
+				.where(eq(colonies._id, colony._id))
+				.run();
+			logEvent(
+				tx,
+				colony._id,
+				"leader_change",
+				`${bestLeader.name} is now leading the colony.`,
+				[bestLeader._id],
+			);
+		}
+
+		const policyTier = pickPolicyTier(
+			bestLeader?.stats.leadership ?? 50,
+			nextRoll(),
+		);
+		const policy = configForTier(policyTier);
+		const canTakePolicyAction = () => nextRoll() <= policy.actionReliability;
+
+		const aliveCats = getAliveCats(tx, colony._id);
+
+		const { foodUse, waterUse } = consumptionForTick(
+			aliveCats.length,
+			elapsedSec * runtime.resourceDecayMultiplier,
+			upgrades,
+		);
+
+		const nextResources = {
+			...colony.resources,
+			food: Math.max(0, colony.resources.food - foodUse),
+			water: Math.max(0, colony.resources.water - waterUse),
+		};
+
+		if (colony.resources.water > 3 && nextResources.water <= 3) {
+			logEvent(
+				tx,
+				colony._id,
+				"crisis",
+				"CRISIS: WATER RESERVES DANGEROUSLY LOW",
+			);
+		}
+
+		// Promote queued jobs to active.
+		const queuedJobs = getJobsByStatus(tx, colony._id, "queued");
+		for (const job of queuedJobs) {
+			tx.update(jobs)
+				.set({ status: "active", startedAt: job.startedAt || now })
+				.where(eq(jobs._id, job._id))
+				.run();
+		}
+
+		// Leader auto-plans hunt/build when resources are low, gated by policy reliability.
+		const activeJobs = getJobsByStatus(tx, colony._id, "active");
+
+		if (
+			nextResources.food < policy.foodEmergencyThreshold &&
+			!hasConflictingStrategicJob("leader_plan_hunt", activeJobs) &&
+			canTakePolicyAction()
+		) {
+			queueJob(
+				tx,
+				colony._id,
+				"leader_plan_hunt",
+				"leader",
+				upgrades,
+				runtime,
+				null,
+				selectBestCat(tx, colony._id, "hunter"),
+			);
+		}
+
+		if (
+			nextResources.materials < policy.houseMaterialsRequired &&
+			!hasConflictingStrategicJob("leader_plan_house", activeJobs) &&
+			canTakePolicyAction()
+		) {
+			queueJob(
+				tx,
+				colony._id,
+				"leader_plan_house",
+				"leader",
+				upgrades,
+				runtime,
+				null,
+				selectBestCat(tx, colony._id, "architect"),
+			);
+		}
+
+		// Ritual from player request, only if resources are stable and policy roll passes.
+		if (
+			shouldStartRitual(colony.ritualRequestedAt, nextResources, activeJobs) &&
+			canTakePolicyAction()
+		) {
+			queueJob(
+				tx,
+				colony._id,
+				"ritual",
+				"leader",
+				upgrades,
+				runtime,
+				null,
+				selectBestCat(tx, colony._id, "ritualist"),
+			);
+			tx.update(colonies)
+				.set({ ritualRequestedAt: null })
+				.where(eq(colonies._id, colony._id))
+				.run();
+			logEvent(
+				tx,
+				colony._id,
+				"ritual_ready",
+				"Leader approved a ritual window.",
+			);
+		}
+
+		const patchedResources = { ...nextResources };
+		let automationTier = colony.automationTier ?? 0;
+		let globalUpgradePoints = colony.globalUpgradePoints ?? 0;
+
+		for (const cat of aliveCats) {
+			const survival = applySurvivalTick(
+				cat.needs,
+				{
+					food: patchedResources.food,
+					water: patchedResources.water,
+				},
+				elapsedSec * runtime.resourceDecayMultiplier,
+				{
+					needsDecayMultiplier: policy.needsDecayMultiplier,
+					needsDamageMultiplier: policy.needsDamageMultiplier,
+				},
+			);
+
+			tx.update(cats)
+				.set({ needs: survival.nextNeeds })
+				.where(eq(cats._id, cat._id))
+				.run();
+
+			if (survival.dehydratingStarted) {
+				logEvent(tx, colony._id, "crisis", `${cat.name} started dehydrating.`, [
+					cat._id,
+				]);
+			}
+
+			if (survival.recoveredFromDehydration) {
+				logEvent(
+					tx,
+					colony._id,
+					"recovery",
+					`${cat.name} recovered from dehydration.`,
+					[cat._id],
+				);
+			}
+
+			if (survival.died) {
+				tx.update(cats)
+					.set({ deathTime: now, currentTask: null })
+					.where(eq(cats._id, cat._id))
+					.run();
+				logEvent(
+					tx,
+					colony._id,
+					"death",
+					`${cat.name} died from ${
+						survival.nextNeeds.thirst === 0 && survival.nextNeeds.hunger === 0
+							? "starvation and dehydration"
+							: survival.nextNeeds.thirst === 0
+								? "dehydration"
+								: "starvation"
+					}.`,
+					[cat._id],
+				);
+			}
+		}
+
+		const livingCats = getAliveCats(tx, colony._id);
+		if (livingCats.length === 0) {
+			resetGlobalRun(
+				tx,
+				{
+					...colony,
+					resources: patchedResources,
+					automationTier,
+					runStartedAt: colony.runStartedAt ?? colony.createdAt,
+				},
+				"all-cats-dead",
+			);
+			return { ok: true, reset: true };
+		}
+
+		// Complete due jobs.
+		const dueJobs = activeJobs.filter((job) => job.endsAt <= now);
+		const activeOrQueuedJobs: Array<{
+			kind: JobKind;
+			metadata?: Record<string, unknown>;
+		}> = [
+			...activeJobs.map((job) => ({
+				kind: job.kind,
+				metadata: job.metadata ?? undefined,
+			})),
+			...queuedJobs.map((job) => ({
+				kind: job.kind,
+				metadata: job.metadata ?? undefined,
+			})),
+		];
+
+		for (const job of dueJobs) {
+			const assignedCat = job.assignedCatId
+				? (tx
+						.select()
+						.from(cats)
+						.where(eq(cats._id, job.assignedCatId))
+						.get() ?? null)
+				: null;
+
+			if (job.kind === "supply_food" || job.kind === "supply_water") {
+				const resourceKey = job.kind === "supply_food" ? "food" : "water";
+				patchedResources[resourceKey] += 8;
+
+				if (job.requestedByPlayerId) {
+					const player = tx
+						.select()
+						.from(players)
+						.where(eq(players._id, job.requestedByPlayerId))
+						.get();
+					if (player) {
+						tx.update(players)
+							.set({
+								lifetimeContribution: {
+									...player.lifetimeContribution,
+									[resourceKey]: player.lifetimeContribution[resourceKey] + 8,
+								},
+							})
+							.where(eq(players._id, player._id))
+							.run();
+					}
+				}
+			}
+
+			if (job.kind === "leader_plan_hunt" && canTakePolicyAction()) {
+				const hunter = selectBestCat(tx, colony._id, "hunter");
+				queueJob(
+					tx,
+					colony._id,
+					"hunt_expedition",
+					"leader",
+					upgrades,
+					runtime,
+					null,
+					hunter,
+				);
+				activeOrQueuedJobs.push({ kind: "hunt_expedition" });
+			}
+
+			if (job.kind === "leader_plan_house") {
+				queuePlannedHouseJobs(
+					tx,
+					colony._id,
+					patchedResources,
+					policy,
+					activeOrQueuedJobs,
+					upgrades,
+					runtime,
+					canTakePolicyAction,
+				);
+			}
+
+			if (job.kind === "hunt_expedition" && assignedCat) {
+				const roleXp = defaultRoleXp(assignedCat);
+				const reward = getHuntReward(
+					assignedCat.stats.hunting,
+					assignedCat.specialization ?? null,
+					roleXp.hunter,
+					upgrades,
+				);
+				patchedResources.food += reward;
+
+				const nextRoleXp = { ...roleXp, hunter: roleXp.hunter + 1 };
+				tx.update(cats)
+					.set({
+						roleXp: nextRoleXp,
+						specialization: nextSpecialization(
+							"hunter",
+							nextRoleXp.hunter,
+							assignedCat.specialization ?? null,
+						),
+						stats: {
+							...assignedCat.stats,
+							hunting: Math.min(100, assignedCat.stats.hunting + 0.4),
+						},
+					})
+					.where(eq(cats._id, assignedCat._id))
+					.run();
+			}
+
+			if (job.kind === "build_house" && assignedCat) {
+				const phase = String(
+					(job.metadata as Record<string, unknown> | null)?.phase ??
+						"gather_materials",
+				);
+				if (phase === "construct_house") {
+					if (
+						patchedResources.water >= policy.houseWaterRequired &&
+						patchedResources.materials >= policy.houseMaterialsRequired
+					) {
+						patchedResources.water = Math.max(
+							0,
+							patchedResources.water - policy.houseWaterRequired,
+						);
+						patchedResources.materials = Math.max(
+							0,
+							patchedResources.materials - policy.houseMaterialsRequired,
+						);
+						automationTier =
+							Math.round(Math.min(10, automationTier + 0.05) * 100) / 100;
+					} else {
+						queuePlannedHouseJobs(
+							tx,
+							colony._id,
+							patchedResources,
+							policy,
+							activeOrQueuedJobs,
+							upgrades,
+							runtime,
+						);
+					}
+				} else {
+					patchedResources.materials += 12;
+				}
+
+				const roleXp = defaultRoleXp(assignedCat);
+				const nextRoleXp = { ...roleXp, architect: roleXp.architect + 1 };
+				tx.update(cats)
+					.set({
+						roleXp: nextRoleXp,
+						specialization: nextSpecialization(
+							"architect",
+							nextRoleXp.architect,
+							assignedCat.specialization ?? null,
+						),
+						stats: {
+							...assignedCat.stats,
+							building: Math.min(100, assignedCat.stats.building + 0.4),
+						},
+					})
+					.where(eq(cats._id, assignedCat._id))
+					.run();
+			}
+
+			if (job.kind === "ritual" && assignedCat) {
+				globalUpgradePoints += 1 + Math.floor(upgrades.ritual_mastery / 3);
+
+				const roleXp = defaultRoleXp(assignedCat);
+				const nextRoleXp = { ...roleXp, ritualist: roleXp.ritualist + 1 };
+				tx.update(cats)
+					.set({
+						roleXp: nextRoleXp,
+						specialization: nextSpecialization(
+							"ritualist",
+							nextRoleXp.ritualist,
+							assignedCat.specialization ?? null,
+						),
+					})
+					.where(eq(cats._id, assignedCat._id))
+					.run();
+			}
+
+			tx.update(jobs)
+				.set({ status: "completed", completedAt: now })
+				.where(eq(jobs._id, job._id))
+				.run();
+
+			logEvent(
+				tx,
+				colony._id,
+				"job_completed",
+				`Completed ${job.kind.replace(/_/g, " ")}.`,
+				assignedCat ? [assignedCat._id] : [],
+			);
+		}
+
+		const unattendedHours =
+			(now - (colony.lastPlayerActivityAt ?? now)) / 3_600_000;
+		const resilienceHours =
+			runtime.resilienceHoursOverride ??
+			getResilienceHours(upgrades, automationTier);
+
+		let criticalSince = colony.criticalSince ?? null;
+		if (
+			shouldTrackCritical(patchedResources, unattendedHours, resilienceHours)
+		) {
+			if (!criticalSince) {
+				criticalSince = now;
+			}
+
+			// Collapse if critical state exceeds configured threshold (default 5 min).
+			if (
+				shouldResetFromCritical(criticalSince, now, runtime.criticalMsOverride)
+			) {
+				resetGlobalRun(
+					tx,
+					{
+						...colony,
+						resources: patchedResources,
+						automationTier,
+						runStartedAt: colony.runStartedAt ?? colony.createdAt,
+					},
+					"unattended-collapse",
+				);
+				return { ok: true, reset: true };
+			}
+		} else {
+			criticalSince = null;
+		}
+
+		if (colony.resources.water <= 3 && patchedResources.water > 6) {
+			logEvent(
+				tx,
+				colony._id,
+				"recovery",
+				"Water reserves restored to safe levels.",
+			);
+		}
+
+		const nextStatus = nextColonyStatus(patchedResources);
+
+		tx.update(colonies)
+			.set({
+				resources: patchedResources,
+				status: nextStatus,
+				automationTier,
+				globalUpgradePoints,
+				criticalSince,
+				lastTick: now,
+				testRngSeed: rngSeed,
+			})
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		return {
+			ok: true,
+			colonyId: colony._id,
+			resources: patchedResources,
+			automationTier,
+			globalUpgradePoints,
+			policyTier,
+			reset: false,
+		};
+	});
+}
