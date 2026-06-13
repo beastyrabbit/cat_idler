@@ -32,7 +32,12 @@ export function createDb(
 	sqlite.pragma("synchronous = NORMAL");
 
 	const db = drizzle(sqlite, { schema });
-	migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+	try {
+		migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+	} catch (err) {
+		console.error(`[db] migration failed for ${dbPath}:`, err);
+		throw err;
+	}
 	return db;
 }
 

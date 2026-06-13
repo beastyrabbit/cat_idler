@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { presetFromTimeScale } from "@/lib/game/testAcceleration";
 
@@ -57,7 +57,12 @@ async function postAction<T = unknown>(
 		throw new Error(message);
 	}
 
-	return result as T;
+	if (result === null) {
+		// 2xx with an unparseable body — don't report success on nothing
+		throw new Error("Empty response from server.");
+	}
+
+	return result;
 }
 
 export function useGameDashboard() {
@@ -70,6 +75,7 @@ export function useGameDashboard() {
 	const [busyAction, setBusyAction] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [showTestControls, setShowTestControls] = useState(false);
+	const lastFrameAtRef = useRef(0);
 
 	useEffect(() => {
 		if (!error) return;
@@ -104,13 +110,20 @@ export function useGameDashboard() {
 		source.addEventListener("dashboard", (event) => {
 			try {
 				setDashboard(JSON.parse((event as MessageEvent).data));
+				lastFrameAtRef.current = Date.now();
 			} catch (err) {
 				console.warn("Failed to parse dashboard frame:", err);
 			}
 		});
 
+		source.addEventListener("error", () => {
+			// server-sent failure frame (dashboard read failed) — staleness is
+			// surfaced via connectionLost while EventSource reconnects
+		});
+
 		source.onerror = () => {
-			// keep last known state; EventSource retries on its own
+			// keep last known state; EventSource retries on its own.
+			// connectionLost flags staleness if this persists.
 		};
 
 		return () => source.close();
@@ -152,6 +165,11 @@ export function useGameDashboard() {
 	const accelerationPreset = useMemo(() => {
 		return presetFromTimeScale(colony?.testTimeScale);
 	}, [colony?.testTimeScale]);
+
+	// Stale-data indicator: frames normally arrive every second; if none
+	// landed for a while the stream is down and the data on screen is old.
+	const connectionLost =
+		lastFrameAtRef.current > 0 && now - lastFrameAtRef.current > 5000;
 
 	async function runAction<T>(
 		actionKey: string,
@@ -287,5 +305,8 @@ export function useGameDashboard() {
 		// Leader
 		leader: dashboard?.leader ?? null,
 		onlineCount: dashboard?.onlineCount ?? 0,
+
+		// Connection
+		connectionLost,
 	};
 }

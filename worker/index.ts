@@ -2,9 +2,14 @@ import { getDb } from "../db/client";
 import { ensureGlobalState, workerTick } from "../server/game";
 
 const tickMs = Number(process.env.WORKER_TICK_MS ?? 1000);
+// A broken DB (corruption, disk full, schema drift) fails every tick; exit
+// after this many consecutive failures so a supervisor restart is visible
+// instead of a silent spin.
+const MAX_CONSECUTIVE_FAILURES = 30;
 const db = getDb();
 
 let running = false;
+let consecutiveFailures = 0;
 
 function runTick() {
 	if (running) {
@@ -15,8 +20,16 @@ function runTick() {
 	const start = Date.now();
 	try {
 		workerTick(db);
+		consecutiveFailures = 0;
 	} catch (error) {
+		consecutiveFailures += 1;
 		console.error("[worker] tick failed:", error);
+		if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+			console.error(
+				`[worker] ${consecutiveFailures} consecutive tick failures — exiting`,
+			);
+			process.exit(1);
+		}
 	} finally {
 		const duration = Date.now() - start;
 		if (duration > tickMs) {

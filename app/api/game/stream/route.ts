@@ -5,18 +5,29 @@
  * simulation at the same cadence, so every frame reflects a fresh tick.
  * The worker runs in a separate process, so updates are read from SQLite
  * rather than an in-memory bus.
+ *
+ * On a dashboard read failure the stream sends an `error` event and
+ * closes; the client's EventSource reconnects and the hook surfaces
+ * staleness via `connectionLost`.
  */
 
 import { getDb } from "@/db/client";
-import { ensureGlobalColony, getGlobalDashboard } from "@/server/game";
+import { ensureGlobalState, getGlobalDashboard } from "@/server/game";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const PUSH_INTERVAL_MS = 1000;
 
 export async function GET(request: Request) {
-	const db = getDb();
-	ensureGlobalColony(db);
+	let db: ReturnType<typeof getDb>;
+	try {
+		db = getDb();
+		ensureGlobalState(db); // transactional bootstrap
+	} catch (err) {
+		console.error("[stream] bootstrap failed:", err);
+		return new Response("Game backend unavailable", { status: 503 });
+	}
 
 	const encoder = new TextEncoder();
 
@@ -45,7 +56,18 @@ export async function GET(request: Request) {
 						),
 					);
 				} catch (err) {
-					console.error("SSE dashboard push failed:", err);
+					if (closed) {
+						// enqueue raced a client disconnect — not a data failure
+						return;
+					}
+					console.error("[stream] dashboard push failed:", err);
+					try {
+						controller.enqueue(
+							encoder.encode(`event: error\ndata: "dashboard_failed"\n\n`),
+						);
+					} catch {
+						// stream already torn down
+					}
 					close();
 				}
 			};

@@ -6,7 +6,7 @@
  * upgrades, click boosting, the worker tick, and run resets.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { createDb, type GameDb } from "@/db/client";
@@ -301,3 +301,272 @@ describe("presence", () => {
 		expect(dashboard.onlineCount).toBe(2);
 	});
 });
+
+/** Force a job's deadline into the past so the next elapsing tick completes it. */
+function forceJobDue(database: GameDb, jobId: string) {
+	database
+		.update(jobs)
+		.set({ endsAt: Date.now() - 1000 })
+		.where(eq(jobs._id, jobId))
+		.run();
+}
+
+function setResources(
+	database: GameDb,
+	colonyId: string,
+	patch: Partial<{
+		food: number;
+		water: number;
+		herbs: number;
+		materials: number;
+		blessings: number;
+	}>,
+) {
+	const colony = ensureGlobalColony(database);
+	database
+		.update(colonies)
+		.set({ resources: { ...colony.resources, ...patch } })
+		.where(eq(colonies._id, colonyId))
+		.run();
+}
+
+function eventMessages(database: GameDb): string[] {
+	return (getGlobalDashboard(database)?.events ?? []).map(
+		(event: { message: string }) => event.message,
+	);
+}
+
+describe("upgrade persistence across run reset", () => {
+	it("keeps upgrade levels, points, and blessings through a colony collapse", () => {
+		const colony = ensureGlobalColony(db);
+
+		db.update(colonies)
+			.set({ globalUpgradePoints: 20 })
+			.where(eq(colonies._id, colony._id))
+			.run();
+		purchaseUpgrade(db, { ...SESSION, key: "click_power" }); // cost 2
+		purchaseUpgrade(db, { ...SESSION, key: "click_power" }); // cost 4
+		setResources(db, colony._id, { food: 0, water: 0, blessings: 3 });
+		db.update(cats)
+			.set({ needs: { hunger: 0, thirst: 0, rest: 50, health: 1 } })
+			.where(eq(cats.colonyId, colony._id))
+			.run();
+
+		advanceTime(db, 3600);
+		const result = workerTick(db) as { reset?: boolean };
+		expect(result.reset).toBe(true);
+
+		const after = ensureGlobalColony(db);
+		expect(after.globalUpgradePoints).toBe(20 - 2 - 4);
+		expect(after.resources).toEqual({
+			food: 24,
+			water: 24,
+			herbs: 8,
+			materials: 0,
+			blessings: 3,
+		});
+
+		const upgrade = getGlobalDashboard(db)?.upgrades.find(
+			(u: { key: string }) => u.key === "click_power",
+		);
+		expect(upgrade?.level).toBe(2);
+	});
+});
+
+describe("water crisis and recovery events", () => {
+	it("logs the crisis headline when water crosses the threshold", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 4 });
+
+		// 5 cats over an hour consume ~5 water — crosses 4 -> <= 3
+		advanceTime(db, 3600);
+		workerTick(db);
+
+		expect(eventMessages(db)).toContain(
+			"CRISIS: WATER RESERVES DANGEROUSLY LOW",
+		);
+	});
+
+	it("logs recovery when a supply job lifts water back above safe levels", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 0 });
+
+		const { jobId } = requestJob(db, { ...SESSION, kind: "supply_water" }) as {
+			jobId: string;
+		};
+		workerTick(db); // promote queued -> active (sub-second tick is fine for promotion? no — needs elapsed)
+		advanceTime(db, 2);
+		workerTick(db);
+		forceJobDue(db, jobId);
+		advanceTime(db, 2);
+		workerTick(db); // completes: water 0 -> ~8 (> 6, from <= 3)
+
+		expect(eventMessages(db)).toContain(
+			"Water reserves restored to safe levels.",
+		);
+	});
+});
+
+describe("build pipeline orchestration", () => {
+	it("queues material gathering as a house prerequisite and pays out on completion", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 100, materials: 0 });
+		// Seed chosen so the leader's policy-reliability roll passes for every
+		// tier (second roll in the chain is 0.088; worst-case gate is 0.6).
+		setTestRngSeed(db, 42);
+
+		const { jobId } = requestJob(db, {
+			...SESSION,
+			kind: "leader_plan_house",
+		}) as { jobId: string };
+		forceJobDue(db, jobId);
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const planJob = db.select().from(jobs).where(eq(jobs._id, jobId)).get();
+		expect(planJob?.status).toBe("completed");
+
+		// Plenty of water but no materials -> planner queues the gather phase.
+		const gather = db
+			.select()
+			.from(jobs)
+			.where(and(eq(jobs.colonyId, colony._id), eq(jobs.kind, "build_house")))
+			.all()
+			.find(
+				(job) =>
+					(job.metadata as { phase?: string })?.phase === "gather_materials",
+			);
+		expect(gather).toBeDefined();
+		expect((gather?.metadata as { reason?: string })?.reason).toBe(
+			"house_prereq",
+		);
+
+		const materialsBefore = ensureGlobalColony(db).resources.materials;
+		forceJobDue(db, gather!._id);
+		advanceTime(db, 2);
+		workerTick(db);
+
+		expect(ensureGlobalColony(db).resources.materials).toBe(
+			materialsBefore + 12,
+		);
+	});
+
+	it("deducts resources and raises automation when a house is constructed", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 100, materials: 100 });
+
+		const builder = getAliveCatsForTest(db, colony._id)[0];
+		db.insert(jobs)
+			.values({
+				_id: "construct-test-job",
+				colonyId: colony._id,
+				kind: "build_house",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: builder._id,
+				baseDurationSec: 10,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: Date.now(),
+				startedAt: Date.now(),
+				endsAt: Date.now() - 1000,
+				metadata: { phase: "construct_house" },
+			})
+			.run();
+
+		const before = ensureGlobalColony(db);
+		advanceTime(db, 2);
+		const result = workerTick(db) as {
+			policyTier: "simple" | "normal" | "excellent";
+			automationTier: number;
+			resources: { water: number; materials: number };
+		};
+
+		const requirements = {
+			simple: { water: 10, materials: 12 },
+			normal: { water: 8, materials: 10 },
+			excellent: { water: 6, materials: 8 },
+		}[result.policyTier];
+
+		expect(result.automationTier).toBeCloseTo(
+			(before.automationTier ?? 0) + 0.05,
+			5,
+		);
+		expect(result.resources.materials).toBe(100 - requirements.materials);
+		// small consumption also drains water during the tick
+		expect(result.resources.water).toBeLessThanOrEqual(
+			100 - requirements.water,
+		);
+		expect(result.resources.water).toBeGreaterThan(
+			100 - requirements.water - 1,
+		);
+	});
+});
+
+describe("unattended collapse", () => {
+	it("resets the run when critical state persists past the threshold", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 0, water: 0 });
+		db.update(colonies)
+			.set({
+				lastPlayerActivityAt: Date.now() - 24 * 3600 * 1000,
+				criticalSince: Date.now() - 10 * 60 * 1000,
+			})
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		advanceTime(db, 5);
+		const result = workerTick(db) as { reset?: boolean };
+		expect(result.reset).toBe(true);
+
+		const history = db.select().from(runHistory).all();
+		expect(history).toHaveLength(1);
+		expect(history[0].reason).toBe("unattended-collapse");
+	});
+});
+
+describe("ritual completion", () => {
+	it("awards global upgrade points when a ritual job finishes", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 100 });
+		const ritualist = getAliveCatsForTest(db, colony._id)[0];
+
+		db.insert(jobs)
+			.values({
+				_id: "ritual-test-job",
+				colonyId: colony._id,
+				kind: "ritual",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: ritualist._id,
+				baseDurationSec: 10,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: Date.now(),
+				startedAt: Date.now(),
+				endsAt: Date.now() - 1000,
+				metadata: {},
+			})
+			.run();
+
+		const pointsBefore = ensureGlobalColony(db).globalUpgradePoints ?? 0;
+		advanceTime(db, 2);
+		workerTick(db);
+
+		// +1 base (ritual_mastery is level 0)
+		expect(ensureGlobalColony(db).globalUpgradePoints).toBe(pointsBefore + 1);
+	});
+});
+
+function getAliveCatsForTest(database: GameDb, colonyId: string) {
+	return database
+		.select()
+		.from(cats)
+		.where(eq(cats.colonyId, colonyId))
+		.all()
+		.filter((cat) => cat.deathTime === null);
+}

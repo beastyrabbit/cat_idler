@@ -3,7 +3,12 @@
  *
  * POST { action, ...payload }. Soft failures (e.g. "ritual already
  * pending") return 200 with { ok: false, message } — the client treats
- * them as inline notices. Invalid input or unexpected errors return 4xx.
+ * them as inline notices. Game-rule rejections return 400 with their
+ * message; unexpected internal errors are logged server-side and return
+ * a generic 500.
+ *
+ * Test actions (advanceTime, setTestAcceleration, setTestRngSeed) are
+ * only available outside production unless GAME_ENABLE_TEST_ACTIONS=1.
  */
 
 import { NextResponse } from "next/server";
@@ -22,6 +27,7 @@ import {
 	workerTick,
 } from "@/server/game";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const JOB_KINDS: PlayerJobKind[] = [
@@ -43,6 +49,16 @@ const UPGRADE_KEYS = [
 
 const ACCELERATION_PRESETS = ["off", "fast", "turbo"] as const;
 
+/** Largest time skip a test may request (24h). */
+const MAX_ADVANCE_SECONDS = 86_400;
+
+function testActionsEnabled(): boolean {
+	return (
+		process.env.GAME_ENABLE_TEST_ACTIONS === "1" ||
+		process.env.NODE_ENV !== "production"
+	);
+}
+
 function requireString(value: unknown, name: string): string {
 	if (typeof value !== "string" || value.length === 0) {
 		throw new Error(`Missing or invalid ${name}.`);
@@ -50,9 +66,27 @@ function requireString(value: unknown, name: string): string {
 	return value;
 }
 
-export async function POST(request: Request) {
-	const db = getDb();
+/** Internal failures whose details must not reach the client. */
+function isInternalError(err: unknown): boolean {
+	if (err instanceof TypeError || err instanceof RangeError) {
+		return true;
+	}
+	// better-sqlite3 throws SqliteError (name + SQLITE_* code)
+	const candidate = err as { name?: string; code?: string };
+	return (
+		candidate?.name === "SqliteError" ||
+		(typeof candidate?.code === "string" && candidate.code.startsWith("SQLITE"))
+	);
+}
 
+function testActionsDisabledResponse() {
+	return NextResponse.json(
+		{ ok: false, message: "Test actions are disabled." },
+		{ status: 404 },
+	);
+}
+
+export async function POST(request: Request) {
 	let body: Record<string, unknown>;
 	try {
 		body = await request.json();
@@ -66,6 +100,8 @@ export async function POST(request: Request) {
 	const action = body.action;
 
 	try {
+		const db = getDb();
+
 		switch (action) {
 			case "ensure": {
 				return NextResponse.json({ colonyId: ensureGlobalState(db) });
@@ -111,6 +147,9 @@ export async function POST(request: Request) {
 			}
 
 			case "setTestAcceleration": {
+				if (!testActionsEnabled()) {
+					return testActionsDisabledResponse();
+				}
 				const preset = body.preset as (typeof ACCELERATION_PRESETS)[number];
 				if (!ACCELERATION_PRESETS.includes(preset)) {
 					throw new Error("Unknown acceleration preset.");
@@ -119,9 +158,18 @@ export async function POST(request: Request) {
 			}
 
 			case "advanceTime": {
+				if (!testActionsEnabled()) {
+					return testActionsDisabledResponse();
+				}
 				const seconds = Number(body.seconds);
-				if (!Number.isFinite(seconds)) {
-					throw new Error("Invalid seconds.");
+				if (
+					!Number.isFinite(seconds) ||
+					seconds < 1 ||
+					seconds > MAX_ADVANCE_SECONDS
+				) {
+					throw new Error(
+						`Invalid seconds (must be 1..${MAX_ADVANCE_SECONDS}).`,
+					);
 				}
 				const result = advanceTime(db, seconds);
 				// Apply the skipped time immediately so tests see the effect
@@ -131,6 +179,9 @@ export async function POST(request: Request) {
 			}
 
 			case "setTestRngSeed": {
+				if (!testActionsEnabled()) {
+					return testActionsDisabledResponse();
+				}
 				const seed = body.seed;
 				if (seed !== null && typeof seed !== "number") {
 					throw new Error("Invalid seed.");
@@ -145,7 +196,19 @@ export async function POST(request: Request) {
 				);
 		}
 	} catch (err) {
-		const message = err instanceof Error ? err.message : "Action failed.";
-		return NextResponse.json({ ok: false, message }, { status: 400 });
+		console.error(`[actions] ${String(action)} failed:`, err);
+
+		if (isInternalError(err) || !(err instanceof Error)) {
+			return NextResponse.json(
+				{ ok: false, message: "Something went wrong on the server." },
+				{ status: 500 },
+			);
+		}
+
+		// Game-rule rejection (e.g. "Not enough ritual points.") — user-facing.
+		return NextResponse.json(
+			{ ok: false, message: err.message },
+			{ status: 400 },
+		);
 	}
 }

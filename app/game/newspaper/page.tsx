@@ -715,6 +715,7 @@ export default function CatfordExaminerPage() {
     updateNickname,
     leader,
     onlineCount,
+    connectionLost,
   } = useGameDashboard();
 
   const [expandedCatId, setExpandedCatId] = useState<string | null>(null);
@@ -1181,6 +1182,26 @@ export default function CatfordExaminerPage() {
             }}
           >
             CORRECTION NOTICE: {error}
+          </div>
+        )}
+
+        {connectionLost && (
+          <div
+            style={{
+              background: INK.ink,
+              color: INK.white,
+              padding: "8px 16px",
+              marginTop: 8,
+              fontFamily:
+                "var(--font-playfair, Georgia, 'Times New Roman', serif)",
+              fontWeight: 700,
+              fontSize: 13,
+              textAlign: "center",
+              letterSpacing: "0.05em",
+            }}
+          >
+            WIRE SERVICE INTERRUPTED: live dispatches lost — figures below may
+            be out of date. Reconnecting…
           </div>
         )}
 

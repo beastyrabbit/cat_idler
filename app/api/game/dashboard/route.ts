@@ -5,12 +5,21 @@
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/db/client";
-import { ensureGlobalColony, getGlobalDashboard } from "@/server/game";
+import { ensureGlobalState, getGlobalDashboard } from "@/server/game";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-	const db = getDb();
-	ensureGlobalColony(db);
-	return NextResponse.json(getGlobalDashboard(db));
+	try {
+		const db = getDb();
+		ensureGlobalState(db); // transactional bootstrap
+		return NextResponse.json(getGlobalDashboard(db));
+	} catch (err) {
+		console.error("[dashboard] failed:", err);
+		return NextResponse.json(
+			{ ok: false, message: "Game backend unavailable." },
+			{ status: 503 },
+		);
+	}
 }

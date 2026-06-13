@@ -101,7 +101,7 @@ export const colonies = sqliteTable(
 	},
 	(table) => [
 		index("colonies_by_status").on(table.status),
-		index("colonies_by_is_global").on(table.isGlobal),
+		uniqueIndex("colonies_by_is_global").on(table.isGlobal),
 	],
 );
 
