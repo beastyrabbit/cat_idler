@@ -595,8 +595,118 @@ describe("ritual completion", () => {
 		advanceTime(db, 2);
 		workerTick(db);
 
+		// The blessing is carried to the shrine first (Phase 6) — walk the
+		// ritualist home across a few ticks.
+		for (
+			let i = 0;
+			i < 10 &&
+			(ensureGlobalColony(db).globalUpgradePoints ?? 0) === pointsBefore;
+			i++
+		) {
+			advanceTime(db, 10);
+			workerTick(db);
+		}
+
 		// +1 base (ritual_mastery is level 0)
 		expect(ensureGlobalColony(db).globalUpgradePoints).toBe(pointsBefore + 1);
+	});
+});
+
+describe("shrine deposits", () => {
+	it("hunters carry the catch home and deposit it at the shrine", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 100 });
+		const hunter = getAliveCatsForTest(db, colony._id)[0];
+
+		// Far out in the field when the hunt wraps up.
+		db.update(cats)
+			.set({ position: { map: "world", x: 6, y: 26 } })
+			.where(eq(cats._id, hunter._id))
+			.run();
+
+		db.insert(jobs)
+			.values({
+				_id: "hunt-deposit-job",
+				colonyId: colony._id,
+				kind: "hunt_expedition",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: hunter._id,
+				baseDurationSec: 10,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: Date.now(),
+				startedAt: Date.now(),
+				endsAt: Date.now() - 1000,
+				metadata: {},
+			})
+			.run();
+
+		const foodBefore = ensureGlobalColony(db).resources.food;
+		advanceTime(db, 2);
+		workerTick(db);
+
+		// Yield is on the cat's back, not in the pantry.
+		let carrier = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === hunter._id,
+		)!;
+		expect(carrier.carrying).not.toBeNull();
+		const carried = carrier.carrying!.amount;
+		expect(ensureGlobalColony(db).resources.food).toBeLessThan(
+			foodBefore + carried,
+		);
+		expect(carrier.activity).toBe("returning");
+		expect(carrier.destination).toEqual({ map: "world", x: 6, y: 6 });
+
+		// Walk home (20 tiles at 0.5/s) and deposit.
+		for (let i = 0; i < 8; i++) {
+			advanceTime(db, 10);
+			workerTick(db);
+		}
+
+		carrier = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === hunter._id,
+		)!;
+		expect(carrier.carrying).toBeNull();
+		expect(
+			eventMessages(db).some((message) => message.includes("to the shrine")),
+		).toBe(true);
+	});
+
+	it("force-credits a straggler once the grace window lapses", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 50, water: 100 });
+		const straggler = getAliveCatsForTest(db, colony._id)[0];
+
+		db.update(cats)
+			.set({
+				position: { map: "world", x: 60, y: 60 },
+				carrying: { kind: "food", amount: 10, jobEndedAt: Date.now() - 61_000 },
+			})
+			.where(eq(cats._id, straggler._id))
+			.run();
+
+		const foodBefore = ensureGlobalColony(db).resources.food;
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const after = ensureGlobalColony(db).resources.food;
+		expect(after).toBeGreaterThan(foodBefore + 9 - 1); // +10 minus tick consumption
+
+		const carrier = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === straggler._id,
+		)!;
+		expect(carrier.carrying).toBeNull();
+
+		// No double credit on the next tick.
+		advanceTime(db, 2);
+		workerTick(db);
+		const depositEvents = (getGlobalDashboard(db)?.events ?? []).filter(
+			(event: { type: string }) => event.type === "shrine_deposit",
+		);
+		expect(depositEvents).toHaveLength(1);
 	});
 });
 

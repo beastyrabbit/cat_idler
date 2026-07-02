@@ -52,6 +52,14 @@ export interface PositionJson {
 	y: number;
 }
 
+/** Yield a cat is hauling back to the shrine. */
+export interface CarryingJson {
+	kind: "food" | "blessings";
+	amount: number;
+	/** When the producing job completed — drives the grace window. */
+	jobEndedAt: number;
+}
+
 export interface RoleXpJson {
 	hunter: number;
 	architect: number;
@@ -125,6 +133,7 @@ export const cats = sqliteTable(
 		destination: text("destination", {
 			mode: "json",
 		}).$type<PositionJson | null>(),
+		carrying: text("carrying", { mode: "json" }).$type<CarryingJson | null>(),
 		activity: text("activity", {
 			enum: ["idle", "traveling", "working", "returning"],
 		})

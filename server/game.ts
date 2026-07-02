@@ -67,6 +67,7 @@ import {
 import { generateName } from "@/lib/game/naming";
 import { configForTier, pickPolicyTier } from "@/lib/game/policy";
 import { rollSeeded } from "@/lib/game/seededRng";
+import { shouldDeposit } from "@/lib/game/shrine";
 import { applySurvivalTick } from "@/lib/game/survival";
 import { configForPreset } from "@/lib/game/testAcceleration";
 import {
@@ -1498,8 +1499,16 @@ export function workerTick(db: GameDb) {
 			}
 
 			if (survival.died) {
+				// A dying carrier's yield is salvaged rather than lost.
+				if (cat.carrying) {
+					if (cat.carrying.kind === "food") {
+						patchedResources.food += cat.carrying.amount;
+					} else {
+						globalUpgradePoints += cat.carrying.amount;
+					}
+				}
 				tx.update(cats)
-					.set({ deathTime: now, currentTask: null })
+					.set({ deathTime: now, currentTask: null, carrying: null })
 					.where(eq(cats._id, cat._id))
 					.run();
 				logEvent(
@@ -1618,7 +1627,6 @@ export function workerTick(db: GameDb) {
 					roleXp.hunter,
 					upgrades,
 				);
-				patchedResources.food += reward;
 
 				const nextRoleXp = { ...roleXp, hunter: roleXp.hunter + 1 };
 				tx.update(cats)
@@ -1633,6 +1641,8 @@ export function workerTick(db: GameDb) {
 							...assignedCat.stats,
 							hunting: Math.min(100, assignedCat.stats.hunting + 0.4),
 						},
+						// The catch is carried home and credited at the shrine.
+						carrying: { kind: "food", amount: reward, jobEndedAt: now },
 					})
 					.where(eq(cats._id, assignedCat._id))
 					.run();
@@ -1714,7 +1724,7 @@ export function workerTick(db: GameDb) {
 			}
 
 			if (job.kind === "ritual" && assignedCat) {
-				globalUpgradePoints += 1 + Math.floor(upgrades.ritual_mastery / 3);
+				const blessings = 1 + Math.floor(upgrades.ritual_mastery / 3);
 
 				const roleXp = defaultRoleXp(assignedCat);
 				const nextRoleXp = { ...roleXp, ritualist: roleXp.ritualist + 1 };
@@ -1726,23 +1736,33 @@ export function workerTick(db: GameDb) {
 							nextRoleXp.ritualist,
 							assignedCat.specialization ?? null,
 						),
+						// Blessings beam up once the ritualist reaches the shrine.
+						carrying: {
+							kind: "blessings",
+							amount: blessings,
+							jobEndedAt: now,
+						},
 					})
 					.where(eq(cats._id, assignedCat._id))
 					.run();
 			}
 
-			// Working cats head back to the village when the job wraps up.
+			// Working cats head back when the job wraps up — carriers
+			// (hunters, ritualists) make for the shrine to deposit.
 			if (
 				assignedCat &&
 				(job.kind === "hunt_expedition" ||
 					job.kind === "build_house" ||
 					job.kind === "ritual")
 			) {
-				const homeSpot = pickWanderTarget(
-					VILLAGE_ANCHOR,
-					nextMovementRoll(),
-					nextMovementRoll(),
-				);
+				const homeSpot =
+					job.kind === "build_house"
+						? pickWanderTarget(
+								VILLAGE_ANCHOR,
+								nextMovementRoll(),
+								nextMovementRoll(),
+							)
+						: VILLAGE_ANCHOR;
 				tx.update(cats)
 					.set({
 						destination: { map: "world", ...homeSpot },
@@ -1779,6 +1799,33 @@ export function workerTick(db: GameDb) {
 				? { x: cat.destination.x, y: cat.destination.y }
 				: null;
 			const activity = cat.activity ?? "idle";
+
+			// Carried yields deposit at the shrine — or force-credit once the
+			// grace window runs out, so cosmetics can't lose resources.
+			if (
+				cat.carrying &&
+				shouldDeposit(cat.carrying, worldPos, VILLAGE_ANCHOR, now)
+			) {
+				if (cat.carrying.kind === "food") {
+					patchedResources.food += cat.carrying.amount;
+				} else {
+					globalUpgradePoints += cat.carrying.amount;
+				}
+				tx.update(cats)
+					.set({ carrying: null })
+					.where(eq(cats._id, cat._id))
+					.run();
+				logEvent(
+					tx,
+					colony._id,
+					"shrine_deposit",
+					cat.carrying.kind === "food"
+						? `${cat.name} delivered ${Math.round(cat.carrying.amount)} food to the shrine.`
+						: `${cat.name}'s ritual beamed ${cat.carrying.amount} blessing${cat.carrying.amount === 1 ? "" : "s"} up to the players.`,
+					[cat._id],
+					{ kind: cat.carrying.kind, amount: cat.carrying.amount },
+				);
+			}
 
 			if (!destination) {
 				if (activity === "traveling" || activity === "returning") {

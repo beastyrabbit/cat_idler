@@ -10,6 +10,7 @@ export interface MapCat {
 	position: { map: "colony" | "world"; x: number; y: number };
 	currentTask: string | null;
 	activity?: "idle" | "traveling" | "working" | "returning" | null;
+	carrying?: { kind: "food" | "blessings"; amount: number } | null;
 }
 
 interface CatLayerProps {
@@ -93,6 +94,14 @@ export function CatLayer({ cats, leaderId }: CatLayerProps) {
 							{badge && (
 								<span className="absolute -right-2 -top-1 text-sm">
 									{badge}
+								</span>
+							)}
+							{cat.carrying && (
+								<span
+									className="absolute -left-3 top-0 text-base"
+									title={`Carrying ${Math.round(cat.carrying.amount)} ${cat.carrying.kind}`}
+								>
+									{cat.carrying.kind === "food" ? "🎒" : "✨"}
 								</span>
 							)}
 						</div>
