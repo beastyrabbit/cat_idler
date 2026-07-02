@@ -549,6 +549,211 @@ describe("build pipeline orchestration", () => {
 	});
 });
 
+describe("world depletion & tree chopping", () => {
+	it("drains the hunt site tile's food by the hauled share on a mid-job trip", () => {
+		const colony = ensureGlobalColony(db);
+		setTestRngSeed(db, 7);
+		const hunter = getAliveCatsForTest(db, colony._id)[0];
+
+		const site = { x: 10, y: 6 };
+		// Give the site tile a known, plentiful food stock as a plain field.
+		db.update(worldTiles)
+			.set({
+				type: "field",
+				resources: { food: 50, herbs: 0, water: 0 },
+				maxResources: { food: 60, herbs: 0 },
+				lastDepleted: 0,
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, site.x),
+					eq(worldTiles.y, site.y),
+				),
+			)
+			.run();
+
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: "hunt-drain-job",
+				colonyId: colony._id,
+				kind: "hunt_expedition",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: hunter._id,
+				baseDurationSec: 8 * 3600,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now,
+				startedAt: now - 1000,
+				endsAt: now + 8 * 3600 * 1000,
+				metadata: {
+					site,
+					accepted: true,
+					tripsDone: 0,
+					totalYield: 30,
+					nextTripAt: now - 1000,
+				},
+			})
+			.run();
+
+		// The hunter is standing at the site, ready to haul a share home.
+		db.update(cats)
+			.set({
+				activity: "working",
+				carrying: null,
+				position: { map: "world", ...site },
+			})
+			.where(eq(cats._id, hunter._id))
+			.run();
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const tile = db
+			.select()
+			.from(worldTiles)
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, site.x),
+					eq(worldTiles.y, site.y),
+				),
+			)
+			.get()!;
+		// splitYield(30, 3, 0) === 10 hauled off the site this trip.
+		expect(tile.resources.food).toBe(40);
+		expect(tile.lastDepleted).toBeGreaterThan(0);
+	});
+
+	it("chops the nearest explored forest into a permanent field on gather_materials completion", () => {
+		const colony = ensureGlobalColony(db);
+		const builder = getAliveCatsForTest(db, colony._id)[0];
+
+		// Flatten the map to non-forest, then plant one explored forest tile so
+		// the chop target is deterministic.
+		db.update(worldTiles)
+			.set({ type: "field" })
+			.where(eq(worldTiles.colonyId, colony._id))
+			.run();
+		const forest = { x: 6, y: 10 }; // Chebyshev 4 from the (6,6) anchor -> explored
+		db.update(worldTiles)
+			.set({
+				type: "forest",
+				resources: { food: 40, herbs: 5, water: 0 },
+				maxResources: { food: 60, herbs: 0 },
+				pathWear: 0,
+				lastDepleted: 0,
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, forest.x),
+					eq(worldTiles.y, forest.y),
+				),
+			)
+			.run();
+
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: "gather-chop-job",
+				colonyId: colony._id,
+				kind: "build_house",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: builder._id,
+				baseDurationSec: 10,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now,
+				startedAt: now - 1000,
+				endsAt: now - 1000,
+				metadata: { phase: "gather_materials" },
+			})
+			.run();
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const chopped = db
+			.select()
+			.from(worldTiles)
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, forest.x),
+					eq(worldTiles.y, forest.y),
+				),
+			)
+			.get()!;
+		expect(chopped.type).toBe("field");
+		expect(chopped.resources.food).toBe(0);
+		expect(chopped.resources.herbs).toBe(0);
+		expect(chopped.maxResources.food).toBe(5);
+		expect(chopped.lastDepleted).toBeGreaterThan(0);
+
+		expect(eventMessages(db)).toContain(
+			`${builder.name} chopped the forest at (6, 10) for lumber.`,
+		);
+	});
+
+	it("regrows a depleted field up to its cap and never resurrects a chopped forest's type", () => {
+		const colony = ensureGlobalColony(db);
+
+		// A chopped-forest remnant: permanently a field with a low food cap.
+		const spot = { x: 8, y: 8 };
+		db.update(worldTiles)
+			.set({
+				type: "field",
+				resources: { food: 0, herbs: 0, water: 0 },
+				maxResources: { food: 5, herbs: 0 },
+				lastDepleted: Date.now(),
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, spot.x),
+					eq(worldTiles.y, spot.y),
+				),
+			)
+			.run();
+
+		const read = () =>
+			db
+				.select()
+				.from(worldTiles)
+				.where(
+					and(
+						eq(worldTiles.colonyId, colony._id),
+						eq(worldTiles.x, spot.x),
+						eq(worldTiles.y, spot.y),
+					),
+				)
+				.get()!;
+
+		// One game-hour of regrowth: +1 food/hr at timeScale 1.
+		advanceTime(db, 3600);
+		workerTick(db);
+		let tile = read();
+		expect(tile.type).toBe("field");
+		expect(tile.resources.food).toBeGreaterThan(0);
+		expect(tile.resources.food).toBeLessThan(5);
+
+		// Several more hours can't push past the cap.
+		advanceTime(db, 6 * 3600);
+		workerTick(db);
+		tile = read();
+		expect(tile.resources.food).toBe(5);
+		expect(tile.type).toBe("field");
+	});
+});
+
 describe("unattended collapse", () => {
 	it("resets the run when critical state persists past the threshold", () => {
 		const colony = ensureGlobalColony(db);

@@ -29,6 +29,7 @@ import {
 	votes,
 	worldTiles,
 } from "@/db/schema";
+import { isForestType, regrowthAmount } from "@/lib/game/depletion";
 import { KICK_THRESHOLD, tallyVotes } from "@/lib/game/elections";
 import { inheritTraits, traitsToSpriteParams } from "@/lib/game/genetics";
 import { planHousePipeline } from "@/lib/game/housePlanner";
@@ -1559,6 +1560,45 @@ export function workerTick(db: GameDb) {
 				}
 			}
 		}
+		// Regrowth: depleted non-forest tiles slowly refill their food back
+		// toward the cap. Chopped forests keep their new low cap and never
+		// regain the forest type. Runs at most once a game-minute over just
+		// the tiles a haul has touched (lastDepleted > 0) to stay cheap.
+		if (minuteRolled) {
+			const regrow = regrowthAmount(elapsedSec * runtime.timeScale);
+			if (regrow > 0) {
+				const depletedTiles = tx
+					.select()
+					.from(worldTiles)
+					.where(
+						and(
+							eq(worldTiles.colonyId, colony._id),
+							gt(worldTiles.lastDepleted, 0),
+						),
+					)
+					.all();
+				for (const tile of depletedTiles) {
+					if (isForestType(tile.type)) {
+						continue;
+					}
+					const maxFood = tile.maxResources.food ?? 0;
+					const food = tile.resources.food ?? 0;
+					if (food >= maxFood) {
+						continue;
+					}
+					tx.update(worldTiles)
+						.set({
+							resources: {
+								...tile.resources,
+								food: Math.min(maxFood, food + regrow),
+							},
+						})
+						.where(eq(worldTiles._id, tile._id))
+						.run();
+				}
+			}
+		}
+
 		const zoneList: Zone[] = activeZones(tx, colony._id, now).map((zone) => ({
 			kind: zone.kind,
 			x1: zone.x1,
@@ -1603,6 +1643,39 @@ export function workerTick(db: GameDb) {
 				})
 				.map((tile) => ({ x: tile.x, y: tile.y }));
 			return cachedFoodTiles;
+		};
+
+		// Every haul off a hunt site eats into that tile's food. Drained by
+		// the integer share hauled (floored at 0); marks the tile depleted so
+		// the regrowth sweep above will slowly refill it (unless it's forest).
+		const drainHuntSite = (site: WorldPos | undefined, amount: number) => {
+			if (!site || amount <= 0) {
+				return;
+			}
+			const tile = tx
+				.select()
+				.from(worldTiles)
+				.where(
+					and(
+						eq(worldTiles.colonyId, colony._id),
+						eq(worldTiles.x, Math.round(site.x)),
+						eq(worldTiles.y, Math.round(site.y)),
+					),
+				)
+				.get();
+			if (!tile) {
+				return;
+			}
+			tx.update(worldTiles)
+				.set({
+					resources: {
+						...tile.resources,
+						food: Math.max(0, (tile.resources.food ?? 0) - Math.floor(amount)),
+					},
+					lastDepleted: now,
+				})
+				.where(eq(worldTiles._id, tile._id))
+				.run();
 		};
 
 		// Promote queued jobs to active; send assigned cats to the job site.
@@ -2255,6 +2328,9 @@ export function workerTick(db: GameDb) {
 					typeof meta.tripsDone === "number" ? meta.tripsDone : 0;
 				const reward = remainingYield(total, HUNT_TRIP_COUNT, tripsDone);
 
+				// The completion haul drains the last of the catch from the site.
+				drainHuntSite(meta.site as WorldPos | undefined, reward);
+
 				const nextRoleXp = { ...roleXp, hunter: roleXp.hunter + 1 };
 				tx.update(cats)
 					.set({
@@ -2336,6 +2412,59 @@ export function workerTick(db: GameDb) {
 					}
 				} else {
 					patchedResources.materials += 12;
+
+					// Materials come from felled timber: chop the nearest explored
+					// forest tile down to a permanent field. Chopped trees never
+					// grow back — the tile keeps a low food cap and the "field"
+					// type forever.
+					const exploredForests = tx
+						.select()
+						.from(worldTiles)
+						.where(eq(worldTiles.colonyId, colony._id))
+						.all()
+						.filter((tile) => {
+							if (!isForestType(tile.type)) {
+								return false;
+							}
+							const dist = Math.max(
+								Math.abs(tile.x - VILLAGE_ANCHOR.x),
+								Math.abs(tile.y - VILLAGE_ANCHOR.y),
+							);
+							return tile.pathWear > 62 || dist <= 6;
+						});
+					if (exploredForests.length > 0) {
+						let nearest = exploredForests[0];
+						let nearestDist = Math.max(
+							Math.abs(nearest.x - VILLAGE_ANCHOR.x),
+							Math.abs(nearest.y - VILLAGE_ANCHOR.y),
+						);
+						for (const tile of exploredForests) {
+							const dist = Math.max(
+								Math.abs(tile.x - VILLAGE_ANCHOR.x),
+								Math.abs(tile.y - VILLAGE_ANCHOR.y),
+							);
+							if (dist < nearestDist) {
+								nearest = tile;
+								nearestDist = dist;
+							}
+						}
+						tx.update(worldTiles)
+							.set({
+								type: "field",
+								resources: { ...nearest.resources, food: 0, herbs: 0 },
+								maxResources: { ...nearest.maxResources, food: 5 },
+								lastDepleted: now,
+							})
+							.where(eq(worldTiles._id, nearest._id))
+							.run();
+						logEvent(
+							tx,
+							colony._id,
+							"forest_chopped",
+							`${assignedCat.name} chopped the forest at (${nearest.x}, ${nearest.y}) for lumber.`,
+							[assignedCat._id],
+						);
+					}
 				}
 
 				const roleXp = defaultRoleXp(assignedCat);
@@ -2464,6 +2593,9 @@ export function workerTick(db: GameDb) {
 							upgrades,
 						);
 			const share = splitYield(total, HUNT_TRIP_COUNT, tripsDone);
+
+			// This trip's share is carried off the site tile.
+			drainHuntSite(meta.site as WorldPos | undefined, share);
 
 			tx.update(jobs)
 				.set({
