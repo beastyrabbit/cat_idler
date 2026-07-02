@@ -100,7 +100,11 @@ export function useGameDashboard() {
 			setSessionId(createSessionId());
 			setNickname("Guest Cat");
 		}
-		setShowTestControls(window.location.search.includes("test=1"));
+		// Visible with ?test=1, or always during local development.
+		setShowTestControls(
+			window.location.search.includes("test=1") ||
+				process.env.NODE_ENV === "development",
+		);
 	}, []);
 
 	// Live dashboard via SSE; EventSource reconnects automatically on drops.

@@ -27,6 +27,26 @@ const CAT_SHEET = "/images/cats/cat-sheet.png";
 // instead of gliding across the whole map.
 const lastRendered = new Map<string, { x: number; y: number }>();
 
+/**
+ * The sheet is a 360-degree turn: 8 direction groups x 4 walk frames,
+ * ordered S, SW, W, NW, N, NE, E, SE. Pick the group whose facing
+ * matches the screen-space movement vector.
+ */
+function directionGroup(dx: number, dy: number): number {
+	// World axes on screen: +x runs SE, +y runs SW.
+	const sx = dx - dy;
+	const sy = (dx + dy) / 2;
+	const angle = (Math.atan2(sy, sx) * 180) / Math.PI;
+	return Math.round(((((angle - 90) % 360) + 360) % 360) / 45) % 8;
+}
+
+/** Floating tool while a cat works, by trade. */
+const WORK_ICONS: Record<string, string> = {
+	hunter: "🏹",
+	architect: "🪓",
+	ritualist: "🔮",
+};
+
 interface CatLayerProps {
 	cats: MapCat[];
 	leaderId: string | null;
@@ -84,8 +104,14 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 					(Math.abs(worldPos.x - prev.x) > 4 ||
 						Math.abs(worldPos.y - prev.y) > 4);
 				lastRendered.set(cat._id, { x: worldPos.x, y: worldPos.y });
-				const facingLeft =
-					moving && cat.destination != null && cat.destination.x < worldPos.x;
+				const working = cat.activity === "working";
+				const group =
+					moving && cat.destination
+						? directionGroup(
+								cat.destination.x - worldPos.x,
+								cat.destination.y - worldPos.y,
+							)
+						: 0;
 				const badge =
 					(cat.activity ? ACTIVITY_BADGES[cat.activity] : null) ??
 					(cat.currentTask ? TASK_BADGES[cat.currentTask] : null);
@@ -118,12 +144,40 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 							<div
 								role="img"
 								aria-label={cat.name}
-								className={moving ? "cat-sprite cat-sprite-walk" : "cat-sprite"}
+								className={
+									working
+										? "cat-sprite cat-sprite-spin"
+										: moving
+											? "cat-sprite cat-sprite-walk"
+											: "cat-sprite"
+								}
+								style={
+									{
+										backgroundImage: `url(${CAT_SHEET})`,
+										transform: "scale(1.4)",
+										"--sheet-off": `${-group * 128}px`,
+									} as React.CSSProperties
+								}
+							/>
+							{/* Silhouette ghost so cats read through buildings */}
+							<div
+								aria-hidden
+								className="cat-sprite pointer-events-none absolute left-0 top-0"
 								style={{
 									backgroundImage: `url(${CAT_SHEET})`,
-									transform: `scale(1.4)${facingLeft ? " scaleX(-1)" : ""}`,
+									transform: "scale(1.4)",
+									filter: "brightness(0)",
+									opacity: 0.28,
+									zIndex: 99_990,
+									backgroundPositionX: `${-group * 128}px`,
 								}}
 							/>
+							{working && (
+								<span className="cat-work-icon" aria-hidden>
+									{(cat.specialization && WORK_ICONS[cat.specialization]) ||
+										"⚒️"}
+								</span>
+							)}
 							{cat.specialization && HAT_SPRITES[cat.specialization] && (
 								<img
 									src={HAT_SPRITES[cat.specialization]}

@@ -1591,12 +1591,16 @@ export function workerTick(db: GameDb) {
 			);
 		}
 
-		// Keep paws busy: whenever stores aren't full, the leader sends an
-		// idle cat out hunting (up to 3 expeditions at once).
+		// Keep paws busy: the leader keeps roughly a quarter of the colony
+		// out on expeditions at all times (more when food runs low).
 		const activeHunts = activeJobs.filter(
 			(job) => job.kind === "hunt_expedition",
 		).length;
-		if (nextResources.food < 90 && activeHunts < 3) {
+		const huntCap = Math.max(
+			2,
+			Math.floor(aliveCats.length / (nextResources.food < 50 ? 2 : 4)),
+		);
+		if (activeHunts < huntCap) {
 			const busyIds = new Set(
 				activeJobs.map((job) => job.assignedCatId).filter(Boolean),
 			);
