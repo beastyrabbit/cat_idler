@@ -8,7 +8,7 @@
  */
 
 export interface Carrying {
-	kind: "food" | "blessings";
+	kind: "food" | "blessings" | "materials";
 	amount: number;
 	jobEndedAt: number;
 }

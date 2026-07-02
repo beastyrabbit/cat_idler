@@ -82,6 +82,10 @@ export interface JobDestinationContext {
 	roll: number;
 	/** Construction site for build jobs (colony-translated to world). */
 	site?: WorldPos;
+	/** Nearest explored stone tile for a quarry expedition. */
+	quarrySite?: WorldPos;
+	/** Frontier tile an explore job is dispatched to reveal. */
+	exploreSite?: WorldPos;
 }
 
 /**
@@ -97,6 +101,10 @@ export function destinationForJob(
 			return { ...context.shrine };
 		case "build_house":
 			return context.site ? { ...context.site } : { ...context.anchor };
+		case "quarry":
+			return context.quarrySite ? { ...context.quarrySite } : null;
+		case "explore":
+			return context.exploreSite ? { ...context.exploreSite } : null;
 		case "hunt_expedition": {
 			if (context.foodTiles.length > 0) {
 				const clamped = Math.min(Math.max(context.roll, 0), 0.999999);

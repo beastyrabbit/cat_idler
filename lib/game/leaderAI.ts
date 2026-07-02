@@ -27,6 +27,14 @@ export const HUNT_CANCEL_RATIO = 1.1;
 export const STORAGE_RATIO = 0.9;
 /** Housing pressure (pop / (capacity + committed)) that triggers a den. */
 export const DEN_PRESSURE_THRESHOLD = 0.8;
+/** Below this materials/capacity ratio, the leader opens a quarry. */
+export const QUARRY_LOW_RATIO = 0.4;
+/** At or above this materials/capacity ratio, no new quarry is opened. */
+export const QUARRY_HOLD_RATIO = 0.6;
+/** Quarry expeditions the leader keeps running while materials are low. */
+export const QUARRY_TARGET = 1;
+/** Explore jobs the leader keeps running while a frontier remains. */
+export const SCOUT_TARGET = 2;
 /** Stores must exceed this fraction of capacity before food is tithed. */
 export const TITHE_FOOD_RATIO = 0.6;
 /** Food spent per blessing when tithing surplus. */
@@ -43,9 +51,20 @@ export interface LeaderSnapshot {
 	employedCats: number;
 	resources: { food: number; refined: number };
 	foodCapacity: number;
+	/** Materials in store and the cap they're clamped to. */
+	materials: number;
+	materialsCapacity: number;
 	housing: { capacity: number; committed: number };
 	/** hunt_expedition jobs in flight (active or queued). */
 	activeHunts: number;
+	/** quarry jobs in flight (active or queued). */
+	activeQuarries: number;
+	/** explore jobs in flight (active or queued). */
+	activeScouts: number;
+	/** An explored mountains/cave tile exists to quarry. */
+	hasQuarrySite: boolean;
+	/** An unexplored tile still sits on the reachable frontier. */
+	hasFrontier: boolean;
 	/** Den plans in flight: leader_plan_house or a build_house den. */
 	denPlansInFlight: number;
 	/** Storehouse builds in flight: build_house with a food_storage target. */
@@ -57,6 +76,8 @@ export interface LeaderSnapshot {
 export type LeaderDecision =
 	| { kind: "hunt"; count: number }
 	| { kind: "cancel_hunts" }
+	| { kind: "quarry"; count: number }
+	| { kind: "scout"; count: number }
 	| { kind: "build_den" }
 	| { kind: "build_storage" }
 	| { kind: "assign_workshop"; count: number }
@@ -113,6 +134,61 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 		}
 	}
 
+	// --- Quarry: keep one expedition running while materials run low.
+	// Hysteresis mirrors the hunts — dispatch below 40% of the materials
+	// cap, hold through the 40-60% band, and open nothing above 60%.
+	let quarriesPlanned = 0;
+	if (snapshot.hasQuarrySite) {
+		const materialsRatio = foodRatio(
+			snapshot.materials,
+			snapshot.materialsCapacity,
+		);
+		let wantQuarries = snapshot.activeQuarries;
+		if (materialsRatio < QUARRY_LOW_RATIO) {
+			wantQuarries = QUARRY_TARGET;
+		} else if (materialsRatio >= QUARRY_HOLD_RATIO) {
+			wantQuarries = 0;
+		}
+		const idleForQuarry = Math.max(0, snapshot.idleCats - huntsPlanned);
+		const roomForQuarry = Math.max(0, employmentRoom - huntsPlanned);
+		quarriesPlanned = Math.max(
+			0,
+			Math.min(
+				wantQuarries - snapshot.activeQuarries,
+				idleForQuarry,
+				roomForQuarry,
+			),
+		);
+		if (quarriesPlanned > 0) {
+			decisions.push({ kind: "quarry", count: quarriesPlanned });
+		}
+	}
+
+	// --- Scout: keep up to SCOUT_TARGET explore jobs out while any
+	// reachable frontier tile is still fogged.
+	let scoutsPlanned = 0;
+	if (snapshot.hasFrontier) {
+		const idleForScout = Math.max(
+			0,
+			snapshot.idleCats - huntsPlanned - quarriesPlanned,
+		);
+		const roomForScout = Math.max(
+			0,
+			employmentRoom - huntsPlanned - quarriesPlanned,
+		);
+		scoutsPlanned = Math.max(
+			0,
+			Math.min(
+				SCOUT_TARGET - snapshot.activeScouts,
+				idleForScout,
+				roomForScout,
+			),
+		);
+		if (scoutsPlanned > 0) {
+			decisions.push({ kind: "scout", count: scoutsPlanned });
+		}
+	}
+
 	// --- Storehouse: stores brushing the cap ---------------------------
 	if (ratio > STORAGE_RATIO && snapshot.storagePlansInFlight === 0) {
 		decisions.push({ kind: "build_storage" });
@@ -126,8 +202,11 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 		decisions.push({ kind: "build_den" });
 	}
 
-	// --- Workshops: staff idlers not already claimed by hunts ----------
-	const idleAfterHunts = Math.max(0, snapshot.idleCats - huntsPlanned);
+	// --- Workshops: staff idlers not already claimed by hunts/quarry/scout
+	const idleAfterHunts = Math.max(
+		0,
+		snapshot.idleCats - huntsPlanned - quarriesPlanned - scoutsPlanned,
+	);
 	const staffing = Math.min(snapshot.workshopsNeedingWorkers, idleAfterHunts);
 	if (staffing > 0) {
 		decisions.push({ kind: "assign_workshop", count: staffing });

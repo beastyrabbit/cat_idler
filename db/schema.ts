@@ -56,7 +56,7 @@ export interface PositionJson {
 
 /** Yield a cat is hauling back to the shrine. */
 export interface CarryingJson {
-	kind: "food" | "blessings";
+	kind: "food" | "blessings" | "materials";
 	amount: number;
 	/** When the producing job completed — drives the grace window. */
 	jobEndedAt: number;
@@ -276,6 +276,8 @@ export const jobs = sqliteTable(
 				"leader_plan_house",
 				"build_house",
 				"ritual",
+				"quarry",
+				"explore",
 			],
 		}).notNull(),
 		status: text("status", {

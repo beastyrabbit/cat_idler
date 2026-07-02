@@ -25,6 +25,8 @@ const JOB_LABELS: Record<string, string> = {
 	leader_plan_house: "Plan House",
 	build_house: "Build House",
 	ritual: "Shrine Ritual",
+	quarry: "Quarry Expedition",
+	explore: "Scouting",
 };
 
 const STATUS_STYLES: Record<string, string> = {

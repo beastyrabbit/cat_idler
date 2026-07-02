@@ -114,7 +114,9 @@ export type JobKind =
 	| "hunt_expedition"
 	| "leader_plan_house"
 	| "build_house"
-	| "ritual";
+	| "ritual"
+	| "quarry"
+	| "explore";
 
 export type JobStatus =
 	| "queued"

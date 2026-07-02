@@ -8,6 +8,9 @@ import {
 	type LeaderDecision,
 	type LeaderSnapshot,
 	planLeaderActions,
+	QUARRY_HOLD_RATIO,
+	QUARRY_LOW_RATIO,
+	SCOUT_TARGET,
 	STORAGE_RATIO,
 	TITHE_FOOD_AMOUNT,
 	TITHE_FOOD_RATIO,
@@ -25,8 +28,14 @@ function snap(overrides: Partial<LeaderSnapshot> = {}): LeaderSnapshot {
 		employedCats: 0,
 		resources: { food: 100, refined: 0 },
 		foodCapacity: CAP,
+		materials: 100,
+		materialsCapacity: CAP,
 		housing: { capacity: 40, committed: 0 },
 		activeHunts: 0,
+		activeQuarries: 0,
+		activeScouts: 0,
+		hasQuarrySite: false,
+		hasFrontier: false,
 		denPlansInFlight: 0,
 		storagePlansInFlight: 0,
 		workshopsNeedingWorkers: 0,
@@ -41,6 +50,16 @@ function kinds(decisions: LeaderDecision[]): string[] {
 function huntCount(decisions: LeaderDecision[]): number {
 	const hunt = decisions.find((d) => d.kind === "hunt");
 	return hunt && hunt.kind === "hunt" ? hunt.count : 0;
+}
+
+function quarryCount(decisions: LeaderDecision[]): number {
+	const quarry = decisions.find((d) => d.kind === "quarry");
+	return quarry && quarry.kind === "quarry" ? quarry.count : 0;
+}
+
+function scoutCount(decisions: LeaderDecision[]): number {
+	const scout = decisions.find((d) => d.kind === "scout");
+	return scout && scout.kind === "scout" ? scout.count : 0;
 }
 
 describe("leaderAI", () => {
@@ -354,6 +373,108 @@ describe("leaderAI", () => {
 				refined: TITHE_REFINED_AMOUNT,
 				blessings: 2,
 			});
+		});
+	});
+
+	describe("quarry expeditions", () => {
+		// Materials low enough to want stone, food high enough that hunts
+		// don't consume the idle cats first.
+		function quarrySnap(overrides: Partial<LeaderSnapshot> = {}) {
+			return snap({
+				resources: { food: CAP, refined: 0 },
+				materials: CAP * 0.3,
+				hasQuarrySite: true,
+				...overrides,
+			});
+		}
+
+		it("opens a quarry below the low ratio when a site is explored", () => {
+			expect(quarryCount(planLeaderActions(quarrySnap()))).toBe(1);
+		});
+
+		it("opens nothing without an explored quarry site", () => {
+			expect(
+				kinds(planLeaderActions(quarrySnap({ hasQuarrySite: false }))),
+			).not.toContain("quarry");
+		});
+
+		it("stops opening quarries above the hold ratio", () => {
+			expect(
+				quarryCount(
+					planLeaderActions(
+						quarrySnap({ materials: CAP * (QUARRY_HOLD_RATIO + 0.05) }),
+					),
+				),
+			).toBe(0);
+		});
+
+		it("does not open a quarry at exactly the low ratio", () => {
+			expect(
+				quarryCount(
+					planLeaderActions(quarrySnap({ materials: CAP * QUARRY_LOW_RATIO })),
+				),
+			).toBe(0);
+		});
+
+		it("holds inside the 40-60% band without opening a second", () => {
+			// One quarry already out, materials mid-band: hold, don't add.
+			expect(
+				quarryCount(
+					planLeaderActions(
+						quarrySnap({ materials: CAP * 0.5, activeQuarries: 1 }),
+					),
+				),
+			).toBe(0);
+			// No quarry out yet but inside the band: hysteresis keeps it shut.
+			expect(
+				quarryCount(
+					planLeaderActions(
+						quarrySnap({ materials: CAP * 0.5, activeQuarries: 0 }),
+					),
+				),
+			).toBe(0);
+		});
+
+		it("never opens a second quarry while one already runs", () => {
+			expect(
+				quarryCount(planLeaderActions(quarrySnap({ activeQuarries: 1 }))),
+			).toBe(0);
+		});
+	});
+
+	describe("scouting the frontier", () => {
+		function scoutSnap(overrides: Partial<LeaderSnapshot> = {}) {
+			return snap({
+				resources: { food: CAP, refined: 0 },
+				hasFrontier: true,
+				...overrides,
+			});
+		}
+
+		it("keeps up to the target number of scouts out while a frontier remains", () => {
+			expect(scoutCount(planLeaderActions(scoutSnap()))).toBe(SCOUT_TARGET);
+		});
+
+		it("plans no scouts when there is no frontier", () => {
+			expect(
+				kinds(planLeaderActions(scoutSnap({ hasFrontier: false }))),
+			).not.toContain("scout");
+		});
+
+		it("only tops the frontier up to the target", () => {
+			expect(
+				scoutCount(planLeaderActions(scoutSnap({ activeScouts: 1 }))),
+			).toBe(SCOUT_TARGET - 1);
+		});
+
+		it("plans no scouts once the target is already out", () => {
+			expect(
+				kinds(planLeaderActions(scoutSnap({ activeScouts: SCOUT_TARGET }))),
+			).not.toContain("scout");
+		});
+
+		it("never sends more scouts than the idle cats available", () => {
+			expect(scoutCount(planLeaderActions(scoutSnap({ idleCats: 1 })))).toBe(1);
 		});
 	});
 

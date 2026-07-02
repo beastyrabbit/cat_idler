@@ -996,6 +996,187 @@ describe("shrine deposits", () => {
 	});
 });
 
+describe("quarry expeditions", () => {
+	it("hauls materials off a quarry site and banks them at the shrine", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 200, materials: 0 });
+		const miner = getAliveCatsForTest(db, colony._id)[0];
+
+		const site = { x: 6, y: 20 };
+		db.update(cats)
+			.set({
+				position: { map: "world", ...site },
+				activity: "working",
+				currentTask: "quarry",
+				carrying: null,
+			})
+			.where(eq(cats._id, miner._id))
+			.run();
+
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: "quarry-haul-job",
+				colonyId: colony._id,
+				kind: "quarry",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: miner._id,
+				baseDurationSec: 2 * 3600,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now - 3600 * 1000,
+				startedAt: now - 3600 * 1000,
+				endsAt: now + 3600 * 1000,
+				metadata: {
+					accepted: true,
+					site,
+					tripsDone: 0,
+					totalYield: 15,
+					nextTripAt: now - 1000,
+				},
+			})
+			.run();
+
+		const materialsBefore = ensureGlobalColony(db).resources.materials;
+		advanceTime(db, 2);
+		workerTick(db);
+
+		// A share of the load is on the miner's back, heading for the shrine.
+		let carrier = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === miner._id,
+		)!;
+		expect(carrier.carrying).not.toBeNull();
+		expect(carrier.carrying!.kind).toBe("materials");
+		// splitYield(15, 3, 0) === 5 hauled this trip.
+		expect(carrier.carrying!.amount).toBe(5);
+		expect(carrier.activity).toBe("returning");
+
+		// Walk home (14 tiles at 0.5/s) and deposit at the shrine.
+		for (let i = 0; i < 10; i++) {
+			advanceTime(db, 10);
+			workerTick(db);
+		}
+
+		carrier = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === miner._id,
+		)!;
+		expect(carrier.carrying).toBeNull();
+		expect(ensureGlobalColony(db).resources.materials).toBe(
+			materialsBefore + 5,
+		);
+		expect(
+			eventMessages(db).some((message) =>
+				message.includes("materials to the shrine"),
+			),
+		).toBe(true);
+	});
+});
+
+describe("explore expeditions", () => {
+	it("sends a scout to an unexplored frontier tile", () => {
+		const colony = ensureGlobalColony(db);
+		// Clear worn paths so only tiles within village sight (Chebyshev 6)
+		// count as explored — the frontier is then the ring just beyond.
+		db.update(worldTiles)
+			.set({ pathWear: 0 })
+			.where(eq(worldTiles.colonyId, colony._id))
+			.run();
+		const scout = getAliveCatsForTest(db, colony._id)[0];
+
+		db.insert(jobs)
+			.values({
+				_id: "explore-dispatch-job",
+				colonyId: colony._id,
+				kind: "explore",
+				status: "queued",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: scout._id,
+				baseDurationSec: 30 * 60,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: Date.now(),
+				startedAt: Date.now(),
+				endsAt: Date.now() + 30 * 60 * 1000,
+				metadata: {},
+			})
+			.run();
+
+		advanceTime(db, 2);
+		workerTick(db); // promotes queued -> active, assigns a frontier site
+
+		const promoted = db
+			.select()
+			.from(jobs)
+			.where(eq(jobs._id, "explore-dispatch-job"))
+			.get()!;
+		const site = (promoted.metadata as { site?: { x: number; y: number } })
+			.site;
+		expect(site).toBeDefined();
+		// Nearest frontier is the fog ring one step past village sight.
+		const cheb = Math.max(Math.abs(site!.x - 6), Math.abs(site!.y - 6));
+		expect(cheb).toBe(7);
+
+		const tile = db
+			.select()
+			.from(worldTiles)
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, site!.x),
+					eq(worldTiles.y, site!.y),
+				),
+			)
+			.get()!;
+		expect(tile.pathWear).toBeLessThanOrEqual(62);
+
+		const traveler = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === scout._id,
+		)!;
+		expect(traveler.activity).toBe("traveling");
+		expect(traveler.currentTask).toBe("explore");
+	});
+
+	it("logs a mapped-the-lands event when a scout finishes", () => {
+		const colony = ensureGlobalColony(db);
+		const scout = getAliveCatsForTest(db, colony._id)[0];
+
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: "explore-complete-job",
+				colonyId: colony._id,
+				kind: "explore",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: scout._id,
+				baseDurationSec: 30 * 60,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now - 60_000,
+				startedAt: now - 60_000,
+				endsAt: now - 1000,
+				metadata: { accepted: true, site: { x: 13, y: 6 } },
+			})
+			.run();
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		expect(
+			eventMessages(db).some((message) =>
+				message.includes("mapped the lands around (13, 6)"),
+			),
+		).toBe(true);
+	});
+});
+
 describe("visible construction", () => {
 	function insertConstructJob(
 		colonyId: string,

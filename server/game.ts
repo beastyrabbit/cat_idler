@@ -27,6 +27,7 @@ import {
 	players,
 	runHistory,
 	votes,
+	type WorldTileRow,
 	worldTiles,
 } from "@/db/schema";
 import { isForestType, regrowthAmount } from "@/lib/game/depletion";
@@ -99,6 +100,16 @@ import { runElectionLifecycle } from "./elections";
 import { countOnlinePlayers, upsertPlayer } from "./players";
 import { initializeWorldMap } from "./worldMap";
 import { activeZones, sweepExpiredZones } from "./zones";
+
+/** Tile types a quarry expedition can mine for materials. */
+const QUARRY_TILE_TYPES: ReadonlySet<string> = new Set([
+	"mountains",
+	"cave_entrance",
+]);
+/** Materials one quarry expedition hauls home across its trips. */
+const QUARRY_TOTAL_YIELD = 15;
+/** Explore jobs only target fogged frontier tiles within this range. */
+const SCOUT_RANGE = 20;
 
 const UPGRADE_DEFAULTS = [
 	{
@@ -1645,6 +1656,83 @@ export function workerTick(db: GameDb) {
 			return cachedFoodTiles;
 		};
 
+		const chebFromAnchor = (pos: { x: number; y: number }): number =>
+			Math.max(
+				Math.abs(pos.x - VILLAGE_ANCHOR.x),
+				Math.abs(pos.y - VILLAGE_ANCHOR.y),
+			);
+		// Same fog rule the rest of the tick uses: a tile is known once a
+		// cat has worn a path across it, or it sits within village sight.
+		const tileIsExplored = (tile: {
+			x: number;
+			y: number;
+			pathWear: number;
+		}): boolean => tile.pathWear > 62 || chebFromAnchor(tile) <= 6;
+
+		// All colony tiles, loaded once and shared by the quarry/frontier
+		// lookups below (one indexed select, cached for the tick).
+		let cachedColonyTiles: WorldTileRow[] | null = null;
+		const colonyTiles = (): WorldTileRow[] => {
+			if (!cachedColonyTiles) {
+				cachedColonyTiles = tx
+					.select()
+					.from(worldTiles)
+					.where(eq(worldTiles.colonyId, colony._id))
+					.all();
+			}
+			return cachedColonyTiles;
+		};
+
+		// Explored stone country, nearest first — the leader quarries the
+		// closest known mountains/cave tile for materials.
+		let cachedQuarrySites: WorldPos[] | null = null;
+		const quarrySitesNearVillage = (): WorldPos[] => {
+			if (!cachedQuarrySites) {
+				cachedQuarrySites = colonyTiles()
+					.filter(
+						(tile) => QUARRY_TILE_TYPES.has(tile.type) && tileIsExplored(tile),
+					)
+					.sort((a, b) => chebFromAnchor(a) - chebFromAnchor(b))
+					.map((tile) => ({ x: tile.x, y: tile.y }));
+			}
+			return cachedQuarrySites;
+		};
+
+		// Frontier tiles: still fogged, within scouting range, and touching
+		// explored land — the edge the leader sends scouts to reveal.
+		let cachedFrontierTiles: WorldPos[] | null = null;
+		const frontierTilesNearVillage = (): WorldPos[] => {
+			if (!cachedFrontierTiles) {
+				const tiles = colonyTiles();
+				const exploredKeys = new Set(
+					tiles.filter(tileIsExplored).map((tile) => `${tile.x},${tile.y}`),
+				);
+				cachedFrontierTiles = tiles
+					.filter((tile) => {
+						if (tileIsExplored(tile)) {
+							return false;
+						}
+						if (chebFromAnchor(tile) > SCOUT_RANGE) {
+							return false;
+						}
+						for (let dy = -1; dy <= 1; dy++) {
+							for (let dx = -1; dx <= 1; dx++) {
+								if (dx === 0 && dy === 0) {
+									continue;
+								}
+								if (exploredKeys.has(`${tile.x + dx},${tile.y + dy}`)) {
+									return true;
+								}
+							}
+						}
+						return false;
+					})
+					.sort((a, b) => chebFromAnchor(a) - chebFromAnchor(b))
+					.map((tile) => ({ x: tile.x, y: tile.y }));
+			}
+			return cachedFrontierTiles;
+		};
+
 		// Every haul off a hunt site eats into that tile's food. Drained by
 		// the integer share hauled (floored at 0); marks the tile depleted so
 		// the regrowth sweep above will slowly refill it (unless it's forest).
@@ -1680,6 +1768,9 @@ export function workerTick(db: GameDb) {
 
 		// Promote queued jobs to active; send assigned cats to the job site.
 		const queuedJobs = getJobsByStatus(tx, colony._id, "queued");
+		// Spread scouts promoted this tick across the frontier instead of
+		// stacking them on the single nearest tile.
+		let scoutPromotions = 0;
 		for (const job of queuedJobs) {
 			let jobMetadata = job.metadata ?? null;
 
@@ -1752,12 +1843,28 @@ export function workerTick(db: GameDb) {
 				);
 				huntTiles = preferred ? [preferred] : [];
 			}
+			// Quarry heads to the nearest explored stone tile; scouts pick a
+			// frontier tile, rotating so a batch fans out across the edge.
+			let quarrySite: WorldPos | undefined;
+			if (job.kind === "quarry") {
+				quarrySite = quarrySitesNearVillage()[0];
+			}
+			let exploreSite: WorldPos | undefined;
+			if (job.kind === "explore") {
+				const frontier = frontierTilesNearVillage();
+				if (frontier.length > 0) {
+					exploreSite = frontier[scoutPromotions % frontier.length];
+					scoutPromotions += 1;
+				}
+			}
 			const jobDestination = destinationForJob(job.kind, {
 				anchor: VILLAGE_ANCHOR,
 				shrine: VILLAGE_ANCHOR,
 				foodTiles: huntTiles,
 				roll: nextMovementRoll(),
 				site: constructionSite ?? undefined,
+				quarrySite,
+				exploreSite,
 			});
 			if (jobDestination) {
 				// Jobs are accepted at the shrine: the cat reports there first,
@@ -1845,6 +1952,12 @@ export function workerTick(db: GameDb) {
 		const activeHunts = activeJobs.filter(
 			(job) => job.kind === "hunt_expedition",
 		).length;
+		const activeQuarries = activeJobs.filter(
+			(job) => job.kind === "quarry",
+		).length;
+		const activeScouts = activeJobs.filter(
+			(job) => job.kind === "explore",
+		).length;
 		const denPlansInFlight = activeJobs.filter(
 			(job) =>
 				job.kind === "leader_plan_house" ||
@@ -1902,11 +2015,17 @@ export function workerTick(db: GameDb) {
 				refined: nextResources.refined ?? 0,
 			},
 			foodCapacity,
+			materials: nextResources.materials,
+			materialsCapacity: foodCapacity,
 			housing: {
 				capacity: housingCapacity(colonyBuildings),
 				committed: committedCapacity,
 			},
 			activeHunts,
+			activeQuarries,
+			activeScouts,
+			hasQuarrySite: quarrySitesNearVillage().length > 0,
+			hasFrontier: frontierTilesNearVillage().length > 0,
 			denPlansInFlight,
 			storagePlansInFlight,
 			workshopsNeedingWorkers: workshopsNeedingWorkers.length,
@@ -1987,6 +2106,62 @@ export function workerTick(db: GameDb) {
 							"job_cancelled",
 							`The leader called off ${pointlessHunts.length} hunt${pointlessHunts.length === 1 ? "" : "s"} — the stores are overflowing.`,
 						);
+					}
+					break;
+				}
+				case "quarry": {
+					// Best builders make the best miners.
+					const miners = [...availableIdle].sort(
+						(a, b) => b.stats.building - a.stats.building,
+					);
+					let dispatched = 0;
+					for (const miner of miners) {
+						if (dispatched >= decision.count) {
+							break;
+						}
+						if (!canTakePolicyAction()) {
+							break;
+						}
+						queueJob(
+							tx,
+							colony._id,
+							"quarry",
+							"leader",
+							upgrades,
+							runtime,
+							null,
+							miner,
+						);
+						claimIdle(miner);
+						dispatched += 1;
+					}
+					break;
+				}
+				case "scout": {
+					// Sharp-eyed cats scout best.
+					const scouts = [...availableIdle].sort(
+						(a, b) => b.stats.vision - a.stats.vision,
+					);
+					let dispatched = 0;
+					for (const scout of scouts) {
+						if (dispatched >= decision.count) {
+							break;
+						}
+						if (!canTakePolicyAction()) {
+							break;
+						}
+						queueJob(
+							tx,
+							colony._id,
+							"explore",
+							"leader",
+							upgrades,
+							runtime,
+							null,
+							scout,
+						);
+						claimIdle(scout);
+						dispatched += 1;
 					}
 					break;
 				}
@@ -2194,6 +2369,8 @@ export function workerTick(db: GameDb) {
 				if (cat.carrying) {
 					if (cat.carrying.kind === "food") {
 						patchedResources.food += cat.carrying.amount;
+					} else if (cat.carrying.kind === "materials") {
+						patchedResources.materials += cat.carrying.amount;
 					} else {
 						globalUpgradePoints += cat.carrying.amount;
 					}
@@ -2354,6 +2531,44 @@ export function workerTick(db: GameDb) {
 					.run();
 			}
 
+			if (job.kind === "quarry" && assignedCat) {
+				const meta = (job.metadata as Record<string, unknown> | null) ?? {};
+				// Mirrors the hunt haul: trips may already have carried shares
+				// home, so completion picks up exactly what's left of the load.
+				const total =
+					typeof meta.totalYield === "number"
+						? meta.totalYield
+						: QUARRY_TOTAL_YIELD;
+				const tripsDone =
+					typeof meta.tripsDone === "number" ? meta.tripsDone : 0;
+				const reward = remainingYield(total, HUNT_TRIP_COUNT, tripsDone);
+				tx.update(cats)
+					.set({
+						// The final load is carried to the shrine and banked there.
+						carrying:
+							reward > 0
+								? { kind: "materials", amount: reward, jobEndedAt: now }
+								: null,
+					})
+					.where(eq(cats._id, assignedCat._id))
+					.run();
+			}
+
+			if (job.kind === "explore" && assignedCat) {
+				const site = (job.metadata as Record<string, unknown> | null)?.site as
+					| WorldPos
+					| undefined;
+				logEvent(
+					tx,
+					colony._id,
+					"discovery",
+					site
+						? `${assignedCat.name} mapped the lands around (${Math.round(site.x)}, ${Math.round(site.y)}).`
+						: `${assignedCat.name} mapped the lands around the village.`,
+					[assignedCat._id],
+				);
+			}
+
 			if (job.kind === "build_house" && assignedCat) {
 				const phase = String(
 					(job.metadata as Record<string, unknown> | null)?.phase ??
@@ -2511,12 +2726,15 @@ export function workerTick(db: GameDb) {
 			}
 
 			// Working cats head back when the job wraps up — carriers
-			// (hunters, ritualists) make for the shrine to deposit.
+			// (hunters, quarriers, ritualists) make for the shrine to deposit;
+			// scouts just walk home.
 			if (
 				assignedCat &&
 				(job.kind === "hunt_expedition" ||
 					job.kind === "build_house" ||
-					job.kind === "ritual")
+					job.kind === "ritual" ||
+					job.kind === "quarry" ||
+					job.kind === "explore")
 			) {
 				const homeSpot =
 					job.kind === "build_house"
@@ -2550,11 +2768,12 @@ export function workerTick(db: GameDb) {
 			);
 		}
 
-		// --- Mid-job hauling: hunters at their site depart for the shrine
-		// with a share of the catch when a trip comes due (SC2-drone style,
-		// idle-paced: trips are spread across the job duration).
+		// --- Mid-job hauling: hunters and quarriers at their site depart for
+		// the shrine with a share of the load when a trip comes due (SC2-drone
+		// style, idle-paced: trips are spread across the job duration).
 		for (const job of getJobsByStatus(tx, colony._id, "active")) {
-			if (job.kind !== "hunt_expedition" || !job.assignedCatId) {
+			const isQuarry = job.kind === "quarry";
+			if ((job.kind !== "hunt_expedition" && !isQuarry) || !job.assignedCatId) {
 				continue;
 			}
 			const meta = (job.metadata as Record<string, unknown> | null) ?? {};
@@ -2581,21 +2800,25 @@ export function workerTick(db: GameDb) {
 				continue;
 			}
 
-			// The full catch is sized once so trips + completion sum exactly.
+			// The full load is sized once so trips + completion sum exactly.
 			const workerRoleXp = defaultRoleXp(worker);
 			const total =
 				typeof meta.totalYield === "number"
 					? meta.totalYield
-					: getHuntReward(
-							worker.stats.hunting,
-							worker.specialization ?? null,
-							workerRoleXp.hunter,
-							upgrades,
-						);
+					: isQuarry
+						? QUARRY_TOTAL_YIELD
+						: getHuntReward(
+								worker.stats.hunting,
+								worker.specialization ?? null,
+								workerRoleXp.hunter,
+								upgrades,
+							);
 			const share = splitYield(total, HUNT_TRIP_COUNT, tripsDone);
 
-			// This trip's share is carried off the site tile.
-			drainHuntSite(meta.site as WorldPos | undefined, share);
+			// Hunt shares eat into the site's food; quarry stone is inexhaustible.
+			if (!isQuarry) {
+				drainHuntSite(meta.site as WorldPos | undefined, share);
+			}
 
 			tx.update(jobs)
 				.set({
@@ -2610,7 +2833,11 @@ export function workerTick(db: GameDb) {
 				.run();
 			tx.update(cats)
 				.set({
-					carrying: { kind: "food", amount: share, jobEndedAt: now },
+					carrying: {
+						kind: isQuarry ? "materials" : "food",
+						amount: share,
+						jobEndedAt: now,
+					},
 					destination: { map: "world", ...VILLAGE_ANCHOR },
 					activity: "returning",
 				})
@@ -2640,6 +2867,8 @@ export function workerTick(db: GameDb) {
 			) {
 				if (cat.carrying.kind === "food") {
 					patchedResources.food += cat.carrying.amount;
+				} else if (cat.carrying.kind === "materials") {
+					patchedResources.materials += cat.carrying.amount;
 				} else {
 					globalUpgradePoints += cat.carrying.amount;
 				}
@@ -2653,7 +2882,9 @@ export function workerTick(db: GameDb) {
 					"shrine_deposit",
 					cat.carrying.kind === "food"
 						? `${cat.name} delivered ${Math.round(cat.carrying.amount)} food to the shrine.`
-						: `${cat.name}'s ritual beamed ${cat.carrying.amount} blessing${cat.carrying.amount === 1 ? "" : "s"} up to the players.`,
+						: cat.carrying.kind === "materials"
+							? `${cat.name} hauled ${Math.round(cat.carrying.amount)} materials to the shrine.`
+							: `${cat.name}'s ritual beamed ${cat.carrying.amount} blessing${cat.carrying.amount === 1 ? "" : "s"} up to the players.`,
 					[cat._id],
 					{ kind: cat.carrying.kind, amount: cat.carrying.amount },
 				);
@@ -2663,7 +2894,7 @@ export function workerTick(db: GameDb) {
 				const ongoingJob = getJobsByStatus(tx, colony._id, "active").find(
 					(job) =>
 						job.assignedCatId === cat._id &&
-						job.kind === "hunt_expedition" &&
+						(job.kind === "hunt_expedition" || job.kind === "quarry") &&
 						job.endsAt > now,
 				);
 				const ongoingSite = (
