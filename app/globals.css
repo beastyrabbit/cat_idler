@@ -476,3 +476,18 @@ h6 {
 		transform: perspective(80px) rotateY(360deg) translateY(0);
 	}
 }
+
+/* Crossed-billboard fake 3D: two copies at 90deg so the icon never
+   disappears edge-on while spinning */
+.cat-work-icon {
+	transform-style: preserve-3d;
+}
+.cat-work-icon-face {
+	position: absolute;
+	left: 0;
+	top: 0;
+	backface-visibility: visible;
+}
+.cat-work-icon-cross {
+	transform: rotateY(90deg);
+}

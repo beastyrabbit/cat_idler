@@ -40,8 +40,11 @@ function directionGroup(dx: number, dy: number): number {
 	return Math.round(((((angle - 90) % 360) + 360) % 360) / 45) % 8;
 }
 
-/** Floating tool while a cat works, by trade. */
+/** Floating tool while a cat works, by job (fallback: trade). */
 const WORK_ICONS: Record<string, string> = {
+	hunt_expedition: "🏹",
+	build_house: "🪓",
+	ritual: "🔮",
 	hunter: "🏹",
 	architect: "🪓",
 	ritualist: "🔮",
@@ -174,8 +177,16 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 							/>
 							{working && (
 								<span className="cat-work-icon" aria-hidden>
-									{(cat.specialization && WORK_ICONS[cat.specialization]) ||
-										"⚒️"}
+									<span className="cat-work-icon-face">
+										{(cat.currentTask && WORK_ICONS[cat.currentTask]) ||
+											(cat.specialization && WORK_ICONS[cat.specialization]) ||
+											"🏹"}
+									</span>
+									<span className="cat-work-icon-face cat-work-icon-cross">
+										{(cat.currentTask && WORK_ICONS[cat.currentTask]) ||
+											(cat.specialization && WORK_ICONS[cat.specialization]) ||
+											"🏹"}
+									</span>
 								</span>
 							)}
 							{cat.specialization && HAT_SPRITES[cat.specialization] && (

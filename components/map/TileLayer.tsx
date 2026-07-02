@@ -79,7 +79,7 @@ function isExplored(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
 ): boolean {
-	if (tile.pathWear > 0) return true;
+	if (tile.pathWear > 62) return true;
 	const dx = tile.x - anchor.x;
 	const dy = tile.y - anchor.y;
 	return Math.sqrt(dx * dx + dy * dy) < VILLAGE_VISION_RADIUS;
@@ -104,23 +104,31 @@ function villageDistance(
 function ringSprites(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
-): string[] {
+): Array<{ src: string; ox: number; oy: number }> {
 	if (villageDistance(tile, anchor) !== VILLAGE_RING_RADIUS || hasWater(tile)) {
 		return [];
 	}
 	const dx = tile.x - anchor.x;
 	const dy = tile.y - anchor.y;
 	if (dx === 0 && dy === VILLAGE_RING_RADIUS) {
-		return [GATE_SPRITE];
+		return [{ src: GATE_SPRITE, ox: 0, oy: 0 }];
 	}
 	const onRow = Math.abs(dy) === VILLAGE_RING_RADIUS;
 	const onColumn = Math.abs(dx) === VILLAGE_RING_RADIUS;
-	// Corners join both edges, so they carry both fence directions.
+	// Corners: shift each direction half a tile toward its edge so the
+	// two rails meet in an L instead of crossing in an X.
 	if (onRow && onColumn) {
-		return [FENCE_X_SPRITE, FENCE_Y_SPRITE];
+		const sx = Math.sign(dx);
+		const sy = Math.sign(dy);
+		return [
+			{ src: FENCE_X_SPRITE, ox: -sx * 64, oy: -sx * 32 },
+			{ src: FENCE_Y_SPRITE, ox: sy * 64, oy: -sy * 32 },
+		];
 	}
 	// Rows (north/south edges) run along x; columns along y.
-	return onRow ? [FENCE_X_SPRITE] : [FENCE_Y_SPRITE];
+	return onRow
+		? [{ src: FENCE_X_SPRITE, ox: 0, oy: 0 }]
+		: [{ src: FENCE_Y_SPRITE, ox: 0, oy: 0 }];
 }
 
 /**
@@ -236,14 +244,14 @@ const IsoTile = memo(function IsoTile({
 			{/* Fence ring (with a south gate) around the founding village */}
 			{ringSprites(tile, anchor).map((fence) => (
 				<img
-					key={fence}
-					src={fence}
+					key={fence.src}
+					src={fence.src}
 					alt=""
 					draggable={false}
 					className="pointer-events-none absolute select-none"
 					style={{
-						left,
-						top: top - ISO.surfaceOffset,
+						left: left + fence.ox,
+						top: top - ISO.surfaceOffset + fence.oy,
 						width: ISO.tileWidth,
 						height: ISO.imageHeight,
 						zIndex: objectZ,
@@ -285,9 +293,31 @@ const ChunkView = memo(function ChunkView({
 	const tiles = useChunkTiles(chunkX, chunkY);
 
 	if (!tiles || tiles.length === 0) {
-		// Ungenerated (or still loading) chunk — uncharted territory stays
-		// the dark backdrop; no placeholder needed in iso space.
-		return null;
+		// Ungenerated (or still loading) chunk — solid fog diamonds.
+		const fog = [];
+		for (let ty = 0; ty < 12; ty++) {
+			for (let tx = 0; tx < 12; tx++) {
+				const wx = chunkX * 12 + tx;
+				const wy = chunkY * 12 + ty;
+				const { left, top } = tileToIso(wx, wy, ISO);
+				fog.push(
+					<div
+						key={`${wx},${wy}`}
+						className="absolute"
+						style={{
+							left,
+							top,
+							width: ISO.tileWidth,
+							height: ISO.tileHeight,
+							zIndex: zIndexFor(wx, wy, "tile", ISO),
+							clipPath: DIAMOND_CLIP,
+							background: "#182115",
+						}}
+					/>,
+				);
+			}
+		}
+		return <>{fog}</>;
 	}
 
 	return (

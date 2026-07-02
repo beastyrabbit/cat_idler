@@ -1448,14 +1448,16 @@ export function workerTick(db: GameDb) {
 				.from(worldTiles)
 				.where(eq(worldTiles.colonyId, colony._id))
 				.all()
-				.filter(
-					(tile) =>
-						(tile.resources?.food ?? 0) >= 25 &&
-						Math.max(
-							Math.abs(tile.x - VILLAGE_ANCHOR.x),
-							Math.abs(tile.y - VILLAGE_ANCHOR.y),
-						) > 4,
-				)
+				.filter((tile) => {
+					const distance = Math.max(
+						Math.abs(tile.x - VILLAGE_ANCHOR.x),
+						Math.abs(tile.y - VILLAGE_ANCHOR.y),
+					);
+					// Cats only hunt land they know: scouted (cat-worn paths
+					// beat worldgen's <=60 seeds) or within village sight.
+					const explored = tile.pathWear > 62 || distance <= 6;
+					return (tile.resources?.food ?? 0) >= 25 && explored && distance > 4;
+				})
 				.map((tile) => ({ x: tile.x, y: tile.y }));
 			return cachedFoodTiles;
 		};
@@ -1544,6 +1546,7 @@ export function workerTick(db: GameDb) {
 					.set({
 						destination: { map: "world", ...jobDestination },
 						activity: "traveling",
+						currentTask: job.kind,
 					})
 					.where(eq(cats._id, job.assignedCatId))
 					.run();
@@ -2078,6 +2081,7 @@ export function workerTick(db: GameDb) {
 					.set({
 						destination: { map: "world", ...homeSpot },
 						activity: "returning",
+						currentTask: null,
 					})
 					.where(eq(cats._id, assignedCat._id))
 					.run();
