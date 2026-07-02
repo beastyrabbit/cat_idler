@@ -16,6 +16,7 @@ import type { LifeStage } from "@/types/game";
 import { BuildingLayer } from "./BuildingLayer";
 import { CatLayer } from "./CatLayer";
 import { CHUNK_MAX, CHUNK_MIN, ISO, ISO_CONTENT } from "./constants";
+import { RaiderLayer } from "./RaiderLayer";
 import { TileLayer } from "./TileLayer";
 import { TreePanel } from "./TreePanel";
 import { ZoneLayer } from "./ZoneLayer";
@@ -102,6 +103,10 @@ export function MapScreen() {
 		onBuildRoad,
 		research,
 		onUnlockNode,
+		threat,
+		raiders,
+		onTrainWarrior,
+		onDefendRaid,
 	} = useGameDashboard();
 
 	const [chunks, setChunks] = useState<ChunkCoord[]>(INITIAL_CHUNKS);
@@ -239,7 +244,34 @@ export function MapScreen() {
 			cap: caps.refined,
 			fill: "bg-slate-500",
 		},
+		{
+			icon: "⚔️",
+			label: "Weapons",
+			value: resources.weapons ?? 0,
+			cap: caps.weapons ?? 50,
+			fill: "bg-rose-600",
+		},
+		{
+			icon: "🛡️",
+			label: "Armor",
+			value: resources.armor ?? 0,
+			cap: caps.armor ?? 50,
+			fill: "bg-zinc-500",
+		},
 	];
+
+	const THREAT_STYLES: Record<string, string> = {
+		calm: "bg-emerald-100 text-emerald-800",
+		rising: "bg-amber-100 text-amber-900",
+		imminent: "bg-red-200 text-red-900 animate-pulse",
+	};
+	const THREAT_LABELS: Record<string, string> = {
+		calm: "🕊️ Calm",
+		rising: "⚠️ Rising",
+		imminent: "🔥 Raid imminent",
+	};
+	const threatBand = (threat?.band ?? "calm") as string;
+	const raidActive = Boolean(threat?.raidActive);
 
 	return (
 		<div className="relative h-dvh overflow-hidden bg-[#141c12]">
@@ -276,6 +308,7 @@ export function MapScreen() {
 							leaderId={colony.leaderId ?? null}
 							onSelect={setSelectedCatId}
 						/>
+						<RaiderLayer raiders={raiders} />
 						{zoneDraft && (
 							// Drawing mode: swallow clicks/pans and pick tile corners.
 							// biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: full-map drawing surface; keyboard flow uses the panel buttons
@@ -349,6 +382,13 @@ export function MapScreen() {
 						{housing.villageLevel}
 					</span>
 				)}
+
+				<span
+					className={`pointer-events-auto rounded-full border border-[#5d4024] px-3 py-1 text-xs font-bold shadow ${THREAT_STYLES[threatBand]}`}
+					title={`Threat: ${threatBand}. Standing guard: ${threat?.warriors ?? 0} warriors · ${threat?.weapons ?? 0}⚔️ ${threat?.armor ?? 0}🛡️ in the armory.`}
+				>
+					{THREAT_LABELS[threatBand]} · 🗡️ {threat?.warriors ?? 0}
+				</span>
 
 				<div className="flex-1" />
 
@@ -526,7 +566,9 @@ export function MapScreen() {
 				{/* Production: workshops and research huts need workers */}
 				{buildings.some(
 					(b: { type: string; constructionProgress: number }) =>
-						(b.type === "workshop" || b.type === "research_hut") &&
+						(b.type === "workshop" ||
+							b.type === "research_hut" ||
+							b.type === "smithy") &&
 						b.constructionProgress >= 100,
 				) && (
 					<div className={`p-3 ${PANEL}`}>
@@ -548,15 +590,18 @@ export function MapScreen() {
 											(cat: { assignedBuildingId?: string | null }) =>
 												cat.assignedBuildingId === shop._id,
 										);
-										const isResearch = shop.type === "research_hut";
+										const label =
+											shop.type === "research_hut"
+												? "🔬 Research hut"
+												: shop.type === "smithy"
+													? "🗡️ Smithy"
+													: "⚒️ Workshop";
 										return (
 											<li
 												key={shop._id}
 												className="flex items-center justify-between gap-2 text-xs font-semibold text-[#4a3319]"
 											>
-												<span>
-													{isResearch ? "🔬 Research hut" : "⚒️ Workshop"}
-												</span>
+												<span>{label}</span>
 												<select
 													className="rounded border border-[#5d4024] bg-[#e9d9b4] px-1 py-0.5 text-xs"
 													value={worker?._id ?? ""}
@@ -742,6 +787,53 @@ export function MapScreen() {
 						</button>
 						<button
 							type="button"
+							onClick={() => onPlanBuilding("smithy")}
+							disabled={
+								busyAction === "build:smithy" ||
+								!research?.ownedNodeIds?.includes("smithy")
+							}
+							className={WOOD_BUTTON}
+							title={
+								research?.ownedNodeIds?.includes("smithy")
+									? "Build a smithy; assign a smith to forge weapons and armor"
+									: "Unlock the Smithy node in the tree first"
+							}
+						>
+							⚒️ Smithy
+						</button>
+						<button
+							type="button"
+							onClick={() => onPlanBuilding("barracks")}
+							disabled={
+								busyAction === "build:barracks" ||
+								!research?.ownedNodeIds?.includes("barracks")
+							}
+							className={WOOD_BUTTON}
+							title={
+								research?.ownedNodeIds?.includes("barracks")
+									? "Build a barracks so cats can train into warriors"
+									: "Unlock the Barracks node in the tree first"
+							}
+						>
+							🏰 Barracks
+						</button>
+						<button
+							type="button"
+							onClick={() => onTrainWarrior()}
+							disabled={
+								busyAction === "trainWarrior" ||
+								!buildings.some(
+									(b: { type: string; constructionProgress: number }) =>
+										b.type === "barracks" && b.constructionProgress >= 100,
+								)
+							}
+							className={`col-span-2 ${WOOD_BUTTON}`}
+							title="Train the sturdiest idle cat into a warrior (needs a barracks)"
+						>
+							🗡️ Train a warrior
+						</button>
+						<button
+							type="button"
 							onClick={() => submitJob("ritual")}
 							disabled={busyAction === "ritual"}
 							className={`col-span-2 ${WOOD_BUTTON} !from-red-800 !to-red-900 hover:!from-red-700 hover:!to-red-800`}
@@ -916,6 +1008,23 @@ export function MapScreen() {
 					onUnlockNode={onUnlockNode}
 					onClose={() => setShowTree(false)}
 				/>
+			)}
+
+			{/* Raid alert — a big defense button while a warband is at the gate */}
+			{raidActive && (
+				<div className="-translate-x-1/2 absolute bottom-24 left-1/2 z-40 flex flex-col items-center gap-1">
+					<span className="rounded-full bg-red-800/90 px-3 py-1 font-serif text-xs font-black uppercase tracking-wider text-amber-100 shadow">
+						⚔️ Raiders at the gate — {raiders.length} closing in
+					</span>
+					<button
+						type="button"
+						onClick={() => onDefendRaid()}
+						className="rounded-lg border-2 border-red-950 bg-gradient-to-b from-red-600 to-red-800 px-6 py-3 font-serif text-lg font-black text-amber-50 shadow-lg hover:from-red-500 hover:to-red-700 active:scale-95"
+						title="Rally the defense — clicks wear the raiders down"
+					>
+						🗡️ Defend the village!
+					</button>
+				</div>
 			)}
 
 			{/* News ticker — latest headline, full story in the Examiner */}

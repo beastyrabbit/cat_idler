@@ -28,6 +28,10 @@ export interface ColonyResources {
 	blessings: number;
 	/** Workshop output (Phase 7). Missing on older rows — read as 0. */
 	refined?: number;
+	/** Smithy-forged weapons in the armory. Missing on older rows — read as 0. */
+	weapons?: number;
+	/** Smithy-forged armor in the armory. Missing on older rows — read as 0. */
+	armor?: number;
 }
 
 export interface CatStatsJson {
@@ -66,6 +70,8 @@ export interface RoleXpJson {
 	hunter: number;
 	architect: number;
 	ritualist: number;
+	/** Warrior trade experience. Missing on older rows — read as 0. */
+	warrior?: number;
 }
 
 export interface LifetimeContributionJson {
@@ -121,6 +127,18 @@ export const colonies = sqliteTable(
 		}).$type<UpgradeTreeStateJson>(),
 		ritualRequestedAt: integer("ritualRequestedAt"),
 		criticalSince: integer("criticalSince"),
+		/**
+		 * Accrued raid pressure (lib/game/threat.ts). Builds with wealth, size,
+		 * warriors and colony age; a raid launches when it crosses the spawn
+		 * threshold. Null on legacy rows — read as 0.
+		 */
+		threatPressure: real("threatPressure"),
+		/** Wall-clock ms of the last raid launch, for cadence pacing. */
+		lastRaidAt: integer("lastRaidAt"),
+		/** The in-progress raid grouping the {@link raiders} rows, if any. */
+		activeRaidId: text("activeRaidId"),
+		/** Player defense clicks banked against the active raid. */
+		raidClicks: real("raidClicks"),
 		testTimeScale: real("testTimeScale"),
 		testResourceDecayMultiplier: real("testResourceDecayMultiplier"),
 		testResilienceHoursOverride: real("testResilienceHoursOverride"),
@@ -182,7 +200,7 @@ export const cats = sqliteTable(
 			unknown
 		> | null>(),
 		specialization: text("specialization", {
-			enum: ["hunter", "architect", "ritualist"],
+			enum: ["hunter", "architect", "ritualist", "warrior"],
 		}),
 		roleXp: text("roleXp", { mode: "json" }).$type<RoleXpJson | null>(),
 	},
@@ -213,6 +231,8 @@ export const buildings = sqliteTable(
 				"field",
 				"research_hut",
 				"school",
+				"smithy",
+				"barracks",
 			],
 		}).notNull(),
 		level: integer("level").notNull(),
@@ -314,6 +334,7 @@ export const jobs = sqliteTable(
 				"quarry",
 				"explore",
 				"fetch_water",
+				"train_warrior",
 			],
 		}).notNull(),
 		status: text("status", {
@@ -405,6 +426,40 @@ export const zones = sqliteTable(
 	],
 );
 
+/**
+ * Enemy raider units on the map (Roadmap 4, Military). Every row belongs to a
+ * single active raid (grouped by {@link colonies.activeRaidId}); they spawn at
+ * a map edge and path toward the village gate, where the warband is resolved
+ * against the mustered warriors. `hp` starts at `strength` and drops as player
+ * defense clicks and warriors wear it down.
+ */
+export const raiders = sqliteTable(
+	"raiders",
+	{
+		_id: text("id").primaryKey(),
+		colonyId: text("colonyId").notNull(),
+		raidId: text("raidId").notNull(),
+		position: text("position", { mode: "json" })
+			.$type<{ x: number; y: number }>()
+			.notNull(),
+		target: text("target", { mode: "json" })
+			.$type<{ x: number; y: number }>()
+			.notNull(),
+		strength: real("strength").notNull(),
+		hp: real("hp").notNull(),
+		status: text("status", {
+			enum: ["advancing", "engaging", "retreating", "dead"],
+		})
+			.notNull()
+			.default("advancing"),
+		spawnedAt: integer("spawnedAt").notNull(),
+	},
+	(table) => [
+		index("raiders_by_colony").on(table.colonyId),
+		index("raiders_by_raid").on(table.raidId),
+	],
+);
+
 export const globalUpgrades = sqliteTable(
 	"globalUpgrades",
 	{
@@ -463,3 +518,4 @@ export type RunHistoryRow = typeof runHistory.$inferSelect;
 export type ElectionRow = typeof elections.$inferSelect;
 export type VoteRow = typeof votes.$inferSelect;
 export type ZoneRow = typeof zones.$inferSelect;
+export type RaiderRow = typeof raiders.$inferSelect;

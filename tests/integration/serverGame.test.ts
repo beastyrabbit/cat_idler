@@ -66,6 +66,8 @@ describe("bootstrap", () => {
 			materials: 24,
 			blessings: 0,
 			refined: 0,
+			weapons: 0,
+			armor: 0,
 		});
 
 		const dashboard = getGlobalDashboard(db)!;
@@ -415,6 +417,8 @@ describe("upgrade persistence across run reset", () => {
 			materials: 24,
 			blessings: 3,
 			refined: 0,
+			weapons: 0,
+			armor: 0,
 		});
 
 		const upgrade = getGlobalDashboard(db)?.upgrades.find(

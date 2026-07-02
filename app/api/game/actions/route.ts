@@ -20,6 +20,7 @@ import {
 	assignWorker,
 	buildRoad,
 	clickBoostJob,
+	defendRaid,
 	ensureGlobalState,
 	type PlayerJobKind,
 	planBuilding,
@@ -27,6 +28,8 @@ import {
 	requestJob,
 	setTestAcceleration,
 	setTestRngSeed,
+	spawnRaidForTest,
+	trainWarrior,
 	unlockNode,
 	upsertPresence,
 	workerTick,
@@ -222,7 +225,9 @@ export async function POST(request: Request) {
 					type !== "workshop" &&
 					type !== "field" &&
 					type !== "research_hut" &&
-					type !== "school"
+					type !== "school" &&
+					type !== "smithy" &&
+					type !== "barracks"
 				) {
 					throw new Error("Unknown building type.");
 				}
@@ -250,6 +255,38 @@ export async function POST(request: Request) {
 						: requireString(body.buildingId, "buildingId");
 				return NextResponse.json(
 					assignWorker(db, { sessionId, nickname, catId, buildingId }),
+				);
+			}
+
+			case "trainWarrior": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				const catId =
+					body.catId == null ? null : requireString(body.catId, "catId");
+				return NextResponse.json(
+					trainWarrior(db, { sessionId, nickname, catId }),
+				);
+			}
+
+			case "defendRaid": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				return NextResponse.json(defendRaid(db, { sessionId, nickname }));
+			}
+
+			case "spawnRaid": {
+				if (!testActionsEnabled()) {
+					return testActionsDisabledResponse();
+				}
+				const count = body.count == null ? undefined : Number(body.count);
+				const strength =
+					body.strength == null ? undefined : Number(body.strength);
+				return NextResponse.json(
+					spawnRaidForTest(db, {
+						atGate: body.atGate !== false,
+						count,
+						strength,
+					}),
 				);
 			}
 

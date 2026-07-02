@@ -8,7 +8,14 @@
  * always agree on how full each store is.
  */
 
-export type ResourceKey = "food" | "water" | "herbs" | "materials" | "refined";
+export type ResourceKey =
+	| "food"
+	| "water"
+	| "herbs"
+	| "materials"
+	| "refined"
+	| "weapons"
+	| "armor";
 
 export interface StorageCapacities {
 	food: number;
@@ -16,6 +23,10 @@ export interface StorageCapacities {
 	herbs: number;
 	materials: number;
 	refined: number;
+	/** Weapons the armory can hold. */
+	weapons: number;
+	/** Armor the armory can hold. */
+	armor: number;
 }
 
 /** Minimal building shape the capacity math needs. */
@@ -32,6 +43,8 @@ export const BASE_CAPACITY: StorageCapacities = {
 	herbs: 100,
 	materials: 100,
 	refined: 100,
+	weapons: 50,
+	armor: 50,
 };
 
 /** Dry-goods a single finished granary (`food_storage`) adds per level. */
@@ -44,6 +57,9 @@ export const GRANARY_BONUS = {
 
 /** Extra water a single finished water bowl holds per level. */
 export const WATER_BOWL_BONUS = 200;
+
+/** Extra armory capacity a single finished smithy holds per level. */
+export const SMITHY_ARMORY_BONUS = 50;
 
 function isFinished(building: StorageBuilding): boolean {
 	return building.constructionProgress >= 100;
@@ -77,6 +93,9 @@ export function storageCapacities(
 			caps.refined += GRANARY_BONUS.refined * level * mult;
 		} else if (building.type === "water_bowl") {
 			caps.water += WATER_BOWL_BONUS * level * mult;
+		} else if (building.type === "smithy") {
+			caps.weapons += SMITHY_ARMORY_BONUS * level * mult;
+			caps.armor += SMITHY_ARMORY_BONUS * level * mult;
 		}
 	}
 	return caps;

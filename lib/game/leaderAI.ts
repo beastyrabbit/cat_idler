@@ -55,6 +55,30 @@ export const TITHE_REFINED_AMOUNT = 5;
 export const RESEARCH_COMFORT_RATIO = 0.5;
 /** Researchers the leader keeps assigned per standing research hut. */
 export const RESEARCH_TARGET_PER_HUT = 1;
+/** Standing warriors the leader aims for, by threat band. */
+export const WARRIOR_TARGET_BY_BAND: Record<
+	"calm" | "rising" | "imminent",
+	number
+> = { calm: 2, rising: 4, imminent: 7 };
+/** Never train more than this fraction of the workforce into warriors. */
+export const WARRIOR_MAX_RATIO = 0.4;
+
+/**
+ * How many warriors the leader wants standing, given the threat band and the
+ * colony's size. A bigger colony can afford a bigger guard, but the guard is
+ * always capped at {@link WARRIOR_MAX_RATIO} of the workforce so the economy
+ * isn't hollowed out.
+ */
+export function targetWarriors(snapshot: LeaderSnapshot): number {
+	if (!snapshot.hasBarracks) {
+		return 0;
+	}
+	const band = snapshot.threatBand ?? "calm";
+	const base = WARRIOR_TARGET_BY_BAND[band];
+	const workforce = snapshot.workforce ?? snapshot.population;
+	const cap = Math.floor(workforce * WARRIOR_MAX_RATIO);
+	return Math.min(base, Math.max(1, cap));
+}
 
 export interface LeaderSnapshot {
 	/** Living cats in the colony (raw head count, incl. kittens). */
@@ -105,6 +129,18 @@ export interface LeaderSnapshot {
 	workshopsNeedingWorkers: number;
 	/** Completed research huts that have no assigned researcher. */
 	researchHutsNeedingWorkers?: number;
+	/** Completed smithies that have no assigned smith. */
+	smithiesNeedingWorkers?: number;
+	/** A finished barracks stands, so cats can be trained into warriors. */
+	hasBarracks?: boolean;
+	/** Trained warriors currently standing. */
+	warriorCount?: number;
+	/** train_warrior jobs already in flight. */
+	trainingInFlight?: number;
+	/** Current HUD threat band — scales the warrior target. */
+	threatBand?: "calm" | "rising" | "imminent";
+	/** The larder is nearly empty; the leader stops staffing/training. */
+	starving?: boolean;
 }
 
 export type LeaderDecision =
@@ -117,6 +153,9 @@ export type LeaderDecision =
 	| { kind: "build_storage" }
 	| { kind: "assign_workshop"; count: number }
 	| { kind: "assign_research"; count: number }
+	| { kind: "assign_smithy"; count: number }
+	| { kind: "train_warrior"; count: number }
+	| { kind: "cancel_training" }
 	| { kind: "tithe"; food: number; refined: number; blessings: number };
 
 /** Food as a fraction of storage capacity; unbounded when capacity is 0. */
@@ -298,6 +337,33 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 	const staffing = Math.min(snapshot.workshopsNeedingWorkers, idleAfterHunts);
 	if (staffing > 0) {
 		decisions.push({ kind: "assign_workshop", count: staffing });
+	}
+
+	// --- Military: keep the smithy forging and train toward a threat-scaled
+	// guard. A starving colony cancels training and staffs nothing extra —
+	// warriors and smiths are mouths that don't gather. -------------------
+	let idleForMilitary = Math.max(0, idleAfterHunts - staffing);
+	if (snapshot.starving) {
+		if ((snapshot.trainingInFlight ?? 0) > 0) {
+			decisions.push({ kind: "cancel_training" });
+		}
+	} else {
+		const smithies = snapshot.smithiesNeedingWorkers ?? 0;
+		const smithStaffing = Math.min(smithies, idleForMilitary);
+		if (smithStaffing > 0) {
+			decisions.push({ kind: "assign_smithy", count: smithStaffing });
+			idleForMilitary -= smithStaffing;
+		}
+
+		const warriorGap =
+			targetWarriors(snapshot) -
+			(snapshot.warriorCount ?? 0) -
+			(snapshot.trainingInFlight ?? 0);
+		const trainCount = Math.max(0, Math.min(warriorGap, idleForMilitary));
+		if (trainCount > 0) {
+			decisions.push({ kind: "train_warrior", count: trainCount });
+			idleForMilitary -= trainCount;
+		}
 	}
 
 	// --- Research: spare one mouth per hut for study, but only once the

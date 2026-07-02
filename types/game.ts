@@ -33,7 +33,9 @@ export type BuildingType =
 	| "mouse_farm"
 	| "shrine"
 	| "workshop"
-	| "field";
+	| "field"
+	| "smithy"
+	| "barracks";
 
 export type TileType =
 	| "field"
@@ -105,7 +107,12 @@ export type EventType =
 
 export type PolicyTier = "simple" | "normal" | "excellent";
 
-export type CatSpecialization = "hunter" | "architect" | "ritualist" | null;
+export type CatSpecialization =
+	| "hunter"
+	| "architect"
+	| "ritualist"
+	| "warrior"
+	| null;
 
 export type JobKind =
 	| "supply_food"
@@ -117,7 +124,8 @@ export type JobKind =
 	| "ritual"
 	| "quarry"
 	| "explore"
-	| "fetch_water";
+	| "fetch_water"
+	| "train_warrior";
 
 export type JobStatus =
 	| "queued"
@@ -144,6 +152,12 @@ export interface Resources {
 	herbs: number;
 	materials: number;
 	blessings: number;
+	/** Workshop-refined goods. Missing on older rows — read as 0. */
+	refined?: number;
+	/** Smithy-forged weapons in the colony armory. Read as 0 when missing. */
+	weapons?: number;
+	/** Smithy-forged armor in the colony armory. Read as 0 when missing. */
+	armor?: number;
 }
 
 export interface CatStats {
@@ -442,6 +456,8 @@ export const BUILDING_COSTS: Record<BuildingType, number> = {
 	shrine: 0, // central building, never purchasable
 	workshop: 20,
 	field: 15,
+	smithy: 30,
+	barracks: 30,
 };
 
 export const TASK_TO_SKILL: Record<TaskType, keyof CatStats> = {

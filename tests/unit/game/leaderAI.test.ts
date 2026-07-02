@@ -16,6 +16,9 @@ import {
 	TITHE_FOOD_RATIO,
 	TITHE_REFINED_AMOUNT,
 	targetHuntSlots,
+	targetWarriors,
+	WARRIOR_MAX_RATIO,
+	WARRIOR_TARGET_BY_BAND,
 } from "@/lib/game/leaderAI";
 
 const CAP = 200;
@@ -645,6 +648,128 @@ describe("leaderAI", () => {
 			expect(
 				kinds(planLeaderActions(snap({ water: 0, hasWaterSite: false }))),
 			).not.toContain("fetch_water");
+		});
+	});
+
+	// Military scenarios keep the larder full so no hunts eat the idle budget.
+	const calm = (overrides: Partial<LeaderSnapshot> = {}) =>
+		snap({ resources: { food: CAP, refined: 0 }, ...overrides });
+
+	function trainCount(decisions: LeaderDecision[]): number {
+		const d = decisions.find((x) => x.kind === "train_warrior");
+		return d && d.kind === "train_warrior" ? d.count : 0;
+	}
+
+	describe("targetWarriors", () => {
+		it("is zero without a barracks", () => {
+			expect(targetWarriors(calm({ hasBarracks: false }))).toBe(0);
+		});
+
+		it("scales with the threat band", () => {
+			const rising = targetWarriors(
+				calm({ hasBarracks: true, threatBand: "rising", workforce: 40 }),
+			);
+			const imminent = targetWarriors(
+				calm({ hasBarracks: true, threatBand: "imminent", workforce: 40 }),
+			);
+			expect(rising).toBe(WARRIOR_TARGET_BY_BAND.rising);
+			expect(imminent).toBe(WARRIOR_TARGET_BY_BAND.imminent);
+			expect(imminent).toBeGreaterThan(rising);
+		});
+
+		it("caps the guard at the workforce fraction", () => {
+			// A tiny workforce can't field the imminent-band target.
+			const capped = targetWarriors(
+				calm({ hasBarracks: true, threatBand: "imminent", workforce: 4 }),
+			);
+			expect(capped).toBe(Math.floor(4 * WARRIOR_MAX_RATIO));
+		});
+	});
+
+	describe("train_warrior decisions", () => {
+		it("trains recruits toward the threat-scaled target", () => {
+			const decisions = planLeaderActions(
+				calm({
+					hasBarracks: true,
+					threatBand: "rising",
+					warriorCount: 0,
+					trainingInFlight: 0,
+					workforce: 40,
+					idleCats: 10,
+				}),
+			);
+			expect(trainCount(decisions)).toBe(WARRIOR_TARGET_BY_BAND.rising);
+		});
+
+		it("counts existing warriors and in-flight training toward the target", () => {
+			const decisions = planLeaderActions(
+				calm({
+					hasBarracks: true,
+					threatBand: "rising",
+					warriorCount: 2,
+					trainingInFlight: 1,
+					workforce: 40,
+					idleCats: 10,
+				}),
+			);
+			expect(trainCount(decisions)).toBe(WARRIOR_TARGET_BY_BAND.rising - 3);
+		});
+
+		it("trains nobody without a barracks", () => {
+			expect(
+				kinds(
+					planLeaderActions(
+						calm({ hasBarracks: false, threatBand: "imminent" }),
+					),
+				),
+			).not.toContain("train_warrior");
+		});
+
+		it("is bounded by idle cats", () => {
+			const decisions = planLeaderActions(
+				calm({
+					hasBarracks: true,
+					threatBand: "imminent",
+					warriorCount: 0,
+					workforce: 40,
+					idleCats: 1,
+					employedCats: 0,
+				}),
+			);
+			expect(trainCount(decisions)).toBeLessThanOrEqual(1);
+		});
+	});
+
+	describe("starving military stand-down", () => {
+		it("cancels training and staffs no smithy when starving", () => {
+			const decisions = planLeaderActions(
+				snap({
+					resources: { food: 10, refined: 0 },
+					starving: true,
+					hasBarracks: true,
+					threatBand: "imminent",
+					trainingInFlight: 2,
+					smithiesNeedingWorkers: 1,
+					idleCats: 10,
+				}),
+			);
+			const k = kinds(decisions);
+			expect(k).toContain("cancel_training");
+			expect(k).not.toContain("train_warrior");
+			expect(k).not.toContain("assign_smithy");
+		});
+	});
+
+	describe("assign_smithy decisions", () => {
+		it("staffs an idle smith when comfortable", () => {
+			const decisions = planLeaderActions(
+				calm({
+					smithiesNeedingWorkers: 1,
+					idleCats: 10,
+					starving: false,
+				}),
+			);
+			expect(kinds(decisions)).toContain("assign_smithy");
 		});
 	});
 });

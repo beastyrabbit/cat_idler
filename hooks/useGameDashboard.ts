@@ -294,13 +294,38 @@ export function useGameDashboard() {
 	};
 
 	const onPlanBuilding = async (
-		type: "workshop" | "field" | "research_hut" | "school",
+		type:
+			| "workshop"
+			| "field"
+			| "research_hut"
+			| "school"
+			| "smithy"
+			| "barracks",
 	) => {
 		if (!sessionId || !nickname) {
 			return;
 		}
 		await runAction(`build:${type}`, () =>
 			postAction("planBuilding", { sessionId, nickname, type }),
+		);
+	};
+
+	const onTrainWarrior = async (catId?: string | null) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction("trainWarrior", () =>
+			postAction("trainWarrior", { sessionId, nickname, catId: catId ?? null }),
+		);
+	};
+
+	const onDefendRaid = async () => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		// Defense clicks are frequent — key by "defend" so the button stays live.
+		await runAction("defend", () =>
+			postAction("defendRaid", { sessionId, nickname }),
 		);
 	};
 
@@ -420,6 +445,12 @@ export function useGameDashboard() {
 		// Research & upgrade tree
 		research: dashboard?.research ?? null,
 		onUnlockNode,
+
+		// Military (Roadmap 4)
+		threat: dashboard?.threat ?? null,
+		raiders: dashboard?.raiders ?? [],
+		onTrainWarrior,
+		onDefendRaid,
 
 		// Connection
 		connectionLost,

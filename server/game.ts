@@ -25,6 +25,7 @@ import {
 	jobs,
 	players,
 	type RoleXpJson,
+	raiders,
 	runHistory,
 	votes,
 	type WorldTileRow,
@@ -103,6 +104,7 @@ import {
 } from "@/lib/game/production";
 import { rollSeeded } from "@/lib/game/seededRng";
 import { shouldDeposit } from "@/lib/game/shrine";
+import { advanceSmithy } from "@/lib/game/smithy";
 import {
 	countStorehouses,
 	storageCapacities,
@@ -110,6 +112,7 @@ import {
 } from "@/lib/game/storage";
 import { applySurvivalTick } from "@/lib/game/survival";
 import { configForPreset } from "@/lib/game/testAcceleration";
+import { colonyWealth, threatBand } from "@/lib/game/threat";
 import {
 	HUNT_TRIP_COUNT,
 	remainingYield,
@@ -140,6 +143,12 @@ import {
 	villageRingRadius,
 } from "@/lib/game/villageLayout";
 import { isInZone, pickTargetWithZones, type Zone } from "@/lib/game/zones";
+import {
+	DEFEND_CLICK_DAMAGE,
+	gatePosition,
+	runRaidDirector,
+	spawnRaid,
+} from "@/server/raids";
 import type { CatStats } from "@/types/game";
 
 import { runElectionLifecycle } from "./elections";
@@ -261,7 +270,12 @@ function getRuntimeConfig(colony: ColonyRow): RuntimeConfig {
 	};
 }
 
-const DEFAULT_ROLE_XP = { hunter: 0, architect: 0, ritualist: 0 } as const;
+const DEFAULT_ROLE_XP = {
+	hunter: 0,
+	architect: 0,
+	ritualist: 0,
+	warrior: 0,
+} as const;
 
 /**
  * Stocked general storage for a fresh settlement — sized so 20 cats have
@@ -274,6 +288,8 @@ const STARTING_RESOURCES = {
 	materials: 24,
 	blessings: 0,
 	refined: 0,
+	weapons: 0,
+	armor: 0,
 } as const;
 
 const STARTER_CAT_COUNT = 20;
@@ -282,8 +298,9 @@ function defaultRoleXp(cat: CatRow): {
 	hunter: number;
 	architect: number;
 	ritualist: number;
+	warrior: number;
 } {
-	return cat.roleXp ?? { ...DEFAULT_ROLE_XP };
+	return { ...DEFAULT_ROLE_XP, ...(cat.roleXp ?? {}) };
 }
 
 function randomStat(min: number, max: number): number {
@@ -873,6 +890,10 @@ export function ensureGlobalColony(db: GameDb): ColonyRow {
 				upgradeTree: serializeUpgradeTreeState(createUpgradeTreeState()),
 				ritualRequestedAt: null,
 				criticalSince: null,
+				threatPressure: 0,
+				lastRaidAt: null,
+				activeRaidId: null,
+				raidClicks: 0,
 				testTimeScale: 1,
 				testResourceDecayMultiplier: 1,
 				testResilienceHoursOverride: null,
@@ -1005,6 +1026,7 @@ const SPECIALIZATION_STAT: Record<
 	hunter: "hunting",
 	architect: "building",
 	ritualist: "leadership",
+	warrior: "attack",
 };
 
 function selectBestCat(
@@ -1190,6 +1212,8 @@ function resetGlobalRun(db: GameDb, colony: ColonyRow, reason: string) {
 		.run();
 
 	db.delete(jobs).where(eq(jobs.colonyId, colony._id)).run();
+	// A collapse also scatters any in-progress raid and resets threat pressure.
+	db.delete(raiders).where(eq(raiders.colonyId, colony._id)).run();
 
 	// A collapse dissolves any open polls — the new run elects fresh.
 	db.update(elections)
@@ -1231,6 +1255,10 @@ function resetGlobalRun(db: GameDb, colony: ColonyRow, reason: string) {
 			lastTick: now,
 			criticalSince: null,
 			ritualRequestedAt: null,
+			threatPressure: 0,
+			activeRaidId: null,
+			raidClicks: 0,
+			lastRaidAt: null,
 			testRngSeed: colony.testRngSeed ?? null,
 		})
 		.where(eq(colonies._id, colony._id))
@@ -1255,7 +1283,13 @@ export function planBuilding(
 	args: {
 		sessionId: string;
 		nickname: string;
-		type: "workshop" | "field" | "research_hut" | "school";
+		type:
+			| "workshop"
+			| "field"
+			| "research_hut"
+			| "school"
+			| "smithy"
+			| "barracks";
 	},
 ) {
 	return db.transaction((txRaw) => {
@@ -1276,9 +1310,15 @@ export function planBuilding(
 		if (args.type === "field" && !fieldUnlocked(level)) {
 			throw new Error("Fields unlock at village level 4");
 		}
-		// Era gating: research_hut and school are unlocked by their tree
-		// nodes (whose ids match the building type). Reject until owned.
-		if (args.type === "research_hut" || args.type === "school") {
+		// Era gating: research_hut, school, smithy and barracks are unlocked by
+		// their tree nodes (whose ids match the building type). Reject until
+		// owned.
+		if (
+			args.type === "research_hut" ||
+			args.type === "school" ||
+			args.type === "smithy" ||
+			args.type === "barracks"
+		) {
 			const tree = getUpgradeTree(colony);
 			if (!isOwned(tree, args.type)) {
 				const node = getNode(args.type);
@@ -1375,7 +1415,9 @@ export function assignWorker(
 			.get();
 		if (
 			!building ||
-			(building.type !== "workshop" && building.type !== "research_hut") ||
+			(building.type !== "workshop" &&
+				building.type !== "research_hut" &&
+				building.type !== "smithy") ||
 			building.constructionProgress < 100
 		) {
 			throw new Error("That building cannot take a worker");
@@ -1602,6 +1644,24 @@ export function getGlobalDashboard(db: GameDb) {
 	).length;
 	const nextTarget = nextResearchTarget(tree);
 
+	// Active-raid raiders and the current threat reading for the map + HUD.
+	const activeRaiders = colony.activeRaidId
+		? db
+				.select()
+				.from(raiders)
+				.where(
+					and(
+						eq(raiders.colonyId, colony._id),
+						eq(raiders.raidId, colony.activeRaidId),
+					),
+				)
+				.all()
+				.filter((r) => r.status !== "dead" && r.hp > 0)
+		: [];
+	const warriorCount = aliveCats.filter(
+		(cat) => cat.specialization === "warrior",
+	).length;
+
 	return {
 		now,
 		colony,
@@ -1650,6 +1710,23 @@ export function getGlobalDashboard(db: GameDb) {
 			x2: zone.x2,
 			y2: zone.y2,
 			expiresAt: zone.expiresAt,
+		})),
+		// Military: the current threat reading, the standing guard, and any
+		// raiders on the map so the HUD can warn and the map can draw them.
+		threat: {
+			pressure: colony.threatPressure ?? 0,
+			band: threatBand(colony.threatPressure ?? 0),
+			raidActive: Boolean(colony.activeRaidId),
+			warriors: warriorCount,
+			weapons: colony.resources.weapons ?? 0,
+			armor: colony.resources.armor ?? 0,
+		},
+		raiders: activeRaiders.map((r) => ({
+			_id: r._id,
+			position: r.position,
+			hp: r.hp,
+			strength: r.strength,
+			status: r.status,
 		})),
 	};
 }
@@ -1995,6 +2072,202 @@ export function unlockNode(
 			nodeId: args.nodeId,
 			remainingBlessings: blessings - result.blessingsCost,
 		};
+	});
+}
+
+/**
+ * Player-requested warrior training. Needs a finished barracks; enrolls a
+ * chosen cat (or the sturdiest idle adult) into a `train_warrior` job.
+ * Kittens and existing warriors are rejected. Soft-fails so the client can
+ * surface the reason inline.
+ */
+export function trainWarrior(
+	db: GameDb,
+	args: { sessionId: string; nickname: string; catId?: string | null },
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+		const now = Date.now();
+		upsertPlayer(tx, args.sessionId, args.nickname, now);
+
+		const colonyBuildings = tx
+			.select()
+			.from(buildings)
+			.where(eq(buildings.colonyId, colony._id))
+			.all();
+		const hasBarracks = colonyBuildings.some(
+			(b) => b.type === "barracks" && b.constructionProgress >= 100,
+		);
+		if (!hasBarracks) {
+			return { ok: false, reason: "no_barracks" };
+		}
+
+		const alive = getAliveCats(tx, colony._id);
+		const busyIds = new Set(
+			[
+				...getJobsByStatus(tx, colony._id, "active"),
+				...getJobsByStatus(tx, colony._id, "queued"),
+			]
+				.map((job) => job.assignedCatId)
+				.filter(Boolean),
+		);
+		const eligible = (cat: CatRow): boolean =>
+			canWork(getLifeStage(cat.ageHours ?? 0)) &&
+			cat.specialization !== "warrior" &&
+			!busyIds.has(cat._id);
+
+		let recruit: CatRow | null = null;
+		if (args.catId) {
+			const chosen = alive.find((cat) => cat._id === args.catId) ?? null;
+			if (!chosen || !eligible(chosen)) {
+				return { ok: false, reason: "ineligible" };
+			}
+			recruit = chosen;
+		} else {
+			recruit =
+				alive
+					.filter(eligible)
+					.sort(
+						(a, b) =>
+							b.stats.attack +
+							b.stats.defense -
+							(a.stats.attack + a.stats.defense),
+					)[0] ?? null;
+		}
+		if (!recruit) {
+			return { ok: false, reason: "no_recruit" };
+		}
+
+		const upgrades = upgradesToLevels(getUpgradeRows(tx, colony._id));
+		const runtime = getRuntimeConfig(colony);
+		const jobId = queueJob(
+			tx,
+			colony._id,
+			"train_warrior",
+			"player",
+			upgrades,
+			runtime,
+			null,
+			recruit,
+		);
+		tx.update(colonies)
+			.set({ lastPlayerActivityAt: now })
+			.where(eq(colonies._id, colony._id))
+			.run();
+		return { ok: true, jobId, catId: recruit._id };
+	});
+}
+
+/**
+ * Player defense click against the active raid — the muster's answer to
+ * {@link clickBoostJob}. Each click deals damage to the frontmost raider
+ * (nearest the gate); a raider at zero hp is cut down. Soft-fails when no raid
+ * is in progress.
+ */
+export function defendRaid(
+	db: GameDb,
+	args: { sessionId: string; nickname: string },
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+		const now = Date.now();
+		upsertPlayer(tx, args.sessionId, args.nickname, now);
+
+		const raidId = colony.activeRaidId ?? null;
+		if (!raidId) {
+			return { ok: false, reason: "no_raid" };
+		}
+
+		const living = tx
+			.select()
+			.from(raiders)
+			.where(and(eq(raiders.colonyId, colony._id), eq(raiders.raidId, raidId)))
+			.all()
+			.filter((r) => r.status !== "dead" && r.hp > 0);
+		if (living.length === 0) {
+			return { ok: false, reason: "no_raid" };
+		}
+
+		// Frontmost = closest to the gate the warband is marching on.
+		const gate = gatePosition(
+			villageRingRadius(
+				tx
+					.select()
+					.from(buildings)
+					.where(eq(buildings.colonyId, colony._id))
+					.all().length,
+			),
+		);
+		const target = [...living].sort(
+			(a, b) =>
+				Math.hypot(a.position.x - gate.x, a.position.y - gate.y) -
+				Math.hypot(b.position.x - gate.x, b.position.y - gate.y),
+		)[0];
+
+		const nextHp = target.hp - DEFEND_CLICK_DAMAGE;
+		tx.update(raiders)
+			.set(nextHp <= 0 ? { hp: 0, status: "dead" } : { hp: nextHp })
+			.where(eq(raiders._id, target._id))
+			.run();
+
+		tx.update(colonies)
+			.set({
+				raidClicks: (colony.raidClicks ?? 0) + 1,
+				lastPlayerActivityAt: now,
+			})
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		return {
+			ok: true,
+			raiderId: target._id,
+			raiderHp: Math.max(0, nextHp),
+			killed: nextHp <= 0,
+		};
+	});
+}
+
+/**
+ * Force a raid for tests / live sanity. Spawns a warband (at the gate by
+ * default so the next tick resolves it) using the current colony snapshot.
+ */
+export function spawnRaidForTest(
+	db: GameDb,
+	opts: { atGate?: boolean; count?: number; strength?: number } = {},
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+		if (colony.activeRaidId) {
+			return { ok: false, reason: "raid_in_progress" };
+		}
+		const alive = getAliveCats(tx, colony._id);
+		const buildingCount = tx
+			.select()
+			.from(buildings)
+			.where(eq(buildings.colonyId, colony._id))
+			.all().length;
+		const ringRadius = villageRingRadius(buildingCount);
+		const snapshot = {
+			wealth: colonyWealth(colony.resources),
+			population: alive.length,
+			warriors: alive.filter((c) => c.specialization === "warrior").length,
+			colonyAgeSec:
+				(Date.now() - (colony.runStartedAt ?? colony.createdAt)) / 1000,
+		};
+		const raidId = spawnRaid(tx, colony._id, snapshot, ringRadius, () => 0.5, {
+			atGate: opts.atGate ?? true,
+			plan:
+				opts.count != null || opts.strength != null
+					? {
+							count: opts.count ?? 3,
+							strengthEach: opts.strength ?? 30,
+						}
+					: undefined,
+		});
+		return { ok: true, raidId };
 	});
 }
 
@@ -2448,13 +2721,17 @@ export function workerTick(db: GameDb) {
 					requestedType === "field" ||
 					requestedType === "food_storage" ||
 					requestedType === "research_hut" ||
-					requestedType === "school"
+					requestedType === "school" ||
+					requestedType === "smithy" ||
+					requestedType === "barracks"
 						? (requestedType as
 								| "workshop"
 								| "field"
 								| "food_storage"
 								| "research_hut"
-								| "school")
+								| "school"
+								| "smithy"
+								| "barracks")
 						: ("den" as const);
 				const occupied = tx
 					.select()
@@ -2700,6 +2977,30 @@ export function workerTick(db: GameDb) {
 				!staffedBuildingIds.has(building._id),
 		);
 
+		// Completed smithies with no assigned smith, for staffing.
+		const smithiesNeedingWorkers = colonyBuildings.filter(
+			(building) =>
+				building.type === "smithy" &&
+				building.constructionProgress >= 100 &&
+				!staffedBuildingIds.has(building._id),
+		);
+
+		// --- Military readiness for the leader's war planning ---------------
+		const hasBarracks = colonyBuildings.some(
+			(b) => b.type === "barracks" && b.constructionProgress >= 100,
+		);
+		const warriorCount = aliveCats.filter(
+			(cat) => cat.specialization === "warrior",
+		).length;
+		const trainingInFlight = activeJobs.filter(
+			(job) => job.kind === "train_warrior",
+		).length;
+		// Threat band the raid director will act on — the leader trains toward a
+		// bigger guard as pressure climbs, and stands down when the larder empties.
+		const currentThreatBand = threatBand(colony.threatPressure ?? 0);
+		const starving =
+			foodCapacity > 0 && nextResources.food / foodCapacity < 0.15;
+
 		const snapshot: LeaderSnapshot = {
 			population: aliveCats.length,
 			workforce,
@@ -2731,6 +3032,12 @@ export function workerTick(db: GameDb) {
 			storehouseCap: storehouseCap(aliveCats.length),
 			workshopsNeedingWorkers: workshopsNeedingWorkers.length,
 			researchHutsNeedingWorkers: researchHutsNeedingWorkers.length,
+			smithiesNeedingWorkers: smithiesNeedingWorkers.length,
+			hasBarracks,
+			warriorCount,
+			trainingInFlight,
+			threatBand: currentThreatBand,
+			starving,
 		};
 
 		// Worker map the later production pass consumes.
@@ -2991,6 +3298,100 @@ export function workerTick(db: GameDb) {
 					}
 					break;
 				}
+				case "assign_smithy": {
+					let staffed = 0;
+					for (const smithy of smithiesNeedingWorkers) {
+						if (staffed >= decision.count) {
+							break;
+						}
+						// The most dexterous idlers make the best smiths (building).
+						const idle = [...availableIdle].sort(
+							(a, b) => b.stats.building - a.stats.building,
+						)[0];
+						if (!idle) {
+							break;
+						}
+						if (!canTakePolicyAction()) {
+							break;
+						}
+						tx.update(cats)
+							.set({ assignedBuildingId: smithy._id })
+							.where(eq(cats._id, idle._id))
+							.run();
+						workshopWorkers.set(smithy._id, idle);
+						claimIdle(idle);
+						logEvent(
+							tx,
+							colony._id,
+							"worker_assigned",
+							`The leader set ${idle.name} to work the forge at the smithy.`,
+							[idle._id],
+						);
+						staffed += 1;
+					}
+					break;
+				}
+				case "train_warrior": {
+					// Send the strongest idle adults to the barracks. Kittens are
+					// excluded via workCapableCats upstream, so idlers are fit to fight.
+					const recruits = [...availableIdle]
+						.filter((cat) => cat.specialization !== "warrior")
+						.sort(
+							(a, b) =>
+								b.stats.attack +
+								b.stats.defense -
+								(a.stats.attack + a.stats.defense),
+						);
+					let trained = 0;
+					for (const recruit of recruits) {
+						if (trained >= decision.count) {
+							break;
+						}
+						if (!canTakePolicyAction()) {
+							break;
+						}
+						queueJob(
+							tx,
+							colony._id,
+							"train_warrior",
+							"leader",
+							upgrades,
+							runtime,
+							null,
+							recruit,
+						);
+						claimIdle(recruit);
+						trained += 1;
+					}
+					break;
+				}
+				case "cancel_training": {
+					// A starving colony pulls its recruits back to work.
+					const training = activeJobs.filter(
+						(job) => job.kind === "train_warrior",
+					);
+					for (const job of training) {
+						tx.update(jobs)
+							.set({ status: "cancelled", completedAt: now })
+							.where(eq(jobs._id, job._id))
+							.run();
+						if (job.assignedCatId) {
+							tx.update(cats)
+								.set({ activity: "idle", currentTask: null })
+								.where(eq(cats._id, job.assignedCatId))
+								.run();
+						}
+					}
+					if (training.length > 0) {
+						logEvent(
+							tx,
+							colony._id,
+							"job_cancelled",
+							`The leader called ${training.length} recruit${training.length === 1 ? "" : "s"} back from the barracks — the larder is bare.`,
+						);
+					}
+					break;
+				}
 				case "tithe": {
 					// Surplus offering is capped to once a minute.
 					if (!minuteRolled) {
@@ -3078,6 +3479,48 @@ export function workerTick(db: GameDb) {
 						colony._id,
 						"production",
 						`${worker?.name ?? "The workshop"} refined ${step.materialsUsed} materials into ${step.refinedProduced} refined good${step.refinedProduced === 1 ? "" : "s"}.`,
+						worker ? [worker._id] : [],
+					);
+				}
+				if (step.nextProgress !== (building.productionProgress ?? 0)) {
+					tx.update(buildings)
+						.set({ productionProgress: step.nextProgress })
+						.where(eq(buildings._id, building._id))
+						.run();
+				}
+			}
+			// A staffed smithy forges refined + materials into weapons and armor
+			// for the armory — the arsenal the warriors draw on when raiders come.
+			if (building.type === "smithy") {
+				const worker = workshopWorkers.get(building._id) ?? null;
+				const step = advanceSmithy(
+					building.productionProgress ?? 0,
+					productionElapsed,
+					{
+						hasWorker: worker !== null,
+						workerIsFast: worker?.specialization === "architect",
+						refinedAvailable: patchedResources.refined ?? 0,
+						materialsAvailable: patchedResources.materials,
+					},
+				);
+				if (step.weaponsProduced > 0 || step.armorProduced > 0) {
+					patchedResources.refined = Math.max(
+						0,
+						(patchedResources.refined ?? 0) - step.refinedUsed,
+					);
+					patchedResources.materials = Math.max(
+						0,
+						patchedResources.materials - step.materialsUsed,
+					);
+					patchedResources.weapons =
+						(patchedResources.weapons ?? 0) + step.weaponsProduced;
+					patchedResources.armor =
+						(patchedResources.armor ?? 0) + step.armorProduced;
+					logEvent(
+						tx,
+						colony._id,
+						"production",
+						`${worker?.name ?? "The smith"} forged ${step.weaponsProduced} weapon${step.weaponsProduced === 1 ? "" : "s"} and ${step.armorProduced} armor at the smithy.`,
 						worker ? [worker._id] : [],
 					);
 				}
@@ -3558,6 +4001,34 @@ export function workerTick(db: GameDb) {
 					.run();
 			}
 
+			// Training graduates a cat into a warrior — the barracks turns a
+			// recruit into a fighter who'll draw gear from the armory when
+			// raiders come. Kittens are never enrolled (guarded at queue time).
+			if (job.kind === "train_warrior" && assignedCat) {
+				const roleXp = defaultRoleXp(assignedCat);
+				tx.update(cats)
+					.set({
+						specialization: "warrior",
+						roleXp: { ...roleXp, warrior: (roleXp.warrior ?? 0) + 1 },
+						stats: {
+							...assignedCat.stats,
+							attack: Math.min(100, assignedCat.stats.attack + 3),
+							defense: Math.min(100, assignedCat.stats.defense + 3),
+						},
+						activity: "idle",
+						currentTask: null,
+					})
+					.where(eq(cats._id, assignedCat._id))
+					.run();
+				logEvent(
+					tx,
+					colony._id,
+					"warrior_trained",
+					`${assignedCat.name} completed warrior training and joined the village guard.`,
+					[assignedCat._id],
+				);
+			}
+
 			// Working cats head back when the job wraps up — carriers
 			// (hunters, quarriers, ritualists) make for the shrine to deposit;
 			// scouts just walk home.
@@ -3964,6 +4435,58 @@ export function workerTick(db: GameDb) {
 			}
 		}
 
+		// --- Threat director: build raid pressure, march the active warband,
+		// and resolve the fight at the gate. Runs on its own forked roll chain
+		// so the policy/movement/life chains stay byte-stable, and after the
+		// movement pass so raiders and cats have both moved this tick. Loot is
+		// taken straight from patchedResources before the storage clamp below.
+		let raidSeed = rngSeed === null ? null : rngSeed + 3_000_003;
+		const nextRaidRoll = () => {
+			if (raidSeed === null) {
+				return Math.random();
+			}
+			const roll = rollSeeded(raidSeed);
+			raidSeed = roll.nextSeed;
+			return roll.value;
+		};
+		const raidResult = runRaidDirector(
+			tx,
+			{ _id: colony._id },
+			{
+				now,
+				elapsedGameSec: elapsedSec * runtime.timeScale,
+				ringRadius,
+				aliveCats: getAliveCats(tx, colony._id),
+				effects: {
+					combatPowerMult: effects.combatPowerMult,
+					defenseMult: effects.defenseMult,
+				},
+				resources: patchedResources,
+				roll: nextRaidRoll,
+				pressure: colony.threatPressure ?? 0,
+				colonyAgeSec:
+					((now - (colony.runStartedAt ?? colony.createdAt)) / 1000) *
+					runtime.timeScale,
+				activeRaidId: colony.activeRaidId ?? null,
+				raidClicks: colony.raidClicks ?? 0,
+			},
+		);
+		const threatPressure = raidResult.pressure;
+		// A raid that wiped the colony ends the run cleanly.
+		if (getAliveCats(tx, colony._id).length === 0) {
+			resetGlobalRun(
+				tx,
+				{
+					...colony,
+					resources: patchedResources,
+					automationTier,
+					runStartedAt: colony.runStartedAt ?? colony.createdAt,
+				},
+				"raid-wipeout",
+			);
+			return { ok: true, reset: true };
+		}
+
 		// Storage caps are the final word: deposits, field yields, and player
 		// supplies this tick can push a store past its cap, so clamp every
 		// resource down to what the buildings can actually hold.
@@ -3978,6 +4501,11 @@ export function workerTick(db: GameDb) {
 			patchedResources.refined ?? 0,
 			caps.refined,
 		);
+		patchedResources.weapons = Math.min(
+			patchedResources.weapons ?? 0,
+			caps.weapons,
+		);
+		patchedResources.armor = Math.min(patchedResources.armor ?? 0, caps.armor);
 
 		const unattendedHours =
 			(now - (colony.lastPlayerActivityAt ?? now)) / 3_600_000;
@@ -4031,6 +4559,7 @@ export function workerTick(db: GameDb) {
 				automationTier,
 				globalUpgradePoints,
 				criticalSince,
+				threatPressure,
 				lastTick: now,
 				testRngSeed: rngSeed,
 			})

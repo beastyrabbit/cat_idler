@@ -14,7 +14,7 @@ export interface MapCat {
 	activity?: "idle" | "traveling" | "working" | "returning" | null;
 	destination?: { x: number; y: number } | null;
 	carrying?: { kind: "food" | "blessings"; amount: number } | null;
-	specialization?: "hunter" | "architect" | "ritualist" | null;
+	specialization?: "hunter" | "architect" | "ritualist" | "warrior" | null;
 	/** Accumulated game-hours; drives the on-map size by life stage. */
 	ageHours?: number;
 }
@@ -46,6 +46,7 @@ const HAT_SPRITES: Record<string, string> = {
 	hunter: "/images/cats/hat-hunter.png",
 	architect: "/images/cats/hat-architect.png",
 	ritualist: "/images/cats/hat-ritualist.png",
+	warrior: "/images/cats/hat-warrior.png",
 };
 const CAT_SHEET = "/images/cats/cat-sheet.png";
 
@@ -76,6 +77,8 @@ const WORK_ICONS: Record<string, string> = {
 	hunter: "🏹",
 	architect: "🪓",
 	ritualist: "🔮",
+	warrior: "⚔️",
+	train_warrior: "⚔️",
 };
 
 interface CatLayerProps {
