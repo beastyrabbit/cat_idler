@@ -144,6 +144,21 @@ export const cats = sqliteTable(
 			.default("idle"),
 		isPregnant: integer("isPregnant", { mode: "boolean" }).notNull(),
 		pregnancyDueTime: integer("pregnancyDueTime"),
+		/**
+		 * Accumulated age in game-hours. Ticked up by
+		 * elapsedSec * timeScale each tick, so aging tracks the same
+		 * accelerated clock as jobs (and responds to advanceTime in tests)
+		 * rather than wall-clock time. Life stage and old-age death read this.
+		 */
+		ageHours: real("ageHours").notNull().default(0),
+		/**
+		 * Target {@link ageHours} at which a pregnant cat gives birth. Null
+		 * when not expecting. Comparing against the mother's own accumulated
+		 * age keeps gestation on the accelerated clock.
+		 */
+		pregnancyDueAgeHours: real("pregnancyDueAgeHours"),
+		/** The co-parent chosen at conception, for kitten trait inheritance. */
+		pregnancyMateId: text("pregnancyMateId"),
 		spriteParams: text("spriteParams", { mode: "json" }).$type<Record<
 			string,
 			unknown

@@ -1,7 +1,9 @@
 "use client";
 
 import { tileDiamondCenter, zIndexFor } from "@/lib/game/isoProjection";
+import { getLifeStage } from "@/lib/game/lifeSim";
 import { colonyToWorld } from "@/lib/game/villageLayout";
+import type { LifeStage } from "@/types/game";
 import { ISO } from "./constants";
 
 export interface MapCat {
@@ -13,7 +15,31 @@ export interface MapCat {
 	destination?: { x: number; y: number } | null;
 	carrying?: { kind: "food" | "blessings"; amount: number } | null;
 	specialization?: "hunter" | "architect" | "ritualist" | null;
+	/** Accumulated game-hours; drives the on-map size by life stage. */
+	ageHours?: number;
 }
+
+/**
+ * Sprite scale by life stage — kittens are visibly small, young cats not yet
+ * full-grown, adults and elders full size. Legacy rows without an age render
+ * adult-sized.
+ */
+function stageSpriteScale(stage: LifeStage): number {
+	switch (stage) {
+		case "kitten":
+			return 0.9;
+		case "young":
+			return 1.15;
+		default:
+			return 1.4;
+	}
+}
+
+/** A leading glyph on the name label for the youngest and oldest cats. */
+const STAGE_GLYPH: Partial<Record<LifeStage, string>> = {
+	kitten: "🍼",
+	elder: "🧓",
+};
 
 /** Job hats overlaid on the animated sprite. */
 const HAT_SPRITES: Record<string, string> = {
@@ -123,6 +149,9 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 					(cat.activity ? ACTIVITY_BADGES[cat.activity] : null) ??
 					(cat.currentTask ? TASK_BADGES[cat.currentTask] : null);
 				const isLeader = cat._id === leaderId;
+				const stage = getLifeStage(cat.ageHours ?? 24);
+				const spriteScale = stageSpriteScale(stage);
+				const stageGlyph = STAGE_GLYPH[stage];
 
 				return (
 					<button
@@ -161,7 +190,7 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 								style={
 									{
 										backgroundImage: `url(${CAT_SHEET})`,
-										transform: "scale(1.4)",
+										transform: `scale(${spriteScale})`,
 										"--sheet-off": `${-group * 128}px`,
 									} as React.CSSProperties
 								}
@@ -172,7 +201,7 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 								className="cat-sprite pointer-events-none absolute left-0 top-0"
 								style={{
 									backgroundImage: `url(${CAT_SHEET})`,
-									transform: "scale(1.4)",
+									transform: `scale(${spriteScale})`,
 									filter: "brightness(0)",
 									opacity: 0.28,
 									zIndex: 99_990,
@@ -201,7 +230,7 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 									className="pointer-events-none absolute left-0 top-0 h-8 w-8"
 									style={{
 										imageRendering: "pixelated",
-										transform: "scale(1.4)",
+										transform: `scale(${spriteScale})`,
 									}}
 								/>
 							)}
@@ -220,6 +249,7 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 							)}
 						</div>
 						<span className="mt-0.5 max-w-full truncate rounded-full bg-black/60 px-1.5 text-[11px] font-semibold text-white">
+							{stageGlyph ? `${stageGlyph} ` : ""}
 							{cat.name}
 						</span>
 					</button>

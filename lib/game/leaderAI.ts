@@ -49,8 +49,15 @@ export const TITHE_FOOD_AMOUNT = 20;
 export const TITHE_REFINED_AMOUNT = 5;
 
 export interface LeaderSnapshot {
-	/** Living cats in the colony. */
+	/** Living cats in the colony (raw head count, incl. kittens). */
 	population: number;
+	/**
+	 * Stage-weighted count of work-capable cats — kittens count for nothing,
+	 * elders partially. The employment target is a fraction of this, not of the
+	 * raw head count, so a nursery full of kittens doesn't inflate the budget.
+	 * Falls back to {@link population} when omitted.
+	 */
+	workforce?: number;
 	/** Cats free to take on a new job right now. */
 	idleCats: number;
 	/** Cats currently occupied by any job or workplace. */
@@ -120,7 +127,9 @@ export function targetHuntSlots(snapshot: LeaderSnapshot): number {
 		return 0;
 	}
 	const deficit = (HUNT_HOLD_RATIO - ratio) / HUNT_HOLD_RATIO;
-	const maxEmployed = Math.floor(snapshot.population * EMPLOYMENT_TARGET_RATIO);
+	const maxEmployed = Math.floor(
+		(snapshot.workforce ?? snapshot.population) * EMPLOYMENT_TARGET_RATIO,
+	);
 	return Math.ceil(deficit * maxEmployed);
 }
 
@@ -134,7 +143,9 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 	const decisions: LeaderDecision[] = [];
 	const ratio = foodRatio(snapshot.resources.food, snapshot.foodCapacity);
 
-	const maxEmployed = Math.floor(snapshot.population * EMPLOYMENT_TARGET_RATIO);
+	const maxEmployed = Math.floor(
+		(snapshot.workforce ?? snapshot.population) * EMPLOYMENT_TARGET_RATIO,
+	);
 	const employmentRoom = Math.max(0, maxEmployed - snapshot.employedCats);
 
 	// --- Hunting, with hysteresis across the 90-110% food band ---------

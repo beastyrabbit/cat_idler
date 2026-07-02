@@ -6,7 +6,7 @@
  * upgrades, click boosting, the worker tick, and run resets.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDb, type GameDb } from "@/db/client";
@@ -15,11 +15,13 @@ import {
 	cats,
 	colonies,
 	elections,
+	events,
 	jobs,
 	runHistory,
 	worldTiles,
 	zones as zonesTable,
 } from "@/db/schema";
+import { getLifeStage } from "@/lib/game/lifeSim";
 import {
 	colonyToWorld,
 	ringCells,
@@ -2224,3 +2226,189 @@ function getAliveCatsForTest(database: GameDb, colonyId: string) {
 		.all()
 		.filter((cat) => cat.deathTime === null);
 }
+
+/** Trim the colony to `keep` cats, all healthy adults at `ageHours`. */
+function foundSmallColony(
+	database: GameDb,
+	colonyId: string,
+	keep: number,
+	ageHours: number,
+) {
+	const all = getAliveCatsForTest(database, colonyId);
+	for (const cat of all.slice(keep)) {
+		database.delete(cats).where(eq(cats._id, cat._id)).run();
+	}
+	database
+		.update(cats)
+		.set({
+			ageHours,
+			isPregnant: false,
+			pregnancyDueAgeHours: null,
+			pregnancyMateId: null,
+			needs: { hunger: 100, thirst: 100, rest: 100, health: 100 },
+		})
+		.where(eq(cats.colonyId, colonyId))
+		.run();
+}
+
+describe("life simulation", () => {
+	it("grows a bounded, aging population with births and new life stages", () => {
+		const colony = ensureGlobalColony(db);
+		setTestRngSeed(db, 4242);
+
+		// A small, healthy founding group with clear housing headroom (shrine +
+		// 5 dens shelter 14). Adults just under elderhood so aging shows without
+		// wiping the founders mid-run.
+		foundSmallColony(db, colony._id, 8, 26);
+		db.update(colonies)
+			.set({ testTimeScale: 60 })
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		const housingCap = 14;
+		const founders = 8;
+		let peak = founders;
+		let kittenSeen = false;
+
+		// ~24 game-hours (advanceTime 60s * timeScale 60 = 1 game-hour/tick).
+		for (let i = 0; i < 24; i += 1) {
+			// Keep the stores full so only old age — never starvation — removes
+			// cats; breeding needs the colony fed and watered.
+			const current = ensureGlobalColony(db);
+			db.update(colonies)
+				.set({
+					resources: { ...current.resources, food: 100_000, water: 100_000 },
+				})
+				.where(eq(colonies._id, current._id))
+				.run();
+
+			advanceTime(db, 60);
+			workerTick(db);
+
+			const living = getAliveCatsForTest(db, colony._id);
+			peak = Math.max(peak, living.length);
+			if (living.some((cat) => getLifeStage(cat.ageHours ?? 0) === "kitten")) {
+				kittenSeen = true;
+			}
+			// Never runs away past the housing soft-cap (+ slack), never empties.
+			expect(living.length).toBeGreaterThanOrEqual(1);
+			expect(living.length).toBeLessThanOrEqual(housingCap + 4);
+		}
+
+		const birthEvents = db
+			.select()
+			.from(events)
+			.where(and(eq(events.colonyId, colony._id), eq(events.type, "birth")))
+			.all();
+
+		// Births happened, kittens existed, and the colony grew past its founders.
+		expect(birthEvents.length).toBeGreaterThan(0);
+		expect(kittenSeen).toBe(true);
+		expect(peak).toBeGreaterThan(founders);
+
+		// Kittens inherit both parents (the co-parent is recorded).
+		const born = getAliveCatsForTest(db, colony._id).filter(
+			(cat) => cat.parentIds[0] !== null,
+		);
+		expect(born.length).toBeGreaterThan(0);
+		expect(born.some((cat) => cat.parentIds[1] !== null)).toBe(true);
+	});
+
+	it("retires an elder of old age and frees the job it was on", () => {
+		const colony = ensureGlobalColony(db);
+		setTestRngSeed(db, 1);
+		const elder = getAliveCatsForTest(db, colony._id)[0];
+
+		// Ancient cat, mid-expedition.
+		db.update(cats).set({ ageHours: 400 }).where(eq(cats._id, elder._id)).run();
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: "elder-hunt",
+				colonyId: colony._id,
+				kind: "hunt_expedition",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: elder._id,
+				baseDurationSec: 8 * 3600,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now,
+				startedAt: now,
+				endsAt: now + 8 * 3600 * 1000,
+				metadata: {},
+			})
+			.run();
+
+		// A game-hour at 400h age carries a near-certain death chance.
+		db.update(colonies)
+			.set({ testTimeScale: 60 })
+			.where(eq(colonies._id, colony._id))
+			.run();
+		advanceTime(db, 60);
+		workerTick(db);
+
+		const row = db.select().from(cats).where(eq(cats._id, elder._id)).get()!;
+		expect(row.deathTime).not.toBeNull();
+
+		const job = db.select().from(jobs).where(eq(jobs._id, "elder-hunt")).get()!;
+		expect(job.status).toBe("cancelled");
+
+		const oldAgeDeaths = db
+			.select()
+			.from(events)
+			.where(and(eq(events.colonyId, colony._id), eq(events.type, "death")))
+			.all()
+			.filter((event) => event.involvedCatIds.includes(elder._id));
+		expect(oldAgeDeaths.length).toBeGreaterThan(0);
+	});
+
+	it("suffers starvation deaths in a food crisis and stops once restored", () => {
+		const colony = ensureGlobalColony(db);
+		foundSmallColony(db, colony._id, 10, 30);
+
+		// Crisis: empty stores. Four cats are at death's door; the rest are hale
+		// and will ride the famine out.
+		db.update(colonies)
+			.set({ resources: { ...colony.resources, food: 0, water: 0 } })
+			.where(eq(colonies._id, colony._id))
+			.run();
+		const roster = getAliveCatsForTest(db, colony._id);
+		for (const cat of roster.slice(0, 4)) {
+			db.update(cats)
+				.set({ needs: { hunger: 0, thirst: 0, rest: 50, health: 0.5 } })
+				.where(eq(cats._id, cat._id))
+				.run();
+		}
+
+		advanceTime(db, 60);
+		workerTick(db);
+
+		const afterCrisis = getAliveCatsForTest(db, colony._id).length;
+		const deathEvents = db
+			.select()
+			.from(events)
+			.where(and(eq(events.colonyId, colony._id), eq(events.type, "death")))
+			.all();
+		expect(deathEvents.length).toBeGreaterThan(0);
+		expect(afterCrisis).toBeLessThan(10);
+		expect(afterCrisis).toBeGreaterThan(0);
+
+		// Relief arrives: restock and let the survivors recover without dying off.
+		const survivor = ensureGlobalColony(db);
+		db.update(colonies)
+			.set({ resources: { ...survivor.resources, food: 100, water: 100 } })
+			.where(eq(colonies._id, survivor._id))
+			.run();
+		db.update(cats)
+			.set({ needs: { hunger: 100, thirst: 100, rest: 100, health: 100 } })
+			.where(and(eq(cats.colonyId, colony._id), isNull(cats.deathTime)))
+			.run();
+
+		advanceTime(db, 60);
+		workerTick(db);
+		expect(getAliveCatsForTest(db, colony._id).length).toBe(afterCrisis);
+	});
+});

@@ -11,7 +11,6 @@
 
 import { and, desc, eq, gt, gte, isNull, lte } from "drizzle-orm";
 import { nanoid } from "nanoid";
-
 import type { GameDb } from "@/db/client";
 import {
 	buildings,
@@ -25,14 +24,21 @@ import {
 	type JobRow,
 	jobs,
 	players,
+	type RoleXpJson,
 	runHistory,
 	votes,
 	type WorldTileRow,
 	worldTiles,
 } from "@/db/schema";
+import type { CatSpriteParams } from "@/lib/cat-renderer/types";
 import { isForestType, regrowthAmount } from "@/lib/game/depletion";
 import { KICK_THRESHOLD, tallyVotes } from "@/lib/game/elections";
-import { inheritTraits, traitsToSpriteParams } from "@/lib/game/genetics";
+import {
+	extractGeneticTraits,
+	type GeneticTraits,
+	inheritTraits,
+	traitsToSpriteParams,
+} from "@/lib/game/genetics";
 import { planHousePipeline } from "@/lib/game/housePlanner";
 import {
 	housingCapacity,
@@ -60,6 +66,24 @@ import {
 	shouldTrackCritical,
 } from "@/lib/game/idleRules";
 import { type LeaderSnapshot, planLeaderActions } from "@/lib/game/leaderAI";
+import {
+	detectLifeStageTransition,
+	generateMilestoneAnnouncement,
+} from "@/lib/game/lifeMilestones";
+import {
+	canWork,
+	colonyCanBreed,
+	conceptionProbability,
+	GESTATION_GAME_HOURS,
+	getLifeStage,
+	inheritStats,
+	leadershipAfterTenure,
+	oldAgeDeathProbability,
+	stageWorkEffectiveness,
+	tradeSpeedMultiplier,
+	tradeYieldMultiplier,
+	workforceWeight,
+} from "@/lib/game/lifeSim";
 import {
 	destinationForJob,
 	EXPLORE_SPEED_FACTOR,
@@ -251,6 +275,40 @@ function randomStat(min: number, max: number): number {
 	return min + Math.floor(Math.random() * (max - min + 1));
 }
 
+/** The role-experience track a job kind trains, if any. */
+function tradeForJob(kind: JobKind): keyof RoleXpJson | null {
+	if (kind === "hunt_expedition" || kind === "leader_plan_hunt") {
+		return "hunter";
+	}
+	if (kind === "build_house" || kind === "leader_plan_house") {
+		return "architect";
+	}
+	if (kind === "ritual") {
+		return "ritualist";
+	}
+	return null;
+}
+
+/**
+ * Duration scaling for a cat taking on a job, folding in life stage (elders and
+ * young cats are slower than adults) and trade experience (a seasoned hunter or
+ * architect finishes quicker). Returns 1 for unassigned/player jobs. Clamped so
+ * neither effect can make a job absurdly long or instant.
+ */
+function capabilityDurationFactor(cat: CatRow | null, kind: JobKind): number {
+	if (!cat) {
+		return 1;
+	}
+	const effectiveness = stageWorkEffectiveness(getLifeStage(cat.ageHours ?? 0));
+	if (effectiveness <= 0) {
+		return 1;
+	}
+	const trade = tradeForJob(kind);
+	const xp = trade ? (defaultRoleXp(cat)[trade] ?? 0) : 0;
+	const factor = tradeSpeedMultiplier(xp) / effectiveness;
+	return Math.max(0.4, Math.min(2.5, factor));
+}
+
 function starterNames(): string[] {
 	const names = ["Whiskers", "Shadow", "Luna", "Max", "Bella"];
 	const seen = new Set(names);
@@ -280,6 +338,16 @@ function starterCatSpot(index: number): { x: number; y: number } {
 	return spots[index % spots.length];
 }
 
+/**
+ * Founding age for a starter cat, in game-hours. Spread across the young/adult
+ * band (12-45h) so the colony opens with a working-age population — no kittens
+ * that can't work, and none old enough to drop dead in the first hours. Elders,
+ * births and deaths all emerge from the simulation over time.
+ */
+function starterAgeHours(index: number): number {
+	return 12 + ((index * 17) % 34);
+}
+
 function createStarterCats(db: GameDb, colonyId: string) {
 	const names = starterNames();
 	for (let i = 0; i < STARTER_CAT_COUNT; i += 1) {
@@ -291,6 +359,9 @@ function createStarterCats(db: GameDb, colonyId: string) {
 				name: names[i] ?? `Cat ${i + 1}`,
 				parentIds: [null, null],
 				birthTime: Date.now(),
+				ageHours: starterAgeHours(i),
+				pregnancyDueAgeHours: null,
+				pregnancyMateId: null,
 				deathTime: null,
 				stats: {
 					attack: randomStat(30, 60),
@@ -315,6 +386,356 @@ function createStarterCats(db: GameDb, colonyId: string) {
 				roleXp: { ...DEFAULT_ROLE_XP },
 			})
 			.run();
+	}
+}
+
+/**
+ * Hunt yield for one expedition, folding the base reward together with the
+ * hunter's life stage (young/elder haul less) and trade experience (a seasoned
+ * hunter hauls more, with diminishing returns).
+ */
+function huntYieldFor(
+	cat: CatRow,
+	hunterXp: number,
+	upgrades: UpgradeLevels,
+): number {
+	const base = getHuntReward(
+		cat.stats.hunting,
+		cat.specialization ?? null,
+		hunterXp,
+		upgrades,
+	);
+	const stageMult = stageWorkEffectiveness(getLifeStage(cat.ageHours ?? 0));
+	const yieldMult = tradeYieldMultiplier(hunterXp);
+	return Math.max(1, Math.floor(base * stageMult * yieldMult));
+}
+
+/**
+ * Retire a cat that has died of old age: cancel any job it was on, vacate its
+ * workplace, and mark it dead. Keeps the job/assignment state clean so no
+ * expedition or workshop is left pointing at a corpse.
+ */
+function retireCat(db: GameDb, colonyId: string, cat: CatRow, now: number) {
+	db.update(jobs)
+		.set({ status: "cancelled", completedAt: now })
+		.where(and(eq(jobs.assignedCatId, cat._id), eq(jobs.status, "active")))
+		.run();
+	db.update(jobs)
+		.set({ status: "cancelled", completedAt: now })
+		.where(and(eq(jobs.assignedCatId, cat._id), eq(jobs.status, "queued")))
+		.run();
+
+	db.update(cats)
+		.set({
+			deathTime: now,
+			currentTask: null,
+			carrying: null,
+			assignedBuildingId: null,
+			destination: null,
+			activity: "idle",
+			isPregnant: false,
+			pregnancyDueAgeHours: null,
+			pregnancyMateId: null,
+		})
+		.where(eq(cats._id, cat._id))
+		.run();
+
+	logEvent(
+		db,
+		colonyId,
+		"death",
+		`${cat.name} died peacefully of old age.`,
+		[cat._id],
+		{ cause: "old_age" },
+	);
+}
+
+/**
+ * Pick a co-parent for a conceiving cat: another eligible adult, preferring one
+ * with the same specialization so lineages of a trade concentrate, then the
+ * strongest available. Deterministic — no RNG. Returns null if no partner.
+ */
+function pickMate(candidates: CatRow[], cat: CatRow): CatRow | null {
+	const others = candidates.filter((c) => c._id !== cat._id);
+	if (others.length === 0) {
+		return null;
+	}
+	const sameTrade = cat.specialization
+		? others.filter((c) => c.specialization === cat.specialization)
+		: [];
+	const pool = sameTrade.length > 0 ? sameTrade : others;
+	return [...pool].sort(
+		(a, b) =>
+			b.stats.leadership +
+			b.stats.hunting +
+			b.stats.building -
+			(a.stats.leadership + a.stats.hunting + a.stats.building),
+	)[0];
+}
+
+/**
+ * Birth a kitten to a pregnant mother. Coat and stats are inherited from both
+ * parents (biased toward their strengths, so born hunters beget hunters), the
+ * mother's pregnancy is cleared, and a birth notice is logged.
+ */
+function birthKitten(
+	db: GameDb,
+	colonyId: string,
+	mother: CatRow,
+	now: number,
+	roll: () => number,
+) {
+	const father = mother.pregnancyMateId
+		? (db
+				.select()
+				.from(cats)
+				.where(
+					and(eq(cats._id, mother.pregnancyMateId), isNull(cats.deathTime)),
+				)
+				.get() ?? null)
+		: null;
+
+	const motherTraits: GeneticTraits | null = extractGeneticTraits(
+		(mother.spriteParams ?? null) as unknown as CatSpriteParams | null,
+	);
+	const fatherTraits: GeneticTraits | null = father
+		? extractGeneticTraits(
+				(father.spriteParams ?? null) as unknown as CatSpriteParams | null,
+			)
+		: null;
+
+	const kittenStats = inheritStats(
+		mother.stats,
+		father ? father.stats : null,
+		roll,
+	);
+	const kittenName = generateName(Math.floor(roll() * 1_000_000_000));
+
+	db.insert(cats)
+		.values({
+			_id: nanoid(),
+			colonyId,
+			name: kittenName,
+			parentIds: [mother._id, father?._id ?? null],
+			birthTime: now,
+			ageHours: 0,
+			pregnancyDueAgeHours: null,
+			pregnancyMateId: null,
+			deathTime: null,
+			stats: kittenStats,
+			needs: { hunger: 100, thirst: 100, rest: 100, health: 100 },
+			currentTask: null,
+			position: { ...mother.position },
+			isPregnant: false,
+			spriteParams: traitsToSpriteParams(
+				inheritTraits(motherTraits, fatherTraits),
+			) as Record<string, unknown>,
+			specialization: null,
+			roleXp: { ...DEFAULT_ROLE_XP },
+		})
+		.run();
+
+	db.update(cats)
+		.set({
+			isPregnant: false,
+			pregnancyDueTime: null,
+			pregnancyDueAgeHours: null,
+			pregnancyMateId: null,
+		})
+		.where(eq(cats._id, mother._id))
+		.run();
+
+	logEvent(
+		db,
+		colonyId,
+		"birth",
+		father
+			? `${kittenName} was born to ${mother.name} and ${father.name}.`
+			: `${kittenName} was born to ${mother.name}.`,
+		father ? [mother._id, father._id] : [mother._id],
+		{ motherId: mother._id, fatherId: father?._id ?? null },
+	);
+}
+
+interface LifeSimContext {
+	aliveCats: CatRow[];
+	elapsedGameHours: number;
+	housingCap: number;
+	foodRatio: number;
+	waterRatio: number;
+	/** Seed for the isolated life-sim roll chain, or null for unseeded. */
+	lifeSeed: number | null;
+}
+
+/**
+ * The population loop: age every cat, retire elders that lose the old-age roll,
+ * grow the leader's leadership with tenure, deliver kittens whose gestation has
+ * finished, and — while the village is fed, watered and has spare beds — pair
+ * adults into new pregnancies. All randomness runs on a forked chain so the
+ * seeded policy/movement chains stay byte-stable.
+ */
+function runLifeSimulation(
+	db: GameDb,
+	colony: ColonyRow,
+	ctx: LifeSimContext,
+): void {
+	const { elapsedGameHours } = ctx;
+	if (elapsedGameHours <= 0) {
+		return;
+	}
+	const now = Date.now();
+
+	let lifeSeed = ctx.lifeSeed;
+	const nextLifeRoll = () => {
+		if (lifeSeed === null) {
+			return Math.random();
+		}
+		const roll = rollSeeded(lifeSeed);
+		lifeSeed = roll.nextSeed;
+		return roll.value;
+	};
+
+	// 1. Aging, old-age mortality, leadership tenure, life-stage milestones.
+	for (const cat of ctx.aliveCats) {
+		const prevAge = cat.ageHours ?? 0;
+		const newAge = prevAge + elapsedGameHours;
+		const isLeader = cat._id === colony.leaderId;
+
+		const deathChance = oldAgeDeathProbability(
+			newAge,
+			isLeader,
+			elapsedGameHours,
+		);
+		if (deathChance > 0 && nextLifeRoll() < deathChance) {
+			retireCat(db, colony._id, cat, now);
+			continue;
+		}
+
+		db.update(cats)
+			.set({
+				ageHours: newAge,
+				...(isLeader
+					? {
+							stats: {
+								...cat.stats,
+								leadership: leadershipAfterTenure(
+									cat.stats.leadership,
+									elapsedGameHours,
+								),
+							},
+						}
+					: {}),
+			})
+			.where(eq(cats._id, cat._id))
+			.run();
+
+		const transition = detectLifeStageTransition(prevAge, newAge);
+		if (transition) {
+			const announcement = generateMilestoneAnnouncement(
+				transition,
+				cat.name,
+				cat.stats,
+			);
+			logEvent(
+				db,
+				colony._id,
+				"milestone",
+				`${announcement.headline} — ${announcement.body}`,
+				[cat._id],
+				{ from: transition.from, to: transition.to },
+			);
+		}
+	}
+
+	// 2. Births: any mother whose gestation (tracked in her own age) is up.
+	const postAge = getAliveCats(db, colony._id);
+	for (const cat of postAge) {
+		if (
+			cat.isPregnant &&
+			cat.pregnancyDueAgeHours != null &&
+			(cat.ageHours ?? 0) >= cat.pregnancyDueAgeHours
+		) {
+			birthKitten(db, colony._id, cat, now, nextLifeRoll);
+		}
+	}
+
+	// 3. Conceptions: adults pair off while the colony is healthy and has room.
+	// The housing headroom check is the soft population cap — growth tracks the
+	// village's shelter instead of running away.
+	const roster = getAliveCats(db, colony._id);
+	const blessings = colony.resources.blessings ?? 0;
+	let pregnantCount = roster.filter((c) => c.isPregnant).length;
+	const population = roster.length;
+	const adults = roster.filter(
+		(c) => !c.isPregnant && getLifeStage(c.ageHours ?? 0) === "adult",
+	);
+	for (const cat of adults) {
+		if (
+			!colonyCanBreed({
+				foodRatio: ctx.foodRatio,
+				waterRatio: ctx.waterRatio,
+				population: population + pregnantCount,
+				housingCapacity: ctx.housingCap,
+			})
+		) {
+			break;
+		}
+		const chance = conceptionProbability(
+			cat.specialization ?? null,
+			blessings,
+			elapsedGameHours,
+		);
+		if (nextLifeRoll() >= chance) {
+			continue;
+		}
+		const mate = pickMate(adults, cat);
+		db.update(cats)
+			.set({
+				isPregnant: true,
+				pregnancyDueAgeHours: (cat.ageHours ?? 0) + GESTATION_GAME_HOURS,
+				pregnancyDueTime: now + GESTATION_GAME_HOURS * 3_600_000,
+				pregnancyMateId: mate?._id ?? null,
+			})
+			.where(eq(cats._id, cat._id))
+			.run();
+		pregnantCount += 1;
+		logEvent(
+			db,
+			colony._id,
+			"breeding",
+			mate
+				? `${cat.name} and ${mate.name} are expecting a litter.`
+				: `${cat.name} is expecting a litter.`,
+			mate ? [cat._id, mate._id] : [cat._id],
+		);
+	}
+}
+
+/**
+ * Grace window separating a genuine newborn (ageHours 0, just created) from a
+ * cat that predates the ageHours column (ageHours 0 but born long ago). Legacy
+ * rows would otherwise read as kittens who can't work and stall the colony.
+ */
+const LEGACY_AGE_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * One-time backfill for colonies migrated before cats carried an age: any cat
+ * still at ageHours 0 but born more than the grace window ago is a legacy row,
+ * so seed it a working-age adult age. Idempotent — once seeded (> 0) it's never
+ * touched again, and true newborns inside the grace window are left alone.
+ */
+function backfillLegacyAges(db: GameDb, aliveCats: CatRow[]) {
+	const now = Date.now();
+	let index = 0;
+	for (const cat of aliveCats) {
+		if (cat.ageHours !== 0 || now - cat.birthTime < LEGACY_AGE_GRACE_MS) {
+			continue;
+		}
+		db.update(cats)
+			.set({ ageHours: starterAgeHours(index) })
+			.where(eq(cats._id, cat._id))
+			.run();
+		index += 1;
 	}
 }
 
@@ -428,6 +849,8 @@ export function ensureGlobalColony(db: GameDb): ColonyRow {
 	const aliveCats = getAliveCats(db, colony._id);
 	if (aliveCats.length === 0) {
 		createStarterCats(db, colony._id);
+	} else {
+		backfillLegacyAges(db, aliveCats);
 	}
 
 	ensureShrineAndWorld(db, colony._id);
@@ -604,11 +1027,18 @@ function queueJob(
 	metadata: Record<string, unknown> = {},
 ): string {
 	const specialization: CatSpecialization = assignedCat?.specialization ?? null;
-	const duration = getScaledDurationSeconds(
+	const baseDuration = getScaledDurationSeconds(
 		kind,
 		specialization,
 		upgrades,
 		runtime.timeScale,
+	);
+	// Life stage and trade experience of the assigned cat stretch or compress
+	// the job: elders and kittens-just-grown work slower, seasoned tradescats
+	// work faster.
+	const duration = Math.max(
+		1,
+		Math.round(baseDuration * capabilityDurationFactor(assignedCat, kind)),
 	);
 	const now = Date.now();
 
@@ -1509,7 +1939,7 @@ export function workerTick(db: GameDb) {
 		const policy = configForTier(policyTier);
 		const canTakePolicyAction = () => nextRoll() <= policy.actionReliability;
 
-		const aliveCats = getAliveCats(tx, colony._id);
+		let aliveCats = getAliveCats(tx, colony._id);
 
 		// Storage: base stores plus each finished food storehouse.
 		const colonyBuildingsEarly = tx
@@ -1519,6 +1949,25 @@ export function workerTick(db: GameDb) {
 			.all();
 		const caps = storageCapacities(colonyBuildingsEarly);
 		const foodCapacity = caps.food;
+
+		// --- Life simulation: aging, mortality, births, conceptions --------
+		// The colony is a living population. Everyone ages on the accelerated
+		// game-clock; elders roll against old-age death; sitting leaders get
+		// better at leading; and when the village is fed, watered and has spare
+		// housing, adults pair off and birth trait-inheriting kittens. Runs on
+		// a forked roll chain so the policy/movement chains (and their
+		// deterministic tests) are untouched.
+		runLifeSimulation(tx, colony, {
+			aliveCats,
+			elapsedGameHours: (elapsedSec * runtime.timeScale) / 3600,
+			housingCap: housingCapacity(colonyBuildingsEarly),
+			foodRatio: caps.food > 0 ? colony.resources.food / caps.food : 0,
+			waterRatio: caps.water > 0 ? colony.resources.water / caps.water : 0,
+			lifeSeed: rngSeed === null ? null : rngSeed + 2_000_003,
+		});
+		// Births and deaths this tick change the roster the rest of the tick
+		// runs against.
+		aliveCats = getAliveCats(tx, colony._id);
 
 		const { foodUse, waterUse } = consumptionForTick(
 			aliveCats.length,
@@ -2067,11 +2516,21 @@ export function workerTick(db: GameDb) {
 		const busyIds = new Set(
 			activeJobs.map((job) => job.assignedCatId).filter(Boolean),
 		);
-		const idleCatRows = aliveCats.filter(
+		// Kittens stay in the nursery — they're never dispatched to work.
+		const workCapableCats = aliveCats.filter((cat) =>
+			canWork(getLifeStage(cat.ageHours ?? 0)),
+		);
+		const idleCatRows = workCapableCats.filter(
 			(cat) =>
 				!busyIds.has(cat._id) &&
 				!cat.assignedBuildingId &&
 				(cat.activity ?? "idle") === "idle",
+		);
+		// Stage-aware workforce: kittens count for nothing, elders partially.
+		// The leader employs a fraction of this, not of the raw head count.
+		const workforce = aliveCats.reduce(
+			(sum, cat) => sum + workforceWeight(getLifeStage(cat.ageHours ?? 0)),
+			0,
 		);
 
 		// Completed workshops with no assigned worker, for staffing below.
@@ -2089,8 +2548,9 @@ export function workerTick(db: GameDb) {
 
 		const snapshot: LeaderSnapshot = {
 			population: aliveCats.length,
+			workforce,
 			idleCats: idleCatRows.length,
-			employedCats: aliveCats.length - idleCatRows.length,
+			employedCats: workCapableCats.length - idleCatRows.length,
 			resources: {
 				food: nextResources.food,
 				refined: nextResources.refined ?? 0,
@@ -2612,12 +3072,7 @@ export function workerTick(db: GameDb) {
 				const total =
 					typeof meta.totalYield === "number"
 						? meta.totalYield
-						: getHuntReward(
-								assignedCat.stats.hunting,
-								assignedCat.specialization ?? null,
-								roleXp.hunter,
-								upgrades,
-							);
+						: huntYieldFor(assignedCat, roleXp.hunter, upgrades);
 				const tripsDone =
 					typeof meta.tripsDone === "number" ? meta.tripsDone : 0;
 				const reward = remainingYield(total, HUNT_TRIP_COUNT, tripsDone);
@@ -2953,12 +3408,7 @@ export function workerTick(db: GameDb) {
 						? WATER_TOTAL_YIELD
 						: isQuarry
 							? QUARRY_TOTAL_YIELD
-							: getHuntReward(
-									worker.stats.hunting,
-									worker.specialization ?? null,
-									workerRoleXp.hunter,
-									upgrades,
-								);
+							: huntYieldFor(worker, workerRoleXp.hunter, upgrades);
 			const share = splitYield(total, HUNT_TRIP_COUNT, tripsDone);
 
 			// Hunt shares eat into the site's food; quarry stone and river

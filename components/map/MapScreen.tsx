@@ -9,8 +9,10 @@ import {
 	tileDiamondCenter,
 	visibleChunksIso,
 } from "@/lib/game/isoProjection";
+import { getLifeStage, tradeLevel } from "@/lib/game/lifeSim";
 import { type ChunkCoord, chunkKey } from "@/lib/game/mapView";
 import { shrineWorldPosition } from "@/lib/game/villageLayout";
+import type { LifeStage } from "@/types/game";
 import { BuildingLayer } from "./BuildingLayer";
 import { CatLayer } from "./CatLayer";
 import { CHUNK_MAX, CHUNK_MIN, ISO, ISO_CONTENT } from "./constants";
@@ -27,6 +29,16 @@ const JOB_LABELS: Record<string, string> = {
 	ritual: "Shrine Ritual",
 	quarry: "Quarry Expedition",
 	explore: "Scouting",
+};
+
+/** Per-cat role experience carried on the dashboard row. */
+type TradeXp = { hunter: number; architect: number; ritualist: number };
+
+const STAGE_LABELS: Record<LifeStage, string> = {
+	kitten: "🍼 Kitten",
+	young: "🐱 Young",
+	adult: "🐈 Adult",
+	elder: "🧓 Elder",
 };
 
 const STATUS_STYLES: Record<string, string> = {
@@ -770,6 +782,18 @@ export function MapScreen() {
 				if (!cat) {
 					return null;
 				}
+				const catAge = (cat as { ageHours?: number }).ageHours ?? 24;
+				const stage = getLifeStage(catAge);
+				const stageLabel = STAGE_LABELS[stage];
+				const roleXp = (cat as { roleXp?: TradeXp | null }).roleXp ?? null;
+				const trades: { key: keyof TradeXp; label: string; icon: string }[] = [
+					{ key: "hunter", label: "Hunting", icon: "🏹" },
+					{ key: "architect", label: "Building", icon: "🪓" },
+					{ key: "ritualist", label: "Ritual", icon: "🔮" },
+				];
+				const learnedTrades = roleXp
+					? trades.filter((trade) => (roleXp[trade.key] ?? 0) > 0)
+					: [];
 				return (
 					<div className={`absolute bottom-14 left-3 z-30 w-64 p-3 ${PANEL}`}>
 						<div className="mb-1 flex items-center justify-between">
@@ -787,17 +811,30 @@ export function MapScreen() {
 							</button>
 						</div>
 						<p className="text-xs font-semibold text-[#4a3319]">
-							{cat.activity === "traveling" && "🧭 Traveling"}
-							{cat.activity === "working" && "⚒️ Working"}
-							{cat.activity === "returning" && "🏠 Heading home"}
-							{(cat.activity === "idle" || !cat.activity) &&
-								"😽 Idling around the village"}
+							<span className="text-[#6b4a2a]">{stageLabel}</span>
 							{cat.specialization && (
 								<span className="ml-1 text-[#6b4a2a]">
 									· {cat.specialization}
 								</span>
 							)}
 						</p>
+						<p className="text-xs font-semibold text-[#4a3319]">
+							{cat.activity === "traveling" && "🧭 Traveling"}
+							{cat.activity === "working" && "⚒️ Working"}
+							{cat.activity === "returning" && "🏠 Heading home"}
+							{(cat.activity === "idle" || !cat.activity) &&
+								"😽 Idling around the village"}
+						</p>
+						{learnedTrades.length > 0 && (
+							<div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] text-[#4a3319]">
+								{learnedTrades.map((trade) => (
+									<span key={trade.key}>
+										{trade.icon} {trade.label} Lv
+										{tradeLevel(roleXp?.[trade.key] ?? 0)}
+									</span>
+								))}
+							</div>
+						)}
 						{cat.carrying && (
 							<p className="text-xs text-[#6b4a2a]">
 								Carrying {Math.round(cat.carrying.amount)} {cat.carrying.kind}{" "}
