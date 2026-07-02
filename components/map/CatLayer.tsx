@@ -11,7 +11,16 @@ export interface MapCat {
 	currentTask: string | null;
 	activity?: "idle" | "traveling" | "working" | "returning" | null;
 	carrying?: { kind: "food" | "blessings"; amount: number } | null;
+	specialization?: "hunter" | "architect" | "ritualist" | null;
 }
+
+/** Pixel cat sprite by job — hats mark specializations. */
+const CAT_SPRITES: Record<string, string> = {
+	hunter: "/images/cats/cat-hunter.png",
+	architect: "/images/cats/cat-architect.png",
+	ritualist: "/images/cats/cat-ritualist.png",
+};
+const CAT_SPRITE_DEFAULT = "/images/cats/cat.png";
 
 interface CatLayerProps {
 	cats: MapCat[];
@@ -83,13 +92,23 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 						}}
 						title={`${cat.name}${isLeader ? " (leader)" : ""} — click for details`}
 					>
-						<div className="relative text-3xl drop-shadow-md">
+						<div className="relative drop-shadow-md">
 							{isLeader && (
 								<span className="absolute -top-4 left-1/2 -translate-x-1/2 text-base">
 									👑
 								</span>
 							)}
-							🐈
+							<img
+								src={
+									(cat.specialization &&
+										CAT_SPRITES[cat.specialization]) ||
+									CAT_SPRITE_DEFAULT
+								}
+								alt={cat.name}
+								draggable={false}
+								className="h-10 w-10"
+								style={{ imageRendering: "pixelated" }}
+							/>
 							{badge && (
 								<span className="absolute -right-2 -top-1 text-sm">
 									{badge}

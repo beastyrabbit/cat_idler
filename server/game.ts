@@ -875,7 +875,7 @@ export function ensureGlobalState(db: GameDb): string {
 
 export function setTestAcceleration(
 	db: GameDb,
-	preset: "off" | "fast" | "turbo",
+	preset: "off" | "fast" | "turbo" | "hyper" | "ludicrous",
 ) {
 	return db.transaction((txRaw) => {
 		const tx = txRaw as unknown as GameDb;

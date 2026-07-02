@@ -154,6 +154,9 @@ export function MapViewport({
 	const onPointerDown = useCallback(
 		(e: React.PointerEvent) => {
 			if (e.pointerType === "mouse" && e.button !== 0) return;
+			// Interactive map elements (cats, zones) handle their own clicks —
+			// capturing here would swallow them.
+			if ((e.target as HTMLElement).closest("button, select, a")) return;
 			const el = containerRef.current;
 			if (!el) return;
 			el.setPointerCapture(e.pointerId);

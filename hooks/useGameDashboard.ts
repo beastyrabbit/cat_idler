@@ -295,7 +295,9 @@ export function useGameDashboard() {
 		);
 	};
 
-	const onSetAcceleration = async (preset: "off" | "fast" | "turbo") => {
+	const onSetAcceleration = async (
+		preset: "off" | "fast" | "turbo" | "hyper" | "ludicrous",
+	) => {
 		await runAction(`accel:${preset}`, () =>
 			postAction("setTestAcceleration", { preset }),
 		);

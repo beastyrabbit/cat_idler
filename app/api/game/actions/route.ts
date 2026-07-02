@@ -51,7 +51,13 @@ const UPGRADE_KEYS = [
 	"resilience",
 ] as const;
 
-const ACCELERATION_PRESETS = ["off", "fast", "turbo"] as const;
+const ACCELERATION_PRESETS = [
+	"off",
+	"fast",
+	"turbo",
+	"hyper",
+	"ludicrous",
+] as const;
 
 /** Largest time skip a test may request (24h). */
 const MAX_ADVANCE_SECONDS = 86_400;

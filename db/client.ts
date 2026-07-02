@@ -32,6 +32,18 @@ export function createDb(
 	sqlite.pragma("synchronous = NORMAL");
 
 	const db = drizzle(sqlite, { schema });
+
+	// Write transactions must BEGIN IMMEDIATE: a deferred transaction that
+	// upgrades to a write mid-flight throws SQLITE_BUSY *without* honoring
+	// busy_timeout when the worker holds the write lock. Defaulting the
+	// behavior here fixes every db.transaction() call at once.
+	const originalTransaction = db.transaction.bind(db);
+	db.transaction = ((callback: Parameters<typeof originalTransaction>[0], config?: Parameters<typeof originalTransaction>[1]) =>
+		originalTransaction(callback, {
+			behavior: "immediate",
+			...config,
+		})) as typeof db.transaction;
+
 	try {
 		migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
 	} catch (err) {

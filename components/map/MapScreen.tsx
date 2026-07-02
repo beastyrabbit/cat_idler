@@ -649,20 +649,22 @@ export function MapScreen() {
 							Test Controls ({accelerationPreset})
 						</h3>
 						<div className="grid grid-cols-3 gap-1.5 text-xs">
-							{(["off", "fast", "turbo"] as const).map((preset) => (
-								<button
-									key={preset}
-									type="button"
-									onClick={() => onSetAcceleration(preset)}
-									className={`rounded px-2 py-1 font-semibold ${
-										accelerationPreset === preset
-											? "bg-purple-400 text-black"
-											: "bg-white/10 hover:bg-white/20"
-									}`}
-								>
-									{preset}
-								</button>
-							))}
+							{(["off", "fast", "turbo", "hyper", "ludicrous"] as const).map(
+								(preset) => (
+									<button
+										key={preset}
+										type="button"
+										onClick={() => onSetAcceleration(preset)}
+										className={`rounded px-2 py-1 font-semibold ${
+											accelerationPreset === preset
+												? "bg-purple-400 text-black"
+												: "bg-white/10 hover:bg-white/20"
+										}`}
+									>
+										{preset}
+									</button>
+								),
+							)}
 							<button
 								type="button"
 								onClick={() => onAdvanceTime(300)}
