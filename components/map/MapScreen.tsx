@@ -67,6 +67,7 @@ export function MapScreen() {
 		showTestControls,
 		accelerationPreset,
 		onlineCount,
+		housing,
 	} = useGameDashboard();
 
 	const [chunks, setChunks] = useState<ChunkCoord[]>(INITIAL_CHUNKS);
@@ -162,6 +163,22 @@ export function MapScreen() {
 				<span className="pointer-events-auto rounded-full border border-[#5d4024] bg-[#f3e6c8] px-3 py-1 text-xs font-semibold text-[#4a3319] shadow">
 					👥 {onlineCount} online · 🐈 {cats.length} cats
 				</span>
+
+				{housing && (
+					<span
+						className={`pointer-events-auto rounded-full border border-[#5d4024] px-3 py-1 text-xs font-semibold shadow ${
+							housing.pressure >= 1
+								? "bg-red-100 text-red-900"
+								: housing.pressure >= 0.8
+									? "bg-amber-100 text-amber-900"
+									: "bg-[#f3e6c8] text-[#4a3319]"
+						}`}
+						title={`Housing pressure ${Math.round(housing.pressure * 100)}% — village level ${housing.villageLevel}`}
+					>
+						🏠 {housing.population}/{housing.capacity} · Lv{" "}
+						{housing.villageLevel}
+					</span>
+				)}
 
 				<div className="flex-1" />
 

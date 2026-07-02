@@ -30,6 +30,12 @@ import {
 import { inheritTraits, traitsToSpriteParams } from "@/lib/game/genetics";
 import { planHousePipeline } from "@/lib/game/housePlanner";
 import {
+	housingCapacity,
+	housingPressure,
+	shouldQueueHouse,
+	villageLevel,
+} from "@/lib/game/housing";
+import {
 	applyClickBoostSeconds,
 	type CatSpecialization,
 	getHuntReward,
@@ -800,6 +806,15 @@ export function getGlobalDashboard(db: GameDb) {
 			...building,
 			worldPosition: colonyToWorld(building.position),
 		})),
+		housing: {
+			population: aliveCats.length,
+			capacity: housingCapacity(colonyBuildings),
+			pressure: housingPressure(
+				aliveCats.length,
+				housingCapacity(colonyBuildings),
+			),
+			villageLevel: villageLevel(colonyBuildings),
+		},
 	};
 }
 
@@ -1156,8 +1171,50 @@ export function workerTick(db: GameDb) {
 		// Promote queued jobs to active; send assigned cats to the job site.
 		const queuedJobs = getJobsByStatus(tx, colony._id, "queued");
 		for (const job of queuedJobs) {
+			let jobMetadata = job.metadata ?? null;
+
+			// A construction job breaks ground when it starts: pick a free
+			// site next to the village and raise a scaffold there.
+			const isConstruction =
+				job.kind === "build_house" &&
+				String((jobMetadata as Record<string, unknown> | null)?.phase) ===
+					"construct_house";
+			let constructionSite: WorldPos | null = null;
+			if (isConstruction) {
+				const occupied = tx
+					.select()
+					.from(buildings)
+					.where(eq(buildings.colonyId, colony._id))
+					.all()
+					.map((b) => b.position);
+				const siteLocal = nextBuildingSite(occupied, nextMovementRoll());
+				if (siteLocal) {
+					const buildingId = nanoid();
+					tx.insert(buildings)
+						.values({
+							_id: buildingId,
+							colonyId: colony._id,
+							type: "den",
+							level: 1,
+							position: siteLocal,
+							constructionProgress: 0,
+						})
+						.run();
+					jobMetadata = {
+						...(jobMetadata ?? {}),
+						site: siteLocal,
+						buildingId,
+					};
+					constructionSite = colonyToWorld(siteLocal);
+				}
+			}
+
 			tx.update(jobs)
-				.set({ status: "active", startedAt: job.startedAt || now })
+				.set({
+					status: "active",
+					startedAt: job.startedAt || now,
+					metadata: jobMetadata,
+				})
 				.where(eq(jobs._id, job._id))
 				.run();
 
@@ -1169,6 +1226,7 @@ export function workerTick(db: GameDb) {
 				shrine: VILLAGE_ANCHOR,
 				foodTiles: job.kind === "hunt_expedition" ? foodTilesNearVillage() : [],
 				roll: nextMovementRoll(),
+				site: constructionSite ?? undefined,
 			});
 			if (jobDestination) {
 				tx.update(cats)
@@ -1183,6 +1241,27 @@ export function workerTick(db: GameDb) {
 
 		// Leader auto-plans hunt/build when resources are low, gated by policy reliability.
 		const activeJobs = getJobsByStatus(tx, colony._id, "active");
+
+		// Scaffolds rise with their job's progress.
+		for (const job of activeJobs) {
+			if (job.kind !== "build_house") {
+				continue;
+			}
+			const meta = job.metadata as Record<string, unknown> | null;
+			const buildingId = meta?.buildingId;
+			if (typeof buildingId !== "string") {
+				continue;
+			}
+			const duration = Math.max(1, job.endsAt - job.startedAt);
+			const progress = Math.min(
+				99,
+				Math.max(0, Math.round(((now - job.startedAt) / duration) * 100)),
+			);
+			tx.update(buildings)
+				.set({ constructionProgress: progress })
+				.where(eq(buildings._id, buildingId))
+				.run();
+		}
 
 		if (
 			nextResources.food < policy.foodEmergencyThreshold &&
@@ -1201,8 +1280,20 @@ export function workerTick(db: GameDb) {
 			);
 		}
 
+		// Crowding drives growth: the leader plans a den when shelter runs
+		// short (replaces the old materials-low trigger).
+		const colonyBuildings = tx
+			.select()
+			.from(buildings)
+			.where(eq(buildings.colonyId, colony._id))
+			.all();
+		const pressure = housingPressure(
+			aliveCats.length,
+			housingCapacity(colonyBuildings),
+		);
+
 		if (
-			nextResources.materials < policy.houseMaterialsRequired &&
+			shouldQueueHouse(pressure) &&
 			!hasConflictingStrategicJob("leader_plan_house", activeJobs) &&
 			canTakePolicyAction()
 		) {
@@ -1431,6 +1522,8 @@ export function workerTick(db: GameDb) {
 						"gather_materials",
 				);
 				if (phase === "construct_house") {
+					const buildingId = (job.metadata as Record<string, unknown> | null)
+						?.buildingId;
 					if (
 						patchedResources.water >= policy.houseWaterRequired &&
 						patchedResources.materials >= policy.houseMaterialsRequired
@@ -1445,7 +1538,26 @@ export function workerTick(db: GameDb) {
 						);
 						automationTier =
 							Math.round(Math.min(10, automationTier + 0.05) * 100) / 100;
+
+						// The scaffold becomes a finished den.
+						if (typeof buildingId === "string") {
+							tx.update(buildings)
+								.set({ constructionProgress: 100 })
+								.where(eq(buildings._id, buildingId))
+								.run();
+							logEvent(
+								tx,
+								colony._id,
+								"building_completed",
+								`${assignedCat.name} finished building a new den.`,
+								[assignedCat._id],
+							);
+						}
 					} else {
+						// Not enough resources — abandon the scaffold and re-plan.
+						if (typeof buildingId === "string") {
+							tx.delete(buildings).where(eq(buildings._id, buildingId)).run();
+						}
 						queuePlannedHouseJobs(
 							tx,
 							colony._id,

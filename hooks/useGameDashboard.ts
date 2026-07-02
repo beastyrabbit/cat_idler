@@ -309,6 +309,7 @@ export function useGameDashboard() {
 		// Map (Phase 1: shrine + buildings on the world map)
 		buildings: dashboard?.buildings ?? [],
 		anchor: dashboard?.anchor ?? { x: 6, y: 6 },
+		housing: dashboard?.housing ?? null,
 
 		// Connection
 		connectionLost,

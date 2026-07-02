@@ -591,6 +591,143 @@ describe("ritual completion", () => {
 	});
 });
 
+describe("visible construction", () => {
+	function insertConstructJob(
+		colonyId: string,
+		architectId: string,
+		opts: { due?: boolean } = {},
+	) {
+		db.insert(jobs)
+			.values({
+				_id: "construct-visible-job",
+				colonyId,
+				kind: "build_house",
+				status: "queued",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: architectId,
+				baseDurationSec: 600,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: Date.now(),
+				startedAt: Date.now(),
+				endsAt: opts.due ? Date.now() - 1000 : Date.now() + 600_000,
+				metadata: { phase: "construct_house" },
+			})
+			.run();
+	}
+
+	it("breaks ground on a free site when construction starts", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { water: 100, materials: 100 });
+		const architect = getAliveCatsForTest(db, colony._id)[0];
+		insertConstructJob(colony._id, architect._id);
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const dashboard = getGlobalDashboard(db)!;
+		const scaffolds = dashboard.buildings.filter(
+			(b: { constructionProgress: number }) => b.constructionProgress < 100,
+		);
+		expect(scaffolds).toHaveLength(1);
+		expect(scaffolds[0].type).toBe("den");
+
+		// The job remembers its scaffold, and the architect heads there.
+		const job = db
+			.select()
+			.from(jobs)
+			.where(eq(jobs._id, "construct-visible-job"))
+			.get()!;
+		expect((job.metadata as { buildingId?: string }).buildingId).toBe(
+			scaffolds[0]._id,
+		);
+
+		const worker = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === architect._id,
+		)!;
+		expect(worker.activity).toBe("traveling");
+		expect(worker.destination).toEqual({
+			map: "world",
+			x: scaffolds[0].worldPosition.x,
+			y: scaffolds[0].worldPosition.y,
+		});
+	});
+
+	it("finishes the den when the job completes with enough resources", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { water: 100, materials: 100 });
+		const architect = getAliveCatsForTest(db, colony._id)[0];
+		insertConstructJob(colony._id, architect._id);
+
+		advanceTime(db, 2);
+		workerTick(db); // breaks ground
+		forceJobDue(db, "construct-visible-job");
+		advanceTime(db, 2);
+		workerTick(db); // completes
+
+		const dashboard = getGlobalDashboard(db)!;
+		const dens = dashboard.buildings.filter(
+			(b: { type: string }) => b.type === "den",
+		);
+		expect(dens).toHaveLength(6); // 5 starter + 1 new
+		for (const den of dens) {
+			expect(den.constructionProgress).toBe(100);
+		}
+		expect(eventMessages(db)).toContain(
+			`${architect.name} finished building a new den.`,
+		);
+	});
+
+	it("abandons the scaffold when resources run short at completion", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { water: 0, materials: 0 });
+		const architect = getAliveCatsForTest(db, colony._id)[0];
+		insertConstructJob(colony._id, architect._id);
+
+		advanceTime(db, 2);
+		workerTick(db); // breaks ground
+		forceJobDue(db, "construct-visible-job");
+		advanceTime(db, 2);
+		workerTick(db); // completes without resources
+
+		const dashboard = getGlobalDashboard(db)!;
+		const dens = dashboard.buildings.filter(
+			(b: { type: string }) => b.type === "den",
+		);
+		expect(dens).toHaveLength(5); // scaffold removed
+	});
+
+	it("reports housing pressure and village level on the dashboard", () => {
+		ensureGlobalColony(db);
+		const dashboard = getGlobalDashboard(db)!;
+
+		// 20 cats vs shrine(4) + 5 dens (2 each) = 14 shelter
+		expect(dashboard.housing.population).toBe(20);
+		expect(dashboard.housing.capacity).toBe(14);
+		expect(dashboard.housing.pressure).toBeCloseTo(20 / 14, 6);
+		expect(dashboard.housing.villageLevel).toBe(2);
+	});
+
+	it("leader plans housing under crowding pressure", () => {
+		ensureGlobalColony(db);
+		setTestRngSeed(db, 3);
+
+		// Pressure starts at 20/14 — the leader should react within a few
+		// ticks once a policy roll passes.
+		let planned = false;
+		for (let i = 0; i < 10 && !planned; i++) {
+			advanceTime(db, 5);
+			workerTick(db);
+			planned = getGlobalDashboard(db)!.jobs.some(
+				(job: { kind: string }) => job.kind === "leader_plan_house",
+			);
+		}
+		expect(planned).toBe(true);
+	});
+});
+
 describe("cat movement", () => {
 	it("sends the assigned hunter out when a hunt is promoted to active", () => {
 		const colony = ensureGlobalColony(db);
