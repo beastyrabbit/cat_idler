@@ -17,9 +17,11 @@ import { getDb } from "@/db/client";
 import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
+	assignWorker,
 	clickBoostJob,
 	ensureGlobalState,
 	type PlayerJobKind,
+	planBuilding,
 	purchaseUpgrade,
 	requestJob,
 	setTestAcceleration,
@@ -201,6 +203,31 @@ export async function POST(request: Request) {
 				const zoneId = requireString(body.zoneId, "zoneId");
 				return NextResponse.json(
 					removeZone(db, { sessionId, nickname, zoneId }),
+				);
+			}
+
+			case "planBuilding": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				const type = body.type;
+				if (type !== "workshop" && type !== "field") {
+					throw new Error("Unknown building type.");
+				}
+				return NextResponse.json(
+					planBuilding(db, { sessionId, nickname, type }),
+				);
+			}
+
+			case "assignWorker": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				const catId = requireString(body.catId, "catId");
+				const buildingId =
+					body.buildingId === null
+						? null
+						: requireString(body.buildingId, "buildingId");
+				return NextResponse.json(
+					assignWorker(db, { sessionId, nickname, catId, buildingId }),
 				);
 			}
 

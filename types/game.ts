@@ -31,7 +31,9 @@ export type BuildingType =
 	| "elder_corner"
 	| "walls"
 	| "mouse_farm"
-	| "shrine";
+	| "shrine"
+	| "workshop"
+	| "field";
 
 export type TileType =
 	| "field"
@@ -434,6 +436,8 @@ export const BUILDING_COSTS: Record<BuildingType, number> = {
 	walls: 15,
 	mouse_farm: 25,
 	shrine: 0, // central building, never purchasable
+	workshop: 20,
+	field: 15,
 };
 
 export const TASK_TO_SKILL: Record<TaskType, keyof CatStats> = {

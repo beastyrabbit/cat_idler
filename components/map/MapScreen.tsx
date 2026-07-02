@@ -81,6 +81,8 @@ export function MapScreen() {
 		zones,
 		onCreateZone,
 		onRemoveZone,
+		onPlanBuilding,
+		onAssignWorker,
 	} = useGameDashboard();
 
 	const [chunks, setChunks] = useState<ChunkCoord[]>(INITIAL_CHUNKS);
@@ -214,6 +216,9 @@ export function MapScreen() {
 					<span title="Water">💧 {Math.floor(resources.water)}</span>
 					<span title="Herbs">🌿 {Math.floor(resources.herbs)}</span>
 					<span title="Materials">🪵 {Math.floor(resources.materials)}</span>
+					<span title="Refined goods">
+						⚙️ {Math.floor(resources.refined ?? 0)}
+					</span>
 					<span title="Ritual points" className="text-amber-700">
 						✨ {ritualPoints}
 					</span>
@@ -384,6 +389,61 @@ export function MapScreen() {
 					)}
 				</div>
 
+				{/* Production: workshops need workers */}
+				{buildings.some(
+					(b: { type: string; constructionProgress: number }) =>
+						b.type === "workshop" && b.constructionProgress >= 100,
+				) && (
+					<div className={`p-3 ${PANEL}`}>
+						<h3 className={PANEL_HEADING}>Production</h3>
+						<ul className="space-y-1.5">
+							{buildings
+								.filter(
+									(b: { type: string; constructionProgress: number }) =>
+										b.type === "workshop" && b.constructionProgress >= 100,
+								)
+								.map(
+									(shop: {
+										_id: string;
+										worldPosition: { x: number; y: number };
+									}) => {
+										const worker = cats.find(
+											(cat: { assignedBuildingId?: string | null }) =>
+												cat.assignedBuildingId === shop._id,
+										);
+										return (
+											<li
+												key={shop._id}
+												className="flex items-center justify-between gap-2 text-xs font-semibold text-[#4a3319]"
+											>
+												<span>⚒️ Workshop</span>
+												<select
+													className="rounded border border-[#5d4024] bg-[#e9d9b4] px-1 py-0.5 text-xs"
+													value={worker?._id ?? ""}
+													onChange={(e) => {
+														const catId = e.target.value;
+														if (catId) {
+															void onAssignWorker(catId, shop._id);
+														} else if (worker) {
+															void onAssignWorker(worker._id, null);
+														}
+													}}
+												>
+													<option value="">— no worker —</option>
+													{cats.map((cat: { _id: string; name: string }) => (
+														<option key={cat._id} value={cat._id}>
+															{cat.name}
+														</option>
+													))}
+												</select>
+											</li>
+										);
+									},
+								)}
+						</ul>
+					</div>
+				)}
+
 				{/* Player zones: steer the cats */}
 				<div className={`p-3 ${PANEL}`}>
 					<h3 className={PANEL_HEADING}>Zones</h3>
@@ -476,6 +536,37 @@ export function MapScreen() {
 							className={WOOD_BUTTON}
 						>
 							🏠 Plan house
+						</button>
+						<button
+							type="button"
+							onClick={() => onPlanBuilding("workshop")}
+							disabled={
+								busyAction === "build:workshop" ||
+								(housing?.villageLevel ?? 1) < 2
+							}
+							className={WOOD_BUTTON}
+							title={
+								(housing?.villageLevel ?? 1) < 2
+									? "Unlocks at village level 2"
+									: "Refines materials into goods (needs a worker)"
+							}
+						>
+							⚒️ Workshop
+						</button>
+						<button
+							type="button"
+							onClick={() => onPlanBuilding("field")}
+							disabled={
+								busyAction === "build:field" || (housing?.villageLevel ?? 1) < 4
+							}
+							className={WOOD_BUTTON}
+							title={
+								(housing?.villageLevel ?? 1) < 4
+									? "Unlocks at village level 4"
+									: "Grows food passively"
+							}
+						>
+							🌾 Field
 						</button>
 						<button
 							type="button"

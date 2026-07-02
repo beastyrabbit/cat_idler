@@ -66,6 +66,12 @@ import {
 } from "@/lib/game/movement";
 import { generateName } from "@/lib/game/naming";
 import { configForTier, pickPolicyTier } from "@/lib/game/policy";
+import {
+	advanceWorkshop,
+	fieldUnlocked,
+	fieldYield,
+	workshopUnlocked,
+} from "@/lib/game/production";
 import { rollSeeded } from "@/lib/game/seededRng";
 import { shouldDeposit } from "@/lib/game/shrine";
 import { applySurvivalTick } from "@/lib/game/survival";
@@ -172,6 +178,7 @@ const STARTING_RESOURCES = {
 	herbs: 16,
 	materials: 24,
 	blessings: 0,
+	refined: 0,
 } as const;
 
 const STARTER_CAT_COUNT = 20;
@@ -708,6 +715,155 @@ function resetGlobalRun(db: GameDb, colony: ColonyRow, reason: string) {
 		[],
 		{ reason },
 	);
+}
+
+/**
+ * Player-requested construction of an unlockable building (Phase 7).
+ * Reuses the build_house pipeline with a buildingType override.
+ */
+export function planBuilding(
+	db: GameDb,
+	args: {
+		sessionId: string;
+		nickname: string;
+		type: "workshop" | "field";
+	},
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+		const now = Date.now();
+		upsertPlayer(tx, args.sessionId, args.nickname, now);
+
+		const colonyBuildings = tx
+			.select()
+			.from(buildings)
+			.where(eq(buildings.colonyId, colony._id))
+			.all();
+		const level = villageLevel(colonyBuildings);
+		if (args.type === "workshop" && !workshopUnlocked(level)) {
+			throw new Error("Workshops unlock at village level 2");
+		}
+		if (args.type === "field" && !fieldUnlocked(level)) {
+			throw new Error("Fields unlock at village level 4");
+		}
+
+		const pending = [
+			...getJobsByStatus(tx, colony._id, "active"),
+			...getJobsByStatus(tx, colony._id, "queued"),
+		].some(
+			(job) =>
+				job.kind === "build_house" &&
+				(job.metadata as Record<string, unknown> | null)?.buildingType ===
+					args.type,
+		);
+		if (pending) {
+			return { ok: false, reason: "already_in_progress" };
+		}
+
+		const upgrades = upgradesToLevels(getUpgradeRows(tx, colony._id));
+		const runtime = getRuntimeConfig(colony);
+		const jobId = queueJob(
+			tx,
+			colony._id,
+			"build_house",
+			"player",
+			upgrades,
+			runtime,
+			null,
+			selectBestCat(tx, colony._id, "architect"),
+			{ phase: "construct_house", buildingType: args.type },
+		);
+
+		tx.update(colonies)
+			.set({ lastPlayerActivityAt: now })
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		return { ok: true, jobId };
+	});
+}
+
+/** Assign (or unassign with buildingId null) a cat to a workshop. */
+export function assignWorker(
+	db: GameDb,
+	args: {
+		sessionId: string;
+		nickname: string;
+		catId: string;
+		buildingId: string | null;
+	},
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+		const now = Date.now();
+		upsertPlayer(tx, args.sessionId, args.nickname, now);
+
+		const cat = tx
+			.select()
+			.from(cats)
+			.where(
+				and(
+					eq(cats._id, args.catId),
+					eq(cats.colonyId, colony._id),
+					isNull(cats.deathTime),
+				),
+			)
+			.get();
+		if (!cat) {
+			throw new Error("That cat is not available");
+		}
+
+		if (args.buildingId === null) {
+			tx.update(cats)
+				.set({ assignedBuildingId: null })
+				.where(eq(cats._id, cat._id))
+				.run();
+			return { ok: true };
+		}
+
+		const building = tx
+			.select()
+			.from(buildings)
+			.where(
+				and(
+					eq(buildings._id, args.buildingId),
+					eq(buildings.colonyId, colony._id),
+				),
+			)
+			.get();
+		if (
+			!building ||
+			building.type !== "workshop" ||
+			building.constructionProgress < 100
+		) {
+			throw new Error("That building cannot take a worker");
+		}
+
+		// One worker per workshop — displace any current occupant.
+		const occupant = getAliveCats(tx, colony._id).find(
+			(candidate) => candidate.assignedBuildingId === building._id,
+		);
+		if (occupant && occupant._id !== cat._id) {
+			tx.update(cats)
+				.set({ assignedBuildingId: null })
+				.where(eq(cats._id, occupant._id))
+				.run();
+		}
+
+		tx.update(cats)
+			.set({ assignedBuildingId: building._id })
+			.where(eq(cats._id, cat._id))
+			.run();
+
+		tx.update(colonies)
+			.set({ lastPlayerActivityAt: now })
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		return { ok: true };
+	});
 }
 
 export function ensureGlobalState(db: GameDb): string {
@@ -1293,6 +1449,14 @@ export function workerTick(db: GameDb) {
 					"construct_house";
 			let constructionSite: WorldPos | null = null;
 			if (isConstruction) {
+				const requestedType = String(
+					(jobMetadata as Record<string, unknown> | null)?.buildingType ??
+						"den",
+				);
+				const scaffoldType =
+					requestedType === "workshop" || requestedType === "field"
+						? (requestedType as "workshop" | "field")
+						: ("den" as const);
 				const occupied = tx
 					.select()
 					.from(buildings)
@@ -1306,7 +1470,7 @@ export function workerTick(db: GameDb) {
 						.values({
 							_id: buildingId,
 							colonyId: colony._id,
-							type: "den",
+							type: scaffoldType,
 							level: 1,
 							position: siteLocal,
 							constructionProgress: 0,
@@ -1432,6 +1596,45 @@ export function workerTick(db: GameDb) {
 			);
 		}
 
+		// --- Production (Phase 7): leader staffs idle cats into workerless
+		// workshops, then workshops refine materials and fields grow food.
+		const workshopWorkers = new Map<string, CatRow>();
+		for (const cat of aliveCats) {
+			if (cat.assignedBuildingId) {
+				workshopWorkers.set(cat.assignedBuildingId, cat);
+			}
+		}
+		const completedWorkshops = colonyBuildings.filter(
+			(building) =>
+				building.type === "workshop" && building.constructionProgress >= 100,
+		);
+		for (const workshop of completedWorkshops) {
+			if (workshopWorkers.has(workshop._id)) {
+				continue;
+			}
+			const idle = aliveCats
+				.filter(
+					(cat) =>
+						!cat.assignedBuildingId && (cat.activity ?? "idle") === "idle",
+				)
+				.sort((a, b) => b.stats.building - a.stats.building)[0];
+			if (!idle || !canTakePolicyAction()) {
+				continue;
+			}
+			tx.update(cats)
+				.set({ assignedBuildingId: workshop._id })
+				.where(eq(cats._id, idle._id))
+				.run();
+			workshopWorkers.set(workshop._id, idle);
+			logEvent(
+				tx,
+				colony._id,
+				"worker_assigned",
+				`The leader put ${idle.name} to work at the workshop.`,
+				[idle._id],
+			);
+		}
+
 		// Ritual from player request, only if resources are stable and policy roll passes.
 		if (
 			shouldStartRitual(colony.ritualRequestedAt, nextResources, activeJobs) &&
@@ -1460,6 +1663,51 @@ export function workerTick(db: GameDb) {
 		}
 
 		const patchedResources = { ...nextResources };
+
+		// Workshops refine materials, fields grow food (Phase 7). Runs once
+		// resource patching is available; worker staffing happened above.
+		const productionElapsed = elapsedSec * runtime.timeScale;
+		for (const building of colonyBuildings) {
+			if (building.constructionProgress < 100) {
+				continue;
+			}
+			if (building.type === "field") {
+				patchedResources.food += fieldYield(productionElapsed);
+			}
+			if (building.type === "workshop") {
+				const worker = workshopWorkers.get(building._id) ?? null;
+				const step = advanceWorkshop(
+					building.productionProgress ?? 0,
+					productionElapsed,
+					{
+						hasWorker: worker !== null,
+						workerIsArchitect: worker?.specialization === "architect",
+						materialsAvailable: patchedResources.materials,
+					},
+				);
+				if (step.refinedProduced > 0) {
+					patchedResources.materials = Math.max(
+						0,
+						patchedResources.materials - step.materialsUsed,
+					);
+					patchedResources.refined =
+						(patchedResources.refined ?? 0) + step.refinedProduced;
+					logEvent(
+						tx,
+						colony._id,
+						"production",
+						`${worker?.name ?? "The workshop"} refined ${step.materialsUsed} materials into ${step.refinedProduced} refined good${step.refinedProduced === 1 ? "" : "s"}.`,
+						worker ? [worker._id] : [],
+					);
+				}
+				if (step.nextProgress !== (building.productionProgress ?? 0)) {
+					tx.update(buildings)
+						.set({ productionProgress: step.nextProgress })
+						.where(eq(buildings._id, building._id))
+						.run();
+				}
+			}
+		}
 		let automationTier = colony.automationTier ?? 0;
 		let globalUpgradePoints = colony.globalUpgradePoints ?? 0;
 
@@ -1671,17 +1919,21 @@ export function workerTick(db: GameDb) {
 						automationTier =
 							Math.round(Math.min(10, automationTier + 0.05) * 100) / 100;
 
-						// The scaffold becomes a finished den.
+						// The scaffold becomes a finished building.
 						if (typeof buildingId === "string") {
 							tx.update(buildings)
 								.set({ constructionProgress: 100 })
 								.where(eq(buildings._id, buildingId))
 								.run();
+							const builtType = String(
+								(job.metadata as Record<string, unknown> | null)
+									?.buildingType ?? "den",
+							).replaceAll("_", " ");
 							logEvent(
 								tx,
 								colony._id,
 								"building_completed",
-								`${assignedCat.name} finished building a new den.`,
+								`${assignedCat.name} finished building a new ${builtType}.`,
 								[assignedCat._id],
 							);
 						}
@@ -1835,8 +2087,17 @@ export function workerTick(db: GameDb) {
 						.where(eq(cats._id, cat._id))
 						.run();
 				} else if (activity === "idle" && nextMovementRoll() < wanderChance) {
+					// Assigned workers linger around their workplace.
+					const assignedShop = cat.assignedBuildingId
+						? (colonyBuildings.find(
+								(building) => building._id === cat.assignedBuildingId,
+							) ?? null)
+						: null;
+					const wanderAnchor = assignedShop
+						? colonyToWorld(assignedShop.position)
+						: VILLAGE_ANCHOR;
 					const target = pickWanderTarget(
-						VILLAGE_ANCHOR,
+						wanderAnchor,
 						nextMovementRoll(),
 						nextMovementRoll(),
 					);

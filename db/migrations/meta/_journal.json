@@ -43,6 +43,13 @@
       "when": 1782971860867,
       "tag": "0005_lively_thor",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1782972186239,
+      "tag": "0006_cultured_exodus",
+      "breakpoints": true
     }
   ]
 }

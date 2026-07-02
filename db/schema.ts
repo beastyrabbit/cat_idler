@@ -26,6 +26,8 @@ export interface ColonyResources {
 	herbs: number;
 	materials: number;
 	blessings: number;
+	/** Workshop output (Phase 7). Missing on older rows — read as 0. */
+	refined?: number;
 }
 
 export interface CatStatsJson {
@@ -134,6 +136,7 @@ export const cats = sqliteTable(
 			mode: "json",
 		}).$type<PositionJson | null>(),
 		carrying: text("carrying", { mode: "json" }).$type<CarryingJson | null>(),
+		assignedBuildingId: text("assignedBuildingId"),
 		activity: text("activity", {
 			enum: ["idle", "traveling", "working", "returning"],
 		})
@@ -173,6 +176,8 @@ export const buildings = sqliteTable(
 				"walls",
 				"mouse_farm",
 				"shrine",
+				"workshop",
+				"field",
 			],
 		}).notNull(),
 		level: integer("level").notNull(),
@@ -180,6 +185,8 @@ export const buildings = sqliteTable(
 			.$type<{ x: number; y: number }>()
 			.notNull(),
 		constructionProgress: real("constructionProgress").notNull(),
+		/** Accumulated workshop cycle time in seconds (Phase 7). */
+		productionProgress: real("productionProgress").notNull().default(0),
 	},
 	(table) => [index("buildings_by_colony").on(table.colonyId)],
 );

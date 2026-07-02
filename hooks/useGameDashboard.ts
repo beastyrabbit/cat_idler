@@ -275,6 +275,24 @@ export function useGameDashboard() {
 		);
 	};
 
+	const onPlanBuilding = async (type: "workshop" | "field") => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction(`build:${type}`, () =>
+			postAction("planBuilding", { sessionId, nickname, type }),
+		);
+	};
+
+	const onAssignWorker = async (catId: string, buildingId: string | null) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction(`assign:${buildingId ?? "none"}`, () =>
+			postAction("assignWorker", { sessionId, nickname, catId, buildingId }),
+		);
+	};
+
 	const onSetAcceleration = async (preset: "off" | "fast" | "turbo") => {
 		await runAction(`accel:${preset}`, () =>
 			postAction("setTestAcceleration", { preset }),
@@ -362,6 +380,10 @@ export function useGameDashboard() {
 		zones: dashboard?.zones ?? [],
 		onCreateZone,
 		onRemoveZone,
+
+		// Production (Phase 7)
+		onPlanBuilding,
+		onAssignWorker,
 
 		// Connection
 		connectionLost,

@@ -76,6 +76,8 @@ export const BUILDING_SPRITES: Record<string, string> = {
 	elder_corner: "/images/iso/buildings/elder-corner.png",
 	walls: "/images/iso/buildings/walls.png",
 	mouse_farm: "/images/iso/buildings/mouse-farm.png",
+	workshop: "/images/iso/buildings/workshop.png",
+	field: "/images/iso/buildings/field.png",
 };
 export const BUILDING_SPRITE_FALLBACK = "/images/iso/buildings/default.png";
 

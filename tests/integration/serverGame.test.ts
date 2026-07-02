@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { createDb, type GameDb } from "@/db/client";
 import {
+	buildings as buildingsTable,
 	cats,
 	colonies,
 	elections,
@@ -21,10 +22,12 @@ import {
 import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
+	assignWorker,
 	clickBoostJob,
 	ensureGlobalColony,
 	ensureGlobalState,
 	getGlobalDashboard,
+	planBuilding,
 	purchaseUpgrade,
 	requestJob,
 	setTestAcceleration,
@@ -54,6 +57,7 @@ describe("bootstrap", () => {
 			herbs: 16,
 			materials: 24,
 			blessings: 0,
+			refined: 0,
 		});
 
 		const dashboard = getGlobalDashboard(db)!;
@@ -402,6 +406,7 @@ describe("upgrade persistence across run reset", () => {
 			herbs: 16,
 			materials: 24,
 			blessings: 3,
+			refined: 0,
 		});
 
 		const upgrade = getGlobalDashboard(db)?.upgrades.find(
@@ -1125,6 +1130,105 @@ describe("player zones", () => {
 			const inAvoid = dest.x >= 3 && dest.x <= 9 && dest.y >= 3 && dest.y <= 9;
 			expect(inAvoid).toBe(false);
 		}
+	});
+});
+
+describe("production (Phase 7)", () => {
+	const SESSION_P = { sessionId: "producer_1", nickname: "Producer" };
+
+	function insertWorkshop(colonyId: string, id = "workshop-1") {
+		db.insert(buildingsTable)
+			.values({
+				_id: id,
+				colonyId,
+				type: "workshop",
+				level: 1,
+				position: { x: 2, y: 2 },
+				constructionProgress: 100,
+				productionProgress: 0,
+			})
+			.run();
+		return id;
+	}
+
+	it("gates building types by village level", () => {
+		ensureGlobalColony(db);
+		// Starter village is level 2: workshops yes, fields not yet.
+		const result = planBuilding(db, { ...SESSION_P, type: "workshop" }) as {
+			ok: boolean;
+			jobId?: string;
+		};
+		expect(result.ok).toBe(true);
+
+		expect(() => planBuilding(db, { ...SESSION_P, type: "field" })).toThrow(
+			/village level 4/,
+		);
+
+		// Duplicate pending builds are rejected softly.
+		const dupe = planBuilding(db, { ...SESSION_P, type: "workshop" }) as {
+			ok: boolean;
+			reason?: string;
+		};
+		expect(dupe.ok).toBe(false);
+		expect(dupe.reason).toBe("already_in_progress");
+	});
+
+	it("builds a workshop scaffold of the right type", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { water: 100, materials: 100 });
+		planBuilding(db, { ...SESSION_P, type: "workshop" });
+
+		advanceTime(db, 2);
+		workerTick(db); // promotes and breaks ground
+
+		const scaffold = getGlobalDashboard(db)!.buildings.find(
+			(b: { type: string }) => b.type === "workshop",
+		);
+		expect(scaffold).toBeTruthy();
+		expect(scaffold?.constructionProgress).toBeLessThan(100);
+	});
+
+	it("refines materials with an assigned worker and stalls without", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 200, water: 200, materials: 50 });
+		const shopId = insertWorkshop(colony._id);
+		const worker = getAliveCatsForTest(db, colony._id)[0];
+
+		assignWorker(db, { ...SESSION_P, catId: worker._id, buildingId: shopId });
+
+		// A full cycle is 600s of worker time.
+		advanceTime(db, 700);
+		workerTick(db);
+
+		const colonyAfter = ensureGlobalColony(db);
+		expect(colonyAfter.resources.refined ?? 0).toBeGreaterThanOrEqual(1);
+		expect(colonyAfter.resources.materials).toBeLessThanOrEqual(45);
+
+		// Unassigning frees the cat, but the leader auto-staffs workerless
+		// workshops — production continues under new management.
+		assignWorker(db, { ...SESSION_P, catId: worker._id, buildingId: null });
+		advanceTime(db, 700);
+		workerTick(db);
+		expect(
+			eventMessages(db).some((message) =>
+				message.includes("to work at the workshop"),
+			),
+		).toBe(true);
+	});
+
+	it("validates worker assignment targets", () => {
+		const colony = ensureGlobalColony(db);
+		const cat = getAliveCatsForTest(db, colony._id)[0];
+		expect(() =>
+			assignWorker(db, { ...SESSION_P, catId: cat._id, buildingId: "nope" }),
+		).toThrow(/cannot take a worker/);
+		expect(() =>
+			assignWorker(db, {
+				...SESSION_P,
+				catId: "ghost-cat",
+				buildingId: null,
+			}),
+		).toThrow(/not available/);
 	});
 });
 
