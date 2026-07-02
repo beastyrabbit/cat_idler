@@ -30,7 +30,13 @@ export interface IsoGeometry {
 	tilesY: number;
 }
 
-/** Matches the Kenney source sprites at native resolution. */
+/**
+ * Matches the Kenney source sprites at native resolution.
+ *
+ * The content plane spans a ±12 chunk window around the village chunk (0,0):
+ * world tiles -144..155 on each axis (25 chunks × 12 tiles = 300). The village
+ * anchor (6,6) stays near the center. See `chunkWindow` for the derived bounds.
+ */
 export const DEFAULT_ISO_GEOMETRY: IsoGeometry = {
 	tileWidth: 256,
 	tileHeight: 128,
@@ -38,11 +44,24 @@ export const DEFAULT_ISO_GEOMETRY: IsoGeometry = {
 	surfaceOffset: 368,
 	surfacePadding: 368,
 	chunkSize: 12,
-	originX: -36,
-	originY: -36,
-	tilesX: 84,
-	tilesY: 84,
+	originX: -144,
+	originY: -144,
+	tilesX: 300,
+	tilesY: 300,
 };
+
+/**
+ * Renderable chunk window derived from the content-plane geometry. Chunks
+ * outside this range have no content plane to draw on, so both the map culler
+ * and the chunks API clamp to it (the world is generated on demand, but only
+ * within these bounds — an unbounded window would let panning generate forever).
+ */
+export function chunkWindow(geo: IsoGeometry): { min: number; max: number } {
+	return {
+		min: Math.floor(geo.originX / geo.chunkSize),
+		max: Math.floor((geo.originX + geo.tilesX - 1) / geo.chunkSize),
+	};
+}
 
 /**
  * Top-left corner of a tile's ground-diamond bounding box in content px.

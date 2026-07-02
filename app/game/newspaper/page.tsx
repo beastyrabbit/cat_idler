@@ -14,20 +14,23 @@ import { computeColonyMorale } from "@/lib/game/morale";
    PALETTE & CONSTANTS
    ─────────────────────────────────────────── */
 const INK = {
-	paper: "#F5F0E8",
-	paperDark: "#EDE6D6",
-	ink: "#1A1A18",
-	inkLight: "#3D3D38",
-	inkFaded: "#8A8578",
-	rule: "#B8B0A0",
-	ruleHeavy: "#7A7468",
-	red: "#8B1A1A",
-	redBright: "#C0392B",
-	green: "#2E5E1A",
-	blue: "#1A3A5E",
-	gold: "#8B6914",
-	accent: "#D4A017",
-	white: "#FEFCF5",
+	paper: "#f3e6c8", // parchment — matches the village map panels
+	paperDark: "#e9d9b4", // darker parchment inset
+	ink: "#2c1e0e", // near-black warm brown — primary text & rules
+	inkLight: "#5d4024", // wood brown — secondary text
+	inkFaded: "#957a4d", // faded tan — captions & metadata
+	rule: "#c7ae7d", // hairline rule on parchment
+	ruleHeavy: "#5d4024",
+	red: "#8b1e14", // deep vintage red — crisis
+	redBright: "#b23a1e",
+	green: "#3d5a1e", // olive — healthy
+	blue: "#274b6b", // muted ink-blue
+	gold: "#8a6a16",
+	accent: "#c9922a",
+	white: "#fdf6e3", // warm paper-white
+	wood: "#5d4024", // wooden border (map header/border tone)
+	woodDark: "#3a2712", // deep wood — desk & heavy frames
+	amber: "#f4e4bd", // light text on wood bands
 } as const;
 
 const ORNAMENT = "\u2500\u2550\u2500\u2726\u2550\u2500";
@@ -134,6 +137,17 @@ const NEWSPAPER_STYLES = `
     padding-top: 4px;
     color: ${INK.ink};
     font-weight: 700;
+  }
+
+  .ce-back-map {
+    transition: filter 150ms, transform 80ms, box-shadow 150ms;
+  }
+  .ce-back-map:hover {
+    filter: brightness(1.12);
+    box-shadow: 0 3px 10px rgba(0,0,0,0.45);
+  }
+  .ce-back-map:active {
+    transform: translateY(1px);
   }
 
   .ce-col-divider {
@@ -413,6 +427,54 @@ function OrnamentalRule() {
 			}}
 		>
 			{ORNAMENT_LONG}
+		</div>
+	);
+}
+
+/** Full-width wood band that opens each major section (matches map header bands). */
+function SectionBand({ kicker, title }: { kicker?: string; title: string }) {
+	return (
+		<div
+			style={{
+				display: "flex",
+				alignItems: "baseline",
+				justifyContent: "space-between",
+				gap: 12,
+				background: `linear-gradient(180deg, ${INK.wood}, ${INK.woodDark})`,
+				border: `2px solid ${INK.woodDark}`,
+				borderRadius: 3,
+				padding: "6px 14px",
+				boxShadow: "inset 0 1px 0 rgba(255,255,255,0.08)",
+				marginBottom: 14,
+			}}
+		>
+			<span
+				style={{
+					fontFamily: "var(--font-playfair, Georgia, 'Times New Roman', serif)",
+					fontSize: "clamp(15px, 2vw, 20px)",
+					fontWeight: 900,
+					letterSpacing: "0.14em",
+					textTransform: "uppercase",
+					color: INK.amber,
+					lineHeight: 1,
+				}}
+			>
+				{title}
+			</span>
+			{kicker && (
+				<span
+					style={{
+						fontFamily: "var(--font-special-elite, 'Courier New', monospace)",
+						fontSize: 10,
+						letterSpacing: "0.16em",
+						textTransform: "uppercase",
+						color: `${INK.amber}bb`,
+						whiteSpace: "nowrap",
+					}}
+				>
+					{kicker}
+				</span>
+			)}
 		</div>
 	);
 }
@@ -1036,6 +1098,9 @@ export default function CatfordExaminerPage() {
 		population,
 	);
 	const subhead = statusSubhead(colony.status, population);
+	const leadEvent = events[0] as
+		| { timestamp?: number; _creationTime?: number; message: string }
+		| undefined;
 
 	/* ═══════════════════════════════════════════
      RENDER
@@ -1047,18 +1112,14 @@ export default function CatfordExaminerPage() {
 			style={{
 				position: "fixed",
 				inset: 0,
-				background: INK.paper,
+				/* Dark wooden desk the parchment sheet rests on */
+				background: `radial-gradient(120% 120% at 50% 0%, ${INK.wood} 0%, ${INK.woodDark} 60%, #241708 100%)`,
 				color: INK.ink,
 				overflow: "auto",
 				zIndex: 50,
 				fontFamily: "var(--font-inter, Georgia, 'Times New Roman', serif)",
 				fontSize: 13,
 				lineHeight: 1.5,
-				/* Subtle paper texture via noise */
-				backgroundImage: `
-          url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E")
-        `,
-				backgroundSize: "256px 256px",
 			}}
 		>
 			<style>{NEWSPAPER_STYLES}</style>
@@ -1068,37 +1129,52 @@ export default function CatfordExaminerPage() {
 				<SubscriptionModal onSubscribe={handleSubscribe} />
 			)}
 
-			{/* Outer container for max-width broadsheet feel */}
+			{/* The parchment broadsheet — a page laid on the wooden desk */}
 			<div
 				style={{
-					maxWidth: 1400,
+					maxWidth: 1180,
 					margin: "0 auto",
-					padding: "0 20px 40px",
+					padding: "0 clamp(20px, 4vw, 52px) 44px",
+					background: INK.paper,
+					border: `3px solid ${INK.wood}`,
+					borderTop: "none",
+					boxShadow: "0 10px 40px rgba(0,0,0,0.55)",
+					/* Subtle paper texture via noise */
+					backgroundImage: `
+          url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E")
+        `,
+					backgroundSize: "256px 256px",
 				}}
 			>
 				{/* ═══════════════════════════════════════
            MASTHEAD
            ═══════════════════════════════════════ */}
-				<header style={{ paddingTop: 16 }}>
-					{/* Back to the live map */}
+				<header style={{ paddingTop: 18 }}>
+					{/* Back to the live map — styled like the map's own wooden buttons */}
 					<a
 						href="/game"
+						className="ce-back-map"
 						style={{
-							display: "inline-block",
-							marginBottom: 8,
-							padding: "6px 12px",
-							border: `2px solid ${INK.ink}`,
+							display: "inline-flex",
+							alignItems: "center",
+							gap: 8,
+							marginBottom: 12,
+							padding: "8px 16px",
+							borderRadius: 6,
+							border: `2px solid ${INK.woodDark}`,
+							background: `linear-gradient(180deg, ${INK.wood}, ${INK.woodDark})`,
 							fontFamily: "var(--font-special-elite, 'Courier New', monospace)",
-							fontSize: 11,
+							fontSize: 12,
 							fontWeight: 700,
 							letterSpacing: "0.08em",
 							textTransform: "uppercase",
-							color: INK.ink,
+							color: INK.amber,
 							textDecoration: "none",
-							background: "transparent",
+							boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
 						}}
 					>
-						← Back to the Village Map
+						<span style={{ fontSize: 15, lineHeight: 1 }}>←</span> Back to the
+						Village Map
 					</a>
 					{/* Top info line */}
 					<div
@@ -1305,15 +1381,28 @@ export default function CatfordExaminerPage() {
 							? "ce-section-visible"
 							: "ce-section-hidden"
 					}
-					style={{ scrollMarginTop: 48, marginTop: 12, marginBottom: 4 }}
+					style={{ scrollMarginTop: 48, marginTop: 18, marginBottom: 10 }}
 				>
+					<div
+						style={{
+							fontFamily: "var(--font-special-elite, 'Courier New', monospace)",
+							fontSize: 11,
+							fontWeight: 700,
+							letterSpacing: "0.2em",
+							textTransform: "uppercase",
+							color: INK.red,
+							marginBottom: 6,
+						}}
+					>
+						{DIAMOND} Today&apos;s Lead Story {DIAMOND}
+					</div>
 					<h1
 						style={{
 							fontFamily:
 								"var(--font-playfair, Georgia, 'Times New Roman', serif)",
-							fontSize: "clamp(28px, 4vw, 48px)",
+							fontSize: "clamp(30px, 4.6vw, 54px)",
 							fontWeight: 900,
-							lineHeight: 1.05,
+							lineHeight: 1.03,
 							letterSpacing: "-0.01em",
 							textTransform: "uppercase",
 							margin: 0,
@@ -1329,15 +1418,58 @@ export default function CatfordExaminerPage() {
 						style={{
 							fontFamily:
 								"var(--font-playfair, Georgia, 'Times New Roman', serif)",
-							fontSize: 16,
+							fontSize: 17,
 							fontStyle: "italic",
 							color: INK.inkLight,
-							marginTop: 4,
-							lineHeight: 1.3,
+							marginTop: 6,
+							lineHeight: 1.35,
+							maxWidth: "62ch",
 						}}
 					>
 						{subhead}
 					</div>
+
+					{/* Featured newest dispatch — the fresh-off-the-wire lede */}
+					{leadEvent && (
+						<div
+							style={{
+								marginTop: 12,
+								padding: "8px 14px",
+								borderLeft: `4px solid ${INK.red}`,
+								background: INK.paperDark,
+								maxWidth: "72ch",
+							}}
+						>
+							<span
+								style={{
+									fontFamily:
+										"var(--font-special-elite, 'Courier New', monospace)",
+									fontSize: 10,
+									fontWeight: 700,
+									letterSpacing: "0.14em",
+									textTransform: "uppercase",
+									color: INK.red,
+									marginRight: 8,
+								}}
+							>
+								Latest {BULLET}{" "}
+								{formatTime(
+									leadEvent.timestamp ?? leadEvent._creationTime ?? now,
+								)}
+							</span>
+							<span
+								style={{
+									fontFamily:
+										"var(--font-playfair, Georgia, 'Times New Roman', serif)",
+									fontSize: 15,
+									color: INK.ink,
+									lineHeight: 1.4,
+								}}
+							>
+								{leadEvent.message}
+							</span>
+						</div>
+					)}
 				</section>
 
 				{/* ─── Nav sentinel (zero-height div for sticky detection) ─── */}
@@ -1434,8 +1566,12 @@ export default function CatfordExaminerPage() {
 								? "ce-section-visible"
 								: "ce-section-hidden"
 						}
-						style={{ scrollMarginTop: 48, marginTop: 8 }}
+						style={{ scrollMarginTop: 48, marginTop: 20 }}
 					>
+						<SectionBand
+							title="The Market"
+							kicker={`Provisions ${BULLET} Labour ${BULLET} Treasury`}
+						/>
 						<div
 							style={{
 								display: "grid",
@@ -1894,8 +2030,12 @@ export default function CatfordExaminerPage() {
 								? "ce-section-visible"
 								: "ce-section-hidden"
 						}
-						style={{ scrollMarginTop: 48, marginTop: 8 }}
+						style={{ scrollMarginTop: 48, marginTop: 20 }}
 					>
+						<SectionBand
+							title="The Community"
+							kicker={`Requisitions ${BULLET} Society ${BULLET} Obituaries`}
+						/>
 						<div
 							style={{
 								display: "grid",
@@ -2245,8 +2385,12 @@ export default function CatfordExaminerPage() {
 								? "ce-section-visible"
 								: "ce-section-hidden"
 						}
-						style={{ scrollMarginTop: 48, marginTop: 8 }}
+						style={{ scrollMarginTop: 48, marginTop: 20 }}
 					>
+						<SectionBand
+							title="The News"
+							kicker={`Weather ${BULLET} Dispatches ${BULLET} Notices`}
+						/>
 						<div
 							style={{
 								display: "grid",
@@ -2540,112 +2684,26 @@ export default function CatfordExaminerPage() {
 								? "ce-section-visible"
 								: "ce-section-hidden"
 						}
-						style={{ scrollMarginTop: 48, marginTop: 8 }}
+						style={{ scrollMarginTop: 48, marginTop: 20 }}
 					>
+						<SectionBand
+							title="The Back Page"
+							kicker={`Cartoon ${BULLET} Editorial ${BULLET} Barometer`}
+						/>
 						<div
 							style={{
 								display: "grid",
-								gridTemplateColumns: "1fr 1fr 1fr",
-								gap: 16,
+								gridTemplateColumns: "1fr 1fr",
+								gap: 20,
 							}}
 						>
-							{/* Amusements */}
-							<div
-								style={{
-									border: `2px solid ${INK.ink}`,
-									padding: "8px 10px",
-								}}
-							>
-								<div
-									style={{
-										fontFamily:
-											"var(--font-playfair, Georgia, 'Times New Roman', serif)",
-										fontWeight: 900,
-										fontSize: 13,
-										textTransform: "uppercase",
-										textAlign: "center",
-										letterSpacing: "0.15em",
-										marginBottom: 4,
-									}}
-								>
-									Amusements
-								</div>
-								<LightRule />
-								{/* Mini crossword grid - decorative */}
-								<div
-									style={{
-										display: "grid",
-										gridTemplateColumns: "repeat(5, 1fr)",
-										gap: 1,
-										maxWidth: 100,
-										margin: "6px auto",
-									}}
-								>
-									{[
-										"C",
-										"A",
-										"T",
-										"S",
-										" ",
-										" ",
-										"I",
-										"D",
-										"L",
-										"E",
-										"M",
-										"E",
-										"O",
-										"W",
-										" ",
-										" ",
-										"P",
-										"U",
-										"R",
-										"R",
-										"N",
-										"A",
-										"P",
-										" ",
-										" ",
-									].map((ch, i) => (
-										<div
-											key={i}
-											style={{
-												width: 18,
-												height: 18,
-												border: ch === " " ? "none" : `1px solid ${INK.ink}`,
-												background: ch === " " ? INK.ink : INK.paper,
-												display: "flex",
-												alignItems: "center",
-												justifyContent: "center",
-												fontFamily:
-													"var(--font-special-elite, 'Courier New', monospace)",
-												fontSize: 10,
-												fontWeight: 700,
-											}}
-										>
-											{ch !== " " ? ch : ""}
-										</div>
-									))}
-								</div>
-								<div
-									style={{
-										textAlign: "center",
-										fontSize: 9,
-										color: INK.inkFaded,
-										fontStyle: "italic",
-										marginTop: 4,
-									}}
-								>
-									Today&apos;s Puzzle: 5 letters, &ldquo;Feline pastime&rdquo;
-								</div>
-							</div>
-
 							{/* Editorial Cartoon */}
 							<div
 								style={{
-									padding: "6px 8px",
-									border: `1px solid ${INK.rule}`,
+									padding: "12px 10px",
+									border: `2px solid ${INK.wood}`,
+									borderRadius: 3,
+									background: INK.paperDark,
 									textAlign: "center",
 								}}
 								className="ce-stagger-1"
@@ -2689,9 +2747,9 @@ export default function CatfordExaminerPage() {
 							{/* Pull Quote */}
 							<div
 								style={{
-									padding: "8px 12px",
-									borderLeft: `3px solid ${INK.ink}`,
-									borderRight: `3px solid ${INK.ink}`,
+									padding: "14px 20px",
+									borderLeft: `4px solid ${INK.wood}`,
+									borderRight: `4px solid ${INK.wood}`,
 									display: "flex",
 									flexDirection: "column",
 									justifyContent: "center",

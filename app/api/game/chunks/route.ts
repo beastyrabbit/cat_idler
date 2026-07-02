@@ -1,20 +1,34 @@
 /**
  * World chunk tiles for the map UI.
  *
- * GET /api/game/chunks?x=<chunkX>&y=<chunkY> — returns the stored tiles
- * of one 12x12 chunk for the global colony. Ungenerated chunks return an
- * empty list (rendered as uncharted territory); generation only happens
- * through the simulation, never from map panning.
+ * GET /api/game/chunks?x=<chunkX>&y=<chunkY> — returns the stored tiles of one
+ * 12x12 chunk for the global colony. The world is effectively infinite: a
+ * requested chunk that has never been generated is generated on demand (deter-
+ * ministically from the colony's worldSeed) as long as it falls inside the
+ * renderable window. Chunks outside the window are never generated and return
+ * an empty list, so panning can't drive unbounded generation.
  */
 
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/db/client";
+import { chunkWindow, DEFAULT_ISO_GEOMETRY } from "@/lib/game/isoProjection";
 import { ensureGlobalState } from "@/server/game";
-import { getChunkTiles } from "@/server/worldMap";
+import { ensureChunk, getChunkTiles } from "@/server/worldMap";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const WINDOW = chunkWindow(DEFAULT_ISO_GEOMETRY);
+
+function inWindow(chunkX: number, chunkY: number): boolean {
+	return (
+		chunkX >= WINDOW.min &&
+		chunkX <= WINDOW.max &&
+		chunkY >= WINDOW.min &&
+		chunkY <= WINDOW.max
+	);
+}
 
 export async function GET(request: Request) {
 	const url = new URL(request.url);
@@ -31,6 +45,11 @@ export async function GET(request: Request) {
 	try {
 		const db = getDb();
 		const colonyId = ensureGlobalState(db);
+		// Generate the chunk on first visit — but only inside the renderable
+		// window, so a client can't request faraway chunks to bloat the DB.
+		if (inWindow(chunkX, chunkY)) {
+			ensureChunk(db, colonyId, chunkX, chunkY);
+		}
 		const tiles = getChunkTiles(db, colonyId, chunkX, chunkY);
 		return NextResponse.json(
 			{ tiles },

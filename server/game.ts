@@ -35,7 +35,6 @@ import { planHousePipeline } from "@/lib/game/housePlanner";
 import {
 	housingCapacity,
 	housingPressure,
-	shouldQueueHouse,
 	villageLevel,
 } from "@/lib/game/housing";
 import {
@@ -58,6 +57,7 @@ import {
 	shouldStartRitual,
 	shouldTrackCritical,
 } from "@/lib/game/idleRules";
+import { type LeaderSnapshot, planLeaderActions } from "@/lib/game/leaderAI";
 import {
 	advanceMovement,
 	destinationForJob,
@@ -1502,36 +1502,14 @@ export function workerTick(db: GameDb) {
 			refined: Math.min(foodCapacity, colony.resources.refined ?? 0),
 		};
 
-		// Leader tithe: once per minute, surplus goes to the gods.
-		// Rates: 20 food -> 1 blessing point, 5 refined -> 1 point.
+		// Leader tithe cadence: surplus goes to the gods at most once a
+		// minute. The amount is decided in the consolidated leader pass
+		// below; this flag just gates when it may fire.
+		// Deterministic under advanceTime: a >=60s tick always counts as a
+		// minute, so skip-time tests don't depend on wall-clock boundaries.
 		const minuteRolled =
+			elapsedSec >= 60 ||
 			Math.floor(now / 60_000) !== Math.floor(colony.lastTick / 60_000);
-		if (minuteRolled) {
-			let tithed = 0;
-			if (nextResources.food > foodCapacity * 0.6 + 20) {
-				nextResources.food -= 20;
-				tithed += 1;
-			}
-			if ((nextResources.refined ?? 0) >= 5) {
-				nextResources.refined = (nextResources.refined ?? 0) - 5;
-				tithed += 1;
-			}
-			if (tithed > 0) {
-				tx.update(colonies)
-					.set({
-						globalUpgradePoints: (colony.globalUpgradePoints ?? 0) + tithed,
-					})
-					.where(eq(colonies._id, colony._id))
-					.run();
-				colony.globalUpgradePoints = (colony.globalUpgradePoints ?? 0) + tithed;
-				logEvent(
-					tx,
-					colony._id,
-					"shrine_deposit",
-					`The leader offered surplus stores to the gods (+${tithed} blessing${tithed === 1 ? "" : "s"}).`,
-				);
-			}
-		}
 
 		if (colony.resources.water > 3 && nextResources.water <= 3) {
 			logEvent(
@@ -1766,181 +1744,259 @@ export function workerTick(db: GameDb) {
 			);
 		}
 
-		// Keep paws busy: the leader keeps roughly a quarter of the colony
-		// out on expeditions at all times (more when food runs low).
-		const activeHunts = activeJobs.filter(
-			(job) => job.kind === "hunt_expedition",
-		).length;
-		const huntCap = Math.max(
-			2,
-			Math.floor(aliveCats.length / (nextResources.food < 50 ? 2 : 4)),
-		);
-		if (activeHunts < huntCap) {
-			const busyIds = new Set(
-				activeJobs.map((job) => job.assignedCatId).filter(Boolean),
-			);
-			const idleHunters = aliveCats
-				.filter(
-					(cat) =>
-						!busyIds.has(cat._id) &&
-						!cat.assignedBuildingId &&
-						(cat.activity ?? "idle") === "idle",
-				)
-				.sort((a, b) => b.stats.hunting - a.stats.hunting);
-			// Fill every open expedition slot this tick, one cat per job.
-			for (const hunter of idleHunters.slice(0, huntCap - activeHunts)) {
-				if (!canTakePolicyAction()) {
-					break;
-				}
-				queueJob(
-					tx,
-					colony._id,
-					"hunt_expedition",
-					"leader",
-					upgrades,
-					runtime,
-					null,
-					hunter,
-				);
-			}
-		}
-
-		// Overflowing stores: the leader calls hunts off; the cats walk home
-		// and only pick up new work back at the shrine.
-		if (nextResources.food > foodCapacity) {
-			const pointlessHunts = [...activeJobs, ...queuedJobs].filter(
-				(job) => job.kind === "hunt_expedition",
-			);
-			for (const hunt of pointlessHunts) {
-				tx.update(jobs)
-					.set({ status: "cancelled", completedAt: now })
-					.where(eq(jobs._id, hunt._id))
-					.run();
-				if (hunt.assignedCatId) {
-					tx.update(cats)
-						.set({
-							destination: { map: "world", ...VILLAGE_ANCHOR },
-							activity: "returning",
-							currentTask: null,
-						})
-						.where(eq(cats._id, hunt.assignedCatId))
-						.run();
-				}
-			}
-			if (pointlessHunts.length > 0) {
-				logEvent(
-					tx,
-					colony._id,
-					"job_cancelled",
-					`The leader called off ${pointlessHunts.length} hunt${pointlessHunts.length === 1 ? "" : "s"} — the stores are overflowing.`,
-				);
-			}
-		}
-
-		// Stores near the cap: the leader commissions another storehouse.
-		const storagePending = [...activeJobs, ...queuedJobs].some(
-			(job) =>
-				job.kind === "build_house" &&
-				(job.metadata as Record<string, unknown> | null)?.buildingType ===
-					"food_storage",
-		);
-		if (
-			nextResources.food > foodCapacity * 0.9 &&
-			!storagePending &&
-			canTakePolicyAction()
-		) {
-			queueJob(
-				tx,
-				colony._id,
-				"build_house",
-				"leader",
-				upgrades,
-				runtime,
-				null,
-				selectBestCat(tx, colony._id, "architect"),
-				{ phase: "construct_house", buildingType: "food_storage" },
-			);
-		}
-
-		// Crowding drives growth: the leader plans a den when shelter runs
-		// short (replaces the old materials-low trigger).
+		// --- Leader brain: one coherent decision pass over a colony
+		// snapshot (replaces the old scattered hunt / cancel / storage / den /
+		// workshop / tithe blocks). The pure planner in lib/game/leaderAI.ts
+		// decides *what* to do; here we execute each decision, keeping the
+		// seeded policy-reliability roll at the call site so leader tiers still
+		// skip and limit actions.
 		const colonyBuildings = tx
 			.select()
 			.from(buildings)
 			.where(eq(buildings.colonyId, colony._id))
 			.all();
+
+		const jobBuildingType = (job: JobRow): string =>
+			String(
+				(job.metadata as Record<string, unknown> | null)?.buildingType ?? "den",
+			);
+
+		// All queued jobs were promoted to active above, so activeJobs is the
+		// complete in-flight set.
+		const activeHunts = activeJobs.filter(
+			(job) => job.kind === "hunt_expedition",
+		).length;
+		const denPlansInFlight = activeJobs.filter(
+			(job) =>
+				job.kind === "leader_plan_house" ||
+				(job.kind === "build_house" && jobBuildingType(job) === "den"),
+		).length;
+		const storagePlansInFlight = activeJobs.filter(
+			(job) =>
+				job.kind === "build_house" && jobBuildingType(job) === "food_storage",
+		).length;
+
+		// Committed shelter: dens still under construction plus dens being
+		// raised by an in-flight construct job.
 		const committedCapacity =
 			colonyBuildings
 				.filter((b) => b.type === "den" && b.constructionProgress < 100)
 				.reduce((sum, b) => sum + 2 * Math.max(1, b.level), 0) +
 			2 *
-				[...activeJobs, ...queuedJobs].filter(
+				activeJobs.filter(
 					(job) =>
 						job.kind === "build_house" &&
-						((job.metadata as Record<string, unknown> | null)?.buildingType ??
-							"den") === "den" &&
+						jobBuildingType(job) === "den" &&
 						(job.metadata as Record<string, unknown> | null)?.phase ===
 							"construct_house",
 				).length;
-		const pressure = housingPressure(
-			aliveCats.length,
-			housingCapacity(colonyBuildings) + committedCapacity,
+
+		const busyIds = new Set(
+			activeJobs.map((job) => job.assignedCatId).filter(Boolean),
+		);
+		const idleCatRows = aliveCats.filter(
+			(cat) =>
+				!busyIds.has(cat._id) &&
+				!cat.assignedBuildingId &&
+				(cat.activity ?? "idle") === "idle",
 		);
 
-		if (
-			shouldQueueHouse(pressure) &&
-			!hasConflictingStrategicJob("leader_plan_house", activeJobs) &&
-			canTakePolicyAction()
-		) {
-			queueJob(
-				tx,
-				colony._id,
-				"leader_plan_house",
-				"leader",
-				upgrades,
-				runtime,
-				null,
-				selectBestCat(tx, colony._id, "architect"),
-			);
-		}
+		// Completed workshops with no assigned worker, for staffing below.
+		const staffedBuildingIds = new Set(
+			aliveCats
+				.map((cat) => cat.assignedBuildingId)
+				.filter((id): id is string => Boolean(id)),
+		);
+		const workshopsNeedingWorkers = colonyBuildings.filter(
+			(building) =>
+				building.type === "workshop" &&
+				building.constructionProgress >= 100 &&
+				!staffedBuildingIds.has(building._id),
+		);
 
-		// --- Production (Phase 7): leader staffs idle cats into workerless
-		// workshops, then workshops refine materials and fields grow food.
+		const snapshot: LeaderSnapshot = {
+			population: aliveCats.length,
+			idleCats: idleCatRows.length,
+			employedCats: aliveCats.length - idleCatRows.length,
+			resources: {
+				food: nextResources.food,
+				refined: nextResources.refined ?? 0,
+			},
+			foodCapacity,
+			housing: {
+				capacity: housingCapacity(colonyBuildings),
+				committed: committedCapacity,
+			},
+			activeHunts,
+			denPlansInFlight,
+			storagePlansInFlight,
+			workshopsNeedingWorkers: workshopsNeedingWorkers.length,
+		};
+
+		// Worker map the later production pass consumes.
 		const workshopWorkers = new Map<string, CatRow>();
 		for (const cat of aliveCats) {
 			if (cat.assignedBuildingId) {
 				workshopWorkers.set(cat.assignedBuildingId, cat);
 			}
 		}
-		const completedWorkshops = colonyBuildings.filter(
-			(building) =>
-				building.type === "workshop" && building.constructionProgress >= 100,
-		);
-		for (const workshop of completedWorkshops) {
-			if (workshopWorkers.has(workshop._id)) {
-				continue;
+
+		// Idle cats still free to take work this tick (mutated as we assign).
+		const availableIdle = [...idleCatRows];
+		const claimIdle = (cat: CatRow) => {
+			const idx = availableIdle.findIndex((c) => c._id === cat._id);
+			if (idx >= 0) {
+				availableIdle.splice(idx, 1);
 			}
-			const idle = aliveCats
-				.filter(
-					(cat) =>
-						!cat.assignedBuildingId && (cat.activity ?? "idle") === "idle",
-				)
-				.sort((a, b) => b.stats.building - a.stats.building)[0];
-			if (!idle || !canTakePolicyAction()) {
-				continue;
+		};
+
+		for (const decision of planLeaderActions(snapshot)) {
+			switch (decision.kind) {
+				case "hunt": {
+					const hunters = [...availableIdle].sort(
+						(a, b) => b.stats.hunting - a.stats.hunting,
+					);
+					let dispatched = 0;
+					for (const hunter of hunters) {
+						if (dispatched >= decision.count) {
+							break;
+						}
+						if (!canTakePolicyAction()) {
+							break;
+						}
+						queueJob(
+							tx,
+							colony._id,
+							"hunt_expedition",
+							"leader",
+							upgrades,
+							runtime,
+							null,
+							hunter,
+						);
+						claimIdle(hunter);
+						dispatched += 1;
+					}
+					break;
+				}
+				case "cancel_hunts": {
+					// Overflowing stores: call the hunts off; the cats walk home
+					// and only pick up new work back at the shrine.
+					const pointlessHunts = activeJobs.filter(
+						(job) => job.kind === "hunt_expedition",
+					);
+					for (const hunt of pointlessHunts) {
+						tx.update(jobs)
+							.set({ status: "cancelled", completedAt: now })
+							.where(eq(jobs._id, hunt._id))
+							.run();
+						if (hunt.assignedCatId) {
+							tx.update(cats)
+								.set({
+									destination: { map: "world", ...VILLAGE_ANCHOR },
+									activity: "returning",
+									currentTask: null,
+								})
+								.where(eq(cats._id, hunt.assignedCatId))
+								.run();
+						}
+					}
+					if (pointlessHunts.length > 0) {
+						logEvent(
+							tx,
+							colony._id,
+							"job_cancelled",
+							`The leader called off ${pointlessHunts.length} hunt${pointlessHunts.length === 1 ? "" : "s"} — the stores are overflowing.`,
+						);
+					}
+					break;
+				}
+				case "build_storage": {
+					if (canTakePolicyAction()) {
+						queueJob(
+							tx,
+							colony._id,
+							"build_house",
+							"leader",
+							upgrades,
+							runtime,
+							null,
+							selectBestCat(tx, colony._id, "architect"),
+							{ phase: "construct_house", buildingType: "food_storage" },
+						);
+					}
+					break;
+				}
+				case "build_den": {
+					if (canTakePolicyAction()) {
+						queueJob(
+							tx,
+							colony._id,
+							"leader_plan_house",
+							"leader",
+							upgrades,
+							runtime,
+							null,
+							selectBestCat(tx, colony._id, "architect"),
+						);
+					}
+					break;
+				}
+				case "assign_workshop": {
+					let staffed = 0;
+					for (const workshop of workshopsNeedingWorkers) {
+						if (staffed >= decision.count) {
+							break;
+						}
+						const idle = [...availableIdle].sort(
+							(a, b) => b.stats.building - a.stats.building,
+						)[0];
+						if (!idle) {
+							break;
+						}
+						if (!canTakePolicyAction()) {
+							break;
+						}
+						tx.update(cats)
+							.set({ assignedBuildingId: workshop._id })
+							.where(eq(cats._id, idle._id))
+							.run();
+						workshopWorkers.set(workshop._id, idle);
+						claimIdle(idle);
+						logEvent(
+							tx,
+							colony._id,
+							"worker_assigned",
+							`The leader put ${idle.name} to work at the workshop.`,
+							[idle._id],
+						);
+						staffed += 1;
+					}
+					break;
+				}
+				case "tithe": {
+					// Surplus offering is capped to once a minute.
+					if (!minuteRolled) {
+						break;
+					}
+					nextResources.food -= decision.food;
+					nextResources.refined =
+						(nextResources.refined ?? 0) - decision.refined;
+					const points = (colony.globalUpgradePoints ?? 0) + decision.blessings;
+					tx.update(colonies)
+						.set({ globalUpgradePoints: points })
+						.where(eq(colonies._id, colony._id))
+						.run();
+					colony.globalUpgradePoints = points;
+					logEvent(
+						tx,
+						colony._id,
+						"shrine_deposit",
+						`The leader offered surplus stores to the gods (+${decision.blessings} blessing${decision.blessings === 1 ? "" : "s"}).`,
+					);
+					break;
+				}
 			}
-			tx.update(cats)
-				.set({ assignedBuildingId: workshop._id })
-				.where(eq(cats._id, idle._id))
-				.run();
-			workshopWorkers.set(workshop._id, idle);
-			logEvent(
-				tx,
-				colony._id,
-				"worker_assigned",
-				`The leader put ${idle.name} to work at the workshop.`,
-				[idle._id],
-			);
 		}
 
 		// Ritual from player request, only if resources are stable and policy roll passes.

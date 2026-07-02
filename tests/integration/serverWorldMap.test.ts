@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { createDb, type GameDb } from "@/db/client";
 import { buildings, colonies, worldTiles } from "@/db/schema";
+import { chunkWindow, DEFAULT_ISO_GEOMETRY } from "@/lib/game/isoProjection";
 import { VILLAGE_ANCHOR } from "@/lib/game/villageLayout";
 import { ensureGlobalColony, getGlobalDashboard } from "@/server/game";
 import { ensureChunk, getChunkTiles } from "@/server/worldMap";
@@ -118,6 +119,28 @@ describe("getChunkTiles", () => {
 		ensureChunk(db, colony._id, 2, 2);
 
 		expect(getChunkTiles(db, colony._id, 2, 2)).toHaveLength(144);
+	});
+
+	it("generates a full chunk on demand at the far edge of the window", () => {
+		const colony = ensureGlobalColony(db);
+		const { min, max } = chunkWindow(DEFAULT_ISO_GEOMETRY);
+
+		// Chunk was never part of the starting bootstrap — the API generates
+		// it on first visit (infinite world within the renderable window).
+		expect(getChunkTiles(db, colony._id, max, max)).toEqual([]);
+		ensureChunk(db, colony._id, max, max);
+		expect(getChunkTiles(db, colony._id, max, max)).toHaveLength(144);
+
+		ensureChunk(db, colony._id, min, min);
+		expect(getChunkTiles(db, colony._id, min, min)).toHaveLength(144);
+	});
+});
+
+describe("chunkWindow", () => {
+	it("spans a symmetric ±12 chunk window around the village", () => {
+		const { min, max } = chunkWindow(DEFAULT_ISO_GEOMETRY);
+		expect(min).toBe(-12);
+		expect(max).toBe(12);
 	});
 });
 

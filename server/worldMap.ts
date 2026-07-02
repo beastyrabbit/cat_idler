@@ -97,15 +97,19 @@ export function ensureChunk(
 		colonyPos.y,
 	);
 
-	for (const tile of tiles) {
-		db.insert(worldTiles)
-			.values({
-				_id: nanoid(),
-				colonyId,
-				...tile,
-			})
-			.run();
-	}
+	// One transaction per chunk: a partially-inserted chunk would read back as
+	// "exists" and never finish generating, leaving a hole in the map.
+	db.transaction((tx) => {
+		for (const tile of tiles) {
+			tx.insert(worldTiles)
+				.values({
+					_id: nanoid(),
+					colonyId,
+					...tile,
+				})
+				.run();
+		}
+	});
 }
 
 /** Initialize the starting world: 3x3 chunks around the village (chunk 0,0). */

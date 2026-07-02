@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { tileToIso, zIndexFor } from "@/lib/game/isoProjection";
 import type { ChunkCoord } from "@/lib/game/mapView";
 import { chunkKey } from "@/lib/game/mapView";
@@ -10,6 +10,7 @@ import {
 	DIAMOND_CLIP,
 	FENCE_X_SPRITE,
 	FENCE_Y_SPRITE,
+	FOG_SHADES,
 	GATE_SPRITE,
 	ISO,
 	ROAD_SPRITE,
@@ -86,6 +87,50 @@ function isExplored(
 	return Math.sqrt(dx * dx + dy * dy) < VILLAGE_VISION_RADIUS;
 }
 
+/** Deepest fog shade — used for far tiles and ungenerated chunks. */
+const SOLID_FOG = FOG_SHADES[FOG_SHADES.length - 1];
+
+/**
+ * Fog color for every unexplored tile in a chunk, keyed by tile id.
+ *
+ * Each tile is shaded by its Chebyshev distance to the nearest explored tile
+ * *within this chunk* (plus the village vision the anchor grants), so the fog
+ * fades from a light frontier hug into solid unknown. Cross-chunk neighbors
+ * are not consulted, so seams between chunks are approximate — acceptable for
+ * a soft fog effect. Explored tiles are omitted (they render terrain).
+ */
+function computeFogShades(
+	tiles: WorldTile[],
+	anchor: { x: number; y: number },
+): Map<string, string> {
+	const explored = tiles.filter((tile) => isExplored(tile, anchor));
+	const shades = new Map<string, string>();
+
+	for (const tile of tiles) {
+		if (isExplored(tile, anchor)) {
+			continue;
+		}
+		if (explored.length === 0) {
+			shades.set(tile._id, SOLID_FOG);
+			continue;
+		}
+		let nearest = Number.POSITIVE_INFINITY;
+		for (const e of explored) {
+			const dist = Math.max(Math.abs(tile.x - e.x), Math.abs(tile.y - e.y));
+			if (dist < nearest) {
+				nearest = dist;
+				if (nearest === 1) {
+					break;
+				}
+			}
+		}
+		const idx = Math.min(nearest - 1, FOG_SHADES.length - 1);
+		shades.set(tile._id, FOG_SHADES[idx]);
+	}
+
+	return shades;
+}
+
 function hasWater(tile: WorldTile): boolean {
 	return tile.type === "river" || tile.resources.water > 0;
 }
@@ -147,10 +192,13 @@ const IsoTile = memo(function IsoTile({
 	tile,
 	anchor,
 	showInfo,
+	fogShade,
 }: {
 	tile: WorldTile;
 	anchor: { x: number; y: number };
 	showInfo: boolean;
+	/** Precomputed fog color for unexplored tiles (see computeFogShades). */
+	fogShade: string;
 }) {
 	const { left, top } = tileToIso(tile.x, tile.y, ISO);
 	const explored = isExplored(tile, anchor);
@@ -158,8 +206,9 @@ const IsoTile = memo(function IsoTile({
 	const objectZ = zIndexFor(tile.x, tile.y, "object", ISO);
 
 	if (!explored) {
-		// Fog blends into the page backdrop so unexplored land reads as
-		// "beyond the known world" instead of a hard navy patch.
+		// Fog fades from a light frontier hug into the page backdrop, so
+		// unexplored land reads as "beyond the known world" rather than a
+		// hard patch. Shade is distance-graded per chunk (computeFogShades).
 		return (
 			<div
 				className="absolute"
@@ -170,7 +219,7 @@ const IsoTile = memo(function IsoTile({
 					height: ISO.tileHeight,
 					zIndex: tileZ,
 					clipPath: DIAMOND_CLIP,
-					background: "#182115",
+					background: fogShade,
 				}}
 			/>
 		);
@@ -295,6 +344,10 @@ const ChunkView = memo(function ChunkView({
 	showInfo: boolean;
 }) {
 	const tiles = useChunkTiles(chunkX, chunkY);
+	const fogShades = useMemo(
+		() => (tiles ? computeFogShades(tiles, anchor) : null),
+		[tiles, anchor],
+	);
 
 	if (!tiles || tiles.length === 0) {
 		// Ungenerated (or still loading) chunk — solid fog diamonds.
@@ -315,7 +368,7 @@ const ChunkView = memo(function ChunkView({
 							height: ISO.tileHeight,
 							zIndex: zIndexFor(wx, wy, "tile", ISO),
 							clipPath: DIAMOND_CLIP,
-							background: "#182115",
+							background: SOLID_FOG,
 						}}
 					/>,
 				);
@@ -332,6 +385,7 @@ const ChunkView = memo(function ChunkView({
 					tile={tile}
 					anchor={anchor}
 					showInfo={showInfo}
+					fogShade={fogShades?.get(tile._id) ?? SOLID_FOG}
 				/>
 			))}
 		</>

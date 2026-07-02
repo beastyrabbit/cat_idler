@@ -1,4 +1,5 @@
 import {
+	chunkWindow,
 	DEFAULT_ISO_GEOMETRY,
 	type IsoGeometry,
 	isoContentSize,
@@ -9,9 +10,13 @@ export const ISO_CONTENT = isoContentSize(ISO);
 
 export const CHUNK_SIZE = ISO.chunkSize;
 
-/** Renderable chunk window (7x7 chunks around the village). */
-export const CHUNK_MIN = -3;
-export const CHUNK_MAX = 3;
+/**
+ * Renderable chunk window (25x25 chunks, ±12 around the village). Derived from
+ * the content-plane geometry so it can never drift from the drawable area.
+ */
+const CHUNK_WINDOW = chunkWindow(ISO);
+export const CHUNK_MIN = CHUNK_WINDOW.min;
+export const CHUNK_MAX = CHUNK_WINDOW.max;
 
 /**
  * Terrain sprite per tile type (Kenney Isometric Miniature series,
@@ -114,3 +119,13 @@ export const TILE_COLORS: Record<string, string> = {
 
 /** CSS clip-path for a 2:1 iso ground diamond. */
 export const DIAMOND_CLIP = "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)";
+
+/**
+ * Fog-of-war shades by distance (in tiles) to the nearest explored tile.
+ * Index 0 hugs the explored frontier (lightest, a hint of land beyond the
+ * fence); each step darkens until the last shade equals the page backdrop
+ * (`bg-[#141c12]`), so deep fog dissolves into "beyond the known world".
+ * Tiles more than `FOG_SHADES.length - 1` away, and ungenerated chunks, use
+ * the final (solid) shade.
+ */
+export const FOG_SHADES = ["#33422a", "#26321f", "#1b2416", "#141c12"];
