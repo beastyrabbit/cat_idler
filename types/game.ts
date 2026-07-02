@@ -58,6 +58,7 @@ export type OverlayFeature =
 	| "ancient_road"
 	| "game_trail"
 	| "trade_route"
+	| "road_built"
 	| null;
 
 export type TaskType =

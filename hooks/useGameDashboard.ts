@@ -281,6 +281,18 @@ export function useGameDashboard() {
 		);
 	};
 
+	const onBuildRoad = async (
+		a: { x: number; y: number },
+		b: { x: number; y: number },
+	) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction("buildRoad", () =>
+			postAction("buildRoad", { sessionId, nickname, a, b }),
+		);
+	};
+
 	const onPlanBuilding = async (type: "workshop" | "field") => {
 		if (!sessionId || !nickname) {
 			return;
@@ -392,6 +404,7 @@ export function useGameDashboard() {
 		// Production (Phase 7)
 		onPlanBuilding,
 		onAssignWorker,
+		onBuildRoad,
 
 		// Connection
 		connectionLost,

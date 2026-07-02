@@ -6,6 +6,7 @@ import type { ChunkCoord } from "@/lib/game/mapView";
 import { chunkKey } from "@/lib/game/mapView";
 import type { WorldTile } from "@/types/game";
 import {
+	BUILT_ROAD_SPRITE,
 	DIAMOND_CLIP,
 	FENCE_X_SPRITE,
 	FENCE_Y_SPRITE,
@@ -176,6 +177,7 @@ const IsoTile = memo(function IsoTile({
 	}
 
 	const isWater = tile.type === "river" || tile.overlayFeature === "river";
+	const isBuiltRoad = tile.overlayFeature === "road_built";
 	// Heavily-trodden ground outside the village becomes a visible road.
 	// Worldgen seeds faint trails up to ~60 wear; only genuinely cat-worn
 	// routes cross this bar.
@@ -183,11 +185,13 @@ const IsoTile = memo(function IsoTile({
 		!isWater && tile.pathWear >= 70 && !isVillageClearing(tile, anchor);
 	const sprite = isWater
 		? { src: WATER_SPRITE }
-		: isRoad
-			? { src: ROAD_SPRITE }
-			: isVillageClearing(tile, anchor)
-				? TILE_SPRITES.field
-				: TILE_SPRITES[tile.type];
+		: isBuiltRoad
+			? { src: BUILT_ROAD_SPRITE }
+			: isRoad
+				? { src: ROAD_SPRITE }
+				: isVillageClearing(tile, anchor)
+					? TILE_SPRITES.field
+					: TILE_SPRITES[tile.type];
 	const title = `${tile.type.replaceAll("_", " ")} (${tile.x}, ${tile.y})`;
 
 	return (

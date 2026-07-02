@@ -84,6 +84,7 @@ export function MapScreen() {
 		onRemoveZone,
 		onPlanBuilding,
 		onAssignWorker,
+		onBuildRoad,
 	} = useGameDashboard();
 
 	const [chunks, setChunks] = useState<ChunkCoord[]>(INITIAL_CHUNKS);
@@ -91,7 +92,7 @@ export function MapScreen() {
 	const [infoMode, setInfoMode] = useState(false);
 	const [selectedCatId, setSelectedCatId] = useState<string | null>(null);
 	const [zoneDraft, setZoneDraft] = useState<{
-		kind: "avoid" | "gather";
+		kind: "avoid" | "gather" | "road";
 		durationMs: number;
 		cornerA: { x: number; y: number } | null;
 	} | null>(null);
@@ -116,12 +117,16 @@ export function MapScreen() {
 				setZoneDraft({ ...zoneDraft, cornerA: corner });
 				return;
 			}
-			void onCreateZone(
-				zoneDraft.kind,
-				zoneDraft.cornerA,
-				corner,
-				zoneDraft.durationMs,
-			);
+			if (zoneDraft.kind === "road") {
+				void onBuildRoad(zoneDraft.cornerA, corner);
+			} else {
+				void onCreateZone(
+					zoneDraft.kind,
+					zoneDraft.cornerA,
+					corner,
+					zoneDraft.durationMs,
+				);
+			}
 			setZoneDraft(null);
 		},
 		[zoneDraft, onCreateZone],

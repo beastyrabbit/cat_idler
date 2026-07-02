@@ -18,6 +18,7 @@ import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
 	assignWorker,
+	buildRoad,
 	clickBoostJob,
 	ensureGlobalState,
 	type PlayerJobKind,
@@ -234,6 +235,29 @@ export async function POST(request: Request) {
 						: requireString(body.buildingId, "buildingId");
 				return NextResponse.json(
 					assignWorker(db, { sessionId, nickname, catId, buildingId }),
+				);
+			}
+
+			case "buildRoad": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				const a = body.a as { x?: unknown; y?: unknown };
+				const b = body.b as { x?: unknown; y?: unknown };
+				if (
+					typeof a?.x !== "number" ||
+					typeof a?.y !== "number" ||
+					typeof b?.x !== "number" ||
+					typeof b?.y !== "number"
+				) {
+					throw new Error("Invalid road endpoints.");
+				}
+				return NextResponse.json(
+					buildRoad(db, {
+						sessionId,
+						nickname,
+						a: { x: a.x, y: a.y },
+						b: { x: b.x, y: b.y },
+					}),
 				);
 			}
 

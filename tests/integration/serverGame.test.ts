@@ -769,12 +769,21 @@ describe("visible construction", () => {
 			scaffolds[0]._id,
 		);
 
+		// The architect reports in at the shrine before heading to the site.
 		const worker = getAliveCatsForTest(db, colony._id).find(
 			(cat) => cat._id === architect._id,
 		)!;
 		expect(worker.activity).toBe("traveling");
-		expect(worker.destination).toEqual({
-			map: "world",
+		expect(worker.destination).toEqual({ map: "world", x: 6, y: 6 });
+		expect(
+			(
+				db
+					.select()
+					.from(jobs)
+					.where(eq(jobs._id, "construct-visible-job"))
+					.get()!.metadata as { site?: { x: number; y: number } }
+			).site,
+		).toEqual({
 			x: scaffolds[0].worldPosition.x,
 			y: scaffolds[0].worldPosition.y,
 		});
@@ -1262,17 +1271,35 @@ describe("cat movement", () => {
 		advanceTime(db, 2);
 		workerTick(db);
 
+		// Jobs are accepted at the shrine: the cat reports in first while
+		// the job records the hunt site out beyond the fence.
 		const updated = getAliveCatsForTest(db, colony._id).find(
 			(cat) => cat._id === hunter._id,
 		)!;
 		expect(updated.activity).toBe("traveling");
-		expect(updated.destination).not.toBeNull();
-		const dest = updated.destination!;
-		expect(dest.map).toBe("world");
-		// Hunts happen outside the village clearing.
+		expect(updated.destination).toEqual({ map: "world", x: 6, y: 6 });
+
+		const meta = db
+			.select()
+			.from(jobs)
+			.where(eq(jobs._id, "hunt-travel-job"))
+			.get()!.metadata as { site?: { x: number; y: number } };
+		expect(meta.site).toBeTruthy();
 		expect(
-			Math.max(Math.abs(dest.x - 6), Math.abs(dest.y - 6)),
+			Math.max(Math.abs(meta.site!.x - 6), Math.abs(meta.site!.y - 6)),
 		).toBeGreaterThan(4);
+
+		let accepted = false;
+		for (let i = 0; i < 10 && !accepted; i++) {
+			advanceTime(db, 30);
+			workerTick(db);
+			accepted =
+				(
+					db.select().from(jobs).where(eq(jobs._id, "hunt-travel-job")).get()!
+						.metadata as { accepted?: boolean }
+				).accepted === true;
+		}
+		expect(accepted).toBe(true);
 	});
 
 	it("walks a traveling cat toward its destination and sets it to work on arrival", () => {

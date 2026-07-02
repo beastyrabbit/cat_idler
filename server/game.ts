@@ -868,6 +868,89 @@ export function assignWorker(
 	});
 }
 
+/** Lay a permanent road along an L-path (x leg then y), 1 material/tile. */
+export function buildRoad(
+	db: GameDb,
+	args: {
+		sessionId: string;
+		nickname: string;
+		a: { x: number; y: number };
+		b: { x: number; y: number };
+	},
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+		const now = Date.now();
+		upsertPlayer(tx, args.sessionId, args.nickname, now);
+
+		const path: Array<{ x: number; y: number }> = [];
+		const ax = Math.round(args.a.x);
+		const ay = Math.round(args.a.y);
+		const bx = Math.round(args.b.x);
+		const by = Math.round(args.b.y);
+		for (let x = ax; x !== bx; x += Math.sign(bx - ax)) {
+			path.push({ x, y: ay });
+		}
+		for (let y = ay; y !== by + Math.sign(by - ay); y += Math.sign(by - ay)) {
+			path.push({ x: bx, y });
+		}
+		if (path.length === 0) {
+			path.push({ x: bx, y: by });
+		}
+		if (path.length > 24) {
+			throw new Error("Roads are limited to 24 tiles per build");
+		}
+		if (colony.resources.materials < path.length) {
+			throw new Error(
+				`Not enough materials (${path.length} needed, one per tile)`,
+			);
+		}
+
+		let paved = 0;
+		for (const pos of path) {
+			const tile = tx
+				.select()
+				.from(worldTiles)
+				.where(
+					and(
+						eq(worldTiles.colonyId, colony._id),
+						eq(worldTiles.x, pos.x),
+						eq(worldTiles.y, pos.y),
+					),
+				)
+				.get();
+			if (!tile || tile.type === "river" || tile.overlayFeature === "river") {
+				continue;
+			}
+			tx.update(worldTiles)
+				.set({ overlayFeature: "road_built", pathWear: 100 })
+				.where(eq(worldTiles._id, tile._id))
+				.run();
+			paved += 1;
+		}
+
+		tx.update(colonies)
+			.set({
+				resources: {
+					...colony.resources,
+					materials: colony.resources.materials - paved,
+				},
+				lastPlayerActivityAt: now,
+			})
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		logEvent(
+			tx,
+			colony._id,
+			"road_built",
+			`A paved road was laid (${paved} tiles).`,
+		);
+		return { ok: true, paved };
+	});
+}
+
 export function ensureGlobalState(db: GameDb): string {
 	return db.transaction((tx) => ensureGlobalColony(tx as unknown as GameDb))
 		._id;
@@ -1410,7 +1493,13 @@ export function workerTick(db: GameDb) {
 		const nextResources = {
 			...colony.resources,
 			food: Math.max(0, decayedFood),
-			water: Math.max(0, colony.resources.water - waterUse),
+			water: Math.min(
+				foodCapacity,
+				Math.max(0, colony.resources.water - waterUse),
+			),
+			herbs: Math.min(foodCapacity, colony.resources.herbs),
+			materials: Math.min(foodCapacity, colony.resources.materials),
+			refined: Math.min(foodCapacity, colony.resources.refined ?? 0),
 		};
 
 		// Leader tithe: once per minute, surplus goes to the gods.
@@ -1473,6 +1562,9 @@ export function workerTick(db: GameDb) {
 				)
 				.all();
 			for (const worn of wornTiles) {
+				if (worn.overlayFeature === "road_built") {
+					continue; // built roads are permanent
+				}
 				const floor = worn.pathWear > 62 ? 63 : 1;
 				const next = Math.max(floor, worn.pathWear - decayAmount);
 				if (next !== worn.pathWear) {
@@ -1611,9 +1703,20 @@ export function workerTick(db: GameDb) {
 				site: constructionSite ?? undefined,
 			});
 			if (jobDestination) {
+				// Jobs are accepted at the shrine: the cat reports there first,
+				// then heads out to the recorded site.
+				jobMetadata = {
+					...(jobMetadata ?? {}),
+					site: jobDestination,
+					accepted: false,
+				};
+				tx.update(jobs)
+					.set({ metadata: jobMetadata })
+					.where(eq(jobs._id, job._id))
+					.run();
 				tx.update(cats)
 					.set({
-						destination: { map: "world", ...jobDestination },
+						destination: { map: "world", ...VILLAGE_ANCHOR },
 						activity: "traveling",
 						currentTask: job.kind,
 					})
@@ -1702,6 +1805,38 @@ export function workerTick(db: GameDb) {
 			}
 		}
 
+		// Overflowing stores: the leader calls hunts off; the cats walk home
+		// and only pick up new work back at the shrine.
+		if (nextResources.food > foodCapacity) {
+			const pointlessHunts = [...activeJobs, ...queuedJobs].filter(
+				(job) => job.kind === "hunt_expedition",
+			);
+			for (const hunt of pointlessHunts) {
+				tx.update(jobs)
+					.set({ status: "cancelled", completedAt: now })
+					.where(eq(jobs._id, hunt._id))
+					.run();
+				if (hunt.assignedCatId) {
+					tx.update(cats)
+						.set({
+							destination: { map: "world", ...VILLAGE_ANCHOR },
+							activity: "returning",
+							currentTask: null,
+						})
+						.where(eq(cats._id, hunt.assignedCatId))
+						.run();
+				}
+			}
+			if (pointlessHunts.length > 0) {
+				logEvent(
+					tx,
+					colony._id,
+					"job_cancelled",
+					`The leader called off ${pointlessHunts.length} hunt${pointlessHunts.length === 1 ? "" : "s"} — the stores are overflowing.`,
+				);
+			}
+		}
+
 		// Stores near the cap: the leader commissions another storehouse.
 		const storagePending = [...activeJobs, ...queuedJobs].some(
 			(job) =>
@@ -1734,9 +1869,22 @@ export function workerTick(db: GameDb) {
 			.from(buildings)
 			.where(eq(buildings.colonyId, colony._id))
 			.all();
+		const committedCapacity =
+			colonyBuildings
+				.filter((b) => b.type === "den" && b.constructionProgress < 100)
+				.reduce((sum, b) => sum + 2 * Math.max(1, b.level), 0) +
+			2 *
+				[...activeJobs, ...queuedJobs].filter(
+					(job) =>
+						job.kind === "build_house" &&
+						((job.metadata as Record<string, unknown> | null)?.buildingType ??
+							"den") === "den" &&
+						(job.metadata as Record<string, unknown> | null)?.phase ===
+							"construct_house",
+				).length;
 		const pressure = housingPressure(
 			aliveCats.length,
-			housingCapacity(colonyBuildings),
+			housingCapacity(colonyBuildings) + committedCapacity,
 		);
 
 		if (
@@ -2291,7 +2439,10 @@ export function workerTick(db: GameDb) {
 				.get();
 			const speed =
 				MOVE_SPEED_TILES_PER_SEC *
-				(1 + getPathSpeedBonus(standingTile?.pathWear ?? 0));
+				(1 +
+					(standingTile?.overlayFeature === "road_built"
+						? 0.6
+						: getPathSpeedBonus(standingTile?.pathWear ?? 0)));
 			// The village fence blocks travel: crossing the ring means going
 			// through the south gate first.
 			const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + 4 };
@@ -2310,7 +2461,35 @@ export function workerTick(db: GameDb) {
 				movementElapsed,
 				speed,
 			);
-			const arrived = step.arrived && stepTarget === destination;
+			let arrived = step.arrived && stepTarget === destination;
+
+			// Reporting in at the shrine: pick up the job and head out.
+			if (arrived && activity === "traveling") {
+				const activeJob = getJobsByStatus(tx, colony._id, "active").find(
+					(job) => job.assignedCatId === cat._id,
+				);
+				const meta = activeJob?.metadata as Record<string, unknown> | null;
+				const site = meta?.site as WorldPos | undefined;
+				if (activeJob && site && meta?.accepted === false) {
+					tx.update(jobs)
+						.set({ metadata: { ...meta, accepted: true } })
+						.where(eq(jobs._id, activeJob._id))
+						.run();
+					tx.update(cats)
+						.set({
+							position: {
+								map: "world",
+								x: step.position.x,
+								y: step.position.y,
+							},
+							destination: { map: "world", ...site },
+						})
+						.where(eq(cats._id, cat._id))
+						.run();
+					continue;
+				}
+				arrived = true;
+			}
 			const moved =
 				step.position.x !== worldPos.x || step.position.y !== worldPos.y;
 			if (!moved && !arrived) {

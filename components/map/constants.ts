@@ -70,8 +70,11 @@ export const GATE_SPRITE = "/images/iso/tiles/gate.png";
 /** Water terrain (Isometric Nature pack, remapped to our diamond). */
 export const WATER_SPRITE = "/images/iso/tiles/water.png";
 
-/** Worn road on heavily-trodden tiles (pathWear >= 30). */
+/** Worn road on heavily-trodden tiles. */
 export const ROAD_SPRITE = "/images/iso/tiles/road.png";
+
+/** Player-paved permanent road (fastest travel). */
+export const BUILT_ROAD_SPRITE = "/images/iso/tiles/road-built.png";
 
 export const BUILDING_SPRITES: Record<string, string> = {
 	shrine: "/images/iso/buildings/shrine.png",
