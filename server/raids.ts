@@ -28,6 +28,7 @@ import {
 } from "@/db/schema";
 import { canWork, getLifeStage } from "@/lib/game/lifeSim";
 import { type WorldPos, walkPath } from "@/lib/game/movement";
+import { findPath, type WalkGrid } from "@/lib/game/pathfinding";
 import {
 	accrueThreat,
 	colonyWealth,
@@ -203,6 +204,12 @@ export interface RaidDirectorContext {
 	activeRaidId: string | null;
 	/** Player defense clicks banked against the active raid. */
 	raidClicks: number;
+	/**
+	 * Walkability for real pathing — raiders route around rivers and funnel to
+	 * the gate through the fence just like cats. Omitted (tests / legacy) falls
+	 * back to a straight march.
+	 */
+	walkGrid?: WalkGrid;
 }
 
 export interface RaidDirectorResult {
@@ -272,7 +279,13 @@ function advanceActiveRaid(
 	const budget = ctx.elapsedGameSec * RAIDER_SPEED_TILES_PER_SEC;
 	let anyAtGate = false;
 	for (const unit of units) {
-		const walk = walkPath(unit.position, gate, budget);
+		// Raiders path to the gate the same way cats do: A* around rivers and
+		// the palisade, falling back to a straight march when no grid is given.
+		const route = ctx.walkGrid
+			? findPath(unit.position, gate, ctx.walkGrid)
+			: null;
+		const waypoints = route && route.length > 2 ? route.slice(1, -1) : [];
+		const walk = walkPath(unit.position, gate, budget, waypoints);
 		const atGate =
 			Math.max(
 				Math.abs(walk.position.x - gate.x),

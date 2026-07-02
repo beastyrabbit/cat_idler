@@ -16,12 +16,13 @@ import {
 	colonies,
 	elections,
 	events,
+	globalUpgrades as globalUpgradesTable,
 	jobs,
 	runHistory,
 	worldTiles,
 	zones as zonesTable,
 } from "@/db/schema";
-import { getLifeStage } from "@/lib/game/lifeSim";
+import { canWork, getLifeStage } from "@/lib/game/lifeSim";
 import {
 	colonyToWorld,
 	ringCells,
@@ -466,9 +467,21 @@ describe("build pipeline orchestration", () => {
 	it("queues material gathering as a house prerequisite and pays out on completion", () => {
 		const colony = ensureGlobalColony(db);
 		setResources(db, colony._id, { food: 100, water: 100, materials: 0 });
-		// Seed chosen so the leader's policy-reliability roll passes for every
-		// tier (second roll in the chain is 0.088; worst-case gate is 0.6).
-		setTestRngSeed(db, 42);
+		// Give the colony a decisive leader (leadership >= 70 → "excellent"
+		// bucket) and a seed whose first roll (0.72) lands that bucket on the
+		// excellent tier, whose action reliability is 1.0 — so every policy gate
+		// passes and the gather phase is queued deterministically, independent of
+		// how many rolls the director consumes first.
+		db.update(cats)
+			.set({
+				stats: {
+					...getAliveCatsForTest(db, colony._id)[0].stats,
+					leadership: 80,
+				},
+			})
+			.where(eq(cats.colonyId, colony._id))
+			.run();
+		setTestRngSeed(db, 1249);
 
 		const { jobId } = requestJob(db, {
 			...SESSION,
@@ -2414,5 +2427,152 @@ describe("life simulation", () => {
 		advanceTime(db, 60);
 		workerTick(db);
 		expect(getAliveCatsForTest(db, colony._id).length).toBe(afterCrisis);
+	});
+});
+
+describe("leader AI v3 + real pathing", () => {
+	/** Fraction of work-capable cats standing idle right now. */
+	function idleFraction(colonyId: string): number {
+		const able = getAliveCatsForTest(db, colonyId).filter((cat) =>
+			canWork(getLifeStage(cat.ageHours ?? 0)),
+		);
+		if (able.length === 0) {
+			return 0;
+		}
+		const idle = able.filter(
+			(cat) => !cat.assignedBuildingId && (cat.activity ?? "idle") === "idle",
+		);
+		return idle.length / able.length;
+	}
+
+	it("keeps most of a healthy colony busy — under 20% idle at steady state", () => {
+		const colony = ensureGlobalColony(db);
+		setTestRngSeed(db, 3);
+		setTestAcceleration(db, "hyper");
+
+		const samples: number[] = [];
+		for (let i = 0; i < 12; i++) {
+			advanceTime(db, 30);
+			workerTick(db);
+			// Sample only once the colony has spun up past the first few ticks.
+			if (i >= 6) {
+				samples.push(idleFraction(colony._id));
+			}
+		}
+		const avg = samples.reduce((a, b) => a + b, 0) / samples.length;
+		expect(avg).toBeLessThan(0.2);
+	});
+
+	it("routes a cat out through the village gate around the fence", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 200, water: 200 });
+		// Clear wear so only the cat's own steps raise pathWear.
+		db.update(worldTiles)
+			.set({ pathWear: 0 })
+			.where(eq(worldTiles.colonyId, colony._id))
+			.run();
+
+		// The fresh village fences at Chebyshev 4 with its gate due south, at
+		// (6, 10). Send a cat from the shrine to a tile off the south-east
+		// corner: the straight route would cut across the east fence, so the
+		// only way out is the gate.
+		const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + 4 };
+		const traveler = getAliveCatsForTest(db, colony._id)[0];
+		db.update(cats)
+			.set({
+				position: { map: "world", ...VILLAGE_ANCHOR },
+				destination: { map: "world", x: 10, y: 16 },
+				activity: "traveling",
+				currentTask: null,
+				carrying: null,
+			})
+			.where(eq(cats._id, traveler._id))
+			.run();
+		db.update(colonies)
+			.set({ testTimeScale: 500 })
+			.where(eq(colonies._id, colony._id))
+			.run();
+		advanceTime(db, 5);
+		workerTick(db);
+
+		const wearAt = (x: number, y: number) =>
+			db
+				.select()
+				.from(worldTiles)
+				.where(
+					and(
+						eq(worldTiles.colonyId, colony._id),
+						eq(worldTiles.x, x),
+						eq(worldTiles.y, y),
+					),
+				)
+				.get()?.pathWear ?? 0;
+
+		// The tile just south of the gate is on the through-gate route (the fence
+		// forces the exit due south before the cat can head east), so wearing it
+		// proves the cat left through the gate rather than cutting the corner.
+		// The cat completes the whole journey this accelerated tick.
+		expect(wearAt(gate.x, gate.y + 1)).toBeGreaterThan(62);
+		const arrived = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === traveler._id,
+		)!;
+		expect(arrived.position).toMatchObject({ map: "world", x: 10, y: 16 });
+	});
+
+	it("runs a byte-identical tick from an identical state under a fixed seed", () => {
+		// The bootstrap (nanoid ids, Date.now world seed, random stats) is not
+		// reproducible across fresh databases, so to isolate the *tick's*
+		// determinism we clone one colony's full state into a second database and
+		// run both under the same seed. Byte-identical output — resources and
+		// every cat's position/activity — proves the whole tick (director,
+		// assignment, A* movement, roads, raids) is a pure function of state+seed.
+		const dbA = createDb(":memory:");
+		const colId = ensureGlobalColony(dbA)._id;
+		setTestRngSeed(dbA, 99);
+		setTestAcceleration(dbA, "hyper");
+
+		const dbB = createDb(":memory:");
+		ensureGlobalColony(dbB);
+		const cloneTables = [
+			colonies,
+			cats,
+			buildingsTable,
+			worldTiles,
+			jobs,
+			globalUpgradesTable,
+			events,
+		] as const;
+		for (const table of cloneTables) {
+			dbB.delete(table).run();
+			const rows = dbA.select().from(table).all();
+			if (rows.length > 0) {
+				dbB.insert(table).values(rows).run();
+			}
+		}
+
+		const digest = (database: GameDb) => {
+			const colony = database
+				.select()
+				.from(colonies)
+				.where(eq(colonies._id, colId))
+				.get()!;
+			const roster = getAliveCatsForTest(database, colId)
+				.map(
+					(cat) =>
+						`${cat._id}:${cat.position.x.toFixed(2)},${cat.position.y.toFixed(2)}:${cat.activity ?? "idle"}`,
+				)
+				.sort()
+				.join("|");
+			return JSON.stringify({ resources: colony.resources, roster });
+		};
+
+		for (let i = 0; i < 10; i++) {
+			advanceTime(dbA, 30);
+			workerTick(dbA);
+			advanceTime(dbB, 30);
+			workerTick(dbB);
+		}
+
+		expect(digest(dbB)).toBe(digest(dbA));
 	});
 });

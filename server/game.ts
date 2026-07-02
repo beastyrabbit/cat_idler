@@ -66,7 +66,12 @@ import {
 	shouldStartRitual,
 	shouldTrackCritical,
 } from "@/lib/game/idleRules";
-import { type LeaderSnapshot, planLeaderActions } from "@/lib/game/leaderAI";
+import type { LeaderSnapshot } from "@/lib/game/leaderAI";
+import {
+	type CatBrief,
+	directColony,
+	matchCatsToSlots,
+} from "@/lib/game/leaderDirector";
 import {
 	detectLifeStageTransition,
 	generateMilestoneAnnouncement,
@@ -94,6 +99,7 @@ import {
 	walkPath,
 } from "@/lib/game/movement";
 import { generateName } from "@/lib/game/naming";
+import { buildColonyWalkGrid, findPath } from "@/lib/game/pathfinding";
 import { addPathWear, getPathSpeedBonus } from "@/lib/game/paths";
 import { configForTier, pickPolicyTier } from "@/lib/game/policy";
 import {
@@ -102,6 +108,7 @@ import {
 	fieldYield,
 	workshopUnlocked,
 } from "@/lib/game/production";
+import { ROAD_PAVE_WEAR, selectRoadCorridor } from "@/lib/game/roads";
 import { rollSeeded } from "@/lib/game/seededRng";
 import { shouldDeposit } from "@/lib/game/shrine";
 import { advanceSmithy } from "@/lib/game/smithy";
@@ -167,6 +174,10 @@ const QUARRY_TOTAL_YIELD = 15;
 const WATER_TOTAL_YIELD = 40;
 /** Explore jobs only target fogged frontier tiles within this range. */
 const SCOUT_RANGE = 20;
+/** The leader keeps this many materials in reserve before paving roads. */
+const ROAD_MATERIALS_RESERVE = 30;
+/** Most tiles the leader paves into road in a single (once-a-minute) batch. */
+const ROAD_MAX_PAVE_PER_BATCH = 6;
 
 /**
  * Wear a single traversal lays on a trodden tile. The first pass reveals the
@@ -3011,10 +3022,14 @@ export function workerTick(db: GameDb) {
 				refined: nextResources.refined ?? 0,
 			},
 			foodCapacity,
+			// This tick's consumption feeds the director's projection curve, so a
+			// still-full but fast-draining store scores urgent at high time scales.
+			foodDrainPerTick: foodUse,
 			materials: nextResources.materials,
 			materialsCapacity: caps.materials,
 			water: nextResources.water,
 			waterCapacity: caps.water,
+			waterDrainPerTick: waterUse,
 			housing: {
 				capacity: housingCapacity(colonyBuildings, effects.housingPerDen),
 				committed: committedCapacity,
@@ -3057,363 +3072,218 @@ export function workerTick(db: GameDb) {
 			}
 		};
 
-		for (const decision of planLeaderActions(snapshot)) {
-			switch (decision.kind) {
-				case "hunt": {
-					const hunters = [...availableIdle].sort(
-						(a, b) => b.stats.hunting - a.stats.hunting,
-					);
-					let dispatched = 0;
-					for (const hunter of hunters) {
-						if (dispatched >= decision.count) {
-							break;
-						}
-						if (!canTakePolicyAction()) {
-							break;
-						}
-						queueJob(
-							tx,
-							colony._id,
-							"hunt_expedition",
-							"leader",
-							upgrades,
-							runtime,
-							null,
-							hunter,
-						);
-						claimIdle(hunter);
-						dispatched += 1;
-					}
-					break;
-				}
-				case "cancel_hunts": {
-					// Overflowing stores: call the hunts off; the cats walk home
-					// and only pick up new work back at the shrine.
-					const pointlessHunts = activeJobs.filter(
-						(job) => job.kind === "hunt_expedition",
-					);
-					for (const hunt of pointlessHunts) {
-						tx.update(jobs)
-							.set({ status: "cancelled", completedAt: now })
-							.where(eq(jobs._id, hunt._id))
-							.run();
-						if (hunt.assignedCatId) {
-							tx.update(cats)
-								.set({
-									destination: { map: "world", ...VILLAGE_ANCHOR },
-									activity: "returning",
-									currentTask: null,
-								})
-								.where(eq(cats._id, hunt.assignedCatId))
-								.run();
-						}
-					}
-					if (pointlessHunts.length > 0) {
-						logEvent(
-							tx,
-							colony._id,
-							"job_cancelled",
-							`The leader called off ${pointlessHunts.length} hunt${pointlessHunts.length === 1 ? "" : "s"} — the stores are overflowing.`,
-						);
-					}
-					break;
-				}
-				case "quarry": {
-					// Best builders make the best miners.
-					const miners = [...availableIdle].sort(
-						(a, b) => b.stats.building - a.stats.building,
-					);
-					let dispatched = 0;
-					for (const miner of miners) {
-						if (dispatched >= decision.count) {
-							break;
-						}
-						if (!canTakePolicyAction()) {
-							break;
-						}
-						queueJob(
-							tx,
-							colony._id,
-							"quarry",
-							"leader",
-							upgrades,
-							runtime,
-							null,
-							miner,
-						);
-						claimIdle(miner);
-						dispatched += 1;
-					}
-					break;
-				}
-				case "fetch_water": {
-					// Any able-bodied cat can haul water; send the sturdiest idlers.
-					const carriers = [...availableIdle].sort(
-						(a, b) => b.stats.hunting - a.stats.hunting,
-					);
-					let dispatched = 0;
-					for (const carrier of carriers) {
-						if (dispatched >= decision.count) {
-							break;
-						}
-						if (!canTakePolicyAction()) {
-							break;
-						}
-						queueJob(
-							tx,
-							colony._id,
-							"fetch_water",
-							"leader",
-							upgrades,
-							runtime,
-							null,
-							carrier,
-						);
-						claimIdle(carrier);
-						dispatched += 1;
-					}
-					break;
-				}
-				case "scout": {
-					// Sharp-eyed cats scout best.
-					const scouts = [...availableIdle].sort(
-						(a, b) => b.stats.vision - a.stats.vision,
-					);
-					let dispatched = 0;
-					for (const scout of scouts) {
-						if (dispatched >= decision.count) {
-							break;
-						}
-						if (!canTakePolicyAction()) {
-							break;
-						}
-						queueJob(
-							tx,
-							colony._id,
-							"explore",
-							"leader",
-							upgrades,
-							runtime,
-							null,
-							scout,
-						);
-						claimIdle(scout);
-						dispatched += 1;
-					}
-					break;
-				}
-				case "build_storage": {
-					if (canTakePolicyAction()) {
-						queueJob(
-							tx,
-							colony._id,
-							"build_house",
-							"leader",
-							upgrades,
-							runtime,
-							null,
-							selectBestCat(tx, colony._id, "architect"),
-							{ phase: "construct_house", buildingType: "food_storage" },
-						);
-					}
-					break;
-				}
-				case "build_den": {
-					if (canTakePolicyAction()) {
-						queueJob(
-							tx,
-							colony._id,
-							"leader_plan_house",
-							"leader",
-							upgrades,
-							runtime,
-							null,
-							selectBestCat(tx, colony._id, "architect"),
-						);
-					}
-					break;
-				}
-				case "assign_workshop": {
-					let staffed = 0;
-					for (const workshop of workshopsNeedingWorkers) {
-						if (staffed >= decision.count) {
-							break;
-						}
-						const idle = [...availableIdle].sort(
-							(a, b) => b.stats.building - a.stats.building,
-						)[0];
-						if (!idle) {
-							break;
-						}
-						if (!canTakePolicyAction()) {
-							break;
-						}
-						tx.update(cats)
-							.set({ assignedBuildingId: workshop._id })
-							.where(eq(cats._id, idle._id))
-							.run();
-						workshopWorkers.set(workshop._id, idle);
-						claimIdle(idle);
-						logEvent(
-							tx,
-							colony._id,
-							"worker_assigned",
-							`The leader put ${idle.name} to work at the workshop.`,
-							[idle._id],
-						);
-						staffed += 1;
-					}
-					break;
-				}
-				case "assign_research": {
-					let staffed = 0;
-					for (const hut of researchHutsNeedingWorkers) {
-						if (staffed >= decision.count) {
-							break;
-						}
-						// The most studious idlers (medicine as the scholar proxy).
-						const idle = [...availableIdle].sort(
-							(a, b) => b.stats.medicine - a.stats.medicine,
-						)[0];
-						if (!idle) {
-							break;
-						}
-						if (!canTakePolicyAction()) {
-							break;
-						}
-						tx.update(cats)
-							.set({ assignedBuildingId: hut._id })
-							.where(eq(cats._id, idle._id))
-							.run();
-						workshopWorkers.set(hut._id, idle);
-						claimIdle(idle);
-						logEvent(
-							tx,
-							colony._id,
-							"worker_assigned",
-							`The leader sent ${idle.name} to study at the research hut.`,
-							[idle._id],
-						);
-						staffed += 1;
-					}
-					break;
-				}
-				case "assign_smithy": {
-					let staffed = 0;
-					for (const smithy of smithiesNeedingWorkers) {
-						if (staffed >= decision.count) {
-							break;
-						}
-						// The most dexterous idlers make the best smiths (building).
-						const idle = [...availableIdle].sort(
-							(a, b) => b.stats.building - a.stats.building,
-						)[0];
-						if (!idle) {
-							break;
-						}
-						if (!canTakePolicyAction()) {
-							break;
-						}
-						tx.update(cats)
-							.set({ assignedBuildingId: smithy._id })
-							.where(eq(cats._id, idle._id))
-							.run();
-						workshopWorkers.set(smithy._id, idle);
-						claimIdle(idle);
-						logEvent(
-							tx,
-							colony._id,
-							"worker_assigned",
-							`The leader set ${idle.name} to work the forge at the smithy.`,
-							[idle._id],
-						);
-						staffed += 1;
-					}
-					break;
-				}
-				case "train_warrior": {
-					// Send the strongest idle adults to the barracks. Kittens are
-					// excluded via workCapableCats upstream, so idlers are fit to fight.
-					const recruits = [...availableIdle]
-						.filter((cat) => cat.specialization !== "warrior")
-						.sort(
-							(a, b) =>
-								b.stats.attack +
-								b.stats.defense -
-								(a.stats.attack + a.stats.defense),
-						);
-					let trained = 0;
-					for (const recruit of recruits) {
-						if (trained >= decision.count) {
-							break;
-						}
-						if (!canTakePolicyAction()) {
-							break;
-						}
-						queueJob(
-							tx,
-							colony._id,
-							"train_warrior",
-							"leader",
-							upgrades,
-							runtime,
-							null,
-							recruit,
-						);
-						claimIdle(recruit);
-						trained += 1;
-					}
-					break;
-				}
-				case "cancel_training": {
-					// A starving colony pulls its recruits back to work.
-					const training = activeJobs.filter(
-						(job) => job.kind === "train_warrior",
-					);
-					for (const job of training) {
-						tx.update(jobs)
-							.set({ status: "cancelled", completedAt: now })
-							.where(eq(jobs._id, job._id))
-							.run();
-						if (job.assignedCatId) {
-							tx.update(cats)
-								.set({ activity: "idle", currentTask: null })
-								.where(eq(cats._id, job.assignedCatId))
-								.run();
-						}
-					}
-					if (training.length > 0) {
-						logEvent(
-							tx,
-							colony._id,
-							"job_cancelled",
-							`The leader called ${training.length} recruit${training.length === 1 ? "" : "s"} back from the barracks — the larder is bare.`,
-						);
-					}
-					break;
-				}
-				case "tithe": {
-					// Surplus offering is capped to once a minute.
-					if (!minuteRolled) {
-						break;
-					}
-					nextResources.food -= decision.food;
-					nextResources.refined =
-						(nextResources.refined ?? 0) - decision.refined;
-					const points = (colony.globalUpgradePoints ?? 0) + decision.blessings;
-					tx.update(colonies)
-						.set({ globalUpgradePoints: points })
-						.where(eq(colonies._id, colony._id))
+		// The IAUS director scores every goal on one scale and hands the shared
+		// employment budget to the highest-urgency goals first; here we execute
+		// its plan. The seeded policy-reliability roll stays at each execution
+		// site, so leader tiers still skip and cap actions.
+		const plan = directColony(snapshot);
+
+		// --- Cancellations first: they free labour rather than spend it. -----
+		for (const decision of plan.decisions) {
+			if (decision.kind === "cancel_hunts") {
+				// Overflowing stores: call the hunts off; the cats walk home and
+				// only pick up new work back at the shrine.
+				const pointlessHunts = activeJobs.filter(
+					(job) => job.kind === "hunt_expedition",
+				);
+				for (const hunt of pointlessHunts) {
+					tx.update(jobs)
+						.set({ status: "cancelled", completedAt: now })
+						.where(eq(jobs._id, hunt._id))
 						.run();
-					colony.globalUpgradePoints = points;
+					if (hunt.assignedCatId) {
+						tx.update(cats)
+							.set({
+								destination: { map: "world", ...VILLAGE_ANCHOR },
+								activity: "returning",
+								currentTask: null,
+							})
+							.where(eq(cats._id, hunt.assignedCatId))
+							.run();
+					}
+				}
+				if (pointlessHunts.length > 0) {
 					logEvent(
 						tx,
 						colony._id,
-						"shrine_deposit",
-						`The leader offered surplus stores to the gods (+${decision.blessings} blessing${decision.blessings === 1 ? "" : "s"}).`,
+						"job_cancelled",
+						`The leader called off ${pointlessHunts.length} hunt${pointlessHunts.length === 1 ? "" : "s"} — the stores are overflowing.`,
 					);
+				}
+			} else if (decision.kind === "cancel_training") {
+				// A starving colony pulls its recruits back to work.
+				const training = activeJobs.filter(
+					(job) => job.kind === "train_warrior",
+				);
+				for (const job of training) {
+					tx.update(jobs)
+						.set({ status: "cancelled", completedAt: now })
+						.where(eq(jobs._id, job._id))
+						.run();
+					if (job.assignedCatId) {
+						tx.update(cats)
+							.set({ activity: "idle", currentTask: null })
+							.where(eq(cats._id, job.assignedCatId))
+							.run();
+					}
+				}
+				if (training.length > 0) {
+					logEvent(
+						tx,
+						colony._id,
+						"job_cancelled",
+						`The leader called ${training.length} recruit${training.length === 1 ? "" : "s"} back from the barracks — the larder is bare.`,
+					);
+				}
+			}
+		}
+
+		// --- Assignment: one greedy skill-fit pass matches idle able cats to
+		// the director's open labour slots (highest-urgency slot first). This
+		// single global pass replaces the old per-goal sort loops, so a great
+		// hunter is never burned on a scout slot while a scrub takes the hunt.
+		const catBriefs: CatBrief[] = availableIdle.map((c) => ({
+			id: c._id,
+			specialization: c.specialization ?? null,
+			stats: {
+				hunting: c.stats.hunting,
+				building: c.stats.building,
+				vision: c.stats.vision,
+				medicine: c.stats.medicine,
+				attack: c.stats.attack,
+				defense: c.stats.defense,
+				leadership: c.stats.leadership,
+			},
+		}));
+		const idleById = new Map(availableIdle.map((c) => [c._id, c]));
+		const workshopQueue = [...workshopsNeedingWorkers];
+		const researchQueue = [...researchHutsNeedingWorkers];
+		const smithyQueue = [...smithiesNeedingWorkers];
+		const staffBuilding = (
+			building: (typeof workshopsNeedingWorkers)[number] | undefined,
+			cat: CatRow,
+			message: string,
+		) => {
+			if (!building) {
+				return;
+			}
+			tx.update(cats)
+				.set({ assignedBuildingId: building._id })
+				.where(eq(cats._id, cat._id))
+				.run();
+			workshopWorkers.set(building._id, cat);
+			claimIdle(cat);
+			logEvent(tx, colony._id, "worker_assigned", message, [cat._id]);
+		};
+
+		for (const assignment of matchCatsToSlots(plan.slots, catBriefs, {
+			excludeWarriorsFromTraining: true,
+		})) {
+			const cat = idleById.get(assignment.catId);
+			if (!cat) {
+				continue;
+			}
+			// One policy roll per intended action — a fallible leader skips it.
+			if (!canTakePolicyAction()) {
+				continue;
+			}
+			switch (assignment.goal) {
+				case "hunt":
+				case "fetch_water":
+				case "quarry":
+				case "scout":
+				case "train_warrior": {
+					const kind =
+						assignment.goal === "hunt"
+							? "hunt_expedition"
+							: assignment.goal === "scout"
+								? "explore"
+								: assignment.goal;
+					queueJob(
+						tx,
+						colony._id,
+						kind,
+						"leader",
+						upgrades,
+						runtime,
+						null,
+						cat,
+					);
+					claimIdle(cat);
 					break;
 				}
+				case "assign_workshop":
+					staffBuilding(
+						workshopQueue.shift(),
+						cat,
+						`The leader put ${cat.name} to work at the workshop.`,
+					);
+					break;
+				case "assign_research":
+					staffBuilding(
+						researchQueue.shift(),
+						cat,
+						`The leader sent ${cat.name} to study at the research hut.`,
+					);
+					break;
+				case "assign_smithy":
+					staffBuilding(
+						smithyQueue.shift(),
+						cat,
+						`The leader set ${cat.name} to work the forge at the smithy.`,
+					);
+					break;
+			}
+		}
+
+		// --- Capital projects and offerings the director scheduled. ----------
+		for (const decision of plan.decisions) {
+			if (decision.kind === "build_storage") {
+				if (canTakePolicyAction()) {
+					queueJob(
+						tx,
+						colony._id,
+						"build_house",
+						"leader",
+						upgrades,
+						runtime,
+						null,
+						selectBestCat(tx, colony._id, "architect"),
+						{ phase: "construct_house", buildingType: "food_storage" },
+					);
+				}
+			} else if (decision.kind === "build_den") {
+				if (canTakePolicyAction()) {
+					queueJob(
+						tx,
+						colony._id,
+						"leader_plan_house",
+						"leader",
+						upgrades,
+						runtime,
+						null,
+						selectBestCat(tx, colony._id, "architect"),
+					);
+				}
+			} else if (decision.kind === "tithe") {
+				// Surplus offering is capped to once a minute.
+				if (!minuteRolled) {
+					continue;
+				}
+				nextResources.food -= decision.food;
+				nextResources.refined = (nextResources.refined ?? 0) - decision.refined;
+				const points = (colony.globalUpgradePoints ?? 0) + decision.blessings;
+				tx.update(colonies)
+					.set({ globalUpgradePoints: points })
+					.where(eq(colonies._id, colony._id))
+					.run();
+				colony.globalUpgradePoints = points;
+				logEvent(
+					tx,
+					colony._id,
+					"shrine_deposit",
+					`The leader offered surplus stores to the gods (+${decision.blessings} blessing${decision.blessings === 1 ? "" : "s"}).`,
+				);
 			}
 		}
 
@@ -4165,6 +4035,16 @@ export function workerTick(db: GameDb) {
 		// crossing, and "outside the village" reveal all key off it so the
 		// server and client agree on where the palisade sits.
 		const ringRadius = villageRingRadius(colonyBuildings.length);
+		// Walkability for real pathing this tick: rivers block, the palisade
+		// blocks every ring tile but the south gate, roads are cheap. Built once
+		// from the tiles already cached above and shared by cats and raiders.
+		const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + ringRadius };
+		const walkGrid = buildColonyWalkGrid({
+			tiles: colonyTiles(),
+			anchor: VILLAGE_ANCHOR,
+			ringRadius,
+			gate,
+		});
 		for (const cat of getAliveCats(tx, colony._id)) {
 			const worldPos: WorldPos =
 				cat.position.map === "world"
@@ -4297,22 +4177,29 @@ export function workerTick(db: GameDb) {
 						: getPathSpeedBonus(standingTile?.pathWear ?? 0))) *
 				exploreSlowdown *
 				effects.moveSpeedMult;
-			// The village fence blocks travel: crossing the ring means going
-			// through the south gate first.
-			const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + ringRadius };
+			// Real pathing: A* over the walkability grid finds the route around
+			// rivers and out through the fence's one gate. On open ground it
+			// returns the straight x-before-y L, so ordinary trips are unchanged
+			// and just as cheap. The intermediate tiles become walkPath's
+			// waypoints, so the whole tick's budget is still spent tile-by-tile
+			// (and every tile worn) even on a huge accelerated step. If no route
+			// fits the search budget, fall back to a straight walk to the gate.
 			const ringDist = (p: WorldPos) =>
 				Math.max(
 					Math.abs(p.x - VILLAGE_ANCHOR.x),
 					Math.abs(p.y - VILLAGE_ANCHOR.y),
 				);
-			const crossesFence =
-				ringDist(worldPos) < ringRadius !== ringDist(destination) < ringRadius;
 			const atGate =
 				Math.abs(worldPos.x - gate.x) < 1 && Math.abs(worldPos.y - gate.y) < 1;
-			// Walk the whole tick's budget tile-by-tile — through the south gate
-			// when the route crosses the fence — so even a huge accelerated step
-			// traverses (and wears) every tile instead of teleporting one leg.
-			const waypoints = crossesFence && !atGate ? [gate] : [];
+			const route = findPath(worldPos, destination, walkGrid);
+			const crossesFence =
+				ringDist(worldPos) < ringRadius !== ringDist(destination) < ringRadius;
+			const waypoints =
+				route && route.length > 2
+					? route.slice(1, -1)
+					: crossesFence && !atGate
+						? [gate]
+						: [];
 			const walk = walkPath(
 				worldPos,
 				destination,
@@ -4435,6 +4322,54 @@ export function workerTick(db: GameDb) {
 			}
 		}
 
+		// --- Deliberate roads: once a minute, if the colony can spare the
+		// materials, the leader paves the most-trafficked trodden corridor
+		// outside the fence into a permanent road. Routine leaves a mark — a
+		// route walked day after day earns a road, which is then cheaper to walk
+		// (the A* cost model) so it entrenches itself.
+		if (minuteRolled && patchedResources.materials > ROAD_MATERIALS_RESERVE) {
+			const paveBudget = Math.min(
+				ROAD_MAX_PAVE_PER_BATCH,
+				patchedResources.materials - ROAD_MATERIALS_RESERVE,
+			);
+			const wornTiles = tx
+				.select()
+				.from(worldTiles)
+				.where(
+					and(
+						eq(worldTiles.colonyId, colony._id),
+						gte(worldTiles.pathWear, ROAD_PAVE_WEAR),
+					),
+				)
+				.all();
+			const corridor = selectRoadCorridor(wornTiles, {
+				anchor: VILLAGE_ANCHOR,
+				ringRadius,
+				maxTiles: paveBudget,
+			});
+			if (corridor.length > 0) {
+				for (const pos of corridor) {
+					tx.update(worldTiles)
+						.set({ overlayFeature: "road_built", pathWear: 100 })
+						.where(
+							and(
+								eq(worldTiles.colonyId, colony._id),
+								eq(worldTiles.x, pos.x),
+								eq(worldTiles.y, pos.y),
+							),
+						)
+						.run();
+				}
+				patchedResources.materials -= corridor.length;
+				logEvent(
+					tx,
+					colony._id,
+					"road_built",
+					`The leader had a well-worn trail paved into a road (${corridor.length} tile${corridor.length === 1 ? "" : "s"}).`,
+				);
+			}
+		}
+
 		// --- Threat director: build raid pressure, march the active warband,
 		// and resolve the fight at the gate. Runs on its own forked roll chain
 		// so the policy/movement/life chains stay byte-stable, and after the
@@ -4469,6 +4404,7 @@ export function workerTick(db: GameDb) {
 					runtime.timeScale,
 				activeRaidId: colony.activeRaidId ?? null,
 				raidClicks: colony.raidClicks ?? 0,
+				walkGrid,
 			},
 		);
 		const threatPressure = raidResult.pressure;
