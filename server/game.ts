@@ -1591,6 +1591,37 @@ export function workerTick(db: GameDb) {
 			);
 		}
 
+		// Keep paws busy: whenever stores aren't full, the leader sends an
+		// idle cat out hunting (up to 3 expeditions at once).
+		const activeHunts = activeJobs.filter(
+			(job) => job.kind === "hunt_expedition",
+		).length;
+		if (nextResources.food < 90 && activeHunts < 3) {
+			const busyIds = new Set(
+				activeJobs.map((job) => job.assignedCatId).filter(Boolean),
+			);
+			const idleHunter = aliveCats
+				.filter(
+					(cat) =>
+						!busyIds.has(cat._id) &&
+						!cat.assignedBuildingId &&
+						(cat.activity ?? "idle") === "idle",
+				)
+				.sort((a, b) => b.stats.hunting - a.stats.hunting)[0];
+			if (idleHunter && canTakePolicyAction()) {
+				queueJob(
+					tx,
+					colony._id,
+					"hunt_expedition",
+					"leader",
+					upgrades,
+					runtime,
+					null,
+					idleHunter,
+				);
+			}
+		}
+
 		// Crowding drives growth: the leader plans a den when shelter runs
 		// short (replaces the old materials-low trigger).
 		const colonyBuildings = tx

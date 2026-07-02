@@ -10,17 +10,22 @@ export interface MapCat {
 	position: { map: "colony" | "world"; x: number; y: number };
 	currentTask: string | null;
 	activity?: "idle" | "traveling" | "working" | "returning" | null;
+	destination?: { x: number; y: number } | null;
 	carrying?: { kind: "food" | "blessings"; amount: number } | null;
 	specialization?: "hunter" | "architect" | "ritualist" | null;
 }
 
-/** Pixel cat sprite by job — hats mark specializations. */
-const CAT_SPRITES: Record<string, string> = {
-	hunter: "/images/cats/cat-hunter.png",
-	architect: "/images/cats/cat-architect.png",
-	ritualist: "/images/cats/cat-ritualist.png",
+/** Job hats overlaid on the animated sprite. */
+const HAT_SPRITES: Record<string, string> = {
+	hunter: "/images/cats/hat-hunter.png",
+	architect: "/images/cats/hat-architect.png",
+	ritualist: "/images/cats/hat-ritualist.png",
 };
-const CAT_SPRITE_DEFAULT = "/images/cats/cat.png";
+const CAT_SHEET = "/images/cats/cat-sheet.png";
+
+// Last rendered tile per cat — big jumps (teleports, speed-ups) snap
+// instead of gliding across the whole map.
+const lastRendered = new Map<string, { x: number; y: number }>();
 
 interface CatLayerProps {
 	cats: MapCat[];
@@ -71,6 +76,16 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 				const center = tileDiamondCenter(worldPos.x, worldPos.y, ISO);
 				const zIndex = zIndexFor(worldPos.x, worldPos.y, "object", ISO);
 				const offset = spreadOffset(cat._id);
+				const moving =
+					cat.activity === "traveling" || cat.activity === "returning";
+				const prev = lastRendered.get(cat._id);
+				const jumped =
+					prev != null &&
+					(Math.abs(worldPos.x - prev.x) > 4 ||
+						Math.abs(worldPos.y - prev.y) > 4);
+				lastRendered.set(cat._id, { x: worldPos.x, y: worldPos.y });
+				const facingLeft =
+					moving && cat.destination != null && cat.destination.x < worldPos.x;
 				const badge =
 					(cat.activity ? ACTIVITY_BADGES[cat.activity] : null) ??
 					(cat.currentTask ? TASK_BADGES[cat.currentTask] : null);
@@ -81,7 +96,9 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 						type="button"
 						key={cat._id}
 						onClick={() => onSelect?.(cat._id)}
-						className="absolute flex w-24 cursor-pointer flex-col items-center border-0 bg-transparent p-0 transition-transform duration-1000 ease-linear"
+						className={`absolute flex w-24 cursor-pointer flex-col items-center border-0 bg-transparent p-0 ${
+							jumped ? "" : "transition-transform duration-1000 ease-linear"
+						}`}
 						style={{
 							left: 0,
 							top: 0,
@@ -98,17 +115,27 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 									👑
 								</span>
 							)}
-							<img
-								src={
-									(cat.specialization &&
-										CAT_SPRITES[cat.specialization]) ||
-									CAT_SPRITE_DEFAULT
-								}
-								alt={cat.name}
-								draggable={false}
-								className="h-10 w-10"
-								style={{ imageRendering: "pixelated" }}
+							<div
+								role="img"
+								aria-label={cat.name}
+								className={moving ? "cat-sprite cat-sprite-walk" : "cat-sprite"}
+								style={{
+									backgroundImage: `url(${CAT_SHEET})`,
+									transform: `scale(1.4)${facingLeft ? " scaleX(-1)" : ""}`,
+								}}
 							/>
+							{cat.specialization && HAT_SPRITES[cat.specialization] && (
+								<img
+									src={HAT_SPRITES[cat.specialization]}
+									alt=""
+									draggable={false}
+									className="pointer-events-none absolute left-0 top-0 h-8 w-8"
+									style={{
+										imageRendering: "pixelated",
+										transform: "scale(1.4)",
+									}}
+								/>
+							)}
 							{badge && (
 								<span className="absolute -right-2 -top-1 text-sm">
 									{badge}

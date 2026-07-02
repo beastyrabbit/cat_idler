@@ -294,8 +294,8 @@ export function MapScreen() {
 			</header>
 
 			{/* Right action panel */}
-			<aside className="absolute bottom-3 right-3 top-16 z-20 flex w-72 max-w-[80vw] flex-col gap-2 overflow-hidden">
-				<div className={`flex-1 overflow-y-auto p-3 ${PANEL}`}>
+			<aside className="absolute bottom-3 right-3 top-16 z-20 flex w-72 max-w-[80vw] flex-col gap-2 overflow-y-auto">
+				<div className={`max-h-64 shrink-0 overflow-y-auto p-3 ${PANEL}`}>
 					<h3 className={PANEL_HEADING}>Colony Work</h3>
 					{jobs.length === 0 ? (
 						<p className="text-sm text-[#6b4a2a]/70">Nothing in progress.</p>

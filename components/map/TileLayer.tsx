@@ -101,20 +101,26 @@ function villageDistance(
  * Fence sprite for a village-ring tile: fences follow the edge they sit
  * on, the south side gets an open gate, water gaps stay open.
  */
-function ringSprite(
+function ringSprites(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
-): string | null {
+): string[] {
 	if (villageDistance(tile, anchor) !== VILLAGE_RING_RADIUS || hasWater(tile)) {
-		return null;
+		return [];
 	}
 	const dx = tile.x - anchor.x;
 	const dy = tile.y - anchor.y;
 	if (dx === 0 && dy === VILLAGE_RING_RADIUS) {
-		return GATE_SPRITE;
+		return [GATE_SPRITE];
+	}
+	const onRow = Math.abs(dy) === VILLAGE_RING_RADIUS;
+	const onColumn = Math.abs(dx) === VILLAGE_RING_RADIUS;
+	// Corners join both edges, so they carry both fence directions.
+	if (onRow && onColumn) {
+		return [FENCE_X_SPRITE, FENCE_Y_SPRITE];
 	}
 	// Rows (north/south edges) run along x; columns along y.
-	return Math.abs(dy) === VILLAGE_RING_RADIUS ? FENCE_X_SPRITE : FENCE_Y_SPRITE;
+	return onRow ? [FENCE_X_SPRITE] : [FENCE_Y_SPRITE];
 }
 
 /**
@@ -228,9 +234,10 @@ const IsoTile = memo(function IsoTile({
 			)}
 
 			{/* Fence ring (with a south gate) around the founding village */}
-			{ringSprite(tile, anchor) && (
+			{ringSprites(tile, anchor).map((fence) => (
 				<img
-					src={ringSprite(tile, anchor) ?? undefined}
+					key={fence}
+					src={fence}
 					alt=""
 					draggable={false}
 					className="pointer-events-none absolute select-none"
@@ -242,7 +249,7 @@ const IsoTile = memo(function IsoTile({
 						zIndex: objectZ,
 					}}
 				/>
-			)}
+			))}
 
 			{/* Only notably rich tiles get a marker — keeps the map readable */}
 			{showInfo &&
