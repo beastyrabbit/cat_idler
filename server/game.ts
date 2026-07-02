@@ -79,6 +79,12 @@ import { shouldDeposit } from "@/lib/game/shrine";
 import { applySurvivalTick } from "@/lib/game/survival";
 import { configForPreset } from "@/lib/game/testAcceleration";
 import {
+	HUNT_TRIP_COUNT,
+	remainingYield,
+	splitYield,
+	tripDueAt,
+} from "@/lib/game/trips";
+import {
 	colonyToWorld,
 	nextBuildingSite,
 	ringCells,
@@ -2233,12 +2239,21 @@ export function workerTick(db: GameDb) {
 
 			if (job.kind === "hunt_expedition" && assignedCat) {
 				const roleXp = defaultRoleXp(assignedCat);
-				const reward = getHuntReward(
-					assignedCat.stats.hunting,
-					assignedCat.specialization ?? null,
-					roleXp.hunter,
-					upgrades,
-				);
+				const meta = (job.metadata as Record<string, unknown> | null) ?? {};
+				// Mid-job trips may already have hauled shares home; the
+				// completion haul carries exactly what's left of the catch.
+				const total =
+					typeof meta.totalYield === "number"
+						? meta.totalYield
+						: getHuntReward(
+								assignedCat.stats.hunting,
+								assignedCat.specialization ?? null,
+								roleXp.hunter,
+								upgrades,
+							);
+				const tripsDone =
+					typeof meta.tripsDone === "number" ? meta.tripsDone : 0;
+				const reward = remainingYield(total, HUNT_TRIP_COUNT, tripsDone);
 
 				const nextRoleXp = { ...roleXp, hunter: roleXp.hunter + 1 };
 				tx.update(cats)
@@ -2253,8 +2268,11 @@ export function workerTick(db: GameDb) {
 							...assignedCat.stats,
 							hunting: Math.min(100, assignedCat.stats.hunting + 0.4),
 						},
-						// The catch is carried home and credited at the shrine.
-						carrying: { kind: "food", amount: reward, jobEndedAt: now },
+						// The last share is carried home and credited at the shrine.
+						carrying:
+							reward > 0
+								? { kind: "food", amount: reward, jobEndedAt: now }
+								: null,
 					})
 					.where(eq(cats._id, assignedCat._id))
 					.run();
@@ -2403,6 +2421,71 @@ export function workerTick(db: GameDb) {
 			);
 		}
 
+		// --- Mid-job hauling: hunters at their site depart for the shrine
+		// with a share of the catch when a trip comes due (SC2-drone style,
+		// idle-paced: trips are spread across the job duration).
+		for (const job of getJobsByStatus(tx, colony._id, "active")) {
+			if (job.kind !== "hunt_expedition" || !job.assignedCatId) {
+				continue;
+			}
+			const meta = (job.metadata as Record<string, unknown> | null) ?? {};
+			if (meta.accepted !== true || !meta.site) {
+				continue;
+			}
+			const tripsDone = typeof meta.tripsDone === "number" ? meta.tripsDone : 0;
+			if (tripsDone >= HUNT_TRIP_COUNT - 1) {
+				continue; // only the completion haul remains
+			}
+			const nextTripAt =
+				typeof meta.nextTripAt === "number"
+					? meta.nextTripAt
+					: tripDueAt(job.startedAt, job.endsAt, tripsDone + 1);
+			if (now < nextTripAt || job.endsAt <= now) {
+				continue;
+			}
+			const worker = tx
+				.select()
+				.from(cats)
+				.where(and(eq(cats._id, job.assignedCatId), isNull(cats.deathTime)))
+				.get();
+			if (!worker || worker.activity !== "working" || worker.carrying) {
+				continue;
+			}
+
+			// The full catch is sized once so trips + completion sum exactly.
+			const workerRoleXp = defaultRoleXp(worker);
+			const total =
+				typeof meta.totalYield === "number"
+					? meta.totalYield
+					: getHuntReward(
+							worker.stats.hunting,
+							worker.specialization ?? null,
+							workerRoleXp.hunter,
+							upgrades,
+						);
+			const share = splitYield(total, HUNT_TRIP_COUNT, tripsDone);
+
+			tx.update(jobs)
+				.set({
+					metadata: {
+						...meta,
+						totalYield: total,
+						tripsDone: tripsDone + 1,
+						nextTripAt: tripDueAt(job.startedAt, job.endsAt, tripsDone + 2),
+					},
+				})
+				.where(eq(jobs._id, job._id))
+				.run();
+			tx.update(cats)
+				.set({
+					carrying: { kind: "food", amount: share, jobEndedAt: now },
+					destination: { map: "world", ...VILLAGE_ANCHOR },
+					activity: "returning",
+				})
+				.where(eq(cats._id, worker._id))
+				.run();
+		}
+
 		// --- Movement pass: cats walk to job sites, come home, or wander.
 		// Cosmetic only — the economy stays on job timers above.
 		const movementElapsed = elapsedSec * runtime.timeScale;
@@ -2442,6 +2525,28 @@ export function workerTick(db: GameDb) {
 					[cat._id],
 					{ kind: cat.carrying.kind, amount: cat.carrying.amount },
 				);
+
+				// Mid-job haulers head straight back to their site for the
+				// next collection instead of settling down at the shrine.
+				const ongoingJob = getJobsByStatus(tx, colony._id, "active").find(
+					(job) =>
+						job.assignedCatId === cat._id &&
+						job.kind === "hunt_expedition" &&
+						job.endsAt > now,
+				);
+				const ongoingSite = (
+					ongoingJob?.metadata as Record<string, unknown> | null
+				)?.site as WorldPos | undefined;
+				if (ongoingJob && ongoingSite) {
+					tx.update(cats)
+						.set({
+							destination: { map: "world", ...ongoingSite },
+							activity: "traveling",
+						})
+						.where(eq(cats._id, cat._id))
+						.run();
+					continue;
+				}
 			}
 
 			if (!destination) {

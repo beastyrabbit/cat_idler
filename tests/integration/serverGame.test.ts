@@ -681,6 +681,81 @@ describe("shrine deposits", () => {
 		).toBe(true);
 	});
 
+	it("hunters haul the catch home in trips and return to their site", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 50, water: 200 });
+		const hunter = getAliveCatsForTest(db, colony._id)[0];
+
+		// Cat is at its hunt site, mid-job, with the first trip overdue.
+		db.update(cats)
+			.set({
+				position: { map: "world", x: 6, y: 20 },
+				activity: "working",
+				currentTask: "hunt_expedition",
+			})
+			.where(eq(cats._id, hunter._id))
+			.run();
+		db.insert(jobs)
+			.values({
+				_id: "hunt-trip-job",
+				colonyId: colony._id,
+				kind: "hunt_expedition",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: hunter._id,
+				baseDurationSec: 8 * 3600,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: Date.now() - 4 * 3600 * 1000,
+				startedAt: Date.now() - 4 * 3600 * 1000,
+				endsAt: Date.now() + 4 * 3600 * 1000,
+				metadata: {
+					accepted: true,
+					site: { x: 6, y: 20 },
+					tripsDone: 0,
+					nextTripAt: Date.now() - 1000,
+				},
+			})
+			.run();
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		// Departed for the shrine with roughly a third of the catch.
+		let updated = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === hunter._id,
+		)!;
+		expect(updated.carrying).not.toBeNull();
+		expect(updated.activity).toBe("returning");
+		const meta = db
+			.select()
+			.from(jobs)
+			.where(eq(jobs._id, "hunt-trip-job"))
+			.get()!.metadata as { tripsDone?: number; totalYield?: number };
+		expect(meta.tripsDone).toBe(1);
+		expect(updated.carrying!.amount).toBeLessThan(meta.totalYield ?? 0);
+
+		// Walk home, deposit, and head straight back to the site.
+		let backOut = false;
+		for (let i = 0; i < 20 && !backOut; i++) {
+			advanceTime(db, 60);
+			workerTick(db);
+			updated = getAliveCatsForTest(db, colony._id).find(
+				(cat) => cat._id === hunter._id,
+			)!;
+			backOut =
+				updated.carrying === null &&
+				updated.destination?.x === 6 &&
+				updated.destination?.y === 20;
+		}
+		expect(backOut).toBe(true);
+		expect(
+			eventMessages(db).some((message) => message.includes("to the shrine")),
+		).toBe(true);
+	});
+
 	it("force-credits a straggler once the grace window lapses", () => {
 		const colony = ensureGlobalColony(db);
 		setResources(db, colony._id, { food: 50, water: 100 });
