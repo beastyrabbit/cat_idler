@@ -234,6 +234,24 @@ export function useGameDashboard() {
 		);
 	};
 
+	const onCastVote = async (electionId: string, catId: string) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction(`vote:${electionId}`, () =>
+			postAction("castVote", { sessionId, nickname, electionId, catId }),
+		);
+	};
+
+	const onRequestVoteKick = async () => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction("voteKick", () =>
+			postAction("requestVoteKick", { sessionId, nickname }),
+		);
+	};
+
 	const onSetAcceleration = async (preset: "off" | "fast" | "turbo") => {
 		await runAction(`accel:${preset}`, () =>
 			postAction("setTestAcceleration", { preset }),
@@ -310,6 +328,12 @@ export function useGameDashboard() {
 		buildings: dashboard?.buildings ?? [],
 		anchor: dashboard?.anchor ?? { x: 6, y: 6 },
 		housing: dashboard?.housing ?? null,
+
+		// Elections (Phase 4)
+		election: dashboard?.election ?? null,
+		voteKick: dashboard?.voteKick ?? null,
+		onCastVote,
+		onRequestVoteKick,
 
 		// Connection
 		connectionLost,

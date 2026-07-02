@@ -10,7 +10,8 @@ import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { createDb, type GameDb } from "@/db/client";
-import { cats, colonies, jobs, runHistory } from "@/db/schema";
+import { cats, colonies, elections, jobs, runHistory } from "@/db/schema";
+import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
 	clickBoostJob,
@@ -725,6 +726,154 @@ describe("visible construction", () => {
 			);
 		}
 		expect(planned).toBe(true);
+	});
+});
+
+describe("elections", () => {
+	function tick(seconds = 2) {
+		advanceTime(db, seconds);
+		workerTick(db);
+	}
+
+	function forceElectionDue(electionId: string) {
+		db.update(elections)
+			.set({ endsAt: Date.now() - 1000 })
+			.where(eq(elections._id, electionId))
+			.run();
+	}
+
+	it("opens a leadership election on the first tick", () => {
+		ensureGlobalColony(db);
+		tick();
+
+		const dashboard = getGlobalDashboard(db)!;
+		expect(dashboard.election).not.toBeNull();
+		expect(dashboard.election!.candidates.length).toBeGreaterThan(0);
+		expect(dashboard.election!.candidates.length).toBeLessThanOrEqual(5);
+		expect(eventMessages(db)).toContain(
+			"The colony is holding a leadership election — cast your vote!",
+		);
+	});
+
+	it("elects the voted winner and stops auto-replacing the leader", () => {
+		ensureGlobalColony(db);
+		tick();
+
+		const dashboard = getGlobalDashboard(db)!;
+		const election = dashboard.election!;
+		// Vote for the least leaderly candidate — votes must beat stats.
+		const underdog = election.candidates[election.candidates.length - 1];
+
+		castVote(db, {
+			sessionId: "voter_1",
+			nickname: "V1",
+			electionId: election._id,
+			catId: underdog._id,
+		});
+		castVote(db, {
+			sessionId: "voter_2",
+			nickname: "V2",
+			electionId: election._id,
+			catId: underdog._id,
+		});
+
+		forceElectionDue(election._id);
+		tick();
+
+		const colony = ensureGlobalColony(db);
+		expect(colony.leaderId).toBe(underdog._id);
+
+		// The underdog stays in charge — no per-tick auto-replace.
+		tick(30);
+		expect(ensureGlobalColony(db).leaderId).toBe(underdog._id);
+	});
+
+	it("counts a changed vote once", () => {
+		ensureGlobalColony(db);
+		tick();
+		const election = getGlobalDashboard(db)!.election!;
+		const [first, , third] = election.candidates;
+
+		castVote(db, {
+			sessionId: "swing_voter",
+			nickname: "SV",
+			electionId: election._id,
+			catId: third._id,
+		});
+		castVote(db, {
+			sessionId: "swing_voter",
+			nickname: "SV",
+			electionId: election._id,
+			catId: first._id,
+		});
+
+		const tally = getGlobalDashboard(db)!.election!.tally;
+		expect(tally[first._id]).toBe(1);
+		expect(tally[third._id]).toBeUndefined();
+	});
+
+	it("kicks the leader with 5 distinct signatures and bars them from the snap election", () => {
+		ensureGlobalColony(db);
+		tick();
+
+		// Close the bootstrap election so the snap election is observable.
+		const bootstrapElection = getGlobalDashboard(db)!.election!;
+		forceElectionDue(bootstrapElection._id);
+		tick();
+
+		const leaderId = ensureGlobalColony(db).leaderId!;
+
+		requestVoteKick(db, { sessionId: "angry_1", nickname: "A1" });
+		const petition = getGlobalDashboard(db)!.voteKick!;
+		expect(petition.targetCatId).toBe(leaderId);
+		expect(petition.signatures).toBe(1);
+
+		for (let i = 2; i <= 5; i++) {
+			castVote(db, {
+				sessionId: `angry_${i}`,
+				nickname: `A${i}`,
+				electionId: petition._id,
+				catId: leaderId,
+			});
+		}
+		expect(getGlobalDashboard(db)!.voteKick!.signatures).toBe(5);
+
+		forceElectionDue(petition._id);
+		tick();
+
+		const colony = ensureGlobalColony(db);
+		expect(colony.leaderId).not.toBe(leaderId);
+		expect(eventMessages(db).some((m) => m.includes("was voted out"))).toBe(
+			true,
+		);
+
+		// Snap election opened, kicked cat is not on the ballot.
+		const snap = getGlobalDashboard(db)!.election!;
+		expect(snap.candidates.map((c: { _id: string }) => c._id)).not.toContain(
+			leaderId,
+		);
+	});
+
+	it("leaves the leader in place with fewer than 5 signatures", () => {
+		ensureGlobalColony(db);
+		tick();
+		const leaderId = ensureGlobalColony(db).leaderId!;
+
+		requestVoteKick(db, { sessionId: "grump_1", nickname: "G1" });
+		const petition = getGlobalDashboard(db)!.voteKick!;
+		for (let i = 2; i <= 4; i++) {
+			castVote(db, {
+				sessionId: `grump_${i}`,
+				nickname: `G${i}`,
+				electionId: petition._id,
+				catId: leaderId,
+			});
+		}
+
+		forceElectionDue(petition._id);
+		tick();
+
+		expect(ensureGlobalColony(db).leaderId).toBe(leaderId);
 	});
 });
 

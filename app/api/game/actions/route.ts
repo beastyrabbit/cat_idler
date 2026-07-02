@@ -14,6 +14,7 @@
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/db/client";
+import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
 	clickBoostJob,
@@ -144,6 +145,22 @@ export async function POST(request: Request) {
 				return NextResponse.json(
 					purchaseUpgrade(db, { sessionId, nickname, key }),
 				);
+			}
+
+			case "castVote": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				const electionId = requireString(body.electionId, "electionId");
+				const catId = requireString(body.catId, "catId");
+				return NextResponse.json(
+					castVote(db, { sessionId, nickname, electionId, catId }),
+				);
+			}
+
+			case "requestVoteKick": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				return NextResponse.json(requestVoteKick(db, { sessionId, nickname }));
 			}
 
 			case "setTestAcceleration": {

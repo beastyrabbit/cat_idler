@@ -289,6 +289,47 @@ export const jobs = sqliteTable(
 	],
 );
 
+export const elections = sqliteTable(
+	"elections",
+	{
+		_id: text("id").primaryKey(),
+		colonyId: text("colonyId").notNull(),
+		kind: text("kind", { enum: ["election", "vote_kick"] }).notNull(),
+		status: text("status", { enum: ["open", "resolved"] }).notNull(),
+		candidateCatIds: text("candidateCatIds", { mode: "json" })
+			.$type<string[]>()
+			.notNull(),
+		/** Leader on trial (vote_kick only). */
+		targetCatId: text("targetCatId"),
+		startedAt: integer("startedAt").notNull(),
+		endsAt: integer("endsAt").notNull(),
+		winnerCatId: text("winnerCatId"),
+		runNumber: integer("runNumber").notNull(),
+	},
+	(table) => [
+		index("elections_by_colony_status").on(table.colonyId, table.status),
+	],
+);
+
+export const votes = sqliteTable(
+	"votes",
+	{
+		_id: text("id").primaryKey(),
+		electionId: text("electionId").notNull(),
+		playerId: text("playerId").notNull(),
+		/** Chosen candidate (election) or the kick target (vote_kick). */
+		catId: text("catId").notNull(),
+		createdAt: integer("createdAt").notNull(),
+	},
+	(table) => [
+		index("votes_by_election").on(table.electionId),
+		uniqueIndex("votes_by_election_player").on(
+			table.electionId,
+			table.playerId,
+		),
+	],
+);
+
 export const globalUpgrades = sqliteTable(
 	"globalUpgrades",
 	{
@@ -344,3 +385,5 @@ export type PlayerRow = typeof players.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type GlobalUpgradeRow = typeof globalUpgrades.$inferSelect;
 export type RunHistoryRow = typeof runHistory.$inferSelect;
+export type ElectionRow = typeof elections.$inferSelect;
+export type VoteRow = typeof votes.$inferSelect;

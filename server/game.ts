@@ -19,14 +19,17 @@ import {
 	type ColonyRow,
 	cats,
 	colonies,
+	elections,
 	events,
 	globalUpgrades,
 	type JobRow,
 	jobs,
 	players,
 	runHistory,
+	votes,
 	worldTiles,
 } from "@/db/schema";
+import { KICK_THRESHOLD, tallyVotes } from "@/lib/game/elections";
 import { inheritTraits, traitsToSpriteParams } from "@/lib/game/genetics";
 import { planHousePipeline } from "@/lib/game/housePlanner";
 import {
@@ -75,6 +78,7 @@ import {
 } from "@/lib/game/villageLayout";
 import type { CatStats } from "@/types/game";
 
+import { runElectionLifecycle } from "./elections";
 import { countOnlinePlayers, upsertPlayer } from "./players";
 import { initializeWorldMap } from "./worldMap";
 
@@ -648,6 +652,14 @@ function resetGlobalRun(db: GameDb, colony: ColonyRow, reason: string) {
 
 	db.delete(jobs).where(eq(jobs.colonyId, colony._id)).run();
 
+	// A collapse dissolves any open polls — the new run elects fresh.
+	db.update(elections)
+		.set({ status: "resolved" })
+		.where(
+			and(eq(elections.colonyId, colony._id), eq(elections.status, "open")),
+		)
+		.run();
+
 	const aliveCats = getAliveCats(db, colony._id);
 	if (aliveCats.length === 0) {
 		createStarterCats(db, colony._id);
@@ -815,7 +827,68 @@ export function getGlobalDashboard(db: GameDb) {
 			),
 			villageLevel: villageLevel(colonyBuildings),
 		},
+		...electionPayloads(db, colony._id, aliveCats),
 	};
+}
+
+/** Open election + vote-kick payloads for the dashboard. */
+function electionPayloads(db: GameDb, colonyId: string, aliveCats: CatRow[]) {
+	const openPolls = db
+		.select()
+		.from(elections)
+		.where(and(eq(elections.colonyId, colonyId), eq(elections.status, "open")))
+		.all();
+
+	const poll = openPolls.find((election) => election.kind === "election");
+	const kick = openPolls.find((election) => election.kind === "vote_kick");
+
+	let election = null;
+	if (poll) {
+		const ballots = db
+			.select()
+			.from(votes)
+			.where(eq(votes.electionId, poll._id))
+			.all()
+			.map((vote) => ({ playerId: vote.playerId, catId: vote.catId }));
+		election = {
+			_id: poll._id,
+			endsAt: poll.endsAt,
+			tally: tallyVotes(ballots),
+			totalBallots: new Set(ballots.map((ballot) => ballot.playerId)).size,
+			candidates: poll.candidateCatIds
+				.map((catId) => aliveCats.find((cat) => cat._id === catId))
+				.filter((cat): cat is CatRow => Boolean(cat))
+				.map((cat) => ({
+					_id: cat._id,
+					name: cat.name,
+					leadership: cat.stats.leadership,
+					specialization: cat.specialization ?? null,
+				})),
+		};
+	}
+
+	let voteKick = null;
+	if (kick?.targetCatId) {
+		const signatures = new Set(
+			db
+				.select()
+				.from(votes)
+				.where(eq(votes.electionId, kick._id))
+				.all()
+				.map((vote) => vote.playerId),
+		).size;
+		const target = aliveCats.find((cat) => cat._id === kick.targetCatId);
+		voteKick = {
+			_id: kick._id,
+			endsAt: kick.endsAt,
+			targetCatId: kick.targetCatId,
+			targetName: target?.name ?? "the leader",
+			signatures,
+			needed: KICK_THRESHOLD,
+		};
+	}
+
+	return { election, voteKick };
 }
 
 export function requestJob(
@@ -1086,24 +1159,36 @@ export function workerTick(db: GameDb) {
 			return roll.value;
 		};
 
-		// Ensure best leader.
-		const bestLeader = chooseLeader(tx, colony._id);
-		if (bestLeader && colony.leaderId !== bestLeader._id) {
-			tx.update(colonies)
-				.set({ leaderId: bestLeader._id })
-				.where(eq(colonies._id, colony._id))
-				.run();
-			logEvent(
-				tx,
-				colony._id,
-				"leader_change",
-				`${bestLeader.name} is now leading the colony.`,
-				[bestLeader._id],
-			);
+		// Leadership is player-elected (Phase 4). The tick only auto-picks an
+		// interim leader when the seat is empty — leader death or bootstrap —
+		// and otherwise leaves the elected cat in charge, good or bad.
+		let leaderCat = colony.leaderId
+			? (tx
+					.select()
+					.from(cats)
+					.where(and(eq(cats._id, colony.leaderId), isNull(cats.deathTime)))
+					.get() ?? null)
+			: null;
+		if (!leaderCat) {
+			const interim = chooseLeader(tx, colony._id);
+			if (interim) {
+				leaderCat = interim;
+				tx.update(colonies)
+					.set({ leaderId: interim._id })
+					.where(eq(colonies._id, colony._id))
+					.run();
+				logEvent(
+					tx,
+					colony._id,
+					"leader_change",
+					`${interim.name} is now leading the colony.`,
+					[interim._id],
+				);
+			}
 		}
 
 		const policyTier = pickPolicyTier(
-			bestLeader?.stats.leadership ?? 50,
+			leaderCat?.stats.leadership ?? 50,
 			nextRoll(),
 		);
 		const policy = configForTier(policyTier);
@@ -1131,6 +1216,10 @@ export function workerTick(db: GameDb) {
 				"CRISIS: WATER RESERVES DANGEROUSLY LOW",
 			);
 		}
+
+		// --- Elections: resolve due polls, then open the next one when the
+		// term expires. Uses no policy rolls, so the seeded chain is stable.
+		runElectionLifecycle(tx, colony, aliveCats, runtime, now);
 
 		// Movement randomness runs on a forked chain so the policy/planning
 		// roll order (and its deterministic tests) stays untouched.

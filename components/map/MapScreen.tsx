@@ -68,6 +68,11 @@ export function MapScreen() {
 		accelerationPreset,
 		onlineCount,
 		housing,
+		leader,
+		election,
+		voteKick,
+		onCastVote,
+		onRequestVoteKick,
 	} = useGameDashboard();
 
 	const [chunks, setChunks] = useState<ChunkCoord[]>(INITIAL_CHUNKS);
@@ -241,6 +246,81 @@ export function MapScreen() {
 								);
 							})}
 						</ul>
+					)}
+				</div>
+
+				{/* Leadership: current leader, live election, vote-kick petition */}
+				<div className={`p-3 ${PANEL}`}>
+					<h3 className={PANEL_HEADING}>Leadership</h3>
+					<p className="text-sm font-bold text-[#4a3319]">
+						👑 {leader ? leader.name : "No leader yet"}
+						{leader && (
+							<span className="ml-1 font-normal text-[#6b4a2a]">
+								(leadership {Math.round(leader.stats.leadership)})
+							</span>
+						)}
+					</p>
+
+					{election && (
+						<div className="mt-2 border-t border-[#5d4024]/40 pt-2">
+							<p className="mb-1.5 text-xs font-bold uppercase tracking-wide text-[#6b4a2a]">
+								🗳️ Election — closes in{" "}
+								{formatDuration(Math.max(0, election.endsAt - now))}
+							</p>
+							<ul className="space-y-1">
+								{election.candidates.map(
+									(candidate: {
+										_id: string;
+										name: string;
+										leadership: number;
+									}) => (
+										<li
+											key={candidate._id}
+											className="flex items-center justify-between gap-2 text-xs font-semibold text-[#4a3319]"
+										>
+											<span>
+												{candidate.name}{" "}
+												<span className="text-[#6b4a2a]/70">
+													lead {Math.round(candidate.leadership)} ·{" "}
+													{election.tally[candidate._id] ?? 0} vote
+													{(election.tally[candidate._id] ?? 0) === 1
+														? ""
+														: "s"}
+												</span>
+											</span>
+											<button
+												type="button"
+												onClick={() => onCastVote(election._id, candidate._id)}
+												disabled={busyAction === `vote:${election._id}`}
+												className="rounded border border-amber-700 bg-gradient-to-b from-amber-400 to-amber-500 px-2 py-0.5 font-bold text-[#3a2712] shadow hover:from-amber-300 disabled:opacity-40"
+											>
+												Vote
+											</button>
+										</li>
+									),
+								)}
+							</ul>
+						</div>
+					)}
+
+					{leader && (
+						<div className="mt-2 border-t border-[#5d4024]/40 pt-2">
+							{voteKick ? (
+								<p className="text-xs font-semibold text-red-900">
+									⚖️ Petition to remove {voteKick.targetName}:{" "}
+									{voteKick.signatures}/{voteKick.needed} signatures ·{" "}
+									{formatDuration(Math.max(0, voteKick.endsAt - now))} left
+								</p>
+							) : null}
+							<button
+								type="button"
+								onClick={() => onRequestVoteKick()}
+								disabled={busyAction === "voteKick"}
+								className={`mt-1.5 w-full ${WOOD_BUTTON} !from-red-800 !to-red-900 hover:!from-red-700 hover:!to-red-800`}
+							>
+								{voteKick ? "✍️ Sign the petition" : "⚖️ Demand a new leader"}
+							</button>
+						</div>
 					)}
 				</div>
 
