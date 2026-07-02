@@ -9,8 +9,8 @@
  * 2. Implement functions to make tests pass
  */
 
-import type { LifeStage } from '@/types/game'
-import { LIFE_STAGE_HOURS } from '@/types/game'
+import type { LifeStage } from "@/types/game";
+import { LIFE_STAGE_HOURS } from "@/types/game";
 
 /**
  * Calculate cat age in hours.
@@ -20,8 +20,8 @@ import { LIFE_STAGE_HOURS } from '@/types/game'
  * @returns Age in hours (can be fractional)
  */
 export function getAgeInHours(birthTime: number, currentTime: number): number {
-  const ageMs = currentTime - birthTime
-  return ageMs / (1000 * 60 * 60) // Convert milliseconds to hours
+	const ageMs = currentTime - birthTime;
+	return ageMs / (1000 * 60 * 60); // Convert milliseconds to hours
 }
 
 /**
@@ -37,15 +37,15 @@ export function getAgeInHours(birthTime: number, currentTime: number): number {
  * @returns Life stage
  */
 export function getLifeStage(ageInHours: number): LifeStage {
-  if (ageInHours < 6) {
-    return 'kitten'
-  } else if (ageInHours < 24) {
-    return 'young'
-  } else if (ageInHours < 48) {
-    return 'adult'
-  } else {
-    return 'elder'
-  }
+	if (ageInHours < 6) {
+		return "kitten";
+	} else if (ageInHours < 24) {
+		return "young";
+	} else if (ageInHours < 48) {
+		return "adult";
+	} else {
+		return "elder";
+	}
 }
 
 /**
@@ -61,18 +61,21 @@ export function getLifeStage(ageInHours: number): LifeStage {
  * @param isLeaderOrHealer - Whether cat is leader or healer
  * @returns Death probability (0.0 to 1.0)
  */
-export function getDeathChance(ageInHours: number, isLeaderOrHealer: boolean): number {
-  const threshold = isLeaderOrHealer ? 57.6 : 48
-  
-  if (ageInHours < threshold) {
-    return 0
-  }
-  
-  const hoursPastThreshold = ageInHours - threshold
-  const baseChance = 0.01 // 1% at threshold
-  const additionalChance = hoursPastThreshold * 0.005 // +0.5% per hour
-  
-  return baseChance + additionalChance
+export function getDeathChance(
+	ageInHours: number,
+	isLeaderOrHealer: boolean,
+): number {
+	const threshold = isLeaderOrHealer ? 57.6 : 48;
+
+	if (ageInHours < threshold) {
+		return 0;
+	}
+
+	const hoursPastThreshold = ageInHours - threshold;
+	const baseChance = 0.01; // 1% at threshold
+	const additionalChance = hoursPastThreshold * 0.005; // +0.5% per hour
+
+	return baseChance + additionalChance;
 }
 
 /**
@@ -82,9 +85,12 @@ export function getDeathChance(ageInHours: number, isLeaderOrHealer: boolean): n
  * @param isLeaderOrHealer - Whether cat is leader or healer
  * @returns True if cat dies this tick
  */
-export function shouldDieOfOldAge(ageInHours: number, isLeaderOrHealer: boolean): boolean {
-  const deathChance = getDeathChance(ageInHours, isLeaderOrHealer)
-  return Math.random() < deathChance
+export function shouldDieOfOldAge(
+	ageInHours: number,
+	isLeaderOrHealer: boolean,
+): boolean {
+	const deathChance = getDeathChance(ageInHours, isLeaderOrHealer);
+	return Math.random() < deathChance;
 }
 
 /**
@@ -100,18 +106,18 @@ export function shouldDieOfOldAge(ageInHours: number, isLeaderOrHealer: boolean)
  * @returns Multiplier for skill gain
  */
 export function getAgeSkillModifier(lifeStage: LifeStage): number {
-  switch (lifeStage) {
-    case 'kitten':
-      return 0
-    case 'young':
-      return 1.5
-    case 'adult':
-      return 1.0
-    case 'elder':
-      return 0.5
-    default:
-      return 1.0
-  }
+	switch (lifeStage) {
+		case "kitten":
+			return 0;
+		case "young":
+			return 1.5;
+		case "adult":
+			return 1.0;
+		case "elder":
+			return 0.5;
+		default:
+			return 1.0;
+	}
 }
 
 /**
@@ -123,22 +129,20 @@ export function getAgeSkillModifier(lifeStage: LifeStage): number {
  * @returns True if cat can perform task
  */
 export function canPerformTask(
-  lifeStage: LifeStage,
-  taskRequiresOutside: boolean,
-  isDangerousTask: boolean
+	lifeStage: LifeStage,
+	taskRequiresOutside: boolean,
+	isDangerousTask: boolean,
 ): boolean {
-  // Kittens cannot go outside or do dangerous tasks
-  if (lifeStage === 'kitten') {
-    return !taskRequiresOutside && !isDangerousTask
-  }
-  
-  // Young cats cannot do dangerous tasks alone
-  if (lifeStage === 'young') {
-    return !isDangerousTask
-  }
-  
-  // Adults and elders can do all tasks
-  return true
+	// Kittens cannot go outside or do dangerous tasks
+	if (lifeStage === "kitten") {
+		return !taskRequiresOutside && !isDangerousTask;
+	}
+
+	// Young cats cannot do dangerous tasks alone
+	if (lifeStage === "young") {
+		return !isDangerousTask;
+	}
+
+	// Adults and elders can do all tasks
+	return true;
 }
-
-

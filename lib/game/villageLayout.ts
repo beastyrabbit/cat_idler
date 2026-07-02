@@ -23,6 +23,9 @@ export const SHRINE_LOCAL: GridPos = { x: 0, y: 0 };
 /** Default maximum ring the village can spiral out to. */
 export const DEFAULT_MAX_RING = 8;
 
+/** Smallest fence-ring radius — the founding clearing always looks roomy. */
+export const VILLAGE_MIN_RING = 4;
+
 export function colonyToWorld(local: GridPos): GridPos {
 	return { x: VILLAGE_ANCHOR.x + local.x, y: VILLAGE_ANCHOR.y + local.y };
 }
@@ -75,12 +78,15 @@ export function nextBuildingSite(
 	occupied: GridPos[],
 	roll: number,
 	maxRing: number = DEFAULT_MAX_RING,
+	isBlocked?: (local: GridPos) => boolean,
 ): GridPos | null {
 	const taken = new Set(occupied.map(posKey));
 	taken.add(posKey(SHRINE_LOCAL));
 
 	for (let ring = 1; ring <= maxRing; ring++) {
-		const free = ringCells(ring).filter((cell) => !taken.has(posKey(cell)));
+		const free = ringCells(ring).filter(
+			(cell) => !taken.has(posKey(cell)) && !(isBlocked?.(cell) ?? false),
+		);
 		if (free.length === 0) {
 			continue;
 		}
@@ -103,4 +109,17 @@ export function villageRadius(buildingCount: number): number {
 		capacity += 8 * radius;
 	}
 	return radius;
+}
+
+/**
+ * Radius of the fence/clearing ring that encloses the village.
+ *
+ * The fence always sits one ring beyond the outermost building ring, so the
+ * settlement keeps a clear margin inside the palisade and buildings never
+ * land on top of the fence. It steps outward as the inner rings fill, never
+ * shrinking below {@link VILLAGE_MIN_RING} so the founding clearing looks
+ * roomy from the start.
+ */
+export function villageRingRadius(buildingCount: number): number {
+	return Math.max(VILLAGE_MIN_RING, villageRadius(buildingCount) + 1);
 }

@@ -9,24 +9,24 @@
 // --- Types ---
 
 export type PopularityTier =
-  | "unknown"
-  | "noticed"
-  | "popular"
-  | "beloved"
-  | "legendary";
+	| "unknown"
+	| "noticed"
+	| "popular"
+	| "beloved"
+	| "legendary";
 
 export interface PopularityFactors {
-  socialScore: number;
-  heroScore: number;
-  charmScore: number;
-  fameScore: number;
+	socialScore: number;
+	heroScore: number;
+	charmScore: number;
+	fameScore: number;
 }
 
 export interface PopularityEntry {
-  catName: string;
-  factors: PopularityFactors;
-  totalScore: number;
-  tier: PopularityTier;
+	catName: string;
+	factors: PopularityFactors;
+	totalScore: number;
+	tier: PopularityTier;
 }
 
 // --- Constants ---
@@ -34,15 +34,15 @@ export interface PopularityEntry {
 const MAX_FACTOR_SCORE = 25;
 
 const CHARM_WEIGHTS: Record<string, number> = {
-  friendly: 8,
-  brave: 7,
-  clever: 7,
-  cautious: 3,
-  curious: 4,
-  playful: 5,
-  gentle: 5,
-  aggressive: 1,
-  lazy: 1,
+	friendly: 8,
+	brave: 7,
+	clever: 7,
+	cautious: 3,
+	curious: 4,
+	playful: 5,
+	gentle: 5,
+	aggressive: 1,
+	lazy: 1,
 };
 
 const DEFAULT_CHARM_WEIGHT = 3;
@@ -54,11 +54,11 @@ const DEFAULT_CHARM_WEIGHT = 3;
  * Each relationship = 2 pts, each mentorship = 3 pts, capped at 25.
  */
 export function calculateSocialScore(
-  relationshipCount: number,
-  mentorCount: number,
+	relationshipCount: number,
+	mentorCount: number,
 ): number {
-  const raw = relationshipCount * 2 + mentorCount * 3;
-  return Math.min(MAX_FACTOR_SCORE, Math.max(0, raw));
+	const raw = relationshipCount * 2 + mentorCount * 3;
+	return Math.min(MAX_FACTOR_SCORE, Math.max(0, raw));
 }
 
 /**
@@ -66,11 +66,11 @@ export function calculateSocialScore(
  * Combat victories = 3 pts each, encounters = 1.5 pts each, capped at 25.
  */
 export function calculateHeroScore(
-  combatVictories: number,
-  encountersSurvived: number,
+	combatVictories: number,
+	encountersSurvived: number,
 ): number {
-  const raw = combatVictories * 3 + encountersSurvived * 1.5;
-  return Math.min(MAX_FACTOR_SCORE, Math.max(0, raw));
+	const raw = combatVictories * 3 + encountersSurvived * 1.5;
+	return Math.min(MAX_FACTOR_SCORE, Math.max(0, raw));
 }
 
 /**
@@ -78,12 +78,12 @@ export function calculateHeroScore(
  * Friendly/brave/clever weigh more; aggressive/lazy weigh less.
  */
 export function calculateCharmScore(traits: string[]): number {
-  if (traits.length === 0) return 0;
-  const raw = traits.reduce(
-    (sum, t) => sum + (CHARM_WEIGHTS[t] ?? DEFAULT_CHARM_WEIGHT),
-    0,
-  );
-  return Math.min(MAX_FACTOR_SCORE, Math.max(0, raw));
+	if (traits.length === 0) return 0;
+	const raw = traits.reduce(
+		(sum, t) => sum + (CHARM_WEIGHTS[t] ?? DEFAULT_CHARM_WEIGHT),
+		0,
+	);
+	return Math.min(MAX_FACTOR_SCORE, Math.max(0, raw));
 }
 
 /**
@@ -91,22 +91,22 @@ export function calculateCharmScore(traits: string[]): number {
  * Events = 1.5 pts each, leader days = 3 pts each, capped at 25.
  */
 export function calculateFameScore(
-  eventCount: number,
-  leaderDays: number,
+	eventCount: number,
+	leaderDays: number,
 ): number {
-  const raw = eventCount * 1.5 + leaderDays * 3;
-  return Math.min(MAX_FACTOR_SCORE, Math.max(0, raw));
+	const raw = eventCount * 1.5 + leaderDays * 3;
+	return Math.min(MAX_FACTOR_SCORE, Math.max(0, raw));
 }
 
 /**
  * Classify total popularity score into a tier.
  */
 export function getPopularityTier(score: number): PopularityTier {
-  if (score >= 80) return "legendary";
-  if (score >= 60) return "beloved";
-  if (score >= 40) return "popular";
-  if (score >= 20) return "noticed";
-  return "unknown";
+	if (score >= 80) return "legendary";
+	if (score >= 60) return "beloved";
+	if (score >= 40) return "popular";
+	if (score >= 20) return "noticed";
+	return "unknown";
 }
 
 /**
@@ -114,18 +114,18 @@ export function getPopularityTier(score: number): PopularityTier {
  * Returns a new array (does not mutate input).
  */
 export function rankCatPopularity(
-  entries: PopularityEntry[],
+	entries: PopularityEntry[],
 ): PopularityEntry[] {
-  return [...entries]
-    .map((entry, index) => ({ entry, index }))
-    .sort((a, b) => {
-      const scoreDelta = b.entry.totalScore - a.entry.totalScore;
-      if (scoreDelta !== 0) {
-        return scoreDelta;
-      }
-      return a.index - b.index;
-    })
-    .map(({ entry }) => entry);
+	return [...entries]
+		.map((entry, index) => ({ entry, index }))
+		.sort((a, b) => {
+			const scoreDelta = b.entry.totalScore - a.entry.totalScore;
+			if (scoreDelta !== 0) {
+				return scoreDelta;
+			}
+			return a.index - b.index;
+		})
+		.map(({ entry }) => entry);
 }
 
 /**
@@ -133,11 +133,11 @@ export function rankCatPopularity(
  * Returns null if no entries.
  */
 export function getCatOfTheMonth(
-  entries: PopularityEntry[],
+	entries: PopularityEntry[],
 ): PopularityEntry | null {
-  if (entries.length === 0) return null;
-  const ranked = rankCatPopularity(entries);
-  return ranked[0];
+	if (entries.length === 0) return null;
+	const ranked = rankCatPopularity(entries);
+	return ranked[0];
 }
 
 /**
@@ -145,31 +145,31 @@ export function getCatOfTheMonth(
  * Shows top 5 cats with their tiers and highlights Cat of the Month.
  */
 export function generatePopularityColumn(
-  entries: PopularityEntry[],
-  colonyName: string,
+	entries: PopularityEntry[],
+	colonyName: string,
 ): string {
-  const lines: string[] = [];
-  lines.push(`=== ${colonyName} Popularity Poll ===`);
-  lines.push("");
+	const lines: string[] = [];
+	lines.push(`=== ${colonyName} Popularity Poll ===`);
+	lines.push("");
 
-  if (entries.length === 0) {
-    lines.push("No cats have entered the poll yet.");
-    return lines.join("\n");
-  }
+	if (entries.length === 0) {
+		lines.push("No cats have entered the poll yet.");
+		return lines.join("\n");
+	}
 
-  const ranked = rankCatPopularity(entries);
-  const catOfMonth = ranked[0];
+	const ranked = rankCatPopularity(entries);
+	const catOfMonth = ranked[0];
 
-  lines.push(`Cat of the Month: ${catOfMonth.catName} (${catOfMonth.tier})`);
-  lines.push("");
-  lines.push("Top Rankings:");
+	lines.push(`Cat of the Month: ${catOfMonth.catName} (${catOfMonth.tier})`);
+	lines.push("");
+	lines.push("Top Rankings:");
 
-  const top5 = ranked.slice(0, 5);
-  top5.forEach((entry, i) => {
-    lines.push(
-      `  ${i + 1}. ${entry.catName} — ${entry.totalScore} pts [${entry.tier}]`,
-    );
-  });
+	const top5 = ranked.slice(0, 5);
+	top5.forEach((entry, i) => {
+		lines.push(
+			`  ${i + 1}. ${entry.catName} — ${entry.totalScore} pts [${entry.tier}]`,
+		);
+	});
 
-  return lines.join("\n");
+	return lines.join("\n");
 }

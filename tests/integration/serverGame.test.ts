@@ -7,8 +7,8 @@
  */
 
 import { and, eq } from "drizzle-orm";
+import { nanoid } from "nanoid";
 import { beforeEach, describe, expect, it } from "vitest";
-
 import { createDb, type GameDb } from "@/db/client";
 import {
 	buildings as buildingsTable,
@@ -20,6 +20,11 @@ import {
 	worldTiles,
 	zones as zonesTable,
 } from "@/db/schema";
+import {
+	colonyToWorld,
+	ringCells,
+	VILLAGE_ANCHOR,
+} from "@/lib/game/villageLayout";
 import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
@@ -1676,15 +1681,19 @@ describe("production (Phase 7)", () => {
 		expect(colonyAfter.resources.materials).toBeLessThanOrEqual(45);
 
 		// Unassigning frees the cat, but the leader auto-staffs workerless
-		// workshops — production continues under new management.
+		// workshops — production continues under new management. Staffing is
+		// gated by an (unseeded) policy-reliability roll, so allow the
+		// leader a few ticks to get around to it.
 		assignWorker(db, { ...SESSION_P, catId: worker._id, buildingId: null });
-		advanceTime(db, 700);
-		workerTick(db);
-		expect(
-			eventMessages(db).some((message) =>
+		let staffed = false;
+		for (let i = 0; i < 12 && !staffed; i++) {
+			advanceTime(db, 700);
+			workerTick(db);
+			staffed = eventMessages(db).some((message) =>
 				message.includes("to work at the workshop"),
-			),
-		).toBe(true);
+			);
+		}
+		expect(staffed).toBe(true);
 	});
 
 	it("validates worker assignment targets", () => {
@@ -1896,6 +1905,244 @@ describe("cat movement", () => {
 			ensureGlobalColony(db)._id,
 		).filter((cat) => cat.destination !== null);
 		expect(wanderers.length).toBeGreaterThan(0);
+	});
+});
+
+describe("world credibility", () => {
+	it("never raises a scaffold on a water tile", () => {
+		const colony = ensureGlobalColony(db);
+		const existing = db
+			.select()
+			.from(buildingsTable)
+			.where(eq(buildingsTable.colonyId, colony._id))
+			.all();
+		const occupied = new Set(
+			existing.map((b) => `${b.position.x},${b.position.y}`),
+		);
+
+		// Leave a single free build cell in rings 1-2 and make it water; every
+		// other inner cell is filled, so the next scaffold must either land on
+		// that water cell (the bug) or skip past it to ring 3 (the fix).
+		const target = ringCells(2).find(
+			(cell) => !occupied.has(`${cell.x},${cell.y}`),
+		)!;
+		for (const cell of [...ringCells(1), ...ringCells(2)]) {
+			const key = `${cell.x},${cell.y}`;
+			if (occupied.has(key) || (cell.x === target.x && cell.y === target.y)) {
+				continue;
+			}
+			db.insert(buildingsTable)
+				.values({
+					_id: nanoid(),
+					colonyId: colony._id,
+					type: "den",
+					level: 1,
+					position: cell,
+					constructionProgress: 100,
+				})
+				.run();
+		}
+
+		const targetWorld = colonyToWorld(target);
+		db.update(worldTiles)
+			.set({
+				type: "river",
+				overlayFeature: "river",
+				resources: { food: 0, herbs: 0, water: 999 },
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, targetWorld.x),
+					eq(worldTiles.y, targetWorld.y),
+				),
+			)
+			.run();
+
+		// Queue a construction job; the worker places its scaffold on promotion.
+		const architect = getAliveCatsForTest(db, colony._id)[0];
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: nanoid(),
+				colonyId: colony._id,
+				kind: "build_house",
+				status: "queued",
+				requestedByType: "leader",
+				assignedCatId: architect._id,
+				baseDurationSec: 1000,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now,
+				startedAt: now,
+				endsAt: now + 1_000_000,
+				metadata: { phase: "construct_house", buildingType: "food_storage" },
+			})
+			.run();
+
+		advanceTime(db, 5);
+		workerTick(db);
+
+		const scaffold = db
+			.select()
+			.from(buildingsTable)
+			.where(
+				and(
+					eq(buildingsTable.colonyId, colony._id),
+					eq(buildingsTable.type, "food_storage"),
+				),
+			)
+			.all()
+			.find((b) => b.constructionProgress < 100);
+
+		expect(scaffold).toBeDefined();
+		// It skipped the only free inner cell because that cell is water.
+		expect(scaffold?.position).not.toEqual(target);
+		const world = colonyToWorld(scaffold!.position);
+		const tile = db
+			.select()
+			.from(worldTiles)
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, world.x),
+					eq(worldTiles.y, world.y),
+				),
+			)
+			.get();
+		expect(tile?.type).not.toBe("river");
+		expect(tile?.resources.water ?? 0).toBe(0);
+	});
+
+	it("fetches its own water when the reservoir runs low", () => {
+		const colony = ensureGlobalColony(db);
+		// Drain the reservoir and guarantee a known, explored water tile.
+		db.update(colonies)
+			.set({ resources: { ...colony.resources, water: 15, food: 400 } })
+			.where(eq(colonies._id, colony._id))
+			.run();
+		db.update(worldTiles)
+			.set({
+				type: "river",
+				overlayFeature: "river",
+				resources: { food: 0, herbs: 0, water: 999 },
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, VILLAGE_ANCHOR.x),
+					eq(worldTiles.y, VILLAGE_ANCHOR.y + 4),
+				),
+			)
+			.run();
+
+		setTestRngSeed(db, 7);
+		setTestAcceleration(db, "hyper");
+
+		for (let i = 0; i < 8; i++) {
+			advanceTime(db, 60);
+			workerTick(db);
+		}
+
+		const waterJobs = db
+			.select()
+			.from(jobs)
+			.where(and(eq(jobs.colonyId, colony._id), eq(jobs.kind, "fetch_water")))
+			.all();
+		expect(waterJobs.length).toBeGreaterThan(0);
+	});
+
+	it("reveals a 3x3 fog halo around moving cats", () => {
+		const colony = ensureGlobalColony(db);
+		setTestRngSeed(db, 3);
+		setTestAcceleration(db, "hyper");
+
+		for (let i = 0; i < 20; i++) {
+			const c = ensureGlobalColony(db);
+			// Keep the colony alive so it doesn't reset and wipe the map.
+			db.update(colonies)
+				.set({
+					resources: { ...c.resources, food: 110, water: 170 },
+					lastPlayerActivityAt: Date.now(),
+				})
+				.where(eq(colonies._id, c._id))
+				.run();
+			advanceTime(db, 30);
+			workerTick(db);
+		}
+
+		const outside = db
+			.select()
+			.from(worldTiles)
+			.where(eq(worldTiles.colonyId, colony._id))
+			.all()
+			.filter(
+				(t) =>
+					Math.max(
+						Math.abs(t.x - VILLAGE_ANCHOR.x),
+						Math.abs(t.y - VILLAGE_ANCHOR.y),
+					) > 4,
+			);
+		// Reveal spreads a halo of explored tiles (>62) well beyond the tiles a
+		// cat's own feet touched — many tiles cross the bar as cats fan out.
+		const revealed = outside.filter((t) => t.pathWear > 62);
+		expect(revealed.length).toBeGreaterThan(20);
+	});
+
+	it("wears a repeatedly-trodden corridor into a visible road", () => {
+		const colony = ensureGlobalColony(db);
+		// Pin one cat to a den so the leader never reassigns it, then walk it up
+		// and down a straight corridor south of the village. A second pass over
+		// a tile crosses the road threshold (>=70).
+		const walker = getAliveCatsForTest(db, colony._id)[0];
+		const den = db
+			.select()
+			.from(buildingsTable)
+			.where(eq(buildingsTable.colonyId, colony._id))
+			.all()
+			.find((b) => b.type === "den");
+		db.update(cats)
+			.set({ assignedBuildingId: den?._id ?? null })
+			.where(eq(cats._id, walker._id))
+			.run();
+
+		const low = { map: "world" as const, x: 6, y: 16 };
+		const high = { map: "world" as const, x: 6, y: 26 };
+		db.update(cats)
+			.set({ position: low, destination: high, activity: "traveling" })
+			.where(eq(cats._id, walker._id))
+			.run();
+
+		for (let i = 0; i < 60; i++) {
+			const cur = db.select().from(cats).where(eq(cats._id, walker._id)).get()!;
+			// Keep it walking the corridor: flip target when it nears an end.
+			const target = cur.position.y >= 24 ? low : high;
+			db.update(cats)
+				.set({ destination: target, activity: "traveling" })
+				.where(eq(cats._id, walker._id))
+				.run();
+			// Keep the colony stocked so it never resets mid-test.
+			const c = ensureGlobalColony(db);
+			db.update(colonies)
+				.set({
+					resources: { ...c.resources, food: 180, water: 190 },
+					lastPlayerActivityAt: Date.now(),
+				})
+				.where(eq(colonies._id, c._id))
+				.run();
+			advanceTime(db, 2);
+			workerTick(db);
+		}
+
+		const corridor = db
+			.select()
+			.from(worldTiles)
+			.where(eq(worldTiles.colonyId, colony._id))
+			.all()
+			.filter((t) => t.x === 6 && t.y >= 18 && t.y <= 24);
+		const road = corridor.some((t) => t.pathWear >= 70);
+		expect(road).toBe(true);
 	});
 });
 

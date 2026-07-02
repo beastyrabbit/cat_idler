@@ -18,6 +18,13 @@ export const MOVE_SPEED_TILES_PER_SEC = 0.5;
 /** Idle cats meander within this Chebyshev radius of the village anchor. */
 export const WANDER_RADIUS = 3;
 
+/**
+ * Explorers pick their way carefully through the fog: while traveling to a
+ * frontier tile they move at this fraction of normal speed, so scouting a
+ * wide 5x5 reveal is a real time investment rather than a free sprint.
+ */
+export const EXPLORE_SPEED_FACTOR = 0.35;
+
 /** Fallback hunt range (Chebyshev tiles from the anchor). */
 const HUNT_RANGE_MIN = 8;
 const HUNT_RANGE_MAX = 14;
@@ -84,6 +91,8 @@ export interface JobDestinationContext {
 	site?: WorldPos;
 	/** Nearest explored stone tile for a quarry expedition. */
 	quarrySite?: WorldPos;
+	/** Nearest explored water tile for a water-fetch expedition. */
+	waterSite?: WorldPos;
 	/** Frontier tile an explore job is dispatched to reveal. */
 	exploreSite?: WorldPos;
 }
@@ -103,6 +112,8 @@ export function destinationForJob(
 			return context.site ? { ...context.site } : { ...context.anchor };
 		case "quarry":
 			return context.quarrySite ? { ...context.quarrySite } : null;
+		case "fetch_water":
+			return context.waterSite ? { ...context.waterSite } : null;
 		case "explore":
 			return context.exploreSite ? { ...context.exploreSite } : null;
 		case "hunt_expedition": {

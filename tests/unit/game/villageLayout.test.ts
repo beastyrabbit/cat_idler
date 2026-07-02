@@ -6,7 +6,9 @@ import {
 	ringCells,
 	shrineWorldPosition,
 	VILLAGE_ANCHOR,
+	VILLAGE_MIN_RING,
 	villageRadius,
+	villageRingRadius,
 	worldToColony,
 } from "@/lib/game/villageLayout";
 
@@ -110,6 +112,50 @@ describe("villageLayout", () => {
 		it("clamps degenerate rolls into range", () => {
 			expect(nextBuildingSite([], 1)).not.toBeNull();
 			expect(nextBuildingSite([], -0.1)).not.toBeNull();
+		});
+
+		it("skips blocked cells (e.g. water) and picks the next free one", () => {
+			// Block every ring-1 cell except one; the site must land on it.
+			const free = ringCells(1)[3];
+			const site = nextBuildingSite(
+				[],
+				0.5,
+				undefined,
+				(cell) => !(cell.x === free.x && cell.y === free.y),
+			);
+			expect(site).toEqual(free);
+		});
+
+		it("spills to the next ring when a whole ring is blocked", () => {
+			const blockedRing1 = new Set(ringCells(1).map((c) => `${c.x},${c.y}`));
+			const site = nextBuildingSite([], 0.5, undefined, (cell) =>
+				blockedRing1.has(`${cell.x},${cell.y}`),
+			);
+			expect(site).not.toBeNull();
+			expect(Math.max(Math.abs(site!.x), Math.abs(site!.y))).toBe(2);
+		});
+	});
+
+	describe("villageRingRadius", () => {
+		it("never shrinks below the minimum founding ring", () => {
+			expect(villageRingRadius(0)).toBe(VILLAGE_MIN_RING);
+			expect(villageRingRadius(6)).toBe(VILLAGE_MIN_RING);
+			expect(villageRingRadius(48)).toBe(VILLAGE_MIN_RING);
+		});
+
+		it("always sits at least one ring beyond the buildings", () => {
+			for (const count of [1, 9, 25, 60, 100]) {
+				expect(villageRingRadius(count)).toBeGreaterThan(villageRadius(count));
+			}
+		});
+
+		it("steps outward once the inner rings fill (boundaries)", () => {
+			// villageRadius(48)=3 -> fence 4; villageRadius(49)=4 -> fence 5.
+			expect(villageRingRadius(48)).toBe(4);
+			expect(villageRingRadius(49)).toBe(5);
+			// villageRadius(80)=4 -> fence 5; villageRadius(81)=5 -> fence 6.
+			expect(villageRingRadius(80)).toBe(5);
+			expect(villageRingRadius(81)).toBe(6);
 		});
 	});
 

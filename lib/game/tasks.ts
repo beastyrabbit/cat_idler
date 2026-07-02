@@ -5,9 +5,9 @@
  * See TASKS.md: LOGIC-006
  */
 
-import type { Cat, TaskType, LifeStage } from '@/types/game'
-import { TASK_TO_SKILL, LEADER_QUALITY } from '@/types/game'
-import { getLifeStage, getAgeInHours, canPerformTask } from './age'
+import type { Cat, LifeStage, TaskType } from "@/types/game";
+import { LEADER_QUALITY, TASK_TO_SKILL } from "@/types/game";
+import { canPerformTask, getAgeInHours, getLifeStage } from "./age";
 
 /**
  * Find the optimal cat for a task based on skills and age.
@@ -16,42 +16,51 @@ import { getLifeStage, getAgeInHours, canPerformTask } from './age'
  * @param taskType - Type of task
  * @returns Optimal cat or null if none available
  */
-export function getOptimalCatForTask(cats: Cat[], taskType: TaskType): Cat | null {
-  if (cats.length === 0) {
-    return null
-  }
+export function getOptimalCatForTask(
+	cats: Cat[],
+	taskType: TaskType,
+): Cat | null {
+	if (cats.length === 0) {
+		return null;
+	}
 
-  const currentTime = Date.now()
-  const isDangerousTask = taskType === 'hunt' || taskType === 'patrol' || taskType === 'guard'
-  const requiresOutside = taskType === 'hunt' || taskType === 'gather_herbs' || taskType === 'fetch_water' || taskType === 'explore' || taskType === 'patrol'
+	const currentTime = Date.now();
+	const isDangerousTask =
+		taskType === "hunt" || taskType === "patrol" || taskType === "guard";
+	const requiresOutside =
+		taskType === "hunt" ||
+		taskType === "gather_herbs" ||
+		taskType === "fetch_water" ||
+		taskType === "explore" ||
+		taskType === "patrol";
 
-  // Filter cats that can perform the task
-  const eligibleCats = cats.filter(cat => {
-    const age = getAgeInHours(cat.birthTime, currentTime)
-    const lifeStage = getLifeStage(age)
-    return canPerformTask(lifeStage, requiresOutside, isDangerousTask)
-  })
+	// Filter cats that can perform the task
+	const eligibleCats = cats.filter((cat) => {
+		const age = getAgeInHours(cat.birthTime, currentTime);
+		const lifeStage = getLifeStage(age);
+		return canPerformTask(lifeStage, requiresOutside, isDangerousTask);
+	});
 
-  if (eligibleCats.length === 0) {
-    return null
-  }
+	if (eligibleCats.length === 0) {
+		return null;
+	}
 
-  // Get the skill relevant to this task
-  const relevantSkill = TASK_TO_SKILL[taskType]
+	// Get the skill relevant to this task
+	const relevantSkill = TASK_TO_SKILL[taskType];
 
-  // Find cat with highest relevant skill
-  let bestCat = eligibleCats[0]
-  let bestSkill = eligibleCats[0].stats[relevantSkill]
+	// Find cat with highest relevant skill
+	let bestCat = eligibleCats[0];
+	let bestSkill = eligibleCats[0].stats[relevantSkill];
 
-  for (const cat of eligibleCats) {
-    const skill = cat.stats[relevantSkill]
-    if (skill > bestSkill) {
-      bestSkill = skill
-      bestCat = cat
-    }
-  }
+	for (const cat of eligibleCats) {
+		const skill = cat.stats[relevantSkill];
+		if (skill > bestSkill) {
+			bestSkill = skill;
+			bestCat = cat;
+		}
+	}
 
-  return bestCat
+	return bestCat;
 }
 
 /**
@@ -61,15 +70,15 @@ export function getOptimalCatForTask(cats: Cat[], taskType: TaskType): Cat | nul
  * @returns Assignment time in seconds
  */
 export function getAssignmentTime(leadershipStat: number): number {
-  if (leadershipStat <= LEADER_QUALITY.bad.max) {
-    return LEADER_QUALITY.bad.time
-  } else if (leadershipStat <= LEADER_QUALITY.okay.max) {
-    return LEADER_QUALITY.okay.time
-  } else if (leadershipStat <= LEADER_QUALITY.good.max) {
-    return LEADER_QUALITY.good.time
-  } else {
-    return LEADER_QUALITY.great.time
-  }
+	if (leadershipStat <= LEADER_QUALITY.bad.max) {
+		return LEADER_QUALITY.bad.time;
+	} else if (leadershipStat <= LEADER_QUALITY.okay.max) {
+		return LEADER_QUALITY.okay.time;
+	} else if (leadershipStat <= LEADER_QUALITY.good.max) {
+		return LEADER_QUALITY.good.time;
+	} else {
+		return LEADER_QUALITY.great.time;
+	}
 }
 
 /**
@@ -81,45 +90,42 @@ export function getAssignmentTime(leadershipStat: number): number {
  * @returns Assigned cat and whether it's optimal
  */
 export function getAssignedCat(
-  cats: Cat[],
-  taskType: TaskType,
-  leadershipStat: number
+	cats: Cat[],
+	taskType: TaskType,
+	leadershipStat: number,
 ): { cat: Cat | null; isOptimal: boolean } {
-  const optimalCat = getOptimalCatForTask(cats, taskType)
-  
-  if (!optimalCat) {
-    return { cat: null, isOptimal: false }
-  }
+	const optimalCat = getOptimalCatForTask(cats, taskType);
 
-  // Determine wrong assignment chance based on leadership
-  let wrongChance = 0
-  if (leadershipStat <= LEADER_QUALITY.bad.max) {
-    wrongChance = LEADER_QUALITY.bad.wrongChance
-  } else if (leadershipStat <= LEADER_QUALITY.okay.max) {
-    wrongChance = LEADER_QUALITY.okay.wrongChance
-  } else if (leadershipStat <= LEADER_QUALITY.good.max) {
-    wrongChance = LEADER_QUALITY.good.wrongChance
-  } else {
-    wrongChance = LEADER_QUALITY.great.wrongChance
-  }
+	if (!optimalCat) {
+		return { cat: null, isOptimal: false };
+	}
 
-  // Check if leader makes wrong assignment
-  const shouldAssignWrong = Math.random() < wrongChance
+	// Determine wrong assignment chance based on leadership
+	let wrongChance = 0;
+	if (leadershipStat <= LEADER_QUALITY.bad.max) {
+		wrongChance = LEADER_QUALITY.bad.wrongChance;
+	} else if (leadershipStat <= LEADER_QUALITY.okay.max) {
+		wrongChance = LEADER_QUALITY.okay.wrongChance;
+	} else if (leadershipStat <= LEADER_QUALITY.good.max) {
+		wrongChance = LEADER_QUALITY.good.wrongChance;
+	} else {
+		wrongChance = LEADER_QUALITY.great.wrongChance;
+	}
 
-  if (!shouldAssignWrong) {
-    return { cat: optimalCat, isOptimal: true }
-  }
+	// Check if leader makes wrong assignment
+	const shouldAssignWrong = Math.random() < wrongChance;
 
-  // Pick a random wrong cat
-  const otherCats = cats.filter(cat => cat._id !== optimalCat._id)
-  if (otherCats.length === 0) {
-    // If no other cats, use optimal
-    return { cat: optimalCat, isOptimal: true }
-  }
+	if (!shouldAssignWrong) {
+		return { cat: optimalCat, isOptimal: true };
+	}
 
-  const randomIndex = Math.floor(Math.random() * otherCats.length)
-  return { cat: otherCats[randomIndex], isOptimal: false }
+	// Pick a random wrong cat
+	const otherCats = cats.filter((cat) => cat._id !== optimalCat._id);
+	if (otherCats.length === 0) {
+		// If no other cats, use optimal
+		return { cat: optimalCat, isOptimal: true };
+	}
+
+	const randomIndex = Math.floor(Math.random() * otherCats.length);
+	return { cat: otherCats[randomIndex], isOptimal: false };
 }
-
-
-

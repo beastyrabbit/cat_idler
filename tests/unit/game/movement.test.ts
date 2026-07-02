@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	advanceMovement,
 	destinationForJob,
+	EXPLORE_SPEED_FACTOR,
 	MOVE_SPEED_TILES_PER_SEC,
 	pickWanderTarget,
 	WANDER_RADIUS,
@@ -91,6 +92,13 @@ describe("movement", () => {
 		});
 	});
 
+	describe("EXPLORE_SPEED_FACTOR", () => {
+		it("makes explorers travel a fraction of normal speed", () => {
+			expect(EXPLORE_SPEED_FACTOR).toBeGreaterThan(0);
+			expect(EXPLORE_SPEED_FACTOR).toBeLessThan(1);
+		});
+	});
+
 	describe("destinationForJob", () => {
 		it("sends ritualists to the shrine", () => {
 			const dest = destinationForJob("ritual", {
@@ -130,6 +138,28 @@ describe("movement", () => {
 				Math.abs((dest as { y: number }).y - ANCHOR.y),
 			);
 			expect(distance).toBeGreaterThanOrEqual(8);
+		});
+
+		it("sends water fetchers to the given water site", () => {
+			const dest = destinationForJob("fetch_water", {
+				anchor: ANCHOR,
+				shrine: { x: 6, y: 6 },
+				foodTiles: [],
+				roll: 0.5,
+				waterSite: { x: 9, y: 12 },
+			});
+			expect(dest).toEqual({ x: 9, y: 12 });
+		});
+
+		it("returns null for a water fetch with no known water tile", () => {
+			expect(
+				destinationForJob("fetch_water", {
+					anchor: ANCHOR,
+					shrine: { x: 6, y: 6 },
+					foodTiles: [],
+					roll: 0.5,
+				}),
+			).toBeNull();
 		});
 
 		it("sends builders to the given site", () => {

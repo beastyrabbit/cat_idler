@@ -116,7 +116,8 @@ export type JobKind =
 	| "build_house"
 	| "ritual"
 	| "quarry"
-	| "explore";
+	| "explore"
+	| "fetch_water";
 
 export type JobStatus =
 	| "queued"

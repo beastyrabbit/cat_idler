@@ -131,7 +131,7 @@ export function MapScreen() {
 			}
 			setZoneDraft(null);
 		},
-		[zoneDraft, onCreateZone],
+		[zoneDraft, onCreateZone, onBuildRoad],
 	);
 
 	const onViewChange = useCallback((view: ViewportView) => {
@@ -173,7 +173,57 @@ export function MapScreen() {
 	}
 
 	const resources = colony.resources;
-	const foodCapacity = dashboard?.storage?.foodCapacity ?? 200;
+	const villageRadius = dashboard?.villageRadius ?? 4;
+	const caps = dashboard?.storage?.capacities ?? {
+		food: dashboard?.storage?.foodCapacity ?? 200,
+		water: 200,
+		herbs: 100,
+		materials: 100,
+		refined: 100,
+	};
+	const resourceBars: Array<{
+		icon: string;
+		label: string;
+		value: number;
+		cap: number;
+		fill: string;
+	}> = [
+		{
+			icon: "🍖",
+			label: "Food",
+			value: resources.food,
+			cap: caps.food,
+			fill: "bg-emerald-600",
+		},
+		{
+			icon: "💧",
+			label: "Water",
+			value: resources.water,
+			cap: caps.water,
+			fill: "bg-sky-600",
+		},
+		{
+			icon: "🌿",
+			label: "Herbs",
+			value: resources.herbs,
+			cap: caps.herbs,
+			fill: "bg-lime-600",
+		},
+		{
+			icon: "🪵",
+			label: "Materials",
+			value: resources.materials,
+			cap: caps.materials,
+			fill: "bg-amber-700",
+		},
+		{
+			icon: "⚙️",
+			label: "Refined",
+			value: resources.refined ?? 0,
+			cap: caps.refined,
+			fill: "bg-slate-500",
+		},
+	];
 
 	return (
 		<div className="relative h-dvh overflow-hidden bg-[#141c12]">
@@ -192,7 +242,12 @@ export function MapScreen() {
 						className="relative select-none"
 						style={{ width: ISO_CONTENT.width, height: ISO_CONTENT.height }}
 					>
-						<TileLayer chunks={chunks} anchor={anchor} showInfo={infoMode} />
+						<TileLayer
+							chunks={chunks}
+							anchor={anchor}
+							ringRadius={villageRadius}
+							showInfo={infoMode}
+						/>
 						<ZoneLayer
 							zones={zones}
 							now={now}
@@ -227,39 +282,27 @@ export function MapScreen() {
 				</h1>
 
 				<div className="pointer-events-auto flex items-center gap-3 rounded-md border border-[#5d4024] bg-[#f3e6c8] px-4 py-1.5 text-sm font-bold text-[#4a3319] shadow-inner">
-					<span
-						title={`Village food stores (capacity ${foodCapacity}). Leader tithes surplus: 20 food or 5 refined = 1 blessing. Overflow beyond capacity spoils fast!`}
-						className="flex items-center gap-1"
-					>
-						🍖 {Math.floor(resources.food)}
-						<span className="h-2 w-14 overflow-hidden rounded-full border border-[#5d4024]/50 bg-black/10">
-							<span
-								className="block h-full bg-emerald-600"
-								style={{
-									width: `${Math.min(100, (resources.food / foodCapacity) * 100)}%`,
-								}}
-							/>
+					{resourceBars.map((bar) => (
+						<span
+							key={bar.label}
+							title={`${bar.label}: ${Math.floor(bar.value)} / ${bar.cap}${
+								bar.label === "Food"
+									? ". Leader tithes surplus (20 food or 5 refined = 1 blessing); overflow beyond capacity spoils."
+									: ""
+							}`}
+							className="flex items-center gap-1"
+						>
+							{bar.icon} {Math.floor(bar.value)}
+							<span className="h-2 w-12 overflow-hidden rounded-full border border-[#5d4024]/50 bg-black/10">
+								<span
+									className={`block h-full ${bar.fill}`}
+									style={{
+										width: `${Math.min(100, (bar.value / bar.cap) * 100)}%`,
+									}}
+								/>
+							</span>
 						</span>
-					</span>
-					<span
-						title="Village water stores"
-						className="flex items-center gap-1"
-					>
-						💧 {Math.floor(resources.water)}
-						<span className="h-2 w-14 overflow-hidden rounded-full border border-[#5d4024]/50 bg-black/10">
-							<span
-								className="block h-full bg-sky-600"
-								style={{
-									width: `${Math.min(100, (resources.water / 200) * 100)}%`,
-								}}
-							/>
-						</span>
-					</span>
-					<span title="Herbs">🌿 {Math.floor(resources.herbs)}</span>
-					<span title="Materials">🪵 {Math.floor(resources.materials)}</span>
-					<span title="Refined goods">
-						⚙️ {Math.floor(resources.refined ?? 0)}
-					</span>
+					))}
 					<span title="Ritual points" className="text-amber-700">
 						✨ {ritualPoints}
 					</span>

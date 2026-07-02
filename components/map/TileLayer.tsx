@@ -22,6 +22,8 @@ import {
 interface TileLayerProps {
 	chunks: ChunkCoord[];
 	anchor: { x: number; y: number };
+	/** Fence/clearing ring radius (grows as the village fills). */
+	ringRadius?: number;
 	/** Info mode: draw resource markers on rich tiles. */
 	showInfo?: boolean;
 }
@@ -80,8 +82,12 @@ const RICH_HERBS = 12;
 function isExplored(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
+	ringRadius: number,
 ): boolean {
 	if (tile.pathWear > 62) return true;
+	// Everything inside the fence is cleared ground, and the village grants a
+	// vision halo just beyond it, so both always read as explored.
+	if (villageDistance(tile, anchor) < ringRadius) return true;
 	const dx = tile.x - anchor.x;
 	const dy = tile.y - anchor.y;
 	return Math.sqrt(dx * dx + dy * dy) < VILLAGE_VISION_RADIUS;
@@ -102,12 +108,13 @@ const SOLID_FOG = FOG_SHADES[FOG_SHADES.length - 1];
 function computeFogShades(
 	tiles: WorldTile[],
 	anchor: { x: number; y: number },
+	ringRadius: number,
 ): Map<string, string> {
-	const explored = tiles.filter((tile) => isExplored(tile, anchor));
+	const explored = tiles.filter((tile) => isExplored(tile, anchor, ringRadius));
 	const shades = new Map<string, string>();
 
 	for (const tile of tiles) {
-		if (isExplored(tile, anchor)) {
+		if (isExplored(tile, anchor, ringRadius)) {
 			continue;
 		}
 		if (explored.length === 0) {
@@ -150,17 +157,18 @@ function villageDistance(
 function ringSprites(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
+	ringRadius: number,
 ): Array<{ src: string; ox: number; oy: number }> {
-	if (villageDistance(tile, anchor) !== VILLAGE_RING_RADIUS || hasWater(tile)) {
+	if (villageDistance(tile, anchor) !== ringRadius || hasWater(tile)) {
 		return [];
 	}
 	const dx = tile.x - anchor.x;
 	const dy = tile.y - anchor.y;
-	if (dx === 0 && dy === VILLAGE_RING_RADIUS) {
+	if (dx === 0 && dy === ringRadius) {
 		return [{ src: GATE_SPRITE, ox: 0, oy: 0 }];
 	}
-	const onRow = Math.abs(dy) === VILLAGE_RING_RADIUS;
-	const onColumn = Math.abs(dx) === VILLAGE_RING_RADIUS;
+	const onRow = Math.abs(dy) === ringRadius;
+	const onColumn = Math.abs(dx) === ringRadius;
 	// Corners: shift each direction half a tile toward its edge so the
 	// two rails meet in an L instead of crossing in an X.
 	if (onRow && onColumn) {
@@ -184,24 +192,27 @@ function ringSprites(
 function isVillageClearing(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
+	ringRadius: number,
 ): boolean {
-	return villageDistance(tile, anchor) < VILLAGE_RING_RADIUS && !hasWater(tile);
+	return villageDistance(tile, anchor) < ringRadius && !hasWater(tile);
 }
 
 const IsoTile = memo(function IsoTile({
 	tile,
 	anchor,
+	ringRadius,
 	showInfo,
 	fogShade,
 }: {
 	tile: WorldTile;
 	anchor: { x: number; y: number };
+	ringRadius: number;
 	showInfo: boolean;
 	/** Precomputed fog color for unexplored tiles (see computeFogShades). */
 	fogShade: string;
 }) {
 	const { left, top } = tileToIso(tile.x, tile.y, ISO);
-	const explored = isExplored(tile, anchor);
+	const explored = isExplored(tile, anchor, ringRadius);
 	const tileZ = zIndexFor(tile.x, tile.y, "tile", ISO);
 	const objectZ = zIndexFor(tile.x, tile.y, "object", ISO);
 
@@ -231,14 +242,16 @@ const IsoTile = memo(function IsoTile({
 	// Worldgen seeds faint trails up to ~60 wear; only genuinely cat-worn
 	// routes cross this bar.
 	const isRoad =
-		!isWater && tile.pathWear >= 70 && !isVillageClearing(tile, anchor);
+		!isWater &&
+		tile.pathWear >= 70 &&
+		!isVillageClearing(tile, anchor, ringRadius);
 	const sprite = isWater
 		? { src: WATER_SPRITE }
 		: isBuiltRoad
 			? { src: BUILT_ROAD_SPRITE }
 			: isRoad
 				? { src: ROAD_SPRITE }
-				: isVillageClearing(tile, anchor)
+				: isVillageClearing(tile, anchor, ringRadius)
 					? TILE_SPRITES.field
 					: TILE_SPRITES[tile.type];
 	const title = `${tile.type.replaceAll("_", " ")} (${tile.x}, ${tile.y})`;
@@ -295,7 +308,7 @@ const IsoTile = memo(function IsoTile({
 			)}
 
 			{/* Fence ring (with a south gate) around the founding village */}
-			{ringSprites(tile, anchor).map((fence) => (
+			{ringSprites(tile, anchor, ringRadius).map((fence) => (
 				<img
 					key={fence.src}
 					src={fence.src}
@@ -336,17 +349,19 @@ const ChunkView = memo(function ChunkView({
 	chunkX,
 	chunkY,
 	anchor,
+	ringRadius,
 	showInfo,
 }: {
 	chunkX: number;
 	chunkY: number;
 	anchor: { x: number; y: number };
+	ringRadius: number;
 	showInfo: boolean;
 }) {
 	const tiles = useChunkTiles(chunkX, chunkY);
 	const fogShades = useMemo(
-		() => (tiles ? computeFogShades(tiles, anchor) : null),
-		[tiles, anchor],
+		() => (tiles ? computeFogShades(tiles, anchor, ringRadius) : null),
+		[tiles, anchor, ringRadius],
 	);
 
 	if (!tiles || tiles.length === 0) {
@@ -384,6 +399,7 @@ const ChunkView = memo(function ChunkView({
 					key={tile._id}
 					tile={tile}
 					anchor={anchor}
+					ringRadius={ringRadius}
 					showInfo={showInfo}
 					fogShade={fogShades?.get(tile._id) ?? SOLID_FOG}
 				/>
@@ -395,6 +411,7 @@ const ChunkView = memo(function ChunkView({
 export function TileLayer({
 	chunks,
 	anchor,
+	ringRadius = VILLAGE_RING_RADIUS,
 	showInfo = false,
 }: TileLayerProps) {
 	return (
@@ -405,6 +422,7 @@ export function TileLayer({
 					chunkX={chunk.chunkX}
 					chunkY={chunk.chunkY}
 					anchor={anchor}
+					ringRadius={ringRadius}
 					showInfo={showInfo}
 				/>
 			))}

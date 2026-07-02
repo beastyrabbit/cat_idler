@@ -33,6 +33,12 @@ export const QUARRY_LOW_RATIO = 0.4;
 export const QUARRY_HOLD_RATIO = 0.6;
 /** Quarry expeditions the leader keeps running while materials are low. */
 export const QUARRY_TARGET = 1;
+/** Below this water/capacity ratio, the leader sends cats to fetch water. */
+export const WATER_LOW_RATIO = 0.5;
+/** At or above this water/capacity ratio, no new water fetch is dispatched. */
+export const WATER_HOLD_RATIO = 0.85;
+/** Water-fetch expeditions kept running while the reservoir is low. */
+export const WATER_FETCH_TARGET = 2;
 /** Explore jobs the leader keeps running while a frontier remains. */
 export const SCOUT_TARGET = 2;
 /** Stores must exceed this fraction of capacity before food is tithed. */
@@ -54,6 +60,9 @@ export interface LeaderSnapshot {
 	/** Materials in store and the cap they're clamped to. */
 	materials: number;
 	materialsCapacity: number;
+	/** Water in store and the cap it's clamped to. */
+	water: number;
+	waterCapacity: number;
 	housing: { capacity: number; committed: number };
 	/** hunt_expedition jobs in flight (active or queued). */
 	activeHunts: number;
@@ -61,14 +70,22 @@ export interface LeaderSnapshot {
 	activeQuarries: number;
 	/** explore jobs in flight (active or queued). */
 	activeScouts: number;
+	/** fetch_water jobs in flight (active or queued). */
+	activeWaterFetchers: number;
 	/** An explored mountains/cave tile exists to quarry. */
 	hasQuarrySite: boolean;
+	/** An explored water tile the colony can draw from. */
+	hasWaterSite: boolean;
 	/** An unexplored tile still sits on the reachable frontier. */
 	hasFrontier: boolean;
 	/** Den plans in flight: leader_plan_house or a build_house den. */
 	denPlansInFlight: number;
 	/** Storehouse builds in flight: build_house with a food_storage target. */
 	storagePlansInFlight: number;
+	/** Finished granary storehouses currently standing. */
+	storehouseCount: number;
+	/** Cap on total storehouses (scales with population). */
+	storehouseCap: number;
 	/** Completed workshops that have no assigned worker. */
 	workshopsNeedingWorkers: number;
 }
@@ -76,6 +93,7 @@ export interface LeaderSnapshot {
 export type LeaderDecision =
 	| { kind: "hunt"; count: number }
 	| { kind: "cancel_hunts" }
+	| { kind: "fetch_water"; count: number }
 	| { kind: "quarry"; count: number }
 	| { kind: "scout"; count: number }
 	| { kind: "build_den" }
@@ -134,6 +152,35 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 		}
 	}
 
+	// --- Water: the colony draws its own water from the nearest known
+	// water tile. Hysteresis mirrors the hunts — dispatch below 50% of the
+	// reservoir cap, hold through the 50-85% band, and stop above 85%. Water
+	// is life-or-death, so it's planned right after hunting and ahead of the
+	// slower material/scout work.
+	let waterFetchPlanned = 0;
+	if (snapshot.hasWaterSite) {
+		const waterRatio = foodRatio(snapshot.water, snapshot.waterCapacity);
+		let wantFetchers = snapshot.activeWaterFetchers;
+		if (waterRatio < WATER_LOW_RATIO) {
+			wantFetchers = WATER_FETCH_TARGET;
+		} else if (waterRatio >= WATER_HOLD_RATIO) {
+			wantFetchers = 0;
+		}
+		const idleForWater = Math.max(0, snapshot.idleCats - huntsPlanned);
+		const roomForWater = Math.max(0, employmentRoom - huntsPlanned);
+		waterFetchPlanned = Math.max(
+			0,
+			Math.min(
+				wantFetchers - snapshot.activeWaterFetchers,
+				idleForWater,
+				roomForWater,
+			),
+		);
+		if (waterFetchPlanned > 0) {
+			decisions.push({ kind: "fetch_water", count: waterFetchPlanned });
+		}
+	}
+
 	// --- Quarry: keep one expedition running while materials run low.
 	// Hysteresis mirrors the hunts — dispatch below 40% of the materials
 	// cap, hold through the 40-60% band, and open nothing above 60%.
@@ -149,8 +196,14 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 		} else if (materialsRatio >= QUARRY_HOLD_RATIO) {
 			wantQuarries = 0;
 		}
-		const idleForQuarry = Math.max(0, snapshot.idleCats - huntsPlanned);
-		const roomForQuarry = Math.max(0, employmentRoom - huntsPlanned);
+		const idleForQuarry = Math.max(
+			0,
+			snapshot.idleCats - huntsPlanned - waterFetchPlanned,
+		);
+		const roomForQuarry = Math.max(
+			0,
+			employmentRoom - huntsPlanned - waterFetchPlanned,
+		);
 		quarriesPlanned = Math.max(
 			0,
 			Math.min(
@@ -170,11 +223,11 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 	if (snapshot.hasFrontier) {
 		const idleForScout = Math.max(
 			0,
-			snapshot.idleCats - huntsPlanned - quarriesPlanned,
+			snapshot.idleCats - huntsPlanned - waterFetchPlanned - quarriesPlanned,
 		);
 		const roomForScout = Math.max(
 			0,
-			employmentRoom - huntsPlanned - quarriesPlanned,
+			employmentRoom - huntsPlanned - waterFetchPlanned - quarriesPlanned,
 		);
 		scoutsPlanned = Math.max(
 			0,
@@ -189,8 +242,17 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 		}
 	}
 
-	// --- Storehouse: stores brushing the cap ---------------------------
-	if (ratio > STORAGE_RATIO && snapshot.storagePlansInFlight === 0) {
+	// --- Storehouse: stores brushing the cap, but only up to the
+	// population-scaled storehouse cap (and one build at a time). Without the
+	// cap the leader re-triggers every time a finished granary leaves food
+	// still above 90%, carpeting the clearing in storehouses.
+	const storehousesPlannedOrBuilt =
+		snapshot.storehouseCount + snapshot.storagePlansInFlight;
+	if (
+		ratio > STORAGE_RATIO &&
+		snapshot.storagePlansInFlight === 0 &&
+		storehousesPlannedOrBuilt < snapshot.storehouseCap
+	) {
 		decisions.push({ kind: "build_storage" });
 	}
 
@@ -205,7 +267,11 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 	// --- Workshops: staff idlers not already claimed by hunts/quarry/scout
 	const idleAfterHunts = Math.max(
 		0,
-		snapshot.idleCats - huntsPlanned - quarriesPlanned - scoutsPlanned,
+		snapshot.idleCats -
+			huntsPlanned -
+			waterFetchPlanned -
+			quarriesPlanned -
+			scoutsPlanned,
 	);
 	const staffing = Math.min(snapshot.workshopsNeedingWorkers, idleAfterHunts);
 	if (staffing > 0) {

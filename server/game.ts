@@ -9,7 +9,7 @@
  * handlers call the rest.
  */
 
-import { and, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNull, lte } from "drizzle-orm";
 import { nanoid } from "nanoid";
 
 import type { GameDb } from "@/db/client";
@@ -63,6 +63,7 @@ import { type LeaderSnapshot, planLeaderActions } from "@/lib/game/leaderAI";
 import {
 	advanceMovement,
 	destinationForJob,
+	EXPLORE_SPEED_FACTOR,
 	MOVE_SPEED_TILES_PER_SEC,
 	pickWanderTarget,
 	type WorldPos,
@@ -78,6 +79,11 @@ import {
 } from "@/lib/game/production";
 import { rollSeeded } from "@/lib/game/seededRng";
 import { shouldDeposit } from "@/lib/game/shrine";
+import {
+	countStorehouses,
+	storageCapacities,
+	storehouseCap,
+} from "@/lib/game/storage";
 import { applySurvivalTick } from "@/lib/game/survival";
 import { configForPreset } from "@/lib/game/testAcceleration";
 import {
@@ -92,6 +98,7 @@ import {
 	ringCells,
 	SHRINE_LOCAL,
 	VILLAGE_ANCHOR,
+	villageRingRadius,
 } from "@/lib/game/villageLayout";
 import { isInZone, pickTargetWithZones, type Zone } from "@/lib/game/zones";
 import type { CatStats } from "@/types/game";
@@ -108,8 +115,37 @@ const QUARRY_TILE_TYPES: ReadonlySet<string> = new Set([
 ]);
 /** Materials one quarry expedition hauls home across its trips. */
 const QUARRY_TOTAL_YIELD = 15;
+/** Water one fetch expedition hauls home across its trips. */
+const WATER_TOTAL_YIELD = 40;
 /** Explore jobs only target fogged frontier tiles within this range. */
 const SCOUT_RANGE = 20;
+
+/**
+ * Wear a single traversal lays on a trodden tile. The first pass reveals the
+ * tile (clamped to 64); a second pass over the same tile crosses the road
+ * threshold (>=70), so shared corridors between shrine and work sites harden
+ * into roads while a one-off scouting crossing stays bare explored ground.
+ */
+const WALK_WEAR = 8;
+/**
+ * Most path wear that can fade in one tick. Traversal adds {@link WALK_WEAR}
+ * per pass, so a route walked repeatedly outpaces this cap and hardens into a
+ * road, while a one-off crossing fades back to bare explored ground.
+ */
+const MAX_PATH_DECAY_PER_TICK = 2;
+
+/** A world tile holds drawable water (river channel or a resource pool). */
+function tileHasWater(tile: {
+	type: string;
+	overlayFeature?: string | null;
+	resources: { water: number };
+}): boolean {
+	return (
+		tile.type === "river" ||
+		tile.overlayFeature === "river" ||
+		(tile.resources?.water ?? 0) > 0
+	);
+}
 
 const UPGRADE_DEFAULTS = [
 	{
@@ -1076,19 +1112,16 @@ export function getGlobalDashboard(db: GameDb) {
 		events: recentEvents,
 		onlineCount,
 		anchor: VILLAGE_ANCHOR,
+		villageRadius: villageRingRadius(colonyBuildings.length),
 		buildings: colonyBuildings.map((building) => ({
 			...building,
 			worldPosition: colonyToWorld(building.position),
 		})),
 		storage: {
-			foodCapacity:
-				200 +
-				400 *
-					colonyBuildings
-						.filter(
-							(b) => b.type === "food_storage" && b.constructionProgress >= 100,
-						)
-						.reduce((sum, b) => sum + Math.max(1, b.level), 0),
+			// Per-resource caps derived from the finished storehouses, plus a
+			// `foodCapacity` alias kept for the existing HUD.
+			capacities: storageCapacities(colonyBuildings),
+			foodCapacity: storageCapacities(colonyBuildings).food,
 			titheRates: { food: 20, refined: 5 },
 		},
 		housing: {
@@ -1484,14 +1517,8 @@ export function workerTick(db: GameDb) {
 			.from(buildings)
 			.where(eq(buildings.colonyId, colony._id))
 			.all();
-		const foodCapacity =
-			200 +
-			400 *
-				colonyBuildingsEarly
-					.filter(
-						(b) => b.type === "food_storage" && b.constructionProgress >= 100,
-					)
-					.reduce((sum, b) => sum + Math.max(1, b.level), 0);
+		const caps = storageCapacities(colonyBuildingsEarly);
+		const foodCapacity = caps.food;
 
 		const { foodUse, waterUse } = consumptionForTick(
 			aliveCats.length,
@@ -1512,12 +1539,12 @@ export function workerTick(db: GameDb) {
 			...colony.resources,
 			food: Math.max(0, decayedFood),
 			water: Math.min(
-				foodCapacity,
+				caps.water,
 				Math.max(0, colony.resources.water - waterUse),
 			),
-			herbs: Math.min(foodCapacity, colony.resources.herbs),
-			materials: Math.min(foodCapacity, colony.resources.materials),
-			refined: Math.min(foodCapacity, colony.resources.refined ?? 0),
+			herbs: Math.min(caps.herbs, colony.resources.herbs),
+			materials: Math.min(caps.materials, colony.resources.materials),
+			refined: Math.min(caps.refined, colony.resources.refined ?? 0),
 		};
 
 		// Leader tithe cadence: surplus goes to the gods at most once a
@@ -1547,8 +1574,14 @@ export function workerTick(db: GameDb) {
 		sweepExpiredZones(tx, colony._id, now);
 
 		// Unused paths decay (~1 wear/min). Wear floors at 1 so explored
-		// terrain stays revealed even after the road itself fades.
-		const decayAmount = (elapsedSec * runtime.timeScale) / 60;
+		// terrain stays revealed even after the road itself fades. The decay
+		// is capped per tick (MAX_PATH_DECAY_PER_TICK) so an accelerated preset
+		// can't erase a whole route in one tick before traffic re-lays it —
+		// that cap is what lets roads persist under the hyper/ludicrous presets.
+		const decayAmount = Math.min(
+			MAX_PATH_DECAY_PER_TICK,
+			(elapsedSec * runtime.timeScale) / 60,
+		);
 		if (decayAmount > 0) {
 			const wornTiles = tx
 				.select()
@@ -1561,8 +1594,20 @@ export function workerTick(db: GameDb) {
 				if (worn.overlayFeature === "road_built") {
 					continue; // built roads are permanent
 				}
-				const floor = worn.pathWear > 62 ? 63 : 1;
-				const next = Math.max(floor, worn.pathWear - decayAmount);
+				let next = worn.pathWear;
+				if (worn.pathWear >= 70) {
+					// A worn road slowly fades back toward a bare trail once the
+					// traffic that made it stops.
+					next = Math.max(63, worn.pathWear - decayAmount);
+				} else if (worn.pathWear > 62) {
+					// Revealed-but-not-road ground stays put: it's explored terrain
+					// and a faint trail, and freezing it here is what lets repeated
+					// traversals accumulate into a road under accelerated presets.
+					continue;
+				} else {
+					// Worldgen's faint seeded trails fade to nothing.
+					next = Math.max(1, worn.pathWear - decayAmount);
+				}
 				if (next !== worn.pathWear) {
 					tx.update(worldTiles)
 						.set({ pathWear: next })
@@ -1698,6 +1743,29 @@ export function workerTick(db: GameDb) {
 			return cachedQuarrySites;
 		};
 
+		// Explored water country, nearest first — the colony draws water from
+		// the closest known river/pond tile.
+		let cachedWaterSites: WorldPos[] | null = null;
+		const waterSitesNearVillage = (): WorldPos[] => {
+			if (!cachedWaterSites) {
+				cachedWaterSites = colonyTiles()
+					.filter((tile) => tileHasWater(tile) && tileIsExplored(tile))
+					.sort((a, b) => chebFromAnchor(a) - chebFromAnchor(b))
+					.map((tile) => ({ x: tile.x, y: tile.y }));
+			}
+			return cachedWaterSites;
+		};
+
+		// A colony-local build cell sits on water when its world tile is a
+		// river/pond — scaffolds must never rise there.
+		const localCellIsWater = (local: WorldPos): boolean => {
+			const world = colonyToWorld(local);
+			const tile = colonyTiles().find(
+				(t) => t.x === world.x && t.y === world.y,
+			);
+			return tile ? tileHasWater(tile) : false;
+		};
+
 		// Frontier tiles: still fogged, within scouting range, and touching
 		// explored land — the edge the leader sends scouts to reveal.
 		let cachedFrontierTiles: WorldPos[] | null = null;
@@ -1798,7 +1866,12 @@ export function workerTick(db: GameDb) {
 					.where(eq(buildings.colonyId, colony._id))
 					.all()
 					.map((b) => b.position);
-				const siteLocal = nextBuildingSite(occupied, nextMovementRoll());
+				const siteLocal = nextBuildingSite(
+					occupied,
+					nextMovementRoll(),
+					undefined,
+					localCellIsWater,
+				);
 				if (siteLocal) {
 					const buildingId = nanoid();
 					tx.insert(buildings)
@@ -1849,6 +1922,10 @@ export function workerTick(db: GameDb) {
 			if (job.kind === "quarry") {
 				quarrySite = quarrySitesNearVillage()[0];
 			}
+			let waterSite: WorldPos | undefined;
+			if (job.kind === "fetch_water") {
+				waterSite = waterSitesNearVillage()[0];
+			}
 			let exploreSite: WorldPos | undefined;
 			if (job.kind === "explore") {
 				const frontier = frontierTilesNearVillage();
@@ -1864,6 +1941,7 @@ export function workerTick(db: GameDb) {
 				roll: nextMovementRoll(),
 				site: constructionSite ?? undefined,
 				quarrySite,
+				waterSite,
 				exploreSite,
 			});
 			if (jobDestination) {
@@ -1958,6 +2036,9 @@ export function workerTick(db: GameDb) {
 		const activeScouts = activeJobs.filter(
 			(job) => job.kind === "explore",
 		).length;
+		const activeWaterFetchers = activeJobs.filter(
+			(job) => job.kind === "fetch_water",
+		).length;
 		const denPlansInFlight = activeJobs.filter(
 			(job) =>
 				job.kind === "leader_plan_house" ||
@@ -2016,7 +2097,9 @@ export function workerTick(db: GameDb) {
 			},
 			foodCapacity,
 			materials: nextResources.materials,
-			materialsCapacity: foodCapacity,
+			materialsCapacity: caps.materials,
+			water: nextResources.water,
+			waterCapacity: caps.water,
 			housing: {
 				capacity: housingCapacity(colonyBuildings),
 				committed: committedCapacity,
@@ -2024,10 +2107,14 @@ export function workerTick(db: GameDb) {
 			activeHunts,
 			activeQuarries,
 			activeScouts,
+			activeWaterFetchers,
 			hasQuarrySite: quarrySitesNearVillage().length > 0,
+			hasWaterSite: waterSitesNearVillage().length > 0,
 			hasFrontier: frontierTilesNearVillage().length > 0,
 			denPlansInFlight,
 			storagePlansInFlight,
+			storehouseCount: countStorehouses(colonyBuildings),
+			storehouseCap: storehouseCap(aliveCats.length),
 			workshopsNeedingWorkers: workshopsNeedingWorkers.length,
 		};
 
@@ -2133,6 +2220,34 @@ export function workerTick(db: GameDb) {
 							miner,
 						);
 						claimIdle(miner);
+						dispatched += 1;
+					}
+					break;
+				}
+				case "fetch_water": {
+					// Any able-bodied cat can haul water; send the sturdiest idlers.
+					const carriers = [...availableIdle].sort(
+						(a, b) => b.stats.hunting - a.stats.hunting,
+					);
+					let dispatched = 0;
+					for (const carrier of carriers) {
+						if (dispatched >= decision.count) {
+							break;
+						}
+						if (!canTakePolicyAction()) {
+							break;
+						}
+						queueJob(
+							tx,
+							colony._id,
+							"fetch_water",
+							"leader",
+							upgrades,
+							runtime,
+							null,
+							carrier,
+						);
+						claimIdle(carrier);
 						dispatched += 1;
 					}
 					break;
@@ -2371,6 +2486,8 @@ export function workerTick(db: GameDb) {
 						patchedResources.food += cat.carrying.amount;
 					} else if (cat.carrying.kind === "materials") {
 						patchedResources.materials += cat.carrying.amount;
+					} else if (cat.carrying.kind === "water") {
+						patchedResources.water += cat.carrying.amount;
 					} else {
 						globalUpgradePoints += cat.carrying.amount;
 					}
@@ -2548,6 +2665,28 @@ export function workerTick(db: GameDb) {
 						carrying:
 							reward > 0
 								? { kind: "materials", amount: reward, jobEndedAt: now }
+								: null,
+					})
+					.where(eq(cats._id, assignedCat._id))
+					.run();
+			}
+
+			if (job.kind === "fetch_water" && assignedCat) {
+				const meta = (job.metadata as Record<string, unknown> | null) ?? {};
+				// Mirrors the quarry haul: trips may already have carried shares
+				// home, so completion picks up exactly what's left of the load.
+				const total =
+					typeof meta.totalYield === "number"
+						? meta.totalYield
+						: WATER_TOTAL_YIELD;
+				const tripsDone =
+					typeof meta.tripsDone === "number" ? meta.tripsDone : 0;
+				const reward = remainingYield(total, HUNT_TRIP_COUNT, tripsDone);
+				tx.update(cats)
+					.set({
+						carrying:
+							reward > 0
+								? { kind: "water", amount: reward, jobEndedAt: now }
 								: null,
 					})
 					.where(eq(cats._id, assignedCat._id))
@@ -2734,7 +2873,8 @@ export function workerTick(db: GameDb) {
 					job.kind === "build_house" ||
 					job.kind === "ritual" ||
 					job.kind === "quarry" ||
-					job.kind === "explore")
+					job.kind === "explore" ||
+					job.kind === "fetch_water")
 			) {
 				const homeSpot =
 					job.kind === "build_house"
@@ -2773,7 +2913,11 @@ export function workerTick(db: GameDb) {
 		// style, idle-paced: trips are spread across the job duration).
 		for (const job of getJobsByStatus(tx, colony._id, "active")) {
 			const isQuarry = job.kind === "quarry";
-			if ((job.kind !== "hunt_expedition" && !isQuarry) || !job.assignedCatId) {
+			const isWaterFetch = job.kind === "fetch_water";
+			if (
+				(job.kind !== "hunt_expedition" && !isQuarry && !isWaterFetch) ||
+				!job.assignedCatId
+			) {
 				continue;
 			}
 			const meta = (job.metadata as Record<string, unknown> | null) ?? {};
@@ -2805,18 +2949,21 @@ export function workerTick(db: GameDb) {
 			const total =
 				typeof meta.totalYield === "number"
 					? meta.totalYield
-					: isQuarry
-						? QUARRY_TOTAL_YIELD
-						: getHuntReward(
-								worker.stats.hunting,
-								worker.specialization ?? null,
-								workerRoleXp.hunter,
-								upgrades,
-							);
+					: isWaterFetch
+						? WATER_TOTAL_YIELD
+						: isQuarry
+							? QUARRY_TOTAL_YIELD
+							: getHuntReward(
+									worker.stats.hunting,
+									worker.specialization ?? null,
+									workerRoleXp.hunter,
+									upgrades,
+								);
 			const share = splitYield(total, HUNT_TRIP_COUNT, tripsDone);
 
-			// Hunt shares eat into the site's food; quarry stone is inexhaustible.
-			if (!isQuarry) {
+			// Hunt shares eat into the site's food; quarry stone and river
+			// water are inexhaustible.
+			if (!isQuarry && !isWaterFetch) {
 				drainHuntSite(meta.site as WorldPos | undefined, share);
 			}
 
@@ -2834,7 +2981,7 @@ export function workerTick(db: GameDb) {
 			tx.update(cats)
 				.set({
 					carrying: {
-						kind: isQuarry ? "materials" : "food",
+						kind: isWaterFetch ? "water" : isQuarry ? "materials" : "food",
 						amount: share,
 						jobEndedAt: now,
 					},
@@ -2849,6 +2996,10 @@ export function workerTick(db: GameDb) {
 		// Cosmetic only — the economy stays on job timers above.
 		const movementElapsed = elapsedSec * runtime.timeScale;
 		const wanderChance = Math.min(0.08, 0.02 * elapsedSec);
+		// Fence/clearing radius grows as the village fills — the gate, fence
+		// crossing, and "outside the village" reveal all key off it so the
+		// server and client agree on where the palisade sits.
+		const ringRadius = villageRingRadius(colonyBuildings.length);
 		for (const cat of getAliveCats(tx, colony._id)) {
 			const worldPos: WorldPos =
 				cat.position.map === "world"
@@ -2869,6 +3020,8 @@ export function workerTick(db: GameDb) {
 					patchedResources.food += cat.carrying.amount;
 				} else if (cat.carrying.kind === "materials") {
 					patchedResources.materials += cat.carrying.amount;
+				} else if (cat.carrying.kind === "water") {
+					patchedResources.water += cat.carrying.amount;
 				} else {
 					globalUpgradePoints += cat.carrying.amount;
 				}
@@ -2884,7 +3037,9 @@ export function workerTick(db: GameDb) {
 						? `${cat.name} delivered ${Math.round(cat.carrying.amount)} food to the shrine.`
 						: cat.carrying.kind === "materials"
 							? `${cat.name} hauled ${Math.round(cat.carrying.amount)} materials to the shrine.`
-							: `${cat.name}'s ritual beamed ${cat.carrying.amount} blessing${cat.carrying.amount === 1 ? "" : "s"} up to the players.`,
+							: cat.carrying.kind === "water"
+								? `${cat.name} carried ${Math.round(cat.carrying.amount)} water to the shrine.`
+								: `${cat.name}'s ritual beamed ${cat.carrying.amount} blessing${cat.carrying.amount === 1 ? "" : "s"} up to the players.`,
 					[cat._id],
 					{ kind: cat.carrying.kind, amount: cat.carrying.amount },
 				);
@@ -2894,7 +3049,9 @@ export function workerTick(db: GameDb) {
 				const ongoingJob = getJobsByStatus(tx, colony._id, "active").find(
 					(job) =>
 						job.assignedCatId === cat._id &&
-						(job.kind === "hunt_expedition" || job.kind === "quarry") &&
+						(job.kind === "hunt_expedition" ||
+							job.kind === "quarry" ||
+							job.kind === "fetch_water") &&
 						job.endsAt > now,
 				);
 				const ongoingSite = (
@@ -2961,21 +3118,29 @@ export function workerTick(db: GameDb) {
 					),
 				)
 				.get();
+			// Explorers pick their way slowly through the fog on the way out;
+			// once they're done and heading home they move at normal pace.
+			const exploreSlowdown =
+				cat.currentTask === "explore" && activity === "traveling"
+					? EXPLORE_SPEED_FACTOR
+					: 1;
 			const speed =
 				MOVE_SPEED_TILES_PER_SEC *
 				(1 +
 					(standingTile?.overlayFeature === "road_built"
 						? 0.6
-						: getPathSpeedBonus(standingTile?.pathWear ?? 0)));
+						: getPathSpeedBonus(standingTile?.pathWear ?? 0))) *
+				exploreSlowdown;
 			// The village fence blocks travel: crossing the ring means going
 			// through the south gate first.
-			const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + 4 };
+			const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + ringRadius };
 			const ringDist = (p: WorldPos) =>
 				Math.max(
 					Math.abs(p.x - VILLAGE_ANCHOR.x),
 					Math.abs(p.y - VILLAGE_ANCHOR.y),
 				);
-			const crossesFence = ringDist(worldPos) < 4 !== ringDist(destination) < 4;
+			const crossesFence =
+				ringDist(worldPos) < ringRadius !== ringDist(destination) < ringRadius;
 			const atGate =
 				Math.abs(worldPos.x - gate.x) < 1 && Math.abs(worldPos.y - gate.y) < 1;
 			const stepTarget = crossesFence && !atGate ? gate : destination;
@@ -3036,41 +3201,101 @@ export function workerTick(db: GameDb) {
 				.where(eq(cats._id, cat._id))
 				.run();
 
-			// Exploration: movement outside the village wears paths, which
-			// also reveals fog on the map.
+			// Exploration: every tile the cat trod this tick wears toward a
+			// visible road, and a fog halo around the whole route is revealed.
+			// Walking the full segment (not just the landing tile) is what lets
+			// roads form under the accelerated presets, where a cat can cross
+			// many tiles in a single tick.
 			if (moved) {
-				const tileX = Math.round(step.position.x);
-				const tileY = Math.round(step.position.y);
-				const outsideVillage =
-					Math.max(
-						Math.abs(tileX - VILLAGE_ANCHOR.x),
-						Math.abs(tileY - VILLAGE_ANCHOR.y),
-					) > 4;
-				if (outsideVillage) {
-					const tile = tx
-						.select()
-						.from(worldTiles)
-						.where(
-							and(
-								eq(worldTiles.colonyId, colony._id),
-								eq(worldTiles.x, tileX),
-								eq(worldTiles.y, tileY),
-							),
-						)
-						.get();
-					if (tile) {
-						// Walking a tile reveals it immediately (>62 = explored);
-						// repeated traffic pushes it toward a visible road (>=70).
+				// advanceMovement steps along one axis per tick, so the route is
+				// a straight run of integer tiles from start to landing.
+				const startX = Math.round(worldPos.x);
+				const startY = Math.round(worldPos.y);
+				const endX = Math.round(step.position.x);
+				const endY = Math.round(step.position.y);
+				const walked: WorldPos[] = [];
+				if (startX === endX) {
+					const lo = Math.min(startY, endY);
+					const hi = Math.max(startY, endY);
+					for (let y = lo; y <= hi; y++) {
+						walked.push({ x: endX, y });
+					}
+				} else {
+					const lo = Math.min(startX, endX);
+					const hi = Math.max(startX, endX);
+					for (let x = lo; x <= hi; x++) {
+						walked.push({ x, y: endY });
+					}
+				}
+
+				// Ordinary cats reveal a 3x3; explorers sweep a wide 5x5.
+				const revealRadius = cat.currentTask === "explore" ? 2 : 1;
+				const walkedKeys = new Set(walked.map((w) => `${w.x},${w.y}`));
+				const xs = walked.map((w) => w.x);
+				const ys = walked.map((w) => w.y);
+				const nearby = tx
+					.select()
+					.from(worldTiles)
+					.where(
+						and(
+							eq(worldTiles.colonyId, colony._id),
+							gte(worldTiles.x, Math.min(...xs) - revealRadius),
+							lte(worldTiles.x, Math.max(...xs) + revealRadius),
+							gte(worldTiles.y, Math.min(...ys) - revealRadius),
+							lte(worldTiles.y, Math.max(...ys) + revealRadius),
+						),
+					)
+					.all();
+				for (const tile of nearby) {
+					const outsideVillage =
+						Math.max(
+							Math.abs(tile.x - VILLAGE_ANCHOR.x),
+							Math.abs(tile.y - VILLAGE_ANCHOR.y),
+						) > ringRadius;
+					if (!outsideVillage) {
+						continue; // the clearing inside the fence is already open ground
+					}
+					const onRoute = walkedKeys.has(`${tile.x},${tile.y}`);
+					// Tiles actually trodden climb toward a road (>=70 renders a road
+					// sprite). Halo tiles are only revealed (>=63 clears the >62
+					// explored threshold) so reveal never spawns phantom roads.
+					let nextWear = tile.pathWear;
+					if (onRoute) {
+						nextWear = Math.max(addPathWear(tile.pathWear, WALK_WEAR), 64);
+					} else {
+						const nearRoute = walked.some(
+							(w) =>
+								Math.max(Math.abs(w.x - tile.x), Math.abs(w.y - tile.y)) <=
+								revealRadius,
+						);
+						if (nearRoute) {
+							nextWear = Math.max(tile.pathWear, 63);
+						}
+					}
+					if (nextWear !== tile.pathWear) {
 						tx.update(worldTiles)
-							.set({
-								pathWear: Math.max(addPathWear(tile.pathWear, 2), 64),
-							})
+							.set({ pathWear: nextWear })
 							.where(eq(worldTiles._id, tile._id))
 							.run();
 					}
 				}
 			}
 		}
+
+		// Storage caps are the final word: deposits, field yields, and player
+		// supplies this tick can push a store past its cap, so clamp every
+		// resource down to what the buildings can actually hold.
+		patchedResources.food = Math.min(patchedResources.food, caps.food);
+		patchedResources.water = Math.min(patchedResources.water, caps.water);
+		patchedResources.herbs = Math.min(patchedResources.herbs, caps.herbs);
+		patchedResources.materials = Math.min(
+			patchedResources.materials,
+			caps.materials,
+		);
+		patchedResources.refined = Math.min(
+			patchedResources.refined ?? 0,
+			caps.refined,
+		);
 
 		const unattendedHours =
 			(now - (colony.lastPlayerActivityAt ?? now)) / 3_600_000;

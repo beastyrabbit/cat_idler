@@ -30,14 +30,20 @@ function snap(overrides: Partial<LeaderSnapshot> = {}): LeaderSnapshot {
 		foodCapacity: CAP,
 		materials: 100,
 		materialsCapacity: CAP,
+		water: CAP,
+		waterCapacity: CAP,
 		housing: { capacity: 40, committed: 0 },
 		activeHunts: 0,
 		activeQuarries: 0,
 		activeScouts: 0,
+		activeWaterFetchers: 0,
 		hasQuarrySite: false,
+		hasWaterSite: false,
 		hasFrontier: false,
 		denPlansInFlight: 0,
 		storagePlansInFlight: 0,
+		storehouseCount: 0,
+		storehouseCap: 3,
 		workshopsNeedingWorkers: 0,
 		...overrides,
 	};
@@ -524,6 +530,81 @@ describe("leaderAI", () => {
 					),
 				),
 			).not.toContain("hunt");
+		});
+	});
+
+	describe("storehouse cap (spam regression)", () => {
+		// Food brushing the cap normally triggers a storehouse.
+		const overflowing = { food: CAP * 0.95, refined: 0 };
+
+		it("builds a storehouse when under the cap", () => {
+			expect(
+				kinds(
+					planLeaderActions(
+						snap({
+							resources: overflowing,
+							storehouseCount: 1,
+							storehouseCap: 3,
+						}),
+					),
+				),
+			).toContain("build_storage");
+		});
+
+		it("stops building once the storehouse cap is reached", () => {
+			// The old bug: every finished granary left food >90%, so the leader
+			// re-triggered forever. With the cap, standing storehouses at the
+			// limit block any new build.
+			expect(
+				kinds(
+					planLeaderActions(
+						snap({
+							resources: overflowing,
+							storehouseCount: 3,
+							storehouseCap: 3,
+						}),
+					),
+				),
+			).not.toContain("build_storage");
+		});
+	});
+
+	describe("water economy", () => {
+		it("fetches water when the reservoir runs low", () => {
+			const decisions = planLeaderActions(
+				snap({ water: CAP * 0.2, hasWaterSite: true }),
+			);
+			const fetch = decisions.find((d) => d.kind === "fetch_water");
+			expect(fetch?.kind).toBe("fetch_water");
+			expect(fetch && fetch.kind === "fetch_water" ? fetch.count : 0).toBe(2);
+		});
+
+		it("holds through the mid band without re-dispatching", () => {
+			expect(
+				kinds(
+					planLeaderActions(
+						snap({
+							water: CAP * 0.7,
+							hasWaterSite: true,
+							activeWaterFetchers: 1,
+						}),
+					),
+				),
+			).not.toContain("fetch_water");
+		});
+
+		it("stops fetching once the reservoir is nearly full", () => {
+			expect(
+				kinds(
+					planLeaderActions(snap({ water: CAP * 0.95, hasWaterSite: true })),
+				),
+			).not.toContain("fetch_water");
+		});
+
+		it("never fetches without a known water tile", () => {
+			expect(
+				kinds(planLeaderActions(snap({ water: 0, hasWaterSite: false }))),
+			).not.toContain("fetch_water");
 		});
 	});
 });

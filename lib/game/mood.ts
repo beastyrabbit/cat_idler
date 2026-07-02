@@ -5,23 +5,23 @@
  * colony population, and colony status. Mood affects productivity.
  */
 
-import type { CatNeeds, LifeStage, ColonyStatus } from "@/types/game";
+import type { CatNeeds, ColonyStatus, LifeStage } from "@/types/game";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type MoodLevel =
-  | "miserable"
-  | "anxious"
-  | "content"
-  | "happy"
-  | "ecstatic";
+	| "miserable"
+	| "anxious"
+	| "content"
+	| "happy"
+	| "ecstatic";
 
 export interface ColonyMorale {
-  dominantMood: MoodLevel;
-  averageModifier: number;
-  catCount: number;
+	dominantMood: MoodLevel;
+	averageModifier: number;
+	catCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -29,18 +29,18 @@ export interface ColonyMorale {
 // ---------------------------------------------------------------------------
 
 const MOOD_MODIFIERS: Record<MoodLevel, number> = {
-  miserable: 0.6,
-  anxious: 0.8,
-  content: 1.0,
-  happy: 1.15,
-  ecstatic: 1.3,
+	miserable: 0.6,
+	anxious: 0.8,
+	content: 1.0,
+	happy: 1.15,
+	ecstatic: 1.3,
 };
 
 const LIFE_STAGE_BONUS: Record<LifeStage, number> = {
-  kitten: 7,
-  young: 8,
-  adult: 10,
-  elder: 5,
+	kitten: 7,
+	young: 8,
+	adult: 10,
+	elder: 5,
 };
 
 // ---------------------------------------------------------------------------
@@ -64,37 +64,37 @@ const LIFE_STAGE_BONUS: Record<LifeStage, number> = {
  *  - 58-70: ecstatic
  */
 export function getMood(
-  needs: CatNeeds,
-  lifeStage: LifeStage,
-  colonyPopulation: number,
-  colonyStatus: ColonyStatus,
+	needs: CatNeeds,
+	lifeStage: LifeStage,
+	colonyPopulation: number,
+	colonyStatus: ColonyStatus,
 ): MoodLevel {
-  const needsAvg =
-    (needs.hunger + needs.thirst + needs.rest + needs.health) / 4;
-  const needsScore = (needsAvg / 100) * 40;
+	const needsAvg =
+		(needs.hunger + needs.thirst + needs.rest + needs.health) / 4;
+	const needsScore = (needsAvg / 100) * 40;
 
-  const lifeStageBonus = LIFE_STAGE_BONUS[lifeStage];
+	const lifeStageBonus = LIFE_STAGE_BONUS[lifeStage];
 
-  let socialBonus: number;
-  if (colonyPopulation >= 11) socialBonus = 10;
-  else if (colonyPopulation >= 6) socialBonus = 8;
-  else if (colonyPopulation >= 2) socialBonus = 5;
-  else if (colonyPopulation === 1) socialBonus = 2;
-  else socialBonus = 0;
+	let socialBonus: number;
+	if (colonyPopulation >= 11) socialBonus = 10;
+	else if (colonyPopulation >= 6) socialBonus = 8;
+	else if (colonyPopulation >= 2) socialBonus = 5;
+	else if (colonyPopulation === 1) socialBonus = 2;
+	else socialBonus = 0;
 
-  let statusBonus: number;
-  if (colonyStatus === "thriving") statusBonus = 10;
-  else if (colonyStatus === "starting") statusBonus = 5;
-  else if (colonyStatus === "struggling") statusBonus = 2;
-  else statusBonus = 0; // dead
+	let statusBonus: number;
+	if (colonyStatus === "thriving") statusBonus = 10;
+	else if (colonyStatus === "starting") statusBonus = 5;
+	else if (colonyStatus === "struggling") statusBonus = 2;
+	else statusBonus = 0; // dead
 
-  const total = needsScore + lifeStageBonus + socialBonus + statusBonus;
+	const total = needsScore + lifeStageBonus + socialBonus + statusBonus;
 
-  if (total >= 58) return "ecstatic";
-  if (total >= 45) return "happy";
-  if (total >= 30) return "content";
-  if (total >= 15) return "anxious";
-  return "miserable";
+	if (total >= 58) return "ecstatic";
+	if (total >= 45) return "happy";
+	if (total >= 30) return "content";
+	if (total >= 15) return "anxious";
+	return "miserable";
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ export function getMood(
  * Get the productivity multiplier for a given mood level.
  */
 export function getMoodModifier(mood: MoodLevel): number {
-  return MOOD_MODIFIERS[mood];
+	return MOOD_MODIFIERS[mood];
 }
 
 // ---------------------------------------------------------------------------
@@ -116,29 +116,29 @@ export function getMoodModifier(mood: MoodLevel): number {
  * Compute aggregate colony morale from individual cat moods.
  */
 export function getColonyMorale(moods: MoodLevel[]): ColonyMorale {
-  if (moods.length === 0) {
-    return { dominantMood: "content", averageModifier: 0, catCount: 0 };
-  }
+	if (moods.length === 0) {
+		return { dominantMood: "content", averageModifier: 0, catCount: 0 };
+	}
 
-  const totalModifier = moods.reduce((sum, m) => sum + MOOD_MODIFIERS[m], 0);
+	const totalModifier = moods.reduce((sum, m) => sum + MOOD_MODIFIERS[m], 0);
 
-  // Count occurrences to find dominant mood
-  const counts: Record<string, number> = {};
-  for (const m of moods) {
-    counts[m] = (counts[m] ?? 0) + 1;
-  }
-  let dominantMood: MoodLevel = moods[0];
-  let maxCount = 0;
-  for (const [mood, count] of Object.entries(counts)) {
-    if (count > maxCount) {
-      maxCount = count;
-      dominantMood = mood as MoodLevel;
-    }
-  }
+	// Count occurrences to find dominant mood
+	const counts: Record<string, number> = {};
+	for (const m of moods) {
+		counts[m] = (counts[m] ?? 0) + 1;
+	}
+	let dominantMood: MoodLevel = moods[0];
+	let maxCount = 0;
+	for (const [mood, count] of Object.entries(counts)) {
+		if (count > maxCount) {
+			maxCount = count;
+			dominantMood = mood as MoodLevel;
+		}
+	}
 
-  return {
-    dominantMood,
-    averageModifier: totalModifier / moods.length,
-    catCount: moods.length,
-  };
+	return {
+		dominantMood,
+		averageModifier: totalModifier / moods.length,
+		catCount: moods.length,
+	};
 }

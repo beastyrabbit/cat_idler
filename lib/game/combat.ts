@@ -22,28 +22,28 @@ import type { CombatResult } from "@/types/game";
  * @returns Combat result with win status and damage
  */
 export function calculateCombatResult(
-  catAttack: number,
-  catDefense: number,
-  enemyStrength: number,
+	catAttack: number,
+	catDefense: number,
+	enemyStrength: number,
 ): CombatResult {
-  // Cat roll: attack + defense + random(1-20)
-  const catRoll = catAttack + catDefense + Math.floor(Math.random() * 20) + 1;
+	// Cat roll: attack + defense + random(1-20)
+	const catRoll = catAttack + catDefense + Math.floor(Math.random() * 20) + 1;
 
-  // Enemy roll: strength + random(1-20)
-  const enemyRoll = enemyStrength + Math.floor(Math.random() * 20) + 1;
+	// Enemy roll: strength + random(1-20)
+	const enemyRoll = enemyStrength + Math.floor(Math.random() * 20) + 1;
 
-  const won = catRoll > enemyRoll;
+	const won = catRoll > enemyRoll;
 
-  if (won) {
-    return { won: true, damage: 0 };
-  }
+	if (won) {
+		return { won: true, damage: 0 };
+	}
 
-  // Calculate damage based on how much cat lost by
-  const lossMargin = enemyRoll - catRoll;
-  // Damage ranges from 30-70, scaled by loss margin (max margin is ~100)
-  const damage = Math.min(70, Math.max(30, 30 + lossMargin * 0.4));
+	// Calculate damage based on how much cat lost by
+	const lossMargin = enemyRoll - catRoll;
+	// Damage ranges from 30-70, scaled by loss margin (max margin is ~100)
+	const damage = Math.min(70, Math.max(30, 30 + lossMargin * 0.4));
 
-  return { won: false, damage: Math.round(damage) };
+	return { won: false, damage: Math.round(damage) };
 }
 
 /**
@@ -60,61 +60,61 @@ export function calculateCombatResult(
  * @returns Number of clicks needed
  */
 export function getClicksNeeded(
-  baseClicks: number,
-  colonyDefense: number,
-  catVision: number,
+	baseClicks: number,
+	colonyDefense: number,
+	catVision: number,
 ): number {
-  // Defense reduces clicks: 50% defense = 50% reduction, 100% defense = 50% reduction (capped)
-  // Formula: multiplier = 1 - (defense / 100) * 0.5
-  // At 50: 1 - 0.25 = 0.75... wait that's not right
-  // Actually: multiplier = 0.5 + (defense / 100) * 0.5
-  // At 0: 0.5 + 0 = 0.5 (50% of base)
-  // At 50: 0.5 + 0.25 = 0.75 (75% of base)
-  // At 100: 0.5 + 0.5 = 1.0 (100% of base)
-  // That's backwards...
+	// Defense reduces clicks: 50% defense = 50% reduction, 100% defense = 50% reduction (capped)
+	// Formula: multiplier = 1 - (defense / 100) * 0.5
+	// At 50: 1 - 0.25 = 0.75... wait that's not right
+	// Actually: multiplier = 0.5 + (defense / 100) * 0.5
+	// At 0: 0.5 + 0 = 0.5 (50% of base)
+	// At 50: 0.5 + 0.25 = 0.75 (75% of base)
+	// At 100: 0.5 + 0.5 = 1.0 (100% of base)
+	// That's backwards...
 
-  // Let me think: 50 defense should give 50% reduction = 0.5 multiplier
-  // So: multiplier = 1 - (defense / 100) * 0.5
-  // At 0: 1 - 0 = 1.0 (100% of base)
-  // At 50: 1 - 0.25 = 0.75 (75% of base) - WRONG, should be 0.5
-  // At 100: 1 - 0.5 = 0.5 (50% of base) - correct
+	// Let me think: 50 defense should give 50% reduction = 0.5 multiplier
+	// So: multiplier = 1 - (defense / 100) * 0.5
+	// At 0: 1 - 0 = 1.0 (100% of base)
+	// At 50: 1 - 0.25 = 0.75 (75% of base) - WRONG, should be 0.5
+	// At 100: 1 - 0.5 = 0.5 (50% of base) - correct
 
-  // Actually: multiplier = 1 - (defense / 100) * 0.5
-  // But test expects 50 defense = 0.5 multiplier
-  // So: 0.5 = 1 - (50 / 100) * x
-  // 0.5 = 1 - 0.5x
-  // 0.5x = 0.5
-  // x = 1
-  // So: multiplier = 1 - (defense / 100) * 1
-  // At 50: 1 - 0.5 = 0.5 ✓
-  // At 100: 1 - 1 = 0 (but should be 0.5 max)
+	// Actually: multiplier = 1 - (defense / 100) * 0.5
+	// But test expects 50 defense = 0.5 multiplier
+	// So: 0.5 = 1 - (50 / 100) * x
+	// 0.5 = 1 - 0.5x
+	// 0.5x = 0.5
+	// x = 1
+	// So: multiplier = 1 - (defense / 100) * 1
+	// At 50: 1 - 0.5 = 0.5 ✓
+	// At 100: 1 - 1 = 0 (but should be 0.5 max)
 
-  // Actually the test says 50 defense = 50% reduction
-  // So: multiplier = 1 - (defense / 100)
-  // At 50: 0.5 ✓
-  // At 100: 0 (but max should be 0.5)
+	// Actually the test says 50 defense = 50% reduction
+	// So: multiplier = 1 - (defense / 100)
+	// At 50: 0.5 ✓
+	// At 100: 0 (but max should be 0.5)
 
-  // Let me use: multiplier = Math.max(0.5, 1 - defense / 100)
-  // At 0: 1.0 ✓
-  // At 50: 0.5 ✓
-  // At 100: 0.5 ✓
+	// Let me use: multiplier = Math.max(0.5, 1 - defense / 100)
+	// At 0: 1.0 ✓
+	// At 50: 0.5 ✓
+	// At 100: 0.5 ✓
 
-  const defenseMultiplier = Math.max(0.5, 1 - colonyDefense / 100);
-  const visionMultiplier = Math.max(0.5, 1 - catVision / 100);
+	const defenseMultiplier = Math.max(0.5, 1 - colonyDefense / 100);
+	const visionMultiplier = Math.max(0.5, 1 - catVision / 100);
 
-  // Stack both modifiers
-  const totalMultiplier = defenseMultiplier * visionMultiplier;
+	// Stack both modifiers
+	const totalMultiplier = defenseMultiplier * visionMultiplier;
 
-  const clicks = baseClicks * totalMultiplier;
+	const clicks = baseClicks * totalMultiplier;
 
-  // Minimum 1 click needed
-  return Math.max(1, Math.round(clicks));
+	// Minimum 1 click needed
+	return Math.max(1, Math.round(clicks));
 }
 
 export interface BuildingForDefense {
-  type: string;
-  level: number;
-  constructionProgress: number;
+	type: string;
+	level: number;
+	constructionProgress: number;
 }
 
 /**
@@ -124,12 +124,12 @@ export interface BuildingForDefense {
  * Multiple walls stack. Total capped at 100. Non-wall buildings ignored.
  */
 export function calculateColonyDefense(
-  buildings: BuildingForDefense[],
+	buildings: BuildingForDefense[],
 ): number {
-  let total = 0;
-  for (const b of buildings) {
-    if (b.type !== "walls") continue;
-    total += Math.floor(b.level * 10 * (b.constructionProgress / 100));
-  }
-  return Math.min(100, total);
+	let total = 0;
+	for (const b of buildings) {
+		if (b.type !== "walls") continue;
+		total += Math.floor(b.level * 10 * (b.constructionProgress / 100));
+	}
+	return Math.min(100, total);
 }
