@@ -979,6 +979,17 @@ export function getGlobalDashboard(db: GameDb) {
 			...building,
 			worldPosition: colonyToWorld(building.position),
 		})),
+		storage: {
+			foodCapacity:
+				200 +
+				400 *
+					colonyBuildings
+						.filter(
+							(b) => b.type === "food_storage" && b.constructionProgress >= 100,
+						)
+						.reduce((sum, b) => sum + Math.max(1, b.level), 0),
+			titheRates: { food: 20, refined: 5 },
+		},
 		housing: {
 			population: aliveCats.length,
 			capacity: housingCapacity(colonyBuildings),
@@ -1366,17 +1377,72 @@ export function workerTick(db: GameDb) {
 
 		const aliveCats = getAliveCats(tx, colony._id);
 
+		// Storage: base stores plus each finished food storehouse.
+		const colonyBuildingsEarly = tx
+			.select()
+			.from(buildings)
+			.where(eq(buildings.colonyId, colony._id))
+			.all();
+		const foodCapacity =
+			200 +
+			400 *
+				colonyBuildingsEarly
+					.filter(
+						(b) => b.type === "food_storage" && b.constructionProgress >= 100,
+					)
+					.reduce((sum, b) => sum + Math.max(1, b.level), 0);
+
 		const { foodUse, waterUse } = consumptionForTick(
 			aliveCats.length,
 			elapsedSec * runtime.resourceDecayMultiplier,
 			upgrades,
 		);
 
+		// Spoilage: food inside storage keeps well; overflow "in the open"
+		// rots fast — offer it to the shrine before it goes off.
+		const rawFood = Math.max(0, colony.resources.food - foodUse);
+		const stored = Math.min(rawFood, foodCapacity);
+		const overflow = Math.max(0, rawFood - foodCapacity);
+		const decayedFood =
+			stored * (1 - 0.0005 * (elapsedSec / 60)) +
+			overflow * (1 - 0.02 * (elapsedSec / 60));
+
 		const nextResources = {
 			...colony.resources,
-			food: Math.max(0, colony.resources.food - foodUse),
+			food: Math.max(0, decayedFood),
 			water: Math.max(0, colony.resources.water - waterUse),
 		};
+
+		// Leader tithe: once per minute, surplus goes to the gods.
+		// Rates: 20 food -> 1 blessing point, 5 refined -> 1 point.
+		const minuteRolled =
+			Math.floor(now / 60_000) !== Math.floor(colony.lastTick / 60_000);
+		if (minuteRolled) {
+			let tithed = 0;
+			if (nextResources.food > foodCapacity * 0.6 + 20) {
+				nextResources.food -= 20;
+				tithed += 1;
+			}
+			if ((nextResources.refined ?? 0) >= 5) {
+				nextResources.refined = (nextResources.refined ?? 0) - 5;
+				tithed += 1;
+			}
+			if (tithed > 0) {
+				tx.update(colonies)
+					.set({
+						globalUpgradePoints: (colony.globalUpgradePoints ?? 0) + tithed,
+					})
+					.where(eq(colonies._id, colony._id))
+					.run();
+				colony.globalUpgradePoints = (colony.globalUpgradePoints ?? 0) + tithed;
+				logEvent(
+					tx,
+					colony._id,
+					"shrine_deposit",
+					`The leader offered surplus stores to the gods (+${tithed} blessing${tithed === 1 ? "" : "s"}).`,
+				);
+			}
+		}
 
 		if (colony.resources.water > 3 && nextResources.water <= 3) {
 			logEvent(
@@ -1481,8 +1547,10 @@ export function workerTick(db: GameDb) {
 						"den",
 				);
 				const scaffoldType =
-					requestedType === "workshop" || requestedType === "field"
-						? (requestedType as "workshop" | "field")
+					requestedType === "workshop" ||
+					requestedType === "field" ||
+					requestedType === "food_storage"
+						? (requestedType as "workshop" | "field" | "food_storage")
 						: ("den" as const);
 				const occupied = tx
 					.select()
@@ -1632,6 +1700,31 @@ export function workerTick(db: GameDb) {
 					hunter,
 				);
 			}
+		}
+
+		// Stores near the cap: the leader commissions another storehouse.
+		const storagePending = [...activeJobs, ...queuedJobs].some(
+			(job) =>
+				job.kind === "build_house" &&
+				(job.metadata as Record<string, unknown> | null)?.buildingType ===
+					"food_storage",
+		);
+		if (
+			nextResources.food > foodCapacity * 0.9 &&
+			!storagePending &&
+			canTakePolicyAction()
+		) {
+			queueJob(
+				tx,
+				colony._id,
+				"build_house",
+				"leader",
+				upgrades,
+				runtime,
+				null,
+				selectBestCat(tx, colony._id, "architect"),
+				{ phase: "construct_house", buildingType: "food_storage" },
+			);
 		}
 
 		// Crowding drives growth: the leader plans a den when shelter runs

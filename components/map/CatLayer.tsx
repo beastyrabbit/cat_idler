@@ -108,12 +108,14 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 						Math.abs(worldPos.y - prev.y) > 4);
 				lastRendered.set(cat._id, { x: worldPos.x, y: worldPos.y });
 				const working = cat.activity === "working";
+				// Face the leg being walked (movement is 4-directional: x first).
+				const legDx = cat.destination ? cat.destination.x - worldPos.x : 0;
+				const legDy = cat.destination ? cat.destination.y - worldPos.y : 0;
 				const group =
 					moving && cat.destination
-						? directionGroup(
-								cat.destination.x - worldPos.x,
-								cat.destination.y - worldPos.y,
-							)
+						? Math.abs(legDx) > 0.01
+							? directionGroup(Math.sign(legDx), 0)
+							: directionGroup(0, Math.sign(legDy))
 						: 0;
 				const badge =
 					(cat.activity ? ACTIVITY_BADGES[cat.activity] : null) ??

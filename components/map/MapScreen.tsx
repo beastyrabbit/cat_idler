@@ -166,6 +166,7 @@ export function MapScreen() {
 	}
 
 	const resources = colony.resources;
+	const foodCapacity = dashboard?.storage?.foodCapacity ?? 200;
 
 	return (
 		<div className="relative h-dvh overflow-hidden bg-[#141c12]">
@@ -219,13 +220,16 @@ export function MapScreen() {
 				</h1>
 
 				<div className="pointer-events-auto flex items-center gap-3 rounded-md border border-[#5d4024] bg-[#f3e6c8] px-4 py-1.5 text-sm font-bold text-[#4a3319] shadow-inner">
-					<span title="Village food stores" className="flex items-center gap-1">
+					<span
+						title={`Village food stores (capacity ${foodCapacity}). Leader tithes surplus: 20 food or 5 refined = 1 blessing. Overflow beyond capacity spoils fast!`}
+						className="flex items-center gap-1"
+					>
 						🍖 {Math.floor(resources.food)}
 						<span className="h-2 w-14 overflow-hidden rounded-full border border-[#5d4024]/50 bg-black/10">
 							<span
 								className="block h-full bg-emerald-600"
 								style={{
-									width: `${Math.min(100, (resources.food / 200) * 100)}%`,
+									width: `${Math.min(100, (resources.food / foodCapacity) * 100)}%`,
 								}}
 							/>
 						</span>
