@@ -18,14 +18,17 @@ describe("movement", () => {
 			expect(step.arrived).toBe(false);
 		});
 
-		it("spills leftover budget from x into y", () => {
+		it("turns corners on separate steps (no diagonal cutting)", () => {
 			const step = advanceMovement({ x: 0, y: 0 }, { x: 1, y: 5 }, 3, 1);
-			expect(step.position).toEqual({ x: 1, y: 2 });
+			expect(step.position).toEqual({ x: 1, y: 0 });
 			expect(step.arrived).toBe(false);
+			const next = advanceMovement(step.position, { x: 1, y: 5 }, 3, 1);
+			expect(next.position).toEqual({ x: 1, y: 3 });
 		});
 
 		it("arrives exactly at the destination without overshooting", () => {
-			const step = advanceMovement({ x: 0, y: 0 }, { x: 1, y: 1 }, 100, 1);
+			const leg = advanceMovement({ x: 0, y: 0 }, { x: 1, y: 1 }, 100, 1);
+			const step = advanceMovement(leg.position, { x: 1, y: 1 }, 100, 1);
 			expect(step.position).toEqual({ x: 1, y: 1 });
 			expect(step.arrived).toBe(true);
 		});

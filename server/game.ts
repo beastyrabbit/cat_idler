@@ -1608,15 +1608,19 @@ export function workerTick(db: GameDb) {
 			const busyIds = new Set(
 				activeJobs.map((job) => job.assignedCatId).filter(Boolean),
 			);
-			const idleHunter = aliveCats
+			const idleHunters = aliveCats
 				.filter(
 					(cat) =>
 						!busyIds.has(cat._id) &&
 						!cat.assignedBuildingId &&
 						(cat.activity ?? "idle") === "idle",
 				)
-				.sort((a, b) => b.stats.hunting - a.stats.hunting)[0];
-			if (idleHunter && canTakePolicyAction()) {
+				.sort((a, b) => b.stats.hunting - a.stats.hunting);
+			// Fill every open expedition slot this tick, one cat per job.
+			for (const hunter of idleHunters.slice(0, huntCap - activeHunts)) {
+				if (!canTakePolicyAction()) {
+					break;
+				}
 				queueJob(
 					tx,
 					colony._id,
@@ -1625,9 +1629,8 @@ export function workerTick(db: GameDb) {
 					upgrades,
 					runtime,
 					null,
-					idleHunter,
+					hunter,
 				);
-				busyIds.add(idleHunter._id);
 			}
 		}
 
@@ -2106,7 +2109,7 @@ export function workerTick(db: GameDb) {
 		// --- Movement pass: cats walk to job sites, come home, or wander.
 		// Cosmetic only — the economy stays on job timers above.
 		const movementElapsed = elapsedSec * runtime.timeScale;
-		const wanderChance = Math.min(0.5, 0.02 * elapsedSec);
+		const wanderChance = Math.min(0.08, 0.02 * elapsedSec);
 		for (const cat of getAliveCats(tx, colony._id)) {
 			const worldPos: WorldPos =
 				cat.position.map === "world"

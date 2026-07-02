@@ -38,17 +38,18 @@ export function advanceMovement(
 	elapsedSec: number,
 	speed: number = MOVE_SPEED_TILES_PER_SEC,
 ): MovementStep {
-	let budget = Math.max(0, elapsedSec) * speed;
+	const budget = Math.max(0, elapsedSec) * speed;
 	let { x, y } = position;
 
+	// Strictly 4-directional: one axis per step, x before y — cats hop
+	// tile to tile instead of cutting corners.
 	const dx = destination.x - x;
-	const stepX = Math.sign(dx) * Math.min(Math.abs(dx), budget);
-	x += stepX;
-	budget -= Math.abs(stepX);
-
-	const dy = destination.y - y;
-	const stepY = Math.sign(dy) * Math.min(Math.abs(dy), budget);
-	y += stepY;
+	if (dx !== 0) {
+		x += Math.sign(dx) * Math.min(Math.abs(dx), budget);
+	} else {
+		const dy = destination.y - y;
+		y += Math.sign(dy) * Math.min(Math.abs(dy), budget);
+	}
 
 	return {
 		position: { x, y },

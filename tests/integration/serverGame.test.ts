@@ -1331,18 +1331,22 @@ describe("cat movement", () => {
 			.where(eq(cats._id, traveler._id))
 			.run();
 
-		// Two legs: through the south gate first, then home.
-		advanceTime(db, 120);
-		workerTick(db);
-		advanceTime(db, 120);
-		workerTick(db);
-
-		const updated = getAliveCatsForTest(db, colony._id).find(
+		// Several legs: 4-directional hops through the south gate, then home.
+		// Stop as soon as it lands (idle cats wander off again afterwards).
+		let updated = getAliveCatsForTest(db, colony._id).find(
 			(cat) => cat._id === traveler._id,
 		)!;
+		for (let i = 0; i < 8; i++) {
+			advanceTime(db, 120);
+			workerTick(db);
+			updated = getAliveCatsForTest(db, colony._id).find(
+				(cat) => cat._id === traveler._id,
+			)!;
+			if (updated.position.x === 7 && updated.position.y === 7) {
+				break;
+			}
+		}
 		expect(updated.position).toEqual({ map: "world", x: 7, y: 7 });
-		expect(updated.activity).toBe("idle");
-		expect(updated.destination).toBeNull();
 	});
 
 	it("sends the worker home when its job completes", () => {

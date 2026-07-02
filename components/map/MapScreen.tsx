@@ -219,8 +219,31 @@ export function MapScreen() {
 				</h1>
 
 				<div className="pointer-events-auto flex items-center gap-3 rounded-md border border-[#5d4024] bg-[#f3e6c8] px-4 py-1.5 text-sm font-bold text-[#4a3319] shadow-inner">
-					<span title="Food">🍖 {Math.floor(resources.food)}</span>
-					<span title="Water">💧 {Math.floor(resources.water)}</span>
+					<span title="Village food stores" className="flex items-center gap-1">
+						🍖 {Math.floor(resources.food)}
+						<span className="h-2 w-14 overflow-hidden rounded-full border border-[#5d4024]/50 bg-black/10">
+							<span
+								className="block h-full bg-emerald-600"
+								style={{
+									width: `${Math.min(100, (resources.food / 200) * 100)}%`,
+								}}
+							/>
+						</span>
+					</span>
+					<span
+						title="Village water stores"
+						className="flex items-center gap-1"
+					>
+						💧 {Math.floor(resources.water)}
+						<span className="h-2 w-14 overflow-hidden rounded-full border border-[#5d4024]/50 bg-black/10">
+							<span
+								className="block h-full bg-sky-600"
+								style={{
+									width: `${Math.min(100, (resources.water / 200) * 100)}%`,
+								}}
+							/>
+						</span>
+					</span>
 					<span title="Herbs">🌿 {Math.floor(resources.herbs)}</span>
 					<span title="Materials">🪵 {Math.floor(resources.materials)}</span>
 					<span title="Refined goods">
@@ -294,8 +317,9 @@ export function MapScreen() {
 			</header>
 
 			{/* Right action panel */}
-			<aside className="absolute bottom-3 right-3 top-24 z-10 flex w-72 max-w-[80vw] flex-col gap-2 overflow-y-auto">
-				<div className={`shrink-0 p-3 ${PANEL}`}>
+			<aside className="absolute bottom-3 right-3 top-24 z-10 flex w-72 max-w-[80vw] flex-col gap-2">
+				{/* Queue grows with its content, scrolls when it outgrows the column */}
+				<div className={`min-h-0 shrink overflow-y-auto p-3 ${PANEL}`}>
 					<h3 className={PANEL_HEADING}>Colony Work</h3>
 					{jobs.length === 0 ? (
 						<p className="text-sm text-[#6b4a2a]/70">Nothing in progress.</p>
@@ -470,7 +494,7 @@ export function MapScreen() {
 				)}
 
 				{/* Player zones: steer the cats */}
-				<div className={`p-3 ${PANEL}`}>
+				<div className={`mt-auto p-3 ${PANEL}`}>
 					<h3 className={PANEL_HEADING}>Zones</h3>
 					{zoneDraft ? (
 						<div className="text-xs font-semibold text-[#4a3319]">
