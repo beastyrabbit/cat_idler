@@ -17,6 +17,7 @@ import {
 	elections,
 	jobs,
 	runHistory,
+	worldTiles,
 	zones as zonesTable,
 } from "@/db/schema";
 import { castVote, requestVoteKick } from "@/server/elections";
@@ -1277,6 +1278,13 @@ describe("cat movement", () => {
 	it("walks a traveling cat toward its destination and sets it to work on arrival", () => {
 		const colony = ensureGlobalColony(db);
 		const walker = getAliveCatsForTest(db, colony._id)[0];
+
+		// Worldgen seeds trail wear that grants speed bonuses — flatten it
+		// so the base walking speed is observable.
+		db.update(worldTiles)
+			.set({ pathWear: 0 })
+			.where(eq(worldTiles.colonyId, colony._id))
+			.run();
 
 		db.update(cats)
 			.set({

@@ -61,9 +61,17 @@ export const TILE_SPRITES: Record<
 	},
 };
 
-/** Dirt embankment ring around the founding village. */
-export const DIRT_HILL_SPRITE = "/images/iso/tiles/dirt-hill.png";
+/** Fence ring around the founding village, with a gate on the south side. */
 export const VILLAGE_RING_RADIUS = 4;
+export const FENCE_X_SPRITE = "/images/iso/tiles/fence-x.png";
+export const FENCE_Y_SPRITE = "/images/iso/tiles/fence-y.png";
+export const GATE_SPRITE = "/images/iso/tiles/gate.png";
+
+/** Water terrain (Isometric Nature pack, remapped to our diamond). */
+export const WATER_SPRITE = "/images/iso/tiles/water.png";
+
+/** Worn road on heavily-trodden tiles (pathWear >= 30). */
+export const ROAD_SPRITE = "/images/iso/tiles/road.png";
 
 export const BUILDING_SPRITES: Record<string, string> = {
 	shrine: "/images/iso/buildings/shrine.png",

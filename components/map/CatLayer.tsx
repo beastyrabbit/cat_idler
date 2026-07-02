@@ -16,6 +16,7 @@ export interface MapCat {
 interface CatLayerProps {
 	cats: MapCat[];
 	leaderId: string | null;
+	onSelect?: (catId: string) => void;
 }
 
 /** Stable small offset inside a tile so co-located cats don't stack exactly. */
@@ -50,7 +51,7 @@ const ACTIVITY_BADGES: Record<string, string> = {
 	returning: "🏠",
 };
 
-export function CatLayer({ cats, leaderId }: CatLayerProps) {
+export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 	return (
 		<>
 			{cats.map((cat) => {
@@ -67,9 +68,11 @@ export function CatLayer({ cats, leaderId }: CatLayerProps) {
 				const isLeader = cat._id === leaderId;
 
 				return (
-					<div
+					<button
+						type="button"
 						key={cat._id}
-						className="absolute flex w-24 flex-col items-center transition-transform duration-1000 ease-linear"
+						onClick={() => onSelect?.(cat._id)}
+						className="absolute flex w-24 cursor-pointer flex-col items-center border-0 bg-transparent p-0 transition-transform duration-1000 ease-linear"
 						style={{
 							left: 0,
 							top: 0,
@@ -78,11 +81,7 @@ export function CatLayer({ cats, leaderId }: CatLayerProps) {
 								center.y + offset.y - 40
 							}px)`,
 						}}
-						title={`${cat.name}${isLeader ? " (leader)" : ""}${
-							cat.currentTask
-								? ` — ${cat.currentTask.replaceAll("_", " ")}`
-								: ""
-						}`}
+						title={`${cat.name}${isLeader ? " (leader)" : ""} — click for details`}
 					>
 						<div className="relative text-3xl drop-shadow-md">
 							{isLeader && (
@@ -108,7 +107,7 @@ export function CatLayer({ cats, leaderId }: CatLayerProps) {
 						<span className="mt-0.5 max-w-full truncate rounded-full bg-black/60 px-1.5 text-[11px] font-semibold text-white">
 							{cat.name}
 						</span>
-					</div>
+					</button>
 				);
 			})}
 		</>

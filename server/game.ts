@@ -9,7 +9,7 @@
  * handlers call the rest.
  */
 
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 
 import type { GameDb } from "@/db/client";
@@ -61,10 +61,12 @@ import {
 import {
 	advanceMovement,
 	destinationForJob,
+	MOVE_SPEED_TILES_PER_SEC,
 	pickWanderTarget,
 	type WorldPos,
 } from "@/lib/game/movement";
 import { generateName } from "@/lib/game/naming";
+import { addPathWear, getPathSpeedBonus } from "@/lib/game/paths";
 import { configForTier, pickPolicyTier } from "@/lib/game/policy";
 import {
 	advanceWorkshop,
@@ -1392,6 +1394,28 @@ export function workerTick(db: GameDb) {
 		// --- Player zones: drop expired ones, snapshot the rest for
 		// destination steering below.
 		sweepExpiredZones(tx, colony._id, now);
+
+		// Unused paths decay (~1 wear/min). Wear floors at 1 so explored
+		// terrain stays revealed even after the road itself fades.
+		const decayAmount = (elapsedSec * runtime.timeScale) / 60;
+		if (decayAmount > 0) {
+			const wornTiles = tx
+				.select()
+				.from(worldTiles)
+				.where(
+					and(eq(worldTiles.colonyId, colony._id), gt(worldTiles.pathWear, 0)),
+				)
+				.all();
+			for (const worn of wornTiles) {
+				const next = Math.max(1, worn.pathWear - decayAmount);
+				if (next !== worn.pathWear) {
+					tx.update(worldTiles)
+						.set({ pathWear: next })
+						.where(eq(worldTiles._id, worn._id))
+						.run();
+				}
+			}
+		}
 		const zoneList: Zone[] = activeZones(tx, colony._id, now).map((zone) => ({
 			kind: zone.kind,
 			x1: zone.x1,
@@ -2117,7 +2141,26 @@ export function workerTick(db: GameDb) {
 				continue;
 			}
 
-			const step = advanceMovement(worldPos, destination, movementElapsed);
+			const standingTile = tx
+				.select()
+				.from(worldTiles)
+				.where(
+					and(
+						eq(worldTiles.colonyId, colony._id),
+						eq(worldTiles.x, Math.round(worldPos.x)),
+						eq(worldTiles.y, Math.round(worldPos.y)),
+					),
+				)
+				.get();
+			const speed =
+				MOVE_SPEED_TILES_PER_SEC *
+				(1 + getPathSpeedBonus(standingTile?.pathWear ?? 0));
+			const step = advanceMovement(
+				worldPos,
+				destination,
+				movementElapsed,
+				speed,
+			);
 			const moved =
 				step.position.x !== worldPos.x || step.position.y !== worldPos.y;
 			if (!moved && !step.arrived) {
@@ -2164,7 +2207,7 @@ export function workerTick(db: GameDb) {
 						.get();
 					if (tile) {
 						tx.update(worldTiles)
-							.set({ pathWear: Math.min(100, tile.pathWear + 2) })
+							.set({ pathWear: addPathWear(tile.pathWear, 2) })
 							.where(eq(worldTiles._id, tile._id))
 							.run();
 					}

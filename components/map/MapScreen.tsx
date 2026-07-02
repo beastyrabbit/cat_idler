@@ -88,6 +88,8 @@ export function MapScreen() {
 
 	const [chunks, setChunks] = useState<ChunkCoord[]>(INITIAL_CHUNKS);
 	const [showUpgrades, setShowUpgrades] = useState(false);
+	const [infoMode, setInfoMode] = useState(false);
+	const [selectedCatId, setSelectedCatId] = useState<string | null>(null);
 	const [zoneDraft, setZoneDraft] = useState<{
 		kind: "avoid" | "gather";
 		durationMs: number;
@@ -179,10 +181,10 @@ export function MapScreen() {
 					onViewChange={onViewChange}
 				>
 					<div
-						className="relative"
+						className="relative select-none"
 						style={{ width: ISO_CONTENT.width, height: ISO_CONTENT.height }}
 					>
-						<TileLayer chunks={chunks} anchor={anchor} />
+						<TileLayer chunks={chunks} anchor={anchor} showInfo={infoMode} />
 						<ZoneLayer
 							zones={zones}
 							now={now}
@@ -190,7 +192,11 @@ export function MapScreen() {
 							draftCorner={zoneDraft?.cornerA ?? null}
 						/>
 						<BuildingLayer buildings={buildings} />
-						<CatLayer cats={cats} leaderId={colony.leaderId ?? null} />
+						<CatLayer
+							cats={cats}
+							leaderId={colony.leaderId ?? null}
+							onSelect={setSelectedCatId}
+						/>
 						{zoneDraft && (
 							// Drawing mode: swallow clicks/pans and pick tile corners.
 							// biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: full-map drawing surface; keyboard flow uses the panel buttons
@@ -253,6 +259,19 @@ export function MapScreen() {
 
 				<div className="flex-1" />
 
+				<button
+					type="button"
+					onClick={() => setInfoMode((v) => !v)}
+					className={`pointer-events-auto rounded-md border border-[#5d4024] px-3 py-1.5 text-sm font-bold shadow ${
+						infoMode
+							? "bg-amber-400 text-[#3a2712]"
+							: "bg-[#f3e6c8] text-[#4a3319] hover:bg-amber-100"
+					}`}
+					title="Toggle tile info markers (resources)"
+				>
+					ℹ️ Info
+				</button>
+
 				<a
 					href="/game/newspaper"
 					className="pointer-events-auto rounded-md border border-[#5d4024] bg-[#f3e6c8] px-3 py-1.5 font-serif text-sm font-bold text-[#4a3319] shadow hover:bg-amber-100"
@@ -298,6 +317,11 @@ export function MapScreen() {
 												{active ? formatDuration(remaining) : "queued"}
 											</span>
 										</div>
+										{job.clickTimeReducedSec > 0 && (
+											<p className="mt-0.5 text-[10px] font-semibold text-emerald-800">
+												🐾 boosted {Math.round(job.clickTimeReducedSec)}s total
+											</p>
+										)}
 										{active && (
 											<button
 												type="button"
@@ -657,6 +681,58 @@ export function MapScreen() {
 					</div>
 				)}
 			</aside>
+
+			{/* Selected cat details */}
+			{(() => {
+				const cat = selectedCatId
+					? cats.find((c: { _id: string }) => c._id === selectedCatId)
+					: null;
+				if (!cat) {
+					return null;
+				}
+				return (
+					<div className={`absolute bottom-14 left-3 z-30 w-64 p-3 ${PANEL}`}>
+						<div className="mb-1 flex items-center justify-between">
+							<h3 className="font-serif text-sm font-black text-[#3a2712]">
+								{cat._id === colony.leaderId ? "👑 " : "🐈 "}
+								{cat.name}
+							</h3>
+							<button
+								type="button"
+								onClick={() => setSelectedCatId(null)}
+								className="rounded px-1.5 text-sm font-bold text-[#6b4a2a] hover:bg-black/10"
+								aria-label="Close cat details"
+							>
+								✕
+							</button>
+						</div>
+						<p className="text-xs font-semibold text-[#4a3319]">
+							{cat.activity === "traveling" && "🧭 Traveling"}
+							{cat.activity === "working" && "⚒️ Working"}
+							{cat.activity === "returning" && "🏠 Heading home"}
+							{(cat.activity === "idle" || !cat.activity) &&
+								"😽 Idling around the village"}
+							{cat.specialization && (
+								<span className="ml-1 text-[#6b4a2a]">
+									· {cat.specialization}
+								</span>
+							)}
+						</p>
+						{cat.carrying && (
+							<p className="text-xs text-[#6b4a2a]">
+								Carrying {Math.round(cat.carrying.amount)} {cat.carrying.kind}{" "}
+								to the shrine
+							</p>
+						)}
+						<div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] text-[#4a3319]">
+							<span>🍖 Hunger {Math.round(cat.needs.hunger)}</span>
+							<span>💧 Thirst {Math.round(cat.needs.thirst)}</span>
+							<span>💤 Rest {Math.round(cat.needs.rest)}</span>
+							<span>❤️ Health {Math.round(cat.needs.health)}</span>
+						</div>
+					</div>
+				);
+			})()}
 
 			{/* News ticker — latest headline, full story in the Examiner */}
 			{events.length > 0 && (

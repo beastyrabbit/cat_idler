@@ -184,11 +184,13 @@ export function useGameDashboard() {
 					? (result as Record<string, unknown>)
 					: null;
 			if (asRecord && asRecord.ok === false) {
-				setError(
+				const message =
 					typeof asRecord.message === "string"
-						? (asRecord.message as string)
-						: "The action failed. Please try again.",
-				);
+						? asRecord.message
+						: typeof asRecord.reason === "string"
+							? `Not possible right now: ${(asRecord.reason as string).replaceAll("_", " ")}.`
+							: "The action failed. Please try again.";
+				setError(message);
 			}
 			return result;
 		} catch (err: unknown) {
