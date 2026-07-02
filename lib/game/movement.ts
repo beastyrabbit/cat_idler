@@ -65,6 +65,125 @@ export function advanceMovement(
 }
 
 /**
+ * Integer tiles a strict 4-directional, x-before-y walk crosses going from
+ * `from` to `to`, inclusive of both rounded endpoints. This mirrors
+ * {@link advanceMovement}'s one-axis-at-a-time rule, so the returned tiles form
+ * a straight run (single axis), an L (both axes), or a single tile (zero-length
+ * hop). Fractional coordinates are rounded onto the tile grid.
+ *
+ * This is the shared source of truth for "which tiles did this cat step on":
+ * the movement tick wears and reveals exactly these tiles, and future enemies
+ * decide whether they can intercept a traveler by testing membership here.
+ */
+export function pathTiles(from: WorldPos, to: WorldPos): WorldPos[] {
+	const startX = Math.round(from.x);
+	const startY = Math.round(from.y);
+	const endX = Math.round(to.x);
+	const endY = Math.round(to.y);
+
+	const tiles: WorldPos[] = [];
+	// The row at startY, from startX to endX (x first).
+	const stepX = Math.sign(endX - startX);
+	for (let x = startX; ; x += stepX) {
+		tiles.push({ x, y: startY });
+		if (x === endX) {
+			break;
+		}
+	}
+	// Then the column at endX, from startY to endY — the corner tile
+	// (endX, startY) is already the last of the row, so start one step in.
+	const stepY = Math.sign(endY - startY);
+	if (stepY !== 0) {
+		for (let y = startY + stepY; ; y += stepY) {
+			tiles.push({ x: endX, y });
+			if (y === endY) {
+				break;
+			}
+		}
+	}
+	return tiles;
+}
+
+export interface PathWalk {
+	/** Final (possibly fractional) position where the budget ran out. */
+	position: WorldPos;
+	/** True when the destination itself was reached this walk. */
+	arrived: boolean;
+	/** Integer tiles the walk crossed, start tile first (deduped, in order). */
+	tiles: WorldPos[];
+}
+
+/**
+ * Walk `from` toward `destination` (through optional `waypoints`, e.g. the
+ * village gate) spending a whole tile budget on a strict one-axis-at-a-time,
+ * x-before-y 4-directional path.
+ *
+ * Unlike {@link advanceMovement} — which moves one axis per call and discards
+ * any leftover budget — this consumes the entire budget within a single call,
+ * turning corners and clearing waypoints as it goes. That is what lets an
+ * accelerated tick actually walk every tile of a long journey instead of
+ * teleporting one leg per render: the cat's final position is still wherever
+ * the budget ran out, but {@link PathWalk.tiles} records the full trail so it
+ * can be worn, revealed, and (later) intercepted.
+ */
+export function walkPath(
+	from: WorldPos,
+	destination: WorldPos,
+	budgetTiles: number,
+	waypoints: WorldPos[] = [],
+): PathWalk {
+	const stops = [...waypoints, destination];
+	let budget = Math.max(0, budgetTiles);
+	let x = from.x;
+	let y = from.y;
+
+	const tiles: WorldPos[] = [];
+	const seen = new Set<string>();
+	const record = (segFrom: WorldPos, segTo: WorldPos) => {
+		for (const tile of pathTiles(segFrom, segTo)) {
+			const key = `${tile.x},${tile.y}`;
+			if (!seen.has(key)) {
+				seen.add(key);
+				tiles.push(tile);
+			}
+		}
+	};
+	record({ x, y }, { x, y }); // the starting tile always counts as trodden
+
+	let arrived = false;
+	for (let i = 0; i < stops.length; i++) {
+		const stop = stops[i];
+		// x axis first, then y — one axis at a time so cats never cut corners.
+		const dx = stop.x - x;
+		if (dx !== 0 && budget > 0) {
+			const move = Math.min(Math.abs(dx), budget);
+			const nextX = x + Math.sign(dx) * move;
+			record({ x, y }, { x: nextX, y });
+			budget -= move;
+			x = nextX;
+		}
+		const dy = stop.y - y;
+		if (dy !== 0 && budget > 0) {
+			const move = Math.min(Math.abs(dy), budget);
+			const nextY = y + Math.sign(dy) * move;
+			record({ x, y }, { x, y: nextY });
+			budget -= move;
+			y = nextY;
+		}
+
+		if (x !== stop.x || y !== stop.y) {
+			break; // budget spent before reaching this stop — stop here
+		}
+		if (i === stops.length - 1) {
+			arrived = true; // reached the destination itself
+		}
+		// A waypoint was cleared; continue toward the next stop with what's left.
+	}
+
+	return { position: { x, y }, arrived, tiles };
+}
+
+/**
  * Pick an idle-wander tile near the anchor from two seeded rolls.
  * Integer tiles so wandering cats settle on tile centers.
  */

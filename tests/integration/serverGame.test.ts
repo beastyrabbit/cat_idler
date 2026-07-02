@@ -1182,6 +1182,76 @@ describe("explore expeditions", () => {
 	});
 });
 
+describe("travel trail integrity", () => {
+	it("wears every tile of a long L-route in one accelerated tick", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 100 });
+		const traveler = getAliveCatsForTest(db, colony._id)[0];
+
+		// Start well outside the village fence and head to a far corner that
+		// forces both an x-leg and a y-leg (an L). Clear any prior wear so the
+		// only thing that can raise pathWear is the cat physically walking.
+		const start = { x: 12, y: 6 };
+		const dest = { x: 20, y: 14 };
+		db.update(worldTiles)
+			.set({ pathWear: 0 })
+			.where(eq(worldTiles.colonyId, colony._id))
+			.run();
+		db.update(cats)
+			.set({
+				position: { map: "world", ...start },
+				destination: { map: "world", ...dest },
+				activity: "traveling",
+				currentTask: null,
+				carrying: null,
+			})
+			.where(eq(cats._id, traveler._id))
+			.run();
+
+		// A huge movement budget in a single tick: pre-fix this teleports the
+		// cat along one axis only, leaving the rest of the route untrodden.
+		db.update(colonies)
+			.set({ testTimeScale: 500 })
+			.where(eq(colonies._id, colony._id))
+			.run();
+		advanceTime(db, 5);
+		workerTick(db);
+
+		const wearAt = (x: number, y: number) =>
+			db
+				.select()
+				.from(worldTiles)
+				.where(
+					and(
+						eq(worldTiles.colonyId, colony._id),
+						eq(worldTiles.x, x),
+						eq(worldTiles.y, y),
+					),
+				)
+				.get()!.pathWear;
+
+		// Reveal threshold is >62; a trodden route tile lands at >=64. Sample
+		// intermediate tiles on BOTH legs, not just the endpoints.
+		const REVEAL = 62;
+		for (const [x, y] of [
+			[14, 6], // x-leg, mid
+			[18, 6], // x-leg, near corner
+			[20, 6], // the corner
+			[20, 9], // y-leg, mid
+			[20, 12], // y-leg, near end
+			[20, 14], // destination
+		] as const) {
+			expect(wearAt(x, y)).toBeGreaterThan(REVEAL);
+		}
+
+		// The whole journey happened this tick, so the cat is at the far corner.
+		const walked = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === traveler._id,
+		)!;
+		expect(walked.position).toMatchObject({ map: "world", ...dest });
+	});
+});
+
 describe("visible construction", () => {
 	function insertConstructJob(
 		colonyId: string,

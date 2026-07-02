@@ -61,12 +61,12 @@ import {
 } from "@/lib/game/idleRules";
 import { type LeaderSnapshot, planLeaderActions } from "@/lib/game/leaderAI";
 import {
-	advanceMovement,
 	destinationForJob,
 	EXPLORE_SPEED_FACTOR,
 	MOVE_SPEED_TILES_PER_SEC,
 	pickWanderTarget,
 	type WorldPos,
+	walkPath,
 } from "@/lib/game/movement";
 import { generateName } from "@/lib/game/naming";
 import { addPathWear, getPathSpeedBonus } from "@/lib/game/paths";
@@ -3143,14 +3143,18 @@ export function workerTick(db: GameDb) {
 				ringDist(worldPos) < ringRadius !== ringDist(destination) < ringRadius;
 			const atGate =
 				Math.abs(worldPos.x - gate.x) < 1 && Math.abs(worldPos.y - gate.y) < 1;
-			const stepTarget = crossesFence && !atGate ? gate : destination;
-			const step = advanceMovement(
+			// Walk the whole tick's budget tile-by-tile — through the south gate
+			// when the route crosses the fence — so even a huge accelerated step
+			// traverses (and wears) every tile instead of teleporting one leg.
+			const waypoints = crossesFence && !atGate ? [gate] : [];
+			const walk = walkPath(
 				worldPos,
-				stepTarget,
-				movementElapsed,
-				speed,
+				destination,
+				movementElapsed * speed,
+				waypoints,
 			);
-			let arrived = step.arrived && stepTarget === destination;
+			const step = { position: walk.position, arrived: walk.arrived };
+			let arrived = walk.arrived;
 
 			// Reporting in at the shrine: pick up the job and head out.
 			if (arrived && activity === "traveling") {
@@ -3207,26 +3211,9 @@ export function workerTick(db: GameDb) {
 			// roads form under the accelerated presets, where a cat can cross
 			// many tiles in a single tick.
 			if (moved) {
-				// advanceMovement steps along one axis per tick, so the route is
-				// a straight run of integer tiles from start to landing.
-				const startX = Math.round(worldPos.x);
-				const startY = Math.round(worldPos.y);
-				const endX = Math.round(step.position.x);
-				const endY = Math.round(step.position.y);
-				const walked: WorldPos[] = [];
-				if (startX === endX) {
-					const lo = Math.min(startY, endY);
-					const hi = Math.max(startY, endY);
-					for (let y = lo; y <= hi; y++) {
-						walked.push({ x: endX, y });
-					}
-				} else {
-					const lo = Math.min(startX, endX);
-					const hi = Math.max(startX, endX);
-					for (let x = lo; x <= hi; x++) {
-						walked.push({ x, y: endY });
-					}
-				}
+				// walkPath already listed every integer tile this walk crossed —
+				// one source of truth shared with the interception helper.
+				const walked = walk.tiles;
 
 				// Ordinary cats reveal a 3x3; explorers sweep a wide 5x5.
 				const revealRadius = cat.currentTask === "explore" ? 2 : 1;

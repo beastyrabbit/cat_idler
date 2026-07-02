@@ -23,8 +23,10 @@ const HAT_SPRITES: Record<string, string> = {
 };
 const CAT_SHEET = "/images/cats/cat-sheet.png";
 
-// Last rendered tile per cat — big jumps (teleports, speed-ups) snap
-// instead of gliding across the whole map.
+// Last rendered tile per cat — big jumps (teleports, accelerated ticks that
+// walk many tiles at once) snap instead of gliding a straight line across the
+// map, which would cut across the fog and any corner the cat actually rounded.
+const JUMP_SNAP_TILES = 3;
 const lastRendered = new Map<string, { x: number; y: number }>();
 
 /**
@@ -104,8 +106,8 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 				const prev = lastRendered.get(cat._id);
 				const jumped =
 					prev != null &&
-					(Math.abs(worldPos.x - prev.x) > 4 ||
-						Math.abs(worldPos.y - prev.y) > 4);
+					(Math.abs(worldPos.x - prev.x) > JUMP_SNAP_TILES ||
+						Math.abs(worldPos.y - prev.y) > JUMP_SNAP_TILES);
 				lastRendered.set(cat._id, { x: worldPos.x, y: worldPos.y });
 				const working = cat.activity === "working";
 				// Face the leg being walked (movement is 4-directional: x first).
