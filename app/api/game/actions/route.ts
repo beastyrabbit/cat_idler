@@ -27,6 +27,7 @@ import {
 	upsertPresence,
 	workerTick,
 } from "@/server/game";
+import { createZone, removeZone } from "@/server/zones";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -161,6 +162,46 @@ export async function POST(request: Request) {
 				const sessionId = requireString(body.sessionId, "sessionId");
 				const nickname = requireString(body.nickname, "nickname");
 				return NextResponse.json(requestVoteKick(db, { sessionId, nickname }));
+			}
+
+			case "createZone": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				const kind = body.kind;
+				if (kind !== "avoid" && kind !== "gather") {
+					throw new Error("Unknown zone kind.");
+				}
+				const a = body.a as { x?: unknown; y?: unknown };
+				const b = body.b as { x?: unknown; y?: unknown };
+				const durationMs = Number(body.durationMs);
+				if (
+					typeof a?.x !== "number" ||
+					typeof a?.y !== "number" ||
+					typeof b?.x !== "number" ||
+					typeof b?.y !== "number" ||
+					!Number.isFinite(durationMs)
+				) {
+					throw new Error("Invalid zone rectangle.");
+				}
+				return NextResponse.json(
+					createZone(db, {
+						sessionId,
+						nickname,
+						kind,
+						a: { x: a.x, y: a.y },
+						b: { x: b.x, y: b.y },
+						durationMs,
+					}),
+				);
+			}
+
+			case "removeZone": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				const zoneId = requireString(body.zoneId, "zoneId");
+				return NextResponse.json(
+					removeZone(db, { sessionId, nickname, zoneId }),
+				);
 			}
 
 			case "setTestAcceleration": {

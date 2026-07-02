@@ -330,6 +330,27 @@ export const votes = sqliteTable(
 	],
 );
 
+export const zones = sqliteTable(
+	"zones",
+	{
+		_id: text("id").primaryKey(),
+		colonyId: text("colonyId").notNull(),
+		kind: text("kind", { enum: ["avoid", "gather"] }).notNull(),
+		x1: integer("x1").notNull(),
+		y1: integer("y1").notNull(),
+		x2: integer("x2").notNull(),
+		y2: integer("y2").notNull(),
+		playerId: text("playerId").notNull(),
+		createdAt: integer("createdAt").notNull(),
+		expiresAt: integer("expiresAt").notNull(),
+	},
+	(table) => [
+		index("zones_by_colony").on(table.colonyId),
+		index("zones_by_colony_expires").on(table.colonyId, table.expiresAt),
+		index("zones_by_player").on(table.playerId),
+	],
+);
+
 export const globalUpgrades = sqliteTable(
 	"globalUpgrades",
 	{
@@ -387,3 +408,4 @@ export type GlobalUpgradeRow = typeof globalUpgrades.$inferSelect;
 export type RunHistoryRow = typeof runHistory.$inferSelect;
 export type ElectionRow = typeof elections.$inferSelect;
 export type VoteRow = typeof votes.$inferSelect;
+export type ZoneRow = typeof zones.$inferSelect;

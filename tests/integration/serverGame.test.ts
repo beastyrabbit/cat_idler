@@ -10,7 +10,14 @@ import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { createDb, type GameDb } from "@/db/client";
-import { cats, colonies, elections, jobs, runHistory } from "@/db/schema";
+import {
+	cats,
+	colonies,
+	elections,
+	jobs,
+	runHistory,
+	zones as zonesTable,
+} from "@/db/schema";
 import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
@@ -25,6 +32,7 @@ import {
 	workerTick,
 } from "@/server/game";
 import { upsertPlayer } from "@/server/players";
+import { createZone, removeZone } from "@/server/zones";
 
 const SESSION = { sessionId: "session_test_1", nickname: "Tester" };
 
@@ -874,6 +882,139 @@ describe("elections", () => {
 		tick();
 
 		expect(ensureGlobalColony(db).leaderId).toBe(leaderId);
+	});
+});
+
+describe("player zones", () => {
+	const SESSION_Z = { sessionId: "zoner_1", nickname: "Zoner" };
+
+	it("creates, lists, and removes a zone", () => {
+		ensureGlobalColony(db);
+		const { zoneId } = createZone(db, {
+			...SESSION_Z,
+			kind: "gather",
+			a: { x: 10, y: 10 },
+			b: { x: 14, y: 12 },
+			durationMs: 30 * 60 * 1000,
+		}) as { zoneId: string };
+
+		let dashboard = getGlobalDashboard(db)!;
+		expect(dashboard.zones).toHaveLength(1);
+		expect(dashboard.zones[0]).toMatchObject({
+			kind: "gather",
+			x1: 10,
+			y1: 10,
+			x2: 14,
+			y2: 12,
+		});
+
+		removeZone(db, { ...SESSION_Z, zoneId });
+		dashboard = getGlobalDashboard(db)!;
+		expect(dashboard.zones).toHaveLength(0);
+	});
+
+	it("enforces per-player limits, size, duration, and ownership", () => {
+		ensureGlobalColony(db);
+		const make = (x: number) =>
+			createZone(db, {
+				...SESSION_Z,
+				kind: "avoid",
+				a: { x, y: 0 },
+				b: { x: x + 2, y: 2 },
+				durationMs: 30 * 60 * 1000,
+			}) as { zoneId: string };
+
+		const first = make(0);
+		make(10);
+		expect(() => make(20)).toThrow(/active zones/);
+
+		expect(() =>
+			createZone(db, {
+				sessionId: "other",
+				nickname: "O",
+				kind: "avoid",
+				a: { x: 0, y: 0 },
+				b: { x: 8, y: 2 }, // 9 tiles wide
+				durationMs: 30 * 60 * 1000,
+			}),
+		).toThrow(/limited/);
+
+		expect(() =>
+			createZone(db, {
+				sessionId: "other",
+				nickname: "O",
+				kind: "avoid",
+				a: { x: 0, y: 0 },
+				b: { x: 2, y: 2 },
+				durationMs: 1000,
+			}),
+		).toThrow(/duration/);
+
+		expect(() =>
+			removeZone(db, {
+				sessionId: "other",
+				nickname: "O",
+				zoneId: first.zoneId,
+			}),
+		).toThrow(/your own/);
+	});
+
+	it("sweeps expired zones during the tick", () => {
+		ensureGlobalColony(db);
+		createZone(db, {
+			...SESSION_Z,
+			kind: "avoid",
+			a: { x: 0, y: 0 },
+			b: { x: 3, y: 3 },
+			durationMs: 10 * 60 * 1000,
+		});
+
+		// Not expired yet
+		advanceTime(db, 2);
+		workerTick(db);
+		expect(getGlobalDashboard(db)!.zones).toHaveLength(1);
+
+		// Push past expiry (advanceTime shifts lastTick, not wall time — so
+		// force the zone's expiry into the past instead).
+		const zone = getGlobalDashboard(db)!.zones[0];
+		db.update(zonesTable)
+			.set({ expiresAt: Date.now() - 1000 })
+			.where(eq(zonesTable._id, zone._id))
+			.run();
+		advanceTime(db, 2);
+		workerTick(db);
+		expect(getGlobalDashboard(db)!.zones).toHaveLength(0);
+	});
+
+	it("keeps wandering cats out of avoid zones", () => {
+		ensureGlobalColony(db);
+		setTestRngSeed(db, 1);
+
+		// Blanket the whole wander area (anchor 6,6 ± 3) with an avoid zone
+		// from two players (zones are max 8x8).
+		createZone(db, {
+			...SESSION_Z,
+			kind: "avoid",
+			a: { x: 3, y: 3 },
+			b: { x: 9, y: 9 },
+			durationMs: 30 * 60 * 1000,
+		});
+
+		for (let i = 0; i < 5; i++) {
+			advanceTime(db, 60);
+			workerTick(db);
+		}
+
+		const colony = ensureGlobalColony(db);
+		const wanderers = getAliveCatsForTest(db, colony._id).filter(
+			(cat) => cat.destination !== null,
+		);
+		// No cat may target the blanketed clearing.
+		for (const cat of wanderers) {
+			const dest = cat.destination!;
+			const inAvoid = dest.x >= 3 && dest.x <= 9 && dest.y >= 3 && dest.y <= 9;
+			expect(inAvoid).toBe(false);
+		}
 	});
 });
 

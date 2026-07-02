@@ -252,6 +252,29 @@ export function useGameDashboard() {
 		);
 	};
 
+	const onCreateZone = async (
+		kind: "avoid" | "gather",
+		a: { x: number; y: number },
+		b: { x: number; y: number },
+		durationMs: number,
+	) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction("createZone", () =>
+			postAction("createZone", { sessionId, nickname, kind, a, b, durationMs }),
+		);
+	};
+
+	const onRemoveZone = async (zoneId: string) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction(`removeZone:${zoneId}`, () =>
+			postAction("removeZone", { sessionId, nickname, zoneId }),
+		);
+	};
+
 	const onSetAcceleration = async (preset: "off" | "fast" | "turbo") => {
 		await runAction(`accel:${preset}`, () =>
 			postAction("setTestAcceleration", { preset }),
@@ -334,6 +357,11 @@ export function useGameDashboard() {
 		voteKick: dashboard?.voteKick ?? null,
 		onCastVote,
 		onRequestVoteKick,
+
+		// Zones (Phase 5)
+		zones: dashboard?.zones ?? [],
+		onCreateZone,
+		onRemoveZone,
 
 		// Connection
 		connectionLost,

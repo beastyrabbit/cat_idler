@@ -4,13 +4,18 @@ import { useCallback, useMemo, useRef, useState } from "react";
 
 import { MapViewport, type ViewportView } from "@/components/ui/MapViewport";
 import { formatDuration, useGameDashboard } from "@/hooks/useGameDashboard";
-import { tileDiamondCenter, visibleChunksIso } from "@/lib/game/isoProjection";
+import {
+	isoToTile,
+	tileDiamondCenter,
+	visibleChunksIso,
+} from "@/lib/game/isoProjection";
 import { type ChunkCoord, chunkKey } from "@/lib/game/mapView";
 import { shrineWorldPosition } from "@/lib/game/villageLayout";
 import { BuildingLayer } from "./BuildingLayer";
 import { CatLayer } from "./CatLayer";
 import { CHUNK_MAX, CHUNK_MIN, ISO, ISO_CONTENT } from "./constants";
 import { TileLayer } from "./TileLayer";
+import { ZoneLayer } from "./ZoneLayer";
 
 const JOB_LABELS: Record<string, string> = {
 	supply_food: "Supply Food",
@@ -73,11 +78,49 @@ export function MapScreen() {
 		voteKick,
 		onCastVote,
 		onRequestVoteKick,
+		zones,
+		onCreateZone,
+		onRemoveZone,
 	} = useGameDashboard();
 
 	const [chunks, setChunks] = useState<ChunkCoord[]>(INITIAL_CHUNKS);
 	const [showUpgrades, setShowUpgrades] = useState(false);
+	const [zoneDraft, setZoneDraft] = useState<{
+		kind: "avoid" | "gather";
+		durationMs: number;
+		cornerA: { x: number; y: number } | null;
+	} | null>(null);
+	const zoneOverlayRef = useRef<HTMLDivElement | null>(null);
 	const chunksKeyRef = useRef("");
+
+	const onZoneOverlayClick = useCallback(
+		(e: React.MouseEvent) => {
+			const el = zoneOverlayRef.current;
+			if (!el || !zoneDraft) {
+				return;
+			}
+			const rect = el.getBoundingClientRect();
+			// The content plane is CSS-scaled; undo it before projecting.
+			const scale = rect.width / ISO_CONTENT.width;
+			const px = (e.clientX - rect.left) / scale;
+			const py = (e.clientY - rect.top) / scale;
+			const tile = isoToTile(px, py, ISO);
+			const corner = { x: Math.round(tile.x), y: Math.round(tile.y) };
+
+			if (!zoneDraft.cornerA) {
+				setZoneDraft({ ...zoneDraft, cornerA: corner });
+				return;
+			}
+			void onCreateZone(
+				zoneDraft.kind,
+				zoneDraft.cornerA,
+				corner,
+				zoneDraft.durationMs,
+			);
+			setZoneDraft(null);
+		},
+		[zoneDraft, onCreateZone],
+	);
 
 	const onViewChange = useCallback((view: ViewportView) => {
 		const visible = visibleChunksIso(view, ISO).filter(
@@ -137,8 +180,25 @@ export function MapScreen() {
 						style={{ width: ISO_CONTENT.width, height: ISO_CONTENT.height }}
 					>
 						<TileLayer chunks={chunks} anchor={anchor} />
+						<ZoneLayer
+							zones={zones}
+							now={now}
+							onRemove={onRemoveZone}
+							draftCorner={zoneDraft?.cornerA ?? null}
+						/>
 						<BuildingLayer buildings={buildings} />
 						<CatLayer cats={cats} leaderId={colony.leaderId ?? null} />
+						{zoneDraft && (
+							// Drawing mode: swallow clicks/pans and pick tile corners.
+							// biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: full-map drawing surface; keyboard flow uses the panel buttons
+							<div
+								ref={zoneOverlayRef}
+								className="absolute inset-0 cursor-crosshair"
+								style={{ zIndex: 100_000 }}
+								onPointerDown={(e) => e.stopPropagation()}
+								onClick={onZoneOverlayClick}
+							/>
+						)}
 					</div>
 				</MapViewport>
 			</div>
@@ -321,6 +381,64 @@ export function MapScreen() {
 								{voteKick ? "✍️ Sign the petition" : "⚖️ Demand a new leader"}
 							</button>
 						</div>
+					)}
+				</div>
+
+				{/* Player zones: steer the cats */}
+				<div className={`p-3 ${PANEL}`}>
+					<h3 className={PANEL_HEADING}>Zones</h3>
+					{zoneDraft ? (
+						<div className="text-xs font-semibold text-[#4a3319]">
+							<p>
+								{zoneDraft.cornerA
+									? "Click the opposite corner on the map."
+									: "Click the first corner on the map."}
+							</p>
+							<button
+								type="button"
+								onClick={() => setZoneDraft(null)}
+								className={`mt-1.5 w-full ${WOOD_BUTTON}`}
+							>
+								✖ Cancel
+							</button>
+						</div>
+					) : (
+						<div className="grid grid-cols-2 gap-1.5">
+							<button
+								type="button"
+								onClick={() =>
+									setZoneDraft({
+										kind: "gather",
+										durationMs: 30 * 60 * 1000,
+										cornerA: null,
+									})
+								}
+								className={WOOD_BUTTON}
+								title="Cats prefer gathering here (30 min)"
+							>
+								📍 Gather zone
+							</button>
+							<button
+								type="button"
+								onClick={() =>
+									setZoneDraft({
+										kind: "avoid",
+										durationMs: 30 * 60 * 1000,
+										cornerA: null,
+									})
+								}
+								className={WOOD_BUTTON}
+								title="Cats stay away from here (30 min)"
+							>
+								🚫 Avoid zone
+							</button>
+						</div>
+					)}
+					{zones.length > 0 && !zoneDraft && (
+						<p className="mt-1.5 text-[11px] text-[#6b4a2a]">
+							{zones.length} active zone{zones.length === 1 ? "" : "s"} — click
+							one on the map to remove it.
+						</p>
 					)}
 				</div>
 

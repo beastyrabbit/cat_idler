@@ -76,11 +76,13 @@ import {
 	SHRINE_LOCAL,
 	VILLAGE_ANCHOR,
 } from "@/lib/game/villageLayout";
+import { isInZone, pickTargetWithZones, type Zone } from "@/lib/game/zones";
 import type { CatStats } from "@/types/game";
 
 import { runElectionLifecycle } from "./elections";
 import { countOnlinePlayers, upsertPlayer } from "./players";
 import { initializeWorldMap } from "./worldMap";
+import { activeZones, sweepExpiredZones } from "./zones";
 
 const UPGRADE_DEFAULTS = [
 	{
@@ -828,6 +830,15 @@ export function getGlobalDashboard(db: GameDb) {
 			villageLevel: villageLevel(colonyBuildings),
 		},
 		...electionPayloads(db, colony._id, aliveCats),
+		zones: activeZones(db, colony._id, now).map((zone) => ({
+			_id: zone._id,
+			kind: zone.kind,
+			x1: zone.x1,
+			y1: zone.y1,
+			x2: zone.x2,
+			y2: zone.y2,
+			expiresAt: zone.expiresAt,
+		})),
 	};
 }
 
@@ -1221,6 +1232,17 @@ export function workerTick(db: GameDb) {
 		// term expires. Uses no policy rolls, so the seeded chain is stable.
 		runElectionLifecycle(tx, colony, aliveCats, runtime, now);
 
+		// --- Player zones: drop expired ones, snapshot the rest for
+		// destination steering below.
+		sweepExpiredZones(tx, colony._id, now);
+		const zoneList: Zone[] = activeZones(tx, colony._id, now).map((zone) => ({
+			kind: zone.kind,
+			x1: zone.x1,
+			y1: zone.y1,
+			x2: zone.x2,
+			y2: zone.y2,
+		}));
+
 		// Movement randomness runs on a forked chain so the policy/planning
 		// roll order (and its deterministic tests) stays untouched.
 		let movementSeed = rngSeed === null ? null : rngSeed + 1_000_003;
@@ -1310,10 +1332,21 @@ export function workerTick(db: GameDb) {
 			if (!job.assignedCatId) {
 				continue;
 			}
+			// Zones steer hunts: avoid tiles are excluded (unless nothing else
+			// exists), gather tiles are twice as likely.
+			let huntTiles: WorldPos[] = [];
+			if (job.kind === "hunt_expedition") {
+				const preferred = pickTargetWithZones(
+					foodTilesNearVillage(),
+					zoneList,
+					nextMovementRoll(),
+				);
+				huntTiles = preferred ? [preferred] : [];
+			}
 			const jobDestination = destinationForJob(job.kind, {
 				anchor: VILLAGE_ANCHOR,
 				shrine: VILLAGE_ANCHOR,
-				foodTiles: job.kind === "hunt_expedition" ? foodTilesNearVillage() : [],
+				foodTiles: huntTiles,
 				roll: nextMovementRoll(),
 				site: constructionSite ?? undefined,
 			});
@@ -1760,7 +1793,13 @@ export function workerTick(db: GameDb) {
 						nextMovementRoll(),
 						nextMovementRoll(),
 					);
-					if (target.x !== worldPos.x || target.y !== worldPos.y) {
+					const blocked = zoneList.some(
+						(zone) => zone.kind === "avoid" && isInZone(target, zone),
+					);
+					if (
+						!blocked &&
+						(target.x !== worldPos.x || target.y !== worldPos.y)
+					) {
 						tx.update(cats)
 							.set({ destination: { map: "world", ...target } })
 							.where(eq(cats._id, cat._id))
