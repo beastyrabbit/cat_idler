@@ -54,6 +54,7 @@ export function MapScreen() {
 		dashboard,
 		colony,
 		jobs,
+		events,
 		upgrades,
 		cats,
 		buildings,
@@ -656,6 +657,22 @@ export function MapScreen() {
 					</div>
 				)}
 			</aside>
+
+			{/* News ticker — latest headline, full story in the Examiner */}
+			{events.length > 0 && (
+				<a
+					href="/game/newspaper"
+					className="absolute bottom-3 left-3 z-20 flex max-w-[50vw] items-center gap-2 rounded-md border border-[#5d4024] bg-[#f3e6c8]/95 px-3 py-1.5 text-xs font-semibold text-[#4a3319] shadow-md hover:bg-amber-100"
+					title="Read the full story in The Catford Examiner"
+				>
+					<span className="shrink-0 rounded bg-[#4a3319] px-1.5 py-0.5 font-serif text-[10px] font-black uppercase tracking-wider text-amber-100">
+						Examiner
+					</span>
+					<span className="truncate">
+						{(events[0] as { message: string }).message}
+					</span>
+				</a>
+			)}
 		</div>
 	);
 }

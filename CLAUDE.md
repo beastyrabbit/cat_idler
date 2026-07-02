@@ -73,6 +73,15 @@ The game operates on a **job-based system** (`db/schema.ts:jobs` table, `lib/gam
 - Global upgrades persist across colony resets (`globalUpgrades` table)
 - Colonies auto-reset after extended critical state (configurable via `testCriticalMsOverride`)
 
+### Map-First Simulation (Phases 1-8, on the workerTick path)
+
+- **Movement** (`lib/game/movement.ts`): cats travel to job sites at 0.5 tiles/s, wander when idle; movement randomness runs on a forked seeded chain so policy-roll determinism is preserved. Travel outside the village wears paths, revealing fog.
+- **Construction** (`lib/game/housing.ts`): `build_house` construct jobs place scaffolds via `nextBuildingSite`; leader plans dens when housing pressure ≥ 0.8 (shrine shelters 4, dens 2/level). `villageLevel` gates unlocks.
+- **Elections** (`lib/game/elections.ts`, `server/elections.ts`): NO per-tick leader auto-replace — interim pick only when the seat is empty. Term elections + vote-kick (5 distinct players) resolve in `runElectionLifecycle`. Voter identity = sessionId (forgeable; HMAC hardening is a flagged follow-up).
+- **Zones** (`lib/game/zones.ts`, `server/zones.ts`): player-painted avoid/gather rects (max 2/player, 8x8, 10min-2h) steer hunts and wandering.
+- **Shrine deposits** (`lib/game/shrine.ts`): hunt/ritual yields are carried to the shrine and credited on arrival, force-credited after a 60s grace window.
+- **Production** (`lib/game/production.ts`): workshops (village level 2+) refine 5 materials → 1 refined/10min with an assigned worker; fields (level 4+) grow food passively; leader auto-staffs workerless workshops.
+
 ### Test Acceleration
 
 `lib/game/testAcceleration.ts` provides QA presets that scale time and resource decay for faster testing. Colony schema has `testTimeScale`, `testResourceDecayMultiplier`, and other override fields.
@@ -105,7 +114,7 @@ The game operates on a **job-based system** (`db/schema.ts:jobs` table, `lib/gam
 
 ## Database Schema
 
-9 tables in `db/schema.ts`: `colonies`, `cats`, `buildings`, `worldTiles`, `events`, `players`, `jobs`, `globalUpgrades`, `runHistory`. Rows keep the `_id` property (TEXT nanoid, mapped to the `id` column) so API payloads match what the frontend expects. The legacy `tasks` and `encounters` tables were dropped with the retired `/colony/[id]` UI.
+12 tables in `db/schema.ts`: `colonies`, `cats`, `buildings`, `worldTiles`, `events`, `players`, `jobs`, `globalUpgrades`, `runHistory`, `elections`, `votes`, `zones`. Rows keep the `_id` property (TEXT nanoid, mapped to the `id` column) so API payloads match what the frontend expects. The legacy `tasks` and `encounters` tables were dropped with the retired `/colony/[id]` UI.
 
 After editing `db/schema.ts`, run `bun run db:generate` and commit the new migration file — `db/client.ts` runs pending migrations on open.
 

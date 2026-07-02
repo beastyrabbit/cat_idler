@@ -145,29 +145,73 @@ export function MapViewport({
 		return () => el.removeEventListener("wheel", handler);
 	}, []);
 
+	// Active pointers for touch: one = pan, two = pinch zoom.
+	const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+	const pinchRef = useRef<{ startDist: number; startScale: number } | null>(
+		null,
+	);
+
 	const onPointerDown = useCallback(
 		(e: React.PointerEvent) => {
-			if (e.button !== 0) return;
+			if (e.pointerType === "mouse" && e.button !== 0) return;
 			const el = containerRef.current;
 			if (!el) return;
 			el.setPointerCapture(e.pointerId);
-			dragRef.current = { x: e.clientX, y: e.clientY, tx, ty };
+			pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+			if (pointersRef.current.size === 2) {
+				const [a, b] = [...pointersRef.current.values()];
+				pinchRef.current = {
+					startDist: Math.hypot(a.x - b.x, a.y - b.y),
+					startScale: scale,
+				};
+				dragRef.current = null;
+			} else {
+				dragRef.current = { x: e.clientX, y: e.clientY, tx, ty };
+			}
 		},
-		[tx, ty],
+		[tx, ty, scale],
 	);
 
-	const onPointerMove = useCallback((e: React.PointerEvent) => {
-		const drag = dragRef.current;
-		if (!drag) return;
-		const dx = e.clientX - drag.x;
-		const dy = e.clientY - drag.y;
-		setTx(drag.tx + dx);
-		setTy(drag.ty + dy);
-	}, []);
+	const onPointerMove = useCallback(
+		(e: React.PointerEvent) => {
+			if (pointersRef.current.has(e.pointerId)) {
+				pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+			}
+
+			const pinch = pinchRef.current;
+			if (pinch && pointersRef.current.size === 2) {
+				const [a, b] = [...pointersRef.current.values()];
+				const dist = Math.hypot(a.x - b.x, a.y - b.y);
+				if (pinch.startDist > 0 && dist > 0) {
+					zoomTo(
+						pinch.startScale * (dist / pinch.startDist),
+						(a.x + b.x) / 2,
+						(a.y + b.y) / 2,
+					);
+				}
+				return;
+			}
+
+			const drag = dragRef.current;
+			if (!drag) return;
+			const dx = e.clientX - drag.x;
+			const dy = e.clientY - drag.y;
+			setTx(drag.tx + dx);
+			setTy(drag.ty + dy);
+		},
+		[zoomTo],
+	);
 
 	const onPointerUp = useCallback((e: React.PointerEvent) => {
 		const el = containerRef.current;
-		if (el) el.releasePointerCapture(e.pointerId);
+		if (el && el.hasPointerCapture(e.pointerId)) {
+			el.releasePointerCapture(e.pointerId);
+		}
+		pointersRef.current.delete(e.pointerId);
+		if (pointersRef.current.size < 2) {
+			pinchRef.current = null;
+		}
 		dragRef.current = null;
 	}, []);
 
@@ -194,11 +238,12 @@ export function MapViewport({
 	return (
 		<div
 			ref={containerRef}
-			className="relative w-full overflow-hidden rounded-xl border border-slate-200/70 bg-white/40 dark:border-slate-800/70 dark:bg-slate-950/20"
+			className="relative w-full touch-none overflow-hidden rounded-xl border border-slate-200/70 bg-white/40 dark:border-slate-800/70 dark:bg-slate-950/20"
 			style={{ height }}
 			onPointerDown={onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={onPointerUp}
+			onPointerCancel={onPointerUp}
 		>
 			<div className="absolute right-3 top-3 z-10 flex flex-col gap-2">
 				<button
