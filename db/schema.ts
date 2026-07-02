@@ -122,6 +122,14 @@ export const cats = sqliteTable(
 		position: text("position", { mode: "json" })
 			.$type<PositionJson>()
 			.notNull(),
+		destination: text("destination", {
+			mode: "json",
+		}).$type<PositionJson | null>(),
+		activity: text("activity", {
+			enum: ["idle", "traveling", "working", "returning"],
+		})
+			.notNull()
+			.default("idle"),
 		isPregnant: integer("isPregnant", { mode: "boolean" }).notNull(),
 		pregnancyDueTime: integer("pregnancyDueTime"),
 		spriteParams: text("spriteParams", { mode: "json" }).$type<Record<

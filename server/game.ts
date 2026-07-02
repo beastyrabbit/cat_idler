@@ -25,6 +25,7 @@ import {
 	jobs,
 	players,
 	runHistory,
+	worldTiles,
 } from "@/db/schema";
 import { inheritTraits, traitsToSpriteParams } from "@/lib/game/genetics";
 import { planHousePipeline } from "@/lib/game/housePlanner";
@@ -48,6 +49,12 @@ import {
 	shouldStartRitual,
 	shouldTrackCritical,
 } from "@/lib/game/idleRules";
+import {
+	advanceMovement,
+	destinationForJob,
+	pickWanderTarget,
+	type WorldPos,
+} from "@/lib/game/movement";
 import { generateName } from "@/lib/game/naming";
 import { configForTier, pickPolicyTier } from "@/lib/game/policy";
 import { rollSeeded } from "@/lib/game/seededRng";
@@ -646,6 +653,8 @@ function resetGlobalRun(db: GameDb, colony: ColonyRow, reason: string) {
 					needs: { hunger: 100, thirst: 100, rest: 100, health: 100 },
 					currentTask: null,
 					position: { map: "colony", x: spot.x, y: spot.y },
+					destination: null,
+					activity: "idle",
 				})
 				.where(eq(cats._id, cat._id))
 				.run();
@@ -1108,13 +1117,68 @@ export function workerTick(db: GameDb) {
 			);
 		}
 
-		// Promote queued jobs to active.
+		// Movement randomness runs on a forked chain so the policy/planning
+		// roll order (and its deterministic tests) stays untouched.
+		let movementSeed = rngSeed === null ? null : rngSeed + 1_000_003;
+		const nextMovementRoll = () => {
+			if (movementSeed === null) {
+				return Math.random();
+			}
+			const roll = rollSeeded(movementSeed);
+			movementSeed = roll.nextSeed;
+			return roll.value;
+		};
+
+		// Known food-rich tiles outside the village, loaded lazily when a
+		// hunt starts (tile snapshot at job start, never per-tick).
+		let cachedFoodTiles: WorldPos[] | null = null;
+		const foodTilesNearVillage = (): WorldPos[] => {
+			if (cachedFoodTiles) {
+				return cachedFoodTiles;
+			}
+			cachedFoodTiles = tx
+				.select()
+				.from(worldTiles)
+				.where(eq(worldTiles.colonyId, colony._id))
+				.all()
+				.filter(
+					(tile) =>
+						(tile.resources?.food ?? 0) >= 25 &&
+						Math.max(
+							Math.abs(tile.x - VILLAGE_ANCHOR.x),
+							Math.abs(tile.y - VILLAGE_ANCHOR.y),
+						) > 4,
+				)
+				.map((tile) => ({ x: tile.x, y: tile.y }));
+			return cachedFoodTiles;
+		};
+
+		// Promote queued jobs to active; send assigned cats to the job site.
 		const queuedJobs = getJobsByStatus(tx, colony._id, "queued");
 		for (const job of queuedJobs) {
 			tx.update(jobs)
 				.set({ status: "active", startedAt: job.startedAt || now })
 				.where(eq(jobs._id, job._id))
 				.run();
+
+			if (!job.assignedCatId) {
+				continue;
+			}
+			const jobDestination = destinationForJob(job.kind, {
+				anchor: VILLAGE_ANCHOR,
+				shrine: VILLAGE_ANCHOR,
+				foodTiles: job.kind === "hunt_expedition" ? foodTilesNearVillage() : [],
+				roll: nextMovementRoll(),
+			});
+			if (jobDestination) {
+				tx.update(cats)
+					.set({
+						destination: { map: "world", ...jobDestination },
+						activity: "traveling",
+					})
+					.where(eq(cats._id, job.assignedCatId))
+					.run();
+			}
 		}
 
 		// Leader auto-plans hunt/build when resources are low, gated by policy reliability.
@@ -1433,6 +1497,27 @@ export function workerTick(db: GameDb) {
 					.run();
 			}
 
+			// Working cats head back to the village when the job wraps up.
+			if (
+				assignedCat &&
+				(job.kind === "hunt_expedition" ||
+					job.kind === "build_house" ||
+					job.kind === "ritual")
+			) {
+				const homeSpot = pickWanderTarget(
+					VILLAGE_ANCHOR,
+					nextMovementRoll(),
+					nextMovementRoll(),
+				);
+				tx.update(cats)
+					.set({
+						destination: { map: "world", ...homeSpot },
+						activity: "returning",
+					})
+					.where(eq(cats._id, assignedCat._id))
+					.run();
+			}
+
 			tx.update(jobs)
 				.set({ status: "completed", completedAt: now })
 				.where(eq(jobs._id, job._id))
@@ -1445,6 +1530,98 @@ export function workerTick(db: GameDb) {
 				`Completed ${job.kind.replace(/_/g, " ")}.`,
 				assignedCat ? [assignedCat._id] : [],
 			);
+		}
+
+		// --- Movement pass: cats walk to job sites, come home, or wander.
+		// Cosmetic only — the economy stays on job timers above.
+		const movementElapsed = elapsedSec * runtime.timeScale;
+		const wanderChance = Math.min(0.5, 0.02 * elapsedSec);
+		for (const cat of getAliveCats(tx, colony._id)) {
+			const worldPos: WorldPos =
+				cat.position.map === "world"
+					? { x: cat.position.x, y: cat.position.y }
+					: colonyToWorld({ x: cat.position.x, y: cat.position.y });
+			const destination = cat.destination
+				? { x: cat.destination.x, y: cat.destination.y }
+				: null;
+			const activity = cat.activity ?? "idle";
+
+			if (!destination) {
+				if (activity === "traveling" || activity === "returning") {
+					// Lost its destination (legacy row / interrupted job) — settle.
+					tx.update(cats)
+						.set({ activity: "idle" })
+						.where(eq(cats._id, cat._id))
+						.run();
+				} else if (activity === "idle" && nextMovementRoll() < wanderChance) {
+					const target = pickWanderTarget(
+						VILLAGE_ANCHOR,
+						nextMovementRoll(),
+						nextMovementRoll(),
+					);
+					if (target.x !== worldPos.x || target.y !== worldPos.y) {
+						tx.update(cats)
+							.set({ destination: { map: "world", ...target } })
+							.where(eq(cats._id, cat._id))
+							.run();
+					}
+				}
+				continue;
+			}
+
+			const step = advanceMovement(worldPos, destination, movementElapsed);
+			const moved =
+				step.position.x !== worldPos.x || step.position.y !== worldPos.y;
+			if (!moved && !step.arrived) {
+				continue;
+			}
+
+			tx.update(cats)
+				.set({
+					position: { map: "world", x: step.position.x, y: step.position.y },
+					...(step.arrived
+						? {
+								destination: null,
+								activity:
+									activity === "traveling"
+										? ("working" as const)
+										: ("idle" as const),
+							}
+						: {}),
+				})
+				.where(eq(cats._id, cat._id))
+				.run();
+
+			// Exploration: movement outside the village wears paths, which
+			// also reveals fog on the map.
+			if (moved) {
+				const tileX = Math.round(step.position.x);
+				const tileY = Math.round(step.position.y);
+				const outsideVillage =
+					Math.max(
+						Math.abs(tileX - VILLAGE_ANCHOR.x),
+						Math.abs(tileY - VILLAGE_ANCHOR.y),
+					) > 4;
+				if (outsideVillage) {
+					const tile = tx
+						.select()
+						.from(worldTiles)
+						.where(
+							and(
+								eq(worldTiles.colonyId, colony._id),
+								eq(worldTiles.x, tileX),
+								eq(worldTiles.y, tileY),
+							),
+						)
+						.get();
+					if (tile) {
+						tx.update(worldTiles)
+							.set({ pathWear: Math.min(100, tile.pathWear + 2) })
+							.where(eq(worldTiles._id, tile._id))
+							.run();
+					}
+				}
+			}
 		}
 
 		const unattendedHours =

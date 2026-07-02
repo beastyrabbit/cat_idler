@@ -9,6 +9,7 @@ export interface MapCat {
 	name: string;
 	position: { map: "colony" | "world"; x: number; y: number };
 	currentTask: string | null;
+	activity?: "idle" | "traveling" | "working" | "returning" | null;
 }
 
 interface CatLayerProps {
@@ -42,6 +43,12 @@ const TASK_BADGES: Record<string, string> = {
 	rest: "💤",
 };
 
+const ACTIVITY_BADGES: Record<string, string> = {
+	traveling: "🧭",
+	working: "⚒️",
+	returning: "🏠",
+};
+
 export function CatLayer({ cats, leaderId }: CatLayerProps) {
 	return (
 		<>
@@ -53,7 +60,9 @@ export function CatLayer({ cats, leaderId }: CatLayerProps) {
 				const center = tileDiamondCenter(worldPos.x, worldPos.y, ISO);
 				const zIndex = zIndexFor(worldPos.x, worldPos.y, "object", ISO);
 				const offset = spreadOffset(cat._id);
-				const badge = cat.currentTask ? TASK_BADGES[cat.currentTask] : null;
+				const badge =
+					(cat.activity ? ACTIVITY_BADGES[cat.activity] : null) ??
+					(cat.currentTask ? TASK_BADGES[cat.currentTask] : null);
 				const isLeader = cat._id === leaderId;
 
 				return (

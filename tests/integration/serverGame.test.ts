@@ -591,6 +591,169 @@ describe("ritual completion", () => {
 	});
 });
 
+describe("cat movement", () => {
+	it("sends the assigned hunter out when a hunt is promoted to active", () => {
+		const colony = ensureGlobalColony(db);
+		setTestRngSeed(db, 7);
+		const hunter = getAliveCatsForTest(db, colony._id)[0];
+
+		db.insert(jobs)
+			.values({
+				_id: "hunt-travel-job",
+				colonyId: colony._id,
+				kind: "hunt_expedition",
+				status: "queued",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: hunter._id,
+				baseDurationSec: 8 * 3600,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: Date.now(),
+				startedAt: Date.now(),
+				endsAt: Date.now() + 8 * 3600 * 1000,
+				metadata: {},
+			})
+			.run();
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const updated = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === hunter._id,
+		)!;
+		expect(updated.activity).toBe("traveling");
+		expect(updated.destination).not.toBeNull();
+		const dest = updated.destination!;
+		expect(dest.map).toBe("world");
+		// Hunts happen outside the village clearing.
+		expect(
+			Math.max(Math.abs(dest.x - 6), Math.abs(dest.y - 6)),
+		).toBeGreaterThan(4);
+	});
+
+	it("walks a traveling cat toward its destination and sets it to work on arrival", () => {
+		const colony = ensureGlobalColony(db);
+		const walker = getAliveCatsForTest(db, colony._id)[0];
+
+		db.update(cats)
+			.set({
+				position: { map: "world", x: 6, y: 6 },
+				destination: { map: "world", x: 16, y: 6 },
+				activity: "traveling",
+			})
+			.where(eq(cats._id, walker._id))
+			.run();
+
+		advanceTime(db, 10);
+		workerTick(db);
+
+		let updated = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === walker._id,
+		)!;
+		// 10s at 0.5 tiles/s — halfway there, still traveling.
+		expect(updated.position.x).toBeCloseTo(11, 5);
+		expect(updated.position.y).toBe(6);
+		expect(updated.activity).toBe("traveling");
+
+		advanceTime(db, 60);
+		workerTick(db);
+
+		updated = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === walker._id,
+		)!;
+		expect(updated.position.x).toBe(16);
+		expect(updated.activity).toBe("working");
+		expect(updated.destination).toBeNull();
+	});
+
+	it("returns a cat home and settles it back to idle", () => {
+		const colony = ensureGlobalColony(db);
+		const traveler = getAliveCatsForTest(db, colony._id)[0];
+
+		db.update(cats)
+			.set({
+				position: { map: "world", x: 20, y: 6 },
+				destination: { map: "world", x: 7, y: 7 },
+				activity: "returning",
+			})
+			.where(eq(cats._id, traveler._id))
+			.run();
+
+		advanceTime(db, 120);
+		workerTick(db);
+
+		const updated = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === traveler._id,
+		)!;
+		expect(updated.position).toEqual({ map: "world", x: 7, y: 7 });
+		expect(updated.activity).toBe("idle");
+		expect(updated.destination).toBeNull();
+	});
+
+	it("sends the worker home when its job completes", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 100 });
+		const ritualist = getAliveCatsForTest(db, colony._id)[0];
+
+		// Far from the village so the same-tick movement pass can't already
+		// bring it home (which would legitimately flip it back to idle).
+		db.update(cats)
+			.set({ position: { map: "world", x: 40, y: 6 } })
+			.where(eq(cats._id, ritualist._id))
+			.run();
+
+		db.insert(jobs)
+			.values({
+				_id: "ritual-return-job",
+				colonyId: colony._id,
+				kind: "ritual",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: ritualist._id,
+				baseDurationSec: 10,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: Date.now(),
+				startedAt: Date.now(),
+				endsAt: Date.now() - 1000,
+				metadata: {},
+			})
+			.run();
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const updated = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === ritualist._id,
+		)!;
+		expect(updated.activity).toBe("returning");
+		expect(updated.destination).not.toBeNull();
+		const home = updated.destination!;
+		// Home spots are inside the village clearing.
+		expect(
+			Math.max(Math.abs(home.x - 6), Math.abs(home.y - 6)),
+		).toBeLessThanOrEqual(3);
+	});
+
+	it("lets idle cats pick wander destinations under a seeded RNG", () => {
+		ensureGlobalColony(db);
+		setTestRngSeed(db, 1);
+
+		advanceTime(db, 60);
+		workerTick(db);
+
+		const wanderers = getAliveCatsForTest(
+			db,
+			ensureGlobalColony(db)._id,
+		).filter((cat) => cat.destination !== null);
+		expect(wanderers.length).toBeGreaterThan(0);
+	});
+});
+
 function getAliveCatsForTest(database: GameDb, colonyId: string) {
 	return database
 		.select()
