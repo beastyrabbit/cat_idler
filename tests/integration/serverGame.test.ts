@@ -1286,10 +1286,11 @@ describe("cat movement", () => {
 			.where(eq(worldTiles.colonyId, colony._id))
 			.run();
 
+		// Entirely outside the village fence so no gate detour applies.
 		db.update(cats)
 			.set({
-				position: { map: "world", x: 6, y: 6 },
-				destination: { map: "world", x: 16, y: 6 },
+				position: { map: "world", x: 20, y: 6 },
+				destination: { map: "world", x: 30, y: 6 },
 				activity: "traveling",
 			})
 			.where(eq(cats._id, walker._id))
@@ -1302,7 +1303,7 @@ describe("cat movement", () => {
 			(cat) => cat._id === walker._id,
 		)!;
 		// 10s at 0.5 tiles/s — halfway there, still traveling.
-		expect(updated.position.x).toBeCloseTo(11, 5);
+		expect(updated.position.x).toBeCloseTo(25, 5);
 		expect(updated.position.y).toBe(6);
 		expect(updated.activity).toBe("traveling");
 
@@ -1312,7 +1313,7 @@ describe("cat movement", () => {
 		updated = getAliveCatsForTest(db, colony._id).find(
 			(cat) => cat._id === walker._id,
 		)!;
-		expect(updated.position.x).toBe(16);
+		expect(updated.position.x).toBe(30);
 		expect(updated.activity).toBe("working");
 		expect(updated.destination).toBeNull();
 	});
@@ -1330,6 +1331,9 @@ describe("cat movement", () => {
 			.where(eq(cats._id, traveler._id))
 			.run();
 
+		// Two legs: through the south gate first, then home.
+		advanceTime(db, 120);
+		workerTick(db);
 		advanceTime(db, 120);
 		workerTick(db);
 

@@ -1407,7 +1407,8 @@ export function workerTick(db: GameDb) {
 				)
 				.all();
 			for (const worn of wornTiles) {
-				const next = Math.max(1, worn.pathWear - decayAmount);
+				const floor = worn.pathWear > 62 ? 63 : 1;
+				const next = Math.max(floor, worn.pathWear - decayAmount);
 				if (next !== worn.pathWear) {
 					tx.update(worldTiles)
 						.set({ pathWear: next })
@@ -1626,6 +1627,7 @@ export function workerTick(db: GameDb) {
 					null,
 					idleHunter,
 				);
+				busyIds.add(idleHunter._id);
 			}
 		}
 
@@ -2194,22 +2196,35 @@ export function workerTick(db: GameDb) {
 			const speed =
 				MOVE_SPEED_TILES_PER_SEC *
 				(1 + getPathSpeedBonus(standingTile?.pathWear ?? 0));
+			// The village fence blocks travel: crossing the ring means going
+			// through the south gate first.
+			const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + 4 };
+			const ringDist = (p: WorldPos) =>
+				Math.max(
+					Math.abs(p.x - VILLAGE_ANCHOR.x),
+					Math.abs(p.y - VILLAGE_ANCHOR.y),
+				);
+			const crossesFence = ringDist(worldPos) < 4 !== ringDist(destination) < 4;
+			const atGate =
+				Math.abs(worldPos.x - gate.x) < 1 && Math.abs(worldPos.y - gate.y) < 1;
+			const stepTarget = crossesFence && !atGate ? gate : destination;
 			const step = advanceMovement(
 				worldPos,
-				destination,
+				stepTarget,
 				movementElapsed,
 				speed,
 			);
+			const arrived = step.arrived && stepTarget === destination;
 			const moved =
 				step.position.x !== worldPos.x || step.position.y !== worldPos.y;
-			if (!moved && !step.arrived) {
+			if (!moved && !arrived) {
 				continue;
 			}
 
 			tx.update(cats)
 				.set({
 					position: { map: "world", x: step.position.x, y: step.position.y },
-					...(step.arrived
+					...(arrived
 						? {
 								destination: null,
 								activity:
@@ -2245,8 +2260,12 @@ export function workerTick(db: GameDb) {
 						)
 						.get();
 					if (tile) {
+						// Walking a tile reveals it immediately (>62 = explored);
+						// repeated traffic pushes it toward a visible road (>=70).
 						tx.update(worldTiles)
-							.set({ pathWear: addPathWear(tile.pathWear, 2) })
+							.set({
+								pathWear: Math.max(addPathWear(tile.pathWear, 2), 64),
+							})
 							.where(eq(worldTiles._id, tile._id))
 							.run();
 					}
