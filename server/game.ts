@@ -9,7 +9,7 @@
  * handlers call the rest.
  */
 
-import { and, desc, eq, gt, gte, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNull, lt, lte } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { GameDb } from "@/db/client";
 import {
@@ -833,11 +833,6 @@ function getUpgradeTree(colony: ColonyRow): UpgradeTreeState {
 	return deserializeUpgradeTreeState(colony.upgradeTree ?? null);
 }
 
-/** Aggregate modifiers from the colony's owned upgrade-tree nodes. */
-function treeEffects(colony: ColonyRow): ResolvedEffects {
-	return resolveEffects(getUpgradeTree(colony).ownedNodeIds);
-}
-
 /** Persist upgrade-tree progress back onto the colony row. */
 function saveUpgradeTree(
 	db: GameDb,
@@ -1475,11 +1470,21 @@ export function buildRoad(
 		const now = Date.now();
 		upsertPlayer(tx, args.sessionId, args.nickname, now);
 
-		const path: Array<{ x: number; y: number }> = [];
+		// Reject non-finite/absurd endpoints BEFORE any loop — NaN/Infinity
+		// or huge coords would otherwise spin inside the write transaction
+		// and stall the whole game (review finding: DoS).
+		const coords = [args.a.x, args.a.y, args.b.x, args.b.y];
+		if (!coords.every((c) => Number.isFinite(c) && Math.abs(c) <= 1_000)) {
+			throw new Error("Invalid road endpoints");
+		}
 		const ax = Math.round(args.a.x);
 		const ay = Math.round(args.a.y);
 		const bx = Math.round(args.b.x);
 		const by = Math.round(args.b.y);
+		if (Math.abs(bx - ax) + Math.abs(by - ay) > 24) {
+			throw new Error("Roads are limited to 24 tiles per build");
+		}
+		const path: Array<{ x: number; y: number }> = [];
 		for (let x = ax; x !== bx; x += Math.sign(bx - ax)) {
 			path.push({ x, y: ay });
 		}
@@ -2445,6 +2450,30 @@ export function workerTick(db: GameDb) {
 		// --- Player zones: drop expired ones, snapshot the rest for
 		// destination steering below.
 		sweepExpiredZones(tx, colony._id, now);
+
+		// Events are append-only; without pruning they grow ~100k+/day.
+		// Once a game-minute, keep only the newest rows.
+		if (minuteRolled) {
+			const EVENT_KEEP = 2_000;
+			const cutoff = tx
+				.select({ timestamp: events.timestamp })
+				.from(events)
+				.where(eq(events.colonyId, colony._id))
+				.orderBy(desc(events.timestamp))
+				.limit(1)
+				.offset(EVENT_KEEP)
+				.get();
+			if (cutoff) {
+				tx.delete(events)
+					.where(
+						and(
+							eq(events.colonyId, colony._id),
+							lt(events.timestamp, cutoff.timestamp),
+						),
+					)
+					.run();
+			}
+		}
 
 		// Unused paths decay (~1 wear/min). Wear floors at 1 so explored
 		// terrain stays revealed even after the road itself fades. The decay
