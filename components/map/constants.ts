@@ -94,6 +94,10 @@ export const BUILDING_SPRITES: Record<string, string> = {
 	mouse_farm: "/images/iso/buildings/mouse-farm.png",
 	workshop: "/images/iso/buildings/workshop.png",
 	field: "/images/iso/buildings/field.png",
+	// Reuse curated pieces that read the part: elders at study for the
+	// research hut, kittens at their books for the school.
+	research_hut: "/images/iso/buildings/elder-corner.png",
+	school: "/images/iso/buildings/nursery.png",
 };
 export const BUILDING_SPRITE_FALLBACK = "/images/iso/buildings/default.png";
 

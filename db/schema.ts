@@ -75,6 +75,17 @@ export interface LifetimeContributionJson {
 	upgradesPurchased: number;
 }
 
+/**
+ * Serialized upgrade-tree progression (lib/game/upgradeTree.ts). The gods'
+ * and cats' shared tech tree — owned nodes plus the cats' accrued research
+ * points. Persisted on the colony because it represents civilization-level
+ * progress that survives run resets, like {@link globalUpgrades}.
+ */
+export interface UpgradeTreeStateJson {
+	ownedNodeIds: string[];
+	researchPoints: number;
+}
+
 export const colonies = sqliteTable(
 	"colonies",
 	{
@@ -101,6 +112,13 @@ export const colonies = sqliteTable(
 		lastResetAt: integer("lastResetAt"),
 		automationTier: real("automationTier"),
 		globalUpgradePoints: real("globalUpgradePoints"),
+		/**
+		 * God/cat upgrade-tree progress. Null on legacy rows — read through
+		 * deserializeUpgradeTreeState, which fills a fresh empty tree.
+		 */
+		upgradeTree: text("upgradeTree", {
+			mode: "json",
+		}).$type<UpgradeTreeStateJson>(),
 		ritualRequestedAt: integer("ritualRequestedAt"),
 		criticalSince: integer("criticalSince"),
 		testTimeScale: real("testTimeScale"),
@@ -193,6 +211,8 @@ export const buildings = sqliteTable(
 				"shrine",
 				"workshop",
 				"field",
+				"research_hut",
+				"school",
 			],
 		}).notNull(),
 		level: integer("level").notNull(),

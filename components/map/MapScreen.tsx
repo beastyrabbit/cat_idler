@@ -17,6 +17,7 @@ import { BuildingLayer } from "./BuildingLayer";
 import { CatLayer } from "./CatLayer";
 import { CHUNK_MAX, CHUNK_MIN, ISO, ISO_CONTENT } from "./constants";
 import { TileLayer } from "./TileLayer";
+import { TreePanel } from "./TreePanel";
 import { ZoneLayer } from "./ZoneLayer";
 
 const JOB_LABELS: Record<string, string> = {
@@ -99,10 +100,13 @@ export function MapScreen() {
 		onPlanBuilding,
 		onAssignWorker,
 		onBuildRoad,
+		research,
+		onUnlockNode,
 	} = useGameDashboard();
 
 	const [chunks, setChunks] = useState<ChunkCoord[]>(INITIAL_CHUNKS);
 	const [showUpgrades, setShowUpgrades] = useState(false);
+	const [showTree, setShowTree] = useState(false);
 	const [infoMode, setInfoMode] = useState(false);
 	const [selectedCatId, setSelectedCatId] = useState<string | null>(null);
 	const [zoneDraft, setZoneDraft] = useState<{
@@ -350,6 +354,21 @@ export function MapScreen() {
 
 				<button
 					type="button"
+					onClick={() => setShowTree(true)}
+					className="pointer-events-auto rounded-md border border-[#5d4024] bg-[#f3e6c8] px-3 py-1.5 text-sm font-bold text-[#4a3319] shadow hover:bg-amber-100"
+					title="Open the god/cat upgrade tree"
+				>
+					🌳 Tree
+					{research?.nextTarget && (
+						<span className="ml-1 text-[11px] text-emerald-700">
+							🔬 {Math.floor(research.researchPoints)}/
+							{research.nextTarget.cost}
+						</span>
+					)}
+				</button>
+
+				<button
+					type="button"
 					onClick={() => setInfoMode((v) => !v)}
 					className={`pointer-events-auto rounded-md border border-[#5d4024] px-3 py-1.5 text-sm font-bold shadow ${
 						infoMode
@@ -504,10 +523,11 @@ export function MapScreen() {
 					)}
 				</div>
 
-				{/* Production: workshops need workers */}
+				{/* Production: workshops and research huts need workers */}
 				{buildings.some(
 					(b: { type: string; constructionProgress: number }) =>
-						b.type === "workshop" && b.constructionProgress >= 100,
+						(b.type === "workshop" || b.type === "research_hut") &&
+						b.constructionProgress >= 100,
 				) && (
 					<div className={`p-3 ${PANEL}`}>
 						<h3 className={PANEL_HEADING}>Production</h3>
@@ -515,23 +535,28 @@ export function MapScreen() {
 							{buildings
 								.filter(
 									(b: { type: string; constructionProgress: number }) =>
-										b.type === "workshop" && b.constructionProgress >= 100,
+										(b.type === "workshop" || b.type === "research_hut") &&
+										b.constructionProgress >= 100,
 								)
 								.map(
 									(shop: {
 										_id: string;
+										type: string;
 										worldPosition: { x: number; y: number };
 									}) => {
 										const worker = cats.find(
 											(cat: { assignedBuildingId?: string | null }) =>
 												cat.assignedBuildingId === shop._id,
 										);
+										const isResearch = shop.type === "research_hut";
 										return (
 											<li
 												key={shop._id}
 												className="flex items-center justify-between gap-2 text-xs font-semibold text-[#4a3319]"
 											>
-												<span>⚒️ Workshop</span>
+												<span>
+													{isResearch ? "🔬 Research hut" : "⚒️ Workshop"}
+												</span>
 												<select
 													className="rounded border border-[#5d4024] bg-[#e9d9b4] px-1 py-0.5 text-xs"
 													value={worker?._id ?? ""}
@@ -682,6 +707,38 @@ export function MapScreen() {
 							}
 						>
 							🌾 Field
+						</button>
+						<button
+							type="button"
+							onClick={() => onPlanBuilding("research_hut")}
+							disabled={
+								busyAction === "build:research_hut" ||
+								!research?.ownedNodeIds?.includes("research_hut")
+							}
+							className={WOOD_BUTTON}
+							title={
+								research?.ownedNodeIds?.includes("research_hut")
+									? "Build a research hut; assign a scholar to accrue research"
+									: "Unlock the Research Hut node in the tree first"
+							}
+						>
+							🔬 Research hut
+						</button>
+						<button
+							type="button"
+							onClick={() => onPlanBuilding("school")}
+							disabled={
+								busyAction === "build:school" ||
+								!research?.ownedNodeIds?.includes("school")
+							}
+							className={WOOD_BUTTON}
+							title={
+								research?.ownedNodeIds?.includes("school")
+									? "Build a school; kittens trickle in extra research"
+									: "Unlock the School node in the tree first"
+							}
+						>
+							🎓 School
 						</button>
 						<button
 							type="button"
@@ -850,6 +907,16 @@ export function MapScreen() {
 					</div>
 				);
 			})()}
+
+			{/* Upgrade tree modal */}
+			{showTree && research && (
+				<TreePanel
+					research={research}
+					busyAction={busyAction}
+					onUnlockNode={onUnlockNode}
+					onClose={() => setShowTree(false)}
+				/>
+			)}
 
 			{/* News ticker — latest headline, full story in the Examiner */}
 			{events.length > 0 && (

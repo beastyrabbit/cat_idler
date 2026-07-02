@@ -57,6 +57,13 @@
       "when": 1783017156631,
       "tag": "0007_little_echo",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1783018695305,
+      "tag": "0008_broad_wasp",
+      "breakpoints": true
     }
   ]
 }

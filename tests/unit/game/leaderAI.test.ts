@@ -328,6 +328,46 @@ describe("leaderAI", () => {
 		});
 	});
 
+	describe("research staffing", () => {
+		it("staffs a researcher when a hut needs one and stores are comfortable", () => {
+			const decisions = planLeaderActions(
+				snap({
+					researchHutsNeedingWorkers: 1,
+					idleCats: 6,
+					// Full stores: no hunts dispatched, food/water comfortable.
+					resources: { food: CAP, refined: 0 },
+					water: CAP,
+				}),
+			);
+			const research = decisions.find((d) => d.kind === "assign_research");
+			expect(research).toEqual({ kind: "assign_research", count: 1 });
+		});
+
+		it("leaves the hut empty when food is below the comfort ratio", () => {
+			const decisions = planLeaderActions(
+				snap({
+					researchHutsNeedingWorkers: 1,
+					idleCats: 6,
+					resources: { food: CAP * 0.2, refined: 0 },
+					water: CAP,
+				}),
+			);
+			expect(kinds(decisions)).not.toContain("assign_research");
+		});
+
+		it("leaves the hut empty when water is below the comfort ratio", () => {
+			const decisions = planLeaderActions(
+				snap({
+					researchHutsNeedingWorkers: 1,
+					idleCats: 6,
+					resources: { food: CAP, refined: 0 },
+					water: CAP * 0.2,
+				}),
+			);
+			expect(kinds(decisions)).not.toContain("assign_research");
+		});
+	});
+
 	describe("tithing", () => {
 		it("tithes food only above 60% of capacity plus the tithe amount", () => {
 			const threshold = CAP * TITHE_FOOD_RATIO + TITHE_FOOD_AMOUNT;

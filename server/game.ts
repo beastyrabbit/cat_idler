@@ -117,6 +117,21 @@ import {
 	tripDueAt,
 } from "@/lib/game/trips";
 import {
+	accrueResearch,
+	catAutoUnlock,
+	createUpgradeTreeState,
+	deserializeUpgradeTreeState,
+	getNode,
+	godPurchase,
+	isOwned,
+	nextResearchTarget,
+	pointsPerTickFor,
+	type ResolvedEffects,
+	resolveEffects,
+	serializeUpgradeTreeState,
+	type UpgradeTreeState,
+} from "@/lib/game/upgradeTree";
+import {
 	colonyToWorld,
 	nextBuildingSite,
 	ringCells,
@@ -398,6 +413,8 @@ function huntYieldFor(
 	cat: CatRow,
 	hunterXp: number,
 	upgrades: UpgradeLevels,
+	/** Upgrade-tree `huntYieldMult` (Basic Tools, etc.); default 1. */
+	huntYieldMult = 1,
 ): number {
 	const base = getHuntReward(
 		cat.stats.hunting,
@@ -407,7 +424,10 @@ function huntYieldFor(
 	);
 	const stageMult = stageWorkEffectiveness(getLifeStage(cat.ageHours ?? 0));
 	const yieldMult = tradeYieldMultiplier(hunterXp);
-	return Math.max(1, Math.floor(base * stageMult * yieldMult));
+	return Math.max(
+		1,
+		Math.floor(base * stageMult * yieldMult * Math.max(0, huntYieldMult)),
+	);
 }
 
 /**
@@ -780,6 +800,28 @@ function upgradesToLevels(
 	};
 }
 
+/** Deserialize the colony's upgrade-tree progress (fresh tree on null). */
+function getUpgradeTree(colony: ColonyRow): UpgradeTreeState {
+	return deserializeUpgradeTreeState(colony.upgradeTree ?? null);
+}
+
+/** Aggregate modifiers from the colony's owned upgrade-tree nodes. */
+function treeEffects(colony: ColonyRow): ResolvedEffects {
+	return resolveEffects(getUpgradeTree(colony).ownedNodeIds);
+}
+
+/** Persist upgrade-tree progress back onto the colony row. */
+function saveUpgradeTree(
+	db: GameDb,
+	colonyId: string,
+	state: UpgradeTreeState,
+): void {
+	db.update(colonies)
+		.set({ upgradeTree: serializeUpgradeTreeState(state) })
+		.where(eq(colonies._id, colonyId))
+		.run();
+}
+
 function ensureGlobalUpgrades(db: GameDb, colonyId: string) {
 	const existing = getUpgradeRows(db, colonyId);
 	const existingKeys = new Set(existing.map((u) => u.key));
@@ -828,6 +870,7 @@ export function ensureGlobalColony(db: GameDb): ColonyRow {
 				lastResetAt: now,
 				automationTier: 0,
 				globalUpgradePoints: 0,
+				upgradeTree: serializeUpgradeTreeState(createUpgradeTreeState()),
 				ritualRequestedAt: null,
 				criticalSince: null,
 				testTimeScale: 1,
@@ -1212,7 +1255,7 @@ export function planBuilding(
 	args: {
 		sessionId: string;
 		nickname: string;
-		type: "workshop" | "field";
+		type: "workshop" | "field" | "research_hut" | "school";
 	},
 ) {
 	return db.transaction((txRaw) => {
@@ -1232,6 +1275,17 @@ export function planBuilding(
 		}
 		if (args.type === "field" && !fieldUnlocked(level)) {
 			throw new Error("Fields unlock at village level 4");
+		}
+		// Era gating: research_hut and school are unlocked by their tree
+		// nodes (whose ids match the building type). Reject until owned.
+		if (args.type === "research_hut" || args.type === "school") {
+			const tree = getUpgradeTree(colony);
+			if (!isOwned(tree, args.type)) {
+				const node = getNode(args.type);
+				throw new Error(
+					`${node?.name ?? args.type} must be researched or granted by the gods first`,
+				);
+			}
 		}
 
 		const pending = [
@@ -1321,13 +1375,13 @@ export function assignWorker(
 			.get();
 		if (
 			!building ||
-			building.type !== "workshop" ||
+			(building.type !== "workshop" && building.type !== "research_hut") ||
 			building.constructionProgress < 100
 		) {
 			throw new Error("That building cannot take a worker");
 		}
 
-		// One worker per workshop — displace any current occupant.
+		// One worker per building — displace any current occupant.
 		const occupant = getAliveCats(tx, colony._id).find(
 			(candidate) => candidate.assignedBuildingId === building._id,
 		);
@@ -1532,6 +1586,22 @@ export function getGlobalDashboard(db: GameDb) {
 		.where(eq(buildings.colonyId, colony._id))
 		.all();
 
+	// Upgrade-tree state + modifiers so the HUD's caps match the tick's.
+	const tree = getUpgradeTree(colony);
+	const effects = resolveEffects(tree.ownedNodeIds);
+	const caps = storageCapacities(colonyBuildings, effects.storagePerLevelMult);
+	const houseCap = housingCapacity(colonyBuildings, effects.housingPerDen);
+	const researchHutIds = new Set(
+		colonyBuildings
+			.filter((b) => b.type === "research_hut" && b.constructionProgress >= 100)
+			.map((b) => b._id),
+	);
+	const researcherCount = aliveCats.filter(
+		(cat) =>
+			cat.assignedBuildingId && researchHutIds.has(cat.assignedBuildingId),
+	).length;
+	const nextTarget = nextResearchTarget(tree);
+
 	return {
 		now,
 		colony,
@@ -1550,18 +1620,26 @@ export function getGlobalDashboard(db: GameDb) {
 		storage: {
 			// Per-resource caps derived from the finished storehouses, plus a
 			// `foodCapacity` alias kept for the existing HUD.
-			capacities: storageCapacities(colonyBuildings),
-			foodCapacity: storageCapacities(colonyBuildings).food,
+			capacities: caps,
+			foodCapacity: caps.food,
 			titheRates: { food: 20, refined: 5 },
 		},
 		housing: {
 			population: aliveCats.length,
-			capacity: housingCapacity(colonyBuildings),
-			pressure: housingPressure(
-				aliveCats.length,
-				housingCapacity(colonyBuildings),
-			),
+			capacity: houseCap,
+			pressure: housingPressure(aliveCats.length, houseCap),
 			villageLevel: villageLevel(colonyBuildings),
+		},
+		// God/cat upgrade tree: owned nodes + accrued research so the UI can
+		// render the tree, blessings-buy buttons, and the research progress bar.
+		research: {
+			ownedNodeIds: tree.ownedNodeIds,
+			researchPoints: tree.researchPoints,
+			researcherCount,
+			blessings: colony.globalUpgradePoints ?? 0,
+			nextTarget: nextTarget
+				? { id: nextTarget.id, name: nextTarget.name, cost: nextTarget.cost }
+				: null,
 		},
 		...electionPayloads(db, colony._id, aliveCats),
 		zones: activeZones(db, colony._id, now).map((zone) => ({
@@ -1867,6 +1945,59 @@ export function purchaseUpgrade(
 	});
 }
 
+/**
+ * God purchase of an upgrade-tree node: spend the colony's blessings
+ * (`globalUpgradePoints`) to unlock a node instantly, provided its
+ * prerequisites are met. Soft-fails (returns `{ ok: false, reason }`) on
+ * bad node, already-owned, unmet prerequisites, or insufficient blessings —
+ * the client surfaces the reason inline.
+ */
+export function unlockNode(
+	db: GameDb,
+	args: { sessionId: string; nickname: string; nodeId: string },
+) {
+	return db.transaction((txRaw) => {
+		const tx = txRaw as unknown as GameDb;
+		const colony = ensureGlobalColony(tx);
+		const now = Date.now();
+		upsertPlayer(tx, args.sessionId, args.nickname, now);
+
+		const tree = getUpgradeTree(colony);
+		const result = godPurchase(tree, args.nodeId);
+		if (!result.ok) {
+			return { ok: false, reason: result.reason };
+		}
+
+		const blessings = colony.globalUpgradePoints ?? 0;
+		if (blessings < result.blessingsCost) {
+			return { ok: false, reason: "insufficient-blessings" };
+		}
+
+		saveUpgradeTree(tx, colony._id, result.state);
+		tx.update(colonies)
+			.set({
+				globalUpgradePoints: blessings - result.blessingsCost,
+				lastPlayerActivityAt: now,
+			})
+			.where(eq(colonies._id, colony._id))
+			.run();
+
+		const node = getNode(args.nodeId);
+		logEvent(
+			tx,
+			colony._id,
+			"research_unlocked",
+			`The gods granted ${node?.name ?? args.nodeId} to the colony (−${result.blessingsCost} blessings).`,
+		);
+
+		return {
+			ok: true,
+			nodeId: args.nodeId,
+			remainingBlessings: blessings - result.blessingsCost,
+		};
+	});
+}
+
 export function upsertPresence(
 	db: GameDb,
 	sessionId: string,
@@ -1893,6 +2024,12 @@ export function workerTick(db: GameDb) {
 
 		const upgrades = upgradesToLevels(getUpgradeRows(tx, colony._id));
 		const runtime = getRuntimeConfig(colony);
+
+		// Upgrade-tree state + resolved modifiers for this tick. `effects`
+		// feeds capacities, hunt yields, movement and research below; the
+		// tree itself accrues research points and may auto-unlock a node.
+		const upgradeTree = getUpgradeTree(colony);
+		const effects = resolveEffects(upgradeTree.ownedNodeIds);
 
 		let rngSeed = runtime.rngSeed;
 		const nextRoll = () => {
@@ -1947,7 +2084,10 @@ export function workerTick(db: GameDb) {
 			.from(buildings)
 			.where(eq(buildings.colonyId, colony._id))
 			.all();
-		const caps = storageCapacities(colonyBuildingsEarly);
+		const caps = storageCapacities(
+			colonyBuildingsEarly,
+			effects.storagePerLevelMult,
+		);
 		const foodCapacity = caps.food;
 
 		// --- Life simulation: aging, mortality, births, conceptions --------
@@ -1960,7 +2100,7 @@ export function workerTick(db: GameDb) {
 		runLifeSimulation(tx, colony, {
 			aliveCats,
 			elapsedGameHours: (elapsedSec * runtime.timeScale) / 3600,
-			housingCap: housingCapacity(colonyBuildingsEarly),
+			housingCap: housingCapacity(colonyBuildingsEarly, effects.housingPerDen),
 			foodRatio: caps.food > 0 ? colony.resources.food / caps.food : 0,
 			waterRatio: caps.water > 0 ? colony.resources.water / caps.water : 0,
 			lifeSeed: rngSeed === null ? null : rngSeed + 2_000_003,
@@ -2306,8 +2446,15 @@ export function workerTick(db: GameDb) {
 				const scaffoldType =
 					requestedType === "workshop" ||
 					requestedType === "field" ||
-					requestedType === "food_storage"
-						? (requestedType as "workshop" | "field" | "food_storage")
+					requestedType === "food_storage" ||
+					requestedType === "research_hut" ||
+					requestedType === "school"
+						? (requestedType as
+								| "workshop"
+								| "field"
+								| "food_storage"
+								| "research_hut"
+								| "school")
 						: ("den" as const);
 				const occupied = tx
 					.select()
@@ -2545,6 +2692,13 @@ export function workerTick(db: GameDb) {
 				building.constructionProgress >= 100 &&
 				!staffedBuildingIds.has(building._id),
 		);
+		// Completed research huts with no assigned researcher, for staffing.
+		const researchHutsNeedingWorkers = colonyBuildings.filter(
+			(building) =>
+				building.type === "research_hut" &&
+				building.constructionProgress >= 100 &&
+				!staffedBuildingIds.has(building._id),
+		);
 
 		const snapshot: LeaderSnapshot = {
 			population: aliveCats.length,
@@ -2561,7 +2715,7 @@ export function workerTick(db: GameDb) {
 			water: nextResources.water,
 			waterCapacity: caps.water,
 			housing: {
-				capacity: housingCapacity(colonyBuildings),
+				capacity: housingCapacity(colonyBuildings, effects.housingPerDen),
 				committed: committedCapacity,
 			},
 			activeHunts,
@@ -2576,6 +2730,7 @@ export function workerTick(db: GameDb) {
 			storehouseCount: countStorehouses(colonyBuildings),
 			storehouseCap: storehouseCap(aliveCats.length),
 			workshopsNeedingWorkers: workshopsNeedingWorkers.length,
+			researchHutsNeedingWorkers: researchHutsNeedingWorkers.length,
 		};
 
 		// Worker map the later production pass consumes.
@@ -2803,6 +2958,39 @@ export function workerTick(db: GameDb) {
 					}
 					break;
 				}
+				case "assign_research": {
+					let staffed = 0;
+					for (const hut of researchHutsNeedingWorkers) {
+						if (staffed >= decision.count) {
+							break;
+						}
+						// The most studious idlers (medicine as the scholar proxy).
+						const idle = [...availableIdle].sort(
+							(a, b) => b.stats.medicine - a.stats.medicine,
+						)[0];
+						if (!idle) {
+							break;
+						}
+						if (!canTakePolicyAction()) {
+							break;
+						}
+						tx.update(cats)
+							.set({ assignedBuildingId: hut._id })
+							.where(eq(cats._id, idle._id))
+							.run();
+						workshopWorkers.set(hut._id, idle);
+						claimIdle(idle);
+						logEvent(
+							tx,
+							colony._id,
+							"worker_assigned",
+							`The leader sent ${idle.name} to study at the research hut.`,
+							[idle._id],
+						);
+						staffed += 1;
+					}
+					break;
+				}
 				case "tithe": {
 					// Surplus offering is capped to once a minute.
 					if (!minuteRolled) {
@@ -2901,6 +3089,52 @@ export function workerTick(db: GameDb) {
 				}
 			}
 		}
+		// --- Research: staffed research huts (and, faintly, schools) accrue
+		// points toward the upgrade tree; the cats then auto-unlock the
+		// cheapest affordable node on their own. Persisted on the colony so it
+		// survives run resets, like the god upgrades.
+		let tree = upgradeTree;
+		const researchHutIds = new Set(
+			colonyBuildings
+				.filter(
+					(b) => b.type === "research_hut" && b.constructionProgress >= 100,
+				)
+				.map((b) => b._id),
+		);
+		const researcherCount = aliveCats.filter(
+			(cat) =>
+				cat.assignedBuildingId && researchHutIds.has(cat.assignedBuildingId),
+		).length;
+		const schoolCount = colonyBuildings.filter(
+			(b) => b.type === "school" && b.constructionProgress >= 100,
+		).length;
+		// Each school trickles a little research from kittens at their books —
+		// a quarter-scholar apiece.
+		const researchWorkforce = researcherCount + schoolCount * 0.25;
+		const researchGained = pointsPerTickFor(
+			researchWorkforce,
+			productionElapsed,
+			effects.researchRateMult,
+		);
+		if (researchGained > 0) {
+			tree = accrueResearch(tree, researchGained);
+		}
+		let autoUnlock = catAutoUnlock(tree);
+		while (autoUnlock.ok) {
+			tree = autoUnlock.state;
+			const node = autoUnlock.nodeId ? getNode(autoUnlock.nodeId) : null;
+			logEvent(
+				tx,
+				colony._id,
+				"research_unlocked",
+				`The cats discovered ${node?.name ?? autoUnlock.nodeId}!`,
+			);
+			autoUnlock = catAutoUnlock(tree);
+		}
+		if (tree !== upgradeTree) {
+			saveUpgradeTree(tx, colony._id, tree);
+		}
+
 		let automationTier = colony.automationTier ?? 0;
 		let globalUpgradePoints = colony.globalUpgradePoints ?? 0;
 
@@ -3072,7 +3306,12 @@ export function workerTick(db: GameDb) {
 				const total =
 					typeof meta.totalYield === "number"
 						? meta.totalYield
-						: huntYieldFor(assignedCat, roleXp.hunter, upgrades);
+						: huntYieldFor(
+								assignedCat,
+								roleXp.hunter,
+								upgrades,
+								effects.huntYieldMult,
+							);
 				const tripsDone =
 					typeof meta.tripsDone === "number" ? meta.tripsDone : 0;
 				const reward = remainingYield(total, HUNT_TRIP_COUNT, tripsDone);
@@ -3408,7 +3647,12 @@ export function workerTick(db: GameDb) {
 						? WATER_TOTAL_YIELD
 						: isQuarry
 							? QUARRY_TOTAL_YIELD
-							: huntYieldFor(worker, workerRoleXp.hunter, upgrades);
+							: huntYieldFor(
+									worker,
+									workerRoleXp.hunter,
+									upgrades,
+									effects.huntYieldMult,
+								);
 			const share = splitYield(total, HUNT_TRIP_COUNT, tripsDone);
 
 			// Hunt shares eat into the site's food; quarry stone and river
@@ -3580,7 +3824,8 @@ export function workerTick(db: GameDb) {
 					(standingTile?.overlayFeature === "road_built"
 						? 0.6
 						: getPathSpeedBonus(standingTile?.pathWear ?? 0))) *
-				exploreSlowdown;
+				exploreSlowdown *
+				effects.moveSpeedMult;
 			// The village fence blocks travel: crossing the ring means going
 			// through the south gate first.
 			const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + ringRadius };

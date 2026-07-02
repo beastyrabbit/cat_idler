@@ -293,12 +293,23 @@ export function useGameDashboard() {
 		);
 	};
 
-	const onPlanBuilding = async (type: "workshop" | "field") => {
+	const onPlanBuilding = async (
+		type: "workshop" | "field" | "research_hut" | "school",
+	) => {
 		if (!sessionId || !nickname) {
 			return;
 		}
 		await runAction(`build:${type}`, () =>
 			postAction("planBuilding", { sessionId, nickname, type }),
+		);
+	};
+
+	const onUnlockNode = async (nodeId: string) => {
+		if (!sessionId || !nickname) {
+			return;
+		}
+		await runAction(`unlock:${nodeId}`, () =>
+			postAction("unlockNode", { sessionId, nickname, nodeId }),
 		);
 	};
 
@@ -405,6 +416,10 @@ export function useGameDashboard() {
 		onPlanBuilding,
 		onAssignWorker,
 		onBuildRoad,
+
+		// Research & upgrade tree
+		research: dashboard?.research ?? null,
+		onUnlockNode,
 
 		// Connection
 		connectionLost,

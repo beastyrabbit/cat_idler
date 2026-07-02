@@ -29,7 +29,14 @@ function isComplete(building: HousingBuilding): boolean {
 	return building.constructionProgress >= 100;
 }
 
-export function housingCapacity(buildings: HousingBuilding[]): number {
+export function housingCapacity(
+	buildings: HousingBuilding[],
+	/**
+	 * Extra cats each completed den shelters, granted by upgrade-tree nodes
+	 * (`housingPerDen`, e.g. Den Insulation). Flat per den, not per level.
+	 */
+	extraPerDen = 0,
+): number {
 	let capacity = 0;
 	for (const building of buildings) {
 		if (!isComplete(building)) {
@@ -38,7 +45,9 @@ export function housingCapacity(buildings: HousingBuilding[]): number {
 		if (building.type === "shrine") {
 			capacity += SHRINE_CAPACITY;
 		} else if (building.type === "den") {
-			capacity += DEN_CAPACITY_PER_LEVEL * Math.max(1, building.level);
+			capacity +=
+				DEN_CAPACITY_PER_LEVEL * Math.max(1, building.level) +
+				Math.max(0, extraPerDen);
 		}
 	}
 	return capacity;

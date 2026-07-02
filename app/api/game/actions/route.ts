@@ -27,6 +27,7 @@ import {
 	requestJob,
 	setTestAcceleration,
 	setTestRngSeed,
+	unlockNode,
 	upsertPresence,
 	workerTick,
 } from "@/server/game";
@@ -217,11 +218,25 @@ export async function POST(request: Request) {
 				const sessionId = requireString(body.sessionId, "sessionId");
 				const nickname = requireString(body.nickname, "nickname");
 				const type = body.type;
-				if (type !== "workshop" && type !== "field") {
+				if (
+					type !== "workshop" &&
+					type !== "field" &&
+					type !== "research_hut" &&
+					type !== "school"
+				) {
 					throw new Error("Unknown building type.");
 				}
 				return NextResponse.json(
 					planBuilding(db, { sessionId, nickname, type }),
+				);
+			}
+
+			case "unlockNode": {
+				const sessionId = requireString(body.sessionId, "sessionId");
+				const nickname = requireString(body.nickname, "nickname");
+				const nodeId = requireString(body.nodeId, "nodeId");
+				return NextResponse.json(
+					unlockNode(db, { sessionId, nickname, nodeId }),
 				);
 			}
 

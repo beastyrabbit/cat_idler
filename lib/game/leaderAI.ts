@@ -47,6 +47,14 @@ export const TITHE_FOOD_RATIO = 0.6;
 export const TITHE_FOOD_AMOUNT = 20;
 /** Refined goods spent per blessing when tithing. */
 export const TITHE_REFINED_AMOUNT = 5;
+/**
+ * The colony only spares a mouth for research once food and water both sit at
+ * or above this fraction of capacity — a researcher gathers nothing, so the
+ * leader won't staff the hut while the larder or reservoir is running low.
+ */
+export const RESEARCH_COMFORT_RATIO = 0.5;
+/** Researchers the leader keeps assigned per standing research hut. */
+export const RESEARCH_TARGET_PER_HUT = 1;
 
 export interface LeaderSnapshot {
 	/** Living cats in the colony (raw head count, incl. kittens). */
@@ -95,6 +103,8 @@ export interface LeaderSnapshot {
 	storehouseCap: number;
 	/** Completed workshops that have no assigned worker. */
 	workshopsNeedingWorkers: number;
+	/** Completed research huts that have no assigned researcher. */
+	researchHutsNeedingWorkers?: number;
 }
 
 export type LeaderDecision =
@@ -106,6 +116,7 @@ export type LeaderDecision =
 	| { kind: "build_den" }
 	| { kind: "build_storage" }
 	| { kind: "assign_workshop"; count: number }
+	| { kind: "assign_research"; count: number }
 	| { kind: "tithe"; food: number; refined: number; blessings: number };
 
 /** Food as a fraction of storage capacity; unbounded when capacity is 0. */
@@ -287,6 +298,25 @@ export function planLeaderActions(snapshot: LeaderSnapshot): LeaderDecision[] {
 	const staffing = Math.min(snapshot.workshopsNeedingWorkers, idleAfterHunts);
 	if (staffing > 0) {
 		decisions.push({ kind: "assign_workshop", count: staffing });
+	}
+
+	// --- Research: spare one mouth per hut for study, but only once the
+	// larder and reservoir are comfortable — a researcher gathers nothing.
+	const researchHutsNeedingWorkers = snapshot.researchHutsNeedingWorkers ?? 0;
+	if (researchHutsNeedingWorkers > 0) {
+		const waterRatio = foodRatio(snapshot.water, snapshot.waterCapacity);
+		const comfortable =
+			ratio >= RESEARCH_COMFORT_RATIO && waterRatio >= RESEARCH_COMFORT_RATIO;
+		const idleForResearch = Math.max(0, idleAfterHunts - staffing);
+		const researchStaffing = comfortable
+			? Math.min(
+					researchHutsNeedingWorkers * RESEARCH_TARGET_PER_HUT,
+					idleForResearch,
+				)
+			: 0;
+		if (researchStaffing > 0) {
+			decisions.push({ kind: "assign_research", count: researchStaffing });
+		}
 	}
 
 	// --- Tithe: offer surplus stores to the shrine ---------------------

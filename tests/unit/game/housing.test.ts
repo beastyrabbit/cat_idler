@@ -38,6 +38,20 @@ describe("housing", () => {
 			).toBe(4);
 		});
 
+		it("adds the upgrade-tree housingPerDen bonus flat per den", () => {
+			// Two dens (levels 1 and 2) + shrine, with +1 shelter per den.
+			expect(
+				housingCapacity(
+					[building("shrine"), building("den"), building("den", 2)],
+					1,
+				),
+			).toBe(4 + (2 + 1) + (4 + 1));
+		});
+
+		it("does not grant the per-den bonus to the shrine", () => {
+			expect(housingCapacity([building("shrine")], 3)).toBe(4);
+		});
+
 		it("ignores non-housing buildings", () => {
 			expect(
 				housingCapacity([building("shrine"), building("food_storage")]),

@@ -53,23 +53,30 @@ function levelOf(building: StorageBuilding): number {
 	return Math.max(1, building.level ?? 1);
 }
 
-/** Per-resource storage caps for a colony's current buildings. */
+/**
+ * Per-resource storage caps for a colony's current buildings. `storageMult`
+ * (default 1) scales the per-building bonus, folding in the upgrade-tree
+ * `storagePerLevelMult` effect (Masonry, Advanced Storage). The base
+ * settlement capacity is not scaled — only what the storehouses add.
+ */
 export function storageCapacities(
 	buildings: readonly StorageBuilding[],
+	storageMult = 1,
 ): StorageCapacities {
 	const caps: StorageCapacities = { ...BASE_CAPACITY };
+	const mult = Math.max(0, storageMult);
 	for (const building of buildings) {
 		if (!isFinished(building)) {
 			continue;
 		}
 		const level = levelOf(building);
 		if (building.type === "food_storage") {
-			caps.food += GRANARY_BONUS.food * level;
-			caps.herbs += GRANARY_BONUS.herbs * level;
-			caps.materials += GRANARY_BONUS.materials * level;
-			caps.refined += GRANARY_BONUS.refined * level;
+			caps.food += GRANARY_BONUS.food * level * mult;
+			caps.herbs += GRANARY_BONUS.herbs * level * mult;
+			caps.materials += GRANARY_BONUS.materials * level * mult;
+			caps.refined += GRANARY_BONUS.refined * level * mult;
 		} else if (building.type === "water_bowl") {
-			caps.water += WATER_BOWL_BONUS * level;
+			caps.water += WATER_BOWL_BONUS * level * mult;
 		}
 	}
 	return caps;

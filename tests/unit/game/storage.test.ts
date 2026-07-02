@@ -62,6 +62,27 @@ describe("storage", () => {
 		});
 	});
 
+	describe("storagePerLevelMult", () => {
+		it("scales only the storehouse bonus, not the base capacity", () => {
+			const caps = storageCapacities([building("food_storage")], 1.25);
+			expect(caps.food).toBe(BASE_CAPACITY.food + GRANARY_BONUS.food * 1.25);
+			expect(caps.materials).toBe(
+				BASE_CAPACITY.materials + GRANARY_BONUS.materials * 1.25,
+			);
+		});
+
+		it("scales the water bowl bonus", () => {
+			const caps = storageCapacities([building("water_bowl")], 1.5);
+			expect(caps.water).toBe(BASE_CAPACITY.water + WATER_BOWL_BONUS * 1.5);
+		});
+
+		it("defaults to no scaling (mult 1)", () => {
+			const withDefault = storageCapacities([building("food_storage")]);
+			const withOne = storageCapacities([building("food_storage")], 1);
+			expect(withDefault).toEqual(withOne);
+		});
+	});
+
 	describe("countStorehouses", () => {
 		it("counts only finished granaries", () => {
 			const count = countStorehouses([
