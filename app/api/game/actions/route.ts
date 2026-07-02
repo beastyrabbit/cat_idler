@@ -14,6 +14,12 @@
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/db/client";
+import {
+	issueSessionId,
+	signSession,
+	verifySession,
+} from "@/lib/game/identity";
+import { RateLimiter } from "@/lib/game/rateLimiter";
 import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
@@ -34,10 +40,60 @@ import {
 	upsertPresence,
 	workerTick,
 } from "@/server/game";
+import { getSessionSecret } from "@/server/players";
 import { createZone, removeZone } from "@/server/zones";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** Reject bodies larger than this before parsing (payloads here are tiny). */
+const MAX_BODY_BYTES = 8 * 1024;
+
+/** Per-session action budget: 30 actions per 10s window, else HTTP 429. */
+const rateLimiter = new RateLimiter(30, 10_000);
+
+/**
+ * Actions that carry a player identity. `presence` mints/refreshes the signed
+ * session; every other entry additionally requires a valid signature.
+ */
+const IDENTITY_ACTIONS = new Set([
+	"presence",
+	"requestJob",
+	"boost",
+	"purchaseUpgrade",
+	"castVote",
+	"requestVoteKick",
+	"createZone",
+	"removeZone",
+	"planBuilding",
+	"unlockNode",
+	"assignWorker",
+	"trainWarrior",
+	"defendRaid",
+	"buildRoad",
+]);
+
+/** Rejection for a missing/forged session signature (maps to HTTP 401). */
+class SessionAuthError extends Error {}
+
+/**
+ * Validate identity fields and the session signature. Used by every
+ * identity-bearing action except `presence` (which mints the signature).
+ */
+function requireSignedSession(body: Record<string, unknown>): {
+	sessionId: string;
+	nickname: string;
+} {
+	const sessionId = requireString(body.sessionId, "sessionId");
+	const nickname = requireString(body.nickname, "nickname");
+	const sig = typeof body.sig === "string" ? body.sig : null;
+	if (!verifySession(sessionId, sig, getSessionSecret())) {
+		throw new SessionAuthError(
+			"Session signature missing or invalid. Refresh to re-establish your session.",
+		);
+	}
+	return { sessionId, nickname };
+}
 
 const JOB_KINDS: PlayerJobKind[] = [
 	"supply_food",
@@ -102,9 +158,26 @@ function testActionsDisabledResponse() {
 }
 
 export async function POST(request: Request) {
+	// Size guard before parsing — payloads here are tiny; anything large is abuse.
+	const raw = await request.text();
+	if (raw.length > MAX_BODY_BYTES) {
+		return NextResponse.json(
+			{ ok: false, message: "Request body too large." },
+			{ status: 413 },
+		);
+	}
+
 	let body: Record<string, unknown>;
 	try {
-		body = await request.json();
+		const parsed = JSON.parse(raw);
+		if (
+			typeof parsed !== "object" ||
+			parsed === null ||
+			Array.isArray(parsed)
+		) {
+			throw new Error("body must be a JSON object");
+		}
+		body = parsed as Record<string, unknown>;
 	} catch {
 		return NextResponse.json(
 			{ ok: false, message: "Invalid JSON body." },
@@ -113,6 +186,22 @@ export async function POST(request: Request) {
 	}
 
 	const action = body.action;
+	if (typeof action !== "string") {
+		return NextResponse.json(
+			{ ok: false, message: "Missing or invalid action." },
+			{ status: 400 },
+		);
+	}
+
+	// Per-session spam brake on identity-bearing actions.
+	if (IDENTITY_ACTIONS.has(action) && typeof body.sessionId === "string") {
+		if (!rateLimiter.check(body.sessionId)) {
+			return NextResponse.json(
+				{ ok: false, message: "Too many actions — slow down." },
+				{ status: 429 },
+			);
+		}
+	}
 
 	try {
 		const db = getDb();
@@ -123,16 +212,31 @@ export async function POST(request: Request) {
 			}
 
 			case "presence": {
-				const sessionId = requireString(body.sessionId, "sessionId");
 				const nickname = requireString(body.nickname, "nickname");
+				const secret = getSessionSecret();
+				const providedSession =
+					typeof body.sessionId === "string" && body.sessionId.length > 0
+						? body.sessionId
+						: null;
+				const providedSig = typeof body.sig === "string" ? body.sig : null;
+				// Only keep the client's id if it already proves ownership with a
+				// valid signature. An unsigned/forged id (including someone else's)
+				// is untrusted — mint a fresh server-generated id and let the client
+				// adopt what we return. This prevents re-signing a victim's id.
+				const sessionId =
+					providedSession && verifySession(providedSession, providedSig, secret)
+						? providedSession
+						: issueSessionId();
+				const sig = signSession(sessionId, secret);
 				return NextResponse.json({
 					playerId: upsertPresence(db, sessionId, nickname),
+					sessionId,
+					sig,
 				});
 			}
 
 			case "requestJob": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const kind = body.kind as PlayerJobKind;
 				if (!JOB_KINDS.includes(kind)) {
 					throw new Error("Unknown job kind.");
@@ -141,8 +245,7 @@ export async function POST(request: Request) {
 			}
 
 			case "boost": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const jobId = requireString(body.jobId, "jobId");
 				return NextResponse.json(
 					clickBoostJob(db, { sessionId, nickname, jobId }),
@@ -150,8 +253,7 @@ export async function POST(request: Request) {
 			}
 
 			case "purchaseUpgrade": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const key = body.key as (typeof UPGRADE_KEYS)[number];
 				if (!UPGRADE_KEYS.includes(key)) {
 					throw new Error("Unknown upgrade key.");
@@ -162,8 +264,7 @@ export async function POST(request: Request) {
 			}
 
 			case "castVote": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const electionId = requireString(body.electionId, "electionId");
 				const catId = requireString(body.catId, "catId");
 				return NextResponse.json(
@@ -172,14 +273,12 @@ export async function POST(request: Request) {
 			}
 
 			case "requestVoteKick": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				return NextResponse.json(requestVoteKick(db, { sessionId, nickname }));
 			}
 
 			case "createZone": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const kind = body.kind;
 				if (kind !== "avoid" && kind !== "gather") {
 					throw new Error("Unknown zone kind.");
@@ -209,8 +308,7 @@ export async function POST(request: Request) {
 			}
 
 			case "removeZone": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const zoneId = requireString(body.zoneId, "zoneId");
 				return NextResponse.json(
 					removeZone(db, { sessionId, nickname, zoneId }),
@@ -218,8 +316,7 @@ export async function POST(request: Request) {
 			}
 
 			case "planBuilding": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const type = body.type;
 				if (
 					type !== "workshop" &&
@@ -237,8 +334,7 @@ export async function POST(request: Request) {
 			}
 
 			case "unlockNode": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const nodeId = requireString(body.nodeId, "nodeId");
 				return NextResponse.json(
 					unlockNode(db, { sessionId, nickname, nodeId }),
@@ -246,8 +342,7 @@ export async function POST(request: Request) {
 			}
 
 			case "assignWorker": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const catId = requireString(body.catId, "catId");
 				const buildingId =
 					body.buildingId === null
@@ -259,8 +354,7 @@ export async function POST(request: Request) {
 			}
 
 			case "trainWarrior": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const catId =
 					body.catId == null ? null : requireString(body.catId, "catId");
 				return NextResponse.json(
@@ -269,8 +363,7 @@ export async function POST(request: Request) {
 			}
 
 			case "defendRaid": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				return NextResponse.json(defendRaid(db, { sessionId, nickname }));
 			}
 
@@ -291,8 +384,7 @@ export async function POST(request: Request) {
 			}
 
 			case "buildRoad": {
-				const sessionId = requireString(body.sessionId, "sessionId");
-				const nickname = requireString(body.nickname, "nickname");
+				const { sessionId, nickname } = requireSignedSession(body);
 				const a = body.a as { x?: unknown; y?: unknown };
 				const b = body.b as { x?: unknown; y?: unknown };
 				if (
@@ -363,6 +455,13 @@ export async function POST(request: Request) {
 				);
 		}
 	} catch (err) {
+		if (err instanceof SessionAuthError) {
+			return NextResponse.json(
+				{ ok: false, message: err.message },
+				{ status: 401 },
+			);
+		}
+
 		console.error(`[actions] ${String(action)} failed:`, err);
 
 		if (isInternalError(err) || !(err instanceof Error)) {

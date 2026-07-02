@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { presetFromTimeScale } from "@/lib/game/testAcceleration";
 
@@ -70,6 +70,7 @@ export function useGameDashboard() {
 	const [dashboard, setDashboard] = useState<any>(undefined);
 
 	const [sessionId, setSessionId] = useState("");
+	const [sig, setSig] = useState("");
 	const [nickname, setNickname] = useState("");
 	const [now, setNow] = useState(() => Date.now());
 	const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -83,18 +84,43 @@ export function useGameDashboard() {
 		return () => clearTimeout(t);
 	}, [error]);
 
+	// Persist the server-signed identity returned by the presence action.
+	// Legacy (unsigned) sessions have no stored sig; presence upgrades them.
+	const applyIdentity = useCallback((result: unknown) => {
+		if (!result || typeof result !== "object") return;
+		const record = result as { sessionId?: unknown; sig?: unknown };
+		if (typeof record.sessionId === "string" && record.sessionId) {
+			setSessionId(record.sessionId);
+			try {
+				localStorage.setItem("cat_idle_session", record.sessionId);
+			} catch {
+				// localStorage unavailable — identity persists in memory only
+			}
+		}
+		if (typeof record.sig === "string" && record.sig) {
+			setSig(record.sig);
+			try {
+				localStorage.setItem("cat_idle_sig", record.sig);
+			} catch {
+				// localStorage unavailable — identity persists in memory only
+			}
+		}
+	}, []);
+
 	useEffect(() => {
 		try {
 			const storedSession =
 				localStorage.getItem("cat_idle_session") || createSessionId();
 			const storedName =
 				localStorage.getItem("cat_idle_nickname") || "Guest Cat";
+			const storedSig = localStorage.getItem("cat_idle_sig") || "";
 
 			localStorage.setItem("cat_idle_session", storedSession);
 			localStorage.setItem("cat_idle_nickname", storedName);
 
 			setSessionId(storedSession);
 			setNickname(storedName);
+			setSig(storedSig);
 		} catch {
 			// localStorage unavailable (private browsing, etc.) — use ephemeral session
 			setSessionId(createSessionId());
@@ -134,22 +160,22 @@ export function useGameDashboard() {
 	}, []);
 
 	useEffect(() => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 
-		postAction("presence", { sessionId, nickname }).catch((err) =>
-			console.warn("presence failed:", err),
-		);
+		postAction("presence", { sessionId, nickname, sig })
+			.then(applyIdentity)
+			.catch((err) => console.warn("presence failed:", err));
 
 		const heartbeat = setInterval(() => {
-			postAction("presence", { sessionId, nickname }).catch((err) =>
-				console.warn("presence heartbeat failed:", err),
-			);
+			postAction("presence", { sessionId, nickname, sig })
+				.then(applyIdentity)
+				.catch((err) => console.warn("presence heartbeat failed:", err));
 		}, 30_000);
 
 		return () => clearInterval(heartbeat);
-	}, [sessionId, nickname]);
+	}, [sessionId, nickname, sig, applyIdentity]);
 
 	useEffect(() => {
 		const interval = setInterval(() => {
@@ -214,47 +240,47 @@ export function useGameDashboard() {
 	}
 
 	const submitJob = async (kind: JobKind) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction(kind, () =>
-			postAction("requestJob", { sessionId, nickname, kind }),
+			postAction("requestJob", { sessionId, nickname, sig, kind }),
 		);
 	};
 
 	const onBoostJob = async (jobId: string) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction(jobId, () =>
-			postAction("boost", { sessionId, nickname, jobId }),
+			postAction("boost", { sessionId, nickname, sig, jobId }),
 		);
 	};
 
 	const onBuyUpgrade = async (key: string) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction(`upgrade:${key}`, () =>
-			postAction("purchaseUpgrade", { sessionId, nickname, key }),
+			postAction("purchaseUpgrade", { sessionId, nickname, sig, key }),
 		);
 	};
 
 	const onCastVote = async (electionId: string, catId: string) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction(`vote:${electionId}`, () =>
-			postAction("castVote", { sessionId, nickname, electionId, catId }),
+			postAction("castVote", { sessionId, nickname, sig, electionId, catId }),
 		);
 	};
 
 	const onRequestVoteKick = async () => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction("voteKick", () =>
-			postAction("requestVoteKick", { sessionId, nickname }),
+			postAction("requestVoteKick", { sessionId, nickname, sig }),
 		);
 	};
 
@@ -264,20 +290,28 @@ export function useGameDashboard() {
 		b: { x: number; y: number },
 		durationMs: number,
 	) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction("createZone", () =>
-			postAction("createZone", { sessionId, nickname, kind, a, b, durationMs }),
+			postAction("createZone", {
+				sessionId,
+				nickname,
+				sig,
+				kind,
+				a,
+				b,
+				durationMs,
+			}),
 		);
 	};
 
 	const onRemoveZone = async (zoneId: string) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction(`removeZone:${zoneId}`, () =>
-			postAction("removeZone", { sessionId, nickname, zoneId }),
+			postAction("removeZone", { sessionId, nickname, sig, zoneId }),
 		);
 	};
 
@@ -285,11 +319,11 @@ export function useGameDashboard() {
 		a: { x: number; y: number },
 		b: { x: number; y: number },
 	) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction("buildRoad", () =>
-			postAction("buildRoad", { sessionId, nickname, a, b }),
+			postAction("buildRoad", { sessionId, nickname, sig, a, b }),
 		);
 	};
 
@@ -302,48 +336,59 @@ export function useGameDashboard() {
 			| "smithy"
 			| "barracks",
 	) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction(`build:${type}`, () =>
-			postAction("planBuilding", { sessionId, nickname, type }),
+			postAction("planBuilding", { sessionId, nickname, sig, type }),
 		);
 	};
 
 	const onTrainWarrior = async (catId?: string | null) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction("trainWarrior", () =>
-			postAction("trainWarrior", { sessionId, nickname, catId: catId ?? null }),
+			postAction("trainWarrior", {
+				sessionId,
+				nickname,
+				sig,
+				catId: catId ?? null,
+			}),
 		);
 	};
 
 	const onDefendRaid = async () => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		// Defense clicks are frequent — key by "defend" so the button stays live.
 		await runAction("defend", () =>
-			postAction("defendRaid", { sessionId, nickname }),
+			postAction("defendRaid", { sessionId, nickname, sig }),
 		);
 	};
 
 	const onUnlockNode = async (nodeId: string) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction(`unlock:${nodeId}`, () =>
-			postAction("unlockNode", { sessionId, nickname, nodeId }),
+			postAction("unlockNode", { sessionId, nickname, sig, nodeId }),
 		);
 	};
 
 	const onAssignWorker = async (catId: string, buildingId: string | null) => {
-		if (!sessionId || !nickname) {
+		if (!sessionId || !nickname || !sig) {
 			return;
 		}
 		await runAction(`assign:${buildingId ?? "none"}`, () =>
-			postAction("assignWorker", { sessionId, nickname, catId, buildingId }),
+			postAction("assignWorker", {
+				sessionId,
+				nickname,
+				sig,
+				catId,
+				buildingId,
+			}),
 		);
 	};
 
@@ -370,9 +415,9 @@ export function useGameDashboard() {
 			// localStorage unavailable — nickname persists in memory only
 		}
 		if (sessionId) {
-			postAction("presence", { sessionId, nickname: trimmed }).catch((err) =>
-				console.warn("presence failed:", err),
-			);
+			postAction("presence", { sessionId, nickname: trimmed, sig })
+				.then(applyIdentity)
+				.catch((err) => console.warn("presence failed:", err));
 		}
 	};
 

@@ -8,6 +8,30 @@ import { nanoid } from "nanoid";
 import type { GameDb } from "@/db/client";
 import { type PlayerRow, players } from "@/db/schema";
 
+/** Dev-only fallback so local/test runs work without configuring a secret. */
+const DEV_FALLBACK_SESSION_SECRET = "dev-insecure-session-secret-change-me";
+
+let warnedAboutSessionSecret = false;
+
+/**
+ * Resolve the HMAC secret for signing sessions. Prefers SESSION_HMAC_SECRET;
+ * falls back to a fixed dev secret (warning once) so local dev and tests run
+ * without configuration. Set SESSION_HMAC_SECRET in production.
+ */
+export function getSessionSecret(): string {
+	const fromEnv = process.env.SESSION_HMAC_SECRET;
+	if (fromEnv && fromEnv.length > 0) {
+		return fromEnv;
+	}
+	if (!warnedAboutSessionSecret) {
+		console.warn(
+			"[identity] SESSION_HMAC_SECRET is not set — using an insecure development fallback. Set SESSION_HMAC_SECRET before deploying.",
+		);
+		warnedAboutSessionSecret = true;
+	}
+	return DEV_FALLBACK_SESSION_SECRET;
+}
+
 export function upsertPlayer(
 	db: GameDb,
 	sessionId: string,
