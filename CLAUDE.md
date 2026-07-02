@@ -96,7 +96,8 @@ The game operates on a **job-based system** (`db/schema.ts:jobs` table, `lib/gam
 
 ## Frontend
 
-- Production UI: `app/game/newspaper/page.tsx` (The Catford Examiner — broadsheet newspaper theme). `/game` redirects there.
+- Main UI: `/game` renders `components/map/MapScreen.tsx` — full-screen 2.5D isometric world map (pure projection math in `lib/game/isoProjection.ts`, chunk culling via `visibleChunksIso`). The Catford Examiner newspaper lives at `/game/newspaper` (linked from the map HUD).
+- Map art: curated Kenney "Isometric Miniature" sprites in `public/images/iso/` (256x512 bottom-anchored, 256x128 ground diamond). Source pack `public/Kenney Game Assets All-in-1 3.5.0/` is gitignored — copy what you need out of it; standalone tree sprites need a grass `base` underlay (see `TILE_SPRITES`).
 - Shared game hook: `hooks/useGameDashboard.ts` — subscribes to the SSE stream and exposes actions; all UI variants import this for game state, actions, and session management
 - README screenshots: `docs/screenshots/` — referenced by relative path from README.md
 - 13 UI concept variants documented in `docs/UI_CONCEPTS.md` (archived on `archive/ui-concepts-all` branch)

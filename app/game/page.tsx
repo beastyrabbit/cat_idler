@@ -1,7 +1,7 @@
-import { redirect } from "next/navigation";
+import { MapScreen } from "@/components/map/MapScreen";
 
-// The Catford Examiner is the production UI; the experimental dashboard
-// this page used to host was retired with the Convex → SQLite migration.
+// Map-first game screen; The Catford Examiner remains available at
+// /game/newspaper and via the in-map News drawer.
 export default function GamePage() {
-	redirect("/game/newspaper");
+	return <MapScreen />;
 }

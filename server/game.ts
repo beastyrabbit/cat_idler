@@ -9,11 +9,12 @@
  * handlers call the rest.
  */
 
-import { and, desc, eq, gte, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 
 import type { GameDb } from "@/db/client";
 import {
+	buildings,
 	type CatRow,
 	type ColonyRow,
 	cats,
@@ -47,13 +48,22 @@ import {
 	shouldStartRitual,
 	shouldTrackCritical,
 } from "@/lib/game/idleRules";
+import { generateName } from "@/lib/game/naming";
 import { configForTier, pickPolicyTier } from "@/lib/game/policy";
 import { rollSeeded } from "@/lib/game/seededRng";
 import { applySurvivalTick } from "@/lib/game/survival";
 import { configForPreset } from "@/lib/game/testAcceleration";
+import {
+	colonyToWorld,
+	nextBuildingSite,
+	ringCells,
+	SHRINE_LOCAL,
+	VILLAGE_ANCHOR,
+} from "@/lib/game/villageLayout";
 import type { CatStats } from "@/types/game";
 
 import { countOnlinePlayers, upsertPlayer } from "./players";
+import { initializeWorldMap } from "./worldMap";
 
 const UPGRADE_DEFAULTS = [
 	{
@@ -132,6 +142,20 @@ function getRuntimeConfig(colony: ColonyRow): RuntimeConfig {
 
 const DEFAULT_ROLE_XP = { hunter: 0, architect: 0, ritualist: 0 } as const;
 
+/**
+ * Stocked general storage for a fresh settlement — sized so 20 cats have
+ * roughly 5 hours of food/water at base decay, plus starter materials.
+ */
+const STARTING_RESOURCES = {
+	food: 100,
+	water: 100,
+	herbs: 16,
+	materials: 24,
+	blessings: 0,
+} as const;
+
+const STARTER_CAT_COUNT = 20;
+
 function defaultRoleXp(cat: CatRow): {
 	hunter: number;
 	architect: number;
@@ -145,12 +169,38 @@ function randomStat(min: number, max: number): number {
 }
 
 function starterNames(): string[] {
-	return ["Whiskers", "Shadow", "Luna", "Max", "Bella"];
+	const names = ["Whiskers", "Shadow", "Luna", "Max", "Bella"];
+	const seen = new Set(names);
+
+	// Fill out the founding population with warrior-style names; walk the
+	// seed until we have enough unique ones.
+	let seed = 424_242;
+	while (names.length < STARTER_CAT_COUNT) {
+		const name = generateName(seed);
+		seed += 1;
+		if (seen.has(name)) {
+			continue;
+		}
+		seen.add(name);
+		names.push(name);
+	}
+
+	return names;
+}
+
+/**
+ * Colony-local resting spots inside the village clearing — rings 2 and 3
+ * around the shrine, past the ring-1 building sites.
+ */
+function starterCatSpot(index: number): { x: number; y: number } {
+	const spots = [...ringCells(2), ...ringCells(3)];
+	return spots[index % spots.length];
 }
 
 function createStarterCats(db: GameDb, colonyId: string) {
 	const names = starterNames();
-	for (let i = 0; i < 5; i += 1) {
+	for (let i = 0; i < STARTER_CAT_COUNT; i += 1) {
+		const spot = starterCatSpot(i);
 		db.insert(cats)
 			.values({
 				_id: nanoid(),
@@ -171,7 +221,7 @@ function createStarterCats(db: GameDb, colonyId: string) {
 				},
 				needs: { hunger: 100, thirst: 100, rest: 100, health: 100 },
 				currentTask: null,
-				position: { map: "colony", x: 1, y: 1 },
+				position: { map: "colony", x: spot.x, y: spot.y },
 				isPregnant: false,
 				pregnancyDueTime: null,
 				spriteParams: traitsToSpriteParams(inheritTraits(null, null)) as Record<
@@ -261,13 +311,7 @@ export function ensureGlobalColony(db: GameDb): ColonyRow {
 				name: "Global Cat Colony",
 				leaderId: null,
 				status: "starting",
-				resources: {
-					food: 24,
-					water: 24,
-					herbs: 8,
-					materials: 0,
-					blessings: 0,
-				},
+				resources: { ...STARTING_RESOURCES },
 				gridSize: 3,
 				createdAt: now,
 				lastTick: now,
@@ -303,7 +347,71 @@ export function ensureGlobalColony(db: GameDb): ColonyRow {
 		createStarterCats(db, colony._id);
 	}
 
+	ensureShrineAndWorld(db, colony._id);
+
 	return getColony(db, colony._id);
+}
+
+function ensureShrineAndWorld(db: GameDb, colonyId: string) {
+	const shrine = db
+		.select({ _id: buildings._id })
+		.from(buildings)
+		.where(and(eq(buildings.colonyId, colonyId), eq(buildings.type, "shrine")))
+		.limit(1)
+		.get();
+
+	if (shrine) {
+		return;
+	}
+
+	db.insert(buildings)
+		.values({
+			_id: nanoid(),
+			colonyId,
+			type: "shrine",
+			level: 1,
+			position: { ...SHRINE_LOCAL },
+			constructionProgress: 100,
+		})
+		.run();
+
+	// Founding village around the shrine: dens housing the starter cats
+	// (2 per den) plus a stocked general storage, all pre-built. Fixed
+	// rolls keep the layout deterministic while looking organic.
+	const starterBuildings: Array<{
+		type: "den" | "food_storage";
+		roll: number;
+	}> = [
+		{ type: "den", roll: 0.05 },
+		{ type: "den", roll: 0.3 },
+		{ type: "den", roll: 0.55 },
+		{ type: "den", roll: 0.8 },
+		{ type: "den", roll: 0.95 },
+		{ type: "food_storage", roll: 0.4 },
+	];
+
+	const occupied: Array<{ x: number; y: number }> = [];
+	for (const starter of starterBuildings) {
+		const site = nextBuildingSite(occupied, starter.roll);
+		if (!site) {
+			break;
+		}
+		occupied.push(site);
+		db.insert(buildings)
+			.values({
+				_id: nanoid(),
+				colonyId,
+				type: starter.type,
+				level: 1,
+				position: site,
+				constructionProgress: 100,
+			})
+			.run();
+	}
+
+	// First run for this colony: seed the starting 3x3 world chunks
+	// (idempotent — skips chunks that already exist).
+	initializeWorldMap(db, colonyId);
 }
 
 function getAliveCats(db: GameDb, colonyId: string): CatRow[] {
@@ -531,26 +639,24 @@ function resetGlobalRun(db: GameDb, colony: ColonyRow, reason: string) {
 	if (aliveCats.length === 0) {
 		createStarterCats(db, colony._id);
 	} else {
-		for (const cat of aliveCats) {
+		aliveCats.forEach((cat, index) => {
+			const spot = starterCatSpot(index);
 			db.update(cats)
 				.set({
 					needs: { hunger: 100, thirst: 100, rest: 100, health: 100 },
 					currentTask: null,
-					position: { map: "colony", x: 1, y: 1 },
+					position: { map: "colony", x: spot.x, y: spot.y },
 				})
 				.where(eq(cats._id, cat._id))
 				.run();
-		}
+		});
 	}
 
 	db.update(colonies)
 		.set({
 			status: "starting",
 			resources: {
-				food: 24,
-				water: 24,
-				herbs: 8,
-				materials: 0,
+				...STARTING_RESOURCES,
 				blessings: colony.resources.blessings,
 			},
 			runNumber: (colony.runNumber ?? 1) + 1,
@@ -665,6 +771,12 @@ export function getGlobalDashboard(db: GameDb) {
 		? (aliveCats.find((cat) => cat._id === colony.leaderId) ?? null)
 		: null;
 
+	const colonyBuildings = db
+		.select()
+		.from(buildings)
+		.where(eq(buildings.colonyId, colony._id))
+		.all();
+
 	return {
 		now,
 		colony,
@@ -674,6 +786,11 @@ export function getGlobalDashboard(db: GameDb) {
 		upgrades: [...upgrades].sort((a, b) => a.key.localeCompare(b.key)),
 		events: recentEvents,
 		onlineCount,
+		anchor: VILLAGE_ANCHOR,
+		buildings: colonyBuildings.map((building) => ({
+			...building,
+			worldPosition: colonyToWorld(building.position),
+		})),
 	};
 }
 

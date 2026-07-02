@@ -34,28 +34,57 @@ beforeEach(() => {
 });
 
 describe("bootstrap", () => {
-	it("creates the global colony with 5 starter cats and 6 upgrades", () => {
+	it("creates the global colony with 20 starter cats and 6 upgrades", () => {
 		const colony = ensureGlobalColony(db);
 
 		expect(colony.isGlobal).toBe(true);
+		// Stocked storage scaled for 20 cats (~5h of food at base decay)
 		expect(colony.resources).toEqual({
-			food: 24,
-			water: 24,
-			herbs: 8,
-			materials: 0,
+			food: 100,
+			water: 100,
+			herbs: 16,
+			materials: 24,
 			blessings: 0,
 		});
 
 		const dashboard = getGlobalDashboard(db)!;
-		expect(dashboard.cats).toHaveLength(5);
+		expect(dashboard.cats).toHaveLength(20);
 		expect(dashboard.upgrades).toHaveLength(6);
+
+		const names = new Set(
+			dashboard.cats.map((cat: { name: string }) => cat.name),
+		);
+		expect(names.size).toBe(20);
+	});
+
+	it("founds a starter village: shrine, dens housing 10, and stocked storage", () => {
+		ensureGlobalColony(db);
+		const dashboard = getGlobalDashboard(db)!;
+
+		const byType: Record<string, number> = {};
+		for (const building of dashboard.buildings) {
+			byType[building.type] = (byType[building.type] ?? 0) + 1;
+		}
+
+		expect(byType.shrine).toBe(1);
+		expect(byType.den).toBe(5); // 2 cats per den -> housing for 10
+		expect(byType.food_storage).toBe(1);
+
+		// All starter buildings are finished and adjacent to the shrine
+		for (const building of dashboard.buildings) {
+			expect(building.constructionProgress).toBe(100);
+			const dx = Math.abs(building.worldPosition.x - dashboard.anchor.x);
+			const dy = Math.abs(building.worldPosition.y - dashboard.anchor.y);
+			expect(Math.max(dx, dy)).toBeLessThanOrEqual(1);
+		}
 	});
 
 	it("is idempotent", () => {
 		const first = ensureGlobalState(db);
 		const second = ensureGlobalState(db);
 		expect(first).toBe(second);
-		expect(getGlobalDashboard(db)!.cats).toHaveLength(5);
+		expect(getGlobalDashboard(db)!.cats).toHaveLength(20);
+		expect(getGlobalDashboard(db)!.buildings).toHaveLength(7);
 	});
 });
 
@@ -79,8 +108,8 @@ describe("workerTick", () => {
 
 		const colony = ensureGlobalColony(db);
 		expect(colony.leaderId).not.toBeNull();
-		expect(colony.resources.food).toBeLessThan(24);
-		expect(colony.resources.water).toBeLessThan(24);
+		expect(colony.resources.food).toBeLessThan(100);
+		expect(colony.resources.water).toBeLessThan(100);
 	});
 
 	it("chains the seeded RNG deterministically across ticks", () => {
@@ -269,7 +298,7 @@ describe("run reset", () => {
 		expect(history[0].reason).toBe("all-cats-dead");
 
 		// resetGlobalRun seeds fresh starter cats when none survive
-		expect(getGlobalDashboard(db)!.cats).toHaveLength(5);
+		expect(getGlobalDashboard(db)!.cats).toHaveLength(20);
 	});
 });
 
@@ -359,10 +388,10 @@ describe("upgrade persistence across run reset", () => {
 		const after = ensureGlobalColony(db);
 		expect(after.globalUpgradePoints).toBe(20 - 2 - 4);
 		expect(after.resources).toEqual({
-			food: 24,
-			water: 24,
-			herbs: 8,
-			materials: 0,
+			food: 100,
+			water: 100,
+			herbs: 16,
+			materials: 24,
 			blessings: 3,
 		});
 
