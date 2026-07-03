@@ -90,7 +90,11 @@ export function gatePosition(ringRadius: number): WorldPos {
 	return { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + ringRadius };
 }
 
-/** Cats eligible to defend: warriors and hunters old enough to fight. */
+/**
+ * Cats eligible to defend: every able-bodied adult, young or elder cat turns
+ * out (warriors and hunters at the front, the rest as militia). Kittens — the
+ * only stage that `canWork` rejects — never fight.
+ */
 export function defenders(aliveCats: CatRow[]): MusterCombatant[] {
 	return aliveCats
 		.filter(
@@ -104,6 +108,7 @@ export function defenders(aliveCats: CatRow[]): MusterCombatant[] {
 			defense: cat.stats.defense,
 			specialization: cat.specialization ?? null,
 			warriorXp: cat.roleXp?.warrior ?? 0,
+			lifeStage: getLifeStage(cat.ageHours ?? 0),
 		}));
 }
 

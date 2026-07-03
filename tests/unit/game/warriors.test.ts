@@ -5,7 +5,9 @@ import {
 	canFight,
 	catCombatPower,
 	combatRoleFactor,
+	combatStageFactor,
 	HUNTER_COMBAT_FACTOR,
+	MILITIA_COMBAT_FACTOR,
 	musterDefense,
 	WARRIOR_COMBAT_FACTOR,
 	WEAPON_ATTACK_BONUS,
@@ -13,35 +15,89 @@ import {
 
 describe("warriors", () => {
 	describe("combatRoleFactor / canFight", () => {
-		it("only warriors and hunters can fight", () => {
+		it("ranks warriors above hunters above militia, all able to fight", () => {
 			expect(combatRoleFactor("warrior")).toBe(WARRIOR_COMBAT_FACTOR);
 			expect(combatRoleFactor("hunter")).toBe(HUNTER_COMBAT_FACTOR);
-			expect(combatRoleFactor("architect")).toBe(0);
-			expect(combatRoleFactor("ritualist")).toBe(0);
-			expect(combatRoleFactor(null)).toBe(0);
+			// Every other cat forms the militia — a smaller, positive contribution.
+			expect(combatRoleFactor("architect")).toBe(MILITIA_COMBAT_FACTOR);
+			expect(combatRoleFactor("ritualist")).toBe(MILITIA_COMBAT_FACTOR);
+			expect(combatRoleFactor(null)).toBe(MILITIA_COMBAT_FACTOR);
+			// Tier ordering: warrior > hunter > militia > 0.
+			expect(WARRIOR_COMBAT_FACTOR).toBeGreaterThan(HUNTER_COMBAT_FACTOR);
+			expect(HUNTER_COMBAT_FACTOR).toBeGreaterThan(MILITIA_COMBAT_FACTOR);
+			expect(MILITIA_COMBAT_FACTOR).toBeGreaterThan(0);
+			// Every specialization can turn out — the caller gates kittens by stage.
 			expect(canFight("warrior")).toBe(true);
 			expect(canFight("hunter")).toBe(true);
-			expect(canFight(null)).toBe(false);
+			expect(canFight(null)).toBe(true);
+		});
+	});
+
+	describe("combatStageFactor", () => {
+		it("kittens never fight, elders fade, adults are the backbone", () => {
+			expect(combatStageFactor("kitten")).toBe(0);
+			expect(combatStageFactor("adult")).toBe(1);
+			// Young cats aren't fully grown; elders have lost a step.
+			expect(combatStageFactor("young")).toBeGreaterThan(0);
+			expect(combatStageFactor("young")).toBeLessThan(1);
+			expect(combatStageFactor("elder")).toBeGreaterThan(0);
+			expect(combatStageFactor("elder")).toBeLessThan(
+				combatStageFactor("young"),
+			);
 		});
 	});
 
 	describe("catCombatPower", () => {
-		it("non-combatants score zero", () => {
+		it("an untrained cat still fights as militia", () => {
+			const militia = catCombatPower({
+				attack: 50,
+				defense: 50,
+				specialization: "architect",
+			});
+			expect(militia).toBeGreaterThan(0);
+			// But well below a warrior with the same stats.
+			const warrior = catCombatPower({
+				attack: 50,
+				defense: 50,
+				specialization: "warrior",
+			});
+			expect(militia).toBeLessThan(warrior);
+		});
+
+		it("a kitten stage factor zeroes out combat power", () => {
 			expect(
 				catCombatPower({
 					attack: 99,
 					defense: 99,
-					specialization: "architect",
+					specialization: "warrior",
+					stageFactor: 0,
 				}),
 			).toBe(0);
 		});
 
-		it("a warrior out-fights a hunter with identical stats", () => {
+		it("an elder stage factor lowers power below an adult", () => {
+			const base = {
+				attack: 50,
+				defense: 50,
+				specialization: "warrior" as const,
+			};
+			const adult = catCombatPower({ ...base, stageFactor: 1 });
+			const elder = catCombatPower({
+				...base,
+				stageFactor: combatStageFactor("elder"),
+			});
+			expect(elder).toBeGreaterThan(0);
+			expect(elder).toBeLessThan(adult);
+		});
+
+		it("warrior > hunter > militia with identical stats", () => {
 			const base = { attack: 50, defense: 50 } as const;
 			const warrior = catCombatPower({ ...base, specialization: "warrior" });
 			const hunter = catCombatPower({ ...base, specialization: "hunter" });
+			const militia = catCombatPower({ ...base, specialization: null });
 			expect(warrior).toBeGreaterThan(hunter);
-			expect(hunter).toBeGreaterThan(0);
+			expect(hunter).toBeGreaterThan(militia);
+			expect(militia).toBeGreaterThan(0);
 		});
 
 		it("equipment raises power by the gear bonuses", () => {
@@ -104,17 +160,19 @@ describe("warriors", () => {
 			specialization: "warrior" as const,
 		});
 
-		it("excludes non-combatants", () => {
+		it("musters militia behind the warriors", () => {
 			const muster = musterDefense(
 				[
-					w("a", 50, 50),
-					{ id: "b", attack: 99, defense: 99, specialization: "architect" },
+					w("warr", 50, 50),
+					{ id: "arch", attack: 99, defense: 99, specialization: "architect" },
 				],
 				{ weapons: 0, armor: 0 },
 			);
-			expect(muster.combatants).toBe(1);
-			expect(muster.perCat).toHaveLength(1);
-			expect(muster.perCat[0].id).toBe("a");
+			// Both turn out now, but the warrior sorts ahead of the militia.
+			expect(muster.combatants).toBe(2);
+			expect(muster.perCat).toHaveLength(2);
+			expect(muster.perCat[0].id).toBe("warr");
+			expect(muster.perCat[1].id).toBe("arch");
 		});
 
 		it("arms the strongest warriors first with scarce gear", () => {
@@ -154,6 +212,24 @@ describe("warriors", () => {
 			});
 			expect(muster.weaponsUsed).toBe(1);
 			expect(muster.armorUsed).toBe(1);
+		});
+
+		it("scales mustered power by life stage", () => {
+			const adult = musterDefense(
+				[{ ...w("a", 50, 50), lifeStage: "adult" as const }],
+				{ weapons: 0, armor: 0 },
+			);
+			const elder = musterDefense(
+				[{ ...w("a", 50, 50), lifeStage: "elder" as const }],
+				{ weapons: 0, armor: 0 },
+			);
+			const kitten = musterDefense(
+				[{ ...w("a", 50, 50), lifeStage: "kitten" as const }],
+				{ weapons: 0, armor: 0 },
+			);
+			expect(elder.totalPower).toBeGreaterThan(0);
+			expect(elder.totalPower).toBeLessThan(adult.totalPower);
+			expect(kitten.totalPower).toBe(0);
 		});
 
 		it("totals the mustered power", () => {

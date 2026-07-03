@@ -23,13 +23,21 @@ export interface ThreatSnapshot {
 }
 
 /** Grace window: no pressure builds for this many game-seconds into a run. */
-export const RAID_GRACE_SEC = 6 * 3600;
+export const RAID_GRACE_SEC = 8 * 3600;
 /** Pressure at which a raid launches. */
 export const RAID_SPAWN_THRESHOLD = 100;
 /** Largest warband the director will field at once. */
 export const MAX_RAID_SIZE = 12;
 /** Base strength of a single raider before scaling. */
 export const RAIDER_BASE_STRENGTH = 30;
+/**
+ * A colony poorer than this presents no extra raiders beyond the lone scout —
+ * a fresh settlement (~240 stored value) sits below it, so its first raids are
+ * a single weak raider a militia turns away without breaking stride.
+ */
+export const RAID_WEALTH_FLOOR = 250;
+/** Population above this baseline (the starter roster) adds raiders. */
+export const RAID_POP_FLOOR = 20;
 
 /** Threat-indicator band for the HUD. */
 export type ThreatBand = "calm" | "rising" | "imminent";
@@ -115,16 +123,23 @@ export interface RaidPlan {
 }
 
 /**
- * Size the warband for a snapshot. The count scales with the standing warrior
- * count and the square-root of wealth (clamped to {@link MAX_RAID_SIZE}); each
- * raider's strength creeps up with colony age so late-game raids bite harder.
+ * Size the warband for a snapshot. A raid always fields at least a lone scout;
+ * extra raiders come only as the colony matures — from its standing warriors,
+ * the wealth it holds above a starter floor, and the population it has grown
+ * past the starter roster (all clamped to {@link MAX_RAID_SIZE}). A fresh
+ * settlement — no warriors, starter stores, starter roster — therefore faces a
+ * single raider, and each raider's strength creeps up with colony age so
+ * late-game raids bite harder.
  */
 export function planRaid(s: ThreatSnapshot): RaidPlan {
-	const fromWarriors = Math.floor(Math.max(0, s.warriors) * 0.7);
-	const fromWealth = Math.floor(Math.sqrt(Math.max(0, s.wealth)) / 6);
+	const fromWarriors = Math.floor(Math.max(0, s.warriors) * 0.6);
+	const fromWealth = Math.floor(
+		Math.sqrt(Math.max(0, s.wealth - RAID_WEALTH_FLOOR)) / 10,
+	);
+	const fromPop = Math.floor(Math.max(0, s.population - RAID_POP_FLOOR) / 15);
 	const count = Math.max(
 		1,
-		Math.min(MAX_RAID_SIZE, 1 + fromWarriors + fromWealth),
+		Math.min(MAX_RAID_SIZE, 1 + fromWarriors + fromWealth + fromPop),
 	);
 	const ageBonus = Math.min(40, (s.colonyAgeSec / 3600) * 0.5);
 	const strengthEach = Math.round(RAIDER_BASE_STRENGTH + ageBonus);
@@ -143,8 +158,19 @@ export interface RaidOutcome {
 
 /** Below this power ratio a defeat also costs a defender's life. */
 const CASUALTY_RATIO = 0.6;
-/** Most of the stores a single raid can carry off. */
-const MAX_LOOT_FRACTION = 0.35;
+/**
+ * Hard ceiling on cats a single lost raid can kill. One bad fight must never
+ * cascade into a wipe: a colony can lose several raids and still live, so
+ * collapse comes from neglect (starvation, thirst), not from being outnumbered
+ * once. See {@link RaidOutcome.defenderCasualties}.
+ */
+export const MAX_RAID_CASUALTIES = 1;
+/**
+ * Most of the stores a single raid can carry off. Bounds the theft alongside
+ * {@link MAX_RAID_CASUALTIES} so a sacked colony keeps the majority of every
+ * store and can recover.
+ */
+const MAX_LOOT_FRACTION = 0.3;
 
 /**
  * Resolve a raid: mustered defense power vs the raiders' remaining strength.
@@ -176,6 +202,6 @@ export function resolveRaid(
 	// The worse the defenders lose, the more the raiders haul off.
 	const shortfall = 1 - Math.min(1, margin);
 	const lootFraction = Math.min(MAX_LOOT_FRACTION, 0.1 + shortfall * 0.3);
-	const defenderCasualties = margin < CASUALTY_RATIO ? 1 : 0;
+	const defenderCasualties = margin < CASUALTY_RATIO ? MAX_RAID_CASUALTIES : 0;
 	return { defendersWin: false, lootFraction, defenderCasualties, margin };
 }
