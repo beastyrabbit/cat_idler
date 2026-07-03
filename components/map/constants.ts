@@ -8,48 +8,7 @@ import {
 export const ISO: IsoGeometry = DEFAULT_ISO_GEOMETRY;
 export const ISO_CONTENT = isoContentSize(ISO);
 
-/**
- * Sub-pixel upscale applied to each Nature sprite so neighbouring ground
- * diamonds overlap by ~1 px within their anti-aliased edge band, closing the
- * hairline backdrop seam that perfectly-abutting AA edges would otherwise leave.
- */
-export const TILE_BLEED_SCALE = (ISO.tileWidth + 2) / ISO.tileWidth;
-
 export const CHUNK_SIZE = ISO.chunkSize;
-
-/**
- * Actors (cats, buildings, fences, gates) still use the Kenney "Isometric
- * Miniature" sprites (256x512 canvas, 256x128 diamond). We scale them uniformly
- * by tileWidth/256 so their footprint diamond becomes exactly one Nature tile
- * wide (they line up horizontally with the ground) while keeping their own
- * aspect. Style mixing (Miniature actors on Nature terrain) is accepted here.
- *
- * The Miniature footprint is a 2:1 diamond (256x128); the Nature ground diamond
- * is flatter (182x115). Uniform width-scaling therefore leaves the actor
- * footprint (91 px tall) shorter than the ground diamond (115 px), so anchoring
- * by the footprint's *top* vertex (the old behaviour) left actors floating ~12px
- * high. Instead we anchor by the footprint *centre*, seating it on the tile's
- * diamond centre — the correct compromise for the mismatched aspect ratios.
- */
-const MINI_DIAMOND_WIDTH = 256;
-const MINI_DIAMOND_HEIGHT = 128;
-const MINI_IMAGE_HEIGHT = 512;
-/** Canvas Y of the Miniature footprint diamond's top vertex. */
-const MINI_SURFACE_OFFSET = 368;
-export const ACTOR_SCALE = ISO.tileWidth / MINI_DIAMOND_WIDTH;
-export const ACTOR = {
-	scale: ACTOR_SCALE,
-	width: MINI_DIAMOND_WIDTH * ACTOR_SCALE,
-	height: MINI_IMAGE_HEIGHT * ACTOR_SCALE,
-	/**
-	 * Y offset subtracted from a tile's projected top so the actor's footprint
-	 * diamond centre lands on the tile diamond centre. Derived from the scaled
-	 * footprint-centre canvas Y minus half the Nature diamond height.
-	 */
-	surfaceOffset:
-		(MINI_SURFACE_OFFSET + MINI_DIAMOND_HEIGHT / 2) * ACTOR_SCALE -
-		ISO.tileHeight / 2,
-};
 
 /**
  * Renderable chunk window (25x25 chunks, ±12 around the village). Derived from
@@ -116,11 +75,63 @@ export const GATE_SPRITE = "/images/iso/tiles/gate.png";
 /** Water terrain (Isometric Nature pack, remapped to our diamond). */
 export const WATER_SPRITE = "/images/iso/tiles/water.png";
 
-/** Worn road on heavily-trodden tiles. */
-export const ROAD_SPRITE = "/images/iso/tiles/road.png";
+/**
+ * Oriented road/path sprites (Kenney "Isometric Miniature Overworld", same
+ * 256x512 canvas as the ground tiles). A road tile picks its sprite from which
+ * of its four orthogonal neighbours are also roads: a straight run along the
+ * x- or y-axis, an L-corner where the run turns, or a crossing at a junction.
+ * Both player-paved roads and heavily-trodden trails use these; worn trails are
+ * dimmed a touch (see `ROAD_WORN_FILTER`) so paved roads still read as brighter.
+ */
+export const ROAD_SPRITES = {
+	/** Runs along the x-axis (connects the E/W tile neighbours). */
+	straightX: "/images/iso/tiles/path-straight-e.png",
+	/** Runs along the y-axis (connects the N/S tile neighbours). */
+	straightY: "/images/iso/tiles/path-straight-n.png",
+	/** L-corner turning between one x-neighbour and one y-neighbour. */
+	cornerEN: "/images/iso/tiles/path-corner-e.png",
+	cornerES: "/images/iso/tiles/path-corner-s.png",
+	cornerWN: "/images/iso/tiles/path-corner-n.png",
+	cornerWS: "/images/iso/tiles/path-corner-w.png",
+	/** 3- or 4-way junction. */
+	crossing: "/images/iso/tiles/path-crossing.png",
+} as const;
 
-/** Player-paved permanent road (fastest travel). */
-export const BUILT_ROAD_SPRITE = "/images/iso/tiles/road-built.png";
+/** Worn trails render dimmer than paved roads (same oriented sprites). */
+export const ROAD_WORN_FILTER = "brightness(0.82) saturate(0.85)";
+
+/** Road-neighbour direction bits, in tile space (x east, y south). */
+export const ROAD_DIR = { E: 1, W: 2, N: 4, S: 8 } as const;
+
+/**
+ * Oriented road sprite for a tile, given which of its orthogonal neighbours are
+ * also roads (a bitmask of {@link ROAD_DIR}). Pure so it can be unit-tested.
+ *
+ * - opposite pair only (E+W, or N+S) → a straight run along that axis
+ * - one horizontal and one vertical neighbour → the matching L-corner
+ * - three or more neighbours → a crossing
+ * - a lone neighbour (dead-end) reads as a straight along its axis
+ * - no neighbours (isolated) → an x-axis straight, an arbitrary default
+ */
+export function roadSpriteFor(mask: number): string {
+	const e = (mask & ROAD_DIR.E) !== 0;
+	const w = (mask & ROAD_DIR.W) !== 0;
+	const n = (mask & ROAD_DIR.N) !== 0;
+	const s = (mask & ROAD_DIR.S) !== 0;
+	const horizontal = Number(e) + Number(w);
+	const vertical = Number(n) + Number(s);
+	const total = horizontal + vertical;
+
+	if (total >= 3) return ROAD_SPRITES.crossing;
+	if (horizontal > 0 && vertical > 0) {
+		if (e && n) return ROAD_SPRITES.cornerEN;
+		if (e && s) return ROAD_SPRITES.cornerES;
+		if (w && n) return ROAD_SPRITES.cornerWN;
+		return ROAD_SPRITES.cornerWS; // w && s
+	}
+	if (vertical > 0) return ROAD_SPRITES.straightY;
+	return ROAD_SPRITES.straightX; // horizontal run, lone x-neighbour, or isolated
+}
 
 export const BUILDING_SPRITES: Record<string, string> = {
 	shrine: "/images/iso/buildings/shrine.png",
@@ -162,13 +173,8 @@ export const TILE_COLORS: Record<string, string> = {
 	enemy_lair: "#9b5a5a",
 };
 
-/** CSS clip-path for an iso ground diamond (parameterized by the tile box). */
+/** CSS clip-path for a 2:1 iso ground diamond. */
 export const DIAMOND_CLIP = "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)";
-
-/** Worn-trail and paved-road recolors, drawn as a translucent diamond over the
- *  ground so roads read on the Nature terrain without a dedicated road pack. */
-export const ROAD_FILL = "rgba(120, 94, 62, 0.55)";
-export const BUILT_ROAD_FILL = "rgba(150, 120, 78, 0.8)";
 
 /**
  * Fog-of-war shades by distance (in tiles) to the nearest explored tile.
@@ -179,12 +185,3 @@ export const BUILT_ROAD_FILL = "rgba(150, 120, 78, 0.8)";
  * the final (solid) shade.
  */
 export const FOG_SHADES = ["#33422a", "#26321f", "#1b2416", "#141c12"];
-
-/**
- * Fog is now a translucent overlay over the Nature terrain (so unexplored land
- * still reads as a dim silhouette of cliffs/rivers rather than a flat patch),
- * graded by distance to the explored frontier: a light haze at the frontier
- * deepening toward the near-opaque backdrop far out. Index maps 1:1 to
- * `FOG_SHADES`; ungenerated/far tiles use the last (deepest) value.
- */
-export const FOG_OPACITIES = [0.5, 0.7, 0.85, 0.95];

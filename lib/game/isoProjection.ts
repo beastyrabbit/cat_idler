@@ -1,43 +1,21 @@
 /**
- * Isometric projection for the world map.
+ * Isometric (2:1 diamond) projection for the world map.
  *
- * Sprites are Kenney "Isometric Nature" tiles: a 220x379 image whose ground
- * diamond (182x115, measured with `magick -trim` — not a forced 2:1 ratio) sits
- * inset at (19, 252) near the bottom of the canvas, with tall content (cliffs,
- * trees) rising above it. Sprites are drawn at native canvas size and shifted by
- * `-diamondInsetX` so the diamond lands exactly on the projected tile box; the
- * pitch is the diamond width itself, so adjacent diamonds tessellate seamlessly.
- * Terrain is
- * height-mapped: a tile on floor `f` is drawn raised by `f * FLOOR_PX` so cliff
- * faces read as solid columns. All math here is pure so the renderer components
- * stay thin.
+ * Sprites are Kenney "Isometric Miniature" tiles: a 256x512 image whose
+ * ground diamond (256x128) sits near the bottom of the canvas, with tall
+ * content (trees, walls) rising above it. All math here is pure so the
+ * renderer components stay thin.
  */
 
 import type { ChunkCoord } from "./mapView";
 
-/**
- * Vertical pixel rise per height floor. Set to the full-tile cliff block's own
- * face height: naturePack_095's grass diamond sits at canvas y=187 versus the
- * flat diamond's y=252, i.e. a 65px one-floor rise. Matching FLOOR_PX to it means
- * a cliff block's face exactly bridges one floor, and stacked blocks (multi-floor
- * drops) tile seamlessly with no gap or overlap between faces.
- */
-export const FLOOR_PX = 65;
-
-/** Highest floor index terrain quantizes to (matches terrainGen DEFAULT_MAX_HEIGHT). */
-export const MAX_FLOORS = 3;
-
 export interface IsoGeometry {
-	/** Ground diamond width in content px (the tessellation pitch). */
+	/** Ground diamond width in content px. */
 	tileWidth: number;
-	/** Ground diamond height in content px. */
+	/** Ground diamond height in content px (tileWidth / 2). */
 	tileHeight: number;
-	/** Full sprite canvas width (the diamond sits inset within this). */
-	imageWidth: number;
 	/** Full sprite canvas height (diamond + tall content above it). */
 	imageHeight: number;
-	/** X inset of the diamond's left vertex inside the sprite canvas. */
-	diamondInsetX: number;
 	/** Y offset of the diamond's top vertex inside the sprite canvas. */
 	surfaceOffset: number;
 	/** Vertical padding above the first diamond row so sprites fit. */
@@ -50,41 +28,27 @@ export interface IsoGeometry {
 	/** Grid span in tiles. */
 	tilesX: number;
 	tilesY: number;
-	/** Highest floor a tile can sit on (drives z-order banding + padding). */
-	maxHeight: number;
 }
 
 /**
- * Matches the Kenney "Isometric Nature" source sprites at native resolution.
+ * Matches the Kenney source sprites at native resolution.
  *
  * The content plane spans a ±12 chunk window around the village chunk (0,0):
  * world tiles -144..155 on each axis (25 chunks × 12 tiles = 300). The village
  * anchor (6,6) stays near the center. See `chunkWindow` for the derived bounds.
- *
- * `surfacePadding` carries `surfaceOffset` (tall content above the diamond top)
- * plus `maxHeight * FLOOR_PX` of headroom so a fully-raised back-corner tile
- * still lands at a non-negative content Y.
  */
 export const DEFAULT_ISO_GEOMETRY: IsoGeometry = {
-	tileWidth: 182,
-	tileHeight: 115,
-	imageWidth: 220,
-	imageHeight: 379,
-	diamondInsetX: 19,
-	surfaceOffset: 252,
-	surfacePadding: 252 + MAX_FLOORS * FLOOR_PX,
+	tileWidth: 256,
+	tileHeight: 128,
+	imageHeight: 512,
+	surfaceOffset: 368,
+	surfacePadding: 368,
 	chunkSize: 12,
 	originX: -144,
 	originY: -144,
 	tilesX: 300,
 	tilesY: 300,
-	maxHeight: MAX_FLOORS,
 };
-
-/** Vertical pixel offset a tile is raised by for sitting on floor `height`. */
-export function elevationOffset(height: number): number {
-	return Math.max(0, height) * FLOOR_PX;
-}
 
 /**
  * Renderable chunk window derived from the content-plane geometry. Chunks
@@ -156,23 +120,18 @@ export function isoContentSize(geo: IsoGeometry): {
 }
 
 /**
- * Painter's-order z-index. Depth (x+y) dominates so terrain in front always
- * occludes terrain behind; within a depth band, a taller floor stacks above a
- * shorter one, and objects (buildings, cats, decor) take the odd slot just
- * above their own tile+floor. `height` is the tile's floor level (default 0).
+ * Painter's-order z-index. Tiles take even slots by depth (x+y); objects
+ * (buildings, cats, decor) take the odd slot just above their own tile so
+ * terrain in front still occludes them.
  */
 export function zIndexFor(
 	x: number,
 	y: number,
 	layer: "tile" | "object",
 	geo: IsoGeometry,
-	height = 0,
 ): number {
 	const depth = x - geo.originX + (y - geo.originY);
-	const floor = Math.max(0, Math.min(geo.maxHeight, height));
-	return (
-		(depth * (geo.maxHeight + 1) + floor) * 2 + (layer === "object" ? 1 : 0)
-	);
+	return depth * 2 + (layer === "object" ? 1 : 0);
 }
 
 /**
@@ -213,11 +172,9 @@ export function visibleChunksIso(
 	}
 
 	// Pad one tile all around, plus extra depth at the bottom edge so tall
-	// sprites (up to surfaceOffset px above their diamond, plus a fully-raised
-	// column) are not culled while their ground tile is just below the viewport.
-	const tallPad = Math.ceil(
-		(geo.surfaceOffset + geo.maxHeight * FLOOR_PX) / (geo.tileHeight / 2),
-	);
+	// sprites (up to surfaceOffset px above their diamond) are not culled
+	// while their ground tile is just below the viewport.
+	const tallPad = Math.ceil(geo.surfaceOffset / (geo.tileHeight / 2));
 	const lo = { x: Math.floor(minX) - 1, y: Math.floor(minY) - 1 };
 	const hi = {
 		x: Math.ceil(maxX) + 1 + tallPad,

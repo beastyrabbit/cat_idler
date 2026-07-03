@@ -242,8 +242,12 @@ describe("buildColonyWalkGrid", () => {
 	});
 });
 
-describe("cliff walkability (height + stairs)", () => {
-	/** Open grid with a height field; optional stair tiles bridge cliffs. */
+describe("cliff walkability (flat world — elevation removed)", () => {
+	/**
+	 * Open grid still carrying a height field and stair tiles. The world renders
+	 * flat now, so these fields are inert: no step is blocked by height. The
+	 * tests guard that contract — a would-be cliff never impedes movement.
+	 */
 	function heightGrid(
 		heightAt: (x: number, y: number) => number,
 		stairs: Set<string> = new Set(),
@@ -256,37 +260,21 @@ describe("cliff walkability (height + stairs)", () => {
 		};
 	}
 
-	it("treats a same-or-one-floor step as walkable", () => {
-		const grid = heightGrid((x) => (x >= 3 ? 1 : 0));
-		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(false); // 0 -> 1 is a slope
-		expect(cliffBlocksStep(grid, 3, 0, 4, 0)).toBe(false); // 1 -> 1 is flat
-	});
-
-	it("blocks a 2+ floor cliff face with no staircase", () => {
+	it("never blocks a step, whatever the floor difference", () => {
 		const grid = heightGrid((x) => (x >= 3 ? 2 : 0));
-		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(true);
+		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(false); // 0 -> 2, still flat
+		expect(cliffBlocksStep(grid, 3, 0, 4, 0)).toBe(false); // 2 -> 2, level
 	});
 
-	it("lets a staircase bridge the cliff", () => {
-		const grid = heightGrid((x) => (x >= 3 ? 2 : 0), new Set(["3,0"]));
-		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(false);
-	});
-
-	it("is flat (never blocks) when the grid has no height field", () => {
+	it("never blocks even without a height field", () => {
 		expect(cliffBlocksStep(OPEN_GRID, 0, 0, 1, 0)).toBe(false);
 	});
 
-	it("routes a walk up the staircase, not over the cliff face", () => {
-		// A height-2 plateau wall at x>=3 with the only stair at (3,0).
-		const grid = heightGrid((x) => (x >= 3 ? 2 : 0), new Set(["3,0"]));
+	it("walks straight across a would-be cliff (no detour to a stair)", () => {
+		// A height-2 "wall" at x>=3 no longer obstructs — the walk is a beeline.
+		const grid = heightGrid((x) => (x >= 3 ? 2 : 0));
 		const path = findPath({ x: 0, y: 0 }, { x: 6, y: 0 }, grid);
 		expect(path).not.toBeNull();
 		expect(pathKeys(path)).toContain("3,0");
-	});
-
-	it("fails to a straight-walk fallback when a mesa has no stair", () => {
-		// A solid height-2 wall across every row this search can reach — no way up.
-		const grid = heightGrid((x) => (x >= 3 ? 2 : 0));
-		expect(findPath({ x: 0, y: 0 }, { x: 6, y: 0 }, grid)).toBeNull();
 	});
 });

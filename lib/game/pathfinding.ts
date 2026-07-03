@@ -28,39 +28,31 @@ export interface WalkGrid {
 	/** Relative cost to enter this tile — roads < 1, open ground 1. */
 	cost(x: number, y: number): number;
 	/**
-	 * Terrain floor of a tile (optional). When provided, a step between two
-	 * tiles whose floors differ by more than one is a cliff and is impassable
-	 * unless a staircase (`hasStair`) connects them. Absent → flat world.
+	 * Terrain floor of a tile (optional). Inert while the world renders flat —
+	 * kept as a seam so elevation can be reintroduced via {@link cliffBlocksStep}
+	 * without rethreading the grid. Absent → flat world.
 	 */
 	heightAt?(x: number, y: number): number;
-	/** Whether a tile carries a staircase (the only way to scale a cliff). */
+	/** Whether a tile carries a staircase. Inert while the world is flat. */
 	hasStair?(x: number, y: number): boolean;
 }
 
 /**
- * A cliff blocks the step between two adjacent tiles when their floors differ by
- * more than one and neither tile has a staircase. Flat when the grid exposes no
- * height field. Kept edge-based (not per-tile) because you can stand on a cliff
- * top but not climb its face.
+ * Whether a cliff blocks the step between two adjacent tiles.
+ *
+ * The world is now rendered flat — elevation was removed from the map — so no
+ * step is ever blocked by terrain height. The `heightAt`/`hasStair` seams remain
+ * on {@link WalkGrid} (the colony grid still forwards a terrain field) so that
+ * re-introducing elevation later is a one-function change; today they are inert.
  */
 export function cliffBlocksStep(
-	grid: WalkGrid,
-	ax: number,
-	ay: number,
-	bx: number,
-	by: number,
+	_grid: WalkGrid,
+	_ax: number,
+	_ay: number,
+	_bx: number,
+	_by: number,
 ): boolean {
-	if (!grid.heightAt) {
-		return false;
-	}
-	const delta = Math.abs(grid.heightAt(ax, ay) - grid.heightAt(bx, by));
-	if (delta <= 1) {
-		return false;
-	}
-	const stair = grid.hasStair
-		? grid.hasStair(ax, ay) || grid.hasStair(bx, by)
-		: false;
-	return !stair;
+	return false;
 }
 
 /** Cheapest a single step can cost (a road tile), so the heuristic stays admissible. */

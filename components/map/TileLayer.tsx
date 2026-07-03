@@ -1,59 +1,36 @@
 "use client";
 
 import { memo, useEffect, useMemo, useState } from "react";
-import {
-	elevationOffset,
-	tileToIso,
-	zIndexFor,
-} from "@/lib/game/isoProjection";
+import { tileToIso, zIndexFor } from "@/lib/game/isoProjection";
 import type { ChunkCoord } from "@/lib/game/mapView";
 import { chunkKey } from "@/lib/game/mapView";
-import {
-	type Direction,
-	generateTerrainChunk,
-	type TerrainTile,
-	WORLD_TERRAIN_OPTIONS,
-} from "@/lib/game/terrainGen";
 import type { WorldTile } from "@/types/game";
 import {
-	ACTOR,
-	BUILT_ROAD_FILL,
 	DIAMOND_CLIP,
 	FENCE_X_SPRITE,
 	FENCE_Y_SPRITE,
-	FOG_OPACITIES,
 	FOG_SHADES,
 	GATE_SPRITE,
 	ISO,
-	ROAD_FILL,
-	TILE_BLEED_SCALE,
+	ROAD_DIR,
+	ROAD_WORN_FILTER,
+	roadSpriteFor,
+	TILE_SPRITES,
 	VILLAGE_RING_RADIUS,
+	WATER_SPRITE,
 } from "./constants";
-import {
-	cliffSprite,
-	groundSprite,
-	type NatureSprite,
-	natureSpriteUrl,
-	riverSprite,
-	rockSprite,
-	stairsSprite,
-	treeSprite,
-} from "./natureMapping";
 
 interface TileLayerProps {
 	chunks: ChunkCoord[];
 	anchor: { x: number; y: number };
-	/** World seed — the client regenerates terrain from it (matches the server). */
-	seed: number | null;
 	/** Fence/clearing ring radius (grows as the village fills). */
 	ringRadius?: number;
 	/** Info mode: draw resource markers on rich tiles. */
 	showInfo?: boolean;
 }
 
-// Terrain is derived client-side from the seed; only the gameplay overlay
-// (pathWear -> fog reveal + roads, rich-tile markers) comes from the DB, so we
-// still fetch chunks and refresh them once a minute.
+// Terrain is near-static, but pathWear (roads, fog reveal) evolves —
+// cache chunks and refresh them once a minute.
 const CHUNK_TTL_MS = 60_000;
 const chunkCache = new Map<string, { tiles: WorldTile[]; fetchedAt: number }>();
 
@@ -96,393 +73,331 @@ function useChunkTiles(chunkX: number, chunkY: number): WorldTile[] | null {
 	return tiles;
 }
 
-/**
- * Tiles within this distance of the village are always revealed — the colony
- * knows the land immediately around it. Sized to show the terrain ring (cliffs,
- * nearby rivers, forest) just outside the flat village plateau.
- */
-const VILLAGE_VISION_RADIUS = 12;
+/** Tiles within this distance of the village are always revealed (~10x10). */
+const VILLAGE_VISION_RADIUS = 5.5;
 
 /** Resource markers only appear on notably rich tiles (biome max ~60/25). */
 const RICH_FOOD = 35;
 const RICH_HERBS = 12;
 
-const tileKey = (x: number, y: number): string => `${x},${y}`;
-
-/** Chebyshev distance from the village anchor. */
-function villageDistance(
-	x: number,
-	y: number,
-	anchor: { x: number; y: number },
-): number {
-	return Math.max(Math.abs(x - anchor.x), Math.abs(y - anchor.y));
-}
-
-/**
- * Whether a tile is revealed. Reveal is driven by the village vision halo (known
- * without DB data) plus trodden path wear (from the DB overlay, absent until the
- * chunk loads). A tile carrying drawable water inside the clearing still counts
- * as village ground.
- */
 function isExplored(
-	x: number,
-	y: number,
+	tile: WorldTile,
 	anchor: { x: number; y: number },
 	ringRadius: number,
-	worldTile: WorldTile | undefined,
 ): boolean {
-	if ((worldTile?.pathWear ?? 0) > 62) return true;
-	if (villageDistance(x, y, anchor) < ringRadius) return true;
-	const dx = x - anchor.x;
-	const dy = y - anchor.y;
+	if (tile.pathWear > 62) return true;
+	// Everything inside the fence is cleared ground, and the village grants a
+	// vision halo just beyond it, so both always read as explored.
+	if (villageDistance(tile, anchor) < ringRadius) return true;
+	const dx = tile.x - anchor.x;
+	const dy = tile.y - anchor.y;
 	return Math.sqrt(dx * dx + dy * dy) < VILLAGE_VISION_RADIUS;
 }
 
-/** Deepest fog opacity — used for far tiles and ungenerated chunks. */
-const SOLID_FOG_OPACITY = FOG_OPACITIES[FOG_OPACITIES.length - 1];
-const FOG_COLOR = FOG_SHADES[FOG_SHADES.length - 1];
+/** Deepest fog shade — used for far tiles and ungenerated chunks. */
+const SOLID_FOG = FOG_SHADES[FOG_SHADES.length - 1];
 
 /**
- * Fog opacity for every unexplored terrain tile in a chunk, keyed by "x,y".
- * Shaded by Chebyshev distance to the nearest explored tile within this chunk,
- * so fog fades from a light frontier haze into near-solid unknown. Explored
- * tiles are omitted (they render clear terrain). Cross-chunk neighbors are not
- * consulted, so seams are approximate — fine for a soft haze.
+ * Fog color for every unexplored tile in a chunk, keyed by tile id.
+ *
+ * Each tile is shaded by its Chebyshev distance to the nearest explored tile
+ * *within this chunk* (plus the village vision the anchor grants), so the fog
+ * fades from a light frontier hug into solid unknown. Cross-chunk neighbors
+ * are not consulted, so seams between chunks are approximate — acceptable for
+ * a soft fog effect. Explored tiles are omitted (they render terrain).
  */
-function computeFogOpacities(
-	terrain: TerrainTile[],
+function computeFogShades(
+	tiles: WorldTile[],
 	anchor: { x: number; y: number },
 	ringRadius: number,
-	worldByKey: Map<string, WorldTile>,
-): Map<string, number> {
-	const opacities = new Map<string, number>();
-	const explored = terrain.filter((t) =>
-		isExplored(t.x, t.y, anchor, ringRadius, worldByKey.get(tileKey(t.x, t.y))),
-	);
+): Map<string, string> {
+	const explored = tiles.filter((tile) => isExplored(tile, anchor, ringRadius));
+	const shades = new Map<string, string>();
 
-	for (const t of terrain) {
-		const wt = worldByKey.get(tileKey(t.x, t.y));
-		if (isExplored(t.x, t.y, anchor, ringRadius, wt)) {
+	for (const tile of tiles) {
+		if (isExplored(tile, anchor, ringRadius)) {
 			continue;
 		}
 		if (explored.length === 0) {
-			opacities.set(tileKey(t.x, t.y), SOLID_FOG_OPACITY);
+			shades.set(tile._id, SOLID_FOG);
 			continue;
 		}
 		let nearest = Number.POSITIVE_INFINITY;
 		for (const e of explored) {
-			const dist = Math.max(Math.abs(t.x - e.x), Math.abs(t.y - e.y));
+			const dist = Math.max(Math.abs(tile.x - e.x), Math.abs(tile.y - e.y));
 			if (dist < nearest) {
 				nearest = dist;
-				if (nearest === 1) break;
+				if (nearest === 1) {
+					break;
+				}
 			}
 		}
-		const idx = Math.min(nearest - 1, FOG_OPACITIES.length - 1);
-		opacities.set(tileKey(t.x, t.y), FOG_OPACITIES[idx]);
+		const idx = Math.min(nearest - 1, FOG_SHADES.length - 1);
+		shades.set(tile._id, FOG_SHADES[idx]);
 	}
 
-	return opacities;
+	return shades;
 }
 
-function hasWater(worldTile: WorldTile | undefined): boolean {
-	return (
-		worldTile?.type === "river" ||
-		worldTile?.overlayFeature === "river" ||
-		(worldTile?.resources?.water ?? 0) > 0
-	);
+function hasWater(tile: WorldTile): boolean {
+	return tile.type === "river" || tile.resources.water > 0;
 }
 
-/** Ground inside the fence is cleared for construction — always flat grass. */
-function isVillageClearing(
-	x: number,
-	y: number,
+/** Chebyshev distance from the village anchor. */
+function villageDistance(
+	tile: WorldTile,
 	anchor: { x: number; y: number },
-	ringRadius: number,
-	worldTile: WorldTile | undefined,
-): boolean {
-	return villageDistance(x, y, anchor) < ringRadius && !hasWater(worldTile);
+): number {
+	return Math.max(Math.abs(tile.x - anchor.x), Math.abs(tile.y - anchor.y));
 }
 
 /**
- * Fence sprite for a village-ring tile: fences follow the edge they sit on, the
- * south side gets an open gate, water gaps stay open. Offsets are in Nature
- * ground-diamond units (half tile = tileWidth/2, quarter height = tileHeight/2).
+ * Fence sprite for a village-ring tile: fences follow the edge they sit
+ * on, the south side gets an open gate, water gaps stay open.
  */
 function ringSprites(
-	x: number,
-	y: number,
+	tile: WorldTile,
 	anchor: { x: number; y: number },
 	ringRadius: number,
-	worldTile: WorldTile | undefined,
 ): Array<{ src: string; ox: number; oy: number }> {
-	if (villageDistance(x, y, anchor) !== ringRadius || hasWater(worldTile)) {
+	if (villageDistance(tile, anchor) !== ringRadius || hasWater(tile)) {
 		return [];
 	}
-	const dx = x - anchor.x;
-	const dy = y - anchor.y;
+	const dx = tile.x - anchor.x;
+	const dy = tile.y - anchor.y;
 	if (dx === 0 && dy === ringRadius) {
 		return [{ src: GATE_SPRITE, ox: 0, oy: 0 }];
 	}
 	const onRow = Math.abs(dy) === ringRadius;
 	const onColumn = Math.abs(dx) === ringRadius;
-	const halfW = ISO.tileWidth / 2;
-	const quarterH = ISO.tileHeight / 2;
+	// Corners: shift each direction half a tile toward its edge so the
+	// two rails meet in an L instead of crossing in an X.
 	if (onRow && onColumn) {
 		const sx = Math.sign(dx);
 		const sy = Math.sign(dy);
 		return [
-			{ src: FENCE_X_SPRITE, ox: -sx * halfW, oy: -sx * quarterH },
-			{ src: FENCE_Y_SPRITE, ox: sy * halfW, oy: -sy * quarterH },
+			{ src: FENCE_X_SPRITE, ox: -sx * 64, oy: -sx * 32 },
+			{ src: FENCE_Y_SPRITE, ox: sy * 64, oy: -sy * 32 },
 		];
 	}
+	// Rows (north/south edges) run along x; columns along y.
 	return onRow
 		? [{ src: FENCE_X_SPRITE, ox: 0, oy: 0 }]
 		: [{ src: FENCE_Y_SPRITE, ox: 0, oy: 0 }];
 }
 
-/** A Nature terrain sprite drawn on a tile, raised by its floor height. */
-function NatureImg({
-	sprite,
-	left,
-	top,
-	height,
-	z,
-	title,
-	dim = 1,
-}: {
-	sprite: NatureSprite;
-	left: number;
-	top: number;
-	height: number;
-	z: number;
-	title?: string;
-	/** Brightness multiplier (1 = lit). Unexplored/fogged tiles pass < 1. */
-	dim?: number;
-}) {
-	return (
-		<img
-			src={natureSpriteUrl(sprite)}
-			alt=""
-			title={title}
-			draggable={false}
-			className="pointer-events-none absolute select-none"
-			style={{
-				filter: dim < 1 ? `brightness(${dim})` : undefined,
-				// The sprite is drawn at native canvas size and shifted left by the
-				// diamond's inset so its ground diamond lands on the projected box.
-				// Raised-block sprites (cliffs) carry their own diamond-top offset so
-				// their grass seats at the tile floor instead of double-raising.
-				left: left - ISO.diamondInsetX,
-				top:
-					top -
-					(sprite.surfaceOffset ?? ISO.surfaceOffset) -
-					elevationOffset(height),
-				width: ISO.imageWidth,
-				height: ISO.imageHeight,
-				// The diamond edges are anti-aliased (~50% alpha), so perfectly
-				// abutting neighbours still leave a hairline of backdrop between
-				// them. Grow each sprite a sub-pixel about its ground-diamond
-				// centre so neighbours overlap within the AA band and the seam
-				// disappears; painter's z-order hides the overlap.
-				transform: `scale(${TILE_BLEED_SCALE})`,
-				transformOrigin: `${ISO.diamondInsetX + ISO.tileWidth / 2}px ${ISO.surfaceOffset + ISO.tileHeight / 2}px`,
-				zIndex: z,
-			}}
-		/>
-	);
+/**
+ * Ground inside the embankment is cleared for construction — render it as
+ * open grass so buildings and cats aren't hidden behind biome trees.
+ */
+function isVillageClearing(
+	tile: WorldTile,
+	anchor: { x: number; y: number },
+	ringRadius: number,
+): boolean {
+	return villageDistance(tile, anchor) < ringRadius && !hasWater(tile);
 }
 
-/** Miniature actor sprite (fence/gate) re-scaled onto the Nature diamond. */
-function ActorImg({
-	src,
-	left,
-	top,
-	height,
-	z,
-	ox = 0,
-	oy = 0,
-}: {
-	src: string;
-	left: number;
-	top: number;
-	height: number;
-	z: number;
-	ox?: number;
-	oy?: number;
-}) {
-	return (
-		<img
-			src={src}
-			alt=""
-			draggable={false}
-			className="pointer-events-none absolute select-none"
-			style={{
-				left: left + ox,
-				top: top - ACTOR.surfaceOffset - elevationOffset(height) + oy,
-				width: ACTOR.width,
-				height: ACTOR.height,
-				zIndex: z,
-			}}
-		/>
-	);
-}
+type RoadKind = "built" | "worn";
 
-/** Which oriented river sprite a tile shows (terrain segment, else a pond). */
-function riverSpriteFor(terrain: TerrainTile): NatureSprite {
-	if (terrain.river) {
-		return riverSprite(terrain.river.segment, terrain.river.facing);
+/**
+ * Whether a tile renders as a road and its grade. Leader-paved roads always
+ * show; ordinary ground becomes a worn trail only once heavily trodden
+ * (pathWear >= 70) and outside the cleared village. Water is never a road.
+ */
+function roadKind(
+	tile: WorldTile,
+	anchor: { x: number; y: number },
+	ringRadius: number,
+): RoadKind | null {
+	if (tile.type === "river" || tile.overlayFeature === "river") return null;
+	if (tile.overlayFeature === "road_built") return "built";
+	if (tile.pathWear >= 70 && !isVillageClearing(tile, anchor, ringRadius)) {
+		return "worn";
 	}
-	// A gameplay-forced pond (starter water) with no terrain river role.
-	return riverSprite("start", "N" as Direction);
+	return null;
+}
+
+const posKey = (x: number, y: number): string => `${x},${y}`;
+
+/**
+ * Oriented road sprite (and worn-trail dimming) for every road tile in a chunk,
+ * keyed by tile id. Each road tile's sprite is chosen from which of its four
+ * orthogonal neighbours are also roads, so straights, corners and crossings
+ * line up. Neighbours are looked up within this chunk only, so a road crossing a
+ * chunk seam reads as a dead-end at the boundary — an acceptable approximation
+ * (same trade-off as fog shading).
+ */
+function computeRoadSprites(
+	tiles: WorldTile[],
+	anchor: { x: number; y: number },
+	ringRadius: number,
+): Map<string, { src: string; filter?: string }> {
+	const roads = new Map<string, RoadKind>();
+	for (const tile of tiles) {
+		const kind = roadKind(tile, anchor, ringRadius);
+		if (kind) roads.set(posKey(tile.x, tile.y), kind);
+	}
+
+	const sprites = new Map<string, { src: string; filter?: string }>();
+	for (const tile of tiles) {
+		const kind = roads.get(posKey(tile.x, tile.y));
+		if (!kind) continue;
+		let mask = 0;
+		if (roads.has(posKey(tile.x + 1, tile.y))) mask |= ROAD_DIR.E;
+		if (roads.has(posKey(tile.x - 1, tile.y))) mask |= ROAD_DIR.W;
+		if (roads.has(posKey(tile.x, tile.y - 1))) mask |= ROAD_DIR.N;
+		if (roads.has(posKey(tile.x, tile.y + 1))) mask |= ROAD_DIR.S;
+		sprites.set(tile._id, {
+			src: roadSpriteFor(mask),
+			filter: kind === "worn" ? ROAD_WORN_FILTER : undefined,
+		});
+	}
+	return sprites;
 }
 
 const IsoTile = memo(function IsoTile({
-	terrain,
-	worldTile,
+	tile,
 	anchor,
 	ringRadius,
 	showInfo,
-	fogOpacity,
+	fogShade,
+	roadSprite,
 }: {
-	terrain: TerrainTile;
-	worldTile: WorldTile | undefined;
+	tile: WorldTile;
 	anchor: { x: number; y: number };
 	ringRadius: number;
 	showInfo: boolean;
-	/** Fog opacity for an unexplored tile, or 0 when explored. */
-	fogOpacity: number;
+	/** Precomputed fog color for unexplored tiles (see computeFogShades). */
+	fogShade: string;
+	/** Oriented road sprite when this tile is a road, else undefined. */
+	roadSprite?: { src: string; filter?: string };
 }) {
-	const { x, y, height } = terrain;
-	const { left, top } = tileToIso(x, y, ISO);
-	const tileZ = zIndexFor(x, y, "tile", ISO, height);
-	const objectZ = zIndexFor(x, y, "object", ISO, height);
-	const clearing = isVillageClearing(x, y, anchor, ringRadius, worldTile);
-	const water = hasWater(worldTile) || Boolean(terrain.river);
+	const { left, top } = tileToIso(tile.x, tile.y, ISO);
+	const explored = isExplored(tile, anchor, ringRadius);
+	const tileZ = zIndexFor(tile.x, tile.y, "tile", ISO);
+	const objectZ = zIndexFor(tile.x, tile.y, "object", ISO);
 
-	// Base ground/cliff/river sprite. Cliffs are drawn as a stack of full-tile
-	// blocks (one per floor of drop) so a multi-floor step reads as one wall.
-	const isCliff = !water && !clearing && terrain.terrain.kind === "cliff";
-	let base: NatureSprite;
-	if (water) {
-		base = riverSpriteFor(terrain);
-	} else if (isCliff && terrain.terrain.kind === "cliff") {
-		base = cliffSprite(
-			terrain.terrain.base,
-			terrain.terrain.variant,
-			terrain.terrain.facing,
+	if (!explored) {
+		// Fog fades from a light frontier hug into the page backdrop, so
+		// unexplored land reads as "beyond the known world" rather than a
+		// hard patch. Shade is distance-graded per chunk (computeFogShades).
+		return (
+			<div
+				className="absolute"
+				style={{
+					left,
+					top,
+					width: ISO.tileWidth,
+					height: ISO.tileHeight,
+					zIndex: tileZ,
+					clipPath: DIAMOND_CLIP,
+					background: fogShade,
+				}}
+			/>
 		);
-	} else {
-		base = groundSprite(clearing ? "grassland" : terrain.biome);
 	}
-	const cliffDrop =
-		isCliff && terrain.terrain.kind === "cliff" ? terrain.terrain.maxDrop : 1;
 
-	const isBuiltRoad = worldTile?.overlayFeature === "road_built";
-	const isWornRoad = !water && !clearing && (worldTile?.pathWear ?? 0) >= 70;
-	const title = `${(worldTile?.type ?? terrain.biome).replaceAll("_", " ")} (${x}, ${y})`;
-
-	// Unexplored terrain is drawn as a darkened version of the real tile (a dim
-	// silhouette that keeps its shape) rather than a flat colour overlay, so fog
-	// reads as "the land, unlit" instead of grey z-banding. Brightness falls off
-	// with distance-to-frontier (fogOpacity), bottoming out near-black deep out.
-	const dim = fogOpacity > 0 ? Math.max(0.12, 1 - 0.9 * fogOpacity) : 1;
+	// Roads (built + heavily-trodden) come in pre-oriented from the chunk (see
+	// computeRoadSprites) so straights, corners and crossings line up with the
+	// road network. Water wins over everything; inside the fence is bare grass.
+	const isWater = tile.type === "river" || tile.overlayFeature === "river";
+	const sprite: { src: string; filter?: string; base?: string } | undefined =
+		isWater
+			? { src: WATER_SPRITE }
+			: roadSprite
+				? roadSprite
+				: isVillageClearing(tile, anchor, ringRadius)
+					? TILE_SPRITES.field
+					: TILE_SPRITES[tile.type];
+	const title = `${tile.type.replaceAll("_", " ")} (${tile.x}, ${tile.y})`;
+	// Standalone tree sprites declare a grass `base` underlay; water/road/path
+	// sprites carry their own ground and have none.
+	const baseSprite = sprite?.base;
 
 	return (
 		<>
-			{/* One block per floor of drop: top block shows grass, lower blocks
-			    fill the face down to the lowest neighbour. Non-cliff tiles render a
-			    single sprite (cliffDrop === 1). Higher floors take a higher z so the
-			    top block overdraws the stacked grass beneath it. */}
-			{Array.from({ length: cliffDrop }, (_, k) => {
-				const floor = height - k;
-				return (
-					<NatureImg
-						key={floor}
-						sprite={base}
-						left={left}
-						top={top}
-						height={floor}
-						z={zIndexFor(x, y, "tile", ISO, floor)}
-						title={k === 0 ? title : undefined}
-						dim={dim}
-					/>
-				);
-			})}
-
-			{/* Worn trails / paved roads: a translucent diamond over the surface. */}
-			{(isBuiltRoad || isWornRoad) && (
+			{!sprite ? (
 				<div
-					className="pointer-events-none absolute"
+					title={title}
+					className="absolute"
 					style={{
 						left,
-						top: top - elevationOffset(height),
+						top,
 						width: ISO.tileWidth,
 						height: ISO.tileHeight,
-						zIndex: tileZ + 1,
+						zIndex: tileZ,
 						clipPath: DIAMOND_CLIP,
-						background: isBuiltRoad ? BUILT_ROAD_FILL : ROAD_FILL,
+						background: "#8aa37b",
 					}}
 				/>
+			) : (
+				<>
+					{baseSprite && (
+						<img
+							src={baseSprite}
+							alt=""
+							draggable={false}
+							className="pointer-events-none absolute select-none"
+							style={{
+								left,
+								top: top - ISO.surfaceOffset,
+								width: ISO.tileWidth,
+								height: ISO.imageHeight,
+								zIndex: tileZ,
+							}}
+						/>
+					)}
+					<img
+						src={sprite.src}
+						alt=""
+						title={title}
+						draggable={false}
+						className="pointer-events-none absolute select-none"
+						style={{
+							left,
+							top: top - ISO.surfaceOffset,
+							width: ISO.tileWidth,
+							height: ISO.imageHeight,
+							zIndex: tileZ,
+							filter: sprite.filter,
+						}}
+					/>
+				</>
 			)}
 
-			{/* Staircase linking this cliff to the level below. */}
-			{!clearing && terrain.stairs && (
-				<NatureImg
-					sprite={stairsSprite(terrain.stairs.facing)}
-					left={left}
-					top={top}
-					height={height}
-					z={objectZ}
-					dim={dim}
-				/>
-			)}
-
-			{/* Scattered tree/rock decoration (never inside the cleared village). */}
-			{!clearing && !water && terrain.decoration && (
-				<NatureImg
-					sprite={
-						terrain.decoration.kind === "tree"
-							? treeSprite(terrain.decoration.species, terrain.biome)
-							: rockSprite(terrain.decoration.size)
-					}
-					left={left}
-					top={top}
-					height={height}
-					z={objectZ}
-					dim={dim}
-				/>
-			)}
-
-			{/* Fence ring (with a south gate) around the founding village. */}
-			{ringSprites(x, y, anchor, ringRadius, worldTile).map((fence) => (
-				<ActorImg
+			{/* Fence ring (with a south gate) around the founding village */}
+			{ringSprites(tile, anchor, ringRadius).map((fence) => (
+				<img
 					key={fence.src}
 					src={fence.src}
-					left={left}
-					top={top}
-					height={height}
-					z={objectZ}
-					ox={fence.ox}
-					oy={fence.oy}
+					alt=""
+					draggable={false}
+					className="pointer-events-none absolute select-none"
+					style={{
+						left: left + fence.ox,
+						top: top - ISO.surfaceOffset + fence.oy,
+						width: ISO.tileWidth,
+						height: ISO.imageHeight,
+						zIndex: objectZ,
+					}}
 				/>
 			))}
 
-			{/* Only notably rich tiles get a marker — keeps the map readable. */}
+			{/* Only notably rich tiles get a marker — keeps the map readable */}
 			{showInfo &&
-				worldTile &&
-				fogOpacity === 0 &&
-				(worldTile.resources.food >= RICH_FOOD ||
-					worldTile.resources.herbs >= RICH_HERBS) && (
+				(tile.resources.food >= RICH_FOOD ||
+					tile.resources.herbs >= RICH_HERBS) && (
 					<div
 						className="pointer-events-none absolute flex gap-1 text-base leading-none drop-shadow"
 						style={{
 							left: left + ISO.tileWidth / 2 - 16,
-							top: top + ISO.tileHeight / 2 - 8 - elevationOffset(height),
+							top: top + ISO.tileHeight / 2 - 8,
 							zIndex: objectZ,
 						}}
 					>
-						{worldTile.resources.food >= RICH_FOOD && <span>🍖</span>}
-						{worldTile.resources.herbs >= RICH_HERBS && <span>🌿</span>}
+						{tile.resources.food >= RICH_FOOD && <span>🍖</span>}
+						{tile.resources.herbs >= RICH_HERBS && <span>🌿</span>}
 					</div>
 				)}
 		</>
@@ -495,37 +410,25 @@ const ChunkView = memo(function ChunkView({
 	anchor,
 	ringRadius,
 	showInfo,
-	seed,
 }: {
 	chunkX: number;
 	chunkY: number;
 	anchor: { x: number; y: number };
 	ringRadius: number;
 	showInfo: boolean;
-	seed: number | null;
 }) {
-	const worldTiles = useChunkTiles(chunkX, chunkY);
-	const terrain = useMemo(
-		() =>
-			seed === null
-				? []
-				: generateTerrainChunk(chunkX, chunkY, seed, WORLD_TERRAIN_OPTIONS),
-		[seed, chunkX, chunkY],
+	const tiles = useChunkTiles(chunkX, chunkY);
+	const fogShades = useMemo(
+		() => (tiles ? computeFogShades(tiles, anchor, ringRadius) : null),
+		[tiles, anchor, ringRadius],
 	);
-	const worldByKey = useMemo(() => {
-		const map = new Map<string, WorldTile>();
-		for (const tile of worldTiles ?? []) {
-			map.set(tileKey(tile.x, tile.y), tile);
-		}
-		return map;
-	}, [worldTiles]);
-	const fogOpacities = useMemo(
-		() => computeFogOpacities(terrain, anchor, ringRadius, worldByKey),
-		[terrain, anchor, ringRadius, worldByKey],
+	const roadSprites = useMemo(
+		() => (tiles ? computeRoadSprites(tiles, anchor, ringRadius) : null),
+		[tiles, anchor, ringRadius],
 	);
 
-	if (terrain.length === 0) {
-		// Seed not loaded yet, or an ungenerated (out-of-window) chunk — solid fog.
+	if (!tiles || tiles.length === 0) {
+		// Ungenerated (or still loading) chunk — solid fog diamonds.
 		const fog = [];
 		for (let ty = 0; ty < 12; ty++) {
 			for (let tx = 0; tx < 12; tx++) {
@@ -543,7 +446,7 @@ const ChunkView = memo(function ChunkView({
 							height: ISO.tileHeight,
 							zIndex: zIndexFor(wx, wy, "tile", ISO),
 							clipPath: DIAMOND_CLIP,
-							background: FOG_COLOR,
+							background: SOLID_FOG,
 						}}
 					/>,
 				);
@@ -554,15 +457,15 @@ const ChunkView = memo(function ChunkView({
 
 	return (
 		<>
-			{terrain.map((tile) => (
+			{tiles.map((tile) => (
 				<IsoTile
-					key={tileKey(tile.x, tile.y)}
-					terrain={tile}
-					worldTile={worldByKey.get(tileKey(tile.x, tile.y))}
+					key={tile._id}
+					tile={tile}
 					anchor={anchor}
 					ringRadius={ringRadius}
 					showInfo={showInfo}
-					fogOpacity={fogOpacities.get(tileKey(tile.x, tile.y)) ?? 0}
+					fogShade={fogShades?.get(tile._id) ?? SOLID_FOG}
+					roadSprite={roadSprites?.get(tile._id)}
 				/>
 			))}
 		</>
@@ -572,7 +475,6 @@ const ChunkView = memo(function ChunkView({
 export function TileLayer({
 	chunks,
 	anchor,
-	seed,
 	ringRadius = VILLAGE_RING_RADIUS,
 	showInfo = false,
 }: TileLayerProps) {
@@ -586,7 +488,6 @@ export function TileLayer({
 					anchor={anchor}
 					ringRadius={ringRadius}
 					showInfo={showInfo}
-					seed={seed}
 				/>
 			))}
 		</>
