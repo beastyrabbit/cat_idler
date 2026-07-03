@@ -79,6 +79,27 @@ describe("breeding gates", () => {
 		expect(colonyCanBreed({ ...healthy, population: 14 })).toBe(false);
 	});
 
+	it("also breeds on a per-capita food/water surplus below the ratio gate", () => {
+		// Subsistence early colony: a large, mostly-empty granary keeps the ratio
+		// far below 0.35, but the store still holds a real per-cat surplus. It must
+		// be able to breed, otherwise the founders age out unreplaced (the unaided
+		// early-collapse bug). 10 cats * 2.5 = 25 food needed.
+		const subsistence = {
+			foodRatio: 0.08,
+			waterRatio: 0.08,
+			population: 10,
+			housingCapacity: 14,
+			food: 40,
+			water: 40,
+		};
+		expect(colonyCanBreed(subsistence)).toBe(true);
+		// Below the per-capita floor AND below the ratio gate: still no breeding.
+		expect(colonyCanBreed({ ...subsistence, food: 20 })).toBe(false);
+		expect(colonyCanBreed({ ...subsistence, water: 10 })).toBe(false);
+		// Housing headroom still governs even with a food surplus.
+		expect(colonyCanBreed({ ...subsistence, population: 14 })).toBe(false);
+	});
+
 	it("specialists conceive more readily than plain adults", () => {
 		const plain = catBreedingChancePerHour(null, 0);
 		const specialist = catBreedingChancePerHour("hunter", 0);

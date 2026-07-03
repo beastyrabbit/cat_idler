@@ -77,6 +77,19 @@ export function oldAgeDeathProbability(
 export const BREEDING_MIN_FOOD_RATIO = 0.35;
 /** Water must sit above this fraction of capacity for the colony to breed. */
 export const BREEDING_MIN_WATER_RATIO = 0.35;
+/**
+ * Capacity-independent fallback breeding gate: a colony may also breed once it
+ * holds this many units of food (and water) per living cat, even if that is
+ * below {@link BREEDING_MIN_FOOD_RATIO} of a large granary. The ratio gate reads
+ * "fraction of a full storehouse", which a founding colony with a 600-food cap
+ * can never reach on subsistence hunting (0.35 * 600 = 210 vs the ~50 it holds
+ * once its starting buffer is drawn down), so it would stop breeding and age out.
+ * This per-capita floor gives a small, self-limiting surplus the same meaning at
+ * any storage size: a fed/late colony always clears the ratio gate and so is
+ * unaffected, while an unaided early colony can keep replacing its founders.
+ */
+export const BREEDING_FOOD_PER_CAT = 2.5;
+export const BREEDING_WATER_PER_CAT = 2.5;
 /** Gestation length in game-hours (matches the kitten stage span). */
 export const GESTATION_GAME_HOURS = 6;
 /** Base per-game-hour conception chance for a plain, healthy adult. */
@@ -89,6 +102,11 @@ export interface ColonyBreedingState {
 	waterRatio: number;
 	population: number;
 	housingCapacity: number;
+	/** Absolute stored food, for the per-capita fallback gate. Optional so
+	 * callers that only know ratios keep the pure ratio behaviour. */
+	food?: number;
+	/** Absolute stored water, for the per-capita fallback gate. */
+	water?: number;
 }
 
 /**
@@ -96,13 +114,20 @@ export interface ColonyBreedingState {
  * and water above their thresholds and at least one bed of housing headroom —
  * this is the soft population cap that keeps growth tied to the village's
  * shelter rather than exploding.
+ *
+ * Food/water are "sufficient" when they clear EITHER the fraction-of-capacity
+ * gate (what a fed/late colony always does) OR the per-capita floor (what lets
+ * a subsistence early colony keep breeding despite a large, mostly-empty
+ * granary). The ratio path alone is unchanged, so mid/late balance is untouched.
  */
 export function colonyCanBreed(state: ColonyBreedingState): boolean {
-	return (
-		state.foodRatio > BREEDING_MIN_FOOD_RATIO &&
-		state.waterRatio > BREEDING_MIN_WATER_RATIO &&
-		state.population < state.housingCapacity
-	);
+	const foodOk =
+		state.foodRatio > BREEDING_MIN_FOOD_RATIO ||
+		(state.food ?? 0) >= state.population * BREEDING_FOOD_PER_CAT;
+	const waterOk =
+		state.waterRatio > BREEDING_MIN_WATER_RATIO ||
+		(state.water ?? 0) >= state.population * BREEDING_WATER_PER_CAT;
+	return foodOk && waterOk && state.population < state.housingCapacity;
 }
 
 /**

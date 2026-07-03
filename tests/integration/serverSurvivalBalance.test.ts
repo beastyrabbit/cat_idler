@@ -41,9 +41,11 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, type GameDb } from "@/db/client";
 import { buildings, cats, colonies, events, runHistory } from "@/db/schema";
+import { BREEDING_FOOD_PER_CAT } from "@/lib/game/lifeSim";
 import {
 	advanceTime,
 	ensureGlobalColony,
+	getGlobalDashboard,
 	setTestRngSeed,
 	workerTick,
 } from "@/server/game";
@@ -267,4 +269,43 @@ describe("survival balance (statistical)", () => {
 		// ...and raids specifically must never be the finishing blow on their own.
 		expect(raidWipeouts).toBe(0);
 	}, 120_000);
+});
+
+/**
+ * Fast structural guard for the unaided-survival fix (the economy fragility the
+ * statistical test above cannot see — see its comment). A fresh colony must be
+ * able to breed a replacement generation from turn one; the real survival number
+ * is measured by the slow real-wall-clock harness (survivalRealtime.harness.test.ts).
+ * These cheap invariants catch a regression of the fix without running a sim.
+ */
+describe("unaided-survival fix invariants (fast guard)", () => {
+	it("a fresh colony opens breeding-ready: housing headroom, food surplus, young founders", () => {
+		const db = createDb(":memory:");
+		const colony = ensureGlobalColony(db);
+		const dash = getGlobalDashboard(db)!;
+		const founders = db
+			.select()
+			.from(cats)
+			.where(eq(cats.colonyId, colony._id))
+			.all()
+			.filter((c) => c.deathTime === null);
+
+		// Housing seats ABOVE the roster, so conception is not blocked while the
+		// founders are still fertile adults (the demographic trap).
+		expect(dash.housing.capacity).toBeGreaterThan(founders.length);
+
+		// The starting food buffer clears the per-capita breeding floor for the
+		// whole roster, so breeding fires immediately rather than after the economy
+		// spins up (and it bridges the 8h gap to the first hunt payout).
+		expect(colony.resources.food).toBeGreaterThanOrEqual(
+			founders.length * BREEDING_FOOD_PER_CAT,
+		);
+
+		// Every founder is a working-age youngster with a full adult breeding
+		// window (24-48h) ahead of it — none parked near the 48h old-age cliff.
+		for (const cat of founders) {
+			expect(cat.ageHours ?? 0).toBeLessThanOrEqual(30);
+			expect(cat.ageHours ?? 0).toBeGreaterThanOrEqual(6);
+		}
+	});
 });

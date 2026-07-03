@@ -127,7 +127,7 @@ export function getHuntReward(
 	hunterXp: number,
 	upgrades: UpgradeLevels,
 ): number {
-	const base = 14 + Math.floor(huntSkill / 15);
+	const base = 24 + Math.floor(huntSkill / 15);
 	const upgradeBonus = 1 + upgrades.hunt_mastery * 0.12;
 	const specialistBonus =
 		specialization === "hunter" && hunterXp >= 30 ? 1.5 : 1;

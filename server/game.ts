@@ -294,12 +294,17 @@ const DEFAULT_ROLE_XP = {
 } as const;
 
 /**
- * Stocked general storage for a fresh settlement — sized so 20 cats have
- * roughly 5 hours of food/water at base decay, plus starter materials.
+ * Stocked general storage for a fresh settlement, plus starter materials. Food
+ * is stocked well past the first hunt's payout (a hunt takes 8 game-hours to
+ * return): it both carries the colony through that opening gap and, crucially,
+ * sits the food store above the breeding threshold from turn one so the young
+ * founders start a replacement generation immediately rather than after the
+ * economy has already spun up. Water self-sustains quickly (river fetching
+ * outpaces drinking), so it needs no comparable buffer.
  */
 const STARTING_RESOURCES = {
-	food: 100,
-	water: 100,
+	food: 300,
+	water: 120,
 	herbs: 16,
 	materials: 24,
 	blessings: 0,
@@ -387,21 +392,27 @@ function starterCatSpot(index: number): { x: number; y: number } {
 }
 
 /**
- * Founding age for a starter cat, in game-hours. Spread *evenly* across the
- * young/adult band (8-44h) so the colony opens with a working-age population —
- * no kittens that can't work, and none old enough to drop dead in the first
- * hours. Elders, births and deaths all emerge from the simulation over time.
+ * Founding age for a starter cat, in game-hours. Spread *evenly* across a young
+ * band (6-30h) so the colony opens with a working-age population — no kittens
+ * that can't work, and none near the 48h old-age cliff. Elders, births and
+ * deaths all emerge from the simulation over time.
  *
  * The even spread is load-bearing for survival: cats age on a shared clock and
  * face a hard old-age mortality cliff at {@link getDeathChance}'s 48h threshold,
  * so a roster bunched into a few ages would all cross that cliff together and
- * wipe the colony in a single die-off wave. Fanning the founders across the
- * whole band staggers their deaths into a steady trickle the birth rate can
- * replace. (The previous `12 + (i*17)%34` collapsed to just two ages — 12 and
- * 29 — because 17*2 = 34, re-creating exactly the cohort cliff it meant to avoid.)
+ * wipe the colony in a single die-off wave. Fanning the founders across the band
+ * staggers their deaths into a steady trickle the birth rate can replace. (The
+ * previous `12 + (i*17)%34` collapsed to just two ages — 12 and 29 — because
+ * 17*2 = 34, re-creating exactly the cohort cliff it meant to avoid.)
+ *
+ * The band is kept *young* (top at 30h, not 44h) so every founder has a long
+ * adult breeding window (24-48h) ahead of it. An unaided colony must breed a
+ * replacement generation before its founders age out; starting them close to the
+ * cliff cut that window short and let the roster die faster than it could be
+ * replaced.
  */
-const STARTER_AGE_MIN_HOURS = 8;
-const STARTER_AGE_MAX_HOURS = 44;
+const STARTER_AGE_MIN_HOURS = 6;
+const STARTER_AGE_MAX_HOURS = 30;
 function starterAgeHours(index: number): number {
 	const span = STARTER_AGE_MAX_HOURS - STARTER_AGE_MIN_HOURS;
 	const denom = Math.max(1, STARTER_CAT_COUNT - 1);
@@ -628,6 +639,9 @@ interface LifeSimContext {
 	housingCap: number;
 	foodRatio: number;
 	waterRatio: number;
+	/** Absolute stored food/water, for the per-capita breeding fallback. */
+	food: number;
+	water: number;
 	/** Seed for the isolated life-sim roll chain, or null for unseeded. */
 	lifeSeed: number | null;
 }
@@ -739,6 +753,8 @@ function runLifeSimulation(
 			!colonyCanBreed({
 				foodRatio: ctx.foodRatio,
 				waterRatio: ctx.waterRatio,
+				food: ctx.food,
+				water: ctx.water,
 				population: population + pregnantCount,
 				housingCapacity: ctx.housingCap,
 			})
@@ -969,30 +985,31 @@ function ensureShrineAndWorld(db: GameDb, colonyId: string) {
 		.run();
 
 	// Founding village around the shrine: five dens plus a stocked general
-	// storage, all pre-built. Two of the dens are raised longhouses (level 2,
-	// 4 beds); the other three are ordinary dens (2 beds). With the shrine's 4
-	// beds that shelters 3*2 + 2*4 + 4 = 18 of the 20 founders. Fixed rolls keep
-	// the layout deterministic while looking organic.
+	// storage, all pre-built. Four of the dens are raised longhouses (level 2,
+	// 4 beds); the fifth is an ordinary den (2 beds). With the shrine's 4 beds
+	// that shelters 4*4 + 2 + 4 = 22 cats. Fixed rolls keep the layout
+	// deterministic while looking organic.
 	//
-	// That headroom is load-bearing for survival: conception is blocked while
-	// population >= housing capacity (see colonyCanBreed), so when the founding
-	// roster (20) sat far above the old capacity (14) the colony bred nothing,
-	// the founders aged out of the 48h old-age cliff with zero replacements, and
-	// it reliably collapsed. Sitting just under capacity lets the colony start
-	// breeding the moment the first elder dies, while the small remaining deficit
-	// keeps an unaided early colony fragile by design (~10% collapse over a long
-	// horizon) without dooming it. The extra beds come from den *levels* rather
-	// than more den *buildings* so the founding footprint — and the fence ring /
-	// walkability grid derived from the building count — is unchanged.
+	// This headroom is load-bearing for unaided survival. Conception is blocked
+	// while population >= housing capacity (see colonyCanBreed), so a cap at or
+	// below the 20-cat founding roster left the founders unable to breed during
+	// their adult window (24-48h): by the time old-age deaths dropped the
+	// population below the cap, the survivors were already elders, no replacement
+	// generation ever formed, and the colony collapsed of old age. Seating the
+	// cap *above* the roster lets the founders breed immediately, so a
+	// replacement generation matures before they age out. The extra beds come
+	// from den *levels* rather than more den *buildings* so the founding
+	// footprint — and the fence ring / walkability grid derived from the building
+	// count — is unchanged.
 	const starterBuildings: Array<{
 		type: "den" | "food_storage";
 		roll: number;
 		level: number;
 	}> = [
 		{ type: "den", roll: 0.05, level: 2 },
-		{ type: "den", roll: 0.3, level: 1 },
+		{ type: "den", roll: 0.3, level: 2 },
 		{ type: "den", roll: 0.55, level: 2 },
-		{ type: "den", roll: 0.8, level: 1 },
+		{ type: "den", roll: 0.8, level: 2 },
 		{ type: "den", roll: 0.95, level: 1 },
 		{ type: "food_storage", roll: 0.4, level: 1 },
 	];
@@ -2443,6 +2460,8 @@ export function workerTick(db: GameDb) {
 			housingCap: housingCapacity(colonyBuildingsEarly, effects.housingPerDen),
 			foodRatio: caps.food > 0 ? colony.resources.food / caps.food : 0,
 			waterRatio: caps.water > 0 ? colony.resources.water / caps.water : 0,
+			food: colony.resources.food,
+			water: colony.resources.water,
 			lifeSeed: rngSeed === null ? null : rngSeed + 2_000_003,
 		});
 		// Births and deaths this tick change the roster the rest of the tick
