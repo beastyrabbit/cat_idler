@@ -359,11 +359,13 @@ const IsoTile = memo(function IsoTile({
 	const clearing = isVillageClearing(x, y, anchor, ringRadius, worldTile);
 	const water = hasWater(worldTile) || Boolean(terrain.river);
 
-	// Base ground/cliff/river sprite.
+	// Base ground/cliff/river sprite. Cliffs are drawn as a stack of full-tile
+	// blocks (one per floor of drop) so a multi-floor step reads as one wall.
+	const isCliff = !water && !clearing && terrain.terrain.kind === "cliff";
 	let base: NatureSprite;
 	if (water) {
 		base = riverSpriteFor(terrain);
-	} else if (!clearing && terrain.terrain.kind === "cliff") {
+	} else if (isCliff && terrain.terrain.kind === "cliff") {
 		base = cliffSprite(
 			terrain.terrain.base,
 			terrain.terrain.variant,
@@ -372,6 +374,8 @@ const IsoTile = memo(function IsoTile({
 	} else {
 		base = groundSprite(clearing ? "grassland" : terrain.biome);
 	}
+	const cliffDrop =
+		isCliff && terrain.terrain.kind === "cliff" ? terrain.terrain.maxDrop : 1;
 
 	const isBuiltRoad = worldTile?.overlayFeature === "road_built";
 	const isWornRoad = !water && !clearing && (worldTile?.pathWear ?? 0) >= 70;
@@ -385,15 +389,25 @@ const IsoTile = memo(function IsoTile({
 
 	return (
 		<>
-			<NatureImg
-				sprite={base}
-				left={left}
-				top={top}
-				height={height}
-				z={tileZ}
-				title={title}
-				dim={dim}
-			/>
+			{/* One block per floor of drop: top block shows grass, lower blocks
+			    fill the face down to the lowest neighbour. Non-cliff tiles render a
+			    single sprite (cliffDrop === 1). Higher floors take a higher z so the
+			    top block overdraws the stacked grass beneath it. */}
+			{Array.from({ length: cliffDrop }, (_, k) => {
+				const floor = height - k;
+				return (
+					<NatureImg
+						key={floor}
+						sprite={base}
+						left={left}
+						top={top}
+						height={floor}
+						z={zIndexFor(x, y, "tile", ISO, floor)}
+						title={k === 0 ? title : undefined}
+						dim={dim}
+					/>
+				);
+			})}
 
 			{/* Worn trails / paved roads: a translucent diamond over the surface. */}
 			{(isBuiltRoad || isWornRoad) && (

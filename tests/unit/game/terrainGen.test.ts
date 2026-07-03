@@ -178,6 +178,24 @@ describe("terrainGen", () => {
 			// A higher neighbor never creates an edge.
 			expect(classifyCliff(2, neighbors(3, 2, 2, 2))).toEqual({ kind: "flat" });
 		});
+
+		it("reports the deepest drop to a lower neighbor as maxDrop", () => {
+			// A single one-floor edge drops exactly one floor.
+			expect(classifyCliff(2, neighbors(1, 2, 2, 2))).toMatchObject({
+				maxDrop: 1,
+			});
+			// Two lower neighbors of different depth: maxDrop follows the deepest
+			// (N drops 3 floors to 0, E drops 1 to 2) so the renderer stacks 3 blocks.
+			expect(classifyCliff(3, neighbors(0, 2, 3, 3))).toMatchObject({
+				base: "corner",
+				maxDrop: 3,
+			});
+			// A pillar surrounded by floor-0 neighbors drops its full height.
+			expect(classifyCliff(3, neighbors(0, 0, 0, 0))).toMatchObject({
+				base: "pillar",
+				maxDrop: 3,
+			});
+		});
 	});
 
 	describe("stairs", () => {

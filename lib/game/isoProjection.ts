@@ -16,10 +16,13 @@
 import type { ChunkCoord } from "./mapView";
 
 /**
- * Vertical pixel rise per height floor (measured on the Nature cliff sprites:
- * a single-floor block raises the top surface ~71-72px above the flat diamond).
+ * Vertical pixel rise per height floor. Set to the full-tile cliff block's own
+ * face height: naturePack_095's grass diamond sits at canvas y=187 versus the
+ * flat diamond's y=252, i.e. a 65px one-floor rise. Matching FLOOR_PX to it means
+ * a cliff block's face exactly bridges one floor, and stacked blocks (multi-floor
+ * drops) tile seamlessly with no gap or overlap between faces.
  */
-export const FLOOR_PX = 72;
+export const FLOOR_PX = 65;
 
 /** Highest floor index terrain quantizes to (matches terrainGen DEFAULT_MAX_HEIGHT). */
 export const MAX_FLOORS = 3;

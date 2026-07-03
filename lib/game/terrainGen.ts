@@ -93,6 +93,12 @@ export interface CliffTerrainRole {
 	variant: string;
 	/** Primary downhill facing (compass), or null for a pillar. */
 	facing: Direction | null;
+	/**
+	 * Deepest single drop to a lower orthogonal neighbor (in floors, >= 1). A
+	 * renderer stacks this many one-floor cliff blocks so a multi-floor drop
+	 * reads as one continuous wall down to the lowest neighbor.
+	 */
+	maxDrop: number;
 }
 
 export type TerrainRole = FlatTerrainRole | CliffTerrainRole;
@@ -378,10 +384,15 @@ export function classifyCliff(
 	if (edges === 0) {
 		return { kind: "flat" };
 	}
-	return maskToCliff(edges, lower);
+	const maxDrop = center - Math.min(...lower.map((d) => neighbors[d]));
+	return maskToCliff(edges, lower, maxDrop);
 }
 
-function maskToCliff(edges: number, lower: Direction[]): CliffTerrainRole {
+function maskToCliff(
+	edges: number,
+	lower: Direction[],
+	maxDrop: number,
+): CliffTerrainRole {
 	const count = lower.length;
 
 	if (count === 1) {
@@ -392,6 +403,7 @@ function maskToCliff(edges: number, lower: Direction[]): CliffTerrainRole {
 			base: "edge",
 			variant: `edge-${facing}`,
 			facing,
+			maxDrop,
 		};
 	}
 
@@ -402,6 +414,7 @@ function maskToCliff(edges: number, lower: Direction[]): CliffTerrainRole {
 			base: "pillar",
 			variant: "pillar",
 			facing: null,
+			maxDrop,
 		};
 	}
 
@@ -417,6 +430,7 @@ function maskToCliff(edges: number, lower: Direction[]): CliffTerrainRole {
 				base: "ridge",
 				variant: `ridge-${axis}`,
 				facing,
+				maxDrop,
 			};
 		}
 		// Adjacent pair → outer corner.
@@ -428,6 +442,7 @@ function maskToCliff(edges: number, lower: Direction[]): CliffTerrainRole {
 					base: "corner",
 					variant: `corner-${name}`,
 					facing: d1,
+					maxDrop,
 				};
 			}
 		}
@@ -441,6 +456,7 @@ function maskToCliff(edges: number, lower: Direction[]): CliffTerrainRole {
 		base: "spur",
 		variant: higher ? `spur-${higher}` : "spur",
 		facing: higher,
+		maxDrop,
 	};
 }
 
