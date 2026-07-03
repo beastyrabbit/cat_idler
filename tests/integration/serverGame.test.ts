@@ -6,7 +6,7 @@
  * upgrades, click boosting, the worker tick, and run resets.
  */
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDb, type GameDb } from "@/db/client";
@@ -1203,71 +1203,105 @@ describe("explore expeditions", () => {
 
 describe("travel trail integrity", () => {
 	it("wears every tile of a long L-route in one accelerated tick", () => {
-		const colony = ensureGlobalColony(db);
-		setResources(db, colony._id, { food: 100, water: 100 });
-		const traveler = getAliveCatsForTest(db, colony._id)[0];
+		// Fully determinise this test. Three independent sources of randomness
+		// otherwise make it flaky: (1) worldSeed defaults to Date.now(), and
+		// walkability (rivers/cliff-walls) is generated from it, so an unlucky wall
+		// across the sampled corridor fails the route; (2) the tick RNG is unseeded;
+		// (3) createStarterCats rolls cat stats off Math.random, which — with the
+		// leader director — decides whether our traveller gets pulled onto a job
+		// mid-tick instead of walking. Pin all three.
+		const realRandom = Math.random;
+		let randState = 0x1234abcd;
+		Math.random = () => {
+			randState |= 0;
+			randState = (randState + 0x6d2b79f5) | 0;
+			let t = Math.imul(randState ^ (randState >>> 15), 1 | randState);
+			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+		};
+		try {
+			const colony = ensureGlobalColony(db);
+			db.update(colonies)
+				.set({ worldSeed: 20240703 })
+				.where(eq(colonies._id, colony._id))
+				.run();
+			setTestRngSeed(db, 7);
+			setResources(db, colony._id, { food: 100, water: 100 });
+			const traveler = getAliveCatsForTest(db, colony._id)[0];
+			// Keep only the traveller. The other founders are idle cats the leader
+			// dispatches and the movement pass wanders; both consume the seeded roll
+			// chains in nanoid-id order, which is not reproducible, so leaving them in
+			// made the traveller's route flaky. With a single cat the tick is a pure
+			// function of the pinned seeds and terrain.
+			db.delete(cats)
+				.where(and(eq(cats.colonyId, colony._id), ne(cats._id, traveler._id)))
+				.run();
 
-		// Start well outside the village fence and head to a far corner that
-		// forces both an x-leg and a y-leg (an L). Clear any prior wear so the
-		// only thing that can raise pathWear is the cat physically walking.
-		const start = { x: 12, y: 6 };
-		const dest = { x: 20, y: 14 };
-		db.update(worldTiles)
-			.set({ pathWear: 0 })
-			.where(eq(worldTiles.colonyId, colony._id))
-			.run();
-		db.update(cats)
-			.set({
-				position: { map: "world", ...start },
-				destination: { map: "world", ...dest },
-				activity: "traveling",
-				currentTask: null,
-				carrying: null,
-			})
-			.where(eq(cats._id, traveler._id))
-			.run();
+			// Start well outside the village fence and head to a far corner that
+			// forces both an x-leg and a y-leg (an L). Clear any prior wear so the
+			// only thing that can raise pathWear is the cat physically walking.
+			const start = { x: 12, y: 6 };
+			const dest = { x: 20, y: 14 };
+			db.update(worldTiles)
+				.set({ pathWear: 0 })
+				.where(eq(worldTiles.colonyId, colony._id))
+				.run();
+			db.update(cats)
+				.set({
+					position: { map: "world", ...start },
+					destination: { map: "world", ...dest },
+					activity: "traveling",
+					currentTask: null,
+					carrying: null,
+				})
+				.where(eq(cats._id, traveler._id))
+				.run();
 
-		// A huge movement budget in a single tick: pre-fix this teleports the
-		// cat along one axis only, leaving the rest of the route untrodden.
-		db.update(colonies)
-			.set({ testTimeScale: 500 })
-			.where(eq(colonies._id, colony._id))
-			.run();
-		advanceTime(db, 5);
-		workerTick(db);
+			// A huge movement budget in a single tick: pre-fix this teleports the
+			// cat along one axis only, leaving the rest of the route untrodden.
+			db.update(colonies)
+				.set({ testTimeScale: 500 })
+				.where(eq(colonies._id, colony._id))
+				.run();
+			advanceTime(db, 5);
+			workerTick(db);
 
-		const wearAt = (x: number, y: number) =>
-			db
-				.select()
-				.from(worldTiles)
-				.where(
-					and(
-						eq(worldTiles.colonyId, colony._id),
-						eq(worldTiles.x, x),
-						eq(worldTiles.y, y),
-					),
-				)
-				.get()!.pathWear;
+			const wearAt = (x: number, y: number) =>
+				db
+					.select()
+					.from(worldTiles)
+					.where(
+						and(
+							eq(worldTiles.colonyId, colony._id),
+							eq(worldTiles.x, x),
+							eq(worldTiles.y, y),
+						),
+					)
+					.get()!.pathWear;
 
-		// Reveal threshold is >62; a trodden route tile lands at >=64. Sample
-		// intermediate tiles on BOTH legs, not just the endpoints.
-		const REVEAL = 62;
-		for (const [x, y] of [
-			[14, 6], // x-leg, mid
-			[18, 6], // x-leg, near corner
-			[20, 6], // the corner
-			[20, 9], // y-leg, mid
-			[20, 12], // y-leg, near end
-			[20, 14], // destination
-		] as const) {
-			expect(wearAt(x, y)).toBeGreaterThan(REVEAL);
+			// The whole journey happened this tick, so the cat is at the far corner.
+			const walked = getAliveCatsForTest(db, colony._id).find(
+				(cat) => cat._id === traveler._id,
+			)!;
+			expect(walked.position).toMatchObject({ map: "world", ...dest });
+
+			// ...treading the tiles along the way, not just the endpoints. Reveal
+			// threshold is >62; a trodden route tile lands at >=64. Sample tiles on
+			// BOTH legs of the L.
+			const REVEAL = 62;
+			for (const [x, y] of [
+				[14, 6], // x-leg, mid
+				[18, 6], // x-leg, near corner
+				[20, 6], // the corner
+				[20, 9], // y-leg, mid
+				[20, 12], // y-leg, near end
+				[20, 14], // destination
+			] as const) {
+				expect(wearAt(x, y)).toBeGreaterThan(REVEAL);
+			}
+		} finally {
+			Math.random = realRandom;
 		}
-
-		// The whole journey happened this tick, so the cat is at the far corner.
-		const walked = getAliveCatsForTest(db, colony._id).find(
-			(cat) => cat._id === traveler._id,
-		)!;
-		expect(walked.position).toMatchObject({ map: "world", ...dest });
 	});
 });
 
