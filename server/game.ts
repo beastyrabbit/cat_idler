@@ -387,13 +387,25 @@ function starterCatSpot(index: number): { x: number; y: number } {
 }
 
 /**
- * Founding age for a starter cat, in game-hours. Spread across the young/adult
- * band (12-45h) so the colony opens with a working-age population — no kittens
- * that can't work, and none old enough to drop dead in the first hours. Elders,
- * births and deaths all emerge from the simulation over time.
+ * Founding age for a starter cat, in game-hours. Spread *evenly* across the
+ * young/adult band (8-44h) so the colony opens with a working-age population —
+ * no kittens that can't work, and none old enough to drop dead in the first
+ * hours. Elders, births and deaths all emerge from the simulation over time.
+ *
+ * The even spread is load-bearing for survival: cats age on a shared clock and
+ * face a hard old-age mortality cliff at {@link getDeathChance}'s 48h threshold,
+ * so a roster bunched into a few ages would all cross that cliff together and
+ * wipe the colony in a single die-off wave. Fanning the founders across the
+ * whole band staggers their deaths into a steady trickle the birth rate can
+ * replace. (The previous `12 + (i*17)%34` collapsed to just two ages — 12 and
+ * 29 — because 17*2 = 34, re-creating exactly the cohort cliff it meant to avoid.)
  */
+const STARTER_AGE_MIN_HOURS = 8;
+const STARTER_AGE_MAX_HOURS = 44;
 function starterAgeHours(index: number): number {
-	return 12 + ((index * 17) % 34);
+	const span = STARTER_AGE_MAX_HOURS - STARTER_AGE_MIN_HOURS;
+	const denom = Math.max(1, STARTER_CAT_COUNT - 1);
+	return STARTER_AGE_MIN_HOURS + Math.round((index / denom) * span);
 }
 
 function createStarterCats(db: GameDb, colonyId: string) {
@@ -956,19 +968,33 @@ function ensureShrineAndWorld(db: GameDb, colonyId: string) {
 		})
 		.run();
 
-	// Founding village around the shrine: dens housing the starter cats
-	// (2 per den) plus a stocked general storage, all pre-built. Fixed
-	// rolls keep the layout deterministic while looking organic.
+	// Founding village around the shrine: five dens plus a stocked general
+	// storage, all pre-built. Two of the dens are raised longhouses (level 2,
+	// 4 beds); the other three are ordinary dens (2 beds). With the shrine's 4
+	// beds that shelters 3*2 + 2*4 + 4 = 18 of the 20 founders. Fixed rolls keep
+	// the layout deterministic while looking organic.
+	//
+	// That headroom is load-bearing for survival: conception is blocked while
+	// population >= housing capacity (see colonyCanBreed), so when the founding
+	// roster (20) sat far above the old capacity (14) the colony bred nothing,
+	// the founders aged out of the 48h old-age cliff with zero replacements, and
+	// it reliably collapsed. Sitting just under capacity lets the colony start
+	// breeding the moment the first elder dies, while the small remaining deficit
+	// keeps an unaided early colony fragile by design (~10% collapse over a long
+	// horizon) without dooming it. The extra beds come from den *levels* rather
+	// than more den *buildings* so the founding footprint — and the fence ring /
+	// walkability grid derived from the building count — is unchanged.
 	const starterBuildings: Array<{
 		type: "den" | "food_storage";
 		roll: number;
+		level: number;
 	}> = [
-		{ type: "den", roll: 0.05 },
-		{ type: "den", roll: 0.3 },
-		{ type: "den", roll: 0.55 },
-		{ type: "den", roll: 0.8 },
-		{ type: "den", roll: 0.95 },
-		{ type: "food_storage", roll: 0.4 },
+		{ type: "den", roll: 0.05, level: 2 },
+		{ type: "den", roll: 0.3, level: 1 },
+		{ type: "den", roll: 0.55, level: 2 },
+		{ type: "den", roll: 0.8, level: 1 },
+		{ type: "den", roll: 0.95, level: 1 },
+		{ type: "food_storage", roll: 0.4, level: 1 },
 	];
 
 	const occupied: Array<{ x: number; y: number }> = [];
@@ -983,7 +1009,7 @@ function ensureShrineAndWorld(db: GameDb, colonyId: string) {
 				_id: nanoid(),
 				colonyId,
 				type: starter.type,
-				level: 1,
+				level: starter.level,
 				position: site,
 				constructionProgress: 100,
 			})
@@ -1225,6 +1251,22 @@ function resetGlobalRun(db: GameDb, colony: ColonyRow, reason: string) {
 	db.delete(jobs).where(eq(jobs.colonyId, colony._id)).run();
 	// A collapse also scatters any in-progress raid and resets threat pressure.
 	db.delete(raiders).where(eq(raiders.colonyId, colony._id)).run();
+
+	// Half-finished construction dies with the run: the jobs driving it are
+	// gone (above), so any building still under construction would otherwise
+	// linger as an unbuildable orphan. Completed buildings — and the shrine —
+	// survive as the standing village. Crucially, the WORLD is untouched here:
+	// the colony row keeps its id and worldSeed, and worldTiles (terrain,
+	// explored pathWear, revealed fog, depletion) are never deleted, so a new
+	// run continues on exactly the same map. See serverWorldPersistence tests.
+	db.delete(buildings)
+		.where(
+			and(
+				eq(buildings.colonyId, colony._id),
+				lt(buildings.constructionProgress, 100),
+			),
+		)
+		.run();
 
 	// A collapse dissolves any open polls — the new run elects fresh.
 	db.update(elections)

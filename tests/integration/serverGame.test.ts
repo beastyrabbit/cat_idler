@@ -81,7 +81,7 @@ describe("bootstrap", () => {
 		expect(names.size).toBe(20);
 	});
 
-	it("founds a starter village: shrine, dens housing 10, and stocked storage", () => {
+	it("founds a starter village: shrine, dens housing 14 beds, and stocked storage", () => {
 		ensureGlobalColony(db);
 		const dashboard = getGlobalDashboard(db)!;
 
@@ -91,7 +91,7 @@ describe("bootstrap", () => {
 		}
 
 		expect(byType.shrine).toBe(1);
-		expect(byType.den).toBe(5); // 2 cats per den -> housing for 10
+		expect(byType.den).toBe(5); // 3 level-1 (2 beds) + 2 level-2 (4 beds) = 14 den beds
 		expect(byType.food_storage).toBe(1);
 
 		// All starter buildings are finished and adjacent to the shrine
@@ -108,7 +108,7 @@ describe("bootstrap", () => {
 		const second = ensureGlobalState(db);
 		expect(first).toBe(second);
 		expect(getGlobalDashboard(db)!.cats).toHaveLength(20);
-		expect(getGlobalDashboard(db)!.buildings).toHaveLength(7);
+		expect(getGlobalDashboard(db)!.buildings).toHaveLength(7); // shrine + 5 dens + storage
 	});
 });
 
@@ -1392,10 +1392,10 @@ describe("visible construction", () => {
 		ensureGlobalColony(db);
 		const dashboard = getGlobalDashboard(db)!;
 
-		// 20 cats vs shrine(4) + 5 dens (2 each) = 14 shelter
+		// 20 cats vs shrine(4) + 5 dens (14 beds: 3 L1 + 2 L2) = 18 shelter
 		expect(dashboard.housing.population).toBe(20);
-		expect(dashboard.housing.capacity).toBe(14);
-		expect(dashboard.housing.pressure).toBeCloseTo(20 / 14, 6);
+		expect(dashboard.housing.capacity).toBe(18);
+		expect(dashboard.housing.pressure).toBeCloseTo(20 / 18, 6);
 		expect(dashboard.housing.villageLevel).toBe(2);
 	});
 
