@@ -26,6 +26,13 @@ import {
 } from "@/components/map/constants";
 import { ringSprites } from "@/components/map/TileLayer";
 import { tileToIso, zIndexFor } from "@/lib/game/isoProjection";
+import {
+	type FenceSegment,
+	fencePerimeter,
+	fromTiles,
+	gatePlacement,
+	type Pos,
+} from "@/lib/game/villageArea";
 import type { WorldTile } from "@/types/game";
 
 const GRASS = TILE_SPRITES.field.src;
@@ -244,6 +251,89 @@ function waterSeamTiles(): Placement[] {
 	return tiles;
 }
 
+// --- Organic village (task #31 stage 1) -------------------------------------
+
+/** Tile just outside a claimed tile across the given edge — where the rail sits. */
+const OUTSIDE_OF: Record<FenceSegment["side"], { dx: number; dy: number }> = {
+	N: { dx: 0, dy: -1 },
+	S: { dx: 0, dy: 1 },
+	E: { dx: 1, dy: 0 },
+	W: { dx: -1, dy: 0 },
+};
+
+/** Render an organic claimed shape: cleared grass, its auto-generated fence
+ * (FENCE_X on N/S edges, FENCE_Y on E/W), and the gate segment. Rails are seated
+ * on the OUTSIDE-neighbour tile centred (ox/oy 0), the exact seating the live
+ * renderer's `ringSprites` uses for a straight run, so the fence hugs the shape
+ * on the ground instead of floating. */
+function organicVillageTiles(tiles: Pos[]): Placement[] {
+	const area = fromTiles(tiles);
+	const gate = gatePlacement(area);
+	const out: Placement[] = [];
+	// Cleared ground under every claimed tile.
+	for (const t of tiles) {
+		out.push({ x: t.x, y: t.y, src: GRASS });
+	}
+	// Fence rails on every boundary edge; the gate segment swaps in the gate.
+	for (const seg of fencePerimeter(area, gate)) {
+		const o = OUTSIDE_OF[seg.side];
+		const src = seg.gate
+			? GATE_SPRITE
+			: seg.axis === "x"
+				? FENCE_X_SPRITE
+				: FENCE_Y_SPRITE;
+		out.push({ x: seg.x + o.dx, y: seg.y + o.dy, src });
+	}
+	return out;
+}
+
+const ORGANIC_SHAPES: Array<{ title: string; tiles: Pos[] }> = [
+	{
+		title: "L-shape + gate",
+		tiles: [
+			{ x: 0, y: 0 },
+			{ x: 1, y: 0 },
+			{ x: 0, y: 1 },
+			{ x: 1, y: 1 },
+			{ x: 2, y: 1 },
+			{ x: 0, y: 2 },
+			{ x: 1, y: 2 },
+			{ x: 2, y: 2 },
+		],
+	},
+	{
+		title: "T-shape + gate",
+		tiles: [
+			{ x: 0, y: 0 },
+			{ x: 1, y: 0 },
+			{ x: 2, y: 0 },
+			{ x: 1, y: 1 },
+			{ x: 1, y: 2 },
+		],
+	},
+	{
+		title: "diagonal blob + gate",
+		tiles: [
+			{ x: 0, y: 0 },
+			{ x: 1, y: 0 },
+			{ x: 1, y: 1 },
+			{ x: 2, y: 1 },
+			{ x: 2, y: 2 },
+			{ x: 3, y: 2 },
+			{ x: 3, y: 1 },
+		],
+	},
+	{
+		title: "grown clearing (4x3 + spur)",
+		tiles: [
+			...[0, 1, 2, 3].flatMap((x) => [0, 1, 2].map((y) => ({ x, y }))),
+			{ x: 4, y: 1 },
+			{ x: 1, y: 3 },
+			{ x: 2, y: 3 },
+		],
+	},
+];
+
 /** (e) Chopped stump beside standing forest. */
 function stumpTiles(): Placement[] {
 	const anchor = { x: 1, y: 1 };
@@ -275,6 +365,32 @@ export default function FitPage() {
 			<section style={{ marginTop: 24 }}>
 				<h2 style={{ fontSize: 15 }}>Fence ring — 4 corners + gate</h2>
 				<Board tiles={fenceRingTiles()} width={420} />
+			</section>
+
+			<section style={{ marginTop: 24 }}>
+				<h2 style={{ fontSize: 15 }}>
+					Organic village — auto-fenced irregular shapes + gate
+				</h2>
+				<p style={{ fontSize: 12, color: "#9fb08c", marginTop: 0 }}>
+					Fence derived from the claimed-tile set via{" "}
+					<code>villageArea.fencePerimeter</code> (FENCE_X on N/S edges, FENCE_Y
+					on E/W), gate from <code>gatePlacement</code>. The perimeter must be a
+					closed loop that hugs the actual shape with exactly one gate.
+				</p>
+				<div
+					style={{
+						display: "grid",
+						gridTemplateColumns: "repeat(auto-fill, 300px)",
+						gap: 16,
+						marginTop: 8,
+					}}
+				>
+					{ORGANIC_SHAPES.map((s) => (
+						<Case key={s.title} title={s.title}>
+							<Board tiles={organicVillageTiles(s.tiles)} width={300} />
+						</Case>
+					))}
+				</div>
 			</section>
 
 			<section style={{ marginTop: 24 }}>
