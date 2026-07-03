@@ -36,10 +36,10 @@
  * demographics or raids, which is exactly what these targets govern.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, type GameDb } from "@/db/client";
-import { buildings, cats, colonies, runHistory } from "@/db/schema";
+import { buildings, cats, colonies, events, runHistory } from "@/db/schema";
 import {
 	advanceTime,
 	ensureGlobalColony,
@@ -95,6 +95,7 @@ const FED_STORE = 400;
 interface RunResult {
 	collapsed: boolean;
 	raidWipeouts: number;
+	raidsSeen: number;
 }
 
 function bootstrapEarly(seed: number): GameDb {
@@ -170,9 +171,14 @@ function bootstrapMedium(seed: number): GameDb {
 	return db;
 }
 
-function simulate(db: GameDb): RunResult {
+function simulate(db: GameDb, ageForRaids: boolean): RunResult {
 	const stepSec = Math.round(STEP_GAME_HOURS * 3600);
 	const steps = Math.round(HORIZON_GAME_HOURS / STEP_GAME_HOURS);
+	const colonyId = db
+		.select()
+		.from(colonies)
+		.where(eq(colonies.isGlobal, true))
+		.get()!._id;
 	for (let s = 0; s < steps; s++) {
 		const colony = db
 			.select()
@@ -180,10 +186,24 @@ function simulate(db: GameDb): RunResult {
 			.where(eq(colonies.isGlobal, true))
 			.get();
 		if (!colony) throw new Error("no colony");
-		// Keep the larder full so the economy is never the cause of death.
+		// Keep the larder full so the economy is never the cause of death, and pin
+		// runStartedAt so raid timing is deterministic. The raid director's
+		// colonyAgeSec is measured from wall-clock (now - runStartedAt), which a
+		// fast test loop never advances — so we drive it explicitly. For the
+		// established MEDIUM village we recede runStartedAt in lockstep with
+		// advanceTime so colonyAgeSec climbs past the 8h grace and raids actually
+		// fire (a matured settlement should be raided). For the EARLY colony we hold
+		// runStartedAt at `now` so colonyAgeSec stays ~0, firmly inside grace: a
+		// fresh unaided colony is young and rarely raided, so its rate reflects
+		// demographic fragility rather than raids inflated by the fed larder's loot.
+		// Pinning both (rather than leaving runStartedAt at bootstrap) also removes
+		// the wall-clock drift that made the result vary with suite load.
 		db.update(colonies)
 			.set({
 				resources: { ...colony.resources, food: FED_STORE, water: FED_STORE },
+				runStartedAt: ageForRaids
+					? (colony.runStartedAt ?? colony.createdAt) - stepSec * 1000
+					: Date.now(),
 			})
 			.where(eq(colonies._id, colony._id))
 			.run();
@@ -191,9 +211,15 @@ function simulate(db: GameDb): RunResult {
 		workerTick(db);
 	}
 	const history = db.select().from(runHistory).all();
+	const raidsSeen = db
+		.select()
+		.from(events)
+		.where(and(eq(events.colonyId, colonyId), eq(events.type, "raid_incoming")))
+		.all().length;
 	return {
 		collapsed: history.length > 0,
 		raidWipeouts: history.filter((h) => h.reason === "raid-wipeout").length,
+		raidsSeen,
 	};
 }
 
@@ -202,15 +228,17 @@ function measure(scenario: Scenario, n: number) {
 	rngState = 0x2545f491;
 	let collapsed = 0;
 	let raidWipeouts = 0;
+	let raidsSeen = 0;
 	for (let i = 0; i < n; i++) {
 		const seed = 1000 + i * 7;
 		const db =
 			scenario === "early" ? bootstrapEarly(seed) : bootstrapMedium(seed);
-		const r = simulate(db);
+		const r = simulate(db, scenario === "medium");
 		if (r.collapsed) collapsed++;
 		raidWipeouts += r.raidWipeouts;
+		raidsSeen += r.raidsSeen;
 	}
-	return { collapsed, raidWipeouts, rate: collapsed / n };
+	return { collapsed, raidWipeouts, raidsSeen, rate: collapsed / n };
 }
 
 describe("survival balance (statistical)", () => {
@@ -225,8 +253,11 @@ describe("survival balance (statistical)", () => {
 		expect(rate).toBeLessThanOrEqual(0.3);
 	}, 120_000);
 
-	it("a medium village is robust across the same horizon, and raids never finish it", () => {
-		const { rate, raidWipeouts } = measure("medium", N);
+	it("a medium village survives many raids across the horizon, which never finish it", () => {
+		const { rate, raidWipeouts, raidsSeen } = measure("medium", N);
+		// The village must actually be raided for this to mean anything — the
+		// harness ages runStartedAt so raids clear the grace window and fire.
+		expect(raidsSeen).toBeGreaterThan(0);
 		// Design target ~1%. A matured village should almost never collapse...
 		expect(rate).toBeLessThanOrEqual(0.05);
 		// ...and raids specifically must never be the finishing blow on their own.
