@@ -193,14 +193,30 @@ export async function POST(request: Request) {
 		);
 	}
 
-	// Per-session spam brake on identity-bearing actions.
-	if (IDENTITY_ACTIONS.has(action) && typeof body.sessionId === "string") {
-		if (!rateLimiter.check(body.sessionId)) {
-			return NextResponse.json(
-				{ ok: false, message: "Too many actions — slow down." },
-				{ status: 429 },
-			);
+	// Spam brake. The per-session budget only applies to requests that
+	// PROVE the session via a valid signature — otherwise an attacker
+	// could drain a victim's budget with garbage, or rotate made-up ids
+	// to escape their own. Everything unproven (presence, ensure, bad
+	// sigs) shares a per-IP bucket instead.
+	const clientIp =
+		request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+	let limiterKey = `ip:${clientIp}`;
+	if (IDENTITY_ACTIONS.has(action)) {
+		const sid = body.sessionId;
+		const sig = body.sig;
+		if (
+			typeof sid === "string" &&
+			typeof sig === "string" &&
+			verifySession(sid, sig, getSessionSecret())
+		) {
+			limiterKey = `s:${sid}`;
 		}
+	}
+	if (!rateLimiter.check(limiterKey)) {
+		return NextResponse.json(
+			{ ok: false, message: "Too many actions — slow down." },
+			{ status: 429 },
+		);
 	}
 
 	try {

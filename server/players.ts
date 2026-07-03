@@ -23,6 +23,13 @@ export function getSessionSecret(): string {
 	if (fromEnv && fromEnv.length > 0) {
 		return fromEnv;
 	}
+	// Fail closed outside development: a known fallback secret would let
+	// anyone sign their own sessions.
+	if (process.env.NODE_ENV === "production") {
+		throw new Error(
+			"SESSION_HMAC_SECRET must be set in production — refusing to start with the development fallback.",
+		);
+	}
 	if (!warnedAboutSessionSecret) {
 		console.warn(
 			"[identity] SESSION_HMAC_SECRET is not set — using an insecure development fallback. Set SESSION_HMAC_SECRET before deploying.",
