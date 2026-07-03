@@ -102,32 +102,42 @@ function isExplored(
 	return Math.sqrt(dx * dx + dy * dy) < ringRadius + VILLAGE_VISION_MARGIN;
 }
 
-/** Deepest fog shade — used for far tiles and ungenerated chunks. */
+/** Deepest fog shade — used for ungenerated (out-of-window) chunks only. */
 const SOLID_FOG = FOG_SHADES[FOG_SHADES.length - 1];
 
 /**
- * Fog color for every unexplored tile in a chunk, keyed by tile id.
- *
- * Each tile is shaded by its Chebyshev distance to the nearest explored tile
- * *within this chunk* (plus the village vision the anchor grants), so the fog
- * fades from a light frontier hug into solid unknown. Cross-chunk neighbors
- * are not consulted, so seams between chunks are approximate — acceptable for
- * a soft fog effect. Explored tiles are omitted (they render terrain).
+ * Brightness an unexplored tile's terrain is dimmed to, by distance (in tiles)
+ * to the nearest explored tile. Index 0 hugs the frontier (a light haze over
+ * real terrain); each step darkens toward near-black deep out. Unexplored land
+ * therefore reads as "the land, unlit" — a dim silhouette that keeps its shape —
+ * instead of a flat dark diamond that looks like a missing tile.
  */
-function computeFogShades(
+const FOG_BRIGHTNESS = [0.55, 0.37, 0.24, 0.14];
+
+/**
+ * Fog brightness for every unexplored tile in a chunk, keyed by tile id.
+ *
+ * Each tile is dimmed by its Chebyshev distance to the nearest explored tile
+ * *within this chunk* (plus the village vision the anchor grants), so the fog
+ * fades from a light frontier hug into near-solid unknown. Cross-chunk
+ * neighbors are not consulted, so seams between chunks are approximate —
+ * acceptable for a soft fog effect. Explored tiles are omitted (they render lit
+ * terrain, dim = 1).
+ */
+function computeFogDim(
 	tiles: WorldTile[],
 	anchor: { x: number; y: number },
 	ringRadius: number,
-): Map<string, string> {
+): Map<string, number> {
 	const explored = tiles.filter((tile) => isExplored(tile, anchor, ringRadius));
-	const shades = new Map<string, string>();
+	const dims = new Map<string, number>();
 
 	for (const tile of tiles) {
 		if (isExplored(tile, anchor, ringRadius)) {
 			continue;
 		}
 		if (explored.length === 0) {
-			shades.set(tile._id, SOLID_FOG);
+			dims.set(tile._id, FOG_BRIGHTNESS[FOG_BRIGHTNESS.length - 1]);
 			continue;
 		}
 		let nearest = Number.POSITIVE_INFINITY;
@@ -140,11 +150,11 @@ function computeFogShades(
 				}
 			}
 		}
-		const idx = Math.min(nearest - 1, FOG_SHADES.length - 1);
-		shades.set(tile._id, FOG_SHADES[idx]);
+		const idx = Math.min(nearest - 1, FOG_BRIGHTNESS.length - 1);
+		dims.set(tile._id, FOG_BRIGHTNESS[idx]);
 	}
 
-	return shades;
+	return dims;
 }
 
 function hasWater(tile: WorldTile): boolean {
@@ -271,15 +281,15 @@ const IsoTile = memo(function IsoTile({
 	anchor,
 	ringRadius,
 	showInfo,
-	fogShade,
+	fogDim,
 	roadSprite,
 }: {
 	tile: WorldTile;
 	anchor: { x: number; y: number };
 	ringRadius: number;
 	showInfo: boolean;
-	/** Precomputed fog color for unexplored tiles (see computeFogShades). */
-	fogShade: string;
+	/** Brightness (0..1) an unexplored tile's terrain is dimmed to; 1 when explored. */
+	fogDim: number;
 	/** Oriented road sprite when this tile is a road, else undefined. */
 	roadSprite?: { src: string; filter?: string };
 }) {
@@ -287,47 +297,33 @@ const IsoTile = memo(function IsoTile({
 	const explored = isExplored(tile, anchor, ringRadius);
 	const tileZ = zIndexFor(tile.x, tile.y, "tile", ISO);
 	const objectZ = zIndexFor(tile.x, tile.y, "object", ISO);
+	const dim = explored ? 1 : fogDim;
 
-	if (!explored) {
-		// Fog fades from a light frontier hug into the page backdrop, so
-		// unexplored land reads as "beyond the known world" rather than a
-		// hard patch. Shade is distance-graded per chunk (computeFogShades).
-		return (
-			<div
-				className="absolute"
-				style={{
-					left,
-					top,
-					width: ISO.tileWidth,
-					height: ISO.tileHeight,
-					zIndex: tileZ,
-					clipPath: DIAMOND_CLIP,
-					background: fogShade,
-				}}
-			/>
-		);
-	}
-
-	// Roads (built + heavily-trodden) come in pre-oriented from the chunk (see
-	// computeRoadSprites) so straights, corners and crossings line up with the
-	// road network. Water wins over everything; inside the fence is bare grass;
-	// a felled forest tile shows a stump instead of plain grass.
+	// Water wins over everything. Explored ground then layers on roads, the
+	// cleared village grass, and felled-forest stumps; unexplored ground shows
+	// only its bare terrain, dimmed by `dim` (the land, unlit) so fog never
+	// reads as a missing tile.
 	const isWater = tile.type === "river" || tile.overlayFeature === "river";
-	const clearing = isVillageClearing(tile, anchor, ringRadius);
+	const clearing = explored && isVillageClearing(tile, anchor, ringRadius);
 	const sprite: { src: string; filter?: string; base?: string } | undefined =
 		isWater
 			? { src: WATER_SPRITE }
-			: roadSprite
+			: explored && roadSprite
 				? roadSprite
 				: clearing
 					? TILE_SPRITES.field
-					: isChoppedStumpTile(tile)
+					: explored && isChoppedStumpTile(tile)
 						? { src: STUMP_SPRITE, base: TILE_SPRITES.field.src }
 						: TILE_SPRITES[tile.type];
 	const title = `${tile.type.replaceAll("_", " ")} (${tile.x}, ${tile.y})`;
 	// Standalone tree sprites declare a grass `base` underlay; water/road/path
 	// sprites carry their own ground and have none.
 	const baseSprite = sprite?.base;
+	// Compose the sprite's own biome tint with the fog dimming (CSS filters
+	// multiply, so a dim brightness stacks onto any existing tint).
+	const dimFilter = dim < 1 ? `brightness(${dim})` : undefined;
+	const spriteFilter =
+		[sprite?.filter, dimFilter].filter(Boolean).join(" ") || undefined;
 
 	return (
 		<>
@@ -342,7 +338,8 @@ const IsoTile = memo(function IsoTile({
 						height: ISO.tileHeight,
 						zIndex: tileZ,
 						clipPath: DIAMOND_CLIP,
-						background: "#8aa37b",
+						// Unknown tile type: a flat diamond. Dim it too when fogged.
+						background: dim < 1 ? SOLID_FOG : "#8aa37b",
 					}}
 				/>
 			) : (
@@ -359,6 +356,7 @@ const IsoTile = memo(function IsoTile({
 								width: ISO.tileWidth,
 								height: ISO.imageHeight,
 								zIndex: tileZ,
+								filter: dimFilter,
 							}}
 						/>
 					)}
@@ -374,32 +372,34 @@ const IsoTile = memo(function IsoTile({
 							width: ISO.tileWidth,
 							height: ISO.imageHeight,
 							zIndex: tileZ,
-							filter: sprite.filter,
+							filter: spriteFilter,
 						}}
 					/>
 				</>
 			)}
 
 			{/* Fence ring (with a south gate) around the founding village */}
-			{ringSprites(tile, anchor, ringRadius).map((fence) => (
-				<img
-					key={fence.src}
-					src={fence.src}
-					alt=""
-					draggable={false}
-					className="pointer-events-none absolute select-none"
-					style={{
-						left: left + fence.ox,
-						top: top - ISO.surfaceOffset + fence.oy,
-						width: ISO.tileWidth,
-						height: ISO.imageHeight,
-						zIndex: objectZ,
-					}}
-				/>
-			))}
+			{explored &&
+				ringSprites(tile, anchor, ringRadius).map((fence) => (
+					<img
+						key={fence.src}
+						src={fence.src}
+						alt=""
+						draggable={false}
+						className="pointer-events-none absolute select-none"
+						style={{
+							left: left + fence.ox,
+							top: top - ISO.surfaceOffset + fence.oy,
+							width: ISO.tileWidth,
+							height: ISO.imageHeight,
+							zIndex: objectZ,
+						}}
+					/>
+				))}
 
 			{/* Only notably rich tiles get a marker — keeps the map readable */}
-			{showInfo &&
+			{explored &&
+				showInfo &&
 				(tile.resources.food >= RICH_FOOD ||
 					tile.resources.herbs >= RICH_HERBS) && (
 					<div
@@ -432,8 +432,8 @@ const ChunkView = memo(function ChunkView({
 	showInfo: boolean;
 }) {
 	const tiles = useChunkTiles(chunkX, chunkY);
-	const fogShades = useMemo(
-		() => (tiles ? computeFogShades(tiles, anchor, ringRadius) : null),
+	const fogDims = useMemo(
+		() => (tiles ? computeFogDim(tiles, anchor, ringRadius) : null),
 		[tiles, anchor, ringRadius],
 	);
 	const roadSprites = useMemo(
@@ -478,7 +478,7 @@ const ChunkView = memo(function ChunkView({
 					anchor={anchor}
 					ringRadius={ringRadius}
 					showInfo={showInfo}
-					fogShade={fogShades?.get(tile._id) ?? SOLID_FOG}
+					fogDim={fogDims?.get(tile._id) ?? 1}
 					roadSprite={roadSprites?.get(tile._id)}
 				/>
 			))}
