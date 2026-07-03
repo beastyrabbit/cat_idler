@@ -41,6 +41,8 @@
 		"lucide-react": "^0.542.0",
 		"nanoid": "^5.1.11",
 		"next": "^16.0.10",
+		"pixi-viewport": "^6.0.3",
+		"pixi.js": "^8.19.0",
 		"react": "^19.2.3",
 		"react-dom": "^19.2.3",
 		"tailwind-merge": "^3.3.1"
