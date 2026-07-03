@@ -6,7 +6,7 @@
  * upgrades, click boosting, the worker tick, and run resets.
  */
 
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, gte, isNull, lte, ne } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDb, type GameDb } from "@/db/client";
@@ -44,6 +44,7 @@ import {
 	workerTick,
 } from "@/server/game";
 import { upsertPlayer } from "@/server/players";
+import { initializeWorldMap } from "@/server/worldMap";
 import { createZone, removeZone } from "@/server/zones";
 
 const SESSION = { sessionId: "session_test_1", nickname: "Tester" };
@@ -1218,12 +1219,18 @@ describe("travel trail integrity", () => {
 	] as const;
 
 	/**
-	 * Run the accelerated long-walk on a fresh DB and report the outcome. All the
-	 * *reproducible* randomness is pinned: worldSeed (walkability is generated from
-	 * it — an unlucky wall across the corridor would fail the route), the tick RNG,
-	 * and Math.random (cat stats feed the leader's dispatch decisions). The roster
-	 * is reduced to the single traveller so no other cat's seeded movement/wander
-	 * rolls interleave.
+	 * Run the accelerated long-walk on a fresh DB and report the outcome. Every
+	 * source of run-to-run variance is pinned so the trail is deterministic:
+	 *   - the terrain is *regenerated* from a fixed worldSeed. `ensureGlobalColony`
+	 *     seeds the world from `Date.now()`, so merely setting `worldSeed`
+	 *     afterwards leaves the already-generated tiles alone — an unlucky wall-clock
+	 *     seed once dropped a river across the corridor, forcing a (correct)
+	 *     contiguous detour that missed the sampled L. Deleting and re-seeding the
+	 *     tiles from 20240703 pins a clear corridor.
+	 *   - the tick RNG (`setTestRngSeed`) and `Math.random` (cat stats feed the
+	 *     leader's dispatch) are fixed.
+	 *   - the roster is reduced to the single traveller so no other cat's seeded
+	 *     movement/wander rolls interleave.
 	 */
 	function runWalk() {
 		const realRandom = Math.random;
@@ -1242,6 +1249,32 @@ describe("travel trail integrity", () => {
 				.update(colonies)
 				.set({ worldSeed: 20240703 })
 				.where(eq(colonies._id, colony._id))
+				.run();
+			// Re-generate the world from the pinned seed (the colony was seeded from
+			// wall-clock time on creation), so the corridor terrain is deterministic.
+			wdb.delete(worldTiles).where(eq(worldTiles.colonyId, colony._id)).run();
+			initializeWorldMap(wdb, colony._id);
+			// Flatten a box around the L to plain open ground: no water to block it,
+			// no forest to make skirting the trees cheaper, no pre-worn overlay to
+			// pull the route sideways. On uniform open ground the cost search returns
+			// the x-before-y L, so the trail runs exactly along the sampled tiles.
+			wdb
+				.update(worldTiles)
+				.set({
+					type: "field",
+					overlayFeature: null,
+					pathWear: 0,
+					resources: { food: 0, herbs: 0, water: 0 },
+				})
+				.where(
+					and(
+						eq(worldTiles.colonyId, colony._id),
+						gte(worldTiles.x, 11),
+						lte(worldTiles.x, 21),
+						gte(worldTiles.y, 5),
+						lte(worldTiles.y, 15),
+					),
+				)
 				.run();
 			setTestRngSeed(wdb, 7);
 			setResources(wdb, colony._id, { food: 100, water: 100 });
@@ -1300,18 +1333,12 @@ describe("travel trail integrity", () => {
 	}
 
 	it("wears every tile of a long L-route in one accelerated tick", () => {
-		// The cat reaching `dest` is deterministic and the strong claim: a single
-		// accelerated tick spends its whole budget rather than stopping one axis in.
-		// The per-tile TRAIL, however, depends on findPath returning a tile-by-tile
-		// route; it *intermittently* returns a straight jump instead (a walkGrid/
-		// pathfinding nondeterminism — a real occasional cat-teleport, tracked
-		// separately in the pathfinding rework). Retry a few fresh attempts so this
-		// test reflects the movement/pathWear behaviour it means to check; a
-		// PERSISTENT teleport (every attempt misses tiles) still fails.
-		let r = runWalk();
-		for (let i = 0; i < 5 && r.wears.some((w) => w <= REVEAL); i++) {
-			r = runWalk();
-		}
+		// A single accelerated tick spends its whole movement budget (the cat
+		// reaches `dest`) and findPath returns a strict tile-by-tile route, so
+		// every sampled tile along the corridor is trodden — not just the endpoints.
+		// With the terrain pinned to a clear corridor this is deterministic; no
+		// retry loop is needed now that the old teleport/flake is gone.
+		const r = runWalk();
 		expect(r.position).toMatchObject({ map: "world", ...dest });
 		for (const w of r.wears) {
 			expect(w).toBeGreaterThan(REVEAL);

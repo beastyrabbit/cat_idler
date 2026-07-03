@@ -3,19 +3,23 @@
  *
  * Movement used to be a straight one-axis-at-a-time L-walk with a single
  * hard-coded "go through the south gate" waypoint. That special case is gone:
- * walkability is now a cost model (water blocks, the fence blocks everywhere
- * but the gate, roads are cheap) and the gate *emerges* as the only opening in
- * the fence, so a cat leaving the clearing routes to it on its own.
+ * walkability is now a real cost model and A* *always* runs, so terrain shapes
+ * every route. Water and the fence (off its one gate) are impassable; a built
+ * road is the cheapest ground, a worn trail cheaper than open field, and forest
+ * is dear — pushing through trees costs several times an open step, so cats
+ * visibly skirt the woods and funnel onto roads, and a leader-paved road earns
+ * its keep by pulling traffic onto it.
  *
- * The trail primitive stays {@link pathTiles}: on open ground the straight
- * x-before-y L is already the cheapest route, so {@link findPath} returns it
- * directly (fast path) and the tick wears exactly those tiles. A* only runs
- * when that L crosses something blocked — a river, the palisade — and then it
- * finds the real detour. Node expansion is capped so a pathological search can
- * never blow up a tick; on failure the caller falls back to the straight walk.
+ * On open ground every monotone route ties on cost, so the search breaks ties
+ * toward the classic x-before-y L (see {@link X_FIRST_BIAS} below): ordinary trips
+ * wear the same trail the old L-walk did, and only real terrain — a river, the
+ * palisade, a stand of trees — bends the path. Node expansion is capped so a
+ * pathological search can never blow up a tick; on failure the caller falls
+ * back to the straight walk. Every returned route is a strict run of
+ * 4-neighbour steps (start first, goal last), so the tick wears every tile.
  */
 
-import { pathTiles, type WorldPos } from "./movement";
+import type { WorldPos } from "./movement";
 
 /**
  * The world as walkability: what a mover cannot enter and what it costs to
@@ -25,7 +29,11 @@ import { pathTiles, type WorldPos } from "./movement";
 export interface WalkGrid {
 	/** A mover cannot step onto this tile (river water, or fence off-gate). */
 	isBlocked(x: number, y: number): boolean;
-	/** Relative cost to enter this tile — roads < 1, open ground 1. */
+	/**
+	 * Relative cost to enter this tile: built road < worn trail < open ground <
+	 * forest < dense woods. Never below {@link MIN_STEP_COST} (which keeps the
+	 * A* heuristic admissible).
+	 */
 	cost(x: number, y: number): number;
 	/**
 	 * Terrain floor of a tile (optional). Inert while the world renders flat —
@@ -55,12 +63,34 @@ export function cliffBlocksStep(
 	return false;
 }
 
-/** Cheapest a single step can cost (a road tile), so the heuristic stays admissible. */
-export const MIN_STEP_COST = 0.5;
-/** Cost multiplier for a tile carrying a built road or road-grade wear. */
-export const ROAD_COST = 0.5;
-/** Default cost for ordinary open ground. */
+/** Cost to enter a tile carrying a leader-paved road — the cheapest ground. */
+export const ROAD_COST = 0.4;
+/**
+ * Cost to enter a worn natural path: a trail trodden to road grade (pathWear at
+ * or past the render threshold) or a pre-worn overlay (game trail / old road).
+ * Cheaper than open ground, dearer than a built road.
+ */
+export const WORN_PATH_COST = 0.6;
+/** Default cost for ordinary open ground (field, plains, bare rock). */
 export const OPEN_COST = 1;
+/** Cost to push through forest — several open steps, so cats skirt the trees. */
+export const FOREST_COST = 4;
+/** Cost to push through dense woods — dearer still than ordinary forest. */
+export const DENSE_WOODS_COST = 8;
+/**
+ * Cheapest a single step can cost (a road tile), so `manhattan * MIN_STEP_COST`
+ * never overestimates the true remaining cost and the A* heuristic stays
+ * admissible.
+ */
+export const MIN_STEP_COST = ROAD_COST;
+/**
+ * Tie-breaking weight that nudges equal-cost routes toward the x-before-y L.
+ * Folded into g as a per-step penalty for stepping in y before x is aligned, it
+ * makes that L the unique cheapest route on open ground while staying far too
+ * small (times any realistic path length) to override a real cost difference
+ * between two routes — so it only decides genuine ties.
+ */
+const X_FIRST_BIAS = 1e-6;
 
 export interface FindPathOptions {
 	/**
@@ -92,21 +122,35 @@ function manhattan(ax: number, ay: number, bx: number, by: number): number {
 	return Math.abs(ax - bx) + Math.abs(ay - by);
 }
 
-/** Binary min-heap over `{ key, f }` records, keyed by the f-score. */
+/**
+ * Binary min-heap over `{ key, f, seq }` records, ordered by f-score and then by
+ * insertion sequence. The `seq` tie-break makes pops fully deterministic: two
+ * nodes with an identical f come out in the order they went in, so the same grid
+ * always yields byte-identical routes run to run (no reliance on heap-swap luck).
+ */
 class MinHeap {
-	private items: Array<{ key: number; f: number }> = [];
+	private items: Array<{ key: number; f: number; seq: number }> = [];
+	private counter = 0;
 
 	get size(): number {
 		return this.items.length;
 	}
 
+	/** True when `a` should sort before `b` (lower f, ties broken by insertion). */
+	private before(
+		a: { f: number; seq: number },
+		b: { f: number; seq: number },
+	): boolean {
+		return a.f < b.f || (a.f === b.f && a.seq < b.seq);
+	}
+
 	push(key: number, f: number): void {
 		const items = this.items;
-		items.push({ key, f });
+		items.push({ key, f, seq: this.counter++ });
 		let i = items.length - 1;
 		while (i > 0) {
 			const parent = (i - 1) >> 1;
-			if (items[parent].f <= items[i].f) {
+			if (!this.before(items[i], items[parent])) {
 				break;
 			}
 			[items[parent], items[i]] = [items[i], items[parent]];
@@ -125,10 +169,10 @@ class MinHeap {
 				const l = 2 * i + 1;
 				const r = 2 * i + 2;
 				let smallest = i;
-				if (l < items.length && items[l].f < items[smallest].f) {
+				if (l < items.length && this.before(items[l], items[smallest])) {
 					smallest = l;
 				}
-				if (r < items.length && items[r].f < items[smallest].f) {
+				if (r < items.length && this.before(items[r], items[smallest])) {
 					smallest = r;
 				}
 				if (smallest === i) {
@@ -180,16 +224,50 @@ function tileIsWater(tile: WalkTile): boolean {
 	);
 }
 
-/** A tile is road-grade — a built road or wear past the road threshold. */
-function tileIsRoad(tile: WalkTile): boolean {
-	return tile.overlayFeature === "road_built" || tile.pathWear >= 70;
+/** Pathwear at or above which a trodden trail renders (and costs) as a road. */
+const ROAD_WEAR_THRESHOLD = 70;
+
+/** Overlay features that are pre-worn natural paths (game trails, old roads). */
+const NATURAL_PATH_OVERLAYS = new Set([
+	"game_trail",
+	"ancient_road",
+	"trade_route",
+]);
+
+/**
+ * Cost to enter a tile, from its terrain and how trodden it is:
+ * built road < worn trail < open ground < forest < dense woods. Unknown tiles
+ * (never-seen frontier) are treated as open ground.
+ */
+function tileCost(tile: WalkTile | undefined): number {
+	if (!tile) {
+		return OPEN_COST;
+	}
+	if (tile.overlayFeature === "road_built") {
+		return ROAD_COST;
+	}
+	if (
+		tile.pathWear >= ROAD_WEAR_THRESHOLD ||
+		(tile.overlayFeature != null &&
+			NATURAL_PATH_OVERLAYS.has(tile.overlayFeature))
+	) {
+		return WORN_PATH_COST;
+	}
+	if (tile.type === "dense_woods") {
+		return DENSE_WOODS_COST;
+	}
+	if (tile.type === "forest") {
+		return FOREST_COST;
+	}
+	return OPEN_COST;
 }
 
 /**
  * Walkability for the colony's world: rivers block, the palisade blocks every
- * ring tile but the gate, and roads are cheap so cats drift onto them and wear
- * them deeper. Tiles the colony has never seen are treated as open ground at
- * normal cost, so a route out to a far frontier still plans.
+ * ring tile but the gate, roads and worn trails are cheap (so cats drift onto
+ * them and wear them deeper) while forest is dear (so they skirt the trees).
+ * Tiles the colony has never seen are treated as open ground at normal cost, so
+ * a route out to a far frontier still plans.
  */
 export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
 	const { anchor, ringRadius, gate } = params;
@@ -217,8 +295,7 @@ export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
 			return tile ? tileIsWater(tile) : false;
 		},
 		cost(x, y) {
-			const tile = byKey.get(packKey(x, y));
-			return tile && tileIsRoad(tile) ? ROAD_COST : OPEN_COST;
+			return tileCost(byKey.get(packKey(x, y)));
 		},
 		heightAt: terrain ? (x, y) => terrain.heightAt(x, y) : undefined,
 		hasStair: terrain ? (x, y) => terrain.hasStair(x, y) : undefined,
@@ -232,9 +309,12 @@ export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
  * leave where it stands and reach where it was sent — e.g. a water tile a
  * fetch job targets), so only the tiles *between* them respect `isBlocked`.
  *
- * Fast path: the straight x-before-y L is the cheapest route whenever nothing
- * blocks it, so it is returned without a search — this both saves the search
- * and keeps trodden trails identical to the old L-walk on open ground.
+ * The cost search always runs so terrain actually shapes the route — there is
+ * no straight-line fast path that would blind the cat to a cheaper road or a
+ * costly wood on the way. The only shortcuts are the degenerate ones a search
+ * would waste work on: standing still, and a single adjacent step. On uniform
+ * open ground the x-before-y bias reproduces the old straight L, so trodden
+ * trails there are unchanged.
  */
 export function findPath(
 	start: WorldPos,
@@ -251,24 +331,13 @@ export function findPath(
 		return [{ x: sx, y: sy }];
 	}
 
-	// Fast path: the straight L only counts as clear if none of its *interior*
-	// tiles are blocked (the endpoints are always allowed).
-	const straight = pathTiles({ x: sx, y: sy }, { x: gx, y: gy });
-	let straightClear = true;
-	for (let i = 1; i < straight.length; i += 1) {
-		const step = straight[i];
-		const prev = straight[i - 1];
-		// Interior tiles honour blocking; every step honours cliff faces.
-		if (
-			(i < straight.length - 1 && grid.isBlocked(step.x, step.y)) ||
-			cliffBlocksStep(grid, prev.x, prev.y, step.x, step.y)
-		) {
-			straightClear = false;
-			break;
-		}
-	}
-	if (straightClear) {
-		return straight;
+	// Cheap shortcut for an adjacent goal: one 4-neighbour step, which the goal
+	// always permits. Anything longer goes through the cost search below.
+	if (manhattan(sx, sy, gx, gy) === 1) {
+		return [
+			{ x: sx, y: sy },
+			{ x: gx, y: gy },
+		];
 	}
 
 	const maxExpansions = options.maxExpansions ?? DEFAULT_MAX_EXPANSIONS;
@@ -347,7 +416,12 @@ export function findPath(
 			if (closed[nk]) {
 				continue;
 			}
-			const tentative = gScore[ck] + grid.cost(nx, ny);
+			// A vanishing penalty for stepping in y before x is aligned biases the
+			// search toward finishing the x-leg first: on open ground that makes the
+			// x-before-y L the unique cheapest route, while the penalty is far too
+			// small to ever outweigh a real terrain cost difference.
+			const prematureY = dy !== 0 && cx !== gx ? X_FIRST_BIAS : 0;
+			const tentative = gScore[ck] + grid.cost(nx, ny) + prematureY;
 			if (tentative < gScore[nk]) {
 				gScore[nk] = tentative;
 				cameFrom[nk] = ck;

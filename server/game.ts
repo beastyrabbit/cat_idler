@@ -99,7 +99,11 @@ import {
 	walkPath,
 } from "@/lib/game/movement";
 import { generateName } from "@/lib/game/naming";
-import { buildColonyWalkGrid, findPath } from "@/lib/game/pathfinding";
+import {
+	buildColonyWalkGrid,
+	findPath,
+	type WalkGrid,
+} from "@/lib/game/pathfinding";
 import { addPathWear, getPathSpeedBonus } from "@/lib/game/paths";
 import { configForTier, pickPolicyTier } from "@/lib/game/policy";
 import {
@@ -191,6 +195,63 @@ const ROAD_MAX_PAVE_PER_BATCH = 6;
  * into roads while a one-off scouting crossing stays bare explored ground.
  */
 const WALK_WEAR = 8;
+
+/**
+ * Per-cat route memo, keyed by cat id and shared across ticks (the worker is a
+ * single long-lived process). A* is cheap but runs for every traveller every
+ * tick; caching the last route lets a cat that is still trudging toward the same
+ * destination reuse it instead of re-searching. The route is re-planned only
+ * when its target changes or a tile it was about to step on has become blocked —
+ * the two things that can make a cached route wrong. Entries are dropped when a
+ * cat arrives or loses its destination, so the map tracks only live travellers.
+ */
+interface CachedRoute {
+	destKey: string;
+	route: WorldPos[];
+}
+const routeCache = new Map<string, CachedRoute>();
+
+/**
+ * Route from the cat's current tile to `destination`, reusing the cached plan
+ * when it is still valid. A reused route is the *remaining tail* of the cached
+ * plan from the cat's current tile — a sub-path of an optimal route is itself
+ * optimal, so this returns the same tiles a fresh search would walk, just
+ * without paying for the search. Falls back to (and caches) a fresh A* search on
+ * a target change, when the cat has strayed off its cached route, or when an
+ * upcoming tile is now blocked.
+ */
+function routeForCat(
+	catId: string,
+	worldPos: WorldPos,
+	destination: WorldPos,
+	grid: WalkGrid,
+): WorldPos[] | null {
+	const curX = Math.round(worldPos.x);
+	const curY = Math.round(worldPos.y);
+	const destKey = `${Math.round(destination.x)},${Math.round(destination.y)}`;
+	const cached = routeCache.get(catId);
+	if (cached && cached.destKey === destKey) {
+		const idx = cached.route.findIndex((p) => p.x === curX && p.y === curY);
+		if (idx >= 0) {
+			const remaining = cached.route.slice(idx);
+			// Interior tiles (everything but the always-enterable goal) must still be
+			// walkable — a freshly-spawned river or a new fence tile invalidates the plan.
+			const blockedAhead = remaining
+				.slice(1, -1)
+				.some((p) => grid.isBlocked(p.x, p.y));
+			if (!blockedAhead) {
+				return remaining;
+			}
+		}
+	}
+	const fresh = findPath(worldPos, destination, grid);
+	if (fresh) {
+		routeCache.set(catId, { destKey, route: fresh });
+	} else {
+		routeCache.delete(catId);
+	}
+	return fresh;
+}
 /**
  * Most path wear that can fade in one tick. Traversal adds {@link WALK_WEAR}
  * per pass, so a route walked repeatedly outpaces this cap and hardens into a
@@ -4223,6 +4284,7 @@ export function workerTick(db: GameDb) {
 			}
 
 			if (!destination) {
+				routeCache.delete(cat._id); // no journey → drop any stale plan
 				if (activity === "traveling" || activity === "returning") {
 					// Lost its destination (legacy row / interrupted job) — settle.
 					tx.update(cats)
@@ -4299,7 +4361,7 @@ export function workerTick(db: GameDb) {
 				);
 			const atGate =
 				Math.abs(worldPos.x - gate.x) < 1 && Math.abs(worldPos.y - gate.y) < 1;
-			const route = findPath(worldPos, destination, walkGrid);
+			const route = routeForCat(cat._id, worldPos, destination, walkGrid);
 			const crossesFence =
 				ringDist(worldPos) < ringRadius !== ringDist(destination) < ringRadius;
 			const waypoints =
@@ -4350,6 +4412,9 @@ export function workerTick(db: GameDb) {
 				continue;
 			}
 
+			if (arrived) {
+				routeCache.delete(cat._id); // journey done → free the cached plan
+			}
 			tx.update(cats)
 				.set({
 					position: { map: "world", x: step.position.x, y: step.position.y },

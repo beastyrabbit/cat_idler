@@ -3,11 +3,14 @@ import type { WorldPos } from "@/lib/game/movement";
 import {
 	buildColonyWalkGrid,
 	cliffBlocksStep,
+	DENSE_WOODS_COST,
+	FOREST_COST,
 	findPath,
 	OPEN_COST,
 	ROAD_COST,
 	type WalkGrid,
 	type WalkTile,
+	WORN_PATH_COST,
 } from "@/lib/game/pathfinding";
 
 /** An open plain — nothing blocks, every step costs the same. */
@@ -24,6 +27,29 @@ function gridFrom(
 	return {
 		isBlocked: (x, y) => blocked.has(`${x},${y}`),
 		cost: (x, y) => (roads.has(`${x},${y}`) ? ROAD_COST : OPEN_COST),
+	};
+}
+
+/** Grid whose per-tile cost is read from an explicit "x,y" → cost map. */
+function costGrid(
+	costs: Map<string, number>,
+	blocked: Set<string> = new Set(),
+): WalkGrid {
+	return {
+		isBlocked: (x, y) => blocked.has(`${x},${y}`),
+		cost: (x, y) => costs.get(`${x},${y}`) ?? OPEN_COST,
+	};
+}
+
+/** Tiny deterministic PRNG so randomised-grid sweeps replay identically. */
+function mulberry32(seed: number): () => number {
+	let a = seed >>> 0;
+	return () => {
+		a |= 0;
+		a = (a + 0x6d2b79f5) | 0;
+		let t = Math.imul(a ^ (a >>> 15), 1 | a);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 	};
 }
 
@@ -139,6 +165,57 @@ describe("findPath", () => {
 		expect(pathKeys(path)).not.toContain("-1,2");
 	});
 
+	it("takes the longer road when it is cheaper overall than a shorter grass line", () => {
+		// A straight west-to-east grass line from (0,0) to (6,0) is 6 open steps
+		// (cost 6). A road runs one row south along y=1. Dropping to the road and
+		// back up is two extra steps but every road step is cheap, so the whole
+		// detour undercuts the straight grass line — the cat should ride the road.
+		const costs = new Map<string, number>();
+		for (let x = 0; x <= 6; x += 1) {
+			costs.set(`${x},1`, ROAD_COST);
+		}
+		const path = findPath({ x: 0, y: 0 }, { x: 6, y: 0 }, costGrid(costs), {
+			margin: 3,
+		});
+		expect(path).not.toBeNull();
+		const nonNull = path as WorldPos[];
+		expect(isContiguous(nonNull)).toBe(true);
+		// It dips onto the road corridor rather than running straight across grass.
+		expect(pathKeys(path)).toContain("3,1");
+	});
+
+	it("skirts a forest when an open detour is the cheaper route", () => {
+		// The straight line (2,0)..(4,0) is forest; a one-row detour along y=1 is
+		// open ground. Two forest steps (2 * FOREST_COST) cost far more than the
+		// slightly longer open swing, so the cat rounds the trees.
+		const costs = new Map<string, number>();
+		for (const x of [2, 3, 4]) {
+			costs.set(`${x},0`, FOREST_COST);
+		}
+		const path = findPath({ x: 0, y: 0 }, { x: 6, y: 0 }, costGrid(costs), {
+			margin: 3,
+		});
+		expect(path).not.toBeNull();
+		const nonNull = path as WorldPos[];
+		expect(isContiguous(nonNull)).toBe(true);
+		// None of the forest tiles are stepped on — it detours through open ground.
+		for (const x of [2, 3, 4]) {
+			expect(pathKeys(path)).not.toContain(`${x},0`);
+		}
+		expect(pathKeys(path)).toContain("3,1");
+	});
+
+	it("pushes through a costly tile when going around costs even more", () => {
+		// One tile at (3,0) carries a small premium (1.4 vs open 1). Rounding it
+		// takes two extra open steps (cost +2), which dwarfs the 0.4 premium, so
+		// the cheapest route steps straight over the costly tile rather than detour.
+		const costs = new Map<string, number>([["3,0", 1.4]]);
+		const path = findPath({ x: 0, y: 0 }, { x: 6, y: 0 }, costGrid(costs), {
+			margin: 3,
+		});
+		expect(pathKeys(path)).toContain("3,0");
+	});
+
 	it("returns null when the goal is walled off, so the caller can fall back", () => {
 		// Ring the goal completely in blocked tiles.
 		const blocked = new Set<string>([
@@ -155,6 +232,68 @@ describe("findPath", () => {
 			margin: 3,
 		});
 		expect(path).toBeNull();
+	});
+
+	it("returns a strictly contiguous 4-neighbour route on hundreds of random grids", () => {
+		// The teleport bug: a returned route that skips tiles, so only its
+		// endpoints wear. Guard it by asserting every step is a unit 4-move across
+		// many randomised terrains of blocked walls and mixed costs.
+		let checked = 0;
+		for (let seed = 1; seed <= 300; seed += 1) {
+			const rng = mulberry32(seed);
+			const blocked = new Set<string>();
+			const costs = new Map<string, number>();
+			for (let x = -2; x <= 12; x += 1) {
+				for (let y = -2; y <= 12; y += 1) {
+					const r = rng();
+					if (r < 0.25) {
+						blocked.add(`${x},${y}`);
+					} else if (r < 0.4) {
+						costs.set(`${x},${y}`, FOREST_COST);
+					} else if (r < 0.5) {
+						costs.set(`${x},${y}`, ROAD_COST);
+					}
+				}
+			}
+			const path = findPath(
+				{ x: 0, y: 0 },
+				{ x: 10, y: 10 },
+				costGrid(costs, blocked),
+				{
+					margin: 4,
+				},
+			);
+			if (!path) {
+				continue; // no route within budget — a legitimate null, nothing to check
+			}
+			expect(isContiguous(path)).toBe(true);
+			expect(path[0]).toEqual({ x: 0, y: 0 });
+			expect(path[path.length - 1]).toEqual({ x: 10, y: 10 });
+			checked += 1;
+		}
+		expect(checked).toBeGreaterThan(0); // the sweep actually exercised routes
+	});
+
+	it("returns byte-identical routes across repeated runs on the same grid", () => {
+		for (let seed = 1; seed <= 40; seed += 1) {
+			const rng = mulberry32(seed * 7 + 1);
+			const blocked = new Set<string>();
+			const costs = new Map<string, number>();
+			for (let x = -2; x <= 12; x += 1) {
+				for (let y = -2; y <= 12; y += 1) {
+					const r = rng();
+					if (r < 0.2) {
+						blocked.add(`${x},${y}`);
+					} else if (r < 0.35) {
+						costs.set(`${x},${y}`, FOREST_COST);
+					}
+				}
+			}
+			const grid = costGrid(costs, blocked);
+			const a = findPath({ x: 0, y: 0 }, { x: 10, y: 10 }, grid, { margin: 4 });
+			const b = findPath({ x: 0, y: 0 }, { x: 10, y: 10 }, grid, { margin: 4 });
+			expect(pathKeys(a)).toEqual(pathKeys(b));
+		}
 	});
 
 	it("returns null when it exhausts the expansion budget", () => {
@@ -224,21 +363,34 @@ describe("buildColonyWalkGrid", () => {
 		expect(grid.isBlocked(6, 20)).toBe(false); // well outside
 	});
 
-	it("discounts road tiles", () => {
+	it("prices tiles by grade: road < worn trail < open < forest < dense woods", () => {
 		const grid = buildColonyWalkGrid({
 			tiles: [
 				tile({ x: 0, y: 0, overlayFeature: "road_built" }),
-				tile({ x: 1, y: 0, pathWear: 80 }),
-				tile({ x: 2, y: 0, pathWear: 20 }),
+				tile({ x: 1, y: 0, pathWear: 80 }), // trodden to road grade
+				tile({ x: 2, y: 0, overlayFeature: "game_trail" }), // pre-worn overlay
+				tile({ x: 3, y: 0, pathWear: 20 }), // barely trodden → still open
+				tile({ x: 4, y: 0, type: "forest" }),
+				tile({ x: 5, y: 0, type: "dense_woods" }),
 			],
 			anchor,
 			ringRadius: 4,
 			gate,
 		});
 		expect(grid.cost(0, 0)).toBe(ROAD_COST);
-		expect(grid.cost(1, 0)).toBe(ROAD_COST);
-		expect(grid.cost(2, 0)).toBe(OPEN_COST);
+		expect(grid.cost(1, 0)).toBe(WORN_PATH_COST);
+		expect(grid.cost(2, 0)).toBe(WORN_PATH_COST);
+		expect(grid.cost(3, 0)).toBe(OPEN_COST);
+		expect(grid.cost(4, 0)).toBe(FOREST_COST);
+		expect(grid.cost(5, 0)).toBe(DENSE_WOODS_COST);
 		expect(grid.cost(50, 50)).toBe(OPEN_COST); // unknown tile → open ground
+	});
+
+	it("orders the cost tiers cheapest to dearest", () => {
+		expect(ROAD_COST).toBeLessThan(WORN_PATH_COST);
+		expect(WORN_PATH_COST).toBeLessThan(OPEN_COST);
+		expect(OPEN_COST).toBeLessThan(FOREST_COST);
+		expect(FOREST_COST).toBeLessThan(DENSE_WOODS_COST);
 	});
 });
 
