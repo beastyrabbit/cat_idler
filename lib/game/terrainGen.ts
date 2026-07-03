@@ -175,6 +175,20 @@ export interface TerrainOptions {
 	decorate?: boolean;
 }
 
+/**
+ * Terrain options shared by the server world generator (`server/worldMap.ts`)
+ * and the client renderer (`components/map/TileLayer.tsx`) so gameplay tiles and
+ * on-screen sprites are sampled from the *exact same* height/biome field — no
+ * drift between what a cat can walk and what a player sees. The village anchor
+ * (world 6,6, see `getColonyPosition`) gets a flat plateau; rivers steer clear
+ * of it. Anything not set here uses the module defaults.
+ */
+export const WORLD_TERRAIN_OPTIONS: TerrainOptions = {
+	villageAnchor: { x: 6, y: 6 },
+	plateauRadius: 8,
+	plateauHeight: 1,
+};
+
 interface ResolvedOptions extends Required<TerrainOptions> {}
 
 function resolveOptions(opts: TerrainOptions): ResolvedOptions {
@@ -329,6 +343,16 @@ export function terrainHeightAt(
 	opts: TerrainOptions = {},
 ): number {
 	return heightWith(x, y, seed, resolveOptions(opts));
+}
+
+/** Whether a world tile carries a staircase (pathing's only cliff crossing). */
+export function terrainStairAt(
+	x: number,
+	y: number,
+	seed: number,
+	opts: TerrainOptions = {},
+): boolean {
+	return deriveStairs(x, y, seed, resolveOptions(opts)) !== undefined;
 }
 
 // ---------------------------------------------------------------------------

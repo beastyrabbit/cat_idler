@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { WorldPos } from "@/lib/game/movement";
 import {
 	buildColonyWalkGrid,
+	cliffBlocksStep,
 	findPath,
 	OPEN_COST,
 	ROAD_COST,
@@ -238,5 +239,54 @@ describe("buildColonyWalkGrid", () => {
 		expect(grid.cost(1, 0)).toBe(ROAD_COST);
 		expect(grid.cost(2, 0)).toBe(OPEN_COST);
 		expect(grid.cost(50, 50)).toBe(OPEN_COST); // unknown tile → open ground
+	});
+});
+
+describe("cliff walkability (height + stairs)", () => {
+	/** Open grid with a height field; optional stair tiles bridge cliffs. */
+	function heightGrid(
+		heightAt: (x: number, y: number) => number,
+		stairs: Set<string> = new Set(),
+	): WalkGrid {
+		return {
+			isBlocked: () => false,
+			cost: () => OPEN_COST,
+			heightAt,
+			hasStair: (x, y) => stairs.has(`${x},${y}`),
+		};
+	}
+
+	it("treats a same-or-one-floor step as walkable", () => {
+		const grid = heightGrid((x) => (x >= 3 ? 1 : 0));
+		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(false); // 0 -> 1 is a slope
+		expect(cliffBlocksStep(grid, 3, 0, 4, 0)).toBe(false); // 1 -> 1 is flat
+	});
+
+	it("blocks a 2+ floor cliff face with no staircase", () => {
+		const grid = heightGrid((x) => (x >= 3 ? 2 : 0));
+		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(true);
+	});
+
+	it("lets a staircase bridge the cliff", () => {
+		const grid = heightGrid((x) => (x >= 3 ? 2 : 0), new Set(["3,0"]));
+		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(false);
+	});
+
+	it("is flat (never blocks) when the grid has no height field", () => {
+		expect(cliffBlocksStep(OPEN_GRID, 0, 0, 1, 0)).toBe(false);
+	});
+
+	it("routes a walk up the staircase, not over the cliff face", () => {
+		// A height-2 plateau wall at x>=3 with the only stair at (3,0).
+		const grid = heightGrid((x) => (x >= 3 ? 2 : 0), new Set(["3,0"]));
+		const path = findPath({ x: 0, y: 0 }, { x: 6, y: 0 }, grid);
+		expect(path).not.toBeNull();
+		expect(pathKeys(path)).toContain("3,0");
+	});
+
+	it("fails to a straight-walk fallback when a mesa has no stair", () => {
+		// A solid height-2 wall across every row this search can reach — no way up.
+		const grid = heightGrid((x) => (x >= 3 ? 2 : 0));
+		expect(findPath({ x: 0, y: 0 }, { x: 6, y: 0 }, grid)).toBeNull();
 	});
 });

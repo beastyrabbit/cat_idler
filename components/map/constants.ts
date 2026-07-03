@@ -11,6 +11,26 @@ export const ISO_CONTENT = isoContentSize(ISO);
 export const CHUNK_SIZE = ISO.chunkSize;
 
 /**
+ * Actors (cats, buildings, fences, gates) still use the Kenney "Isometric
+ * Miniature" sprites (256x512 canvas, 256x128 diamond). To seat them on the
+ * Nature ground diamond (180 wide) we scale them uniformly by 180/256 rather
+ * than stretching — their diamond becomes 180 wide, so they line up
+ * horizontally with the ground while keeping their own aspect. Style mixing
+ * (Miniature actors on Nature terrain) is accepted for this pass.
+ */
+const MINI_DIAMOND_WIDTH = 256;
+const MINI_IMAGE_HEIGHT = 512;
+const MINI_SURFACE_OFFSET = 368;
+export const ACTOR_SCALE = ISO.tileWidth / MINI_DIAMOND_WIDTH;
+export const ACTOR = {
+	scale: ACTOR_SCALE,
+	width: MINI_DIAMOND_WIDTH * ACTOR_SCALE,
+	height: MINI_IMAGE_HEIGHT * ACTOR_SCALE,
+	/** Y within the scaled canvas where the diamond top vertex sits. */
+	surfaceOffset: MINI_SURFACE_OFFSET * ACTOR_SCALE,
+};
+
+/**
  * Renderable chunk window (25x25 chunks, ±12 around the village). Derived from
  * the content-plane geometry so it can never drift from the drawable area.
  */
@@ -121,8 +141,13 @@ export const TILE_COLORS: Record<string, string> = {
 	enemy_lair: "#9b5a5a",
 };
 
-/** CSS clip-path for a 2:1 iso ground diamond. */
+/** CSS clip-path for an iso ground diamond (parameterized by the tile box). */
 export const DIAMOND_CLIP = "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)";
+
+/** Worn-trail and paved-road recolors, drawn as a translucent diamond over the
+ *  ground so roads read on the Nature terrain without a dedicated road pack. */
+export const ROAD_FILL = "rgba(120, 94, 62, 0.55)";
+export const BUILT_ROAD_FILL = "rgba(150, 120, 78, 0.8)";
 
 /**
  * Fog-of-war shades by distance (in tiles) to the nearest explored tile.
@@ -133,3 +158,12 @@ export const DIAMOND_CLIP = "polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)";
  * the final (solid) shade.
  */
 export const FOG_SHADES = ["#33422a", "#26321f", "#1b2416", "#141c12"];
+
+/**
+ * Fog is now a translucent overlay over the Nature terrain (so unexplored land
+ * still reads as a dim silhouette of cliffs/rivers rather than a flat patch),
+ * graded by distance to the explored frontier: a light haze at the frontier
+ * deepening toward the near-opaque backdrop far out. Index maps 1:1 to
+ * `FOG_SHADES`; ungenerated/far tiles use the last (deepest) value.
+ */
+export const FOG_OPACITIES = [0.5, 0.7, 0.85, 0.95];

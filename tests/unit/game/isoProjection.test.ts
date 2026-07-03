@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
 	DEFAULT_ISO_GEOMETRY,
+	elevationOffset,
+	FLOOR_PX,
 	type IsoGeometry,
 	isoContentSize,
 	isoToTile,
@@ -108,6 +110,47 @@ describe("isoProjection", () => {
 					GEO,
 				),
 			).toBeGreaterThan(0);
+		});
+	});
+
+	describe("elevation", () => {
+		it("raises a tile by one FLOOR_PX per floor", () => {
+			expect(elevationOffset(0)).toBe(0);
+			expect(elevationOffset(1)).toBe(FLOOR_PX);
+			expect(elevationOffset(3)).toBe(3 * FLOOR_PX);
+			// Negative heights never push a tile below floor 0.
+			expect(elevationOffset(-2)).toBe(0);
+		});
+
+		it("keeps the raised back-corner tile on the content plane", () => {
+			// A fully-raised tile at the far back corner (minimum top) must still
+			// draw its sprite at a non-negative content Y.
+			const { top } = tileToIso(GEO.originX, GEO.originY, GEO);
+			const imgTop = top - GEO.surfaceOffset - elevationOffset(GEO.maxHeight);
+			expect(imgTop).toBeGreaterThanOrEqual(0);
+		});
+	});
+
+	describe("zIndexFor height", () => {
+		it("stacks a taller floor above a shorter one on the same tile", () => {
+			expect(zIndexFor(5, 5, "tile", GEO, 2)).toBeGreaterThan(
+				zIndexFor(5, 5, "tile", GEO, 0),
+			);
+		});
+
+		it("still lets terrain in front occlude a tall tile behind", () => {
+			// A max-height tile behind must sit below a floor-0 tile one step in
+			// front, so a cliff never pokes through the tile ahead of it.
+			expect(zIndexFor(5, 5, "tile", GEO, GEO.maxHeight)).toBeLessThan(
+				zIndexFor(5, 6, "tile", GEO, 0),
+			);
+		});
+
+		it("defaults to floor 0 and matches the flat ordering", () => {
+			expect(zIndexFor(5, 5, "tile", GEO)).toBe(
+				zIndexFor(5, 5, "tile", GEO, 0),
+			);
+			expect(zIndexFor(GEO.originX, GEO.originY, "tile", GEO)).toBe(0);
 		});
 	});
 

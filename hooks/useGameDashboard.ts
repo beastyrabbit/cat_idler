@@ -469,6 +469,7 @@ export function useGameDashboard() {
 		// Map (Phase 1: shrine + buildings on the world map)
 		buildings: dashboard?.buildings ?? [],
 		anchor: dashboard?.anchor ?? { x: 6, y: 6 },
+		worldSeed: dashboard?.worldSeed ?? null,
 		housing: dashboard?.housing ?? null,
 
 		// Elections (Phase 4)

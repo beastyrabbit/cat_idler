@@ -1,6 +1,11 @@
 "use client";
 
-import { tileDiamondCenter, zIndexFor } from "@/lib/game/isoProjection";
+import {
+	elevationOffset,
+	tileDiamondCenter,
+	zIndexFor,
+} from "@/lib/game/isoProjection";
+import { terrainHeightAt, WORLD_TERRAIN_OPTIONS } from "@/lib/game/terrainGen";
 import { ISO } from "./constants";
 
 export interface MapRaider {
@@ -30,10 +35,12 @@ function spread(id: string) {
 
 interface RaiderLayerProps {
 	raiders: MapRaider[];
+	/** World seed, so a raider rides its tile's terrain floor. */
+	seed: number | null;
 }
 
 /** Enemy raiders marching on the village, drawn on the world map. */
-export function RaiderLayer({ raiders }: RaiderLayerProps) {
+export function RaiderLayer({ raiders, seed }: RaiderLayerProps) {
 	return (
 		<>
 			{raiders.map((raider) => {
@@ -42,11 +49,22 @@ export function RaiderLayer({ raiders }: RaiderLayerProps) {
 					raider.position.y,
 					ISO,
 				);
+				const height =
+					seed === null
+						? 0
+						: terrainHeightAt(
+								Math.round(raider.position.x),
+								Math.round(raider.position.y),
+								seed,
+								WORLD_TERRAIN_OPTIONS,
+							);
+				const elev = elevationOffset(height);
 				const zIndex = zIndexFor(
 					raider.position.x,
 					raider.position.y,
 					"object",
 					ISO,
+					height,
 				);
 				const offset = spread(raider._id);
 				const hpPct = Math.max(
@@ -63,7 +81,7 @@ export function RaiderLayer({ raiders }: RaiderLayerProps) {
 							top: 0,
 							zIndex,
 							transform: `translate(${center.x + offset.x - 32}px, ${
-								center.y + offset.y - 40
+								center.y + offset.y - 40 - elev
 							}px)`,
 						}}
 						title={`Raider — ${Math.round(raider.hp)}/${Math.round(raider.strength)} HP`}

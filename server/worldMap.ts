@@ -11,7 +11,8 @@ import { nanoid } from "nanoid";
 
 import type { GameDb } from "@/db/client";
 import { colonies, type WorldTileRow, worldTiles } from "@/db/schema";
-import { generateChunk, getColonyPosition } from "@/lib/game/worldGen";
+import { generateWorldChunk } from "@/lib/game/terrainWorld";
+import { getColonyPosition } from "@/lib/game/worldGen";
 
 const CHUNK_SIZE = 12;
 
@@ -89,7 +90,7 @@ export function ensureChunk(
 	const worldSeed = colony.worldSeed ?? colony.createdAt;
 	const colonyPos = getColonyPosition();
 
-	const tiles = generateChunk(
+	const tiles = generateWorldChunk(
 		chunkX,
 		chunkY,
 		worldSeed,

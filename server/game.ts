@@ -118,6 +118,11 @@ import {
 	storehouseCap,
 } from "@/lib/game/storage";
 import { applySurvivalTick } from "@/lib/game/survival";
+import {
+	terrainHeightAt,
+	terrainStairAt,
+	WORLD_TERRAIN_OPTIONS,
+} from "@/lib/game/terrainGen";
 import { configForPreset } from "@/lib/game/testAcceleration";
 import { colonyWealth, threatBand } from "@/lib/game/threat";
 import {
@@ -1688,6 +1693,10 @@ export function getGlobalDashboard(db: GameDb) {
 		events: recentEvents,
 		onlineCount,
 		anchor: VILLAGE_ANCHOR,
+		// The renderer regenerates the Isometric-Nature terrain client-side from
+		// this seed (terrainGen is pure), so map visuals match the gameplay tiles
+		// server-side worldgen derives from the very same seed.
+		worldSeed: colony.worldSeed ?? colony.createdAt,
 		villageRadius: villageRingRadius(colonyBuildings.length),
 		buildings: colonyBuildings.map((building) => ({
 			...building,
@@ -4068,11 +4077,21 @@ export function workerTick(db: GameDb) {
 		// blocks every ring tile but the south gate, roads are cheap. Built once
 		// from the tiles already cached above and shared by cats and raiders.
 		const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + ringRadius };
+		// Terrain floors/stairs (same seed the client renders) so cliffs block a
+		// route unless a staircase bridges them; a mesa with no stairs just falls
+		// back to the straight walk, so cats never freeze.
+		const terrainSeed = colony.worldSeed ?? colony.createdAt;
 		const walkGrid = buildColonyWalkGrid({
 			tiles: colonyTiles(),
 			anchor: VILLAGE_ANCHOR,
 			ringRadius,
 			gate,
+			terrain: {
+				heightAt: (x, y) =>
+					terrainHeightAt(x, y, terrainSeed, WORLD_TERRAIN_OPTIONS),
+				hasStair: (x, y) =>
+					terrainStairAt(x, y, terrainSeed, WORLD_TERRAIN_OPTIONS),
+			},
 		});
 		for (const cat of getAliveCats(tx, colony._id)) {
 			const worldPos: WorldPos =

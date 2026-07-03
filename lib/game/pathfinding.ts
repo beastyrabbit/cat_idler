@@ -27,6 +27,40 @@ export interface WalkGrid {
 	isBlocked(x: number, y: number): boolean;
 	/** Relative cost to enter this tile — roads < 1, open ground 1. */
 	cost(x: number, y: number): number;
+	/**
+	 * Terrain floor of a tile (optional). When provided, a step between two
+	 * tiles whose floors differ by more than one is a cliff and is impassable
+	 * unless a staircase (`hasStair`) connects them. Absent → flat world.
+	 */
+	heightAt?(x: number, y: number): number;
+	/** Whether a tile carries a staircase (the only way to scale a cliff). */
+	hasStair?(x: number, y: number): boolean;
+}
+
+/**
+ * A cliff blocks the step between two adjacent tiles when their floors differ by
+ * more than one and neither tile has a staircase. Flat when the grid exposes no
+ * height field. Kept edge-based (not per-tile) because you can stand on a cliff
+ * top but not climb its face.
+ */
+export function cliffBlocksStep(
+	grid: WalkGrid,
+	ax: number,
+	ay: number,
+	bx: number,
+	by: number,
+): boolean {
+	if (!grid.heightAt) {
+		return false;
+	}
+	const delta = Math.abs(grid.heightAt(ax, ay) - grid.heightAt(bx, by));
+	if (delta <= 1) {
+		return false;
+	}
+	const stair = grid.hasStair
+		? grid.hasStair(ax, ay) || grid.hasStair(bx, by)
+		: false;
+	return !stair;
 }
 
 /** Cheapest a single step can cost (a road tile), so the heuristic stays admissible. */
@@ -135,6 +169,14 @@ export interface ColonyGridParams {
 	ringRadius: number;
 	/** The single tile in the fence ring a mover may pass through. */
 	gate: WorldPos;
+	/**
+	 * Optional terrain height/stair field (from `terrainGen`). When supplied,
+	 * cliffs (a 2+ floor drop) block movement unless a staircase bridges them.
+	 */
+	terrain?: {
+		heightAt(x: number, y: number): number;
+		hasStair(x: number, y: number): boolean;
+	};
 }
 
 /** A tile carries drawable water (river channel or a resource pool). */
@@ -173,6 +215,7 @@ export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
 	const isGate = (x: number, y: number): boolean =>
 		x === gate.x && y === gate.y;
 
+	const { terrain } = params;
 	return {
 		isBlocked(x, y) {
 			if (onFence(x, y) && !isGate(x, y)) {
@@ -185,6 +228,8 @@ export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
 			const tile = byKey.get(packKey(x, y));
 			return tile && tileIsRoad(tile) ? ROAD_COST : OPEN_COST;
 		},
+		heightAt: terrain ? (x, y) => terrain.heightAt(x, y) : undefined,
+		hasStair: terrain ? (x, y) => terrain.hasStair(x, y) : undefined,
 	};
 }
 
@@ -218,8 +263,14 @@ export function findPath(
 	// tiles are blocked (the endpoints are always allowed).
 	const straight = pathTiles({ x: sx, y: sy }, { x: gx, y: gy });
 	let straightClear = true;
-	for (let i = 1; i < straight.length - 1; i += 1) {
-		if (grid.isBlocked(straight[i].x, straight[i].y)) {
+	for (let i = 1; i < straight.length; i += 1) {
+		const step = straight[i];
+		const prev = straight[i - 1];
+		// Interior tiles honour blocking; every step honours cliff faces.
+		if (
+			(i < straight.length - 1 && grid.isBlocked(step.x, step.y)) ||
+			cliffBlocksStep(grid, prev.x, prev.y, step.x, step.y)
+		) {
 			straightClear = false;
 			break;
 		}
@@ -290,9 +341,14 @@ export function findPath(
 			if (nx < minX || nx > maxX || ny < minY || ny > maxY) {
 				continue;
 			}
-			// The goal is always enterable; interior tiles honour blocking.
+			// The goal is always enterable; interior tiles honour blocking. A
+			// cliff face blocks every step (even into the goal) unless a stair
+			// bridges it — an unreachable mesa fails to a straight-walk fallback.
 			const isGoal = nx === gx && ny === gy;
 			if (!isGoal && grid.isBlocked(nx, ny)) {
+				continue;
+			}
+			if (cliffBlocksStep(grid, cx, cy, nx, ny)) {
 				continue;
 			}
 			const nk = key(nx, ny);

@@ -1,7 +1,12 @@
 "use client";
 
-import { tileDiamondCenter, zIndexFor } from "@/lib/game/isoProjection";
+import {
+	elevationOffset,
+	tileDiamondCenter,
+	zIndexFor,
+} from "@/lib/game/isoProjection";
 import { getLifeStage } from "@/lib/game/lifeSim";
+import { terrainHeightAt, WORLD_TERRAIN_OPTIONS } from "@/lib/game/terrainGen";
 import { colonyToWorld } from "@/lib/game/villageLayout";
 import type { LifeStage } from "@/types/game";
 import { ISO } from "./constants";
@@ -84,6 +89,8 @@ const WORK_ICONS: Record<string, string> = {
 interface CatLayerProps {
 	cats: MapCat[];
 	leaderId: string | null;
+	/** World seed, so a cat rides its tile's terrain floor. */
+	seed: number | null;
 	onSelect?: (catId: string) => void;
 }
 
@@ -119,7 +126,7 @@ const ACTIVITY_BADGES: Record<string, string> = {
 	returning: "🏠",
 };
 
-export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
+export function CatLayer({ cats, leaderId, seed, onSelect }: CatLayerProps) {
 	return (
 		<>
 			{cats.map((cat) => {
@@ -128,7 +135,17 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 						? { x: cat.position.x, y: cat.position.y }
 						: colonyToWorld(cat.position);
 				const center = tileDiamondCenter(worldPos.x, worldPos.y, ISO);
-				const zIndex = zIndexFor(worldPos.x, worldPos.y, "object", ISO);
+				const height =
+					seed === null
+						? 0
+						: terrainHeightAt(
+								Math.round(worldPos.x),
+								Math.round(worldPos.y),
+								seed,
+								WORLD_TERRAIN_OPTIONS,
+							);
+				const elev = elevationOffset(height);
+				const zIndex = zIndexFor(worldPos.x, worldPos.y, "object", ISO, height);
 				const offset = spreadOffset(cat._id);
 				const moving =
 					cat.activity === "traveling" || cat.activity === "returning";
@@ -169,7 +186,7 @@ export function CatLayer({ cats, leaderId, onSelect }: CatLayerProps) {
 							top: 0,
 							zIndex,
 							transform: `translate(${center.x + offset.x - 48}px, ${
-								center.y + offset.y - 40
+								center.y + offset.y - 40 - elev
 							}px)`,
 						}}
 						title={`${cat.name}${isLeader ? " (leader)" : ""} — click for details`}

@@ -75,6 +75,7 @@ export function MapScreen() {
 		cats,
 		buildings,
 		anchor,
+		worldSeed,
 		ritualPoints,
 		statusTone,
 		now,
@@ -293,6 +294,7 @@ export function MapScreen() {
 						<TileLayer
 							chunks={chunks}
 							anchor={anchor}
+							seed={worldSeed}
 							ringRadius={villageRadius}
 							showInfo={infoMode}
 						/>
@@ -302,13 +304,14 @@ export function MapScreen() {
 							onRemove={onRemoveZone}
 							draftCorner={zoneDraft?.cornerA ?? null}
 						/>
-						<BuildingLayer buildings={buildings} />
+						<BuildingLayer buildings={buildings} seed={worldSeed} />
 						<CatLayer
 							cats={cats}
 							leaderId={colony.leaderId ?? null}
+							seed={worldSeed}
 							onSelect={setSelectedCatId}
 						/>
-						<RaiderLayer raiders={raiders} />
+						<RaiderLayer raiders={raiders} seed={worldSeed} />
 						{zoneDraft && (
 							// Drawing mode: swallow clicks/pans and pick tile corners.
 							// biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: full-map drawing surface; keyboard flow uses the panel buttons
