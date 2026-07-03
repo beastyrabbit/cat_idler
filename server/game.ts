@@ -295,16 +295,15 @@ const DEFAULT_ROLE_XP = {
 
 /**
  * Stocked general storage for a fresh settlement, plus starter materials. Food
- * is stocked well past the first hunt's payout (a hunt takes 8 game-hours to
- * return): it both carries the colony through that opening gap and, crucially,
- * sits the food store above the breeding threshold from turn one so the young
- * founders start a replacement generation immediately rather than after the
- * economy has already spun up. Water self-sustains quickly (river fetching
- * outpaces drinking), so it needs no comparable buffer.
+ * carries the colony through the opening gap before the first hunt returns (a
+ * hunt takes 8 game-hours). It need not be a large surplus: the per-capita
+ * breeding gate (see colonyCanBreed) lets the young founders start a replacement
+ * generation as long as the store holds a few units per cat, which this clears
+ * from turn one. Water self-sustains quickly (river fetching outpaces drinking).
  */
 const STARTING_RESOURCES = {
-	food: 300,
-	water: 120,
+	food: 150,
+	water: 100,
 	herbs: 16,
 	materials: 24,
 	blessings: 0,
