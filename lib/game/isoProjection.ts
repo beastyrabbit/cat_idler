@@ -2,8 +2,12 @@
  * Isometric projection for the world map.
  *
  * Sprites are Kenney "Isometric Nature" tiles: a 220x379 image whose ground
- * diamond (180x115, measured — not a forced 2:1 ratio) sits near the bottom of
- * the canvas, with tall content (cliffs, trees) rising above it. Terrain is
+ * diamond (182x115, measured with `magick -trim` — not a forced 2:1 ratio) sits
+ * inset at (19, 252) near the bottom of the canvas, with tall content (cliffs,
+ * trees) rising above it. Sprites are drawn at native canvas size and shifted by
+ * `-diamondInsetX` so the diamond lands exactly on the projected tile box; the
+ * pitch is the diamond width itself, so adjacent diamonds tessellate seamlessly.
+ * Terrain is
  * height-mapped: a tile on floor `f` is drawn raised by `f * FLOOR_PX` so cliff
  * faces read as solid columns. All math here is pure so the renderer components
  * stay thin.
@@ -21,12 +25,16 @@ export const FLOOR_PX = 72;
 export const MAX_FLOORS = 3;
 
 export interface IsoGeometry {
-	/** Ground diamond width in content px. */
+	/** Ground diamond width in content px (the tessellation pitch). */
 	tileWidth: number;
 	/** Ground diamond height in content px. */
 	tileHeight: number;
+	/** Full sprite canvas width (the diamond sits inset within this). */
+	imageWidth: number;
 	/** Full sprite canvas height (diamond + tall content above it). */
 	imageHeight: number;
+	/** X inset of the diamond's left vertex inside the sprite canvas. */
+	diamondInsetX: number;
 	/** Y offset of the diamond's top vertex inside the sprite canvas. */
 	surfaceOffset: number;
 	/** Vertical padding above the first diamond row so sprites fit. */
@@ -55,9 +63,11 @@ export interface IsoGeometry {
  * still lands at a non-negative content Y.
  */
 export const DEFAULT_ISO_GEOMETRY: IsoGeometry = {
-	tileWidth: 180,
+	tileWidth: 182,
 	tileHeight: 115,
+	imageWidth: 220,
 	imageHeight: 379,
+	diamondInsetX: 19,
 	surfaceOffset: 252,
 	surfacePadding: 252 + MAX_FLOORS * FLOOR_PX,
 	chunkSize: 12,

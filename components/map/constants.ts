@@ -8,26 +8,47 @@ import {
 export const ISO: IsoGeometry = DEFAULT_ISO_GEOMETRY;
 export const ISO_CONTENT = isoContentSize(ISO);
 
+/**
+ * Sub-pixel upscale applied to each Nature sprite so neighbouring ground
+ * diamonds overlap by ~1 px within their anti-aliased edge band, closing the
+ * hairline backdrop seam that perfectly-abutting AA edges would otherwise leave.
+ */
+export const TILE_BLEED_SCALE = (ISO.tileWidth + 2) / ISO.tileWidth;
+
 export const CHUNK_SIZE = ISO.chunkSize;
 
 /**
  * Actors (cats, buildings, fences, gates) still use the Kenney "Isometric
- * Miniature" sprites (256x512 canvas, 256x128 diamond). To seat them on the
- * Nature ground diamond (180 wide) we scale them uniformly by 180/256 rather
- * than stretching — their diamond becomes 180 wide, so they line up
- * horizontally with the ground while keeping their own aspect. Style mixing
- * (Miniature actors on Nature terrain) is accepted for this pass.
+ * Miniature" sprites (256x512 canvas, 256x128 diamond). We scale them uniformly
+ * by tileWidth/256 so their footprint diamond becomes exactly one Nature tile
+ * wide (they line up horizontally with the ground) while keeping their own
+ * aspect. Style mixing (Miniature actors on Nature terrain) is accepted here.
+ *
+ * The Miniature footprint is a 2:1 diamond (256x128); the Nature ground diamond
+ * is flatter (182x115). Uniform width-scaling therefore leaves the actor
+ * footprint (91 px tall) shorter than the ground diamond (115 px), so anchoring
+ * by the footprint's *top* vertex (the old behaviour) left actors floating ~12px
+ * high. Instead we anchor by the footprint *centre*, seating it on the tile's
+ * diamond centre — the correct compromise for the mismatched aspect ratios.
  */
 const MINI_DIAMOND_WIDTH = 256;
+const MINI_DIAMOND_HEIGHT = 128;
 const MINI_IMAGE_HEIGHT = 512;
+/** Canvas Y of the Miniature footprint diamond's top vertex. */
 const MINI_SURFACE_OFFSET = 368;
 export const ACTOR_SCALE = ISO.tileWidth / MINI_DIAMOND_WIDTH;
 export const ACTOR = {
 	scale: ACTOR_SCALE,
 	width: MINI_DIAMOND_WIDTH * ACTOR_SCALE,
 	height: MINI_IMAGE_HEIGHT * ACTOR_SCALE,
-	/** Y within the scaled canvas where the diamond top vertex sits. */
-	surfaceOffset: MINI_SURFACE_OFFSET * ACTOR_SCALE,
+	/**
+	 * Y offset subtracted from a tile's projected top so the actor's footprint
+	 * diamond centre lands on the tile diamond centre. Derived from the scaled
+	 * footprint-centre canvas Y minus half the Nature diamond height.
+	 */
+	surfaceOffset:
+		(MINI_SURFACE_OFFSET + MINI_DIAMOND_HEIGHT / 2) * ACTOR_SCALE -
+		ISO.tileHeight / 2,
 };
 
 /**

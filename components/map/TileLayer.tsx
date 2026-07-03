@@ -26,6 +26,7 @@ import {
 	GATE_SPRITE,
 	ISO,
 	ROAD_FILL,
+	TILE_BLEED_SCALE,
 	VILLAGE_RING_RADIUS,
 } from "./constants";
 import {
@@ -247,6 +248,7 @@ function NatureImg({
 	height,
 	z,
 	title,
+	dim = 1,
 }: {
 	sprite: NatureSprite;
 	left: number;
@@ -254,6 +256,8 @@ function NatureImg({
 	height: number;
 	z: number;
 	title?: string;
+	/** Brightness multiplier (1 = lit). Unexplored/fogged tiles pass < 1. */
+	dim?: number;
 }) {
 	return (
 		<img
@@ -263,10 +267,25 @@ function NatureImg({
 			draggable={false}
 			className="pointer-events-none absolute select-none"
 			style={{
-				left,
-				top: top - ISO.surfaceOffset - elevationOffset(height),
-				width: ISO.tileWidth,
+				filter: dim < 1 ? `brightness(${dim})` : undefined,
+				// The sprite is drawn at native canvas size and shifted left by the
+				// diamond's inset so its ground diamond lands on the projected box.
+				// Raised-block sprites (cliffs) carry their own diamond-top offset so
+				// their grass seats at the tile floor instead of double-raising.
+				left: left - ISO.diamondInsetX,
+				top:
+					top -
+					(sprite.surfaceOffset ?? ISO.surfaceOffset) -
+					elevationOffset(height),
+				width: ISO.imageWidth,
 				height: ISO.imageHeight,
+				// The diamond edges are anti-aliased (~50% alpha), so perfectly
+				// abutting neighbours still leave a hairline of backdrop between
+				// them. Grow each sprite a sub-pixel about its ground-diamond
+				// centre so neighbours overlap within the AA band and the seam
+				// disappears; painter's z-order hides the overlap.
+				transform: `scale(${TILE_BLEED_SCALE})`,
+				transformOrigin: `${ISO.diamondInsetX + ISO.tileWidth / 2}px ${ISO.surfaceOffset + ISO.tileHeight / 2}px`,
 				zIndex: z,
 			}}
 		/>
@@ -354,10 +373,15 @@ const IsoTile = memo(function IsoTile({
 		base = groundSprite(clearing ? "grassland" : terrain.biome);
 	}
 
-	const surfaceTop = top - ISO.surfaceOffset - elevationOffset(height);
 	const isBuiltRoad = worldTile?.overlayFeature === "road_built";
 	const isWornRoad = !water && !clearing && (worldTile?.pathWear ?? 0) >= 70;
 	const title = `${(worldTile?.type ?? terrain.biome).replaceAll("_", " ")} (${x}, ${y})`;
+
+	// Unexplored terrain is drawn as a darkened version of the real tile (a dim
+	// silhouette that keeps its shape) rather than a flat colour overlay, so fog
+	// reads as "the land, unlit" instead of grey z-banding. Brightness falls off
+	// with distance-to-frontier (fogOpacity), bottoming out near-black deep out.
+	const dim = fogOpacity > 0 ? Math.max(0.12, 1 - 0.9 * fogOpacity) : 1;
 
 	return (
 		<>
@@ -368,6 +392,7 @@ const IsoTile = memo(function IsoTile({
 				height={height}
 				z={tileZ}
 				title={title}
+				dim={dim}
 			/>
 
 			{/* Worn trails / paved roads: a translucent diamond over the surface. */}
@@ -394,6 +419,7 @@ const IsoTile = memo(function IsoTile({
 					top={top}
 					height={height}
 					z={objectZ}
+					dim={dim}
 				/>
 			)}
 
@@ -402,13 +428,14 @@ const IsoTile = memo(function IsoTile({
 				<NatureImg
 					sprite={
 						terrain.decoration.kind === "tree"
-							? treeSprite(terrain.decoration.species)
+							? treeSprite(terrain.decoration.species, terrain.biome)
 							: rockSprite(terrain.decoration.size)
 					}
 					left={left}
 					top={top}
 					height={height}
 					z={objectZ}
+					dim={dim}
 				/>
 			)}
 
@@ -444,26 +471,6 @@ const IsoTile = memo(function IsoTile({
 						{worldTile.resources.herbs >= RICH_HERBS && <span>🌿</span>}
 					</div>
 				)}
-
-			{/* Fog: a translucent haze over unexplored terrain (dim silhouette). */}
-			{fogOpacity > 0 && (
-				<div
-					className="pointer-events-none absolute"
-					style={{
-						left,
-						top: surfaceTop,
-						width: ISO.tileWidth,
-						height: ISO.imageHeight,
-						zIndex: objectZ,
-						maskImage: `url(${natureSpriteUrl(base)})`,
-						WebkitMaskImage: `url(${natureSpriteUrl(base)})`,
-						maskSize: "100% 100%",
-						WebkitMaskSize: "100% 100%",
-						background: FOG_COLOR,
-						opacity: fogOpacity,
-					}}
-				/>
-			)}
 		</>
 	);
 });

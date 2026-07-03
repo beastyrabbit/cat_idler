@@ -9,8 +9,8 @@
  *
  * Pack facts (measured with ImageMagick):
  *   - Every sprite is 220x379 px.
- *   - The ground diamond is 180x115 px, bottom-anchored; its top vertex sits at
- *     y=252 (surfaceOffset). Left margin ~19 px (horizontally centered).
+ *   - The ground diamond is 182x115 px, bottom-anchored; its top vertex sits at
+ *     y=252 (surfaceOffset) and its left vertex 19 px in (horizontally centered).
  *   - Each numeric group `NNN` ships 4 rotations `_0`.._3` of the SAME object.
  *
  * Rotation -> compass analysis (task convention: diamond top vertex = N, right
@@ -34,6 +34,15 @@ export interface NatureSprite {
 	file: string;
 	/** Rotation index 0..3 baked into `file` (for the future /dev/tiles editor). */
 	rotation: number;
+	/**
+	 * Canvas Y of this sprite's ground-diamond top vertex, when it differs from
+	 * the standard flat-tile anchor (252). Full-tile raised blocks (cliffs) author
+	 * their grass diamond higher in the canvas (y=187) with a one-floor face
+	 * beneath it; anchoring by this value seats the grass at the tile's floor
+	 * instead of double-raising it. Omit for flat/object sprites drawn on the
+	 * standard diamond.
+	 */
+	surfaceOffset?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,8 +58,16 @@ const PACK_SEGMENTS: readonly string[] = [
 ];
 
 /** Build a sprite record for a numeric group + rotation. */
-function makeSprite(group: string, rotation: number): NatureSprite {
-	return { file: `naturePack_${group}_${rotation}.png`, rotation };
+function makeSprite(
+	group: string,
+	rotation: number,
+	surfaceOffset?: number,
+): NatureSprite {
+	return {
+		file: `naturePack_${group}_${rotation}.png`,
+		rotation,
+		surfaceOffset,
+	};
 }
 
 /** Public URL of a Nature sprite (handles the spaces in the pack path). */
@@ -62,14 +79,6 @@ export function natureSpriteUrl(sprite: NatureSprite): string {
 // ---------------------------------------------------------------------------
 // Rotation -> facing tables
 // ---------------------------------------------------------------------------
-
-/**
- * Facing -> rotation for the straight cliff families (groups 097/116).
- * Confirmed on rot_097 and rot_116: r0 shows the flat face at the lower-left
- * (grid South) and r3 at the lower-right (grid East); r1/r2 turn the face to
- * the hidden back edges (West/North).
- */
-const CLIFF_ROT: Record<Direction, number> = { S: 0, W: 1, N: 2, E: 3 };
 
 /**
  * Facing -> rotation for stairs (group 124). Read off rot_120/rot_124: the
@@ -131,37 +140,40 @@ export function groundSprite(biome: BiomeRole): NatureSprite {
 // Cliffs
 // ---------------------------------------------------------------------------
 //
-// Confirmed cliff pieces are grass-topped blocks with a single tall vertical
-// face. Group 116 is the tan/dirt-faced straight edge (matches the dirt side
-// band of the 001 grass ground); group 097 is the grey/stone equivalent. No
-// distinct outer-corner / inner-corner / ridge / spur sprites could be isolated
-// in the organic low-poly art, so those bases fall back to the oriented edge.
-// Pillars (isolated raised tiles) use group 016, a small grass-topped mesa.
+// The pack's oriented single-face cliffs (groups 116/097) are only ~114 px wide
+// — half a tile — so a run of them reads as disconnected "torn strips" rather
+// than a continuous cliff wall. Group 095 is a FULL-tile (182 px) grass-topped
+// block: a 182x180 sprite whose grass diamond sits at canvas y=187 with a one-
+// floor (~64 px) face beneath it, and whose four rotations are identical (both
+// front faces are drawn, so the isometric camera always sees a solid S+E wall).
+// It meshes with the flat ground diamond and reads as a coherent cliff. Group
+// 107 is the equivalent rockier block. Anchoring by the sprite's own diamond-top
+// (187) seats the grass at the tile's floor instead of stacking an extra block.
+//
+// measured with `magick -trim`:
+//   095 -> 182x180 +19+187 (grass-topped full block)
+//   107 -> 182x178 +19+189 (rockier full block)
 
-// confidence: medium - 116 is a clean single-face tan cliff; rotations map to
-// facings via CLIFF_ROT (verified on rot_116).
-const CLIFF_EDGE_GROUP = "116";
-// confidence: low - 016 is a small grass-topped tan mound used as an isolated
-// pillar; not a true 4-faced pillar sprite (none exists in the pack).
-const CLIFF_PILLAR_GROUP = "016";
+/** Canvas Y of the raised-block sprites' grass-diamond top vertex. */
+const CLIFF_BLOCK_SURFACE_OFFSET = 187;
+// confidence: high - 095 is a full-width grass-topped one-floor block.
+const CLIFF_BLOCK_GROUP = "095";
+// confidence: medium - 107 is the rockier full-width block, for rocky/highland.
+const CLIFF_BLOCK_ROCKY_GROUP = "107";
 
 /**
- * Oriented cliff sprite. `base` and `variant` come from terrainGen's
- * CliffTerrainRole. `facing` is the downhill compass dir (null for pillar).
- * Falls back to a plausible cliff, never throws.
+ * Full-tile cliff block. `base`/`variant`/`facing` come from terrainGen's
+ * CliffTerrainRole but the block is orientation-symmetric (it always presents
+ * both visible front faces; front neighbours overdraw any spurious face), so we
+ * only vary the grass vs. rocky top. Never throws.
  */
 export function cliffSprite(
 	base: CliffBase,
 	_variant: string,
-	facing: Direction | null,
+	_facing: Direction | null,
 ): NatureSprite {
-	// confidence: low - no distinct 4-faced pillar art; use an isolated mesa.
-	if (base === "pillar" || facing === null) {
-		return makeSprite(CLIFF_PILLAR_GROUP, 0);
-	}
-	// confidence: medium for base "edge" (verified single-face cliff); low for
-	// "corner"/"ridge"/"spur" which reuse the oriented edge (no distinct art).
-	return makeSprite(CLIFF_EDGE_GROUP, CLIFF_ROT[facing]);
+	const group = base === "pillar" ? CLIFF_BLOCK_ROCKY_GROUP : CLIFF_BLOCK_GROUP;
+	return makeSprite(group, 0, CLIFF_BLOCK_SURFACE_OFFSET);
 }
 
 // ---------------------------------------------------------------------------
@@ -213,29 +225,34 @@ export function riverSprite(
 // ---------------------------------------------------------------------------
 //
 // Distinct species read off the montages (each ships 4 rotations; canopy is
-// near rotation-invariant, so rotation 0 is used). Index wraps via modulo.
+// near rotation-invariant, so rotation 0 is used). Species is picked from a
+// biome-appropriate palette so warm-climate trees (palms) stay out of conifer
+// biomes and vice-versa; the terrain's abstract `species` index just selects
+// within that biome's palette (wraps via modulo).
+//   062 round green deciduous · 051 pointed conifer/pine · 066 autumn deciduous
+//   061 palm · 148 tall cypress/columnar conifer · 079 bare stump
+const TREES_BY_BIOME: Record<BiomeRole, readonly string[]> = {
+	// Warm open lowland: leafy deciduous with the occasional palm.
+	lowland: ["062", "066", "061"],
+	// Temperate grassland: deciduous mix, no palms.
+	grassland: ["062", "066", "148"],
+	// Forest: conifer-dominant with some broadleaf.
+	forest: ["051", "148", "062"],
+	// Rocky slopes: sparse hardy conifers and dead stumps.
+	rocky: ["051", "079"],
+	// Cold highland: columnar conifers only.
+	highland: ["148", "051"],
+};
 
-const TREE_GROUPS: readonly string[] = [
-	// confidence: high - 062 is a round green deciduous tree.
-	"062",
-	// confidence: high - 051 is a pointed green conifer/pine.
-	"051",
-	// confidence: high - 066 is an autumn/orange deciduous tree.
-	"066",
-	// confidence: high - 061 is a palm tree.
-	"061",
-	// confidence: medium - 148 is a tall dark-green cypress/columnar conifer.
-	"148",
-	// confidence: medium - 079 is a bare tree stump (stand-in for dead/felled).
-	"079",
-];
+/** Fallback tree palette when a biome is unknown. */
+const DEFAULT_TREES: readonly string[] = ["062", "051"];
 
-/** Tree by species index (0..N, wraps if out of range). */
-export function treeSprite(species: number): NatureSprite {
+/** Tree for a biome + species index (index wraps within the biome palette). */
+export function treeSprite(species: number, biome?: BiomeRole): NatureSprite {
+	const palette = (biome && TREES_BY_BIOME[biome]) || DEFAULT_TREES;
 	const idx =
-		((Math.trunc(species) % TREE_GROUPS.length) + TREE_GROUPS.length) %
-		TREE_GROUPS.length;
-	return makeSprite(TREE_GROUPS[idx], 0);
+		((Math.trunc(species) % palette.length) + palette.length) % palette.length;
+	return makeSprite(palette[idx], 0);
 }
 
 // ---------------------------------------------------------------------------
