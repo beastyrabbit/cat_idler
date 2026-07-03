@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useEffect, useMemo, useState } from "react";
+import { isChoppedStumpTile } from "@/lib/game/depletion";
 import { tileToIso, zIndexFor } from "@/lib/game/isoProjection";
 import type { ChunkCoord } from "@/lib/game/mapView";
 import { chunkKey } from "@/lib/game/mapView";
@@ -15,6 +16,7 @@ import {
 	ROAD_DIR,
 	ROAD_WORN_FILTER,
 	roadSpriteFor,
+	STUMP_SPRITE,
 	TILE_SPRITES,
 	VILLAGE_RING_RADIUS,
 	WATER_SPRITE,
@@ -73,8 +75,13 @@ function useChunkTiles(chunkX: number, chunkY: number): WorldTile[] | null {
 	return tiles;
 }
 
-/** Tiles within this distance of the village are always revealed (~10x10). */
-const VILLAGE_VISION_RADIUS = 5.5;
+/**
+ * Euclidean halo of always-revealed ground *beyond* the fence, added to the
+ * ring radius. Scales with the (growing) village so the corners of a large ring
+ * never fall outside vision — a fixed radius used to leave far corners fogged,
+ * which read as missing tiles.
+ */
+const VILLAGE_VISION_MARGIN = 1.5;
 
 /** Resource markers only appear on notably rich tiles (biome max ~60/25). */
 const RICH_FOOD = 35;
@@ -86,12 +93,13 @@ function isExplored(
 	ringRadius: number,
 ): boolean {
 	if (tile.pathWear > 62) return true;
-	// Everything inside the fence is cleared ground, and the village grants a
-	// vision halo just beyond it, so both always read as explored.
-	if (villageDistance(tile, anchor) < ringRadius) return true;
+	// The colony always knows its own walls and the ground just outside them:
+	// the whole fence ring (corners included, hence `<=`) plus a one-tile halo
+	// read as explored no matter how large the village has grown.
+	if (villageDistance(tile, anchor) <= ringRadius) return true;
 	const dx = tile.x - anchor.x;
 	const dy = tile.y - anchor.y;
-	return Math.sqrt(dx * dx + dy * dy) < VILLAGE_VISION_RADIUS;
+	return Math.sqrt(dx * dx + dy * dy) < ringRadius + VILLAGE_VISION_MARGIN;
 }
 
 /** Deepest fog shade — used for far tiles and ungenerated chunks. */
@@ -153,9 +161,10 @@ function villageDistance(
 
 /**
  * Fence sprite for a village-ring tile: fences follow the edge they sit
- * on, the south side gets an open gate, water gaps stay open.
+ * on, the south side gets an open gate, water gaps stay open. Exported so the
+ * /dev/fit QA page exercises the exact same corner seating as the live map.
  */
-function ringSprites(
+export function ringSprites(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
 	ringRadius: number,
@@ -187,15 +196,16 @@ function ringSprites(
 }
 
 /**
- * Ground inside the embankment is cleared for construction — render it as
- * open grass so buildings and cats aren't hidden behind biome trees.
+ * Ground inside and on the embankment is cleared for construction — render it
+ * as open grass so buildings and cats aren't hidden behind biome trees, and so
+ * no tree sits under the fence line. `<=` includes the ring the fence sits on.
  */
 function isVillageClearing(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
 	ringRadius: number,
 ): boolean {
-	return villageDistance(tile, anchor) < ringRadius && !hasWater(tile);
+	return villageDistance(tile, anchor) <= ringRadius && !hasWater(tile);
 }
 
 type RoadKind = "built" | "worn";
@@ -300,16 +310,20 @@ const IsoTile = memo(function IsoTile({
 
 	// Roads (built + heavily-trodden) come in pre-oriented from the chunk (see
 	// computeRoadSprites) so straights, corners and crossings line up with the
-	// road network. Water wins over everything; inside the fence is bare grass.
+	// road network. Water wins over everything; inside the fence is bare grass;
+	// a felled forest tile shows a stump instead of plain grass.
 	const isWater = tile.type === "river" || tile.overlayFeature === "river";
+	const clearing = isVillageClearing(tile, anchor, ringRadius);
 	const sprite: { src: string; filter?: string; base?: string } | undefined =
 		isWater
 			? { src: WATER_SPRITE }
 			: roadSprite
 				? roadSprite
-				: isVillageClearing(tile, anchor, ringRadius)
+				: clearing
 					? TILE_SPRITES.field
-					: TILE_SPRITES[tile.type];
+					: isChoppedStumpTile(tile)
+						? { src: STUMP_SPRITE, base: TILE_SPRITES.field.src }
+						: TILE_SPRITES[tile.type];
 	const title = `${tile.type.replaceAll("_", " ")} (${tile.x}, ${tile.y})`;
 	// Standalone tree sprites declare a grass `base` underlay; water/road/path
 	// sprites carry their own ground and have none.

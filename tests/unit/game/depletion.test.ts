@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	CHOPPED_FOREST_FOOD_CAP,
 	FOREST_TYPES,
+	isChoppedStumpTile,
 	isForestType,
 	regrowthAmount,
 } from "@/lib/game/depletion";
@@ -41,5 +43,48 @@ describe("regrowthAmount", () => {
 
 	it("scales linearly with elapsed time", () => {
 		expect(regrowthAmount(120)).toBeCloseTo(120 / 3600);
+	});
+});
+
+describe("isChoppedStumpTile", () => {
+	const stump = {
+		type: "field",
+		maxResources: { food: CHOPPED_FOREST_FOOD_CAP },
+		lastDepleted: 1_000,
+	};
+
+	it("detects a felled forest by its low field food cap + depletion stamp", () => {
+		expect(isChoppedStumpTile(stump)).toBe(true);
+	});
+
+	it("ignores a natural field tile (higher food cap)", () => {
+		expect(
+			isChoppedStumpTile({
+				type: "field",
+				maxResources: { food: 40 },
+				lastDepleted: 1_000,
+			}),
+		).toBe(false);
+	});
+
+	it("ignores a pristine field tile (never depleted)", () => {
+		expect(isChoppedStumpTile({ ...stump, lastDepleted: 0 })).toBe(false);
+	});
+
+	it("ignores standing forest and water", () => {
+		expect(
+			isChoppedStumpTile({
+				type: "forest",
+				maxResources: { food: 0 },
+				lastDepleted: 1_000,
+			}),
+		).toBe(false);
+		expect(
+			isChoppedStumpTile({
+				type: "river",
+				maxResources: { food: 0 },
+				lastDepleted: 1_000,
+			}),
+		).toBe(false);
 	});
 });

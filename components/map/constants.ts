@@ -75,6 +75,9 @@ export const GATE_SPRITE = "/images/iso/tiles/gate.png";
 /** Water terrain (Isometric Nature pack, remapped to our diamond). */
 export const WATER_SPRITE = "/images/iso/tiles/water.png";
 
+/** Chopped-forest stump (drawn where a felled forest tile became field). */
+export const STUMP_SPRITE = "/images/iso/tiles/stump.png";
+
 /**
  * Oriented road/path sprites (Kenney "Isometric Miniature Overworld", same
  * 256x512 canvas as the ground tiles). A road tile picks its sprite from which
@@ -93,6 +96,19 @@ export const ROAD_SPRITES = {
 	cornerES: "/images/iso/tiles/path-corner-s.png",
 	cornerWN: "/images/iso/tiles/path-corner-n.png",
 	cornerWS: "/images/iso/tiles/path-corner-w.png",
+	/**
+	 * Dead-end: path enters from one side and stops, keyed by the tile-space
+	 * neighbour it connects to (E=bottom-right, W=top-left, N=top-right,
+	 * S=bottom-left on screen). The pack's End sprites label the N/S diagonal
+	 * opposite to its Corner sprites, so end-N connects our S edge and vice
+	 * versa — verified sprite-by-sprite on /dev/fit.
+	 */
+	endE: "/images/iso/tiles/path-end-e.png",
+	endW: "/images/iso/tiles/path-end-w.png",
+	endN: "/images/iso/tiles/path-end-s.png",
+	endS: "/images/iso/tiles/path-end-n.png",
+	/** Isolated stub (no road neighbours) — a path terminating in a clearing. */
+	clearing: "/images/iso/tiles/path-clearing-s.png",
 	/** 3- or 4-way junction. */
 	crossing: "/images/iso/tiles/path-crossing.png",
 } as const;
@@ -107,11 +123,12 @@ export const ROAD_DIR = { E: 1, W: 2, N: 4, S: 8 } as const;
  * Oriented road sprite for a tile, given which of its orthogonal neighbours are
  * also roads (a bitmask of {@link ROAD_DIR}). Pure so it can be unit-tested.
  *
- * - opposite pair only (E+W, or N+S) → a straight run along that axis
- * - one horizontal and one vertical neighbour → the matching L-corner
- * - three or more neighbours → a crossing
- * - a lone neighbour (dead-end) reads as a straight along its axis
- * - no neighbours (isolated) → an x-axis straight, an arbitrary default
+ * Full autotile:
+ * - no neighbours → an isolated clearing stub
+ * - one neighbour → a dead-end oriented toward it
+ * - opposite pair (E+W, or N+S) → a straight run along that axis
+ * - one horizontal + one vertical → the matching L-corner
+ * - three or more → a crossing (T or 4-way)
  */
 export function roadSpriteFor(mask: number): string {
 	const e = (mask & ROAD_DIR.E) !== 0;
@@ -123,14 +140,20 @@ export function roadSpriteFor(mask: number): string {
 	const total = horizontal + vertical;
 
 	if (total >= 3) return ROAD_SPRITES.crossing;
-	if (horizontal > 0 && vertical > 0) {
-		if (e && n) return ROAD_SPRITES.cornerEN;
-		if (e && s) return ROAD_SPRITES.cornerES;
-		if (w && n) return ROAD_SPRITES.cornerWN;
-		return ROAD_SPRITES.cornerWS; // w && s
+	if (total === 0) return ROAD_SPRITES.clearing;
+	if (total === 1) {
+		if (e) return ROAD_SPRITES.endE;
+		if (w) return ROAD_SPRITES.endW;
+		if (n) return ROAD_SPRITES.endN;
+		return ROAD_SPRITES.endS; // s
 	}
-	if (vertical > 0) return ROAD_SPRITES.straightY;
-	return ROAD_SPRITES.straightX; // horizontal run, lone x-neighbour, or isolated
+	// total === 2
+	if (e && w) return ROAD_SPRITES.straightX;
+	if (n && s) return ROAD_SPRITES.straightY;
+	if (e && n) return ROAD_SPRITES.cornerEN;
+	if (e && s) return ROAD_SPRITES.cornerES;
+	if (w && n) return ROAD_SPRITES.cornerWN;
+	return ROAD_SPRITES.cornerWS; // w && s
 }
 
 export const BUILDING_SPRITES: Record<string, string> = {

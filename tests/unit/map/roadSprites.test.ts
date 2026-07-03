@@ -16,15 +16,15 @@ describe("roadSpriteFor", () => {
 		expect(roadSpriteFor(N | S)).toBe(ROAD_SPRITES.straightY);
 	});
 
-	it("reads a lone neighbour (dead-end) as a straight along its axis", () => {
-		expect(roadSpriteFor(E)).toBe(ROAD_SPRITES.straightX);
-		expect(roadSpriteFor(W)).toBe(ROAD_SPRITES.straightX);
-		expect(roadSpriteFor(N)).toBe(ROAD_SPRITES.straightY);
-		expect(roadSpriteFor(S)).toBe(ROAD_SPRITES.straightY);
+	it("reads a lone neighbour as a dead-end oriented toward it", () => {
+		expect(roadSpriteFor(E)).toBe(ROAD_SPRITES.endE);
+		expect(roadSpriteFor(W)).toBe(ROAD_SPRITES.endW);
+		expect(roadSpriteFor(N)).toBe(ROAD_SPRITES.endN);
+		expect(roadSpriteFor(S)).toBe(ROAD_SPRITES.endS);
 	});
 
-	it("defaults an isolated road tile to an x-axis straight", () => {
-		expect(roadSpriteFor(0)).toBe(ROAD_SPRITES.straightX);
+	it("renders an isolated road tile as a clearing stub", () => {
+		expect(roadSpriteFor(0)).toBe(ROAD_SPRITES.clearing);
 	});
 
 	it("picks the matching L-corner for each perpendicular pair", () => {

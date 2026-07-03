@@ -38,3 +38,28 @@ export function regrowthAmount(elapsedSec: number): number {
 	}
 	return elapsedSec / 3600;
 }
+
+/**
+ * The food cap the chop path stamps onto a felled forest tile. A natural
+ * grassland/meadow `field` tile caps far higher (40+), so this low cap is a
+ * reliable render-only signature that a tile *used to be forest* and was
+ * chopped — no schema field or overlay marker needed.
+ */
+export const CHOPPED_FOREST_FOOD_CAP = 5;
+
+/**
+ * Whether a tile is a chopped-forest stump: converted to `field`, drained, and
+ * stamped with the chop's low food cap. Pure and render-only — lets the map
+ * draw a tree stump where a forest once stood without touching the chop writer.
+ */
+export function isChoppedStumpTile(tile: {
+	type: string;
+	maxResources: { food: number };
+	lastDepleted: number;
+}): boolean {
+	return (
+		tile.type === "field" &&
+		tile.lastDepleted > 0 &&
+		tile.maxResources.food <= CHOPPED_FOREST_FOOD_CAP
+	);
+}
