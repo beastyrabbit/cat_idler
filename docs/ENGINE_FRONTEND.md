@@ -3,6 +3,26 @@
 _What should render the world map? Diagnosis of today's DOM renderer, evaluation of
 alternatives, and a recommended path. Scope: `components/map/*`, `lib/game/isoProjection.ts`._
 
+## Status: validated
+
+Commit `40ab476` landed a side-by-side `/game/pixi` spike using raw `pixi.js@8.19`
+with `pixi-viewport@6.0.3` (no `@pixi/react`). It reuses the shared iso projection,
+sprite table, SSE dashboard, and chunks API, so placement is pixel-identical to `/game`.
+
+The spike uses two LOD bands keyed at `scale = 0.2`: close mode mounts per-tile sprites
+for visible chunks; overview mode draws one dominant-biome diamond per chunk, reducing the
+whole-map view to 625 quads instead of ~90k DOM nodes. At 1600×900 it measured 60 fps
+close (`scale 0.45`), ~54 fps mid (`0.225`), and 60 fps at whole-map overview (`0.030`,
+all 625 chunks) — the exact case that stalls the DOM renderer — with zero console errors.
+Cats are pooled sprites lerped per frame with 8-facing walk animation.
+
+Known spike gaps: no road autotiling, zones, HUD, or selection; fog tint is brightness-only;
+the ring radius is fixed. Before cutover, wait for the in-flight organic-village rewiring of
+`components/map/TileLayer.tsx` to settle, then hoist its pure render helpers — fog brightness,
+fence sprites, road autotile, tile-sprite selection, and `isExplored` — into a shared lib module
+both renderers import. After that, port in the step order below: tiles, buildings, cats,
+zones/raiders, then the viewport swap, with each step shippable on its own.
+
 ## 1. What we have today
 
 The map is a **tree of absolutely-positioned React DOM nodes** inside one CSS-transformed
