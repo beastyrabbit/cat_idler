@@ -13,7 +13,7 @@ import { NextResponse } from "next/server";
 
 import { getDb } from "@/db/client";
 import { chunkWindow, DEFAULT_ISO_GEOMETRY } from "@/lib/game/isoProjection";
-import { ensureGlobalState } from "@/server/game";
+import { ensureGlobalState, getVillagePayload } from "@/server/game";
 import { ensureChunk, getChunkTiles } from "@/server/worldMap";
 
 export const runtime = "nodejs";
@@ -51,8 +51,9 @@ export async function GET(request: Request) {
 			ensureChunk(db, colonyId, chunkX, chunkY);
 		}
 		const tiles = getChunkTiles(db, colonyId, chunkX, chunkY);
+		const village = getVillagePayload(db, colonyId);
 		return NextResponse.json(
-			{ tiles },
+			{ tiles, ...village },
 			{
 				headers: {
 					// Tiles are immutable in this phase; let the browser cache them

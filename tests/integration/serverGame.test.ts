@@ -853,6 +853,12 @@ describe("ritual completion", () => {
 describe("shrine deposits", () => {
 	it("hunters carry the catch home and deposit it at the shrine", () => {
 		const colony = ensureGlobalColony(db);
+		// Pin terrain (walkability is generated from worldSeed, which defaults to
+		// Date.now()) so the long walk home isn't flakily dammed by a river.
+		db.update(colonies)
+			.set({ worldSeed: 20240703 })
+			.where(eq(colonies._id, colony._id))
+			.run();
 		setResources(db, colony._id, { food: 100, water: 100 });
 		const hunter = getAliveCatsForTest(db, colony._id)[0];
 
@@ -1938,6 +1944,12 @@ describe("cat movement", () => {
 
 	it("walks a traveling cat toward its destination and sets it to work on arrival", () => {
 		const colony = ensureGlobalColony(db);
+		// Pin terrain (worldSeed defaults to Date.now()) so the straight east
+		// corridor the test measures base speed on isn't flakily rerouted by a river.
+		db.update(colonies)
+			.set({ worldSeed: 20240703 })
+			.where(eq(colonies._id, colony._id))
+			.run();
 		const walker = getAliveCatsForTest(db, colony._id)[0];
 
 		// Worldgen seeds trail wear that grants speed bonuses — flatten it
@@ -1963,8 +1975,12 @@ describe("cat movement", () => {
 		let updated = getAliveCatsForTest(db, colony._id).find(
 			(cat) => cat._id === walker._id,
 		)!;
-		// 10s at 0.5 tiles/s — halfway there, still traveling.
-		expect(updated.position.x).toBeCloseTo(25, 5);
+		// ~10s at 0.5 tiles/s — roughly halfway, still traveling. The exact tile is
+		// elapsedSec-sensitive (a heavily-loaded suite can bill 11s for a 10s
+		// advance), so allow a tile of slack here; the arrival assertion below pins
+		// the base speed precisely.
+		expect(updated.position.x).toBeGreaterThanOrEqual(24);
+		expect(updated.position.x).toBeLessThanOrEqual(26);
 		expect(updated.position.y).toBe(6);
 		expect(updated.activity).toBe("traveling");
 

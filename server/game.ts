@@ -32,7 +32,11 @@ import {
 	worldTiles,
 } from "@/db/schema";
 import type { CatSpriteParams } from "@/lib/cat-renderer/types";
-import { isForestType, regrowthAmount } from "@/lib/game/depletion";
+import {
+	CHOPPED_FOREST_FOOD_CAP,
+	isForestType,
+	regrowthAmount,
+} from "@/lib/game/depletion";
 import { KICK_THRESHOLD, tallyVotes } from "@/lib/game/elections";
 import {
 	extractGeneticTraits,
@@ -145,11 +149,22 @@ import {
 	isOwned,
 	nextResearchTarget,
 	pointsPerTickFor,
-	type ResolvedEffects,
 	resolveEffects,
 	serializeUpgradeTreeState,
 	type UpgradeTreeState,
 } from "@/lib/game/upgradeTree";
+import {
+	type GatePlacement,
+	isInsideVillage,
+	SIDE_DELTA as VILLAGE_SIDE_DELTA,
+	type VillageArea,
+	type Pos as VillagePos,
+	expandVillage as villageExpand,
+	fromTiles as villageFromTiles,
+	gatePlacement as villageGate,
+	shouldExpand as villageShouldExpand,
+	toTiles as villageToTiles,
+} from "@/lib/game/villageArea";
 import {
 	colonyToWorld,
 	nextBuildingSite,
@@ -169,7 +184,7 @@ import type { CatStats } from "@/types/game";
 
 import { runElectionLifecycle } from "./elections";
 import { countOnlinePlayers, upsertPlayer } from "./players";
-import { initializeWorldMap } from "./worldMap";
+import { ensureChunk, initializeWorldMap } from "./worldMap";
 import { activeZones, sweepExpiredZones } from "./zones";
 
 /** Tile types a quarry expedition can mine for materials. */
@@ -235,10 +250,17 @@ function routeForCat(
 		if (idx >= 0) {
 			const remaining = cached.route.slice(idx);
 			// Interior tiles (everything but the always-enterable goal) must still be
-			// walkable — a freshly-spawned river or a new fence tile invalidates the plan.
-			const blockedAhead = remaining
-				.slice(1, -1)
-				.some((p) => grid.isBlocked(p.x, p.y));
+			// walkable, and every edge must still be crossable. The organic fence is
+			// an edge blocker, so checking tiles alone would let stale routes keep
+			// using a gate that moved after village expansion.
+			const blockedAhead = remaining.slice(1).some((p, i) => {
+				const prev = remaining[i];
+				const isGoal = i === remaining.length - 2;
+				return (
+					(!isGoal && grid.isBlocked(p.x, p.y)) ||
+					(grid.fenceBlocksStep?.(prev.x, prev.y, p.x, p.y) ?? false)
+				);
+			});
 			if (!blockedAhead) {
 				return remaining;
 			}
@@ -989,6 +1011,7 @@ export function ensureGlobalColony(db: GameDb): ColonyRow {
 				upgradeTree: serializeUpgradeTreeState(createUpgradeTreeState()),
 				ritualRequestedAt: null,
 				criticalSince: null,
+				claimedTiles: foundingClaimedTiles(),
 				threatPressure: 0,
 				lastRaidAt: null,
 				activeRaidId: null,
@@ -1017,8 +1040,149 @@ export function ensureGlobalColony(db: GameDb): ColonyRow {
 	}
 
 	ensureShrineAndWorld(db, colony._id);
+	colony = ensureClaimedTiles(db, getColony(db, colony._id));
 
-	return getColony(db, colony._id);
+	return colony;
+}
+
+/**
+ * Interior radius (Chebyshev) of the founding village. The auto-fence sits one
+ * tile beyond, at the historical ring radius (4), so a fresh colony's footprint
+ * and fence match the old square exactly before it grows organically.
+ */
+const VILLAGE_START_RADIUS = 3;
+
+/** The founding claimed footprint: the interior square around the anchor. */
+function foundingClaimedTiles(): VillagePos[] {
+	const out: VillagePos[] = [];
+	for (let dy = -VILLAGE_START_RADIUS; dy <= VILLAGE_START_RADIUS; dy++) {
+		for (let dx = -VILLAGE_START_RADIUS; dx <= VILLAGE_START_RADIUS; dx++) {
+			out.push({ x: VILLAGE_ANCHOR.x + dx, y: VILLAGE_ANCHOR.y + dy });
+		}
+	}
+	return out;
+}
+
+/**
+ * The colony's claimed organic village area (lib/game/villageArea.ts), backfilled
+ * from the founding square for legacy rows so the fence/clearing/walkability keep
+ * working before the first save writes `claimedTiles`.
+ */
+function getClaimedArea(colony: ColonyRow): VillageArea {
+	return villageFromTiles(colony.claimedTiles ?? foundingClaimedTiles());
+}
+
+/** The village gate for a claimed area — opens onto the busiest worn corridor,
+ * else the historical south side. */
+function claimedGate(area: VillageArea): GatePlacement | null {
+	return villageGate(area);
+}
+
+function ensureClaimedTiles(db: GameDb, colony: ColonyRow): ColonyRow {
+	if (colony.claimedTiles) {
+		return colony;
+	}
+	const claimedTiles = foundingClaimedTiles();
+	db.update(colonies)
+		.set({ claimedTiles })
+		.where(eq(colonies._id, colony._id))
+		.run();
+	return { ...colony, claimedTiles };
+}
+
+export function getVillagePayload(db: GameDb, colonyId: string) {
+	const colony = getColony(db, colonyId);
+	const colonyBuildings = db
+		.select()
+		.from(buildings)
+		.where(eq(buildings.colonyId, colonyId))
+		.all();
+	const area = getClaimedArea(colony);
+	return {
+		villageRadius: villageRingRadius(colonyBuildings.length),
+		claimedTiles: villageToTiles(area),
+		villageGate: claimedGate(area),
+	};
+}
+
+function worldToVillageLocal(pos: VillagePos): VillagePos {
+	return { x: pos.x - VILLAGE_ANCHOR.x, y: pos.y - VILLAGE_ANCHOR.y };
+}
+
+function nextClaimedBuildingSite(
+	area: VillageArea,
+	occupied: VillagePos[],
+	roll: number,
+	isBlocked?: (world: VillagePos) => boolean,
+): VillagePos | null {
+	const taken = new Set(
+		occupied.map((p) => `${VILLAGE_ANCHOR.x + p.x},${VILLAGE_ANCHOR.y + p.y}`),
+	);
+	taken.add(`${VILLAGE_ANCHOR.x},${VILLAGE_ANCHOR.y}`);
+	const free = villageToTiles(area).filter(
+		(pos) => !taken.has(`${pos.x},${pos.y}`) && !(isBlocked?.(pos) ?? false),
+	);
+	if (free.length === 0) {
+		return null;
+	}
+	const clamped = Math.min(Math.max(roll, 0), 0.999999);
+	return worldToVillageLocal(free[Math.floor(clamped * free.length)]);
+}
+
+function isAdjacentToArea(pos: VillagePos, area: VillageArea): boolean {
+	return (
+		isInsideVillage({ x: pos.x + 1, y: pos.y }, area) ||
+		isInsideVillage({ x: pos.x - 1, y: pos.y }, area) ||
+		isInsideVillage({ x: pos.x, y: pos.y + 1 }, area) ||
+		isInsideVillage({ x: pos.x, y: pos.y - 1 }, area)
+	);
+}
+
+function chunkCoordForTile(n: number): number {
+	return Math.floor(n / 12);
+}
+
+function getTileAt(
+	db: GameDb,
+	colonyId: string,
+	pos: VillagePos,
+): WorldTileRow | undefined {
+	return db
+		.select()
+		.from(worldTiles)
+		.where(
+			and(
+				eq(worldTiles.colonyId, colonyId),
+				eq(worldTiles.x, pos.x),
+				eq(worldTiles.y, pos.y),
+			),
+		)
+		.get();
+}
+
+function clearClaimedTile(
+	db: GameDb,
+	colonyId: string,
+	pos: VillagePos,
+	now: number,
+) {
+	ensureChunk(db, colonyId, chunkCoordForTile(pos.x), chunkCoordForTile(pos.y));
+	const tile = getTileAt(db, colonyId, pos);
+	if (!tile || !isForestType(tile.type)) {
+		return;
+	}
+	db.update(worldTiles)
+		.set({
+			type: "field",
+			resources: { ...tile.resources, food: 0, herbs: 0 },
+			maxResources: {
+				...tile.maxResources,
+				food: CHOPPED_FOREST_FOOD_CAP,
+			},
+			lastDepleted: now,
+		})
+		.where(eq(worldTiles._id, tile._id))
+		.run();
 }
 
 function ensureShrineAndWorld(db: GameDb, colonyId: string) {
@@ -1096,6 +1260,14 @@ function ensureShrineAndWorld(db: GameDb, colonyId: string) {
 	// First run for this colony: seed the starting 3x3 world chunks
 	// (idempotent — skips chunks that already exist).
 	initializeWorldMap(db, colonyId);
+
+	// Seed the organic village footprint (lib/game/villageArea.ts) with the
+	// founding square. From here it grows one tile at a time; the fence, clearing,
+	// building sites and walkability all derive from this set.
+	db.update(colonies)
+		.set({ claimedTiles: foundingClaimedTiles() })
+		.where(eq(colonies._id, colonyId))
+		.run();
 }
 
 function getAliveCats(db: GameDb, colonyId: string): CatRow[] {
@@ -1801,6 +1973,7 @@ export function getGlobalDashboard(db: GameDb) {
 	const warriorCount = aliveCats.filter(
 		(cat) => cat.specialization === "warrior",
 	).length;
+	const claimedArea = getClaimedArea(colony);
 
 	return {
 		now,
@@ -1817,6 +1990,8 @@ export function getGlobalDashboard(db: GameDb) {
 		// server-side worldgen derives from the very same seed.
 		worldSeed: colony.worldSeed ?? colony.createdAt,
 		villageRadius: villageRingRadius(colonyBuildings.length),
+		claimedTiles: villageToTiles(claimedArea),
+		villageGate: claimedGate(claimedArea),
 		buildings: colonyBuildings.map((building) => ({
 			...building,
 			worldPosition: colonyToWorld(building.position),
@@ -2788,10 +2963,9 @@ export function workerTick(db: GameDb) {
 			return cachedWaterSites;
 		};
 
-		// A colony-local build cell sits on water when its world tile is a
-		// river/pond — scaffolds must never rise there.
-		const localCellIsWater = (local: WorldPos): boolean => {
-			const world = colonyToWorld(local);
+		// A claimed build cell sits on water when its world tile is a river/pond
+		// — scaffolds must never rise there.
+		const worldCellIsWater = (world: WorldPos): boolean => {
 			const tile = colonyTiles().find(
 				(t) => t.x === world.x && t.y === world.y,
 			);
@@ -2909,11 +3083,11 @@ export function workerTick(db: GameDb) {
 					.where(eq(buildings.colonyId, colony._id))
 					.all()
 					.map((b) => b.position);
-				const siteLocal = nextBuildingSite(
+				const siteLocal = nextClaimedBuildingSite(
+					getClaimedArea(getColony(tx, colony._id)),
 					occupied,
 					nextMovementRoll(),
-					undefined,
-					localCellIsWater,
+					worldCellIsWater,
 				);
 				if (siteLocal) {
 					const buildingId = nanoid();
@@ -2977,6 +3151,14 @@ export function workerTick(db: GameDb) {
 					scoutPromotions += 1;
 				}
 			}
+			let expansionSite: WorldPos | undefined;
+			if (job.kind === "expand_village") {
+				const target = (jobMetadata as Record<string, unknown> | null)
+					?.target as WorldPos | undefined;
+				if (typeof target?.x === "number" && typeof target?.y === "number") {
+					expansionSite = { x: target.x, y: target.y };
+				}
+			}
 			const jobDestination = destinationForJob(job.kind, {
 				anchor: VILLAGE_ANCHOR,
 				shrine: VILLAGE_ANCHOR,
@@ -2986,6 +3168,7 @@ export function workerTick(db: GameDb) {
 				quarrySite,
 				waterSite,
 				exploreSite,
+				expansionSite,
 			});
 			if (jobDestination) {
 				// Jobs are accepted at the shrine: the cat reports there first,
@@ -3874,6 +4057,52 @@ export function workerTick(db: GameDb) {
 				);
 			}
 
+			if (job.kind === "expand_village") {
+				const meta = (job.metadata as Record<string, unknown> | null) ?? {};
+				const rawTarget = (meta.target ?? meta.site) as WorldPos | undefined;
+				if (
+					typeof rawTarget?.x === "number" &&
+					typeof rawTarget?.y === "number"
+				) {
+					const target = {
+						x: Math.round(rawTarget.x),
+						y: Math.round(rawTarget.y),
+					};
+					ensureChunk(
+						tx,
+						colony._id,
+						chunkCoordForTile(target.x),
+						chunkCoordForTile(target.y),
+					);
+					const tile = getTileAt(tx, colony._id, target);
+					const currentColony = getColony(tx, colony._id);
+					const currentArea = getClaimedArea(currentColony);
+					if (
+						!isInsideVillage(target, currentArea) &&
+						isAdjacentToArea(target, currentArea) &&
+						(!tile || !tileHasWater(tile))
+					) {
+						const grown = [...villageToTiles(currentArea), target];
+						tx.update(colonies)
+							.set({ claimedTiles: grown })
+							.where(eq(colonies._id, colony._id))
+							.run();
+						clearClaimedTile(tx, colony._id, target, now);
+						routeCache.clear();
+						logEvent(
+							tx,
+							colony._id,
+							"village_expanded",
+							assignedCat
+								? `${assignedCat.name} cleared new ground for the village at (${target.x}, ${target.y}).`
+								: `The village claimed new ground at (${target.x}, ${target.y}).`,
+							assignedCat ? [assignedCat._id] : [],
+							{ target },
+						);
+					}
+				}
+			}
+
 			if (job.kind === "build_house" && assignedCat) {
 				const phase = String(
 					(job.metadata as Record<string, unknown> | null)?.phase ??
@@ -4068,7 +4297,8 @@ export function workerTick(db: GameDb) {
 					job.kind === "ritual" ||
 					job.kind === "quarry" ||
 					job.kind === "explore" ||
-					job.kind === "fetch_water")
+					job.kind === "fetch_water" ||
+					job.kind === "expand_village")
 			) {
 				const homeSpot =
 					job.kind === "build_house"
@@ -4194,10 +4424,62 @@ export function workerTick(db: GameDb) {
 		// crossing, and "outside the village" reveal all key off it so the
 		// server and client agree on where the palisade sits.
 		const ringRadius = villageRingRadius(colonyBuildings.length);
-		// Walkability for real pathing this tick: rivers block, the palisade
-		// blocks every ring tile but the south gate, roads are cheap. Built once
-		// from the tiles already cached above and shared by cats and raiders.
-		const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + ringRadius };
+		// Organic village footprint: the palisade and gate derive from the claimed
+		// shape (lib/game/villageArea.ts), so the fence hugs the actual village.
+		const movementColony = getColony(tx, colony._id);
+		const claimedArea = getClaimedArea(movementColony);
+		// Organic growth: when buildable ground runs low or the settlement gets
+		// crowded, the leader queues a small cat job to claim ONE adjacent, dry
+		// tile. Completion performs the mutation; this phase only selects and
+		// records the target. Water is excluded via the known tiles.
+		if (
+			villageShouldExpand(
+				aliveCats.length,
+				claimedArea.size,
+				colonyBuildings.length,
+			) &&
+			![
+				...getJobsByStatus(tx, colony._id, "active"),
+				...getJobsByStatus(tx, colony._id, "queued"),
+			].some((job) => job.kind === "expand_village") &&
+			canTakePolicyAction()
+		) {
+			const waterKeys = new Set(
+				colonyTiles()
+					.filter((t) => tileHasWater(t))
+					.map((t) => `${t.x},${t.y}`),
+			);
+			const next = villageExpand(claimedArea, {
+				isWater: (p) => waterKeys.has(`${p.x},${p.y}`),
+			});
+			if (next) {
+				queueJob(
+					tx,
+					colony._id,
+					"expand_village",
+					"leader",
+					upgrades,
+					runtime,
+					null,
+					selectBestCat(tx, colony._id, "architect"),
+					{ target: next },
+				);
+			}
+		}
+		const areaGate = claimedGate(claimedArea);
+		// Gate passage tile (the tile just outside the gate edge). Used by the
+		// straight-walk fallback and the "at the gate" check; at founding it equals
+		// the historical south gate, and it tracks the organic gate as the village
+		// grows. Falls back to the old south gate if the area has no perimeter.
+		const gate = areaGate
+			? {
+					x: areaGate.x + VILLAGE_SIDE_DELTA[areaGate.side].x,
+					y: areaGate.y + VILLAGE_SIDE_DELTA[areaGate.side].y,
+				}
+			: { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + ringRadius };
+		// Walkability for real pathing this tick: rivers block, the palisade blocks
+		// crossing the claimed boundary except at the gate, roads are cheap. Built
+		// once from the tiles already cached above and shared by cats and raiders.
 		// Terrain floors/stairs (same seed the client renders) so cliffs block a
 		// route unless a staircase bridges them; a mesa with no stairs just falls
 		// back to the straight walk, so cats never freeze.
@@ -4207,6 +4489,8 @@ export function workerTick(db: GameDb) {
 			anchor: VILLAGE_ANCHOR,
 			ringRadius,
 			gate,
+			area: claimedArea,
+			areaGate,
 			terrain: {
 				heightAt: (x, y) =>
 					terrainHeightAt(x, y, terrainSeed, WORLD_TERRAIN_OPTIONS),
@@ -4354,16 +4638,18 @@ export function workerTick(db: GameDb) {
 			// waypoints, so the whole tick's budget is still spent tile-by-tile
 			// (and every tile worn) even on a huge accelerated step. If no route
 			// fits the search budget, fall back to a straight walk to the gate.
-			const ringDist = (p: WorldPos) =>
-				Math.max(
-					Math.abs(p.x - VILLAGE_ANCHOR.x),
-					Math.abs(p.y - VILLAGE_ANCHOR.y),
-				);
 			const atGate =
 				Math.abs(worldPos.x - gate.x) < 1 && Math.abs(worldPos.y - gate.y) < 1;
 			const route = routeForCat(cat._id, worldPos, destination, walkGrid);
 			const crossesFence =
-				ringDist(worldPos) < ringRadius !== ringDist(destination) < ringRadius;
+				isInsideVillage(
+					{ x: Math.round(worldPos.x), y: Math.round(worldPos.y) },
+					claimedArea,
+				) !==
+				isInsideVillage(
+					{ x: Math.round(destination.x), y: Math.round(destination.y) },
+					claimedArea,
+				);
 			const waypoints =
 				route && route.length > 2
 					? route.slice(1, -1)
@@ -4460,11 +4746,10 @@ export function workerTick(db: GameDb) {
 					)
 					.all();
 				for (const tile of nearby) {
-					const outsideVillage =
-						Math.max(
-							Math.abs(tile.x - VILLAGE_ANCHOR.x),
-							Math.abs(tile.y - VILLAGE_ANCHOR.y),
-						) > ringRadius;
+					const outsideVillage = !isInsideVillage(
+						{ x: tile.x, y: tile.y },
+						claimedArea,
+					);
 					if (!outsideVillage) {
 						continue; // the clearing inside the fence is already open ground
 					}

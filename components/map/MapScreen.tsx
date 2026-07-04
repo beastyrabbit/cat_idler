@@ -195,6 +195,8 @@ export function MapScreen() {
 
 	const resources = colony.resources;
 	const villageRadius = dashboard?.villageRadius ?? 4;
+	const claimedTiles = dashboard?.claimedTiles;
+	const villageGate = dashboard?.villageGate ?? null;
 	const caps = dashboard?.storage?.capacities ?? {
 		food: dashboard?.storage?.foodCapacity ?? 200,
 		water: 200,
@@ -294,6 +296,8 @@ export function MapScreen() {
 							chunks={chunks}
 							anchor={anchor}
 							ringRadius={villageRadius}
+							claimedTiles={claimedTiles}
+							villageGate={villageGate}
 							showInfo={infoMode}
 						/>
 						<ZoneLayer

@@ -20,6 +20,11 @@
  */
 
 import type { WorldPos } from "./movement";
+import {
+	fenceBlocksMove,
+	type GatePlacement,
+	type VillageArea,
+} from "./villageArea";
 
 /**
  * The world as walkability: what a mover cannot enter and what it costs to
@@ -43,6 +48,14 @@ export interface WalkGrid {
 	heightAt?(x: number, y: number): number;
 	/** Whether a tile carries a staircase. Inert while the world is flat. */
 	hasStair?(x: number, y: number): boolean;
+	/**
+	 * Whether the village palisade blocks the step from (fx,fy) to (tx,ty) — the
+	 * organic fence blocks crossing a claimed-area boundary edge except at the
+	 * gate. An EDGE test (not a tile test) so the fence follows the actual shape.
+	 * Absent when the grid was built from the legacy square ring (which blocks via
+	 * {@link isBlocked} instead).
+	 */
+	fenceBlocksStep?(fx: number, fy: number, tx: number, ty: number): boolean;
 }
 
 /**
@@ -199,12 +212,22 @@ export interface WalkTile {
 export interface ColonyGridParams {
 	/** Every known colony tile; unknown tiles default to open walkable ground. */
 	tiles: WalkTile[];
-	/** Village centre (Chebyshev origin for the fence ring). */
+	/** Village centre (Chebyshev origin for the legacy fence ring). */
 	anchor: WorldPos;
-	/** Chebyshev radius of the palisade ring around the anchor. */
+	/** Chebyshev radius of the legacy palisade ring around the anchor. Ignored
+	 * when {@link area} is given (the organic fence follows the claimed shape). */
 	ringRadius: number;
-	/** The single tile in the fence ring a mover may pass through. */
+	/** The single tile in the legacy fence ring a mover may pass through. */
 	gate: WorldPos;
+	/**
+	 * The organic claimed village area (lib/game/villageArea.ts). When given, the
+	 * palisade is derived from this shape's boundary edges and blocks crossings
+	 * (except the {@link areaGate}) via `fenceBlocksStep`, superseding the square
+	 * ring. Omit to keep the legacy Chebyshev-ring behaviour.
+	 */
+	area?: VillageArea;
+	/** The gate edge for {@link area} — the one boundary crossing that's open. */
+	areaGate?: GatePlacement | null;
 	/**
 	 * Optional terrain height/stair field (from `terrainGen`). When supplied,
 	 * cliffs (a 2+ floor drop) block movement unless a staircase bridges them.
@@ -280,6 +303,10 @@ export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
 		byKey.set(packKey(tile.x, tile.y), tile);
 	}
 
+	// Organic palisade: the fence follows the claimed shape's boundary edges and
+	// blocks crossings (except the gate) as an EDGE test. Falls back to the legacy
+	// Chebyshev ring (a tile test in isBlocked) when no area is supplied.
+	const { area, areaGate } = params;
 	const onFence = (x: number, y: number): boolean =>
 		Math.max(Math.abs(x - anchor.x), Math.abs(y - anchor.y)) === ringRadius;
 	const isGate = (x: number, y: number): boolean =>
@@ -288,7 +315,9 @@ export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
 	const { terrain } = params;
 	return {
 		isBlocked(x, y) {
-			if (onFence(x, y) && !isGate(x, y)) {
+			// Legacy ring only blocks via a tile test; the organic fence uses
+			// fenceBlocksStep instead, so skip the ring test when an area is given.
+			if (!area && onFence(x, y) && !isGate(x, y)) {
 				return true;
 			}
 			const tile = byKey.get(packKey(x, y));
@@ -297,6 +326,10 @@ export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
 		cost(x, y) {
 			return tileCost(byKey.get(packKey(x, y)));
 		},
+		fenceBlocksStep: area
+			? (fx, fy, tx, ty) =>
+					fenceBlocksMove({ x: fx, y: fy }, { x: tx, y: ty }, area, areaGate)
+			: undefined,
 		heightAt: terrain ? (x, y) => terrain.heightAt(x, y) : undefined,
 		hasStair: terrain ? (x, y) => terrain.hasStair(x, y) : undefined,
 	};
@@ -410,6 +443,12 @@ export function findPath(
 				continue;
 			}
 			if (cliffBlocksStep(grid, cx, cy, nx, ny)) {
+				continue;
+			}
+			// The palisade blocks crossing the claimed-area boundary except at the
+			// gate — an edge test, so it holds even into the goal (a cat must leave
+			// through the gate, not vault the fence to reach a spot just outside).
+			if (grid.fenceBlocksStep?.(cx, cy, nx, ny)) {
 				continue;
 			}
 			const nk = key(nx, ny);

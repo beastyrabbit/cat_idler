@@ -125,7 +125,8 @@ export type JobKind =
 	| "quarry"
 	| "explore"
 	| "fetch_water"
-	| "train_warrior";
+	| "train_warrior"
+	| "expand_village";
 
 export type JobStatus =
 	| "queued"

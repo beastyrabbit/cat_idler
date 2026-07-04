@@ -71,6 +71,13 @@
       "when": 1783020417584,
       "tag": "0009_loving_mordo",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1783093903454,
+      "tag": "0010_typical_meteorite",
+      "breakpoints": true
     }
   ]
 }

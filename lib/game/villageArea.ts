@@ -225,18 +225,25 @@ export function gatePlacement(
 		return null;
 	}
 	const bias = opts.axisBias ?? SIDE_DELTA.S;
+	const centroid = areaCentroid(area);
 	let best: FenceSegment | null = null;
 	let bestScore = Number.NEGATIVE_INFINITY;
+	let bestDist = Number.POSITIVE_INFINITY;
 	for (const seg of segments) {
 		const d = SIDE_DELTA[seg.side];
 		const outside = { x: seg.x + d.x, y: seg.y + d.y };
 		const score = opts.outsideWear
 			? opts.outsideWear(outside)
-			: // Alignment with the bias axis (dot product), tiebroken toward south
-				// via the row-major order already baked into `segments`.
+			: // Alignment with the bias axis (dot product).
 				d.x * sign(bias.x) + d.y * sign(bias.y);
-		if (score > bestScore) {
+		// Tie-break toward the CENTRE of the chosen edge (nearest the centroid), so
+		// a symmetric footprint gates from the middle of its south side (the
+		// historical gate) rather than a corner. Deterministic: exact ties fall to
+		// the earlier row-major segment.
+		const dist = (seg.x - centroid.x) ** 2 + (seg.y - centroid.y) ** 2;
+		if (score > bestScore || (score === bestScore && dist < bestDist)) {
 			bestScore = score;
+			bestDist = dist;
 			best = seg;
 		}
 	}

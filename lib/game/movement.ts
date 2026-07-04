@@ -208,6 +208,8 @@ export interface JobDestinationContext {
 	roll: number;
 	/** Construction site for build jobs (colony-translated to world). */
 	site?: WorldPos;
+	/** Village expansion tile selected by the leader. */
+	expansionSite?: WorldPos;
 	/** Nearest explored stone tile for a quarry expedition. */
 	quarrySite?: WorldPos;
 	/** Nearest explored water tile for a water-fetch expedition. */
@@ -229,6 +231,8 @@ export function destinationForJob(
 			return { ...context.shrine };
 		case "build_house":
 			return context.site ? { ...context.site } : { ...context.anchor };
+		case "expand_village":
+			return context.expansionSite ? { ...context.expansionSite } : null;
 		case "quarry":
 			return context.quarrySite ? { ...context.quarrySite } : null;
 		case "fetch_water":

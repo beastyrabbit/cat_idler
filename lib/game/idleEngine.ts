@@ -9,7 +9,8 @@ export type JobKind =
 	| "quarry"
 	| "explore"
 	| "fetch_water"
-	| "train_warrior";
+	| "train_warrior"
+	| "expand_village";
 
 export type CatSpecialization =
 	| "hunter"
@@ -47,6 +48,7 @@ export const BASE_JOB_SECONDS: Record<JobKind, number> = {
 	explore: 30 * 60,
 	fetch_water: 45 * 60,
 	train_warrior: 3 * 60 * 60,
+	expand_village: 10 * 60,
 };
 
 export function normalizeTimeScale(

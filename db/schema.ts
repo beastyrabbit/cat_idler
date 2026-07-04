@@ -128,6 +128,15 @@ export const colonies = sqliteTable(
 		ritualRequestedAt: integer("ritualRequestedAt"),
 		criticalSince: integer("criticalSince"),
 		/**
+		 * The organic village footprint: the list of claimed world tiles the
+		 * settlement occupies (lib/game/villageArea.ts). Grows one tile at a time;
+		 * the auto-fence, clearing, building sites and walkability are all derived
+		 * from it. Null on legacy rows — seeded from the founding square on open.
+		 */
+		claimedTiles: text("claimedTiles", { mode: "json" }).$type<
+			Array<{ x: number; y: number }>
+		>(),
+		/**
 		 * Accrued raid pressure (lib/game/threat.ts). Builds with wealth, size,
 		 * warriors and colony age; a raid launches when it crosses the spawn
 		 * threshold. Null on legacy rows — read as 0.
@@ -335,6 +344,7 @@ export const jobs = sqliteTable(
 				"explore",
 				"fetch_water",
 				"train_warrior",
+				"expand_village",
 			],
 		}).notNull(),
 		status: text("status", {
