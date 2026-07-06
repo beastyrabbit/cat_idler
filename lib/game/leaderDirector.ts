@@ -267,6 +267,10 @@ interface LaborGoal {
 	mode: "scaled" | "fixed";
 }
 
+function threatIsImminent(s: LeaderSnapshot): boolean {
+	return (s.threatBand ?? "calm") === "imminent" || s.raidActive === true;
+}
+
 /** Score and size every labour goal from the snapshot. */
 function laborGoals(s: LeaderSnapshot): LaborGoal[] {
 	const budget = Math.floor(workforceOf(s) * EMPLOYMENT_TARGET_RATIO);
@@ -286,6 +290,7 @@ function laborGoals(s: LeaderSnapshot): LaborGoal[] {
 		foodR >= RESEARCH_COMFORT_RATIO && waterR >= RESEARCH_COMFORT_RATIO;
 	const warriorGap =
 		targetWarriors(s) - (s.warriorCount ?? 0) - (s.trainingInFlight ?? 0);
+	const threatImminent = threatIsImminent(s);
 
 	const goals: LaborGoal[] = [
 		{
@@ -323,7 +328,7 @@ function laborGoals(s: LeaderSnapshot): LaborGoal[] {
 			maxSlots: SCOUT_MAX_SLOTS,
 			inFlight: s.activeScouts,
 			hardCap: SCOUT_MAX_SLOTS,
-			vetoed: !s.hasFrontier,
+			vetoed: !s.hasFrontier || threatImminent,
 			mode: "fixed",
 		},
 		{
@@ -578,7 +583,10 @@ export function directColony(s: LeaderSnapshot): DirectorPlan {
 		s.employedCats + [...granted.values()].reduce((a, b) => a + b, 0);
 	const employTarget = Math.ceil(ableCats(s) * IDLE_EMPLOYMENT_FLOOR);
 	let idleLeft = Math.max(0, s.idleCats - (busySoFar - s.employedCats));
-	let fillWanted = Math.max(0, Math.min(idleLeft, employTarget - busySoFar));
+	const threatImminent = threatIsImminent(s);
+	let fillWanted = threatImminent
+		? 0
+		: Math.max(0, Math.min(idleLeft, employTarget - busySoFar));
 
 	const fillOrder: Array<{ kind: LaborGoalKind; open: boolean }> = [
 		{ kind: "hunt", open: foodR < 1 },

@@ -3468,6 +3468,7 @@ export function workerTick(db: GameDb) {
 			warriorCount,
 			trainingInFlight,
 			threatBand: currentThreatBand,
+			raidActive: Boolean(colony.activeRaidId),
 			starving,
 		};
 
@@ -4574,6 +4575,7 @@ export function workerTick(db: GameDb) {
 					terrainStairAt(x, y, terrainSeed, WORLD_TERRAIN_OPTIONS),
 			},
 		});
+		const catMovementTrails = new Map<string, WorldPos[]>();
 		for (const cat of getAliveCats(tx, colony._id)) {
 			const worldPos: WorldPos =
 				cat.position.map === "world"
@@ -4802,6 +4804,7 @@ export function workerTick(db: GameDb) {
 				// walkPath already listed every integer tile this walk crossed —
 				// one source of truth shared with the interception helper.
 				const walked = walk.tiles;
+				catMovementTrails.set(cat._id, walked);
 
 				// Ordinary cats reveal a 3x3; explorers sweep a wide 5x5.
 				const revealRadius = cat.currentTask === "explore" ? 2 : 1;
@@ -4939,6 +4942,12 @@ export function workerTick(db: GameDb) {
 				activeRaidId: colony.activeRaidId ?? null,
 				raidClicks: colony.raidClicks ?? 0,
 				walkGrid,
+				catMovementTrails,
+				isInsideVillage: (pos) =>
+					isInsideVillage(
+						{ x: Math.round(pos.x), y: Math.round(pos.y) },
+						claimedArea,
+					),
 			},
 		);
 		const threatPressure = raidResult.pressure;

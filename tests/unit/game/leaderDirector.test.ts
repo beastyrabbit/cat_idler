@@ -202,6 +202,45 @@ describe("near-zero idle", () => {
 		// Nothing to do (full food, no frontier, no quarry) → no fill slots.
 		expect(plan.slots.reduce((sum, s) => sum + s.count, 0)).toBe(0);
 	});
+
+	it("does not pad outbound work while threat is imminent", () => {
+		const calm = directColony(
+			snap({
+				resources: { food: CAP * 0.9, refined: 0 },
+				idleCats: 12,
+				hasFrontier: true,
+				hasQuarrySite: true,
+				threatBand: "calm",
+			}),
+		).slots;
+		const imminent = directColony(
+			snap({
+				resources: { food: CAP * 0.9, refined: 0 },
+				idleCats: 12,
+				hasFrontier: true,
+				hasQuarrySite: true,
+				threatBand: "imminent",
+			}),
+		).slots;
+		const activeRaid = directColony(
+			snap({
+				resources: { food: CAP * 0.9, refined: 0 },
+				idleCats: 12,
+				hasFrontier: true,
+				hasQuarrySite: true,
+				threatBand: "calm",
+				raidActive: true,
+			}),
+		).slots;
+
+		const outbound = (slots: OpenSlots[]) =>
+			slotFor(slots, "hunt") +
+			slotFor(slots, "scout") +
+			slotFor(slots, "quarry");
+		expect(outbound(calm)).toBeGreaterThan(outbound(imminent));
+		expect(outbound(imminent)).toBe(0);
+		expect(outbound(activeRaid)).toBe(0);
+	});
 });
 
 describe("standalone decisions", () => {

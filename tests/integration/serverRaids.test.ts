@@ -14,8 +14,9 @@ import { and, eq, isNull } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { createDb, type GameDb } from "@/db/client";
-import { cats, colonies, events, raiders } from "@/db/schema";
+import { type CatRow, cats, colonies, events, jobs, raiders } from "@/db/schema";
 import { MAX_RAID_CASUALTIES } from "@/lib/game/threat";
+import { VILLAGE_ANCHOR } from "@/lib/game/villageLayout";
 import {
 	advanceTime,
 	ensureGlobalColony,
@@ -79,6 +80,103 @@ function eventTypes(): string[] {
 		.where(eq(events.colonyId, id))
 		.all()
 		.map((e) => e.type);
+}
+
+function ambushEvents(database = db) {
+	const id = ensureGlobalColony(database)._id;
+	return database
+		.select()
+		.from(events)
+		.where(and(eq(events.colonyId, id), eq(events.type, "raider_ambush")))
+		.all();
+}
+
+function firstLivingCat(database = db) {
+	const id = ensureGlobalColony(database)._id;
+	const cat = database
+		.select()
+		.from(cats)
+		.where(and(eq(cats.colonyId, id), isNull(cats.deathTime)))
+		.all()[0];
+	if (!cat) throw new Error("expected living cat");
+	return cat;
+}
+
+function placeCatForAmbush(catId: string, patch: Partial<CatRow> = {}) {
+	db.update(cats)
+		.set({
+			position: { map: "world", x: VILLAGE_ANCHOR.x + 8, y: VILLAGE_ANCHOR.y },
+			destination: {
+				map: "world",
+				x: VILLAGE_ANCHOR.x + 12,
+				y: VILLAGE_ANCHOR.y,
+			},
+			activity: "traveling",
+			currentTask: "hunt_expedition",
+			ageHours: 30,
+			stats: {
+				attack: 50,
+				defense: 50,
+				hunting: 50,
+				medicine: 50,
+				cleaning: 50,
+				building: 50,
+				leadership: 50,
+				vision: 50,
+			},
+			...patch,
+		})
+		.where(eq(cats._id, catId))
+		.run();
+}
+
+function insertActiveFieldJob(catId: string, now = Date.now()) {
+	const id = colonyId();
+	db.insert(jobs)
+		.values({
+			_id: `job-${catId}`,
+			colonyId: id,
+			kind: "hunt_expedition",
+			status: "active",
+			requestedByType: "leader",
+			requestedByPlayerId: null,
+			assignedCatId: catId,
+			baseDurationSec: 3600,
+			speedMultiplier: 1,
+			yieldMultiplier: 1,
+			clickTimeReducedSec: 0,
+			createdAt: now,
+			startedAt: now,
+			endsAt: now + 3600_000,
+			metadata: {
+				site: { x: VILLAGE_ANCHOR.x + 12, y: VILLAGE_ANCHOR.y },
+				accepted: true,
+			},
+		})
+		.run();
+}
+
+function forceAdvancingRaid(count = 1, strength = 40) {
+	const spawn = spawnRaidForTest(db, { atGate: false, count, strength });
+	expect(spawn.ok).toBe(true);
+	const id = colonyId();
+	const units = db
+		.select()
+		.from(raiders)
+		.where(eq(raiders.colonyId, id))
+		.all();
+	for (let i = 0; i < units.length; i += 1) {
+		db.update(raiders)
+			.set({
+				position: {
+					x: VILLAGE_ANCHOR.x + 9,
+					y: VILLAGE_ANCHOR.y + i,
+				},
+				status: "advancing",
+			})
+			.where(eq(raiders._id, units[i]._id))
+			.run();
+	}
 }
 
 describe("raid resolution", () => {
@@ -230,5 +328,153 @@ describe("raid resolution", () => {
 			return ensureGlobalColony(local).resources.food;
 		};
 		expect(run()).toBe(run());
+	});
+
+	it("intercepts a traveler crossing an advancing warband path", () => {
+		ensureGlobalColony(db);
+		setTestRngSeed(db, 4242);
+		const traveler = firstLivingCat();
+		placeCatForAmbush(traveler._id);
+		insertActiveFieldJob(traveler._id);
+		forceAdvancingRaid(1, 40);
+
+		advanceTime(db, 1);
+		workerTick(db);
+
+		const ambush = ambushEvents();
+		expect(ambush).toHaveLength(1);
+		expect(ambush[0].involvedCatIds).toContain(traveler._id);
+		expect((ambush[0].metadata as Record<string, unknown>).outcome).toBe(
+			"flee",
+		);
+	});
+
+	it("does not intercept a traveler behind the fence", () => {
+		ensureGlobalColony(db);
+		setTestRngSeed(db, 4242);
+		const traveler = firstLivingCat();
+		placeCatForAmbush(traveler._id, {
+			position: { map: "world", ...VILLAGE_ANCHOR },
+			destination: {
+				map: "world",
+				x: VILLAGE_ANCHOR.x + 1,
+				y: VILLAGE_ANCHOR.y,
+			},
+		});
+		insertActiveFieldJob(traveler._id);
+		forceAdvancingRaid(1, 40);
+		db.update(raiders)
+			.set({
+				position: { x: VILLAGE_ANCHOR.x + 1, y: VILLAGE_ANCHOR.y },
+				status: "advancing",
+			})
+			.where(eq(raiders.colonyId, colonyId()))
+			.run();
+
+		advanceTime(db, 1);
+		workerTick(db);
+
+		expect(ambushEvents()).toHaveLength(0);
+	});
+
+	it("drops carried yield and cancels field work when a cat flees", () => {
+		ensureGlobalColony(db);
+		setTestRngSeed(db, 4242);
+		const traveler = firstLivingCat();
+		placeCatForAmbush(traveler._id, {
+			activity: "returning",
+			carrying: { kind: "food", amount: 7, jobEndedAt: Date.now() },
+		});
+		insertActiveFieldJob(traveler._id);
+		forceAdvancingRaid(1, 40);
+
+		advanceTime(db, 1);
+		workerTick(db);
+
+		const after = db
+			.select()
+			.from(cats)
+			.where(eq(cats._id, traveler._id))
+			.get();
+		const job = db
+			.select()
+			.from(jobs)
+			.where(eq(jobs.assignedCatId, traveler._id))
+			.get();
+		const ambush = ambushEvents()[0];
+		expect(after?.carrying).toBeNull();
+		expect(after?.activity).toBe("returning");
+		expect(after?.destination).toEqual({ map: "world", ...VILLAGE_ANCHOR });
+		expect(job?.status).toBe("cancelled");
+		expect((ambush.metadata as Record<string, unknown>).dropped).toEqual({
+			kind: "food",
+			amount: 7,
+		});
+	});
+
+	it("counts interception kills against the raid casualty cap", () => {
+		ensureGlobalColony(db);
+		setTestRngSeed(db, 4242);
+		const roster = db
+			.select()
+			.from(cats)
+			.where(and(eq(cats.colonyId, colonyId()), isNull(cats.deathTime)))
+			.all();
+		const first = roster[0];
+		const second = roster[1];
+		placeCatForAmbush(first._id, {
+			position: { map: "world", x: VILLAGE_ANCHOR.x + 8, y: VILLAGE_ANCHOR.y },
+		});
+		placeCatForAmbush(second._id, {
+			position: {
+				map: "world",
+				x: VILLAGE_ANCHOR.x + 8,
+				y: VILLAGE_ANCHOR.y + 1,
+			},
+		});
+		insertActiveFieldJob(first._id);
+		insertActiveFieldJob(second._id);
+		const before = livingCats();
+		forceAdvancingRaid(2, 300);
+
+		advanceTime(db, 1);
+		workerTick(db);
+
+		const outcomes = ambushEvents().map(
+			(e) => (e.metadata as Record<string, unknown>).outcome,
+		);
+		expect(livingCats()).toBe(before - MAX_RAID_CASUALTIES);
+		expect(outcomes.filter((outcome) => outcome === "killed")).toHaveLength(1);
+		expect(outcomes.filter((outcome) => outcome === "wounded")).toHaveLength(1);
+	});
+
+	it("is deterministic for identical seeded interception runs", () => {
+		const run = () => {
+			const local = createDb(":memory:");
+			db = local;
+			ensureGlobalColony(local);
+			setTestRngSeed(local, 4242);
+			const traveler = firstLivingCat(local);
+			placeCatForAmbush(traveler._id);
+			insertActiveFieldJob(traveler._id);
+			forceAdvancingRaid(1, 40);
+			advanceTime(local, 1);
+			workerTick(local);
+			const after = local
+				.select()
+				.from(cats)
+				.where(eq(cats._id, traveler._id))
+				.get();
+			const event = ambushEvents(local)[0];
+			return {
+				message: event.message,
+				outcome: (event.metadata as Record<string, unknown>).outcome,
+				activity: after?.activity,
+				carrying: after?.carrying,
+				deathTime: after?.deathTime == null ? null : "dead",
+			};
+		};
+
+		expect(run()).toEqual(run());
 	});
 });

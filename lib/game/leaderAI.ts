@@ -87,6 +87,8 @@ export interface LeaderSnapshot {
 	trainingInFlight?: number;
 	/** Current HUD threat band — scales the warrior target. */
 	threatBand?: "calm" | "rising" | "imminent";
+	/** A raid is already on the map, even if stored pressure has reset. */
+	raidActive?: boolean;
 	/** The larder is nearly empty; the leader stops staffing/training. */
 	starving?: boolean;
 }
