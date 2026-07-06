@@ -22,6 +22,8 @@ interface CacheEntry {
 export interface ChunkStoreOptions {
 	ttlMs?: number;
 	maxConcurrent?: number;
+	now?: () => number;
+	fetcher?: (chunkX: number, chunkY: number) => Promise<WorldTile[]>;
 	/** Called whenever a chunk's tiles arrive or refresh (key = "cx,cy"). */
 	onLoaded?: (key: string, tiles: WorldTile[]) => void;
 }
@@ -34,11 +36,18 @@ export class ChunkStore {
 
 	private readonly ttlMs: number;
 	private readonly maxConcurrent: number;
+	private readonly now: () => number;
+	private readonly fetcher: (
+		chunkX: number,
+		chunkY: number,
+	) => Promise<WorldTile[]>;
 	private readonly onLoaded?: (key: string, tiles: WorldTile[]) => void;
 
 	constructor(options: ChunkStoreOptions = {}) {
 		this.ttlMs = options.ttlMs ?? 60_000;
 		this.maxConcurrent = options.maxConcurrent ?? 6;
+		this.now = options.now ?? Date.now;
+		this.fetcher = options.fetcher ?? defaultFetchChunk;
 		this.onLoaded = options.onLoaded;
 	}
 
@@ -53,7 +62,7 @@ export class ChunkStore {
 	 * request set are left alone — they stay cached for the next pan.
 	 */
 	ensure(coords: Array<{ chunkX: number; chunkY: number }>): void {
-		const now = Date.now();
+		const now = this.now();
 		for (const coord of coords) {
 			const key = chunkKey(coord);
 			if (this.inFlight.has(key)) {
@@ -89,12 +98,8 @@ export class ChunkStore {
 		this.inFlight.add(key);
 		this.active += 1;
 		try {
-			const res = await fetch(
-				`/api/game/chunks?x=${coord.chunkX}&y=${coord.chunkY}`,
-			);
-			const data = res.ok ? await res.json() : null;
-			const tiles = (data?.tiles ?? []) as WorldTile[];
-			this.cache.set(key, { tiles, fetchedAt: Date.now() });
+			const tiles = await this.fetcher(coord.chunkX, coord.chunkY);
+			this.cache.set(key, { tiles, fetchedAt: this.now() });
 			this.onLoaded?.(key, tiles);
 		} catch (err) {
 			console.warn(`[pixi] chunk ${key} fetch failed:`, err);
@@ -104,4 +109,27 @@ export class ChunkStore {
 			this.pump();
 		}
 	}
+
+	stats(): {
+		cached: number;
+		queued: number;
+		inFlight: number;
+		active: number;
+	} {
+		return {
+			cached: this.cache.size,
+			queued: this.queue.length,
+			inFlight: this.inFlight.size,
+			active: this.active,
+		};
+	}
+}
+
+async function defaultFetchChunk(
+	chunkX: number,
+	chunkY: number,
+): Promise<WorldTile[]> {
+	const res = await fetch(`/api/game/chunks?x=${chunkX}&y=${chunkY}`);
+	const data = res.ok ? await res.json() : null;
+	return (data?.tiles ?? []) as WorldTile[];
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import { MapViewport, type ViewportView } from "@/components/ui/MapViewport";
@@ -20,6 +21,11 @@ import { RaiderLayer } from "./RaiderLayer";
 import { TileLayer } from "./TileLayer";
 import { TreePanel } from "./TreePanel";
 import { ZoneLayer } from "./ZoneLayer";
+
+const PixiViewportLayer = dynamic(
+	() => import("@/lib/render/pixi/PixiViewportLayer"),
+	{ ssr: false },
+);
 
 const JOB_LABELS: Record<string, string> = {
 	supply_food: "Supply Food",
@@ -65,7 +71,9 @@ for (let y = -1; y <= 1; y++) {
 	}
 }
 
-export function MapScreen() {
+export function MapScreen({
+	renderer = "dom",
+}: { renderer?: "dom" | "pixi" } = {}) {
 	const {
 		dashboard,
 		colony,
@@ -119,23 +127,18 @@ export function MapScreen() {
 		durationMs: number;
 		cornerA: { x: number; y: number } | null;
 	} | null>(null);
+	const [pixiStats, setPixiStats] = useState<{
+		fps: number;
+		scale: number;
+		band: "close" | "overview";
+		loadedChunks: number;
+	} | null>(null);
 	const zoneOverlayRef = useRef<HTMLDivElement | null>(null);
 	const chunksKeyRef = useRef("");
 
-	const onZoneOverlayClick = useCallback(
-		(e: React.MouseEvent) => {
-			const el = zoneOverlayRef.current;
-			if (!el || !zoneDraft) {
-				return;
-			}
-			const rect = el.getBoundingClientRect();
-			// The content plane is CSS-scaled; undo it before projecting.
-			const scale = rect.width / ISO_CONTENT.width;
-			const px = (e.clientX - rect.left) / scale;
-			const py = (e.clientY - rect.top) / scale;
-			const tile = isoToTile(px, py, ISO);
-			const corner = { x: Math.round(tile.x), y: Math.round(tile.y) };
-
+	const pickDraftCorner = useCallback(
+		(corner: { x: number; y: number }) => {
+			if (!zoneDraft) return;
 			if (!zoneDraft.cornerA) {
 				setZoneDraft({ ...zoneDraft, cornerA: corner });
 				return;
@@ -153,6 +156,23 @@ export function MapScreen() {
 			setZoneDraft(null);
 		},
 		[zoneDraft, onCreateZone, onBuildRoad],
+	);
+
+	const onZoneOverlayClick = useCallback(
+		(e: React.MouseEvent) => {
+			const el = zoneOverlayRef.current;
+			if (!el || !zoneDraft) {
+				return;
+			}
+			const rect = el.getBoundingClientRect();
+			// The content plane is CSS-scaled; undo it before projecting.
+			const scale = rect.width / ISO_CONTENT.width;
+			const px = (e.clientX - rect.left) / scale;
+			const py = (e.clientY - rect.top) / scale;
+			const tile = isoToTile(px, py, ISO);
+			pickDraftCorner({ x: Math.round(tile.x), y: Math.round(tile.y) });
+		},
+		[zoneDraft, pickDraftCorner],
 	);
 
 	const onViewChange = useCallback((view: ViewportView) => {
@@ -279,53 +299,75 @@ export function MapScreen() {
 		<div className="relative h-dvh overflow-hidden bg-[#141c12]">
 			{/* Map fills the screen */}
 			<div className="absolute inset-0">
-				<MapViewport
-					contentSize={ISO_CONTENT}
-					height="100%"
-					initialScale={0.45}
-					minScale={0.08}
-					maxScale={1.4}
-					initialCenter={shrineCenter}
-					onViewChange={onViewChange}
-				>
-					<div
-						className="relative select-none"
-						style={{ width: ISO_CONTENT.width, height: ISO_CONTENT.height }}
+				{renderer === "pixi" ? (
+					<PixiViewportLayer
+						cats={cats}
+						buildings={buildings}
+						anchor={anchor}
+						villageRadius={villageRadius}
+						claimedTiles={claimedTiles}
+						villageGate={villageGate}
+						zones={zones}
+						now={now}
+						raiders={raiders}
+						showInfo={infoMode}
+						leaderId={colony.leaderId ?? null}
+						selectedCatId={selectedCatId}
+						draftCorner={zoneDraft?.cornerA ?? null}
+						onSelectCat={setSelectedCatId}
+						onRemoveZone={onRemoveZone}
+						onMapTileClick={pickDraftCorner}
+						onStats={setPixiStats}
+					/>
+				) : (
+					<MapViewport
+						contentSize={ISO_CONTENT}
+						height="100%"
+						initialScale={0.45}
+						minScale={0.08}
+						maxScale={1.4}
+						initialCenter={shrineCenter}
+						onViewChange={onViewChange}
 					>
-						<TileLayer
-							chunks={chunks}
-							anchor={anchor}
-							ringRadius={villageRadius}
-							claimedTiles={claimedTiles}
-							villageGate={villageGate}
-							showInfo={infoMode}
-						/>
-						<ZoneLayer
-							zones={zones}
-							now={now}
-							onRemove={onRemoveZone}
-							draftCorner={zoneDraft?.cornerA ?? null}
-						/>
-						<BuildingLayer buildings={buildings} />
-						<CatLayer
-							cats={cats}
-							leaderId={colony.leaderId ?? null}
-							onSelect={setSelectedCatId}
-						/>
-						<RaiderLayer raiders={raiders} />
-						{zoneDraft && (
-							// Drawing mode: swallow clicks/pans and pick tile corners.
-							// biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: full-map drawing surface; keyboard flow uses the panel buttons
-							<div
-								ref={zoneOverlayRef}
-								className="absolute inset-0 cursor-crosshair"
-								style={{ zIndex: 100_000 }}
-								onPointerDown={(e) => e.stopPropagation()}
-								onClick={onZoneOverlayClick}
+						<div
+							className="relative select-none"
+							style={{ width: ISO_CONTENT.width, height: ISO_CONTENT.height }}
+						>
+							<TileLayer
+								chunks={chunks}
+								anchor={anchor}
+								ringRadius={villageRadius}
+								claimedTiles={claimedTiles}
+								villageGate={villageGate}
+								showInfo={infoMode}
 							/>
-						)}
-					</div>
-				</MapViewport>
+							<ZoneLayer
+								zones={zones}
+								now={now}
+								onRemove={onRemoveZone}
+								draftCorner={zoneDraft?.cornerA ?? null}
+							/>
+							<BuildingLayer buildings={buildings} />
+							<CatLayer
+								cats={cats}
+								leaderId={colony.leaderId ?? null}
+								onSelect={setSelectedCatId}
+							/>
+							<RaiderLayer raiders={raiders} />
+							{zoneDraft && (
+								// Drawing mode: swallow clicks/pans and pick tile corners.
+								// biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: full-map drawing surface; keyboard flow uses the panel buttons
+								<div
+									ref={zoneOverlayRef}
+									className="absolute inset-0 cursor-crosshair"
+									style={{ zIndex: 100_000 }}
+									onPointerDown={(e) => e.stopPropagation()}
+									onClick={onZoneOverlayClick}
+								/>
+							)}
+						</div>
+					</MapViewport>
+				)}
 			</div>
 
 			{/* Top HUD bar */}
@@ -432,6 +474,14 @@ export function MapScreen() {
 					📰 Examiner
 				</a>
 
+				<a
+					href={renderer === "pixi" ? "/game/dom" : "/game"}
+					className="pointer-events-auto rounded-md border border-[#5d4024] bg-[#f3e6c8] px-3 py-1.5 text-sm font-bold text-[#4a3319] shadow hover:bg-amber-100"
+					title="Switch map renderer"
+				>
+					{renderer === "pixi" ? "DOM fallback" : "Pixi renderer"}
+				</a>
+
 				{connectionLost && (
 					<span className="pointer-events-auto rounded-lg bg-slate-800 px-3 py-1 text-xs font-semibold text-amber-300 shadow">
 						⚠ Connection lost — reconnecting…
@@ -444,6 +494,13 @@ export function MapScreen() {
 					</span>
 				)}
 			</header>
+
+			{renderer === "pixi" && pixiStats && (
+				<div className="pointer-events-none absolute bottom-12 left-3 z-20 rounded-md border border-[#5d4024] bg-[#0d130b]/85 px-2 py-1 font-mono text-[11px] text-amber-100 shadow">
+					fps {pixiStats.fps} · zoom {pixiStats.scale.toFixed(3)} ·{" "}
+					{pixiStats.band} · chunks {pixiStats.loadedChunks}
+				</div>
+			)}
 
 			{/* Right action panel */}
 			<aside className="absolute bottom-3 right-3 top-24 z-10 flex w-72 max-w-[80vw] flex-col gap-2">

@@ -17,6 +17,7 @@ import {
 	FENCE_X_SPRITE,
 	FENCE_Y_SPRITE,
 	GATE_SPRITE,
+	ROAD_SPRITES,
 	STUMP_SPRITE,
 	TILE_SPRITES,
 	WATER_SPRITE,
@@ -24,6 +25,7 @@ import {
 
 /** The cat spritesheet (8 facings x 4 walk frames, 32x32 cells). */
 export const CAT_SHEET_URL = "/images/cats/cat-sheet.png";
+export const RAIDER_SHEET_URL = "/images/cats/raider-sheet.png";
 
 /** Every sprite URL the map can draw, de-duplicated. */
 export function allSpriteUrls(): string[] {
@@ -37,6 +39,9 @@ export function allSpriteUrls(): string[] {
 	for (const src of Object.values(BUILDING_SPRITES)) {
 		urls.add(src);
 	}
+	for (const src of Object.values(ROAD_SPRITES)) {
+		urls.add(src);
+	}
 	urls.add(BUILDING_SPRITE_FALLBACK);
 	urls.add(FENCE_X_SPRITE);
 	urls.add(FENCE_Y_SPRITE);
@@ -44,6 +49,7 @@ export function allSpriteUrls(): string[] {
 	urls.add(WATER_SPRITE);
 	urls.add(STUMP_SPRITE);
 	urls.add(CAT_SHEET_URL);
+	urls.add(RAIDER_SHEET_URL);
 	return [...urls];
 }
 
