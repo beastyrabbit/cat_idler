@@ -54,5 +54,7 @@ map-screen-verify*.png
 /pixi-*.png
 
 # local asset libraries (source packs — copy needed files into public/images)
+/public/Kenney Game Assets All-in-1 3.5.0
 /public/Kenney Game Assets All-in-1 3.5.0/
+/public/Paws & Whiskers - Isometric Cats Pack (Free)
 /public/Paws & Whiskers - Isometric Cats Pack (Free)/
