@@ -5,8 +5,14 @@
  * See TASKS.md: LOGIC-008
  */
 
-import type { Cat, Resources, BuildingType, AutonomousAction, Position } from '@/types/game'
-import { hasNeedsCritical } from './needs'
+import type {
+	AutonomousAction,
+	BuildingType,
+	Cat,
+	Position,
+	Resources,
+} from "@/types/game";
+import { hasNeedsCritical } from "./needs";
 
 /**
  * Determine what a cat should do autonomously based on needs.
@@ -24,39 +30,36 @@ import { hasNeedsCritical } from './needs'
  * @returns Autonomous action or null
  */
 export function getAutonomousAction(
-  cat: Cat,
-  colonyResources: Resources,
-  colonyHasBuilding: (type: BuildingType) => boolean
+	cat: Cat,
+	colonyResources: Resources,
+	colonyHasBuilding: (type: BuildingType) => boolean,
 ): AutonomousAction | null {
-  // Priority 1: Critical needs while on world map - return to colony
-  if (cat.position.map === 'world' && hasNeedsCritical(cat.needs, 15)) {
-    return { type: 'return_to_colony' }
-  }
+	// Priority 1: Critical needs while on world map - return to colony
+	if (cat.position.map === "world" && hasNeedsCritical(cat.needs, 15)) {
+		return { type: "return_to_colony" };
+	}
 
-  // Priority 2: Hunger (most critical)
-  if (cat.needs.hunger < 30 && colonyResources.food > 0) {
-    return { type: 'eat' }
-  }
+	// Priority 2: Hunger (most critical)
+	if (cat.needs.hunger < 30 && colonyResources.food > 0) {
+		return { type: "eat" };
+	}
 
-  // Priority 3: Thirst
-  if (cat.needs.thirst < 40 && colonyResources.water > 0) {
-    return { type: 'drink' }
-  }
+	// Priority 3: Thirst
+	if (cat.needs.thirst < 40 && colonyResources.water > 0) {
+		return { type: "drink" };
+	}
 
-  // Priority 4: Rest
-  if (cat.needs.rest < 20) {
-    // Find a sleeping position (den or beds)
-    const sleepPosition: Position = {
-      map: 'colony',
-      x: 1,
-      y: 1, // Default to center of colony
-    }
-    return { type: 'sleep', position: sleepPosition }
-  }
+	// Priority 4: Rest
+	if (cat.needs.rest < 20) {
+		// Find a sleeping position (den or beds)
+		const sleepPosition: Position = {
+			map: "colony",
+			x: 1,
+			y: 1, // Default to center of colony
+		};
+		return { type: "sleep", position: sleepPosition };
+	}
 
-  // No urgent needs
-  return null
+	// No urgent needs
+	return null;
 }
-
-
-

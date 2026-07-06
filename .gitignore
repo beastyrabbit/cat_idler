@@ -38,9 +38,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# convex
-.convex/
-convex/_generated/
+# sqlite database
+/data/
 
 # playwright mcp
 .playwright-mcp/
@@ -50,3 +49,10 @@ convex/_generated/
 
 # test artifacts
 artifacts/
+map-screen-verify*.png
+/dom-game.png
+/pixi-*.png
+
+# local asset libraries (source packs — copy needed files into public/images)
+/public/Kenney Game Assets All-in-1 3.5.0/
+/public/Paws & Whiskers - Isometric Cats Pack (Free)/

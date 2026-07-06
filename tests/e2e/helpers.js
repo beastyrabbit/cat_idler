@@ -1,28 +1,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ConvexHttpClient } from "convex/browser";
 import { By } from "selenium-webdriver";
-
-import { api } from "../../convex/_generated/api.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = resolve(__dirname, "../..");
-const gameReadyMarkers = [
-	"Shared Idle World",
-	"Global Colony Not Ready",
-	"Preparing Global Colony...",
-];
 const loadedGameMarkers = [
-	"Food",
-	"Water",
-	"Request Hunt (plan + expedition)",
-	"Ritual Points",
+	"Catford",
+	"Colony Work",
+	"Zones",
+	"Lend a Paw",
+	"Supply food",
 ];
 
 let loadedEnv = false;
-let convexClient = null;
 
 function parseEnvFile(content) {
 	for (const rawLine of content.split("\n")) {
@@ -64,26 +56,34 @@ function loadLocalEnv() {
 	loadedEnv = true;
 }
 
-function getConvexUrl() {
-	loadLocalEnv();
+export async function postGameAction(baseUrl, payload) {
+	const response = await fetch(new URL("/api/game/actions", baseUrl), {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	const result = await response.json().catch(() => null);
 
-	const convexUrl =
-		process.env.CONVEX_URL ?? process.env.NEXT_PUBLIC_CONVEX_URL;
-	if (!convexUrl) {
-		throw new Error(
-			"Missing CONVEX_URL or NEXT_PUBLIC_CONVEX_URL for E2E setup.",
-		);
+	if (!response.ok) {
+		const message =
+			result && typeof result === "object" && "message" in result
+				? result.message
+				: `Request failed (${response.status})`;
+		throw new Error(`Game action ${payload.action} failed: ${message}`);
 	}
 
-	return convexUrl;
+	return result;
 }
 
-function getConvexClient() {
-	if (!convexClient) {
-		convexClient = new ConvexHttpClient(getConvexUrl());
+export async function getGameDashboard(baseUrl) {
+	const response = await fetch(new URL("/api/game/dashboard", baseUrl));
+	const result = await response.json().catch(() => null);
+
+	if (!response.ok || !result) {
+		throw new Error(`Dashboard request failed (${response.status})`);
 	}
 
-	return convexClient;
+	return result;
 }
 
 export async function waitForBodyText(driver, text, timeout = 15000) {
@@ -128,87 +128,57 @@ export async function waitForPathname(driver, matcher, timeout = 15000) {
 }
 
 export async function ensureGamePageReady(driver) {
-	await waitForAnyBodyText(driver, gameReadyMarkers);
-
-	const initializeButtons = await driver.findElements(
-		By.xpath("//button[normalize-space()='Initialize Colony']"),
-	);
-	if (
-		initializeButtons.length > 0 &&
-		(await initializeButtons[0].isDisplayed())
-	) {
-		await initializeButtons[0].click();
-	}
-
 	await waitForAnyBodyText(driver, loadedGameMarkers);
 }
 
 export async function openGamePage(driver, baseUrl) {
+	const identity = await ensureGlobalGameState(baseUrl);
 	await driver.get(new URL("/game", baseUrl).toString());
+	await driver.executeScript(
+		`
+			localStorage.setItem("cat_idle_session", arguments[0]);
+			localStorage.setItem("cat_idle_sig", arguments[1]);
+			localStorage.setItem("cat_idle_nickname", arguments[2]);
+		`,
+		identity.sessionId,
+		identity.sig,
+		identity.nickname,
+	);
+	await driver.navigate().refresh();
 	await waitForPathname(driver, "/game");
 	await ensureGamePageReady(driver);
 }
 
-export function getColonyPageUrl(baseUrl, colonyId) {
-	return new URL(`/colony/${colonyId}`, baseUrl).toString();
-}
+export async function ensureGlobalGameState(baseUrl) {
+	loadLocalEnv();
+	await postGameAction(baseUrl, { action: "ensure" });
+	const nickname = `E2E Cat ${Date.now()}`;
+	const presence = await postGameAction(baseUrl, {
+		action: "presence",
+		nickname,
+	});
 
-async function getGlobalColony(client) {
-	const colonies = await client.query(api.colonies.getAllColonies, {});
-	return colonies.find((colony) => colony.isGlobal) ?? null;
-}
-
-export async function ensureGlobalColony({
-	minimumMaterials = 0,
-	ensureLeader = true,
-} = {}) {
-	const client = getConvexClient();
-
-	await client.mutation(api.game.ensureGlobalState, {});
-	let colony = await getGlobalColony(client);
-	if (!colony) {
-		throw new Error("No global colony was available after ensureGlobalState.");
+	if (
+		!presence ||
+		typeof presence.sessionId !== "string" ||
+		typeof presence.sig !== "string"
+	) {
+		throw new Error("Presence action did not return a signed session.");
 	}
 
-	if (minimumMaterials > 0 && colony.resources.materials < minimumMaterials) {
-		await client.mutation(api.colonies.updateColonyResources, {
-			colonyId: colony._id,
-			resources: {
-				...colony.resources,
-				materials: minimumMaterials,
-			},
-		});
-		colony = await getGlobalColony(client);
-	}
-
-	if (ensureLeader && !colony.leaderId) {
-		const cats = await client.query(api.cats.getAliveCats, {
-			colonyId: colony._id,
-		});
-		if (!cats[0]) {
-			throw new Error("Active colony has no living cats to assign as leader.");
-		}
-
-		await client.mutation(api.colonies.setColonyLeader, {
-			colonyId: colony._id,
-			catId: cats[0]._id,
-		});
-		colony = await getGlobalColony(client);
-	}
-
-	return colony;
+	return {
+		nickname,
+		sessionId: presence.sessionId,
+		sig: presence.sig,
+	};
 }
 
-export async function readResourceFraction(driver, label) {
-	const row = await driver.findElement(
-		By.xpath(
-			`//span[normalize-space()='${label}']/ancestor::div[contains(@class, 'justify-between')][1]`,
-		),
-	);
-	const text = await row.getText();
-	const match = text.match(/(-?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+export async function readHudResource(driver, label) {
+	const resource = await driver.findElement(By.css(`span[title^="${label}:"]`));
+	const text = await resource.getAttribute("title");
+	const match = text.match(/:\s*(-?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
 	if (!match) {
-		throw new Error(`Could not parse resource fraction for ${label}: ${text}`);
+		throw new Error(`Could not parse resource HUD value for ${label}: ${text}`);
 	}
 
 	return {

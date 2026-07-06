@@ -8,17 +8,17 @@
 export type WatchShift = "dusk" | "midnight" | "dawn";
 
 export interface WatchRoster {
-  dusk: number;
-  midnight: number;
-  dawn: number;
-  totalGuards: number;
+	dusk: number;
+	midnight: number;
+	dawn: number;
+	totalGuards: number;
 }
 
 export interface CoverageGap {
-  shift: WatchShift;
-  guardsAssigned: number;
-  guardsNeeded: number;
-  severity: "minor" | "major" | "critical";
+	shift: WatchShift;
+	guardsAssigned: number;
+	guardsNeeded: number;
+	severity: "minor" | "major" | "critical";
 }
 
 /** Minimum guards for full coverage on any shift */
@@ -26,16 +26,16 @@ const FULL_COVERAGE_GUARDS = 3;
 
 /** Coverage score per guard by shift type (midnight is harder) */
 const COVERAGE_PER_GUARD: Record<WatchShift, number> = {
-  dusk: 40,
-  midnight: 25,
-  dawn: 35,
+	dusk: 40,
+	midnight: 25,
+	dawn: 35,
 };
 
 /** Shift weight for overall score calculation (midnight counts double) */
 const SHIFT_WEIGHT: Record<WatchShift, number> = {
-  dusk: 1,
-  midnight: 2,
-  dawn: 1,
+	dusk: 1,
+	midnight: 2,
+	dawn: 1,
 };
 
 const SHIFTS: WatchShift[] = ["dusk", "midnight", "dawn"];
@@ -48,31 +48,31 @@ const SHIFTS: WatchShift[] = ["dusk", "midnight", "dawn"];
  * with midnight getting extras first.
  */
 export function assignWatchShifts(guardCount: number): WatchRoster {
-  if (guardCount <= 0) {
-    return { dusk: 0, midnight: 0, dawn: 0, totalGuards: 0 };
-  }
+	if (guardCount <= 0) {
+		return { dusk: 0, midnight: 0, dawn: 0, totalGuards: 0 };
+	}
 
-  const roster: WatchRoster = {
-    dusk: 0,
-    midnight: 0,
-    dawn: 0,
-    totalGuards: guardCount,
-  };
+	const roster: WatchRoster = {
+		dusk: 0,
+		midnight: 0,
+		dawn: 0,
+		totalGuards: guardCount,
+	};
 
-  // Priority order for assignment: midnight, dusk, dawn
-  const priority: WatchShift[] = ["midnight", "dusk", "dawn"];
-  let remaining = guardCount;
+	// Priority order for assignment: midnight, dusk, dawn
+	const priority: WatchShift[] = ["midnight", "dusk", "dawn"];
+	let remaining = guardCount;
 
-  // Round-robin with priority ordering
-  while (remaining > 0) {
-    for (const shift of priority) {
-      if (remaining <= 0) break;
-      roster[shift]++;
-      remaining--;
-    }
-  }
+	// Round-robin with priority ordering
+	while (remaining > 0) {
+		for (const shift of priority) {
+			if (remaining <= 0) break;
+			roster[shift]++;
+			remaining--;
+		}
+	}
 
-  return roster;
+	return roster;
 }
 
 /**
@@ -83,14 +83,14 @@ export function assignWatchShifts(guardCount: number): WatchRoster {
  * Caps at 100 for >= FULL_COVERAGE_GUARDS guards.
  */
 export function calculateShiftCoverage(
-  guardsOnShift: number,
-  shiftType: WatchShift,
+	guardsOnShift: number,
+	shiftType: WatchShift,
 ): number {
-  if (guardsOnShift <= 0) return 0;
-  if (guardsOnShift >= FULL_COVERAGE_GUARDS) return 100;
+	if (guardsOnShift <= 0) return 0;
+	if (guardsOnShift >= FULL_COVERAGE_GUARDS) return 100;
 
-  const perGuard = COVERAGE_PER_GUARD[shiftType];
-  return Math.min(100, guardsOnShift * perGuard);
+	const perGuard = COVERAGE_PER_GUARD[shiftType];
+	return Math.min(100, guardsOnShift * perGuard);
 }
 
 /**
@@ -100,16 +100,16 @@ export function calculateShiftCoverage(
  * Total weight = 4, so score = (dusk*1 + midnight*2 + dawn*1) / 4.
  */
 export function calculateWatchScore(roster: WatchRoster): number {
-  const totalWeight = SHIFTS.reduce((sum, s) => sum + SHIFT_WEIGHT[s], 0);
+	const totalWeight = SHIFTS.reduce((sum, s) => sum + SHIFT_WEIGHT[s], 0);
 
-  const weightedSum = SHIFTS.reduce((sum, shift) => {
-    const coverage = calculateShiftCoverage(roster[shift], shift);
-    return sum + coverage * SHIFT_WEIGHT[shift];
-  }, 0);
+	const weightedSum = SHIFTS.reduce((sum, shift) => {
+		const coverage = calculateShiftCoverage(roster[shift], shift);
+		return sum + coverage * SHIFT_WEIGHT[shift];
+	}, 0);
 
-  if (totalWeight === 0) return 0;
+	if (totalWeight === 0) return 0;
 
-  return Math.round(weightedSum / totalWeight);
+	return Math.round(weightedSum / totalWeight);
 }
 
 /**
@@ -122,30 +122,30 @@ export function calculateWatchScore(roster: WatchRoster): number {
  * - 2 guards on any shift → minor
  */
 export function identifyCoverageGaps(roster: WatchRoster): CoverageGap[] {
-  const gaps: CoverageGap[] = [];
+	const gaps: CoverageGap[] = [];
 
-  for (const shift of SHIFTS) {
-    const assigned = roster[shift];
-    if (assigned >= FULL_COVERAGE_GUARDS) continue;
+	for (const shift of SHIFTS) {
+		const assigned = roster[shift];
+		if (assigned >= FULL_COVERAGE_GUARDS) continue;
 
-    let severity: CoverageGap["severity"];
-    if (assigned === 0) {
-      severity = "critical";
-    } else if (assigned === 1) {
-      severity = shift === "midnight" ? "critical" : "major";
-    } else {
-      severity = "minor";
-    }
+		let severity: CoverageGap["severity"];
+		if (assigned === 0) {
+			severity = "critical";
+		} else if (assigned === 1) {
+			severity = shift === "midnight" ? "critical" : "major";
+		} else {
+			severity = "minor";
+		}
 
-    gaps.push({
-      shift,
-      guardsAssigned: assigned,
-      guardsNeeded: FULL_COVERAGE_GUARDS,
-      severity,
-    });
-  }
+		gaps.push({
+			shift,
+			guardsAssigned: assigned,
+			guardsNeeded: FULL_COVERAGE_GUARDS,
+			severity,
+		});
+	}
 
-  return gaps;
+	return gaps;
 }
 
 /**
@@ -157,8 +157,8 @@ export function identifyCoverageGaps(roster: WatchRoster): CoverageGap[] {
  * - 3+ shifts → 1.6 (exhausted)
  */
 export function getWatchFatigueModifier(shiftsWorked: number): number {
-  if (shiftsWorked <= 0) return 0;
-  if (shiftsWorked === 1) return 1.0;
-  if (shiftsWorked === 2) return 1.3;
-  return 1.6;
+	if (shiftsWorked <= 0) return 0;
+	if (shiftsWorked === 1) return 1.0;
+	if (shiftsWorked === 2) return 1.3;
+	return 1.6;
 }

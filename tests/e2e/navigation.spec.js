@@ -7,8 +7,7 @@
 import { By } from "selenium-webdriver";
 import {
 	ensureGamePageReady,
-	ensureGlobalColony,
-	getColonyPageUrl,
+	ensureGlobalGameState,
 	waitForBodyText,
 	waitForPathname,
 } from "./helpers.js";
@@ -24,7 +23,7 @@ export default async function testNavigation(
 	try {
 		console.log("  Testing navigation...");
 
-		const colony = await ensureGlobalColony({ ensureLeader: true });
+		await ensureGlobalGameState(baseUrl);
 		await driver.get(baseUrl);
 		await waitForPathname(driver, "/game");
 		await ensureGamePageReady(driver);
@@ -37,30 +36,23 @@ export default async function testNavigation(
 		}
 		console.log("  ✓ Root route redirects to /game");
 
-		await driver.get(getColonyPageUrl(baseUrl, colony._id));
-		await waitForPathname(
-			driver,
-			(pathname) => pathname === `/colony/${colony._id}`,
+		await driver.get(new URL("/game", baseUrl).toString());
+		await waitForPathname(driver, "/game");
+		await ensureGamePageReady(driver);
+		const gameHeading = await driver.findElements(
+			By.xpath("//*[contains(normalize-space(), 'Catford')]"),
 		);
-		await waitForBodyText(driver, "COZY COLONY");
-
-		const colonyUrl = new URL(await driver.getCurrentUrl());
-		if (
-			colonyUrl.origin !== expectedOrigin ||
-			colonyUrl.pathname !== `/colony/${colony._id}`
-		) {
-			throw new Error(
-				`Expected colony route on the same origin, got ${colonyUrl}`,
-			);
+		if (gameHeading.length === 0) {
+			throw new Error("Game route did not render the map HUD heading.");
 		}
+		console.log("  ✓ Game route loads on the expected origin");
 
-		const colonyHeadings = await driver.findElements(
-			By.xpath("//*[contains(normalize-space(), 'COZY COLONY')]"),
+		const examinerLink = await driver.findElement(
+			By.xpath("//a[contains(normalize-space(), 'Examiner')]"),
 		);
-		if (colonyHeadings.length === 0) {
-			throw new Error("Colony route did not render its expected heading.");
-		}
-		console.log("  ✓ Colony route loads on the expected origin");
+		await examinerLink.click();
+		await waitForPathname(driver, "/game/newspaper");
+		await waitForBodyText(driver, "BACK TO THE VILLAGE MAP");
 
 		await driver.navigate().back();
 		await waitForPathname(driver, "/game");

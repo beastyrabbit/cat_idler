@@ -1,6 +1,6 @@
 /**
  * Game Type Definitions
- * 
+ *
  * This file contains all TypeScript types for the Cat Colony Idle Game.
  * See docs/plan.md for detailed explanations of each type.
  */
@@ -9,154 +9,186 @@
 // Core ID Types (Convex will generate these, but we define for reference)
 // =============================================================================
 
-export type Id<T extends string> = string & { __tableName: T }
+export type Id<T extends string> = string & { __tableName: T };
 
 // =============================================================================
 // Enums and Literal Types
 // =============================================================================
 
-export type ColonyStatus = 'starting' | 'thriving' | 'struggling' | 'dead'
+export type ColonyStatus = "starting" | "thriving" | "struggling" | "dead";
 
-export type LifeStage = 'kitten' | 'young' | 'adult' | 'elder'
+export type LifeStage = "kitten" | "young" | "adult" | "elder";
 
-export type MapType = 'colony' | 'world'
+export type MapType = "colony" | "world";
 
 export type BuildingType =
-  | 'den'
-  | 'food_storage'
-  | 'water_bowl'
-  | 'beds'
-  | 'herb_garden'
-  | 'nursery'
-  | 'elder_corner'
-  | 'walls'
-  | 'mouse_farm'
+	| "den"
+	| "food_storage"
+	| "water_bowl"
+	| "beds"
+	| "herb_garden"
+	| "nursery"
+	| "elder_corner"
+	| "walls"
+	| "mouse_farm"
+	| "shrine"
+	| "workshop"
+	| "field"
+	| "smithy"
+	| "barracks";
 
 export type TileType =
-  | 'field'
-  | 'forest'
-  | 'dense_woods'
-  | 'river'
-  | 'enemy_territory'
-  | 'oak_forest'
-  | 'pine_forest'
-  | 'jungle'
-  | 'dead_forest'
-  | 'mountains'
-  | 'swamp'
-  | 'desert'
-  | 'tundra'
-  | 'meadow'
-  | 'cave_entrance'
-  | 'enemy_lair'
+	| "field"
+	| "forest"
+	| "dense_woods"
+	| "river"
+	| "enemy_territory"
+	| "oak_forest"
+	| "pine_forest"
+	| "jungle"
+	| "dead_forest"
+	| "mountains"
+	| "swamp"
+	| "desert"
+	| "tundra"
+	| "meadow"
+	| "cave_entrance"
+	| "enemy_lair";
 
-export type OverlayFeature = 'river' | 'ancient_road' | 'game_trail' | 'trade_route' | null
+export type OverlayFeature =
+	| "river"
+	| "ancient_road"
+	| "game_trail"
+	| "trade_route"
+	| "road_built"
+	| null;
 
 export type TaskType =
-  | 'hunt'
-  | 'gather_herbs'
-  | 'fetch_water'
-  | 'clean'
-  | 'build'
-  | 'guard'
-  | 'heal'
-  | 'kitsit'
-  | 'explore'
-  | 'patrol'
-  | 'teach'
-  | 'rest'
+	| "hunt"
+	| "gather_herbs"
+	| "fetch_water"
+	| "clean"
+	| "build"
+	| "guard"
+	| "heal"
+	| "kitsit"
+	| "explore"
+	| "patrol"
+	| "teach"
+	| "rest";
 
-export type EncounterType = 'predator' | 'rival' | 'injury' | 'discovery'
+export type EncounterType = "predator" | "rival" | "injury" | "discovery";
 
-export type EnemyType = 'fox' | 'hawk' | 'badger' | 'bear' | 'rival_cat'
+export type EnemyType = "fox" | "hawk" | "badger" | "bear" | "rival_cat";
 
-export type EncounterOutcome = 'pending' | 'user_win' | 'cat_win' | 'cat_lose'
+export type EncounterOutcome = "pending" | "user_win" | "cat_win" | "cat_lose";
 
 export type EventType =
-  | 'birth'
-  | 'death'
-  | 'intruder_attack'
-  | 'intruder_defeated'
-  | 'breeding'
-  | 'leader_change'
-  | 'task_complete'
-  | 'building_complete'
-  | 'user_fed'
-  | 'user_healed'
-  | 'cat_joined'
-  | 'cat_left'
-  | 'discovery'
-  | 'job_queued'
-  | 'job_completed'
-  | 'ritual_ready'
-  | 'upgrade_purchased'
-  | 'run_reset'
-  | 'crisis'
-  | 'recovery'
+	| "birth"
+	| "death"
+	| "intruder_attack"
+	| "intruder_defeated"
+	| "breeding"
+	| "leader_change"
+	| "task_complete"
+	| "building_complete"
+	| "user_fed"
+	| "user_healed"
+	| "cat_joined"
+	| "cat_left"
+	| "discovery"
+	| "job_queued"
+	| "job_completed"
+	| "ritual_ready"
+	| "upgrade_purchased"
+	| "run_reset"
+	| "crisis"
+	| "recovery";
 
-export type PolicyTier = 'simple' | 'normal' | 'excellent'
+export type PolicyTier = "simple" | "normal" | "excellent";
 
-export type CatSpecialization = 'hunter' | 'architect' | 'ritualist' | null
+export type CatSpecialization =
+	| "hunter"
+	| "architect"
+	| "ritualist"
+	| "warrior"
+	| null;
 
 export type JobKind =
-  | 'supply_food'
-  | 'supply_water'
-  | 'leader_plan_hunt'
-  | 'hunt_expedition'
-  | 'leader_plan_house'
-  | 'build_house'
-  | 'ritual'
+	| "supply_food"
+	| "supply_water"
+	| "leader_plan_hunt"
+	| "hunt_expedition"
+	| "leader_plan_house"
+	| "build_house"
+	| "ritual"
+	| "quarry"
+	| "explore"
+	| "fetch_water"
+	| "train_warrior"
+	| "expand_village";
 
-export type JobStatus = 'queued' | 'active' | 'completed' | 'failed' | 'cancelled'
+export type JobStatus =
+	| "queued"
+	| "active"
+	| "completed"
+	| "failed"
+	| "cancelled";
 
 export type UpgradeKey =
-  | 'click_power'
-  | 'supply_speed'
-  | 'hunt_mastery'
-  | 'build_mastery'
-  | 'ritual_mastery'
-  | 'resilience'
+	| "click_power"
+	| "supply_speed"
+	| "hunt_mastery"
+	| "build_mastery"
+	| "ritual_mastery"
+	| "resilience";
 
 // =============================================================================
 // Value Objects (no ID, embedded in other objects)
 // =============================================================================
 
 export interface Resources {
-  food: number
-  water: number
-  herbs: number
-  materials: number
-  blessings: number
+	food: number;
+	water: number;
+	herbs: number;
+	materials: number;
+	blessings: number;
+	/** Workshop-refined goods. Missing on older rows — read as 0. */
+	refined?: number;
+	/** Smithy-forged weapons in the colony armory. Read as 0 when missing. */
+	weapons?: number;
+	/** Smithy-forged armor in the colony armory. Read as 0 when missing. */
+	armor?: number;
 }
 
 export interface CatStats {
-  attack: number
-  defense: number
-  hunting: number
-  medicine: number
-  cleaning: number
-  building: number
-  leadership: number
-  vision: number
+	attack: number;
+	defense: number;
+	hunting: number;
+	medicine: number;
+	cleaning: number;
+	building: number;
+	leadership: number;
+	vision: number;
 }
 
 export interface CatNeeds {
-  hunger: number
-  thirst: number
-  rest: number
-  health: number
+	hunger: number;
+	thirst: number;
+	rest: number;
+	health: number;
 }
 
 export interface Position {
-  map: MapType
-  x: number
-  y: number
+	map: MapType;
+	x: number;
+	y: number;
 }
 
 export interface TileResources {
-  food: number
-  herbs: number
-  water: number
+	food: number;
+	herbs: number;
+	water: number;
 }
 
 // =============================================================================
@@ -164,158 +196,158 @@ export interface TileResources {
 // =============================================================================
 
 export interface Colony {
-  _id: Id<'colonies'>
-  name: string
-  leaderId: Id<'cats'> | null
-  status: ColonyStatus
-  resources: Resources
-  gridSize: number
-  createdAt: number
-  lastTick: number
-  lastAttack: number
-  worldSeed?: number // Seed for procedural world generation
-  isGlobal?: boolean
-  runNumber?: number
-  runStartedAt?: number
-  lastPlayerActivityAt?: number
-  lastResetAt?: number
-  automationTier?: number
-  globalUpgradePoints?: number
-  ritualRequestedAt?: number | null
-  criticalSince?: number | null
-  testTimeScale?: number
-  testResourceDecayMultiplier?: number
-  testResilienceHoursOverride?: number | null
-  testCriticalMsOverride?: number
-  testRngSeed?: number | null
+	_id: Id<"colonies">;
+	name: string;
+	leaderId: Id<"cats"> | null;
+	status: ColonyStatus;
+	resources: Resources;
+	gridSize: number;
+	createdAt: number;
+	lastTick: number;
+	lastAttack: number;
+	worldSeed?: number; // Seed for procedural world generation
+	isGlobal?: boolean;
+	runNumber?: number;
+	runStartedAt?: number;
+	lastPlayerActivityAt?: number;
+	lastResetAt?: number;
+	automationTier?: number;
+	globalUpgradePoints?: number;
+	ritualRequestedAt?: number | null;
+	criticalSince?: number | null;
+	testTimeScale?: number;
+	testResourceDecayMultiplier?: number;
+	testResilienceHoursOverride?: number | null;
+	testCriticalMsOverride?: number;
+	testRngSeed?: number | null;
 }
 
 export interface Cat {
-  _id: Id<'cats'>
-  colonyId: Id<'colonies'>
-  name: string
-  // Stored in Convex as an array; usually length 2.
-  parentIds: (Id<'cats'> | null)[]
-  birthTime: number
-  deathTime: number | null
-  stats: CatStats
-  needs: CatNeeds
-  currentTask: TaskType | null
-  position: Position
-  isPregnant: boolean
-  pregnancyDueTime: number | null
-  spriteParams: Record<string, unknown> | null
-  specialization?: CatSpecialization
-  roleXp?: {
-    hunter: number
-    architect: number
-    ritualist: number
-  }
+	_id: Id<"cats">;
+	colonyId: Id<"colonies">;
+	name: string;
+	// Stored in Convex as an array; usually length 2.
+	parentIds: (Id<"cats"> | null)[];
+	birthTime: number;
+	deathTime: number | null;
+	stats: CatStats;
+	needs: CatNeeds;
+	currentTask: TaskType | null;
+	position: Position;
+	isPregnant: boolean;
+	pregnancyDueTime: number | null;
+	spriteParams: Record<string, unknown> | null;
+	specialization?: CatSpecialization;
+	roleXp?: {
+		hunter: number;
+		architect: number;
+		ritualist: number;
+	};
 }
 
 export interface Building {
-  _id: Id<'buildings'>
-  colonyId: Id<'colonies'>
-  type: BuildingType
-  level: number
-  position: { x: number; y: number }
-  constructionProgress: number
+	_id: Id<"buildings">;
+	colonyId: Id<"colonies">;
+	type: BuildingType;
+	level: number;
+	position: { x: number; y: number };
+	constructionProgress: number;
 }
 
 export interface WorldTile {
-  _id: Id<'worldTiles'>
-  colonyId: Id<'colonies'>
-  x: number
-  y: number
-  type: TileType
-  resources: TileResources
-  maxResources: { food: number; herbs: number }
-  dangerLevel: number
-  pathWear: number
-  lastDepleted: number
-  overlayFeature?: OverlayFeature // Optional overlay (river, path, etc.)
+	_id: Id<"worldTiles">;
+	colonyId: Id<"colonies">;
+	x: number;
+	y: number;
+	type: TileType;
+	resources: TileResources;
+	maxResources: { food: number; herbs: number };
+	dangerLevel: number;
+	pathWear: number;
+	lastDepleted: number;
+	overlayFeature?: OverlayFeature; // Optional overlay (river, path, etc.)
 }
 
 export interface Task {
-  _id: Id<'tasks'>
-  colonyId: Id<'colonies'>
-  type: TaskType
-  priority: number
-  assignedCatId: Id<'cats'> | null
-  assignmentCountdown: number
-  isOptimalAssignment: boolean
-  progress: number
-  createdAt: number
+	_id: Id<"tasks">;
+	colonyId: Id<"colonies">;
+	type: TaskType;
+	priority: number;
+	assignedCatId: Id<"cats"> | null;
+	assignmentCountdown: number;
+	isOptimalAssignment: boolean;
+	progress: number;
+	createdAt: number;
 }
 
 export interface Encounter {
-  _id: Id<'encounters'>
-  colonyId: Id<'colonies'>
-  catId: Id<'cats'>
-  type: EncounterType
-  enemyType: EnemyType | null
-  position: { x: number; y: number }
-  clicksNeeded: number
-  clicksReceived: number
-  createdAt: number
-  expiresAt: number
-  resolved: boolean
-  outcome: EncounterOutcome | null
+	_id: Id<"encounters">;
+	colonyId: Id<"colonies">;
+	catId: Id<"cats">;
+	type: EncounterType;
+	enemyType: EnemyType | null;
+	position: { x: number; y: number };
+	clicksNeeded: number;
+	clicksReceived: number;
+	createdAt: number;
+	expiresAt: number;
+	resolved: boolean;
+	outcome: EncounterOutcome | null;
 }
 
 export interface EventLog {
-  _id: Id<'events'>
-  colonyId: Id<'colonies'>
-  timestamp: number
-  type: EventType
-  message: string
-  involvedCatIds: Id<'cats'>[]
-  metadata: Record<string, unknown>
+	_id: Id<"events">;
+	colonyId: Id<"colonies">;
+	timestamp: number;
+	type: EventType;
+	message: string;
+	involvedCatIds: Id<"cats">[];
+	metadata: Record<string, unknown>;
 }
 
 export interface Player {
-  _id: Id<'players'>
-  sessionId: string
-  nickname: string
-  lastSeenAt: number
-  clickWindowStart: number
-  clicksInWindow: number
-  lifetimeClicks: number
-  lifetimeContribution: {
-    food: number
-    water: number
-    jobsRequested: number
-    upgradesPurchased: number
-  }
+	_id: Id<"players">;
+	sessionId: string;
+	nickname: string;
+	lastSeenAt: number;
+	clickWindowStart: number;
+	clicksInWindow: number;
+	lifetimeClicks: number;
+	lifetimeContribution: {
+		food: number;
+		water: number;
+		jobsRequested: number;
+		upgradesPurchased: number;
+	};
 }
 
 export interface Job {
-  _id: Id<'jobs'>
-  colonyId: Id<'colonies'>
-  kind: JobKind
-  status: JobStatus
-  requestedByType: 'player' | 'leader' | 'system'
-  requestedByPlayerId?: Id<'players'>
-  assignedCatId: Id<'cats'> | null
-  baseDurationSec: number
-  speedMultiplier: number
-  yieldMultiplier: number
-  clickTimeReducedSec: number
-  createdAt: number
-  startedAt: number
-  endsAt: number
-  completedAt?: number
-  metadata?: Record<string, unknown>
+	_id: Id<"jobs">;
+	colonyId: Id<"colonies">;
+	kind: JobKind;
+	status: JobStatus;
+	requestedByType: "player" | "leader" | "system";
+	requestedByPlayerId?: Id<"players">;
+	assignedCatId: Id<"cats"> | null;
+	baseDurationSec: number;
+	speedMultiplier: number;
+	yieldMultiplier: number;
+	clickTimeReducedSec: number;
+	createdAt: number;
+	startedAt: number;
+	endsAt: number;
+	completedAt?: number;
+	metadata?: Record<string, unknown>;
 }
 
 export interface GlobalUpgrade {
-  _id: Id<'globalUpgrades'>
-  colonyId: Id<'colonies'>
-  key: UpgradeKey
-  level: number
-  maxLevel: number
-  baseCost: number
-  description: string
+	_id: Id<"globalUpgrades">;
+	colonyId: Id<"colonies">;
+	key: UpgradeKey;
+	level: number;
+	maxLevel: number;
+	baseCost: number;
+	description: string;
 }
 
 // =============================================================================
@@ -323,19 +355,19 @@ export interface GlobalUpgrade {
 // =============================================================================
 
 export type AutonomousAction =
-  | { type: 'eat' }
-  | { type: 'drink' }
-  | { type: 'sleep'; position: Position }
-  | { type: 'return_to_colony' }
-  | { type: 'flee'; from: Position }
+	| { type: "eat" }
+	| { type: "drink" }
+	| { type: "sleep"; position: Position }
+	| { type: "return_to_colony" }
+	| { type: "flee"; from: Position };
 
 // =============================================================================
 // Combat Types
 // =============================================================================
 
 export interface CombatResult {
-  won: boolean
-  damage: number
+	won: boolean;
+	damage: number;
 }
 
 // =============================================================================
@@ -343,31 +375,31 @@ export interface CombatResult {
 // =============================================================================
 
 export interface CatSpriteProps {
-  cat: Cat
-  size?: 'small' | 'medium' | 'large'
-  animated?: boolean
-  onClick?: () => void
+	cat: Cat;
+	size?: "small" | "medium" | "large";
+	animated?: boolean;
+	onClick?: () => void;
 }
 
 export interface ResourceBarProps {
-  value: number
-  max: number
-  color?: 'green' | 'blue' | 'red' | 'yellow' | 'gray' | 'purple'
-  showLabel?: boolean
-  label?: string
+	value: number;
+	max: number;
+	color?: "green" | "blue" | "red" | "yellow" | "gray" | "purple";
+	showLabel?: boolean;
+	label?: string;
 }
 
 export interface TaskCardProps {
-  task: Task
-  assignedCat?: Cat
-  onSpeedUp: () => void
-  onReassign: () => void
+	task: Task;
+	assignedCat?: Cat;
+	onSpeedUp: () => void;
+	onReassign: () => void;
 }
 
 export interface EncounterPopupProps {
-  encounter: Encounter
-  cat: Cat
-  onClickDefend: () => void
+	encounter: Encounter;
+	cat: Cat;
+	onClickDefend: () => void;
 }
 
 // =============================================================================
@@ -375,63 +407,71 @@ export interface EncounterPopupProps {
 // =============================================================================
 
 export const NEEDS_DECAY_RATES = {
-  hunger: 5,
-  thirst: 3,
-  rest: 2,
-} as const
+	hunger: 5,
+	thirst: 3,
+	rest: 2,
+} as const;
 
 export const NEEDS_RESTORE_AMOUNTS = {
-  eating: 30,
-  drinking: 40,
-  sleeping: 20,
-  sleepingWithBeds: 30,
-} as const
+	eating: 30,
+	drinking: 40,
+	sleeping: 20,
+	sleepingWithBeds: 30,
+} as const;
 
 export const LIFE_STAGE_HOURS = {
-  kitten: [0, 6],
-  young: [6, 24],
-  adult: [24, 48],
-  elder: [48, Infinity],
-} as const
+	kitten: [0, 6],
+	young: [6, 24],
+	adult: [24, 48],
+	elder: [48, Infinity],
+} as const;
 
 export const LEADER_QUALITY = {
-  bad: { min: 0, max: 10, time: 30, wrongChance: 0.4 },
-  okay: { min: 11, max: 20, time: 20, wrongChance: 0.2 },
-  good: { min: 21, max: 30, time: 10, wrongChance: 0.05 },
-  great: { min: 31, max: 100, time: 5, wrongChance: 0 },
-} as const
+	bad: { min: 0, max: 10, time: 30, wrongChance: 0.4 },
+	okay: { min: 11, max: 20, time: 20, wrongChance: 0.2 },
+	good: { min: 21, max: 30, time: 10, wrongChance: 0.05 },
+	great: { min: 31, max: 100, time: 5, wrongChance: 0 },
+} as const;
 
-export const ENEMY_STATS: Record<EnemyType, { baseClicks: number; damage: [number, number] }> = {
-  fox: { baseClicks: 20, damage: [30, 50] },
-  hawk: { baseClicks: 15, damage: [20, 40] },
-  badger: { baseClicks: 40, damage: [40, 60] },
-  bear: { baseClicks: 75, damage: [50, 70] },
-  rival_cat: { baseClicks: 30, damage: [30, 50] },
-}
+export const ENEMY_STATS: Record<
+	EnemyType,
+	{ baseClicks: number; damage: [number, number] }
+> = {
+	fox: { baseClicks: 20, damage: [30, 50] },
+	hawk: { baseClicks: 15, damage: [20, 40] },
+	badger: { baseClicks: 40, damage: [40, 60] },
+	bear: { baseClicks: 75, damage: [50, 70] },
+	rival_cat: { baseClicks: 30, damage: [30, 50] },
+};
 
 export const BUILDING_COSTS: Record<BuildingType, number> = {
-  den: 0,
-  food_storage: 5,
-  water_bowl: 3,
-  beds: 8,
-  herb_garden: 10,
-  nursery: 12,
-  elder_corner: 10,
-  walls: 15,
-  mouse_farm: 25,
-}
+	den: 0,
+	food_storage: 5,
+	water_bowl: 3,
+	beds: 8,
+	herb_garden: 10,
+	nursery: 12,
+	elder_corner: 10,
+	walls: 15,
+	mouse_farm: 25,
+	shrine: 0, // central building, never purchasable
+	workshop: 20,
+	field: 15,
+	smithy: 30,
+	barracks: 30,
+};
 
 export const TASK_TO_SKILL: Record<TaskType, keyof CatStats> = {
-  hunt: 'hunting',
-  gather_herbs: 'medicine',
-  fetch_water: 'hunting',
-  clean: 'cleaning',
-  build: 'building',
-  guard: 'defense',
-  heal: 'medicine',
-  kitsit: 'leadership',
-  explore: 'vision',
-  patrol: 'attack',
-  teach: 'leadership',
-  rest: 'defense', // No skill gain for rest, but needs a mapping
-}
+	hunt: "hunting",
+	gather_herbs: "medicine",
+	fetch_water: "hunting",
+	clean: "cleaning",
+	build: "building",
+	guard: "defense",
+	heal: "medicine",
+	kitsit: "leadership",
+	explore: "vision",
+	patrol: "attack",
+	teach: "leadership",
+	rest: "defense", // No skill gain for rest, but needs a mapping
+};

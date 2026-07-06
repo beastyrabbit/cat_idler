@@ -1,0 +1,1 @@
+ALTER TABLE `colonies` ADD `upgradeTree` text;

@@ -14,20 +14,15 @@ bun run test:e2e:headed
 
 ## Prerequisites
 
-1. **Start Convex backend:**
-   ```bash
-   bun run convex:dev
-   ```
-
-2. **Frontend will start automatically** through Portless when you run E2E tests.
+1. **Frontend will start automatically** through Portless when you run E2E tests.
    ```bash
    bun run dev:url
    ```
-   The runner uses `TEST_BASE_URL` if provided, otherwise it targets the same computed `http://<name>.localhost:1355` URL as `bun run dev`.
+   The app uses the local SQLite/API backend. The runner uses `TEST_BASE_URL` if provided, otherwise it targets the same computed `http://<name>.localhost:1355` URL as `bun run dev`.
 
-3. **Chrome/Chromium must be installed** on your system
+2. **Chrome/Chromium must be installed** on your system
 
-4. Optional escape hatches:
+3. Optional escape hatches:
    ```bash
    TEST_BASE_URL=http://my-custom-name.localhost:1355 bun run test:e2e
    PORTLESS=skip bun run dev
@@ -35,10 +30,10 @@ bun run test:e2e:headed
 
 ## Test Files
 
-- `colony-lifecycle.spec.js` - Tests colony creation and basic flow
-- `user-interactions.spec.js` - Tests user actions (feed, heal, etc.)
-- `building-placement.spec.js` - Tests building selection and placement
-- `resource-bars.spec.js` - Tests resource bar display and updates
+- `colony-lifecycle.spec.js` - Tests the map-first game page structure
+- `user-interactions.spec.js` - Tests current action buttons and drawers
+- `building-placement.spec.js` - Tests map controls such as info, zones, and tree
+- `resource-bars.spec.js` - Tests resource HUD display and values
 - `navigation.spec.js` - Tests page navigation
 
 ## Writing New Tests
@@ -53,8 +48,8 @@ export default async function testMyFeature(
   const driver = await createDriver(headed);
   
   try {
-    await driver.get(baseUrl);
-    await waitForText(driver, 'Cat Colony Idle Game');
+    await driver.get(new URL('/game', baseUrl).toString());
+    await waitForText(driver, 'Catford');
     // Your test code
   } finally {
     await driver.quit();
@@ -68,5 +63,4 @@ export default async function testMyFeature(
 - Run `bun run dev:url` to confirm the computed Portless target
 - Screenshots are saved on failure
 - Check console output for detailed error messages
-
 
