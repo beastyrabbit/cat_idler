@@ -12,19 +12,18 @@
  * Route: /dev/fit  (not linked from the game; safe to delete)
  */
 
+import { BUILDING_SPRITES, ISO } from "@/components/map/constants";
 import {
-	BUILDING_SPRITES,
 	FENCE_X_SPRITE,
 	FENCE_Y_SPRITE,
 	GATE_SPRITE,
-	ISO,
 	ROAD_DIR,
 	roadSpriteFor,
+	ringSprites,
 	STUMP_SPRITE,
 	TILE_SPRITES,
 	WATER_SPRITE,
-} from "@/components/map/constants";
-import { ringSprites } from "@/components/map/TileLayer";
+} from "@/lib/game/tileVisuals";
 import { tileToIso, zIndexFor } from "@/lib/game/isoProjection";
 import {
 	type FenceSegment,

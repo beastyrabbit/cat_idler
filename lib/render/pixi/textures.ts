@@ -14,13 +14,16 @@ import { Assets, type Texture } from "pixi.js";
 import {
 	BUILDING_SPRITE_FALLBACK,
 	BUILDING_SPRITES,
+} from "@/components/map/constants";
+import {
 	FENCE_X_SPRITE,
 	FENCE_Y_SPRITE,
 	GATE_SPRITE,
+	ROAD_SPRITES,
 	STUMP_SPRITE,
 	TILE_SPRITES,
 	WATER_SPRITE,
-} from "@/components/map/constants";
+} from "@/lib/game/tileVisuals";
 
 /** The cat spritesheet (8 facings x 4 walk frames, 32x32 cells). */
 export const CAT_SHEET_URL = "/images/cats/cat-sheet.png";
@@ -35,6 +38,9 @@ export function allSpriteUrls(): string[] {
 		}
 	}
 	for (const src of Object.values(BUILDING_SPRITES)) {
+		urls.add(src);
+	}
+	for (const src of Object.values(ROAD_SPRITES)) {
 		urls.add(src);
 	}
 	urls.add(BUILDING_SPRITE_FALLBACK);

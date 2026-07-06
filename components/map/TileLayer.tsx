@@ -1,35 +1,24 @@
 "use client";
 
 import { memo, useEffect, useMemo, useState } from "react";
-import { isChoppedStumpTile } from "@/lib/game/depletion";
 import { tileToIso, zIndexFor } from "@/lib/game/isoProjection";
 import type { ChunkCoord } from "@/lib/game/mapView";
 import { chunkKey } from "@/lib/game/mapView";
 import {
-	fencePerimeter,
-	fromTiles,
-	type GatePlacement,
-	isInsideVillage,
-	SIDE_DELTA,
-	toTiles,
-	type VillageArea,
-} from "@/lib/game/villageArea";
-import type { WorldTile } from "@/types/game";
-import {
-	DIAMOND_CLIP,
-	FENCE_X_SPRITE,
-	FENCE_Y_SPRITE,
-	FOG_SHADES,
-	GATE_SPRITE,
-	ISO,
-	ROAD_DIR,
-	ROAD_WORN_FILTER,
-	roadSpriteFor,
-	STUMP_SPRITE,
-	TILE_SPRITES,
+	buildOrganicVillageView,
+	computeFogDim,
+	computeRoadSprites,
+	fenceSprites,
+	isExplored,
+	type OrganicVillageView,
+	SOLID_FOG,
+	tileGround,
+	type RoadSprite,
 	VILLAGE_RING_RADIUS,
-	WATER_SPRITE,
-} from "./constants";
+} from "@/lib/game/tileVisuals";
+import type { GatePlacement } from "@/lib/game/villageArea";
+import type { WorldTile } from "@/types/game";
+import { DIAMOND_CLIP, ISO } from "./constants";
 
 interface TileLayerProps {
 	chunks: ChunkCoord[];
@@ -88,277 +77,9 @@ function useChunkTiles(chunkX: number, chunkY: number): WorldTile[] | null {
 	return tiles;
 }
 
-/**
- * Euclidean halo of always-revealed ground *beyond* the fence, added to the
- * ring radius. Scales with the (growing) village so the corners of a large ring
- * never fall outside vision — a fixed radius used to leave far corners fogged,
- * which read as missing tiles.
- */
-const VILLAGE_VISION_MARGIN = 1.5;
-
 /** Resource markers only appear on notably rich tiles (biome max ~60/25). */
 const RICH_FOOD = 35;
 const RICH_HERBS = 12;
-
-const posKey = (x: number, y: number): string => `${x},${y}`;
-
-interface OrganicFenceSprite {
-	key: string;
-	src: string;
-	ox: number;
-	oy: number;
-}
-
-interface OrganicVillageView {
-	area: VillageArea;
-	claimed: Array<{ x: number; y: number }>;
-	fenceByTile: Map<string, OrganicFenceSprite[]>;
-}
-
-function buildOrganicVillageView(
-	claimedTiles: Array<{ x: number; y: number }> | undefined,
-	gate: GatePlacement | null | undefined,
-): OrganicVillageView | null {
-	if (!claimedTiles || claimedTiles.length === 0) {
-		return null;
-	}
-	const area = fromTiles(claimedTiles);
-	const fenceByTile = new Map<string, OrganicFenceSprite[]>();
-	for (const seg of fencePerimeter(area, gate)) {
-		const outside = SIDE_DELTA[seg.side];
-		const drawX = seg.x + outside.x;
-		const drawY = seg.y + outside.y;
-		const key = posKey(drawX, drawY);
-		const sprites = fenceByTile.get(key) ?? [];
-		sprites.push({
-			key: `${seg.x},${seg.y},${seg.side}`,
-			src: seg.gate
-				? GATE_SPRITE
-				: seg.axis === "x"
-					? FENCE_X_SPRITE
-					: FENCE_Y_SPRITE,
-			ox: 0,
-			oy: 0,
-		});
-		fenceByTile.set(key, sprites);
-	}
-	return { area, claimed: toTiles(area), fenceByTile };
-}
-
-function isClaimedOrHalo(
-	tile: { x: number; y: number },
-	village: OrganicVillageView,
-): boolean {
-	if (isInsideVillage({ x: tile.x, y: tile.y }, village.area)) {
-		return true;
-	}
-	return village.claimed.some(
-		(pos) => Math.max(Math.abs(tile.x - pos.x), Math.abs(tile.y - pos.y)) <= 1,
-	);
-}
-
-function isExplored(
-	tile: WorldTile,
-	anchor: { x: number; y: number },
-	ringRadius: number,
-	village: OrganicVillageView | null,
-): boolean {
-	if (tile.pathWear > 62) return true;
-	if (village) return isClaimedOrHalo(tile, village);
-	// The colony always knows its own walls and the ground just outside them:
-	// the whole fence ring (corners included, hence `<=`) plus a one-tile halo
-	// read as explored no matter how large the village has grown.
-	if (villageDistance(tile, anchor) <= ringRadius) return true;
-	const dx = tile.x - anchor.x;
-	const dy = tile.y - anchor.y;
-	return Math.sqrt(dx * dx + dy * dy) < ringRadius + VILLAGE_VISION_MARGIN;
-}
-
-/** Deepest fog shade — used for ungenerated (out-of-window) chunks only. */
-const SOLID_FOG = FOG_SHADES[FOG_SHADES.length - 1];
-
-/**
- * Brightness an unexplored tile's terrain is dimmed to, by distance (in tiles)
- * to the nearest explored tile. Index 0 hugs the frontier (a light haze over
- * real terrain); each step darkens toward near-black deep out. Unexplored land
- * therefore reads as "the land, unlit" — a dim silhouette that keeps its shape —
- * instead of a flat dark diamond that looks like a missing tile.
- */
-const FOG_BRIGHTNESS = [0.55, 0.37, 0.24, 0.14];
-
-/**
- * Fog brightness for every unexplored tile in a chunk, keyed by tile id.
- *
- * Each tile is dimmed by its Chebyshev distance to the nearest explored tile
- * *within this chunk* (plus the village vision the anchor grants), so the fog
- * fades from a light frontier hug into near-solid unknown. Cross-chunk
- * neighbors are not consulted, so seams between chunks are approximate —
- * acceptable for a soft fog effect. Explored tiles are omitted (they render lit
- * terrain, dim = 1).
- */
-function computeFogDim(
-	tiles: WorldTile[],
-	anchor: { x: number; y: number },
-	ringRadius: number,
-	village: OrganicVillageView | null,
-): Map<string, number> {
-	const explored = tiles.filter((tile) =>
-		isExplored(tile, anchor, ringRadius, village),
-	);
-	const dims = new Map<string, number>();
-
-	for (const tile of tiles) {
-		if (isExplored(tile, anchor, ringRadius, village)) {
-			continue;
-		}
-		if (explored.length === 0) {
-			dims.set(tile._id, FOG_BRIGHTNESS[FOG_BRIGHTNESS.length - 1]);
-			continue;
-		}
-		let nearest = Number.POSITIVE_INFINITY;
-		for (const e of explored) {
-			const dist = Math.max(Math.abs(tile.x - e.x), Math.abs(tile.y - e.y));
-			if (dist < nearest) {
-				nearest = dist;
-				if (nearest === 1) {
-					break;
-				}
-			}
-		}
-		const idx = Math.min(nearest - 1, FOG_BRIGHTNESS.length - 1);
-		dims.set(tile._id, FOG_BRIGHTNESS[idx]);
-	}
-
-	return dims;
-}
-
-function hasWater(tile: WorldTile): boolean {
-	return tile.type === "river" || tile.resources.water > 0;
-}
-
-/** Chebyshev distance from the village anchor. */
-function villageDistance(
-	tile: WorldTile,
-	anchor: { x: number; y: number },
-): number {
-	return Math.max(Math.abs(tile.x - anchor.x), Math.abs(tile.y - anchor.y));
-}
-
-/**
- * Fence sprite for a village-ring tile: fences follow the edge they sit
- * on, the south side gets an open gate, water gaps stay open. Exported so the
- * /dev/fit QA page exercises the exact same corner seating as the live map.
- */
-export function ringSprites(
-	tile: WorldTile,
-	anchor: { x: number; y: number },
-	ringRadius: number,
-): Array<{ src: string; ox: number; oy: number }> {
-	if (villageDistance(tile, anchor) !== ringRadius || hasWater(tile)) {
-		return [];
-	}
-	const dx = tile.x - anchor.x;
-	const dy = tile.y - anchor.y;
-	if (dx === 0 && dy === ringRadius) {
-		return [{ src: GATE_SPRITE, ox: 0, oy: 0 }];
-	}
-	const onRow = Math.abs(dy) === ringRadius;
-	const onColumn = Math.abs(dx) === ringRadius;
-	// Corners: shift each direction half a tile toward its edge so the
-	// two rails meet in an L instead of crossing in an X.
-	if (onRow && onColumn) {
-		const sx = Math.sign(dx);
-		const sy = Math.sign(dy);
-		return [
-			{ src: FENCE_X_SPRITE, ox: -sx * 64, oy: -sx * 32 },
-			{ src: FENCE_Y_SPRITE, ox: sy * 64, oy: -sy * 32 },
-		];
-	}
-	// Rows (north/south edges) run along x; columns along y.
-	return onRow
-		? [{ src: FENCE_X_SPRITE, ox: 0, oy: 0 }]
-		: [{ src: FENCE_Y_SPRITE, ox: 0, oy: 0 }];
-}
-
-/**
- * Ground inside and on the embankment is cleared for construction — render it
- * as open grass so buildings and cats aren't hidden behind biome trees, and so
- * no tree sits under the fence line. `<=` includes the ring the fence sits on.
- */
-function isVillageClearing(
-	tile: WorldTile,
-	anchor: { x: number; y: number },
-	ringRadius: number,
-	village: OrganicVillageView | null,
-): boolean {
-	if (village) {
-		return (
-			isInsideVillage({ x: tile.x, y: tile.y }, village.area) && !hasWater(tile)
-		);
-	}
-	return villageDistance(tile, anchor) <= ringRadius && !hasWater(tile);
-}
-
-type RoadKind = "built" | "worn";
-
-/**
- * Whether a tile renders as a road and its grade. Leader-paved roads always
- * show; ordinary ground becomes a worn trail only once heavily trodden
- * (pathWear >= 70) and outside the cleared village. Water is never a road.
- */
-function roadKind(
-	tile: WorldTile,
-	anchor: { x: number; y: number },
-	ringRadius: number,
-	village: OrganicVillageView | null,
-): RoadKind | null {
-	if (tile.type === "river" || tile.overlayFeature === "river") return null;
-	if (tile.overlayFeature === "road_built") return "built";
-	if (
-		tile.pathWear >= 70 &&
-		!isVillageClearing(tile, anchor, ringRadius, village)
-	) {
-		return "worn";
-	}
-	return null;
-}
-
-/**
- * Oriented road sprite (and worn-trail dimming) for every road tile in a chunk,
- * keyed by tile id. Each road tile's sprite is chosen from which of its four
- * orthogonal neighbours are also roads, so straights, corners and crossings
- * line up. Neighbours are looked up within this chunk only, so a road crossing a
- * chunk seam reads as a dead-end at the boundary — an acceptable approximation
- * (same trade-off as fog shading).
- */
-function computeRoadSprites(
-	tiles: WorldTile[],
-	anchor: { x: number; y: number },
-	ringRadius: number,
-	village: OrganicVillageView | null,
-): Map<string, { src: string; filter?: string }> {
-	const roads = new Map<string, RoadKind>();
-	for (const tile of tiles) {
-		const kind = roadKind(tile, anchor, ringRadius, village);
-		if (kind) roads.set(posKey(tile.x, tile.y), kind);
-	}
-
-	const sprites = new Map<string, { src: string; filter?: string }>();
-	for (const tile of tiles) {
-		const kind = roads.get(posKey(tile.x, tile.y));
-		if (!kind) continue;
-		let mask = 0;
-		if (roads.has(posKey(tile.x + 1, tile.y))) mask |= ROAD_DIR.E;
-		if (roads.has(posKey(tile.x - 1, tile.y))) mask |= ROAD_DIR.W;
-		if (roads.has(posKey(tile.x, tile.y - 1))) mask |= ROAD_DIR.N;
-		if (roads.has(posKey(tile.x, tile.y + 1))) mask |= ROAD_DIR.S;
-		sprites.set(tile._id, {
-			src: roadSpriteFor(mask),
-			filter: kind === "worn" ? ROAD_WORN_FILTER : undefined,
-		});
-	}
-	return sprites;
-}
 
 const IsoTile = memo(function IsoTile({
 	tile,
@@ -377,7 +98,7 @@ const IsoTile = memo(function IsoTile({
 	/** Brightness (0..1) an unexplored tile's terrain is dimmed to; 1 when explored. */
 	fogDim: number;
 	/** Oriented road sprite when this tile is a road, else undefined. */
-	roadSprite?: { src: string; filter?: string };
+	roadSprite?: RoadSprite;
 }) {
 	const { left, top } = tileToIso(tile.x, tile.y, ISO);
 	const explored = isExplored(tile, anchor, ringRadius, village);
@@ -385,23 +106,13 @@ const IsoTile = memo(function IsoTile({
 	const objectZ = zIndexFor(tile.x, tile.y, "object", ISO);
 	const dim = explored ? 1 : fogDim;
 
-	// Water wins over everything. Explored ground then layers on roads, the
-	// cleared village grass, and felled-forest stumps; unexplored ground shows
-	// only its bare terrain, dimmed by `dim` (the land, unlit) so fog never
-	// reads as a missing tile.
-	const isWater = tile.type === "river" || tile.overlayFeature === "river";
-	const clearing =
-		explored && isVillageClearing(tile, anchor, ringRadius, village);
-	const sprite: { src: string; filter?: string; base?: string } | undefined =
-		isWater
-			? { src: WATER_SPRITE }
-			: explored && roadSprite
-				? roadSprite
-				: clearing
-					? TILE_SPRITES.field
-					: explored && isChoppedStumpTile(tile)
-						? { src: STUMP_SPRITE, base: TILE_SPRITES.field.src }
-						: TILE_SPRITES[tile.type];
+	const sprite = tileGround(tile, {
+		anchor,
+		ringRadius,
+		village,
+		explored,
+		roadSprite,
+	});
 	const title = `${tile.type.replaceAll("_", " ")} (${tile.x}, ${tile.y})`;
 	// Standalone tree sprites declare a grass `base` underlay; water/road/path
 	// sprites carry their own ground and have none.
@@ -467,10 +178,7 @@ const IsoTile = memo(function IsoTile({
 
 			{/* Palisade fence around the claimed village footprint. */}
 			{explored &&
-				(
-					village?.fenceByTile.get(posKey(tile.x, tile.y)) ??
-					ringSprites(tile, anchor, ringRadius)
-				).map((fence) => (
+				fenceSprites(tile, anchor, ringRadius, village).map((fence) => (
 					<img
 						key={
 							"key" in fence && typeof fence.key === "string"

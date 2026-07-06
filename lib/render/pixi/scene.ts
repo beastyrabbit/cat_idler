@@ -42,7 +42,8 @@ import { colonyToWorld } from "@/lib/game/villageLayout";
 import type { WorldTile } from "@/types/game";
 import { CAT_SHEET_URL } from "./textures";
 import {
-	computeFogBrightness,
+	computeFogDim,
+	computeRoadSprites,
 	fenceSprites,
 	isExplored,
 	type OrganicVillageView,
@@ -283,7 +284,13 @@ export class PixiScene {
 	}
 
 	private mountChunk(key: string, tiles: WorldTile[]): void {
-		const fog = computeFogBrightness(
+		const fog = computeFogDim(
+			tiles,
+			this.anchor,
+			this.ringRadius,
+			this.village,
+		);
+		const roadSprites = computeRoadSprites(
 			tiles,
 			this.anchor,
 			this.ringRadius,
@@ -294,13 +301,23 @@ export class PixiScene {
 			const { left, top } = tileToIso(tile.x, tile.y, ISO);
 			const tileZ = zIndexFor(tile.x, tile.y, "tile", ISO);
 			const objZ = zIndexFor(tile.x, tile.y, "object", ISO);
-			const dim = fog.get(tile._id) ?? 1;
-			const ground = tileGround(
+			const explored = isExplored(
 				tile,
 				this.anchor,
 				this.ringRadius,
 				this.village,
 			);
+			const dim = explored ? 1 : (fog.get(tile._id) ?? 1);
+			const ground = tileGround(tile, {
+				anchor: this.anchor,
+				ringRadius: this.ringRadius,
+				village: this.village,
+				explored,
+				roadSprite: roadSprites.get(tile._id),
+			});
+			if (!ground) {
+				continue;
+			}
 			// Grass underlay for standalone tree/stump sprites.
 			if (ground.base) {
 				sprites.push(
@@ -323,7 +340,7 @@ export class PixiScene {
 				),
 			);
 			// Fence ring — only where the tile is explored (matches TileLayer).
-			if (dim >= 1) {
+			if (explored) {
 				for (const fence of fenceSprites(
 					tile,
 					this.anchor,
