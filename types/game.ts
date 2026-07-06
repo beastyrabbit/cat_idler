@@ -34,8 +34,11 @@ export type BuildingType =
 	| "shrine"
 	| "workshop"
 	| "field"
+	| "research_hut"
+	| "school"
 	| "smithy"
-	| "barracks";
+	| "barracks"
+	| "bridge";
 
 export type TileType =
 	| "field"
@@ -457,8 +460,11 @@ export const BUILDING_COSTS: Record<BuildingType, number> = {
 	shrine: 0, // central building, never purchasable
 	workshop: 20,
 	field: 15,
+	research_hut: 20,
+	school: 20,
 	smithy: 30,
 	barracks: 30,
+	bridge: 18,
 };
 
 export const TASK_TO_SKILL: Record<TaskType, keyof CatStats> = {

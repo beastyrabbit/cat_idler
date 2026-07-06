@@ -212,6 +212,8 @@ export interface WalkTile {
 export interface ColonyGridParams {
 	/** Every known colony tile; unknown tiles default to open walkable ground. */
 	tiles: WalkTile[];
+	/** Completed bridge building positions; these water tiles are road-cost land. */
+	bridges?: WorldPos[];
 	/** Village centre (Chebyshev origin for the legacy fence ring). */
 	anchor: WorldPos;
 	/** Chebyshev radius of the legacy palisade ring around the anchor. Ignored
@@ -302,6 +304,11 @@ export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
 	for (const tile of params.tiles) {
 		byKey.set(packKey(tile.x, tile.y), tile);
 	}
+	const bridgeKeys = new Set(
+		(params.bridges ?? []).map((p) =>
+			packKey(Math.round(p.x), Math.round(p.y)),
+		),
+	);
 
 	// Organic palisade: the fence follows the claimed shape's boundary edges and
 	// blocks crossings (except the gate) as an EDGE test. Falls back to the legacy
@@ -320,10 +327,16 @@ export function buildColonyWalkGrid(params: ColonyGridParams): WalkGrid {
 			if (!area && onFence(x, y) && !isGate(x, y)) {
 				return true;
 			}
+			if (bridgeKeys.has(packKey(x, y))) {
+				return false;
+			}
 			const tile = byKey.get(packKey(x, y));
 			return tile ? tileIsWater(tile) : false;
 		},
 		cost(x, y) {
+			if (bridgeKeys.has(packKey(x, y))) {
+				return ROAD_COST;
+			}
 			return tileCost(byKey.get(packKey(x, y)));
 		},
 		fenceBlocksStep: area

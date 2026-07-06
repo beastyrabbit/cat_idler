@@ -69,6 +69,10 @@ export interface LeaderSnapshot {
 	denPlansInFlight: number;
 	/** Storehouse builds in flight: build_house with a food_storage target. */
 	storagePlansInFlight: number;
+	/** Bridge builds in flight: build_house with a bridge target. */
+	bridgePlansInFlight?: number;
+	/** Best currently known river crossing, scored as road-cost detour saving. */
+	bridgeCandidate?: { x: number; y: number; saving: number } | null;
 	/** Finished granary storehouses currently standing. */
 	storehouseCount: number;
 	/** Cap on total storehouses (scales with population). */
@@ -99,6 +103,7 @@ export type LeaderDecision =
 	| { kind: "scout"; count: number }
 	| { kind: "build_den" }
 	| { kind: "build_storage" }
+	| { kind: "build_bridge"; x: number; y: number; saving: number }
 	| { kind: "assign_workshop"; count: number }
 	| { kind: "assign_research"; count: number }
 	| { kind: "assign_smithy"; count: number }

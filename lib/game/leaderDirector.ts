@@ -17,6 +17,11 @@
 
 import type { CatSpecialization } from "./idleEngine";
 import type { LeaderDecision, LeaderSnapshot } from "./leaderAI";
+import {
+	BRIDGE_DETOUR_SAVING_THRESHOLD,
+	BRIDGE_MATERIALS_COST,
+	BRIDGE_REFINED_COST,
+} from "./bridges";
 
 // --- Tunables ---------------------------------------------------------------
 
@@ -632,13 +637,37 @@ export function directColony(s: LeaderSnapshot): DirectorPlan {
 		decisions.push({ kind: "build_den" });
 	}
 
+	const bridge = s.bridgeCandidate ?? null;
+	let refinedReserved = 0;
+	if (
+		bridge &&
+		(s.bridgePlansInFlight ?? 0) === 0 &&
+		bridge.saving >= BRIDGE_DETOUR_SAVING_THRESHOLD &&
+		s.materials >= BRIDGE_MATERIALS_COST &&
+		s.resources.refined >= BRIDGE_REFINED_COST
+	) {
+		decisions.push({
+			kind: "build_bridge",
+			x: bridge.x,
+			y: bridge.y,
+			saving: bridge.saving,
+		});
+		refinedReserved += BRIDGE_REFINED_COST;
+	}
+
 	// --- Tithe surplus to the shrine. ---------------------------------------
 	const titheFood =
 		s.resources.food > s.foodCapacity * TITHE_FOOD_RATIO + TITHE_FOOD_AMOUNT
 			? TITHE_FOOD_AMOUNT
 			: 0;
+	const refinedAfterReservations = Math.max(
+		0,
+		s.resources.refined - refinedReserved,
+	);
 	const titheRefined =
-		s.resources.refined >= TITHE_REFINED_AMOUNT ? TITHE_REFINED_AMOUNT : 0;
+		refinedAfterReservations >= TITHE_REFINED_AMOUNT
+			? TITHE_REFINED_AMOUNT
+			: 0;
 	const blessings = (titheFood > 0 ? 1 : 0) + (titheRefined > 0 ? 1 : 0);
 	if (blessings > 0) {
 		decisions.push({

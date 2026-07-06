@@ -242,6 +242,7 @@ export const buildings = sqliteTable(
 				"school",
 				"smithy",
 				"barracks",
+				"bridge",
 			],
 		}).notNull(),
 		level: integer("level").notNull(),

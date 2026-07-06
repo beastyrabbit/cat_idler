@@ -173,7 +173,14 @@ export const BUILDING_SPRITES: Record<string, string> = {
 	// research hut, kittens at their books for the school.
 	research_hut: "/images/iso/buildings/elder-corner.png",
 	school: "/images/iso/buildings/nursery.png",
+	// No dedicated 2D bridge art in the curated set; a road plank over water
+	// reads correctly and keeps the 256x512 isometric canvas contract.
+	bridge: "/images/iso/tiles/path-straight-e.png",
 };
+export const BRIDGE_SPRITES = {
+	east_west: "/images/iso/tiles/path-straight-e.png",
+	north_south: "/images/iso/tiles/path-straight-n.png",
+} as const;
 export const BUILDING_SPRITE_FALLBACK = "/images/iso/buildings/default.png";
 
 /** Flat biome colors — used for the fog-of-war shimmer and loading states. */

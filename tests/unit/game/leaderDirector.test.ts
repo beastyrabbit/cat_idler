@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { LeaderDecision, LeaderSnapshot } from "@/lib/game/leaderAI";
 import {
+	BRIDGE_DETOUR_SAVING_THRESHOLD,
+	BRIDGE_MATERIALS_COST,
+	BRIDGE_REFINED_COST,
+} from "@/lib/game/bridges";
+import {
 	assignmentFit,
 	type CatBrief,
 	clamp01,
@@ -15,6 +20,7 @@ import {
 	projectionGate,
 	surplusCurve,
 	survivalScore,
+	TITHE_REFINED_AMOUNT,
 } from "@/lib/game/leaderDirector";
 
 const CAP = 200;
@@ -238,6 +244,79 @@ describe("standalone decisions", () => {
 					.decisions,
 			),
 		).toContain("build_den");
+	});
+
+	it("commissions a bridge at the detour threshold only when materials are ready", () => {
+		expect(
+			decisionKinds(
+				directColony(
+					snap({
+						materials: BRIDGE_MATERIALS_COST,
+						resources: { food: CAP, refined: BRIDGE_REFINED_COST },
+						bridgeCandidate: {
+							x: 10,
+							y: 12,
+							saving: BRIDGE_DETOUR_SAVING_THRESHOLD - 0.01,
+						},
+					}),
+				).decisions,
+			),
+		).not.toContain("build_bridge");
+
+		expect(
+			directColony(
+				snap({
+					materials: BRIDGE_MATERIALS_COST,
+					resources: { food: CAP, refined: BRIDGE_REFINED_COST },
+					bridgeCandidate: {
+						x: 10,
+						y: 12,
+						saving: BRIDGE_DETOUR_SAVING_THRESHOLD,
+					},
+				}),
+			).decisions,
+		).toContainEqual({
+			kind: "build_bridge",
+			x: 10,
+			y: 12,
+			saving: BRIDGE_DETOUR_SAVING_THRESHOLD,
+		});
+	});
+
+	it("does not commission a second bridge while one is in flight", () => {
+		expect(
+			decisionKinds(
+				directColony(
+					snap({
+						materials: BRIDGE_MATERIALS_COST,
+						resources: { food: CAP, refined: BRIDGE_REFINED_COST },
+						bridgePlansInFlight: 1,
+						bridgeCandidate: {
+							x: 10,
+							y: 12,
+							saving: BRIDGE_DETOUR_SAVING_THRESHOLD,
+						},
+					}),
+				).decisions,
+			),
+		).not.toContain("build_bridge");
+	});
+
+	it("reserves bridge refined before deciding refined tithes", () => {
+		const decisions = directColony(
+			snap({
+				materials: BRIDGE_MATERIALS_COST,
+				resources: { food: 0, refined: TITHE_REFINED_AMOUNT },
+				bridgeCandidate: {
+					x: 10,
+					y: 12,
+					saving: BRIDGE_DETOUR_SAVING_THRESHOLD,
+				},
+			}),
+		).decisions;
+
+		expect(decisionKinds(decisions)).toContain("build_bridge");
+		expect(decisions.find((d) => d.kind === "tithe")).toBeUndefined();
 	});
 
 	it("stops building storehouses at the cap", () => {

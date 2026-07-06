@@ -14,6 +14,7 @@ import { Assets, type Texture } from "pixi.js";
 import {
 	BUILDING_SPRITE_FALLBACK,
 	BUILDING_SPRITES,
+	BRIDGE_SPRITES,
 	FENCE_X_SPRITE,
 	FENCE_Y_SPRITE,
 	GATE_SPRITE,
@@ -35,6 +36,9 @@ export function allSpriteUrls(): string[] {
 		}
 	}
 	for (const src of Object.values(BUILDING_SPRITES)) {
+		urls.add(src);
+	}
+	for (const src of Object.values(BRIDGE_SPRITES)) {
 		urls.add(src);
 	}
 	urls.add(BUILDING_SPRITE_FALLBACK);

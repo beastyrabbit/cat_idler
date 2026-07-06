@@ -33,6 +33,13 @@ import {
 } from "@/db/schema";
 import type { CatSpriteParams } from "@/lib/cat-renderer/types";
 import {
+	type BridgeOrientation,
+	BRIDGE_MATERIALS_COST,
+	BRIDGE_REFINED_COST,
+	selectBestBridgeCandidate,
+	validateBridgePlacement,
+} from "@/lib/game/bridges";
+import {
 	CHOPPED_FOREST_FOOD_CAP,
 	isForestType,
 	regrowthAmount,
@@ -292,6 +299,23 @@ function tileHasWater(tile: {
 		tile.overlayFeature === "river" ||
 		(tile.resources?.water ?? 0) > 0
 	);
+}
+
+function buildingWorldPosition(building: {
+	type: string;
+	position: { x: number; y: number };
+}): WorldPos {
+	return building.type === "bridge"
+		? { x: building.position.x, y: building.position.y }
+		: colonyToWorld(building.position);
+}
+
+function villageBuildingsOnly<T extends { type: string }>(rows: T[]): T[] {
+	return rows.filter((building) => building.type !== "bridge");
+}
+
+function villageBuildingCount(rows: Array<{ type: string }>): number {
+	return villageBuildingsOnly(rows).length;
 }
 
 const UPGRADE_DEFAULTS = [
@@ -1099,7 +1123,7 @@ export function getVillagePayload(db: GameDb, colonyId: string) {
 		.all();
 	const area = getClaimedArea(colony);
 	return {
-		villageRadius: villageRingRadius(colonyBuildings.length),
+		villageRadius: villageRingRadius(villageBuildingCount(colonyBuildings)),
 		claimedTiles: villageToTiles(area),
 		villageGate: claimedGate(area),
 	};
@@ -1657,7 +1681,7 @@ export function planBuilding(
 			.from(buildings)
 			.where(eq(buildings.colonyId, colony._id))
 			.all();
-		const level = villageLevel(colonyBuildings);
+		const level = villageLevel(villageBuildingsOnly(colonyBuildings));
 		if (args.type === "workshop" && !workshopUnlocked(level)) {
 			throw new Error("Workshops unlock at village level 2");
 		}
@@ -2016,6 +2040,24 @@ export function getGlobalDashboard(db: GameDb) {
 		.from(buildings)
 		.where(eq(buildings.colonyId, colony._id))
 		.all();
+	const dashboardWorldTiles = db
+		.select()
+		.from(worldTiles)
+		.where(eq(worldTiles.colonyId, colony._id))
+		.all();
+	const bridgeOrientationFor = (building: {
+		type: string;
+		position: { x: number; y: number };
+	}): BridgeOrientation | undefined => {
+		if (building.type !== "bridge") {
+			return undefined;
+		}
+		const placement = validateBridgePlacement(
+			dashboardWorldTiles,
+			buildingWorldPosition(building),
+		);
+		return placement.ok ? placement.orientation : undefined;
+	};
 
 	// Upgrade-tree state + modifiers so the HUD's caps match the tick's.
 	const tree = getUpgradeTree(colony);
@@ -2066,12 +2108,13 @@ export function getGlobalDashboard(db: GameDb) {
 		// this seed (terrainGen is pure), so map visuals match the gameplay tiles
 		// server-side worldgen derives from the very same seed.
 		worldSeed: colony.worldSeed ?? colony.createdAt,
-		villageRadius: villageRingRadius(colonyBuildings.length),
+		villageRadius: villageRingRadius(villageBuildingCount(colonyBuildings)),
 		claimedTiles: villageToTiles(claimedArea),
 		villageGate: claimedGate(claimedArea),
 		buildings: colonyBuildings.map((building) => ({
 			...building,
-			worldPosition: colonyToWorld(building.position),
+			worldPosition: buildingWorldPosition(building),
+			orientation: bridgeOrientationFor(building),
 		})),
 		storage: {
 			// Per-resource caps derived from the finished storehouses, plus a
@@ -2084,7 +2127,7 @@ export function getGlobalDashboard(db: GameDb) {
 			population: aliveCats.length,
 			capacity: houseCap,
 			pressure: housingPressure(aliveCats.length, houseCap),
-			villageLevel: villageLevel(colonyBuildings),
+			villageLevel: villageLevel(villageBuildingsOnly(colonyBuildings)),
 		},
 		// God/cat upgrade tree: owned nodes + accrued research so the UI can
 		// render the tree, blessings-buy buttons, and the research progress bar.
@@ -3134,6 +3177,9 @@ export function workerTick(db: GameDb) {
 					(jobMetadata as Record<string, unknown> | null)?.buildingType ??
 						"den",
 				);
+				const requestedBridgeSite = (
+					jobMetadata as Record<string, unknown> | null
+				)?.site as WorldPos | undefined;
 				const scaffoldType =
 					requestedType === "workshop" ||
 					requestedType === "field" ||
@@ -3141,7 +3187,8 @@ export function workerTick(db: GameDb) {
 					requestedType === "research_hut" ||
 					requestedType === "school" ||
 					requestedType === "smithy" ||
-					requestedType === "barracks"
+					requestedType === "barracks" ||
+					requestedType === "bridge"
 						? (requestedType as
 								| "workshop"
 								| "field"
@@ -3149,21 +3196,56 @@ export function workerTick(db: GameDb) {
 								| "research_hut"
 								| "school"
 								| "smithy"
-								| "barracks")
+								| "barracks"
+								| "bridge")
 						: ("den" as const);
-				const occupied = tx
-					.select()
-					.from(buildings)
-					.where(eq(buildings.colonyId, colony._id))
-					.all()
-					.map((b) => b.position);
-				const siteLocal = nextClaimedBuildingSite(
-					getClaimedArea(getColony(tx, colony._id)),
-					occupied,
-					nextMovementRoll(),
-					worldCellIsWater,
-				);
-				if (siteLocal) {
+				let site: WorldPos | null = null;
+				let destinationSite: WorldPos | null = null;
+				if (
+					scaffoldType === "bridge" &&
+					typeof requestedBridgeSite?.x === "number" &&
+					typeof requestedBridgeSite.y === "number"
+				) {
+					const bridgeSite = {
+						x: Math.round(requestedBridgeSite.x),
+						y: Math.round(requestedBridgeSite.y),
+					};
+					const occupiedBridge = tx
+						.select()
+						.from(buildings)
+						.where(eq(buildings.colonyId, colony._id))
+						.all()
+						.some(
+							(b) =>
+								b.type === "bridge" &&
+								b.position.x === bridgeSite.x &&
+								b.position.y === bridgeSite.y,
+						);
+					const placement = validateBridgePlacement(colonyTiles(), bridgeSite);
+					if (!occupiedBridge && placement.ok) {
+						site = bridgeSite;
+						destinationSite = bridgeSite;
+					}
+				} else {
+					const occupied = tx
+						.select()
+						.from(buildings)
+						.where(eq(buildings.colonyId, colony._id))
+						.all()
+						.filter((b) => b.type !== "bridge")
+						.map((b) => b.position);
+					const siteLocal = nextClaimedBuildingSite(
+						getClaimedArea(getColony(tx, colony._id)),
+						occupied,
+						nextMovementRoll(),
+						worldCellIsWater,
+					);
+					if (siteLocal) {
+						site = siteLocal;
+						destinationSite = colonyToWorld(siteLocal);
+					}
+				}
+				if (site && destinationSite) {
 					const buildingId = nanoid();
 					tx.insert(buildings)
 						.values({
@@ -3171,16 +3253,16 @@ export function workerTick(db: GameDb) {
 							colonyId: colony._id,
 							type: scaffoldType,
 							level: 1,
-							position: siteLocal,
+							position: site,
 							constructionProgress: 0,
 						})
 						.run();
 					jobMetadata = {
 						...(jobMetadata ?? {}),
-						site: siteLocal,
+						site: destinationSite,
 						buildingId,
 					};
-					constructionSite = colonyToWorld(siteLocal);
+					constructionSite = destinationSite;
 				}
 			}
 
@@ -3348,6 +3430,37 @@ export function workerTick(db: GameDb) {
 			(job) =>
 				job.kind === "build_house" && jobBuildingType(job) === "food_storage",
 		).length;
+		const bridgePlansInFlight = activeJobs.filter(
+			(job) => job.kind === "build_house" && jobBuildingType(job) === "bridge",
+		).length;
+
+		const completedBridgePositions = colonyBuildings
+			.filter((b) => b.type === "bridge" && b.constructionProgress >= 100)
+			.map((b) => ({ x: b.position.x, y: b.position.y }));
+		let bestBridgeCandidate: ReturnType<typeof selectBestBridgeCandidate> =
+			null;
+		if (
+			minuteRolled &&
+			bridgePlansInFlight === 0 &&
+			nextResources.materials >= BRIDGE_MATERIALS_COST &&
+			(nextResources.refined ?? 0) >= BRIDGE_REFINED_COST
+		) {
+			const bridgeAnalysisGrid = buildColonyWalkGrid({
+				tiles: colonyTiles(),
+				bridges: completedBridgePositions,
+				anchor: VILLAGE_ANCHOR,
+				ringRadius: villageRingRadius(villageBuildingCount(colonyBuildings)),
+				gate: { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + 4 },
+			});
+			bestBridgeCandidate = selectBestBridgeCandidate({
+				tiles: colonyTiles(),
+				grid: bridgeAnalysisGrid,
+				existingBridgePositions: colonyBuildings
+					.filter((b) => b.type === "bridge")
+					.map((b) => ({ x: b.position.x, y: b.position.y })),
+				isExplored: tileIsExplored,
+			});
+		}
 
 		// Committed shelter: dens still under construction plus dens being
 		// raised by an in-flight construct job.
@@ -3459,6 +3572,14 @@ export function workerTick(db: GameDb) {
 			hasFrontier: frontierTilesNearVillage().length > 0,
 			denPlansInFlight,
 			storagePlansInFlight,
+			bridgePlansInFlight,
+			bridgeCandidate: bestBridgeCandidate
+				? {
+						x: bestBridgeCandidate.position.x,
+						y: bestBridgeCandidate.position.y,
+						saving: bestBridgeCandidate.weightedSaving,
+					}
+				: null,
 			storehouseCount: countStorehouses(colonyBuildings),
 			storehouseCap: storehouseCap(aliveCats.length),
 			workshopsNeedingWorkers: workshopsNeedingWorkers.length,
@@ -3683,6 +3804,29 @@ export function workerTick(db: GameDb) {
 						runtime,
 						null,
 						selectBestCat(tx, colony._id, "architect"),
+					);
+				}
+			} else if (decision.kind === "build_bridge") {
+				if (canTakePolicyAction()) {
+					const architect = selectBestCat(tx, colony._id, "architect");
+					if (!architect) {
+						continue;
+					}
+					queueJob(
+						tx,
+						colony._id,
+						"build_house",
+						"leader",
+						upgrades,
+						runtime,
+						null,
+						architect,
+						{
+							phase: "construct_house",
+							buildingType: "bridge",
+							site: { x: decision.x, y: decision.y },
+							saving: decision.saving,
+						},
 					);
 				}
 			} else if (decision.kind === "tithe") {
@@ -4185,19 +4329,31 @@ export function workerTick(db: GameDb) {
 						"gather_materials",
 				);
 				if (phase === "construct_house") {
-					const buildingId = (job.metadata as Record<string, unknown> | null)
-						?.buildingId;
+					const meta = job.metadata as Record<string, unknown> | null;
+					const buildingId = meta?.buildingId;
+					const buildingType = String(meta?.buildingType ?? "den");
+					const isBridge = buildingType === "bridge";
+					const waterRequired = isBridge ? 0 : policy.houseWaterRequired;
+					const materialsRequired = isBridge
+						? BRIDGE_MATERIALS_COST
+						: policy.houseMaterialsRequired;
+					const refinedRequired = isBridge ? BRIDGE_REFINED_COST : 0;
 					if (
-						patchedResources.water >= policy.houseWaterRequired &&
-						patchedResources.materials >= policy.houseMaterialsRequired
+						patchedResources.water >= waterRequired &&
+						patchedResources.materials >= materialsRequired &&
+						(patchedResources.refined ?? 0) >= refinedRequired
 					) {
 						patchedResources.water = Math.max(
 							0,
-							patchedResources.water - policy.houseWaterRequired,
+							patchedResources.water - waterRequired,
 						);
 						patchedResources.materials = Math.max(
 							0,
-							patchedResources.materials - policy.houseMaterialsRequired,
+							patchedResources.materials - materialsRequired,
+						);
+						patchedResources.refined = Math.max(
+							0,
+							(patchedResources.refined ?? 0) - refinedRequired,
 						);
 						automationTier =
 							Math.round(Math.min(10, automationTier + 0.05) * 100) / 100;
@@ -4208,10 +4364,7 @@ export function workerTick(db: GameDb) {
 								.set({ constructionProgress: 100 })
 								.where(eq(buildings._id, buildingId))
 								.run();
-							const builtType = String(
-								(job.metadata as Record<string, unknown> | null)
-									?.buildingType ?? "den",
-							).replaceAll("_", " ");
+							const builtType = buildingType.replaceAll("_", " ");
 							logEvent(
 								tx,
 								colony._id,
@@ -4219,21 +4372,26 @@ export function workerTick(db: GameDb) {
 								`${assignedCat.name} finished building a new ${builtType}.`,
 								[assignedCat._id],
 							);
+							if (isBridge) {
+								routeCache.clear();
+							}
 						}
 					} else {
 						// Not enough resources — abandon the scaffold and re-plan.
 						if (typeof buildingId === "string") {
 							tx.delete(buildings).where(eq(buildings._id, buildingId)).run();
 						}
-						queuePlannedHouseJobs(
-							tx,
-							colony._id,
-							patchedResources,
-							policy,
-							activeOrQueuedJobs,
-							upgrades,
-							runtime,
-						);
+						if (!isBridge) {
+							queuePlannedHouseJobs(
+								tx,
+								colony._id,
+								patchedResources,
+								policy,
+								activeOrQueuedJobs,
+								upgrades,
+								runtime,
+							);
+						}
 					}
 				} else {
 					patchedResources.materials += 12;
@@ -4499,7 +4657,7 @@ export function workerTick(db: GameDb) {
 		// Fence/clearing radius grows as the village fills — the gate, fence
 		// crossing, and "outside the village" reveal all key off it so the
 		// server and client agree on where the palisade sits.
-		const ringRadius = villageRingRadius(colonyBuildings.length);
+		const ringRadius = villageRingRadius(villageBuildingCount(colonyBuildings));
 		// Organic village footprint: the palisade and gate derive from the claimed
 		// shape (lib/game/villageArea.ts), so the fence hugs the actual village.
 		const movementColony = getColony(tx, colony._id);
@@ -4512,7 +4670,7 @@ export function workerTick(db: GameDb) {
 			villageShouldExpand(
 				aliveCats.length,
 				claimedArea.size,
-				colonyBuildings.length,
+				villageBuildingCount(colonyBuildings),
 			) &&
 			![
 				...getJobsByStatus(tx, colony._id, "active"),
@@ -4562,6 +4720,13 @@ export function workerTick(db: GameDb) {
 		const terrainSeed = colony.worldSeed ?? colony.createdAt;
 		const walkGrid = buildColonyWalkGrid({
 			tiles: colonyTiles(),
+			bridges: tx
+				.select()
+				.from(buildings)
+				.where(eq(buildings.colonyId, colony._id))
+				.all()
+				.filter((b) => b.type === "bridge" && b.constructionProgress >= 100)
+				.map((b) => ({ x: b.position.x, y: b.position.y })),
 			anchor: VILLAGE_ANCHOR,
 			ringRadius,
 			gate,

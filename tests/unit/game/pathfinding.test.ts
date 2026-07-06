@@ -349,6 +349,42 @@ describe("buildColonyWalkGrid", () => {
 		expect(grid.isBlocked(3, 0)).toBe(false);
 	});
 
+	it("treats completed bridges over water as road-cost walkable tiles", () => {
+		const grid = buildColonyWalkGrid({
+			tiles: [
+				tile({ x: 0, y: 0 }),
+				tile({ x: 1, y: 0, type: "river", overlayFeature: "river" }),
+				tile({ x: 2, y: 0 }),
+			],
+			bridges: [{ x: 1, y: 0 }],
+			anchor,
+			ringRadius: 4,
+			gate,
+		});
+		expect(grid.isBlocked(1, 0)).toBe(false);
+		expect(grid.cost(1, 0)).toBe(ROAD_COST);
+		expect(pathKeys(findPath({ x: 0, y: 0 }, { x: 2, y: 0 }, grid))).toContain(
+			"1,0",
+		);
+	});
+
+	it("keeps incomplete bridge scaffolds blocked because the water is unchanged", () => {
+		const grid = buildColonyWalkGrid({
+			tiles: [
+				tile({ x: 0, y: 0 }),
+				tile({ x: 1, y: 0, type: "river", overlayFeature: "river" }),
+				tile({ x: 2, y: 0 }),
+			],
+			anchor,
+			ringRadius: 4,
+			gate,
+		});
+		expect(grid.isBlocked(1, 0)).toBe(true);
+		expect(
+			findPath({ x: 0, y: 0 }, { x: 2, y: 0 }, grid, { margin: 0 }),
+		).toBeNull();
+	});
+
 	it("blocks the fence ring everywhere but the gate", () => {
 		const grid = buildColonyWalkGrid({
 			tiles: [],

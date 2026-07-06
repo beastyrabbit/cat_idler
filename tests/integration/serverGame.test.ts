@@ -438,6 +438,9 @@ function setResources(
 		herbs: number;
 		materials: number;
 		blessings: number;
+		refined: number;
+		weapons: number;
+		armor: number;
 	}>,
 ) {
 	const colony = ensureGlobalColony(database);
@@ -2088,6 +2091,308 @@ describe("roads", () => {
 		expect(paved.map((tile) => tile.x).sort((a, b) => a - b)).toEqual([
 			6, 7, 8, 9,
 		]);
+	});
+});
+
+describe("bridges", () => {
+	function flattenWorld(colonyId: string) {
+		db.update(worldTiles)
+			.set({
+				type: "field",
+				overlayFeature: null,
+				resources: { food: 0, herbs: 0, water: 0 },
+				maxResources: { food: 40, herbs: 10 },
+				pathWear: 100,
+			})
+			.where(eq(worldTiles.colonyId, colonyId))
+			.run();
+	}
+
+	function makeRiver(colonyId: string, x: number, y1: number, y2: number) {
+		db.update(worldTiles)
+			.set({
+				type: "river",
+				overlayFeature: "river",
+				resources: { food: 0, herbs: 0, water: 999 },
+				pathWear: 100,
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colonyId),
+					eq(worldTiles.x, x),
+					gte(worldTiles.y, y1),
+					lte(worldTiles.y, y2),
+				),
+			)
+			.run();
+	}
+
+	function makeHorizontalRiver(
+		colonyId: string,
+		y: number,
+		x1: number,
+		x2: number,
+	) {
+		db.update(worldTiles)
+			.set({
+				type: "river",
+				overlayFeature: "river",
+				resources: { food: 0, herbs: 0, water: 999 },
+				pathWear: 100,
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colonyId),
+					eq(worldTiles.y, y),
+					gte(worldTiles.x, x1),
+					lte(worldTiles.x, x2),
+				),
+			)
+			.run();
+	}
+
+	function queueBridgeBuild(
+		colonyId: string,
+		builderId: string,
+		site: { x: number; y: number },
+		id = "bridge-build-job",
+	) {
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: id,
+				colonyId,
+				kind: "build_house",
+				status: "queued",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: builderId,
+				baseDurationSec: 600,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now,
+				startedAt: now,
+				endsAt: now + 600_000,
+				metadata: { phase: "construct_house", buildingType: "bridge", site },
+			})
+			.run();
+	}
+
+	it("builds a bridge scaffold on a valid water crossing and pays materials plus refined", () => {
+		const colony = ensureGlobalColony(db);
+		flattenWorld(colony._id);
+		makeRiver(colony._id, 12, 4, 8);
+		setResources(db, colony._id, {
+			food: 500,
+			water: 500,
+			materials: 100,
+			refined: 10,
+		});
+		const builder = getAliveCatsForTest(db, colony._id)[0];
+		queueBridgeBuild(colony._id, builder._id, { x: 12, y: 6 });
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const scaffold = getGlobalDashboard(db)!.buildings.find(
+			(b: { type: string }) => b.type === "bridge",
+		);
+		expect(scaffold).toBeDefined();
+		expect(scaffold?.constructionProgress).toBeLessThan(100);
+		expect(scaffold?.worldPosition).toEqual({ x: 12, y: 6 });
+
+		forceJobDue(db, "bridge-build-job");
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const bridge = getGlobalDashboard(db)!.buildings.find(
+			(b: { type: string }) => b.type === "bridge",
+		);
+		expect(bridge?.constructionProgress).toBe(100);
+		expect(bridge?.orientation).toBe("east_west");
+		const after = ensureGlobalColony(db).resources;
+		expect(after.materials).toBe(84);
+		expect(after.refined).toBe(8);
+		expect(eventMessages(db)).toContain(
+			`${builder.name} finished building a new bridge.`,
+		);
+	});
+
+	it("keeps completed bridges out of village progression counts", () => {
+		const colony = ensureGlobalColony(db);
+		const before = getGlobalDashboard(db)!.housing.villageLevel;
+
+		for (let i = 0; i < 8; i += 1) {
+			db.insert(buildingsTable)
+				.values({
+					_id: `progression-bridge-${i}`,
+					colonyId: colony._id,
+					type: "bridge",
+					level: 1,
+					position: { x: 40 + i, y: 50 },
+					constructionProgress: 100,
+				})
+				.run();
+		}
+
+		const dashboard = getGlobalDashboard(db)!;
+		expect(dashboard.buildings.filter((b) => b.type === "bridge")).toHaveLength(
+			8,
+		);
+		expect(dashboard.housing.villageLevel).toBe(before);
+	});
+
+	it("reports north-south bridge orientation for horizontal rivers", () => {
+		const colony = ensureGlobalColony(db);
+		flattenWorld(colony._id);
+		makeHorizontalRiver(colony._id, 12, 4, 8);
+
+		db.insert(buildingsTable)
+			.values({
+				_id: "north-south-bridge",
+				colonyId: colony._id,
+				type: "bridge",
+				level: 1,
+				position: { x: 6, y: 12 },
+				constructionProgress: 100,
+			})
+			.run();
+
+		const bridge = getGlobalDashboard(db)!.buildings.find(
+			(b) => b._id === "north-south-bridge",
+		);
+		expect(bridge?.orientation).toBe("north_south");
+	});
+
+	it("replans a cached detour when a bridge completes", () => {
+		const colony = ensureGlobalColony(db);
+		flattenWorld(colony._id);
+		makeRiver(colony._id, 12, 1, 16);
+		// One dry gap far from the direct corridor gives the first route a detour.
+		db.update(worldTiles)
+			.set({
+				type: "field",
+				overlayFeature: null,
+				resources: { food: 0, herbs: 0, water: 0 },
+				pathWear: 100,
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, 12),
+					eq(worldTiles.y, 0),
+				),
+			)
+			.run();
+		setResources(db, colony._id, {
+			food: 500,
+			water: 500,
+			materials: 100,
+			refined: 10,
+		});
+		const [traveler, builder, ...rest] = getAliveCatsForTest(db, colony._id);
+		for (const cat of rest) {
+			db.delete(cats).where(eq(cats._id, cat._id)).run();
+		}
+		db.update(cats)
+			.set({
+				position: { map: "world", x: 10, y: 8 },
+				destination: { map: "world", x: 14, y: 8 },
+				activity: "traveling",
+				currentTask: null,
+			})
+			.where(eq(cats._id, traveler._id))
+			.run();
+
+		advanceTime(db, 2);
+		workerTick(db);
+		db.update(worldTiles)
+			.set({ pathWear: 0 })
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, 12),
+					eq(worldTiles.y, 8),
+				),
+			)
+			.run();
+		const beforeBridgeTile = db
+			.select()
+			.from(worldTiles)
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, 12),
+					eq(worldTiles.y, 8),
+				),
+			)
+			.get()!;
+		expect(beforeBridgeTile.pathWear).toBe(0);
+		setResources(db, colony._id, {
+			food: 500,
+			water: 500,
+			materials: 100,
+			refined: 10,
+		});
+
+		db.insert(buildingsTable)
+			.values({
+				_id: "route-cache-bridge",
+				colonyId: colony._id,
+				type: "bridge",
+				level: 1,
+				position: { x: 12, y: 8 },
+				constructionProgress: 50,
+			})
+			.run();
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: "route-cache-bridge-job",
+				colonyId: colony._id,
+				kind: "build_house",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: builder._id,
+				baseDurationSec: 1,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now - 2000,
+				startedAt: now - 2000,
+				endsAt: now - 1000,
+				metadata: {
+					phase: "construct_house",
+					buildingType: "bridge",
+					buildingId: "route-cache-bridge",
+					site: { x: 12, y: 8 },
+				},
+			})
+			.run();
+
+		advanceTime(db, 4);
+		workerTick(db);
+
+		const bridgeTile = db
+			.select()
+			.from(worldTiles)
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, 12),
+					eq(worldTiles.y, 8),
+				),
+			)
+			.get()!;
+		expect(bridgeTile.pathWear).toBeGreaterThan(0);
+		const moved = db
+			.select()
+			.from(cats)
+			.where(eq(cats._id, traveler._id))
+			.get()!;
+		expect(moved.destination).toEqual({ map: "world", x: 14, y: 8 });
 	});
 });
 

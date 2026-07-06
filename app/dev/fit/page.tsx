@@ -251,6 +251,16 @@ function waterSeamTiles(): Placement[] {
 	return tiles;
 }
 
+/** Bridge deck over a one-tile river with dry banks on both sides. */
+function bridgeTiles(): Placement[] {
+	const tiles = grassSquare({ x: 2, y: 2 }, 2);
+	for (const y of [1, 2, 3]) {
+		tiles.push({ x: 2, y, src: WATER_SPRITE });
+	}
+	tiles.push({ x: 2, y: 2, src: BUILDING_SPRITES.bridge });
+	return tiles;
+}
+
 // --- Organic village (task #31 stage 1) -------------------------------------
 
 /** Tile just outside a claimed tile across the given edge — where the rail sits. */
@@ -425,6 +435,10 @@ export default function FitPage() {
 				<div>
 					<h2 style={{ fontSize: 15 }}>Water / grass seam</h2>
 					<Board tiles={waterSeamTiles()} width={320} rise={ISO.tileHeight} />
+				</div>
+				<div>
+					<h2 style={{ fontSize: 15 }}>Bridge over river</h2>
+					<Board tiles={bridgeTiles()} width={320} rise={ISO.tileHeight} />
 				</div>
 				<div>
 					<h2 style={{ fontSize: 15 }}>Chopped stump beside forest</h2>

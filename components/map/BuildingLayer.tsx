@@ -1,7 +1,12 @@
 "use client";
 
 import { tileToIso, zIndexFor } from "@/lib/game/isoProjection";
-import { BUILDING_SPRITE_FALLBACK, BUILDING_SPRITES, ISO } from "./constants";
+import {
+	BRIDGE_SPRITES,
+	BUILDING_SPRITE_FALLBACK,
+	BUILDING_SPRITES,
+	ISO,
+} from "./constants";
 
 export interface MapBuilding {
 	_id: string;
@@ -9,6 +14,7 @@ export interface MapBuilding {
 	level: number;
 	constructionProgress: number;
 	worldPosition: { x: number; y: number };
+	orientation?: keyof typeof BRIDGE_SPRITES;
 }
 
 interface BuildingLayerProps {
@@ -25,7 +31,9 @@ export function BuildingLayer({ buildings }: BuildingLayerProps) {
 				const isShrine = building.type === "shrine";
 				const underConstruction = building.constructionProgress < 100;
 				const sprite =
-					BUILDING_SPRITES[building.type] ?? BUILDING_SPRITE_FALLBACK;
+					building.type === "bridge" && building.orientation
+						? BRIDGE_SPRITES[building.orientation]
+						: (BUILDING_SPRITES[building.type] ?? BUILDING_SPRITE_FALLBACK);
 				const title = `${building.type.replaceAll("_", " ")} (level ${building.level})`;
 
 				return (

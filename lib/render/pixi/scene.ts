@@ -27,6 +27,7 @@ import {
 } from "pixi.js";
 import type { Viewport } from "pixi-viewport";
 import {
+	BRIDGE_SPRITES,
 	BUILDING_SPRITE_FALLBACK,
 	BUILDING_SPRITES,
 	ISO,
@@ -78,6 +79,7 @@ export interface SceneBuilding {
 	type: string;
 	constructionProgress: number;
 	worldPosition: { x: number; y: number };
+	orientation?: keyof typeof BRIDGE_SPRITES;
 }
 
 interface CatView {
@@ -393,7 +395,10 @@ export class PixiScene {
 			) {
 				continue;
 			}
-			const url = BUILDING_SPRITES[b.type] ?? BUILDING_SPRITE_FALLBACK;
+			const url =
+				b.type === "bridge" && b.orientation
+					? BRIDGE_SPRITES[b.orientation]
+					: (BUILDING_SPRITES[b.type] ?? BUILDING_SPRITE_FALLBACK);
 			const s = this.placeSprite(
 				url,
 				left,
