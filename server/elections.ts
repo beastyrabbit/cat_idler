@@ -4,12 +4,11 @@
  * `runElectionLifecycle` is called from workerTick (single tick path);
  * `castVote` / `requestVoteKick` are player actions from the API route.
  *
- * Voter identity is the player sessionId. Client-generated sessionIds are
- * forgeable — accepted for now; HMAC-signed identity is the flagged
- * follow-up before this gates anything valuable.
+ * Voter identity is a verified session plus a server-derived salted
+ * subscriber/network hash. Either axis collapses to one ballot per poll.
  */
 
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { nanoid } from "nanoid";
 
 import type { GameDb } from "@/db/client";
@@ -21,6 +20,7 @@ import {
 	type ElectionRow,
 	elections,
 	events,
+	type PlayerRow,
 	votes,
 } from "@/db/schema";
 import {
@@ -36,6 +36,13 @@ import {
 } from "@/lib/game/elections";
 
 import { upsertPlayer } from "./players";
+
+export const VOTE_SESSION_MIN_AGE_MS = 2 * 60 * 1000;
+export const VOTE_SESSION_MIN_PRESENCE_COUNT = 2;
+
+interface VoteIdentity {
+	subscriberHash?: string | null;
+}
 
 function logElectionEvent(
 	db: GameDb,
@@ -61,6 +68,99 @@ function logElectionEvent(
 
 function getVotes(db: GameDb, electionId: string) {
 	return db.select().from(votes).where(eq(votes.electionId, electionId)).all();
+}
+
+function normalizeSubscriberHash(
+	hash: string | null | undefined,
+): string | null {
+	const trimmed = hash?.trim();
+	return trimmed ? trimmed : null;
+}
+
+function assertEligibleVoter(player: PlayerRow, now: number) {
+	if (
+		player.presenceCount < VOTE_SESSION_MIN_PRESENCE_COUNT ||
+		now - player.createdAt < VOTE_SESSION_MIN_AGE_MS
+	) {
+		throw new Error(
+			"Stay in the colony a little longer before voting. New sessions need a short presence history.",
+		);
+	}
+}
+
+function matchingVoteRows(
+	db: GameDb,
+	electionId: string,
+	playerId: string,
+	subscriberHash: string | null,
+) {
+	const base = and(
+		eq(votes.electionId, electionId),
+		eq(votes.playerId, playerId),
+	);
+	const predicate = subscriberHash
+		? and(
+				eq(votes.electionId, electionId),
+				or(
+					eq(votes.playerId, playerId),
+					eq(votes.subscriberHash, subscriberHash),
+				),
+			)
+		: base;
+
+	return db.select().from(votes).where(predicate).all();
+}
+
+function upsertVote(
+	db: GameDb,
+	election: ElectionRow,
+	player: PlayerRow,
+	catId: string,
+	now: number,
+	identity: VoteIdentity = {},
+) {
+	const subscriberHash = normalizeSubscriberHash(identity.subscriberHash);
+	const matches = matchingVoteRows(
+		db,
+		election._id,
+		player._id,
+		subscriberHash,
+	);
+	const keeper =
+		(subscriberHash
+			? matches.find((vote) => vote.subscriberHash === subscriberHash)
+			: undefined) ??
+		matches.find((vote) => vote.playerId === player._id) ??
+		matches[0];
+
+	if (keeper) {
+		for (const duplicate of matches) {
+			if (duplicate._id !== keeper._id) {
+				db.delete(votes).where(eq(votes._id, duplicate._id)).run();
+			}
+		}
+		db.update(votes)
+			.set({
+				playerId: player._id,
+				subscriberHash,
+				catId,
+				createdAt: now,
+			})
+			.where(eq(votes._id, keeper._id))
+			.run();
+		return;
+	}
+
+	db.insert(votes)
+		.values({
+			_id: nanoid(),
+			electionId: election._id,
+			playerId: player._id,
+			subscriberHash,
+			catId,
+			createdAt: now,
+		})
+		.run();
 }
 
 function openElectionsFor(db: GameDb, colonyId: string): ElectionRow[] {
@@ -182,6 +282,7 @@ export function runElectionLifecycle(
 			.map((cat) => ({ _id: cat._id, leadership: cat.stats.leadership }));
 		const ballots = getVotes(db, openElection._id).map((vote) => ({
 			playerId: vote.playerId,
+			subscriberHash: vote.subscriberHash,
 			catId: vote.catId,
 		}));
 		const winnerId = electionWinner(candidates, tallyVotes(ballots));
@@ -217,6 +318,7 @@ export function runElectionLifecycle(
 	if (openKick && openKick.endsAt <= now) {
 		const ballots = getVotes(db, openKick._id).map((vote) => ({
 			playerId: vote.playerId,
+			subscriberHash: vote.subscriberHash,
 			catId: vote.catId,
 		}));
 		const kicked =
@@ -292,6 +394,7 @@ export function castVote(
 		nickname: string;
 		electionId: string;
 		catId: string;
+		subscriberHash?: string | null;
 	},
 ) {
 	return db.transaction((txRaw) => {
@@ -299,6 +402,7 @@ export function castVote(
 		const colony = getGlobalColonyOrThrow(tx);
 		const now = Date.now();
 		const player = upsertPlayer(tx, args.sessionId, args.nickname, now);
+		assertEligibleVoter(player, now);
 
 		const election = tx
 			.select()
@@ -322,29 +426,9 @@ export function castVote(
 			throw new Error("Not a valid candidate");
 		}
 
-		const existing = tx
-			.select()
-			.from(votes)
-			.where(
-				and(eq(votes.electionId, election._id), eq(votes.playerId, player._id)),
-			)
-			.get();
-		if (existing) {
-			tx.update(votes)
-				.set({ catId: args.catId, createdAt: now })
-				.where(eq(votes._id, existing._id))
-				.run();
-		} else {
-			tx.insert(votes)
-				.values({
-					_id: nanoid(),
-					electionId: election._id,
-					playerId: player._id,
-					catId: args.catId,
-					createdAt: now,
-				})
-				.run();
-		}
+		upsertVote(tx, election, player, args.catId, now, {
+			subscriberHash: args.subscriberHash,
+		});
 
 		tx.update(colonies)
 			.set({ lastPlayerActivityAt: now })
@@ -357,13 +441,14 @@ export function castVote(
 
 export function requestVoteKick(
 	db: GameDb,
-	args: { sessionId: string; nickname: string },
+	args: { sessionId: string; nickname: string; subscriberHash?: string | null },
 ) {
 	return db.transaction((txRaw) => {
 		const tx = txRaw as unknown as GameDb;
 		const colony = getGlobalColonyOrThrow(tx);
 		const now = Date.now();
 		const player = upsertPlayer(tx, args.sessionId, args.nickname, now);
+		assertEligibleVoter(player, now);
 
 		if (!colony.leaderId) {
 			throw new Error("There is no leader to vote out");
@@ -382,7 +467,9 @@ export function requestVoteKick(
 		);
 		if (alreadyOpen) {
 			// Petition exists — this call counts as the player's vote.
-			return castVoteInline(tx, alreadyOpen, player._id, leader._id, now);
+			return castVoteInline(tx, alreadyOpen, player, leader._id, now, {
+				subscriberHash: args.subscriberHash,
+			});
 		}
 
 		const timeScale = Math.max(1, colony.testTimeScale ?? 1);
@@ -402,15 +489,25 @@ export function requestVoteKick(
 				runNumber: colony.runNumber ?? 1,
 			})
 			.run();
-		tx.insert(votes)
-			.values({
-				_id: nanoid(),
-				electionId,
-				playerId: player._id,
-				catId: leader._id,
-				createdAt: now,
-			})
-			.run();
+		upsertVote(
+			tx,
+			{
+				_id: electionId,
+				colonyId: colony._id,
+				kind: "vote_kick",
+				status: "open",
+				candidateCatIds: [],
+				targetCatId: leader._id,
+				startedAt: now,
+				endsAt: now + windowMs,
+				winnerCatId: null,
+				runNumber: colony.runNumber ?? 1,
+			},
+			player,
+			leader._id,
+			now,
+			{ subscriberHash: args.subscriberHash },
+		);
 
 		logElectionEvent(
 			tx,
@@ -432,27 +529,11 @@ export function requestVoteKick(
 function castVoteInline(
 	db: GameDb,
 	election: ElectionRow,
-	playerId: string,
+	player: PlayerRow,
 	catId: string,
 	now: number,
+	identity: VoteIdentity = {},
 ) {
-	const existing = db
-		.select()
-		.from(votes)
-		.where(
-			and(eq(votes.electionId, election._id), eq(votes.playerId, playerId)),
-		)
-		.get();
-	if (!existing) {
-		db.insert(votes)
-			.values({
-				_id: nanoid(),
-				electionId: election._id,
-				playerId,
-				catId,
-				createdAt: now,
-			})
-			.run();
-	}
+	upsertVote(db, election, player, catId, now, identity);
 	return { ok: true, electionId: election._id };
 }

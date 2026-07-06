@@ -142,10 +142,11 @@ describe("signature verification on identity actions", () => {
 		await post({ action: "ensure" });
 		const sig = signSession("s_valid", SECRET);
 		const { status } = await post({
-			action: "requestVoteKick",
+			action: "requestJob",
 			sessionId: "s_valid",
 			nickname: "Ann",
 			sig,
+			kind: "supply_food",
 		});
 		// Auth passed — any remaining failure is a game-rule 400, never 401.
 		expect(status).not.toBe(401);
@@ -162,10 +163,11 @@ describe("signature verification on identity actions", () => {
 		const sessionId = presence.json?.sessionId as string;
 		const sig = presence.json?.sig as string;
 		const { status } = await post({
-			action: "requestVoteKick",
+			action: "requestJob",
 			sessionId,
 			nickname: "Ann",
 			sig,
+			kind: "supply_water",
 		});
 		expect(status).not.toBe(401);
 	});

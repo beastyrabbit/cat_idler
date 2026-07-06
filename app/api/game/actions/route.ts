@@ -41,6 +41,10 @@ import {
 	workerTick,
 } from "@/server/game";
 import { getSessionSecret } from "@/server/players";
+import {
+	clientIpFromHeaders,
+	subscriberHashFromHeaders,
+} from "@/server/voterIdentity";
 import { createZone, removeZone } from "@/server/zones";
 
 export const runtime = "nodejs";
@@ -238,8 +242,7 @@ export async function POST(request: Request) {
 	// could drain a victim's budget with garbage, or rotate made-up ids
 	// to escape their own. Everything unproven (presence, ensure, bad
 	// sigs) shares a per-IP bucket instead.
-	const clientIp =
-		request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+	const clientIp = clientIpFromHeaders(request.headers);
 	let limiterKey = `ip:${clientIp}`;
 	if (IDENTITY_ACTIONS.has(action)) {
 		const sid = body.sessionId;
@@ -324,13 +327,25 @@ export async function POST(request: Request) {
 				const electionId = requireString(body.electionId, "electionId");
 				const catId = requireString(body.catId, "catId");
 				return NextResponse.json(
-					castVote(db, { sessionId, nickname, electionId, catId }),
+					castVote(db, {
+						sessionId,
+						nickname,
+						electionId,
+						catId,
+						subscriberHash: subscriberHashFromHeaders(request.headers),
+					}),
 				);
 			}
 
 			case "requestVoteKick": {
 				const { sessionId, nickname } = requireSignedSession(body);
-				return NextResponse.json(requestVoteKick(db, { sessionId, nickname }));
+				return NextResponse.json(
+					requestVoteKick(db, {
+						sessionId,
+						nickname,
+						subscriberHash: subscriberHashFromHeaders(request.headers),
+					}),
+				);
 			}
 
 			case "createZone": {

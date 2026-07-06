@@ -19,6 +19,7 @@ import {
 	globalUpgrades as globalUpgradesTable,
 	jobs,
 	runHistory,
+	votes as votesTable,
 	worldTiles,
 	zones as zonesTable,
 } from "@/db/schema";
@@ -28,7 +29,11 @@ import {
 	ringCells,
 	VILLAGE_ANCHOR,
 } from "@/lib/game/villageLayout";
-import { castVote, requestVoteKick } from "@/server/elections";
+import {
+	castVote,
+	requestVoteKick,
+	VOTE_SESSION_MIN_AGE_MS,
+} from "@/server/elections";
 import {
 	advanceTime,
 	assignWorker,
@@ -1664,6 +1669,25 @@ describe("elections", () => {
 			.run();
 	}
 
+	function eligibleVoter(
+		sessionId: string,
+		nickname = sessionId,
+		database: GameDb = db,
+	) {
+		const joinedAt = Date.now() - VOTE_SESSION_MIN_AGE_MS - 1000;
+		upsertPlayer(database, sessionId, nickname, joinedAt, {
+			recordPresence: true,
+		});
+		upsertPlayer(database, sessionId, nickname, Date.now(), {
+			recordPresence: true,
+		});
+		return { sessionId, nickname };
+	}
+
+	function subscriberHash(n: number): string {
+		return n.toString(16).padStart(16, "0");
+	}
+
 	it("opens a leadership election on the first tick", () => {
 		ensureGlobalColony(db);
 		tick();
@@ -1687,16 +1711,16 @@ describe("elections", () => {
 		const underdog = election.candidates[election.candidates.length - 1];
 
 		castVote(db, {
-			sessionId: "voter_1",
-			nickname: "V1",
+			...eligibleVoter("voter_1", "V1"),
 			electionId: election._id,
 			catId: underdog._id,
+			subscriberHash: subscriberHash(1),
 		});
 		castVote(db, {
-			sessionId: "voter_2",
-			nickname: "V2",
+			...eligibleVoter("voter_2", "V2"),
 			electionId: election._id,
 			catId: underdog._id,
+			subscriberHash: subscriberHash(2),
 		});
 
 		forceElectionDue(election._id);
@@ -1717,21 +1741,152 @@ describe("elections", () => {
 		const [first, , third] = election.candidates;
 
 		castVote(db, {
-			sessionId: "swing_voter",
-			nickname: "SV",
+			...eligibleVoter("swing_voter", "SV"),
 			electionId: election._id,
 			catId: third._id,
+			subscriberHash: subscriberHash(10),
 		});
 		castVote(db, {
-			sessionId: "swing_voter",
-			nickname: "SV",
+			...eligibleVoter("swing_voter", "SV"),
 			electionId: election._id,
 			catId: first._id,
+			subscriberHash: subscriberHash(10),
 		});
 
 		const tally = getGlobalDashboard(db)!.election!.tally;
 		expect(tally[first._id]).toBe(1);
 		expect(tally[third._id]).toBeUndefined();
+	});
+
+	it("collapses duplicate election votes by subscriber hash across rotated sessions", () => {
+		ensureGlobalColony(db);
+		tick();
+		const election = getGlobalDashboard(db)!.election!;
+		const [first, second] = election.candidates;
+		const household = subscriberHash(42);
+
+		castVote(db, {
+			...eligibleVoter("rotated_session_1", "R1"),
+			electionId: election._id,
+			catId: first._id,
+			subscriberHash: household,
+		});
+		castVote(db, {
+			...eligibleVoter("rotated_session_2", "R2"),
+			electionId: election._id,
+			catId: second._id,
+			subscriberHash: household,
+		});
+
+		const refreshed = getGlobalDashboard(db)!.election!;
+		expect(refreshed.totalBallots).toBe(1);
+		expect(refreshed.tally[second._id]).toBe(1);
+		expect(refreshed.tally[first._id]).toBeUndefined();
+		expect(
+			db
+				.select()
+				.from(votesTable)
+				.where(eq(votesTable.electionId, election._id))
+				.all(),
+		).toHaveLength(1);
+	});
+
+	it("rejects vote attempts from sessions without enough presence history", () => {
+		ensureGlobalColony(db);
+		tick();
+		const election = getGlobalDashboard(db)!.election!;
+		const candidate = election.candidates[0];
+
+		expect(() =>
+			castVote(db, {
+				sessionId: "fresh_voter",
+				nickname: "Fresh",
+				electionId: election._id,
+				catId: candidate._id,
+				subscriberHash: subscriberHash(90),
+			}),
+		).toThrow(/presence history/);
+
+		upsertPlayer(
+			db,
+			"one_presence",
+			"One",
+			Date.now() - VOTE_SESSION_MIN_AGE_MS - 1000,
+			{ recordPresence: true },
+		);
+		expect(() =>
+			castVote(db, {
+				sessionId: "one_presence",
+				nickname: "One",
+				electionId: election._id,
+				catId: candidate._id,
+				subscriberHash: subscriberHash(91),
+			}),
+		).toThrow(/presence history/);
+	});
+
+	it("caps a session-rotation vote-kick from one subscriber identity at one signature", () => {
+		ensureGlobalColony(db);
+		tick();
+		const leaderId = ensureGlobalColony(db).leaderId!;
+		const household = subscriberHash(77);
+
+		requestVoteKick(db, {
+			...eligibleVoter("rotate_kick_1", "RK1"),
+			subscriberHash: household,
+		});
+		const petition = getGlobalDashboard(db)!.voteKick!;
+		for (let i = 2; i <= 8; i++) {
+			castVote(db, {
+				...eligibleVoter(`rotate_kick_${i}`, `RK${i}`),
+				electionId: petition._id,
+				catId: leaderId,
+				subscriberHash: household,
+			});
+		}
+
+		expect(getGlobalDashboard(db)!.voteKick!.signatures).toBe(1);
+
+		forceElectionDue(petition._id);
+		tick();
+		expect(ensureGlobalColony(db).leaderId).toBe(leaderId);
+	});
+
+	it("deterministically collapses the same rotated-session vote-kick sequence", () => {
+		function runScenario() {
+			const scenarioDb = createDb(":memory:");
+			ensureGlobalColony(scenarioDb);
+			advanceTime(scenarioDb, 2);
+			workerTick(scenarioDb);
+			const leaderId = ensureGlobalColony(scenarioDb).leaderId!;
+			const household = subscriberHash(88);
+
+			requestVoteKick(scenarioDb, {
+				...eligibleVoter("deterministic_1", "D1", scenarioDb),
+				subscriberHash: household,
+			});
+			const petition = getGlobalDashboard(scenarioDb)!.voteKick!;
+			for (let i = 2; i <= 5; i++) {
+				castVote(scenarioDb, {
+					...eligibleVoter(`deterministic_${i}`, `D${i}`, scenarioDb),
+					electionId: petition._id,
+					catId: leaderId,
+					subscriberHash: household,
+				});
+			}
+
+			return {
+				signatures: getGlobalDashboard(scenarioDb)!.voteKick!.signatures,
+				voteRows: scenarioDb
+					.select()
+					.from(votesTable)
+					.where(eq(votesTable.electionId, petition._id))
+					.all().length,
+			};
+		}
+
+		expect(runScenario()).toEqual(runScenario());
+		expect(runScenario()).toEqual({ signatures: 1, voteRows: 1 });
 	});
 
 	it("kicks the leader with 5 distinct signatures and bars them from the snap election", () => {
@@ -1745,17 +1900,20 @@ describe("elections", () => {
 
 		const leaderId = ensureGlobalColony(db).leaderId!;
 
-		requestVoteKick(db, { sessionId: "angry_1", nickname: "A1" });
+		requestVoteKick(db, {
+			...eligibleVoter("angry_1", "A1"),
+			subscriberHash: subscriberHash(1),
+		});
 		const petition = getGlobalDashboard(db)!.voteKick!;
 		expect(petition.targetCatId).toBe(leaderId);
 		expect(petition.signatures).toBe(1);
 
 		for (let i = 2; i <= 5; i++) {
 			castVote(db, {
-				sessionId: `angry_${i}`,
-				nickname: `A${i}`,
+				...eligibleVoter(`angry_${i}`, `A${i}`),
 				electionId: petition._id,
 				catId: leaderId,
+				subscriberHash: subscriberHash(i),
 			});
 		}
 		expect(getGlobalDashboard(db)!.voteKick!.signatures).toBe(5);
@@ -1781,14 +1939,17 @@ describe("elections", () => {
 		tick();
 		const leaderId = ensureGlobalColony(db).leaderId!;
 
-		requestVoteKick(db, { sessionId: "grump_1", nickname: "G1" });
+		requestVoteKick(db, {
+			...eligibleVoter("grump_1", "G1"),
+			subscriberHash: subscriberHash(1),
+		});
 		const petition = getGlobalDashboard(db)!.voteKick!;
 		for (let i = 2; i <= 4; i++) {
 			castVote(db, {
-				sessionId: `grump_${i}`,
-				nickname: `G${i}`,
+				...eligibleVoter(`grump_${i}`, `G${i}`),
 				electionId: petition._id,
 				catId: leaderId,
+				subscriberHash: subscriberHash(i),
 			});
 		}
 

@@ -312,7 +312,9 @@ export const players = sqliteTable(
 		_id: text("id").primaryKey(),
 		sessionId: text("sessionId").notNull(),
 		nickname: text("nickname").notNull(),
+		createdAt: integer("createdAt").notNull(),
 		lastSeenAt: integer("lastSeenAt").notNull(),
+		presenceCount: integer("presenceCount").notNull(),
 		clickWindowStart: integer("clickWindowStart").notNull(),
 		clicksInWindow: integer("clicksInWindow").notNull(),
 		lifetimeClicks: integer("lifetimeClicks").notNull(),
@@ -402,6 +404,8 @@ export const votes = sqliteTable(
 		_id: text("id").primaryKey(),
 		electionId: text("electionId").notNull(),
 		playerId: text("playerId").notNull(),
+		/** Salted network/subscriber hash, used as a second dedupe axis. */
+		subscriberHash: text("subscriberHash"),
 		/** Chosen candidate (election) or the kick target (vote_kick). */
 		catId: text("catId").notNull(),
 		createdAt: integer("createdAt").notNull(),
@@ -411,6 +415,10 @@ export const votes = sqliteTable(
 		uniqueIndex("votes_by_election_player").on(
 			table.electionId,
 			table.playerId,
+		),
+		uniqueIndex("votes_by_election_subscriber").on(
+			table.electionId,
+			table.subscriberHash,
 		),
 	],
 );

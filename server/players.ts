@@ -44,6 +44,7 @@ export function upsertPlayer(
 	sessionId: string,
 	nickname: string,
 	now: number = Date.now(),
+	options: { recordPresence?: boolean } = {},
 ): PlayerRow {
 	const existing = db
 		.select()
@@ -52,18 +53,23 @@ export function upsertPlayer(
 		.get();
 
 	if (existing) {
+		const presenceCount = options.recordPresence
+			? existing.presenceCount + 1
+			: existing.presenceCount;
 		db.update(players)
-			.set({ nickname, lastSeenAt: now })
+			.set({ nickname, lastSeenAt: now, presenceCount })
 			.where(eq(players._id, existing._id))
 			.run();
-		return { ...existing, nickname, lastSeenAt: now };
+		return { ...existing, nickname, lastSeenAt: now, presenceCount };
 	}
 
 	const row: PlayerRow = {
 		_id: nanoid(),
 		sessionId,
 		nickname,
+		createdAt: now,
 		lastSeenAt: now,
+		presenceCount: options.recordPresence ? 1 : 0,
 		clickWindowStart: now,
 		clicksInWindow: 0,
 		lifetimeClicks: 0,

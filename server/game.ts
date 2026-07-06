@@ -37,7 +37,11 @@ import {
 	isForestType,
 	regrowthAmount,
 } from "@/lib/game/depletion";
-import { KICK_THRESHOLD, tallyVotes } from "@/lib/game/elections";
+import {
+	KICK_THRESHOLD,
+	tallyVotes,
+	voteIdentityKey,
+} from "@/lib/game/elections";
 import {
 	extractGeneticTraits,
 	type GeneticTraits,
@@ -2145,12 +2149,16 @@ function electionPayloads(db: GameDb, colonyId: string, aliveCats: CatRow[]) {
 			.from(votes)
 			.where(eq(votes.electionId, poll._id))
 			.all()
-			.map((vote) => ({ playerId: vote.playerId, catId: vote.catId }));
+			.map((vote) => ({
+				playerId: vote.playerId,
+				subscriberHash: vote.subscriberHash,
+				catId: vote.catId,
+			}));
 		election = {
 			_id: poll._id,
 			endsAt: poll.endsAt,
 			tally: tallyVotes(ballots),
-			totalBallots: new Set(ballots.map((ballot) => ballot.playerId)).size,
+			totalBallots: new Set(ballots.map(voteIdentityKey)).size,
 			candidates: poll.candidateCatIds
 				.map((catId) => aliveCats.find((cat) => cat._id === catId))
 				.filter((cat): cat is CatRow => Boolean(cat))
@@ -2171,7 +2179,13 @@ function electionPayloads(db: GameDb, colonyId: string, aliveCats: CatRow[]) {
 				.from(votes)
 				.where(eq(votes.electionId, kick._id))
 				.all()
-				.map((vote) => vote.playerId),
+				.map((vote) =>
+					voteIdentityKey({
+						playerId: vote.playerId,
+						subscriberHash: vote.subscriberHash,
+						catId: vote.catId,
+					}),
+				),
 		).size;
 		const target = aliveCats.find((cat) => cat._id === kick.targetCatId);
 		voteKick = {
@@ -2671,7 +2685,9 @@ export function upsertPresence(
 	sessionId: string,
 	nickname: string,
 ): string {
-	return upsertPlayer(db, sessionId, nickname)._id;
+	return upsertPlayer(db, sessionId, nickname, Date.now(), {
+		recordPresence: true,
+	})._id;
 }
 
 export function workerTick(db: GameDb) {

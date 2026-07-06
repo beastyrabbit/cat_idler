@@ -13,6 +13,7 @@ export interface ElectionCandidate {
 
 export interface BallotVote {
 	playerId: string;
+	subscriberHash?: string | null;
 	catId: string;
 }
 
@@ -43,11 +44,11 @@ export function candidatesFor(
 		.map((cat) => cat._id);
 }
 
-/** One position per player (their latest vote wins), counted per cat. */
+/** One position per effective voter identity (their latest vote wins). */
 export function tallyVotes(votes: BallotVote[]): Record<string, number> {
 	const latest = new Map<string, string>();
 	for (const vote of votes) {
-		latest.set(vote.playerId, vote.catId);
+		latest.set(voteIdentityKey(vote), vote.catId);
 	}
 	const tally: Record<string, number> = {};
 	for (const catId of latest.values()) {
@@ -82,9 +83,15 @@ export function electionWinner(
 	return winner._id;
 }
 
-/** A kick succeeds only with enough distinct players behind it. */
+/** A kick succeeds only with enough distinct effective voter identities. */
 export function shouldTriggerKick(votes: BallotVote[]): boolean {
-	return new Set(votes.map((vote) => vote.playerId)).size >= KICK_THRESHOLD;
+	return new Set(votes.map(voteIdentityKey)).size >= KICK_THRESHOLD;
+}
+
+export function voteIdentityKey(vote: BallotVote): string {
+	return vote.subscriberHash
+		? `subscriber:${vote.subscriberHash}`
+		: `player:${vote.playerId}`;
 }
 
 /** A new election is due when none has happened or the term expired. */
