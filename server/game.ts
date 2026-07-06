@@ -9,7 +9,18 @@
  * handlers call the rest.
  */
 
-import { and, desc, eq, gt, gte, inArray, isNull, lt, lte } from "drizzle-orm";
+import {
+	and,
+	desc,
+	eq,
+	gt,
+	gte,
+	inArray,
+	isNull,
+	lt,
+	lte,
+	sql,
+} from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { GameDb } from "@/db/client";
 import {
@@ -2864,38 +2875,24 @@ export function workerTick(db: GameDb) {
 			(elapsedSec * runtime.timeScale) / 60,
 		);
 		if (decayAmount > 0) {
-			const wornTiles = tx
-				.select()
-				.from(worldTiles)
+			tx.update(worldTiles)
+				.set({
+					pathWear: sql<number>`case
+						when ${worldTiles.pathWear} >= 70
+							then max(63, ${worldTiles.pathWear} - ${decayAmount})
+						else max(1, ${worldTiles.pathWear} - ${decayAmount})
+					end`,
+				})
 				.where(
-					and(eq(worldTiles.colonyId, colony._id), gt(worldTiles.pathWear, 0)),
+					sql`
+					${worldTiles.colonyId} = ${colony._id}
+					and ${worldTiles.pathWear} > 0
+					and (${worldTiles.overlayFeature} is null or ${worldTiles.overlayFeature} <> ${"road_built"})
+					and (${worldTiles.pathWear} >= 70 or ${worldTiles.pathWear} <= 62)
+					and ${worldTiles.pathWear} <> 1
+				`,
 				)
-				.all();
-			for (const worn of wornTiles) {
-				if (worn.overlayFeature === "road_built") {
-					continue; // built roads are permanent
-				}
-				let next = worn.pathWear;
-				if (worn.pathWear >= 70) {
-					// A worn road slowly fades back toward a bare trail once the
-					// traffic that made it stops.
-					next = Math.max(63, worn.pathWear - decayAmount);
-				} else if (worn.pathWear > 62) {
-					// Revealed-but-not-road ground stays put: it's explored terrain
-					// and a faint trail, and freezing it here is what lets repeated
-					// traversals accumulate into a road under accelerated presets.
-					continue;
-				} else {
-					// Worldgen's faint seeded trails fade to nothing.
-					next = Math.max(1, worn.pathWear - decayAmount);
-				}
-				if (next !== worn.pathWear) {
-					tx.update(worldTiles)
-						.set({ pathWear: next })
-						.where(eq(worldTiles._id, worn._id))
-						.run();
-				}
-			}
+				.run();
 		}
 		// Regrowth: depleted non-forest tiles slowly refill their food back
 		// toward the cap. Chopped forests keep their new low cap and never

@@ -1,0 +1,1 @@
+CREATE INDEX `worldTiles_by_colony_path_wear_nonzero` ON `worldTiles` (`colonyId`,`pathWear`) WHERE "worldTiles"."pathWear" > 0;

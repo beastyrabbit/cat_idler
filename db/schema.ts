@@ -19,6 +19,7 @@ import {
 	text,
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 export interface ColonyResources {
 	food: number;
@@ -276,6 +277,9 @@ export const worldTiles = sqliteTable(
 	},
 	(table) => [
 		index("worldTiles_by_colony").on(table.colonyId),
+		index("worldTiles_by_colony_path_wear_nonzero")
+			.on(table.colonyId, table.pathWear)
+			.where(sql`${table.pathWear} > 0`),
 		uniqueIndex("worldTiles_by_colony_position").on(
 			table.colonyId,
 			table.x,
