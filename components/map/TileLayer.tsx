@@ -1,10 +1,19 @@
 "use client";
 
 import { memo, useEffect, useMemo, useState } from "react";
+import {
+	blockedElevationEdgeMask,
+	stairElevationEdgeMask,
+} from "@/lib/game/elevation";
 import { isChoppedStumpTile } from "@/lib/game/depletion";
 import { tileToIso, zIndexFor } from "@/lib/game/isoProjection";
 import type { ChunkCoord } from "@/lib/game/mapView";
 import { chunkKey } from "@/lib/game/mapView";
+import {
+	terrainHeightAt,
+	terrainStairAt,
+	WORLD_TERRAIN_OPTIONS,
+} from "@/lib/game/terrainGen";
 import {
 	fencePerimeter,
 	fromTiles,
@@ -30,6 +39,7 @@ import {
 	VILLAGE_RING_RADIUS,
 	WATER_SPRITE,
 } from "./constants";
+import { ElevationAffordance } from "./ElevationAffordance";
 
 interface TileLayerProps {
 	chunks: ChunkCoord[];
@@ -40,6 +50,8 @@ interface TileLayerProps {
 	claimedTiles?: Array<{ x: number; y: number }>;
 	/** Organic gate edge derived by the server for the claimed footprint. */
 	villageGate?: GatePlacement | null;
+	/** World seed used to derive the same pure terrain height/stair field. */
+	worldSeed?: number | null;
 	/** Info mode: draw resource markers on rich tiles. */
 	showInfo?: boolean;
 }
@@ -368,6 +380,7 @@ const IsoTile = memo(function IsoTile({
 	showInfo,
 	fogDim,
 	roadSprite,
+	worldSeed,
 }: {
 	tile: WorldTile;
 	anchor: { x: number; y: number };
@@ -378,6 +391,7 @@ const IsoTile = memo(function IsoTile({
 	fogDim: number;
 	/** Oriented road sprite when this tile is a road, else undefined. */
 	roadSprite?: { src: string; filter?: string };
+	worldSeed?: number | null;
 }) {
 	const { left, top } = tileToIso(tile.x, tile.y, ISO);
 	const explored = isExplored(tile, anchor, ringRadius, village);
@@ -411,6 +425,21 @@ const IsoTile = memo(function IsoTile({
 	const dimFilter = dim < 1 ? `brightness(${dim})` : undefined;
 	const spriteFilter =
 		[sprite?.filter, dimFilter].filter(Boolean).join(" ") || undefined;
+	const elevationField =
+		worldSeed != null
+			? {
+					heightAt: (x: number, y: number) =>
+						terrainHeightAt(x, y, worldSeed, WORLD_TERRAIN_OPTIONS),
+					hasStair: (x: number, y: number) =>
+						terrainStairAt(x, y, worldSeed, WORLD_TERRAIN_OPTIONS),
+				}
+			: null;
+	const cliffMask = elevationField
+		? blockedElevationEdgeMask({ x: tile.x, y: tile.y }, elevationField)
+		: 0;
+	const stairMask = elevationField
+		? stairElevationEdgeMask({ x: tile.x, y: tile.y }, elevationField)
+		: 0;
 
 	return (
 		<>
@@ -464,6 +493,15 @@ const IsoTile = memo(function IsoTile({
 					/>
 				</>
 			)}
+
+			<ElevationAffordance
+				left={left}
+				top={top}
+				zIndex={objectZ}
+				cliffMask={cliffMask}
+				stairMask={stairMask}
+				dim={dim}
+			/>
 
 			{/* Palisade fence around the claimed village footprint. */}
 			{explored &&
@@ -519,6 +557,7 @@ const ChunkView = memo(function ChunkView({
 	ringRadius,
 	village,
 	showInfo,
+	worldSeed,
 }: {
 	chunkX: number;
 	chunkY: number;
@@ -526,6 +565,7 @@ const ChunkView = memo(function ChunkView({
 	ringRadius: number;
 	village: OrganicVillageView | null;
 	showInfo: boolean;
+	worldSeed?: number | null;
 }) {
 	const tiles = useChunkTiles(chunkX, chunkY);
 	const fogDims = useMemo(
@@ -578,6 +618,7 @@ const ChunkView = memo(function ChunkView({
 					showInfo={showInfo}
 					fogDim={fogDims?.get(tile._id) ?? 1}
 					roadSprite={roadSprites?.get(tile._id)}
+					worldSeed={worldSeed}
 				/>
 			))}
 		</>
@@ -590,6 +631,7 @@ export function TileLayer({
 	ringRadius = VILLAGE_RING_RADIUS,
 	claimedTiles,
 	villageGate,
+	worldSeed,
 	showInfo = false,
 }: TileLayerProps) {
 	const village = useMemo(
@@ -608,6 +650,7 @@ export function TileLayer({
 					ringRadius={ringRadius}
 					village={village}
 					showInfo={showInfo}
+					worldSeed={worldSeed}
 				/>
 			))}
 		</>

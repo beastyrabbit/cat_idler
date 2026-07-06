@@ -75,6 +75,7 @@ export function MapScreen() {
 		cats,
 		buildings,
 		anchor,
+		worldSeed,
 		ritualPoints,
 		statusTone,
 		now,
@@ -298,6 +299,7 @@ export function MapScreen() {
 							ringRadius={villageRadius}
 							claimedTiles={claimedTiles}
 							villageGate={villageGate}
+							worldSeed={worldSeed}
 							showInfo={infoMode}
 						/>
 						<ZoneLayer

@@ -28,6 +28,7 @@ import {
 	ringCells,
 	VILLAGE_ANCHOR,
 } from "@/lib/game/villageLayout";
+import { SIDE_DELTA } from "@/lib/game/villageArea";
 import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
@@ -1015,9 +1016,11 @@ describe("shrine deposits", () => {
 		setResources(db, colony._id, { food: 100, water: 100 });
 		const hunter = getAliveCatsForTest(db, colony._id)[0];
 
-		// Far out in the field when the hunt wraps up.
+		// Far enough to test the return trip, but still on the guaranteed flat
+		// village plateau; elevation-aware pathing must not be part of this deposit
+		// regression.
 		db.update(cats)
-			.set({ position: { map: "world", x: 6, y: 26 } })
+			.set({ position: { map: "world", x: 6, y: 14 } })
 			.where(eq(cats._id, hunter._id))
 			.run();
 
@@ -1057,8 +1060,8 @@ describe("shrine deposits", () => {
 		expect(carrier.activity).toBe("returning");
 		expect(carrier.destination).toEqual({ map: "world", x: 6, y: 6 });
 
-		// Walk home (20 tiles at 0.5/s) and deposit.
-		for (let i = 0; i < 8; i++) {
+		// Walk home (8 tiles at 0.5/s) and deposit.
+		for (let i = 0; i < 4; i++) {
 			advanceTime(db, 10);
 			workerTick(db);
 		}
@@ -1364,17 +1367,17 @@ describe("explore expeditions", () => {
 });
 
 describe("travel trail integrity", () => {
-	const start = { x: 12, y: 6 };
-	const dest = { x: 20, y: 14 };
+	const start = { x: 0, y: 14 };
+	const dest = { x: 14, y: 10 };
 	const REVEAL = 62;
 	// Both legs of the L, so we prove the whole trail wore, not just the endpoints.
 	const sampled = [
-		[14, 6],
-		[18, 6],
-		[20, 6],
-		[20, 9],
-		[20, 12],
-		[20, 14],
+		[4, 14],
+		[9, 14],
+		[14, 14],
+		[14, 13],
+		[14, 11],
+		[14, 10],
 	] as const;
 
 	/**
@@ -1415,8 +1418,9 @@ describe("travel trail integrity", () => {
 			initializeWorldMap(wdb, colony._id);
 			// Flatten a box around the L to plain open ground: no water to block it,
 			// no forest to make skirting the trees cheaper, no pre-worn overlay to
-			// pull the route sideways. On uniform open ground the cost search returns
-			// the x-before-y L, so the trail runs exactly along the sampled tiles.
+			// pull the route sideways. The route itself sits on the terrain
+			// generator's guaranteed flat village plateau, so elevation-aware
+			// pathing still returns the x-before-y L.
 			wdb
 				.update(worldTiles)
 				.set({
@@ -1428,10 +1432,10 @@ describe("travel trail integrity", () => {
 				.where(
 					and(
 						eq(worldTiles.colonyId, colony._id),
-						gte(worldTiles.x, 11),
-						lte(worldTiles.x, 21),
-						gte(worldTiles.y, 5),
-						lte(worldTiles.y, 15),
+						gte(worldTiles.x, 0),
+						lte(worldTiles.x, 14),
+						gte(worldTiles.y, 10),
+						lte(worldTiles.y, 14),
 					),
 				)
 				.run();
@@ -2153,8 +2157,9 @@ describe("cat movement", () => {
 
 	it("walks a traveling cat toward its destination and sets it to work on arrival", () => {
 		const colony = ensureGlobalColony(db);
-		// Pin terrain (worldSeed defaults to Date.now()) so the straight east
-		// corridor the test measures base speed on isn't flakily rerouted by a river.
+		// Pin terrain (worldSeed defaults to Date.now()) and keep the route on the
+		// guaranteed flat plateau so this measures movement speed, not elevation
+		// detours.
 		db.update(colonies)
 			.set({ worldSeed: 20240703 })
 			.where(eq(colonies._id, colony._id))
@@ -2168,11 +2173,12 @@ describe("cat movement", () => {
 			.where(eq(worldTiles.colonyId, colony._id))
 			.run();
 
-		// Entirely outside the village fence so no gate detour applies.
+		// Along the plateau's south edge and outside the village fence, so no gate
+		// or elevation detour applies.
 		db.update(cats)
 			.set({
-				position: { map: "world", x: 20, y: 6 },
-				destination: { map: "world", x: 30, y: 6 },
+				position: { map: "world", x: 0, y: 14 },
+				destination: { map: "world", x: 10, y: 14 },
 				activity: "traveling",
 			})
 			.where(eq(cats._id, walker._id))
@@ -2188,9 +2194,9 @@ describe("cat movement", () => {
 		// elapsedSec-sensitive (a heavily-loaded suite can bill 11s for a 10s
 		// advance), so allow a tile of slack here; the arrival assertion below pins
 		// the base speed precisely.
-		expect(updated.position.x).toBeGreaterThanOrEqual(24);
-		expect(updated.position.x).toBeLessThanOrEqual(26);
-		expect(Math.abs(updated.position.y - 6)).toBeLessThanOrEqual(1);
+		expect(updated.position.x).toBeGreaterThanOrEqual(4);
+		expect(updated.position.x).toBeLessThanOrEqual(6);
+		expect(Math.abs(updated.position.y - 14)).toBeLessThanOrEqual(1);
 		expect(updated.activity).toBe("traveling");
 
 		advanceTime(db, 60);
@@ -2199,8 +2205,8 @@ describe("cat movement", () => {
 		updated = getAliveCatsForTest(db, colony._id).find(
 			(cat) => cat._id === walker._id,
 		)!;
-		expect(updated.position.x).toBe(30);
-		expect(updated.position.y).toBe(6);
+		expect(updated.position.x).toBe(10);
+		expect(updated.position.y).toBe(14);
 		expect(updated.activity).toBe("working");
 		expect(updated.destination).toBeNull();
 	});
@@ -2482,8 +2488,8 @@ describe("world credibility", () => {
 
 	it("wears a repeatedly-trodden corridor into a visible road", () => {
 		const colony = ensureGlobalColony(db);
-		// Pin one cat to a den so the leader never reassigns it, then walk it up
-		// and down a straight corridor south of the village. A second pass over
+		// Pin one cat to a den so the leader never reassigns it, then walk it back
+		// and forth along the flat plateau south of the village. A second pass over
 		// a tile crosses the road threshold (>=70).
 		const walker = getAliveCatsForTest(db, colony._id)[0];
 		const den = db
@@ -2497,17 +2503,17 @@ describe("world credibility", () => {
 			.where(eq(cats._id, walker._id))
 			.run();
 
-		const low = { map: "world" as const, x: 6, y: 16 };
-		const high = { map: "world" as const, x: 6, y: 26 };
+		const low = { map: "world" as const, x: 0, y: 14 };
+		const high = { map: "world" as const, x: 14, y: 14 };
 		db.update(cats)
 			.set({ position: low, destination: high, activity: "traveling" })
 			.where(eq(cats._id, walker._id))
 			.run();
 
-		for (let i = 0; i < 60; i++) {
+		for (let i = 0; i < 90; i++) {
 			const cur = db.select().from(cats).where(eq(cats._id, walker._id)).get()!;
 			// Keep it walking the corridor: flip target when it nears an end.
-			const target = cur.position.y >= 24 ? low : high;
+			const target = cur.position.x >= 12 ? low : high;
 			db.update(cats)
 				.set({ destination: target, activity: "traveling" })
 				.where(eq(cats._id, walker._id))
@@ -2530,7 +2536,7 @@ describe("world credibility", () => {
 			.from(worldTiles)
 			.where(eq(worldTiles.colonyId, colony._id))
 			.all()
-			.filter((t) => t.x === 6 && t.y >= 18 && t.y <= 24);
+			.filter((t) => t.y >= 12 && t.y <= 14 && t.x >= 2 && t.x <= 12);
 		const road = corridor.some((t) => t.pathWear >= 70);
 		expect(road).toBe(true);
 	});
@@ -2773,16 +2779,21 @@ describe("leader AI v3 + real pathing", () => {
 			.where(eq(worldTiles.colonyId, colony._id))
 			.run();
 
-		// The fresh village fences at Chebyshev 4 with its gate due south, at
-		// (6, 10). Send a cat from the shrine to a tile off the south-east
-		// corner: the straight route would cut across the east fence, so the
-		// only way out is the gate.
-		const gate = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + 4 };
+		// Send a cat from the shrine to a tile beyond the actual organic gate:
+		// the straight route would cut across the fence, so the only legal
+		// boundary crossing is the gate edge.
+		const gateEdge = getGlobalDashboard(db)!.villageGate!;
+		const outside = SIDE_DELTA[gateEdge.side];
+		const gateExit = {
+			x: gateEdge.x + outside.x,
+			y: gateEdge.y + outside.y,
+		};
+		const destination = { x: gateExit.x + 4, y: gateExit.y };
 		const traveler = getAliveCatsForTest(db, colony._id)[0];
 		db.update(cats)
 			.set({
 				position: { map: "world", ...VILLAGE_ANCHOR },
-				destination: { map: "world", x: 10, y: 16 },
+				destination: { map: "world", ...destination },
 				activity: "traveling",
 				currentTask: null,
 				carrying: null,
@@ -2809,15 +2820,14 @@ describe("leader AI v3 + real pathing", () => {
 				)
 				.get()?.pathWear ?? 0;
 
-		// The tile just south of the gate is on the through-gate route (the fence
-		// forces the exit due south before the cat can head east), so wearing it
-		// proves the cat left through the gate rather than cutting the corner.
+		// The tile just outside the gate is on the through-gate route, so wearing
+		// it proves the cat left through the gate rather than cutting the corner.
 		// The cat completes the whole journey this accelerated tick.
-		expect(wearAt(gate.x, gate.y + 1)).toBeGreaterThan(62);
+		expect(wearAt(gateExit.x, gateExit.y)).toBeGreaterThan(62);
 		const arrived = getAliveCatsForTest(db, colony._id).find(
 			(cat) => cat._id === traveler._id,
 		)!;
-		expect(arrived.position).toMatchObject({ map: "world", x: 10, y: 16 });
+		expect(arrived.position).toMatchObject({ map: "world", ...destination });
 	});
 
 	it("runs a byte-identical tick from an identical state under a fixed seed", () => {

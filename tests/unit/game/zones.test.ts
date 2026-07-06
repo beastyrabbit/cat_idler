@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	dominantZoneFloor,
 	filterTargetsByZones,
 	isInZone,
 	normalizeRect,
 	pickTargetWithZones,
 	scoreTileWithZones,
 	validateZone,
+	zoneAppliesTo,
 	ZONE_MAX_DURATION_MS,
 	ZONE_MAX_EDGE,
 	ZONE_MAX_PER_PLAYER,
@@ -46,6 +48,22 @@ describe("zones", () => {
 			expect(isInZone({ x: 9, y: 10 }, AVOID)).toBe(false);
 			expect(isInZone({ x: 13, y: 12 }, AVOID)).toBe(false);
 			expect(isInZone({ x: 11, y: 13 }, AVOID)).toBe(false);
+		});
+	});
+
+	describe("elevation-aware zone matching", () => {
+		const mixed = { kind: "gather" as const, x1: 0, y1: 0, x2: 2, y2: 1 };
+		const heightAt = (x: number) => (x === 2 ? 1 : 0);
+
+		it("snaps a mixed rectangle to its dominant floor", () => {
+			expect(dominantZoneFloor(mixed, heightAt)).toBe(0);
+			expect(zoneAppliesTo({ x: 1, y: 1 }, mixed, { heightAt })).toBe(true);
+			expect(zoneAppliesTo({ x: 2, y: 1 }, mixed, { heightAt })).toBe(false);
+		});
+
+		it("uses the lower floor as a deterministic tie-break", () => {
+			const tied = { x1: 0, y1: 0, x2: 1, y2: 0 };
+			expect(dominantZoneFloor(tied, (x) => x)).toBe(0);
 		});
 	});
 
@@ -97,6 +115,17 @@ describe("zones", () => {
 				10,
 			);
 		});
+
+		it("only applies gather weighting on the zone's dominant floor", () => {
+			const zone: Zone = { kind: "gather", x1: 0, y1: 0, x2: 2, y2: 0 };
+			const heightAt = (x: number) => (x === 2 ? 1 : 0);
+			expect(scoreTileWithZones(10, { x: 1, y: 0 }, [zone], { heightAt })).toBe(
+				20,
+			);
+			expect(scoreTileWithZones(10, { x: 2, y: 0 }, [zone], { heightAt })).toBe(
+				10,
+			);
+		});
 	});
 
 	describe("filterTargetsByZones", () => {
@@ -115,6 +144,21 @@ describe("zones", () => {
 
 		it("keeps everything under critical needs", () => {
 			expect(filterTargetsByZones(targets, [AVOID], true)).toEqual(targets);
+		});
+
+		it("does not let an avoid zone remove targets on a different floor", () => {
+			const zone: Zone = { kind: "avoid", x1: 0, y1: 0, x2: 2, y2: 0 };
+			const heightAt = (x: number) => (x === 2 ? 1 : 0);
+			expect(
+				filterTargetsByZones(
+					[
+						{ x: 1, y: 0 },
+						{ x: 2, y: 0 },
+					],
+					[zone],
+					{ heightAt },
+				),
+			).toEqual([{ x: 2, y: 0 }]);
 		});
 	});
 
@@ -161,6 +205,23 @@ describe("zones", () => {
 
 		it("returns null for no targets", () => {
 			expect(pickTargetWithZones([], [], 0.5)).toBeNull();
+		});
+
+		it("weights only same-floor gather targets", () => {
+			const zone: Zone = { kind: "gather", x1: 0, y1: 0, x2: 2, y2: 0 };
+			const targets = [
+				{ x: 1, y: 0 },
+				{ x: 2, y: 0 },
+			];
+			const heightAt = (x: number) => (x === 2 ? 1 : 0);
+			expect(pickTargetWithZones(targets, [zone], 0.6, { heightAt })).toEqual({
+				x: 1,
+				y: 0,
+			});
+			expect(pickTargetWithZones(targets, [zone], 0.9, { heightAt })).toEqual({
+				x: 2,
+				y: 0,
+			});
 		});
 	});
 });

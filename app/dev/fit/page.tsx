@@ -24,7 +24,13 @@ import {
 	TILE_SPRITES,
 	WATER_SPRITE,
 } from "@/components/map/constants";
+import { ElevationAffordance } from "@/components/map/ElevationAffordance";
 import { ringSprites } from "@/components/map/TileLayer";
+import {
+	blockedElevationEdgeMask,
+	stairElevationEdgeMask,
+	type ElevationField,
+} from "@/lib/game/elevation";
 import { tileToIso, zIndexFor } from "@/lib/game/isoProjection";
 import {
 	type FenceSegment,
@@ -122,6 +128,96 @@ function Board({
 								userSelect: "none",
 							}}
 						/>
+					);
+				})}
+			</div>
+		</div>
+	);
+}
+
+function ElevationBoard({
+	heightAt,
+	stairs = new Set<string>(),
+	width = 360,
+}: {
+	heightAt: (x: number, y: number) => number;
+	stairs?: Set<string>;
+	width?: number;
+}) {
+	const tiles = grassSquare({ x: 1, y: 1 }, 2);
+	const field: ElevationField = {
+		heightAt,
+		hasStair: (x, y) => stairs.has(`${x},${y}`),
+	};
+	let minL = Infinity;
+	let maxL = -Infinity;
+	let minT = Infinity;
+	let maxT = -Infinity;
+	for (const t of tiles) {
+		const { left, top } = tileToIso(t.x, t.y, ISO);
+		minL = Math.min(minL, left);
+		maxL = Math.max(maxL, left + ISO.tileWidth);
+		minT = Math.min(minT, top - ISO.surfaceOffset);
+		maxT = Math.max(maxT, top + ISO.tileHeight);
+	}
+	const pad = 10;
+	const contentW = maxL - minL + pad * 2;
+	const contentH = maxT - minT + pad * 2;
+	const scale = width / contentW;
+	return (
+		<div
+			style={{
+				position: "relative",
+				width,
+				height: contentH * scale,
+				overflow: "hidden",
+				background: "#141c12",
+				borderRadius: 6,
+			}}
+		>
+			<div
+				style={{
+					position: "absolute",
+					left: pad,
+					top: pad,
+					width: maxL - minL,
+					height: maxT - minT,
+					transform: `scale(${scale})`,
+					transformOrigin: "top left",
+				}}
+			>
+				{tiles.map((t) => {
+					const { left, top } = tileToIso(t.x, t.y, ISO);
+					const tileZ = zIndexFor(t.x, t.y, "tile", ISO);
+					const objectZ = zIndexFor(t.x, t.y, "object", ISO);
+					const cliffMask = blockedElevationEdgeMask(t, field);
+					const stairMask = stairElevationEdgeMask(t, field);
+					return (
+						<div key={`${t.x},${t.y}`}>
+							<img
+								src={GRASS}
+								alt=""
+								draggable={false}
+								style={{
+									position: "absolute",
+									left: left - minL,
+									top: top - ISO.surfaceOffset - minT,
+									width: ISO.tileWidth,
+									height: ISO.imageHeight,
+									maxWidth: "none",
+									zIndex: tileZ,
+									pointerEvents: "none",
+									userSelect: "none",
+								}}
+							/>
+							<ElevationAffordance
+								left={left - minL}
+								top={top - minT}
+								zIndex={objectZ}
+								cliffMask={cliffMask}
+								stairMask={stairMask}
+							/>
+						</div>
 					);
 				})}
 			</div>
@@ -412,6 +508,34 @@ export default function FitPage() {
 							/>
 						</Case>
 					))}
+				</div>
+			</section>
+
+			<section style={{ marginTop: 24 }}>
+				<h2 style={{ fontSize: 15 }}>
+					Flat elevation affordance — ridges + stair hatch
+				</h2>
+				<p style={{ fontSize: 12, color: "#9fb08c", marginTop: 0 }}>
+					Dark/light bands are the exact blocked edges pathfinding rejects;
+					striped hatches mark stair-connected floor changes.
+				</p>
+				<div
+					style={{
+						display: "grid",
+						gridTemplateColumns: "repeat(auto-fill, 360px)",
+						gap: 16,
+						marginTop: 8,
+					}}
+				>
+					<Case title="ridge: no crossing">
+						<ElevationBoard heightAt={(x) => (x >= 1 ? 1 : 0)} />
+					</Case>
+					<Case title="single stair crossing">
+						<ElevationBoard
+							heightAt={(x) => (x >= 1 ? 1 : 0)}
+							stairs={new Set(["1,1"])}
+						/>
+					</Case>
 				</div>
 			</section>
 

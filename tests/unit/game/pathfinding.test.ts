@@ -394,11 +394,10 @@ describe("buildColonyWalkGrid", () => {
 	});
 });
 
-describe("cliff walkability (flat world — elevation removed)", () => {
+describe("cliff walkability", () => {
 	/**
-	 * Open grid still carrying a height field and stair tiles. The world renders
-	 * flat now, so these fields are inert: no step is blocked by height. The
-	 * tests guard that contract — a would-be cliff never impedes movement.
+	 * Open grid carrying a height field and stair tiles. Without heightAt the
+	 * world is flat; with it, floor-changing steps need a stair.
 	 */
 	function heightGrid(
 		heightAt: (x: number, y: number) => number,
@@ -412,21 +411,49 @@ describe("cliff walkability (flat world — elevation removed)", () => {
 		};
 	}
 
-	it("never blocks a step, whatever the floor difference", () => {
-		const grid = heightGrid((x) => (x >= 3 ? 2 : 0));
-		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(false); // 0 -> 2, still flat
-		expect(cliffBlocksStep(grid, 3, 0, 4, 0)).toBe(false); // 2 -> 2, level
-	});
-
-	it("never blocks even without a height field", () => {
+	it("stays inert without a height field", () => {
 		expect(cliffBlocksStep(OPEN_GRID, 0, 0, 1, 0)).toBe(false);
 	});
 
-	it("walks straight across a would-be cliff (no detour to a stair)", () => {
-		// A height-2 "wall" at x>=3 no longer obstructs — the walk is a beeline.
+	it("blocks floor-changing steps without a stair", () => {
 		const grid = heightGrid((x) => (x >= 3 ? 2 : 0));
+		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(true);
+		expect(cliffBlocksStep(grid, 3, 0, 2, 0)).toBe(true);
+		expect(cliffBlocksStep(grid, 3, 0, 4, 0)).toBe(false);
+	});
+
+	it("allows exactly one floor through a stair", () => {
+		const grid = heightGrid((x) => (x >= 3 ? 1 : 0), new Set(["3,0"]));
+		expect(cliffBlocksStep(grid, 2, 0, 3, 0)).toBe(false);
+
+		const tooTall = heightGrid((x) => (x >= 3 ? 2 : 0), new Set(["3,0"]));
+		expect(cliffBlocksStep(tooTall, 2, 0, 3, 0)).toBe(true);
+	});
+
+	it("detours to the stair instead of crossing an invisible ridge", () => {
+		const grid = heightGrid((x) => (x >= 3 ? 1 : 0), new Set(["3,2"]));
 		const path = findPath({ x: 0, y: 0 }, { x: 6, y: 0 }, grid);
 		expect(path).not.toBeNull();
-		expect(pathKeys(path)).toContain("3,0");
+		expect(pathKeys(path)).toContain("3,2");
+		expect(pathKeys(path)).not.toContain("3,0");
+		expect(isContiguous(path as WorldPos[])).toBe(true);
+	});
+
+	it("does not use the adjacent-step shortcut across a cliff", () => {
+		const grid = heightGrid((x) => (x >= 1 ? 1 : 0));
+		expect(findPath({ x: 0, y: 0 }, { x: 1, y: 0 }, grid)).toBeNull();
+	});
+
+	it("detours around a blocked adjacent cliff edge when a stair exists", () => {
+		const grid = heightGrid((x) => (x >= 1 ? 1 : 0), new Set(["1,2"]));
+		const path = findPath({ x: 0, y: 0 }, { x: 1, y: 0 }, grid);
+
+		expect(path).not.toBeNull();
+		expect(pathKeys(path)).toContain("1,2");
+		expect(path).not.toEqual([
+			{ x: 0, y: 0 },
+			{ x: 1, y: 0 },
+		]);
+		expect(isContiguous(path as WorldPos[])).toBe(true);
 	});
 });

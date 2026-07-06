@@ -105,6 +105,7 @@ import {
 import { generateName } from "@/lib/game/naming";
 import {
 	buildColonyWalkGrid,
+	cliffBlocksStep,
 	findPath,
 	type WalkGrid,
 } from "@/lib/game/pathfinding";
@@ -173,7 +174,11 @@ import {
 	VILLAGE_ANCHOR,
 	villageRingRadius,
 } from "@/lib/game/villageLayout";
-import { isInZone, pickTargetWithZones, type Zone } from "@/lib/game/zones";
+import {
+	pickTargetWithZones,
+	type Zone,
+	zoneAppliesTo,
+} from "@/lib/game/zones";
 import {
 	DEFEND_CLICK_DAMAGE,
 	gatePosition,
@@ -258,6 +263,7 @@ function routeForCat(
 				const isGoal = i === remaining.length - 2;
 				return (
 					(!isGoal && grid.isBlocked(p.x, p.y)) ||
+					cliffBlocksStep(grid, prev.x, prev.y, p.x, p.y) ||
 					(grid.fenceBlocksStep?.(prev.x, prev.y, p.x, p.y) ?? false)
 				);
 			});
@@ -2943,6 +2949,11 @@ export function workerTick(db: GameDb) {
 			x2: zone.x2,
 			y2: zone.y2,
 		}));
+		const terrainSeed = colony.worldSeed ?? colony.createdAt;
+		const zoneElevation = {
+			heightAt: (x: number, y: number) =>
+				terrainHeightAt(x, y, terrainSeed, WORLD_TERRAIN_OPTIONS),
+		};
 
 		// Movement randomness runs on a forked chain so the policy/planning
 		// roll order (and its deterministic tests) stays untouched.
@@ -3204,6 +3215,7 @@ export function workerTick(db: GameDb) {
 					foodTilesNearVillage(),
 					zoneList,
 					nextMovementRoll(),
+					zoneElevation,
 				);
 				huntTiles = preferred ? [preferred] : [];
 			}
@@ -4559,7 +4571,6 @@ export function workerTick(db: GameDb) {
 		// Terrain floors/stairs (same seed the client renders) so cliffs block a
 		// route unless a staircase bridges them; a mesa with no stairs just falls
 		// back to the straight walk, so cats never freeze.
-		const terrainSeed = colony.worldSeed ?? colony.createdAt;
 		const walkGrid = buildColonyWalkGrid({
 			tiles: colonyTiles(),
 			anchor: VILLAGE_ANCHOR,
@@ -4667,7 +4678,9 @@ export function workerTick(db: GameDb) {
 						nextMovementRoll(),
 					);
 					const blocked = zoneList.some(
-						(zone) => zone.kind === "avoid" && isInZone(target, zone),
+						(zone) =>
+							zone.kind === "avoid" &&
+							zoneAppliesTo(target, zone, zoneElevation),
 					);
 					if (
 						!blocked &&

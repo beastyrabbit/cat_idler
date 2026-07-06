@@ -19,6 +19,7 @@
  * 4-neighbour steps (start first, goal last), so the tick wears every tile.
  */
 
+import { elevationBlocksStep, stairBridgesStep } from "./elevation";
 import type { WorldPos } from "./movement";
 import {
 	fenceBlocksMove,
@@ -61,19 +62,31 @@ export interface WalkGrid {
 /**
  * Whether a cliff blocks the step between two adjacent tiles.
  *
- * The world is now rendered flat — elevation was removed from the map — so no
- * step is ever blocked by terrain height. The `heightAt`/`hasStair` seams remain
- * on {@link WalkGrid} (the colony grid still forwards a terrain field) so that
- * re-introducing elevation later is a one-function change; today they are inert.
+ * A supplied height field makes floor-changing edges impassable unless a stair
+ * sits on one endpoint and the step changes exactly one floor. Without
+ * `heightAt` the world remains flat and this seam is inert.
  */
 export function cliffBlocksStep(
-	_grid: WalkGrid,
-	_ax: number,
-	_ay: number,
-	_bx: number,
-	_by: number,
+	grid: WalkGrid,
+	ax: number,
+	ay: number,
+	bx: number,
+	by: number,
 ): boolean {
-	return false;
+	return elevationBlocksStep(grid, ax, ay, bx, by);
+}
+
+/** Extra effort for taking a visible stair between floors. */
+export const STAIR_STEP_COST = 1.2;
+
+function elevationStepCost(
+	grid: WalkGrid,
+	ax: number,
+	ay: number,
+	bx: number,
+	by: number,
+): number {
+	return stairBridgesStep(grid, ax, ay, bx, by) ? STAIR_STEP_COST : 0;
 }
 
 /** Cost to enter a tile carrying a leader-paved road — the cheapest ground. */
@@ -364,13 +377,19 @@ export function findPath(
 		return [{ x: sx, y: sy }];
 	}
 
-	// Cheap shortcut for an adjacent goal: one 4-neighbour step, which the goal
-	// always permits. Anything longer goes through the cost search below.
+	// Cheap shortcut for an adjacent goal when the direct edge is legal. If an
+	// edge blocker stands between start and goal, fall through to A* so a nearby
+	// stair or gate can still provide a valid detour.
 	if (manhattan(sx, sy, gx, gy) === 1) {
-		return [
-			{ x: sx, y: sy },
-			{ x: gx, y: gy },
-		];
+		if (
+			!cliffBlocksStep(grid, sx, sy, gx, gy) &&
+			!(grid.fenceBlocksStep?.(sx, sy, gx, gy) ?? false)
+		) {
+			return [
+				{ x: sx, y: sy },
+				{ x: gx, y: gy },
+			];
+		}
 	}
 
 	const maxExpansions = options.maxExpansions ?? DEFAULT_MAX_EXPANSIONS;
@@ -460,7 +479,11 @@ export function findPath(
 			// x-before-y L the unique cheapest route, while the penalty is far too
 			// small to ever outweigh a real terrain cost difference.
 			const prematureY = dy !== 0 && cx !== gx ? X_FIRST_BIAS : 0;
-			const tentative = gScore[ck] + grid.cost(nx, ny) + prematureY;
+			const tentative =
+				gScore[ck] +
+				grid.cost(nx, ny) +
+				elevationStepCost(grid, cx, cy, nx, ny) +
+				prematureY;
 			if (tentative < gScore[nk]) {
 				gScore[nk] = tentative;
 				cameFrom[nk] = ck;

@@ -17,6 +17,18 @@ export interface Zone extends ZoneRect {
 	kind: "avoid" | "gather";
 }
 
+export interface ZoneEvaluationOptions {
+	/** Critical needs may ignore avoid zones, preserving the existing behavior. */
+	critical?: boolean;
+	/**
+	 * Optional floor sampler. When supplied, a painted rectangle only applies to
+	 * candidates on the rectangle's dominant floor, so mixed-height rectangles
+	 * snap to the plateau the player mostly covered instead of acting invisibly
+	 * through a cliff.
+	 */
+	heightAt?(x: number, y: number): number;
+}
+
 export const ZONE_MAX_PER_PLAYER = 2;
 export const ZONE_MAX_EDGE = 8;
 export const ZONE_MIN_DURATION_MS = 10 * 60 * 1000;
@@ -43,6 +55,51 @@ export function isInZone(
 ): boolean {
 	return (
 		pos.x >= zone.x1 && pos.x <= zone.x2 && pos.y >= zone.y1 && pos.y <= zone.y2
+	);
+}
+
+function zoneOptions(
+	input: boolean | ZoneEvaluationOptions | undefined,
+): ZoneEvaluationOptions {
+	return typeof input === "boolean" ? { critical: input } : (input ?? {});
+}
+
+export function dominantZoneFloor(
+	zone: ZoneRect,
+	heightAt: (x: number, y: number) => number,
+): number {
+	const counts = new Map<number, number>();
+	for (let y = zone.y1; y <= zone.y2; y += 1) {
+		for (let x = zone.x1; x <= zone.x2; x += 1) {
+			const floor = heightAt(x, y);
+			counts.set(floor, (counts.get(floor) ?? 0) + 1);
+		}
+	}
+	let bestFloor = 0;
+	let bestCount = -1;
+	for (const [floor, count] of counts) {
+		if (count > bestCount || (count === bestCount && floor < bestFloor)) {
+			bestFloor = floor;
+			bestCount = count;
+		}
+	}
+	return bestFloor;
+}
+
+/** Inclusive containment plus optional dominant-floor snapping. */
+export function zoneAppliesTo(
+	pos: { x: number; y: number },
+	zone: ZoneRect,
+	options: ZoneEvaluationOptions = {},
+): boolean {
+	if (!isInZone(pos, zone)) {
+		return false;
+	}
+	if (!options.heightAt) {
+		return true;
+	}
+	return (
+		options.heightAt(pos.x, pos.y) === dominantZoneFloor(zone, options.heightAt)
 	);
 }
 
@@ -75,14 +132,15 @@ export function scoreTileWithZones(
 	baseScore: number,
 	pos: { x: number; y: number },
 	zones: Zone[],
-	critical = false,
+	optionsInput: boolean | ZoneEvaluationOptions = false,
 ): number {
+	const options = zoneOptions(optionsInput);
 	let score = baseScore;
 	for (const zone of zones) {
-		if (!isInZone(pos, zone)) {
+		if (!zoneAppliesTo(pos, zone, options)) {
 			continue;
 		}
-		if (zone.kind === "avoid" && !critical) {
+		if (zone.kind === "avoid" && !options.critical) {
 			return 0;
 		}
 		if (zone.kind === "gather") {
@@ -96,9 +154,10 @@ export function scoreTileWithZones(
 export function filterTargetsByZones<T extends { x: number; y: number }>(
 	targets: T[],
 	zones: Zone[],
-	critical = false,
+	optionsInput: boolean | ZoneEvaluationOptions = false,
 ): T[] {
-	if (critical) {
+	const options = zoneOptions(optionsInput);
+	if (options.critical) {
 		return targets;
 	}
 	const avoids = zones.filter((zone) => zone.kind === "avoid");
@@ -106,7 +165,7 @@ export function filterTargetsByZones<T extends { x: number; y: number }>(
 		return targets;
 	}
 	return targets.filter(
-		(target) => !avoids.some((zone) => isInZone(target, zone)),
+		(target) => !avoids.some((zone) => zoneAppliesTo(target, zone, options)),
 	);
 }
 
@@ -119,17 +178,22 @@ export function pickTargetWithZones<T extends { x: number; y: number }>(
 	targets: T[],
 	zones: Zone[],
 	roll: number,
+	optionsInput: boolean | ZoneEvaluationOptions = false,
 ): T | null {
 	if (targets.length === 0) {
 		return null;
 	}
-	const allowed = filterTargetsByZones(targets, zones);
+	const options = zoneOptions(optionsInput);
+	const allowed = filterTargetsByZones(targets, zones, options);
 	const pool = allowed.length > 0 ? allowed : targets;
 	const weighted: T[] = [];
 	for (const target of pool) {
 		weighted.push(target);
 		if (
-			zones.some((zone) => zone.kind === "gather" && isInZone(target, zone))
+			zones.some(
+				(zone) =>
+					zone.kind === "gather" && zoneAppliesTo(target, zone, options),
+			)
 		) {
 			weighted.push(target);
 		}
