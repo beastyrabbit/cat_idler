@@ -26,6 +26,7 @@ import {
 import { useGameDashboard } from "@/hooks/useGameDashboard";
 import { tileDiamondCenter, visibleChunksIso } from "@/lib/game/isoProjection";
 import { chunkKey } from "@/lib/game/mapView";
+import type { GatePlacement } from "@/lib/game/villageArea";
 import { shrineWorldPosition } from "@/lib/game/villageLayout";
 import { ChunkStore } from "./chunkStore";
 import {
@@ -35,6 +36,7 @@ import {
 	type SceneCat,
 } from "./scene";
 import { loadMapTextures } from "./textures";
+import { buildOrganicVillageView, type OrganicVillageView } from "./tileVisual";
 
 const MIN_SCALE = 0.03;
 const MAX_SCALE = 1.6;
@@ -47,24 +49,49 @@ interface HudStats {
 	loadedChunks: number;
 }
 
+interface DashboardSceneData {
+	cats: SceneCat[];
+	buildings: SceneBuilding[];
+	anchor: { x: number; y: number };
+	villageRadius: number;
+	village: OrganicVillageView | null;
+	villageKey: string;
+}
+
+function villageShapeKey(
+	claimedTiles: Array<{ x: number; y: number }> | undefined,
+	gate: GatePlacement | null,
+): string {
+	const tilesKey =
+		claimedTiles?.map((tile) => `${tile.x},${tile.y}`).join(";") ?? "";
+	const gateKey = gate ? `${gate.x},${gate.y},${gate.side}` : "";
+	return `${tilesKey}|${gateKey}`;
+}
+
 export default function PixiMapScreen() {
 	const dashboard = useGameDashboard();
 	const { cats, buildings, anchor } = dashboard;
+	const villageRadius = dashboard.dashboard?.villageRadius ?? 4;
+	const claimedTiles = dashboard.dashboard?.claimedTiles as
+		| Array<{ x: number; y: number }>
+		| undefined;
+	const villageGate = (dashboard.dashboard?.villageGate ??
+		null) as GatePlacement | null;
 
 	const hostRef = useRef<HTMLDivElement | null>(null);
 	const sceneRef = useRef<PixiScene | null>(null);
 	const storeRef = useRef<ChunkStore | null>(null);
 	// Latest dashboard data, read by the imperative Pixi loop without re-mounting.
-	const dataRef = useRef({
-		cats: cats as SceneCat[],
-		buildings: buildings as SceneBuilding[],
-		anchor,
+	const dataRef = useRef<DashboardSceneData>({
+		cats: [],
+		buildings: [],
+		anchor: { x: 6, y: 6 },
+		villageRadius: 4,
+		village: null,
+		villageKey: "",
 	});
-	dataRef.current = {
-		cats: cats as SceneCat[],
-		buildings: buildings as SceneBuilding[],
-		anchor,
-	};
+	const syncSceneDataRef = useRef<(() => void) | null>(null);
+	const refreshVisibleChunksRef = useRef<(() => void) | null>(null);
 
 	const [ready, setReady] = useState(false);
 	const [hud, setHud] = useState<HudStats>({
@@ -74,6 +101,32 @@ export default function PixiMapScreen() {
 		loadedChunks: 0,
 	});
 
+	useEffect(() => {
+		const villageKey = villageShapeKey(claimedTiles, villageGate);
+		const nextData: DashboardSceneData = {
+			cats: cats as SceneCat[],
+			buildings: buildings as SceneBuilding[],
+			anchor: anchor ?? { x: 6, y: 6 },
+			villageRadius,
+			village: buildOrganicVillageView(claimedTiles, villageGate),
+			villageKey,
+		};
+		const previousData = dataRef.current;
+		const villageChanged =
+			previousData.anchor.x !== nextData.anchor.x ||
+			previousData.anchor.y !== nextData.anchor.y ||
+			previousData.villageRadius !== nextData.villageRadius ||
+			previousData.villageKey !== nextData.villageKey;
+
+		dataRef.current = nextData;
+
+		if (villageChanged) {
+			sceneRef.current?.invalidateTileVisuals();
+			refreshVisibleChunksRef.current?.();
+		}
+		syncSceneDataRef.current?.();
+	}, [cats, buildings, anchor, villageRadius, claimedTiles, villageGate]);
+
 	// One-time Pixi Application + Viewport + scene lifecycle.
 	useEffect(() => {
 		const host = hostRef.current;
@@ -82,6 +135,8 @@ export default function PixiMapScreen() {
 		let app: Application | null = null;
 		let viewport: Viewport | null = null;
 		let scene: PixiScene | null = null;
+		let resizeObserver: ResizeObserver | null = null;
+		let handleResize: (() => void) | null = null;
 
 		const boot = async () => {
 			const application = new Application();
@@ -124,6 +179,7 @@ export default function PixiMapScreen() {
 			const store = new ChunkStore({
 				onLoaded: (key, tiles) => {
 					scene?.setChunk(key, tiles);
+					syncSceneDataRef.current?.();
 					viewDirty = true;
 				},
 			});
@@ -142,6 +198,28 @@ export default function PixiMapScreen() {
 			vp.on("moved", markDirty);
 			vp.on("zoomed", markDirty);
 			vp.on("moved-end", markDirty);
+			handleResize = () => {
+				vp.resize(
+					host.clientWidth,
+					host.clientHeight,
+					ISO_CONTENT.width,
+					ISO_CONTENT.height,
+				);
+				markDirty();
+			};
+			if (typeof ResizeObserver !== "undefined") {
+				resizeObserver = new ResizeObserver(handleResize);
+				resizeObserver.observe(host);
+			}
+			window.addEventListener("resize", handleResize);
+
+			const syncSceneData = () => {
+				if (!scene) return;
+				const data = dataRef.current;
+				scene.setVillage(data.anchor, data.villageRadius, data.village);
+				scene.sync(data.buildings);
+			};
+			syncSceneDataRef.current = syncSceneData;
 
 			const updateView = () => {
 				if (!viewport || !scene || !store) return;
@@ -166,11 +244,12 @@ export default function PixiMapScreen() {
 				for (const ch of visible) {
 					const key = chunkKey(ch);
 					const tiles = store.get(ch.chunkX, ch.chunkY);
-					if (tiles) scene.setChunkIfNew(key, tiles);
+					if (!tiles) continue;
+					scene.setChunkIfNew(key, tiles);
 				}
-				scene.setVillage(dataRef.current.anchor ?? { x: 6, y: 6 }, 4);
-				scene.sync(dataRef.current.buildings);
+				syncSceneData();
 			};
+			refreshVisibleChunksRef.current = updateView;
 
 			let hudClock = 0;
 			application.ticker.add((ticker) => {
@@ -203,6 +282,12 @@ export default function PixiMapScreen() {
 			disposed = true;
 			sceneRef.current = null;
 			storeRef.current = null;
+			syncSceneDataRef.current = null;
+			refreshVisibleChunksRef.current = null;
+			resizeObserver?.disconnect();
+			if (handleResize) {
+				window.removeEventListener("resize", handleResize);
+			}
 			scene?.destroy();
 			if (app) {
 				app.destroy(true, { children: true });

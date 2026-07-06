@@ -23,6 +23,7 @@ import {
 	cats,
 	colonies,
 	events,
+	jobs,
 	type RaiderRow,
 	raiders,
 } from "@/db/schema";
@@ -62,6 +63,28 @@ const LOOTABLE: Array<keyof ColonyResources> = [
 	"materials",
 	"refined",
 ];
+
+function markCatDead(db: GameDb, catId: string, now: number): void {
+	db.update(jobs)
+		.set({ status: "cancelled", completedAt: now })
+		.where(and(eq(jobs.assignedCatId, catId), eq(jobs.status, "active")))
+		.run();
+	db.update(jobs)
+		.set({ status: "cancelled", completedAt: now })
+		.where(and(eq(jobs.assignedCatId, catId), eq(jobs.status, "queued")))
+		.run();
+	db.update(cats)
+		.set({
+			deathTime: now,
+			currentTask: null,
+			carrying: null,
+			assignedBuildingId: null,
+			destination: null,
+			activity: "idle",
+		})
+		.where(and(eq(cats._id, catId), isNull(cats.deathTime)))
+		.run();
+}
 
 function logEvent(
 	db: GameDb,
@@ -398,10 +421,7 @@ function resolveActiveRaid(
 				pickRandomCat(ctx.aliveCats, ctx.roll)?._id ??
 				null;
 			if (victimId) {
-				db.update(cats)
-					.set({ deathTime: ctx.now, currentTask: null, carrying: null })
-					.where(and(eq(cats._id, victimId), isNull(cats.deathTime)))
-					.run();
+				markCatDead(db, victimId, ctx.now);
 				const victim = ctx.aliveCats.find((c) => c._id === victimId);
 				killedCatIds.push(victimId);
 				logEvent(

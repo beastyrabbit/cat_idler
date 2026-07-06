@@ -44,6 +44,8 @@ import { CAT_SHEET_URL } from "./textures";
 import {
 	computeFogBrightness,
 	fenceSprites,
+	isExplored,
+	type OrganicVillageView,
 	SPRITE_H,
 	SPRITE_TOP_OFFSET,
 	SPRITE_W,
@@ -116,6 +118,7 @@ export class PixiScene {
 	private tilesByChunk = new Map<string, WorldTile[]>();
 	private anchor = { x: 6, y: 6 };
 	private ringRadius = 4;
+	private village: OrganicVillageView | null = null;
 	private band: "close" | "overview" = "close";
 
 	constructor(viewport: Viewport, textures: Map<string, Texture>) {
@@ -129,9 +132,14 @@ export class PixiScene {
 		this.viewport.addChild(this.catLayer);
 	}
 
-	setVillage(anchor: { x: number; y: number }, ringRadius: number): void {
+	setVillage(
+		anchor: { x: number; y: number },
+		ringRadius: number,
+		village: OrganicVillageView | null = null,
+	): void {
 		this.anchor = anchor;
 		this.ringRadius = ringRadius;
+		this.village = village;
 	}
 
 	/** Replace the tile data for a chunk (from the chunk store). */
@@ -160,6 +168,17 @@ export class PixiScene {
 	/** Number of chunks whose tiles the scene currently holds. */
 	loadedChunkCount(): number {
 		return this.tilesByChunk.size;
+	}
+
+	/** Rebuild mounted tile visuals after village/fog geometry changes. */
+	invalidateTileVisuals(): void {
+		for (const key of [...this.mountedChunks.keys()]) {
+			this.unmountChunk(key);
+		}
+		for (const quad of this.overviewQuads.values()) {
+			quad.destroy();
+		}
+		this.overviewQuads.clear();
 	}
 
 	private texture(url: string): Texture {
@@ -264,14 +283,24 @@ export class PixiScene {
 	}
 
 	private mountChunk(key: string, tiles: WorldTile[]): void {
-		const fog = computeFogBrightness(tiles, this.anchor, this.ringRadius);
+		const fog = computeFogBrightness(
+			tiles,
+			this.anchor,
+			this.ringRadius,
+			this.village,
+		);
 		const sprites: Sprite[] = [];
 		for (const tile of tiles) {
 			const { left, top } = tileToIso(tile.x, tile.y, ISO);
 			const tileZ = zIndexFor(tile.x, tile.y, "tile", ISO);
 			const objZ = zIndexFor(tile.x, tile.y, "object", ISO);
 			const dim = fog.get(tile._id) ?? 1;
-			const ground = tileGround(tile, this.anchor, this.ringRadius);
+			const ground = tileGround(
+				tile,
+				this.anchor,
+				this.ringRadius,
+				this.village,
+			);
 			// Grass underlay for standalone tree/stump sprites.
 			if (ground.base) {
 				sprites.push(
@@ -295,7 +324,12 @@ export class PixiScene {
 			);
 			// Fence ring — only where the tile is explored (matches TileLayer).
 			if (dim >= 1) {
-				for (const fence of fenceSprites(tile, this.anchor, this.ringRadius)) {
+				for (const fence of fenceSprites(
+					tile,
+					this.anchor,
+					this.ringRadius,
+					this.village,
+				)) {
 					sprites.push(
 						this.placeSprite(
 							fence.src,
@@ -420,11 +454,8 @@ export class PixiScene {
 		return g;
 	}
 
-	private villageKnown(t: { x: number; y: number }): boolean {
-		return (
-			Math.max(Math.abs(t.x - this.anchor.x), Math.abs(t.y - this.anchor.y)) <=
-			this.ringRadius
-		);
+	private villageKnown(tile: WorldTile): boolean {
+		return isExplored(tile, this.anchor, this.ringRadius, this.village);
 	}
 
 	// --- Cats: pooled, interpolated toward their live position each frame. ---

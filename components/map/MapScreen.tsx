@@ -581,7 +581,9 @@ export function MapScreen() {
 							{buildings
 								.filter(
 									(b: { type: string; constructionProgress: number }) =>
-										(b.type === "workshop" || b.type === "research_hut") &&
+										(b.type === "workshop" ||
+											b.type === "research_hut" ||
+											b.type === "smithy") &&
 										b.constructionProgress >= 100,
 								)
 								.map(

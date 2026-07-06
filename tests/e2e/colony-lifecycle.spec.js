@@ -1,16 +1,11 @@
 /**
  * E2E Tests: Colony Lifecycle
  *
- * Tests the active colony flow from the shared game page into the colony view.
+ * Tests the shared game page loads the current map-first UI.
  */
 
 import { By } from "selenium-webdriver";
-import {
-	ensureGlobalColony,
-	getColonyPageUrl,
-	waitForBodyText,
-	waitForPathname,
-} from "./helpers.js";
+import { openGamePage, waitForBodyText } from "./helpers.js";
 import { createDriver } from "./selenium-setup.js";
 
 export default async function testColonyLifecycle(
@@ -21,52 +16,37 @@ export default async function testColonyLifecycle(
 	const expectedOrigin = new URL(baseUrl).origin;
 
 	try {
-		console.log("  Testing colony lifecycle...");
+		console.log("  Testing game map lifecycle...");
 
-		const colony = await ensureGlobalColony({ ensureLeader: true });
-		await driver.get(getColonyPageUrl(baseUrl, colony._id));
-		await waitForPathname(
-			driver,
-			(pathname) => pathname === `/colony/${colony._id}`,
-		);
-		await waitForBodyText(driver, "COZY COLONY");
+		await openGamePage(driver, baseUrl);
 
-		const colonyName = await driver.findElement(By.css("h1")).getText();
-		if (colonyName !== colony.name) {
-			throw new Error(
-				`Colony page loaded unexpected colony name. Expected ${colony.name}, got ${colonyName}`,
-			);
-		}
-		const colonyUrl = new URL(await driver.getCurrentUrl());
-		if (
-			colonyUrl.origin !== expectedOrigin ||
-			colonyUrl.pathname !== `/colony/${colony._id}`
-		) {
-			throw new Error(
-				`Expected colony route on ${expectedOrigin}, got ${colonyUrl}`,
-			);
+		const gameUrl = new URL(await driver.getCurrentUrl());
+		if (gameUrl.origin !== expectedOrigin || gameUrl.pathname !== "/game") {
+			throw new Error(`Expected /game on ${expectedOrigin}, got ${gameUrl}`);
 		}
 
 		for (const label of [
-			"Status:",
-			"Cats",
-			"Colony",
-			"World",
-			"Build",
-			"Tasks",
-			"Actions",
-			"Events",
+			"Catford",
+			"Colony Work",
+			"Leadership",
+			"Zones",
+			"Lend a Paw",
+			"Supply food",
+			"Supply water",
+			"Plan hunt",
+			"Upgrades",
 		]) {
 			const matches = await driver.findElements(
 				By.xpath(`//*[contains(normalize-space(), '${label}')]`),
 			);
 			if (matches.length === 0) {
-				throw new Error(`Colony page missing expected control: ${label}`);
+				throw new Error(`Game page missing expected control: ${label}`);
 			}
 		}
-		console.log("  ✓ Colony page structure is ready");
+		await waitForBodyText(driver, "cats");
+		console.log("  ✓ Game map structure is ready");
 
-		console.log("  ✓ All colony lifecycle tests passed");
+		console.log("  ✓ All game map lifecycle tests passed");
 	} catch (error) {
 		console.error("  ✗ Test failed");
 		throw error;

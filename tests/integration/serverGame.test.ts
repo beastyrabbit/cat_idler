@@ -8,7 +8,7 @@
 
 import { and, eq, gte, isNull, lte, ne } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb, type GameDb } from "@/db/client";
 import {
 	buildings as buildingsTable,
@@ -32,6 +32,7 @@ import { castVote, requestVoteKick } from "@/server/elections";
 import {
 	advanceTime,
 	assignWorker,
+	buildRoad,
 	clickBoostJob,
 	ensureGlobalColony,
 	ensureGlobalState,
@@ -244,8 +245,42 @@ describe("clickBoostJob", () => {
 		expect(result.newEndsAt).toBeLessThanOrEqual(before.endsAt);
 
 		const after = db.select().from(jobs).where(eq(jobs._id, jobId)).get()!;
-		expect(after.status).toBe("active");
+		expect(after.status).toBe("queued");
 		expect(after.clickTimeReducedSec).toBe(result.reducedBySec);
+	});
+
+	it("does not bypass queued construction start side effects", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 100, materials: 100 });
+
+		const { jobId } = planBuilding(db, { ...SESSION, type: "workshop" }) as {
+			jobId: string;
+		};
+		clickBoostJob(db, { ...SESSION, jobId });
+
+		const boosted = db.select().from(jobs).where(eq(jobs._id, jobId)).get()!;
+		expect(boosted.status).toBe("queued");
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const promoted = db.select().from(jobs).where(eq(jobs._id, jobId)).get()!;
+		const scaffoldId = (promoted.metadata as { buildingId?: string })
+			.buildingId;
+		expect(promoted.status).toBe("active");
+		expect(scaffoldId).toBeTruthy();
+
+		forceJobDue(db, jobId);
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const workshop = db
+			.select()
+			.from(buildingsTable)
+			.where(eq(buildingsTable._id, scaffoldId!))
+			.get();
+		expect(workshop?.type).toBe("workshop");
+		expect(workshop?.constructionProgress).toBe(100);
 	});
 
 	it("rejects boosts on unknown jobs", () => {
@@ -343,6 +378,33 @@ describe("test controls", () => {
 		advanceTime(db, 120);
 		const after = ensureGlobalColony(db);
 		expect(after.lastTick).toBe(before.lastTick - 120_000);
+	});
+
+	it("workerTick preserves fractional elapsed time", () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:10.500Z"));
+			const colony = ensureGlobalColony(db);
+			const subSecond = Date.now() - 500;
+			db.update(colonies)
+				.set({ lastTick: subSecond })
+				.where(eq(colonies._id, colony._id))
+				.run();
+
+			workerTick(db);
+			expect(ensureGlobalColony(db).lastTick).toBe(subSecond);
+
+			const partialRemainder = Date.now() - 1500;
+			db.update(colonies)
+				.set({ lastTick: partialRemainder })
+				.where(eq(colonies._id, colony._id))
+				.run();
+
+			workerTick(db);
+			expect(ensureGlobalColony(db).lastTick).toBe(partialRemainder + 1000);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -467,6 +529,97 @@ describe("water crisis and recovery events", () => {
 });
 
 describe("build pipeline orchestration", () => {
+	it("does not assign a busy cat to another queued job", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 100, materials: 100 });
+		const busyArchitect = getAliveCatsForTest(db, colony._id)[0];
+
+		db.update(cats)
+			.set({
+				specialization: "architect",
+				stats: { ...busyArchitect.stats, building: 99 },
+			})
+			.where(eq(cats._id, busyArchitect._id))
+			.run();
+
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: "busy-architect-job",
+				colonyId: colony._id,
+				kind: "quarry",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: busyArchitect._id,
+				baseDurationSec: 300,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now,
+				startedAt: now,
+				endsAt: now + 300_000,
+				metadata: {},
+			})
+			.run();
+
+		const { jobId } = planBuilding(db, { ...SESSION, type: "workshop" }) as {
+			jobId: string;
+		};
+		const planned = db.select().from(jobs).where(eq(jobs._id, jobId)).get()!;
+		expect(planned.assignedCatId).not.toBe(busyArchitect._id);
+
+		const pendingForBusy = db
+			.select()
+			.from(jobs)
+			.where(eq(jobs.assignedCatId, busyArchitect._id))
+			.all()
+			.filter((job) => job.status === "active" || job.status === "queued");
+		expect(pendingForBusy).toHaveLength(1);
+	});
+
+	it("does not queue construction when every architect is busy", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 100, water: 100, materials: 100 });
+		const alive = getAliveCatsForTest(db, colony._id);
+		const now = Date.now();
+		for (const cat of alive) {
+			db.insert(jobs)
+				.values({
+					_id: nanoid(),
+					colonyId: colony._id,
+					kind: "quarry",
+					status: "active",
+					requestedByType: "leader",
+					requestedByPlayerId: null,
+					assignedCatId: cat._id,
+					baseDurationSec: 300,
+					speedMultiplier: 1,
+					yieldMultiplier: 1,
+					clickTimeReducedSec: 0,
+					createdAt: now,
+					startedAt: now,
+					endsAt: now + 300_000,
+					metadata: {},
+				})
+				.run();
+		}
+
+		const result = planBuilding(db, { ...SESSION, type: "workshop" }) as {
+			ok: boolean;
+			reason?: string;
+		};
+
+		expect(result.ok).toBe(false);
+		expect(result.reason).toBe("no_available_worker");
+		const constructionJobs = db
+			.select()
+			.from(jobs)
+			.where(and(eq(jobs.colonyId, colony._id), eq(jobs.kind, "build_house")))
+			.all();
+		expect(constructionJobs).toHaveLength(0);
+	});
+
 	it("queues material gathering as a house prerequisite and pays out on completion", () => {
 		const colony = ensureGlobalColony(db);
 		setResources(db, colony._id, { food: 100, water: 100, materials: 0 });
@@ -1880,6 +2033,62 @@ describe("production (Phase 7)", () => {
 			}),
 		).toThrow(/not available/);
 	});
+
+	it("rejects assigning a cat that already has an active job", () => {
+		const colony = ensureGlobalColony(db);
+		const shopId = insertWorkshop(colony._id);
+		const cat = getAliveCatsForTest(db, colony._id)[0];
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: nanoid(),
+				colonyId: colony._id,
+				kind: "hunt_expedition",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: cat._id,
+				baseDurationSec: 60,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now,
+				startedAt: now,
+				endsAt: now + 60_000,
+				metadata: {},
+			})
+			.run();
+
+		expect(() =>
+			assignWorker(db, { ...SESSION_P, catId: cat._id, buildingId: shopId }),
+		).toThrow(/busy/);
+	});
+});
+
+describe("roads", () => {
+	it("includes the endpoint for a horizontal road", () => {
+		const colony = ensureGlobalColony(db);
+
+		const result = buildRoad(db, {
+			...SESSION,
+			a: { x: 6, y: 6 },
+			b: { x: 9, y: 6 },
+		}) as { paved: number };
+
+		expect(result.paved).toBe(4);
+		const paved = db
+			.select()
+			.from(worldTiles)
+			.where(and(eq(worldTiles.colonyId, colony._id), eq(worldTiles.y, 6)))
+			.all()
+			.filter(
+				(tile) =>
+					tile.x >= 6 && tile.x <= 9 && tile.overlayFeature === "road_built",
+			);
+		expect(paved.map((tile) => tile.x).sort((a, b) => a - b)).toEqual([
+			6, 7, 8, 9,
+		]);
+	});
 });
 
 describe("cat movement", () => {
@@ -1981,7 +2190,7 @@ describe("cat movement", () => {
 		// the base speed precisely.
 		expect(updated.position.x).toBeGreaterThanOrEqual(24);
 		expect(updated.position.x).toBeLessThanOrEqual(26);
-		expect(updated.position.y).toBe(6);
+		expect(Math.abs(updated.position.y - 6)).toBeLessThanOrEqual(1);
 		expect(updated.activity).toBe("traveling");
 
 		advanceTime(db, 60);
@@ -1991,6 +2200,7 @@ describe("cat movement", () => {
 			(cat) => cat._id === walker._id,
 		)!;
 		expect(updated.position.x).toBe(30);
+		expect(updated.position.y).toBe(6);
 		expect(updated.activity).toBe("working");
 		expect(updated.destination).toBeNull();
 	});

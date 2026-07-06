@@ -74,10 +74,6 @@ export function ensureChunk(
 	chunkX: number,
 	chunkY: number,
 ): void {
-	if (chunkExists(db, colonyId, chunkX, chunkY)) {
-		return;
-	}
-
 	const colony = db
 		.select()
 		.from(colonies)
@@ -101,6 +97,10 @@ export function ensureChunk(
 	// One transaction per chunk: a partially-inserted chunk would read back as
 	// "exists" and never finish generating, leaving a hole in the map.
 	db.transaction((tx) => {
+		if (chunkExists(tx as unknown as GameDb, colonyId, chunkX, chunkY)) {
+			return;
+		}
+
 		for (const tile of tiles) {
 			tx.insert(worldTiles)
 				.values({
@@ -108,6 +108,7 @@ export function ensureChunk(
 					colonyId,
 					...tile,
 				})
+				.onConflictDoNothing()
 				.run();
 		}
 	});

@@ -12,7 +12,13 @@
  * Route: /dev/tiles  (not linked from the game; safe to delete)
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 
 /** Public path to the Isometric Nature PNGs (spaces are URL-encoded on use). */
 const NATURE_BASE =
@@ -20,6 +26,7 @@ const NATURE_BASE =
 
 /** localStorage key for the annotation map ({ groupId: note }). */
 const STORAGE_KEY = "catidler.tileNotes.v1";
+const NOTES_CHANGED_EVENT = "catidler.tileNotes.changed";
 
 /** Source canvas is 220x379; the ground diamond is 180x115 near the bottom. */
 const CANVAS_W = 220;
@@ -48,16 +55,64 @@ function spriteSrc(group: string, rotation: number): string {
 
 type Notes = Record<string, string>;
 
-function loadNotes(): Notes {
-	if (typeof window === "undefined") return {};
+let memoryNotesSnapshot = "{}";
+
+function parseNotesSnapshot(snapshot: string): Notes {
 	try {
-		const raw = window.localStorage.getItem(STORAGE_KEY);
-		if (!raw) return {};
-		const parsed = JSON.parse(raw);
-		return parsed && typeof parsed === "object" ? (parsed as Notes) : {};
+		const parsed = JSON.parse(snapshot);
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Notes)
+			: {};
 	} catch {
 		return {};
 	}
+}
+
+function notesSnapshotFromStorage(): string {
+	if (typeof window === "undefined") return "{}";
+	try {
+		const raw = window.localStorage.getItem(STORAGE_KEY);
+		return raw ?? "{}";
+	} catch {
+		return memoryNotesSnapshot;
+	}
+}
+
+function serverNotesSnapshot(): string {
+	return "{}";
+}
+
+function loadNotes(): Notes {
+	return parseNotesSnapshot(notesSnapshotFromStorage());
+}
+
+function saveNotes(notes: Notes): void {
+	const snapshot = JSON.stringify(notes);
+	memoryNotesSnapshot = snapshot;
+	if (typeof window === "undefined") return;
+	try {
+		window.localStorage.setItem(STORAGE_KEY, snapshot);
+	} catch {
+		// Storage full or blocked — annotations stay in-memory for the session.
+	}
+	window.dispatchEvent(new Event(NOTES_CHANGED_EVENT));
+}
+
+function subscribeNotes(onStoreChange: () => void): () => void {
+	if (typeof window === "undefined") return () => {};
+
+	const onStorage = (event: StorageEvent) => {
+		if (event.key === STORAGE_KEY) {
+			onStoreChange();
+		}
+	};
+	window.addEventListener("storage", onStorage);
+	window.addEventListener(NOTES_CHANGED_EVENT, onStoreChange);
+
+	return () => {
+		window.removeEventListener("storage", onStorage);
+		window.removeEventListener(NOTES_CHANGED_EVENT, onStoreChange);
+	};
 }
 
 /** Thumbnail scale multiplier applied to the 220x379 source canvas. */
@@ -98,6 +153,7 @@ const GroupRow = function GroupRow({
 							}}
 						>
 							{/* biome-ignore lint/performance/noImgElement: dev tool renders hundreds of raw pack PNGs; next/image optimization is unwanted here. */}
+							{/* eslint-disable-next-line @next/next/no-img-element */}
 							<img
 								src={spriteSrc(group, r)}
 								alt={`${group} rotation ${r}`}
@@ -135,7 +191,15 @@ const GroupRow = function GroupRow({
 };
 
 export default function TileExplorerPage() {
-	const [notes, setNotes] = useState<Notes>({});
+	const notesSnapshot = useSyncExternalStore(
+		subscribeNotes,
+		notesSnapshotFromStorage,
+		serverNotesSnapshot,
+	);
+	const notes = useMemo(
+		() => parseNotesSnapshot(notesSnapshot),
+		[notesSnapshot],
+	);
 	const [query, setQuery] = useState("");
 	const [scale, setScale] = useState<Scale>(0.55);
 	const [onlyAnnotated, setOnlyAnnotated] = useState(false);
@@ -144,11 +208,6 @@ export default function TileExplorerPage() {
 	const [status, setStatus] = useState("");
 	const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-	// Hydrate notes from localStorage after mount (avoids SSR mismatch).
-	useEffect(() => {
-		setNotes(loadNotes());
-	}, []);
-
 	const flash = useCallback((message: string) => {
 		setStatus(message);
 		if (statusTimer.current) clearTimeout(statusTimer.current);
@@ -156,20 +215,13 @@ export default function TileExplorerPage() {
 	}, []);
 
 	const onNoteChange = useCallback((group: string, value: string) => {
-		setNotes((prev) => {
-			const next = { ...prev };
-			if (value.trim() === "") {
-				delete next[group];
-			} else {
-				next[group] = value;
-			}
-			try {
-				window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-			} catch {
-				// Storage full or blocked — annotations stay in-memory for the session.
-			}
-			return next;
-		});
+		const next = { ...loadNotes() };
+		if (value.trim() === "") {
+			delete next[group];
+		} else {
+			next[group] = value;
+		}
+		saveNotes(next);
 	}, []);
 
 	const annotatedCount = Object.keys(notes).length;
@@ -221,8 +273,7 @@ export default function TileExplorerPage() {
 				flash("No usable notes object found");
 				return;
 			}
-			setNotes(incoming);
-			window.localStorage.setItem(STORAGE_KEY, JSON.stringify(incoming));
+			saveNotes(incoming);
 			flash(`Loaded ${Object.keys(incoming).length} annotations`);
 		} catch {
 			flash("Could not parse JSON");

@@ -9,7 +9,7 @@
  * handlers call the rest.
  */
 
-import { and, desc, eq, gt, gte, isNull, lt, lte } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNull, lt, lte } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { GameDb } from "@/db/client";
 import {
@@ -1290,6 +1290,35 @@ function getJobsByStatus(
 		.all();
 }
 
+function pendingJobCatIds(db: GameDb, colonyId: string): Set<string> {
+	return new Set(
+		db
+			.select({ assignedCatId: jobs.assignedCatId })
+			.from(jobs)
+			.where(
+				and(
+					eq(jobs.colonyId, colonyId),
+					inArray(jobs.status, ["active", "queued"]),
+				),
+			)
+			.all()
+			.map((job) => job.assignedCatId)
+			.filter((id): id is string => typeof id === "string" && id.length > 0),
+	);
+}
+
+function canTakeNewJob(cat: CatRow, busyIds: Set<string>): boolean {
+	return (
+		canWork(getLifeStage(cat.ageHours ?? 0)) &&
+		!busyIds.has(cat._id) &&
+		!cat.assignedBuildingId &&
+		(cat.activity ?? "idle") === "idle" &&
+		!cat.currentTask &&
+		!cat.carrying &&
+		!cat.destination
+	);
+}
+
 function chooseLeader(db: GameDb, colonyId: string): CatRow | null {
 	const aliveCats = getAliveCats(db, colonyId);
 	if (aliveCats.length === 0) {
@@ -1320,15 +1349,18 @@ function selectBestCat(
 	colonyId: string,
 	specialization: CatSpecialization,
 ): CatRow | null {
-	const aliveCats = getAliveCats(db, colonyId);
-	if (aliveCats.length === 0) {
+	const busyIds = pendingJobCatIds(db, colonyId);
+	const availableCats = getAliveCats(db, colonyId).filter((cat) =>
+		canTakeNewJob(cat, busyIds),
+	);
+	if (availableCats.length === 0) {
 		return null;
 	}
 
-	const preferred = aliveCats.filter(
+	const preferred = availableCats.filter(
 		(cat) => (cat.specialization ?? null) === specialization,
 	);
-	const pool = preferred.length > 0 ? preferred : aliveCats;
+	const pool = preferred.length > 0 ? preferred : availableCats;
 
 	const statKey = specialization
 		? SPECIALIZATION_STAT[specialization]
@@ -1394,6 +1426,23 @@ function queueJob(
 	const now = Date.now();
 
 	const jobId = nanoid();
+	if (assignedCat?.assignedBuildingId) {
+		const assignedBuilding = db
+			.select({ type: buildings.type })
+			.from(buildings)
+			.where(eq(buildings._id, assignedCat.assignedBuildingId))
+			.get();
+		const isProductionAssignment =
+			assignedBuilding?.type === "workshop" ||
+			assignedBuilding?.type === "research_hut" ||
+			assignedBuilding?.type === "smithy";
+		if (isProductionAssignment) {
+			db.update(cats)
+				.set({ assignedBuildingId: null })
+				.where(eq(cats._id, assignedCat._id))
+				.run();
+		}
+	}
 	db.insert(jobs)
 		.values({
 			_id: jobId,
@@ -1457,6 +1506,9 @@ function queuePlannedHouseJobs(
 			planned.kind === "build_house"
 				? selectBestCat(db, colonyId, "architect")
 				: null;
+		if (planned.kind === "build_house" && !architect) {
+			continue;
+		}
 		queueJob(
 			db,
 			colonyId,
@@ -1645,6 +1697,10 @@ export function planBuilding(
 
 		const upgrades = upgradesToLevels(getUpgradeRows(tx, colony._id));
 		const runtime = getRuntimeConfig(colony);
+		const architect = selectBestCat(tx, colony._id, "architect");
+		if (!architect) {
+			return { ok: false, reason: "no_available_worker" };
+		}
 		const jobId = queueJob(
 			tx,
 			colony._id,
@@ -1653,7 +1709,7 @@ export function planBuilding(
 			upgrades,
 			runtime,
 			null,
-			selectBestCat(tx, colony._id, "architect"),
+			architect,
 			{ phase: "construct_house", buildingType: args.type },
 		);
 
@@ -1703,6 +1759,27 @@ export function assignWorker(
 				.where(eq(cats._id, cat._id))
 				.run();
 			return { ok: true };
+		}
+
+		const activeOrQueuedJob = tx
+			.select({ _id: jobs._id })
+			.from(jobs)
+			.where(
+				and(
+					eq(jobs.assignedCatId, cat._id),
+					inArray(jobs.status, ["active", "queued"]),
+				),
+			)
+			.limit(1)
+			.get();
+		if (
+			activeOrQueuedJob ||
+			(cat.activity ?? "idle") !== "idle" ||
+			cat.currentTask ||
+			cat.carrying ||
+			cat.destination
+		) {
+			throw new Error("That cat is busy");
 		}
 
 		const building = tx
@@ -1781,14 +1858,14 @@ export function buildRoad(
 			throw new Error("Roads are limited to 24 tiles per build");
 		}
 		const path: Array<{ x: number; y: number }> = [];
-		for (let x = ax; x !== bx; x += Math.sign(bx - ax)) {
+		const xStep = Math.sign(bx - ax);
+		for (let x = ax; x !== bx; x += xStep) {
 			path.push({ x, y: ay });
 		}
-		for (let y = ay; y !== by + Math.sign(by - ay); y += Math.sign(by - ay)) {
+		path.push({ x: bx, y: ay });
+		const yStep = Math.sign(by - ay);
+		for (let y = ay + yStep; yStep !== 0 && y !== by + yStep; y += yStep) {
 			path.push({ x: bx, y });
-		}
-		if (path.length === 0) {
-			path.push({ x: bx, y: by });
 		}
 		if (path.length > 24) {
 			throw new Error("Roads are limited to 24 tiles per build");
@@ -2255,7 +2332,6 @@ export function clickBoostJob(
 			.set({
 				endsAt: nextEnd,
 				clickTimeReducedSec: (job.clickTimeReducedSec ?? 0) + reduceSeconds,
-				status: "active",
 			})
 			.where(eq(jobs._id, job._id))
 			.run();
@@ -2606,13 +2682,11 @@ export function workerTick(db: GameDb) {
 		const now = Date.now();
 		const elapsedSec = Math.max(0, Math.floor((now - colony.lastTick) / 1000));
 		if (elapsedSec === 0) {
-			// Sub-second tick — nothing to process yet
-			tx.update(colonies)
-				.set({ lastTick: now })
-				.where(eq(colonies._id, colony._id))
-				.run();
+			// Sub-second tick — keep lastTick untouched so fractional elapsed time
+			// accumulates instead of being discarded by early/jittery workers.
 			return { ok: true, skipped: true };
 		}
+		const processedThrough = colony.lastTick + elapsedSec * 1000;
 
 		const upgrades = upgradesToLevels(getUpgradeRows(tx, colony._id));
 		const runtime = getRuntimeConfig(colony);
@@ -2676,11 +2750,11 @@ export function workerTick(db: GameDb) {
 			.from(buildings)
 			.where(eq(buildings.colonyId, colony._id))
 			.all();
-		const caps = storageCapacities(
+		let caps = storageCapacities(
 			colonyBuildingsEarly,
 			effects.storagePerLevelMult,
 		);
-		const foodCapacity = caps.food;
+		let foodCapacity = caps.food;
 
 		// --- Life simulation: aging, mortality, births, conceptions --------
 		// The colony is a living population. Everyone ages on the accelerated
@@ -3582,6 +3656,10 @@ export function workerTick(db: GameDb) {
 		for (const decision of plan.decisions) {
 			if (decision.kind === "build_storage") {
 				if (canTakePolicyAction()) {
+					const architect = selectBestCat(tx, colony._id, "architect");
+					if (!architect) {
+						continue;
+					}
 					queueJob(
 						tx,
 						colony._id,
@@ -3590,7 +3668,7 @@ export function workerTick(db: GameDb) {
 						upgrades,
 						runtime,
 						null,
-						selectBestCat(tx, colony._id, "architect"),
+						architect,
 						{ phase: "construct_house", buildingType: "food_storage" },
 					);
 				}
@@ -3841,10 +3919,7 @@ export function workerTick(db: GameDb) {
 						globalUpgradePoints += cat.carrying.amount;
 					}
 				}
-				tx.update(cats)
-					.set({ deathTime: now, currentTask: null, carrying: null })
-					.where(eq(cats._id, cat._id))
-					.run();
+				retireCat(tx, colony._id, cat, now);
 				logEvent(
 					tx,
 					colony._id,
@@ -3877,12 +3952,13 @@ export function workerTick(db: GameDb) {
 		}
 
 		// Complete due jobs.
-		const dueJobs = activeJobs.filter((job) => job.endsAt <= now);
+		const activeJobsAtCompletion = getJobsByStatus(tx, colony._id, "active");
+		const dueJobs = activeJobsAtCompletion.filter((job) => job.endsAt <= now);
 		const activeOrQueuedJobs: Array<{
 			kind: JobKind;
 			metadata?: Record<string, unknown>;
 		}> = [
-			...activeJobs.map((job) => ({
+			...activeJobsAtCompletion.map((job) => ({
 				kind: job.kind,
 				metadata: job.metadata ?? undefined,
 			})),
@@ -3897,7 +3973,7 @@ export function workerTick(db: GameDb) {
 				? (tx
 						.select()
 						.from(cats)
-						.where(eq(cats._id, job.assignedCatId))
+						.where(and(eq(cats._id, job.assignedCatId), isNull(cats.deathTime)))
 						.get() ?? null)
 				: null;
 
@@ -4884,6 +4960,15 @@ export function workerTick(db: GameDb) {
 		// Storage caps are the final word: deposits, field yields, and player
 		// supplies this tick can push a store past its cap, so clamp every
 		// resource down to what the buildings can actually hold.
+		caps = storageCapacities(
+			tx
+				.select()
+				.from(buildings)
+				.where(eq(buildings.colonyId, colony._id))
+				.all(),
+			effects.storagePerLevelMult,
+		);
+		foodCapacity = caps.food;
 		patchedResources.food = Math.min(patchedResources.food, caps.food);
 		patchedResources.water = Math.min(patchedResources.water, caps.water);
 		patchedResources.herbs = Math.min(patchedResources.herbs, caps.herbs);
@@ -4954,7 +5039,7 @@ export function workerTick(db: GameDb) {
 				globalUpgradePoints,
 				criticalSince,
 				threatPressure,
-				lastTick: now,
+				lastTick: processedThrough,
 				testRngSeed: rngSeed,
 			})
 			.where(eq(colonies._id, colony._id))

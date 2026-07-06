@@ -21,9 +21,59 @@ import {
 	WATER_SPRITE,
 } from "@/components/map/constants";
 import { isChoppedStumpTile } from "@/lib/game/depletion";
+import {
+	fencePerimeter,
+	fromTiles,
+	type GatePlacement,
+	isInsideVillage,
+	SIDE_DELTA,
+	toTiles,
+	type VillageArea,
+} from "@/lib/game/villageArea";
 import type { WorldTile } from "@/types/game";
 
 const GRASS = TILE_SPRITES.field.src;
+const posKey = (x: number, y: number): string => `${x},${y}`;
+
+export interface OrganicFenceSprite extends FenceSprite {
+	key: string;
+}
+
+export interface OrganicVillageView {
+	area: VillageArea;
+	claimed: Array<{ x: number; y: number }>;
+	fenceByTile: Map<string, OrganicFenceSprite[]>;
+}
+
+export function buildOrganicVillageView(
+	claimedTiles: Array<{ x: number; y: number }> | undefined,
+	gate: GatePlacement | null | undefined,
+): OrganicVillageView | null {
+	if (!claimedTiles || claimedTiles.length === 0) {
+		return null;
+	}
+	const area = fromTiles(claimedTiles);
+	const fenceByTile = new Map<string, OrganicFenceSprite[]>();
+	for (const seg of fencePerimeter(area, gate)) {
+		const outside = SIDE_DELTA[seg.side];
+		const drawX = seg.x + outside.x;
+		const drawY = seg.y + outside.y;
+		const key = posKey(drawX, drawY);
+		const sprites = fenceByTile.get(key) ?? [];
+		sprites.push({
+			key: `${seg.x},${seg.y},${seg.side}`,
+			src: seg.gate
+				? GATE_SPRITE
+				: seg.axis === "x"
+					? FENCE_X_SPRITE
+					: FENCE_Y_SPRITE,
+			ox: 0,
+			oy: 0,
+		});
+		fenceByTile.set(key, sprites);
+	}
+	return { area, claimed: toTiles(area), fenceByTile };
+}
 
 /** Chebyshev distance from the village anchor. */
 export function villageDistance(
@@ -44,12 +94,26 @@ function hasWater(tile: WorldTile): boolean {
 /** Halo of always-revealed ground beyond the fence (mirrors TileLayer). */
 const VILLAGE_VISION_MARGIN = 1.5;
 
+function isClaimedOrHalo(
+	tile: { x: number; y: number },
+	village: OrganicVillageView,
+): boolean {
+	if (isInsideVillage({ x: tile.x, y: tile.y }, village.area)) {
+		return true;
+	}
+	return village.claimed.some(
+		(pos) => Math.max(Math.abs(tile.x - pos.x), Math.abs(tile.y - pos.y)) <= 1,
+	);
+}
+
 export function isExplored(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
 	ringRadius: number,
+	village: OrganicVillageView | null = null,
 ): boolean {
 	if (tile.pathWear > 62) return true;
+	if (village) return isClaimedOrHalo(tile, village);
 	if (villageDistance(tile, anchor) <= ringRadius) return true;
 	const dx = tile.x - anchor.x;
 	const dy = tile.y - anchor.y;
@@ -69,11 +133,14 @@ export function computeFogBrightness(
 	tiles: WorldTile[],
 	anchor: { x: number; y: number },
 	ringRadius: number,
+	village: OrganicVillageView | null = null,
 ): Map<string, number> {
-	const explored = tiles.filter((t) => isExplored(t, anchor, ringRadius));
+	const explored = tiles.filter((t) =>
+		isExplored(t, anchor, ringRadius, village),
+	);
 	const out = new Map<string, number>();
 	for (const tile of tiles) {
-		if (isExplored(tile, anchor, ringRadius)) {
+		if (isExplored(tile, anchor, ringRadius, village)) {
 			out.set(tile._id, 1);
 			continue;
 		}
@@ -95,6 +162,20 @@ export function computeFogBrightness(
 	return out;
 }
 
+function isVillageClearing(
+	tile: WorldTile,
+	anchor: { x: number; y: number },
+	ringRadius: number,
+	village: OrganicVillageView | null,
+): boolean {
+	if (village) {
+		return (
+			isInsideVillage({ x: tile.x, y: tile.y }, village.area) && !hasWater(tile)
+		);
+	}
+	return villageDistance(tile, anchor) <= ringRadius && !hasWater(tile);
+}
+
 export interface TileGround {
 	/** Main sprite URL (tree, water, grass, hill…). */
 	src: string;
@@ -114,11 +195,12 @@ export function tileGround(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
 	ringRadius: number,
+	village: OrganicVillageView | null = null,
 ): TileGround {
 	if (tile.type === "river" || tile.overlayFeature === "river") {
 		return { src: WATER_SPRITE };
 	}
-	if (villageDistance(tile, anchor) <= ringRadius && !hasWater(tile)) {
+	if (isVillageClearing(tile, anchor, ringRadius, village)) {
 		return { src: GRASS };
 	}
 	if (isChoppedStumpTile(tile)) {
@@ -143,7 +225,11 @@ export function fenceSprites(
 	tile: WorldTile,
 	anchor: { x: number; y: number },
 	ringRadius: number,
+	village: OrganicVillageView | null = null,
 ): FenceSprite[] {
+	if (village) {
+		return village.fenceByTile.get(posKey(tile.x, tile.y)) ?? [];
+	}
 	if (villageDistance(tile, anchor) !== ringRadius || hasWater(tile)) {
 		return [];
 	}

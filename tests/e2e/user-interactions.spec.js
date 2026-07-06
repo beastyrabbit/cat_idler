@@ -1,14 +1,13 @@
 /**
  * E2E Tests: User Interactions
  *
- * Tests colony tab switching and direct user action effects.
+ * Tests current map UI interactions and signed action buttons.
  */
 
 import { By } from "selenium-webdriver";
 import {
-	ensureGlobalColony,
-	getColonyPageUrl,
-	readResourceFraction,
+	getGameDashboard,
+	openGamePage,
 	waitForBodyText,
 	waitForPathname,
 } from "./helpers.js";
@@ -23,88 +22,62 @@ export default async function testUserInteractions(
 	try {
 		console.log("  Testing user interactions...");
 
-		const colony = await ensureGlobalColony({ ensureLeader: true });
-		await driver.get(getColonyPageUrl(baseUrl, colony._id));
-		await waitForPathname(
-			driver,
-			(pathname) => pathname === `/colony/${colony._id}`,
-		);
-		await waitForBodyText(driver, "COZY COLONY");
+		await openGamePage(driver, baseUrl);
 
-		const worldTab = await driver.findElement(
-			By.xpath("//*[@role='tab' and normalize-space()='World']"),
+		for (const label of ["Supply food", "Supply water", "Plan hunt"]) {
+			const button = await driver.findElement(
+				By.xpath(`//button[contains(normalize-space(), '${label}')]`),
+			);
+			if (!(await button.isDisplayed())) {
+				throw new Error(`${label} button is not visible.`);
+			}
+		}
+		console.log("  ✓ Primary action buttons are visible");
+
+		const supplyFoodButton = await driver.findElement(
+			By.xpath("//button[contains(normalize-space(), 'Supply food')]"),
 		);
-		await worldTab.click();
+		if (!(await supplyFoodButton.isEnabled())) {
+			throw new Error("Supply food button should be available.");
+		}
+		const beforeDashboard = await getGameDashboard(baseUrl);
+		const beforeJobIds = new Set(
+			(beforeDashboard.jobs ?? []).map((job) => job._id),
+		);
+		await supplyFoodButton.click();
+		await waitForPathname(driver, "/game");
+		await waitForBodyText(driver, "COLONY WORK");
 		await driver.wait(
 			async () => {
-				return (await worldTab.getAttribute("data-state")) === "active";
-			},
-			5000,
-			"World tab did not become active.",
-		);
-
-		const colonyTab = await driver.findElement(
-			By.xpath("//*[@role='tab' and normalize-space()='Colony']"),
-		);
-		await colonyTab.click();
-		await driver.wait(
-			async () => {
-				return (await colonyTab.getAttribute("data-state")) === "active";
-			},
-			5000,
-			"Colony tab did not become active again.",
-		);
-		console.log("  ✓ World and colony tab switching works");
-
-		const actionsTab = await driver.findElement(
-			By.xpath("//*[@role='tab' and normalize-space()='Actions']"),
-		);
-		await actionsTab.click();
-		await waitForBodyText(driver, "🍖 Give Food (+1)");
-		await waitForBodyText(driver, "💧 Give Water (+1)");
-
-		const beforeFood = await readResourceFraction(driver, "Food");
-		const beforeWater = await readResourceFraction(driver, "Water");
-
-		const feedButton = await driver.findElement(
-			By.xpath("//button[contains(., 'Give Food (+1)')]"),
-		);
-		await feedButton.click();
-		await driver.wait(
-			async () => {
-				const currentFood = await readResourceFraction(driver, "Food");
-				return currentFood.value > beforeFood.value;
+				const buttons = await driver.findElements(
+					By.xpath("//button[contains(normalize-space(), 'Supply food')]"),
+				);
+				return buttons.length > 0 && (await buttons[0].isEnabled());
 			},
 			10000,
-			"Food did not increase after clicking Give Food.",
+			"Supply food button did not become available after the action request.",
 		);
-		await driver.wait(
-			async () => !(await feedButton.isEnabled()),
-			5000,
-			"Give Food button did not enter cooldown after use.",
-		);
-
-		const waterButton = await driver.findElement(
-			By.xpath("//button[contains(., 'Give Water (+1)')]"),
-		);
-		await waterButton.click();
 		await driver.wait(
 			async () => {
-				const currentWater = await readResourceFraction(driver, "Water");
-				return currentWater.value > beforeWater.value;
+				const afterDashboard = await getGameDashboard(baseUrl);
+				return (afterDashboard.jobs ?? []).some(
+					(job) => job.kind === "supply_food" && !beforeJobIds.has(job._id),
+				);
 			},
 			10000,
-			"Water did not increase after clicking Give Water.",
+			"Supply food click did not create a new signed job.",
 		);
-		await driver.wait(
-			async () => !(await waterButton.isEnabled()),
-			5000,
-			"Give Water button did not enter cooldown after use.",
-		);
+		console.log("  ✓ Supply food action can be clicked");
 
-		console.log(
-			"  ✓ Colony action buttons update resources and enter cooldown",
+		const upgradesButton = await driver.findElement(
+			By.xpath("//button[contains(normalize-space(), 'Upgrades')]"),
 		);
+		await upgradesButton.click();
+		await waitForBodyText(driver, "click power");
+		await upgradesButton.click();
+		await waitForBodyText(driver, "LEND A PAW");
+		console.log("  ✓ Upgrades drawer toggles");
+
 		console.log("  ✓ All user interaction tests passed");
 	} catch (error) {
 		console.error("  ✗ Test failed");

@@ -160,7 +160,7 @@ export function useGameDashboard() {
 	}, []);
 
 	useEffect(() => {
-		if (!sessionId || !nickname || !sig) {
+		if (!sessionId || !nickname) {
 			return;
 		}
 
