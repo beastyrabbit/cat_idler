@@ -34,11 +34,13 @@ function snap(overrides: Partial<LeaderSnapshot> = {}): LeaderSnapshot {
 		waterCapacity: CAP,
 		housing: { capacity: 40, committed: 0 },
 		activeHunts: 0,
+		activeFishers: 0,
 		activeQuarries: 0,
 		activeScouts: 0,
 		activeWaterFetchers: 0,
 		hasQuarrySite: false,
 		hasWaterSite: false,
+		hasFishingSite: false,
 		hasFrontier: false,
 		denPlansInFlight: 0,
 		storagePlansInFlight: 0,
@@ -140,6 +142,59 @@ describe("quota allocation", () => {
 		expect(slotFor(plan.slots, "fetch_water")).toBeGreaterThan(0);
 		// ...and the storehouse is still commissioned as a standalone capital job.
 		expect(decisionKinds(plan.decisions)).toContain("build_storage");
+	});
+
+	it("allocates fishers from the food deficit when shoreline exists", () => {
+		const plan = directColony(
+			snap({
+				resources: { food: CAP * 0.1, refined: 0 },
+				hasFishingSite: true,
+				idleCats: 8,
+			}),
+		);
+		expect(slotFor(plan.slots, "fish")).toBeGreaterThan(0);
+		expect(slotFor(plan.slots, "hunt")).toBeGreaterThan(0);
+		expect(plan.slots[0].goal).toBe("fish");
+	});
+
+	it("does not allocate fishers without shoreline or past in-flight cap", () => {
+		expect(
+			slotFor(
+				directColony(
+					snap({ resources: { food: CAP * 0.1, refined: 0 }, idleCats: 8 }),
+				).slots,
+				"fish",
+			),
+		).toBe(0);
+		expect(
+			slotFor(
+				directColony(
+					snap({
+						resources: { food: CAP * 0.1, refined: 0 },
+						hasFishingSite: true,
+						activeFishers: 1,
+						idleCats: 8,
+					}),
+				).slots,
+				"fish",
+			),
+		).toBe(0);
+	});
+
+	it("does not exceed the fishing cap through idle-fill work", () => {
+		const plan = directColony(
+			snap({
+				resources: { food: CAP * 0.85, refined: 0 },
+				hasFishingSite: true,
+				idleCats: 20,
+				workforce: 20,
+				activeFishers: 1,
+				hasFrontier: true,
+				hasQuarrySite: true,
+			}),
+		);
+
+		expect(slotFor(plan.slots, "fish")).toBe(0);
 	});
 
 	it("keeps a single-slot workshop from being rounded away", () => {
@@ -308,6 +363,15 @@ describe("assignment matcher", () => {
 		expect(assignmentFit(cats[1], "hunt")).toBeGreaterThan(
 			assignmentFit(cats[0], "hunt"),
 		);
+		expect(matchCatsToSlots(slots, cats)[0].catId).toBe("spec");
+	});
+
+	it("uses hunter specialization when matching fish slots", () => {
+		const slots: OpenSlots[] = [{ goal: "fish", count: 1, score: 1 }];
+		const cats = [
+			cat("gen", { hunting: 70 }),
+			cat("spec", { hunting: 50 }, "hunter"),
+		];
 		expect(matchCatsToSlots(slots, cats)[0].catId).toBe("spec");
 	});
 

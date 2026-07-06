@@ -53,6 +53,8 @@ export interface LeaderSnapshot {
 	housing: { capacity: number; committed: number };
 	/** hunt_expedition jobs in flight (active or queued). */
 	activeHunts: number;
+	/** fish jobs in flight (active or queued). */
+	activeFishers?: number;
 	/** quarry jobs in flight (active or queued). */
 	activeQuarries: number;
 	/** explore jobs in flight (active or queued). */
@@ -63,6 +65,8 @@ export interface LeaderSnapshot {
 	hasQuarrySite: boolean;
 	/** An explored water tile the colony can draw from. */
 	hasWaterSite: boolean;
+	/** An explored, walkable shoreline tile exists for fishing. */
+	hasFishingSite?: boolean;
 	/** An unexplored tile still sits on the reachable frontier. */
 	hasFrontier: boolean;
 	/** Den plans in flight: leader_plan_house or a build_house den. */
@@ -93,6 +97,7 @@ export interface LeaderSnapshot {
 
 export type LeaderDecision =
 	| { kind: "hunt"; count: number }
+	| { kind: "fish"; count: number }
 	| { kind: "cancel_hunts" }
 	| { kind: "fetch_water"; count: number }
 	| { kind: "quarry"; count: number }

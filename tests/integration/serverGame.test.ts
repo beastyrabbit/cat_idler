@@ -23,6 +23,7 @@ import {
 	zones as zonesTable,
 } from "@/db/schema";
 import { canWork, getLifeStage } from "@/lib/game/lifeSim";
+import { FISH_TOTAL_YIELD } from "@/lib/game/idleEngine";
 import {
 	colonyToWorld,
 	ringCells,
@@ -1258,6 +1259,163 @@ describe("quarry expeditions", () => {
 				message.includes("materials to the shrine"),
 			),
 		).toBe(true);
+	});
+});
+
+describe("fishing jobs", () => {
+	it("hauls food from a shoreline and banks it at the shrine", () => {
+		const colony = ensureGlobalColony(db);
+		setResources(db, colony._id, { food: 20, water: 200, materials: 50 });
+		const fisher = getAliveCatsForTest(db, colony._id)[0];
+
+		const site = { x: 6, y: 20 };
+		db.update(cats)
+			.set({
+				position: { map: "world", ...site },
+				activity: "working",
+				currentTask: "fish",
+				carrying: null,
+			})
+			.where(eq(cats._id, fisher._id))
+			.run();
+
+		const now = Date.now();
+		db.insert(jobs)
+			.values({
+				_id: "fish-haul-job",
+				colonyId: colony._id,
+				kind: "fish",
+				status: "active",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: fisher._id,
+				baseDurationSec: 3 * 3600,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: now - 3600 * 1000,
+				startedAt: now - 3600 * 1000,
+				endsAt: now + 3600 * 1000,
+				metadata: {
+					accepted: true,
+					site,
+					tripsDone: 0,
+					totalYield: FISH_TOTAL_YIELD,
+					nextTripAt: now - 1000,
+				},
+			})
+			.run();
+
+		const foodBefore = ensureGlobalColony(db).resources.food;
+		advanceTime(db, 2);
+		workerTick(db);
+
+		let carrier = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === fisher._id,
+		)!;
+		expect(carrier.carrying).not.toBeNull();
+		expect(carrier.carrying!.kind).toBe("food");
+		expect(carrier.carrying!.amount).toBe(2);
+		expect(carrier.activity).toBe("returning");
+
+		for (let i = 0; i < 10; i++) {
+			advanceTime(db, 10);
+			workerTick(db);
+		}
+
+		carrier = getAliveCatsForTest(db, colony._id).find(
+			(cat) => cat._id === fisher._id,
+		)!;
+		expect(carrier.carrying).toBeNull();
+		expect(ensureGlobalColony(db).resources.food).toBeGreaterThan(foodBefore);
+		expect(
+			eventMessages(db).some((message) => message.includes("food to the shrine")),
+		).toBe(true);
+	});
+
+	it("promotes a queued fish job to an explored shoreline, not water", () => {
+		const colony = ensureGlobalColony(db);
+		const fisher = getAliveCatsForTest(db, colony._id)[0];
+		const water = { x: VILLAGE_ANCHOR.x, y: VILLAGE_ANCHOR.y + 5 };
+		const shore = { x: water.x, y: water.y - 1 };
+
+		db.update(worldTiles)
+			.set({
+				type: "river",
+				overlayFeature: "river",
+				resources: { food: 0, herbs: 0, water: 999 },
+				pathWear: 99,
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, water.x),
+					eq(worldTiles.y, water.y),
+				),
+			)
+			.run();
+		db.update(worldTiles)
+			.set({
+				type: "grassland",
+				overlayFeature: null,
+				resources: { food: 0, herbs: 0, water: 0 },
+				pathWear: 99,
+			})
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, shore.x),
+					eq(worldTiles.y, shore.y),
+				),
+			)
+			.run();
+
+		db.insert(jobs)
+			.values({
+				_id: "fish-dispatch-job",
+				colonyId: colony._id,
+				kind: "fish",
+				status: "queued",
+				requestedByType: "leader",
+				requestedByPlayerId: null,
+				assignedCatId: fisher._id,
+				baseDurationSec: 3 * 3600,
+				speedMultiplier: 1,
+				yieldMultiplier: 1,
+				clickTimeReducedSec: 0,
+				createdAt: Date.now(),
+				startedAt: Date.now(),
+				endsAt: Date.now() + 3 * 3600 * 1000,
+				metadata: {},
+			})
+			.run();
+
+		advanceTime(db, 2);
+		workerTick(db);
+
+		const promoted = db
+			.select()
+			.from(jobs)
+			.where(eq(jobs._id, "fish-dispatch-job"))
+			.get()!;
+		const site = (promoted.metadata as { site?: { x: number; y: number } })
+			.site;
+		expect(site).toBeDefined();
+		expect(site).not.toEqual(water);
+
+		const siteTile = db
+			.select()
+			.from(worldTiles)
+			.where(
+				and(
+					eq(worldTiles.colonyId, colony._id),
+					eq(worldTiles.x, site!.x),
+					eq(worldTiles.y, site!.y),
+				),
+			)
+			.get();
+		expect(siteTile?.type).not.toBe("river");
+		expect(siteTile?.resources.water ?? 0).toBe(0);
 	});
 });
 

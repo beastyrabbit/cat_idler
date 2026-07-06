@@ -62,6 +62,7 @@ function getBaseXPForTask(taskType: TaskType): number {
 	// More difficult/dangerous tasks give more XP
 	switch (taskType) {
 		case "hunt":
+		case "fish":
 		case "patrol":
 		case "guard":
 			return 3; // Dangerous tasks

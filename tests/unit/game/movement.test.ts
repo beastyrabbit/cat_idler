@@ -279,6 +279,33 @@ describe("movement", () => {
 			expect(dest).toEqual({ x: 9, y: 12 });
 		});
 
+		it("sends fishers to a shoreline site chosen by the roll", () => {
+			const fishingSites = [
+				{ x: 4, y: 10 },
+				{ x: 9, y: 12 },
+				{ x: 11, y: 2 },
+			];
+			const dest = destinationForJob("fish", {
+				anchor: ANCHOR,
+				shrine: { x: 6, y: 6 },
+				foodTiles: [],
+				fishingSites,
+				roll: 0.5,
+			});
+			expect(dest).toEqual(fishingSites[1]);
+		});
+
+		it("returns null for fishing with no known shoreline", () => {
+			expect(
+				destinationForJob("fish", {
+					anchor: ANCHOR,
+					shrine: { x: 6, y: 6 },
+					foodTiles: [],
+					roll: 0.5,
+				}),
+			).toBeNull();
+		});
+
 		it("returns null for a water fetch with no known water tile", () => {
 			expect(
 				destinationForJob("fetch_water", {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	applyClickBoostSeconds,
 	BASE_JOB_SECONDS,
+	FISH_TOTAL_YIELD,
 	getDurationSeconds,
 	getHuntReward,
 	getResilienceHours,
@@ -27,8 +28,19 @@ describe("idle engine", () => {
 		expect(BASE_JOB_SECONDS.supply_water).toBe(15);
 		expect(BASE_JOB_SECONDS.supply_food).toBe(20);
 		expect(BASE_JOB_SECONDS.hunt_expedition).toBe(8 * 60 * 60);
+		expect(BASE_JOB_SECONDS.fish).toBe(3 * 60 * 60);
 		expect(BASE_JOB_SECONDS.leader_plan_house).toBe(20 * 60 * 60);
 		expect(BASE_JOB_SECONDS.build_house).toBe(8 * 60 * 60);
+	});
+
+	it("keeps fishing shorter and smaller than a hunt", () => {
+		expect(BASE_JOB_SECONDS.fish).toBeGreaterThanOrEqual(2 * 60 * 60);
+		expect(BASE_JOB_SECONDS.fish).toBeLessThanOrEqual(4 * 60 * 60);
+		expect(BASE_JOB_SECONDS.fish).toBeLessThan(BASE_JOB_SECONDS.hunt_expedition);
+		expect(FISH_TOTAL_YIELD).toBeGreaterThan(0);
+		expect(FISH_TOTAL_YIELD).toBeLessThan(
+			getHuntReward(0, null, 0, baseUpgrades),
+		);
 	});
 
 	it("applies click boost with smooth exponential decay after 30 clicks", () => {
@@ -54,6 +66,12 @@ describe("idle engine", () => {
 			baseUpgrades,
 		);
 		expect(specialized).toBeLessThan(normal);
+	});
+
+	it("reduces fishing duration for hunter specialization", () => {
+		const normal = getDurationSeconds("fish", null, baseUpgrades);
+		const specialized = getDurationSeconds("fish", "hunter", baseUpgrades);
+		expect(specialized).toBe(Math.floor(normal * 0.5));
 	});
 
 	it("reduces build duration for architect specialization", () => {

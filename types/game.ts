@@ -65,6 +65,7 @@ export type OverlayFeature =
 
 export type TaskType =
 	| "hunt"
+	| "fish"
 	| "gather_herbs"
 	| "fetch_water"
 	| "clean"
@@ -119,6 +120,7 @@ export type JobKind =
 	| "supply_water"
 	| "leader_plan_hunt"
 	| "hunt_expedition"
+	| "fish"
 	| "leader_plan_house"
 	| "build_house"
 	| "ritual"
@@ -463,6 +465,7 @@ export const BUILDING_COSTS: Record<BuildingType, number> = {
 
 export const TASK_TO_SKILL: Record<TaskType, keyof CatStats> = {
 	hunt: "hunting",
+	fish: "hunting",
 	gather_herbs: "medicine",
 	fetch_water: "hunting",
 	clean: "cleaning",

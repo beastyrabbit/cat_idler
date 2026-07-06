@@ -26,6 +26,7 @@ const JOB_LABELS: Record<string, string> = {
 	supply_water: "Supply Water",
 	leader_plan_hunt: "Plan Hunt",
 	hunt_expedition: "Hunt Expedition",
+	fish: "Fishing",
 	leader_plan_house: "Plan House",
 	build_house: "Build House",
 	ritual: "Shrine Ritual",
@@ -34,7 +35,12 @@ const JOB_LABELS: Record<string, string> = {
 };
 
 /** Per-cat role experience carried on the dashboard row. */
-type TradeXp = { hunter: number; architect: number; ritualist: number };
+type TradeXp = {
+	hunter: number;
+	architect: number;
+	ritualist: number;
+	warrior?: number;
+};
 
 const STAGE_LABELS: Record<LifeStage, string> = {
 	kitten: "🍼 Kitten",

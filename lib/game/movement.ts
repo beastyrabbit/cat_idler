@@ -204,6 +204,8 @@ export interface JobDestinationContext {
 	shrine: WorldPos;
 	/** Known food-rich tiles outside the village (may be empty). */
 	foodTiles: WorldPos[];
+	/** Walkable shoreline tiles next to water, suitable for fishing. */
+	fishingSites?: WorldPos[];
 	/** Seeded roll used for any random choice. */
 	roll: number;
 	/** Construction site for build jobs (colony-translated to world). */
@@ -237,6 +239,15 @@ export function destinationForJob(
 			return context.quarrySite ? { ...context.quarrySite } : null;
 		case "fetch_water":
 			return context.waterSite ? { ...context.waterSite } : null;
+		case "fish": {
+			const sites = context.fishingSites ?? [];
+			if (sites.length === 0) {
+				return null;
+			}
+			const clamped = Math.min(Math.max(context.roll, 0), 0.999999);
+			const index = Math.floor(clamped * sites.length);
+			return { ...sites[index] };
+		}
 		case "explore":
 			return context.exploreSite ? { ...context.exploreSite } : null;
 		case "hunt_expedition": {

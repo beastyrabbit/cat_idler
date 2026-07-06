@@ -337,6 +337,7 @@ export const jobs = sqliteTable(
 				"supply_water",
 				"leader_plan_hunt",
 				"hunt_expedition",
+				"fish",
 				"leader_plan_house",
 				"build_house",
 				"ritual",

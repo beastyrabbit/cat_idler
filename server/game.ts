@@ -53,6 +53,7 @@ import {
 import {
 	applyClickBoostSeconds,
 	type CatSpecialization,
+	FISH_TOTAL_YIELD,
 	getHuntReward,
 	getResilienceHours,
 	getScaledDurationSeconds,
@@ -119,6 +120,7 @@ import {
 import { ROAD_PAVE_WEAR, selectRoadCorridor } from "@/lib/game/roads";
 import { rollSeeded } from "@/lib/game/seededRng";
 import { shouldDeposit } from "@/lib/game/shrine";
+import { shorelineFishingSites } from "@/lib/game/shoreline";
 import { advanceSmithy } from "@/lib/game/smithy";
 import {
 	countStorehouses,
@@ -412,7 +414,11 @@ function randomStat(min: number, max: number): number {
 
 /** The role-experience track a job kind trains, if any. */
 function tradeForJob(kind: JobKind): keyof RoleXpJson | null {
-	if (kind === "hunt_expedition" || kind === "leader_plan_hunt") {
+	if (
+		kind === "hunt_expedition" ||
+		kind === "leader_plan_hunt" ||
+		kind === "fish"
+	) {
 		return "hunter";
 	}
 	if (kind === "build_house" || kind === "leader_plan_house") {
@@ -3037,6 +3043,23 @@ export function workerTick(db: GameDb) {
 			return cachedWaterSites;
 		};
 
+		// Explored walkable shoreline, nearest first — fishers stand on land
+		// orthogonally adjacent to water, never on the water tile itself.
+		let cachedFishingSites: WorldPos[] | null = null;
+		const fishingSitesNearVillage = (): WorldPos[] => {
+			if (!cachedFishingSites) {
+				const dispatchClaimedArea = getClaimedArea(getColony(tx, colony._id));
+				cachedFishingSites = shorelineFishingSites({
+					tiles: colonyTiles(),
+					anchor: VILLAGE_ANCHOR,
+					isExplored: tileIsExplored,
+					area: dispatchClaimedArea,
+					gate: claimedGate(dispatchClaimedArea),
+				});
+			}
+			return cachedFishingSites;
+		};
+
 		// A claimed build cell sits on water when its world tile is a river/pond
 		// — scaffolds must never rise there.
 		const worldCellIsWater = (world: WorldPos): boolean => {
@@ -3207,6 +3230,15 @@ export function workerTick(db: GameDb) {
 				);
 				huntTiles = preferred ? [preferred] : [];
 			}
+			let fishingSites: WorldPos[] = [];
+			if (job.kind === "fish") {
+				const preferred = pickTargetWithZones(
+					fishingSitesNearVillage(),
+					zoneList,
+					nextMovementRoll(),
+				);
+				fishingSites = preferred ? [preferred] : [];
+			}
 			// Quarry heads to the nearest explored stone tile; scouts pick a
 			// frontier tile, rotating so a batch fans out across the edge.
 			let quarrySite: WorldPos | undefined;
@@ -3237,6 +3269,7 @@ export function workerTick(db: GameDb) {
 				anchor: VILLAGE_ANCHOR,
 				shrine: VILLAGE_ANCHOR,
 				foodTiles: huntTiles,
+				fishingSites,
 				roll: nextMovementRoll(),
 				site: constructionSite ?? undefined,
 				quarrySite,
@@ -3330,6 +3363,7 @@ export function workerTick(db: GameDb) {
 		const activeHunts = activeJobs.filter(
 			(job) => job.kind === "hunt_expedition",
 		).length;
+		const activeFishers = activeJobs.filter((job) => job.kind === "fish").length;
 		const activeQuarries = activeJobs.filter(
 			(job) => job.kind === "quarry",
 		).length;
@@ -3451,11 +3485,13 @@ export function workerTick(db: GameDb) {
 				committed: committedCapacity,
 			},
 			activeHunts,
+			activeFishers,
 			activeQuarries,
 			activeScouts,
 			activeWaterFetchers,
 			hasQuarrySite: quarrySitesNearVillage().length > 0,
 			hasWaterSite: waterSitesNearVillage().length > 0,
+			hasFishingSite: fishingSitesNearVillage().length > 0,
 			hasFrontier: frontierTilesNearVillage().length > 0,
 			denPlansInFlight,
 			storagePlansInFlight,
@@ -3605,6 +3641,7 @@ export function workerTick(db: GameDb) {
 			}
 			switch (assignment.goal) {
 				case "hunt":
+				case "fish":
 				case "fetch_water":
 				case "quarry":
 				case "scout":
@@ -4073,6 +4110,38 @@ export function workerTick(db: GameDb) {
 					.run();
 			}
 
+			if (job.kind === "fish" && assignedCat) {
+				const roleXp = defaultRoleXp(assignedCat);
+				const meta = (job.metadata as Record<string, unknown> | null) ?? {};
+				const total =
+					typeof meta.totalYield === "number"
+						? meta.totalYield
+						: FISH_TOTAL_YIELD;
+				const tripsDone =
+					typeof meta.tripsDone === "number" ? meta.tripsDone : 0;
+				const reward = remainingYield(total, HUNT_TRIP_COUNT, tripsDone);
+				const nextRoleXp = { ...roleXp, hunter: roleXp.hunter + 1 };
+				tx.update(cats)
+					.set({
+						roleXp: nextRoleXp,
+						specialization: nextSpecialization(
+							"hunter",
+							nextRoleXp.hunter,
+							assignedCat.specialization ?? null,
+						),
+						stats: {
+							...assignedCat.stats,
+							hunting: Math.min(100, assignedCat.stats.hunting + 0.25),
+						},
+						carrying:
+							reward > 0
+								? { kind: "food", amount: reward, jobEndedAt: now }
+								: null,
+					})
+					.where(eq(cats._id, assignedCat._id))
+					.run();
+			}
+
 			if (job.kind === "quarry" && assignedCat) {
 				const meta = (job.metadata as Record<string, unknown> | null) ?? {};
 				// Mirrors the hunt haul: trips may already have carried shares
@@ -4369,6 +4438,7 @@ export function workerTick(db: GameDb) {
 			if (
 				assignedCat &&
 				(job.kind === "hunt_expedition" ||
+					job.kind === "fish" ||
 					job.kind === "build_house" ||
 					job.kind === "ritual" ||
 					job.kind === "quarry" ||
@@ -4414,8 +4484,12 @@ export function workerTick(db: GameDb) {
 		for (const job of getJobsByStatus(tx, colony._id, "active")) {
 			const isQuarry = job.kind === "quarry";
 			const isWaterFetch = job.kind === "fetch_water";
+			const isFish = job.kind === "fish";
 			if (
-				(job.kind !== "hunt_expedition" && !isQuarry && !isWaterFetch) ||
+				(job.kind !== "hunt_expedition" &&
+					!isFish &&
+					!isQuarry &&
+					!isWaterFetch) ||
 				!job.assignedCatId
 			) {
 				continue;
@@ -4453,17 +4527,19 @@ export function workerTick(db: GameDb) {
 						? WATER_TOTAL_YIELD
 						: isQuarry
 							? QUARRY_TOTAL_YIELD
-							: huntYieldFor(
-									worker,
-									workerRoleXp.hunter,
-									upgrades,
-									effects.huntYieldMult,
-								);
+							: isFish
+								? FISH_TOTAL_YIELD
+								: huntYieldFor(
+										worker,
+										workerRoleXp.hunter,
+										upgrades,
+										effects.huntYieldMult,
+									);
 			const share = splitYield(total, HUNT_TRIP_COUNT, tripsDone);
 
 			// Hunt shares eat into the site's food; quarry stone and river
 			// water are inexhaustible.
-			if (!isQuarry && !isWaterFetch) {
+			if (!isQuarry && !isWaterFetch && !isFish) {
 				drainHuntSite(meta.site as WorldPos | undefined, share);
 			}
 
@@ -4624,6 +4700,7 @@ export function workerTick(db: GameDb) {
 					(job) =>
 						job.assignedCatId === cat._id &&
 						(job.kind === "hunt_expedition" ||
+							job.kind === "fish" ||
 							job.kind === "quarry" ||
 							job.kind === "fetch_water") &&
 						job.endsAt > now,

@@ -26,9 +26,13 @@ export function getOptimalCatForTask(
 
 	const currentTime = Date.now();
 	const isDangerousTask =
-		taskType === "hunt" || taskType === "patrol" || taskType === "guard";
+		taskType === "hunt" ||
+		taskType === "fish" ||
+		taskType === "patrol" ||
+		taskType === "guard";
 	const requiresOutside =
 		taskType === "hunt" ||
+		taskType === "fish" ||
 		taskType === "gather_herbs" ||
 		taskType === "fetch_water" ||
 		taskType === "explore" ||

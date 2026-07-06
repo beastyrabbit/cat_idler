@@ -3,6 +3,7 @@ export type JobKind =
 	| "supply_water"
 	| "leader_plan_hunt"
 	| "hunt_expedition"
+	| "fish"
 	| "leader_plan_house"
 	| "build_house"
 	| "ritual"
@@ -41,6 +42,7 @@ export const BASE_JOB_SECONDS: Record<JobKind, number> = {
 	supply_water: 15,
 	leader_plan_hunt: 30 * 60,
 	hunt_expedition: 8 * 60 * 60,
+	fish: 3 * 60 * 60,
 	leader_plan_house: 20 * 60 * 60,
 	build_house: 8 * 60 * 60,
 	ritual: 6 * 60 * 60,
@@ -50,6 +52,9 @@ export const BASE_JOB_SECONDS: Record<JobKind, number> = {
 	train_warrior: 3 * 60 * 60,
 	expand_village: 10 * 60,
 };
+
+/** Food one fishing job hauls home across its trips. */
+export const FISH_TOTAL_YIELD = 6;
 
 export function normalizeTimeScale(
 	timeScale: number | null | undefined,
@@ -88,7 +93,7 @@ export function getDurationSeconds(
 		multiplier *= Math.max(0.55, 1 - upgrades.supply_speed * 0.1);
 	}
 
-	if (kind === "hunt_expedition") {
+	if (kind === "hunt_expedition" || kind === "fish") {
 		multiplier *= Math.max(0.45, 1 - upgrades.hunt_mastery * 0.1);
 		if (specialization === "hunter") {
 			multiplier *= 0.5;

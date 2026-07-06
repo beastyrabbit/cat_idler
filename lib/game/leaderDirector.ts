@@ -50,6 +50,8 @@ export const TITHE_FOOD_AMOUNT = 20;
 export const TITHE_REFINED_AMOUNT = 5;
 /** A standing hunt yields diminishing value; cap concurrent hunts per this. */
 export const HUNT_MAX_SLOTS_RATIO = 0.7;
+/** Fishing is steady supplemental food, capped so it complements hunts. */
+export const FISH_MAX_SLOTS = 1;
 /** Fetchers the leader will run at once when the reservoir is dry. */
 export const WATER_MAX_SLOTS = 4;
 /** Quarry expeditions the leader will run at once when materials are low. */
@@ -215,6 +217,7 @@ function ableCats(s: LeaderSnapshot): number {
 /** Job kinds the director staffs from the shared idle pool. */
 export type LaborGoalKind =
 	| "hunt"
+	| "fish"
 	| "fetch_water"
 	| "quarry"
 	| "scout"
@@ -237,6 +240,7 @@ export interface GoalSkill {
 
 export const GOAL_SKILL: Record<LaborGoalKind, GoalSkill> = {
 	hunt: { skill: "hunting", preferSpecialization: "hunter" },
+	fish: { skill: "hunting", preferSpecialization: "hunter" },
 	fetch_water: { skill: "hunting", preferSpecialization: null },
 	quarry: { skill: "building", preferSpecialization: "architect" },
 	scout: { skill: "vision", preferSpecialization: null },
@@ -297,6 +301,15 @@ function laborGoals(s: LeaderSnapshot): LaborGoal[] {
 			hardCap: Math.ceil(budget * HUNT_MAX_SLOTS_RATIO),
 			// Overflowing stores: hold, don't dispatch (cancellation handled apart).
 			vetoed: foodR >= 1,
+			mode: "scaled",
+		},
+		{
+			kind: "fish",
+			score: foodScore,
+			maxSlots: FISH_MAX_SLOTS,
+			inFlight: s.activeFishers ?? 0,
+			hardCap: FISH_MAX_SLOTS,
+			vetoed: !s.hasFishingSite || foodR >= 1,
 			mode: "scaled",
 		},
 		{
@@ -538,6 +551,7 @@ export function directColony(s: LeaderSnapshot): DirectorPlan {
 	// Stable sort: score desc, then a fixed goal order for ties.
 	const order: LaborGoalKind[] = [
 		"fetch_water",
+		"fish",
 		"hunt",
 		"quarry",
 		"train_warrior",
@@ -580,10 +594,17 @@ export function directColony(s: LeaderSnapshot): DirectorPlan {
 	let idleLeft = Math.max(0, s.idleCats - (busySoFar - s.employedCats));
 	let fillWanted = Math.max(0, Math.min(idleLeft, employTarget - busySoFar));
 
-	const fillOrder: Array<{ kind: LaborGoalKind; open: boolean }> = [
-		{ kind: "hunt", open: foodR < 1 },
-		{ kind: "scout", open: s.hasFrontier },
-		{ kind: "quarry", open: s.hasQuarrySite },
+	const fillOrder: Array<{ kind: LaborGoalKind; open: () => boolean }> = [
+		{ kind: "hunt", open: () => foodR < 1 },
+		{
+			kind: "fish",
+			open: () =>
+				foodR < 1 &&
+				Boolean(s.hasFishingSite) &&
+				(s.activeFishers ?? 0) + (granted.get("fish") ?? 0) < FISH_MAX_SLOTS,
+		},
+		{ kind: "scout", open: () => s.hasFrontier },
+		{ kind: "quarry", open: () => s.hasQuarrySite },
 	];
 	// Round-robin so leftover cats spread across the open fill work.
 	let progress = true;
@@ -593,7 +614,7 @@ export function directColony(s: LeaderSnapshot): DirectorPlan {
 			if (fillWanted <= 0) {
 				break;
 			}
-			if (!fill.open) {
+			if (!fill.open()) {
 				continue;
 			}
 			grant(fill.kind, 1);

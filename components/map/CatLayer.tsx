@@ -72,6 +72,7 @@ function directionGroup(dx: number, dy: number): number {
 /** Floating tool while a cat works, by job (fallback: trade). */
 const WORK_ICONS: Record<string, string> = {
 	hunt_expedition: "🏹",
+	fish: "🎣",
 	build_house: "🪓",
 	ritual: "🔮",
 	hunter: "🏹",
@@ -103,6 +104,7 @@ function spreadOffset(id: string) {
 
 const TASK_BADGES: Record<string, string> = {
 	hunt: "🎯",
+	fish: "🎣",
 	gather_herbs: "🌿",
 	fetch_water: "💧",
 	build: "🔨",
