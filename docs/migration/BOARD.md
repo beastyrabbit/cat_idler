@@ -28,7 +28,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P2 | World generation | done |
 | P3 | Cat AI (pathfinding, movement, leader director) | done |
 | P4 | Life sim | done |
-| P5 | Economy + housing + roads | pending |
+| P5 | Economy + housing + roads | in progress |
 | P6 | Military + governance + upgrade tree | pending |
 | P7 | Master loop (`world_tick`, multi-colony) | pending |
 | P8 | Protocol + server (+ multi-village founding) | pending |
@@ -429,16 +429,16 @@ scope: Port lib/game/lifeSim.ts -> crates/cat-sim/src/life_sim.rs (stageWorkEffe
 persona: qa (orchestrator gate if timeout)   depends_on: [P4.1,P4.2,P4.3,P4.4,P4.5,P4.6]
 
 ## P5 — Economy + housing + roads (decomposed by orchestrator)
-### P5.1 Idle engine   [status: todo]
+### P5.1 Idle engine   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5a
 scope: lib/game/idleEngine.ts -> crates/cat-sim/src/idle_engine.rs (BASE_JOB_SECONDS, getDurationSeconds, getScaledDurationSeconds, getHuntReward, getResilienceHours, getUpgradeCost, nextSpecialization, applyClickBoostSeconds).
-### P5.2 Idle rules   [status: todo]
+### P5.2 Idle rules   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5a
 scope: lib/game/idleRules.ts -> crates/cat-sim/src/idle_rules.rs (consumptionForTick, nextColonyStatus, shouldTrackCritical/ResetFromCritical, auto-queue rules, ritualRequestIsFresh).
-### P5.3 Production   [status: todo]
+### P5.3 Production   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5a
 scope: lib/game/production.ts -> crates/cat-sim/src/production.rs (workshop 5mat->1refined/600s architect x2; field 2food/hr; unlock levels).
-### P5.4 Smithy   [status: todo]
+### P5.4 Smithy   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5a
 scope: lib/game/smithy.ts -> crates/cat-sim/src/smithy.rs (2refined+3mat->1weapon+1armor/900s, fast smith x2).
 ### P5.5 Storage   [status: todo]
