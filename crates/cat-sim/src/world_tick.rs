@@ -12,14 +12,23 @@ use crate::{
         BallotVote, ELECTION_WINDOW_MS, ElectionCandidate, KICK_WINDOW_MS, TERM_MS,
         candidates_for_unbarred, election_due, election_winner, should_trigger_kick, tally_votes,
     },
-    entities::{Cat, ColonyStatus, Position, Resources},
+    entities::{Cat, CatActivity, ColonyStatus, Position, Resources},
     idle_engine,
     idle_rules::consumption_for_tick,
-    life_sim::{leadership_after_tenure, old_age_death_probability},
+    leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
+    leader_director::{
+        CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, direct_colony,
+        match_cats_to_slots,
+    },
+    life_sim::{can_work, get_life_stage, leadership_after_tenure, old_age_death_probability},
+    policy::PolicyConfig,
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     spoilage::apply_food_spoilage_after_consumption,
-    storage::{StorageBuilding, StorageCapacities, storage_capacities},
-    types::{BuildingType, JobKind, JobStatus, TileType, UpgradeKey},
+    storage::{
+        StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
+    },
+    threat::threat_band,
+    types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType, UpgradeKey},
     upgrade_tree::{UpgradeTreeState, create_upgrade_tree_state, resolve_effects},
     world_gen::TileResources,
     zones::{ZoneKind, ZoneRect},
@@ -267,6 +276,11 @@ struct TickGate {
     previous_water: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct TickPolicy {
+    config: PolicyConfig,
+}
+
 const EVENT_KEEP: usize = 2_000;
 const MAX_PATH_DECAY_PER_TICK: u32 = 2;
 
@@ -381,7 +395,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
 
         phase_2_runtime_upgrades_and_effects(colony, gate);
         phase_3_base_rng_and_fork_roots(colony, gate);
-        phase_4_leader_bootstrap_and_policy(colony, gate);
+        let policy = phase_4_leader_bootstrap_and_policy(colony, gate);
         phase_5_initial_roster_buildings_and_caps(colony, gate);
         phase_6_life_simulation(colony, gate);
         phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(colony, gate);
@@ -394,11 +408,11 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_14_promote_queued_jobs_and_break_ground(colony, gate);
         phase_15_assign_promoted_job_destinations(colony, gate);
         phase_16_active_scaffold_progress(colony, gate);
-        phase_17_legacy_emergency_hunt(colony, gate);
-        phase_18_leader_snapshot_assembly(colony, gate);
-        phase_19_leader_cancellations(colony, gate);
-        phase_20_leader_labor_assignments_and_staffing(colony, gate);
-        phase_21_leader_capital_decisions_and_tithe(colony, gate);
+        phase_17_legacy_emergency_hunt(colony, gate, policy);
+        let snapshot = phase_18_leader_snapshot_assembly(colony, gate);
+        let plan = phase_19_leader_cancellations(colony, gate, &snapshot);
+        phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan);
+        phase_21_leader_capital_decisions_and_tithe(colony, gate, policy, &plan);
         phase_22_ritual_approval(colony, gate);
         phase_23_production(colony, gate);
         phase_24_research(colony, gate);
@@ -468,7 +482,7 @@ fn phase_3_base_rng_and_fork_roots(colony: &mut ColonyRuntime, _: TickGate) {
 
 /// Phase 4: choose or repair the leader, log leader changes, roll policy tier,
 /// and compute policy action reliability.
-fn phase_4_leader_bootstrap_and_policy(colony: &mut ColonyRuntime, _: TickGate) {
+fn phase_4_leader_bootstrap_and_policy(colony: &mut ColonyRuntime, gate: TickGate) -> TickPolicy {
     let leader_missing_or_dead = colony
         .leader_id
         .as_ref()
@@ -483,6 +497,12 @@ fn phase_4_leader_bootstrap_and_policy(colony: &mut ColonyRuntime, _: TickGate) 
         }
         if let Some(leader) = best_leader {
             colony.leader_id = Some(leader.id.clone());
+            append_event(
+                colony,
+                gate.processed_through,
+                EventKind::LeaderChange,
+                format!("{} is now the interim leader.", leader.name),
+            );
         }
     }
 
@@ -499,7 +519,9 @@ fn phase_4_leader_bootstrap_and_policy(colony: &mut ColonyRuntime, _: TickGate) 
     let policy_roll = next_base_roll(colony);
     let policy_tier = crate::policy::pick_policy_tier(leadership, policy_roll);
     let policy_config = crate::policy::config_for_tier(policy_tier);
-    let _can_take_policy_action = next_base_roll(colony) <= policy_config.action_reliability;
+    TickPolicy {
+        config: policy_config,
+    }
 }
 
 /// Phase 5: snapshot alive cats/buildings and compute initial storage caps.
@@ -761,21 +783,416 @@ fn phase_16_active_scaffold_progress(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 17: queue the legacy leader emergency hunt when food is below the
 /// policy threshold and no conflicting strategic job exists.
-fn phase_17_legacy_emergency_hunt(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_17_legacy_emergency_hunt(colony: &mut ColonyRuntime, gate: TickGate, policy: TickPolicy) {
+    if colony.resources.food >= policy.config.food_emergency_threshold {
+        return;
+    }
+    if has_conflicting_active_job(colony, JobKind::LeaderPlanHunt) {
+        return;
+    }
+    if !can_take_policy_action(colony, policy) {
+        return;
+    }
+    let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Hunter)) else {
+        return;
+    };
+    queue_job(
+        colony,
+        gate.processed_through,
+        JobKind::LeaderPlanHunt,
+        Some(cat_id),
+        JobMetadata::None,
+    );
+}
 
 /// Phase 18: assemble the leader snapshot: workforce, housing/storage pressure,
 /// jobs, staffing gaps, warriors, threat, and starvation flags.
-fn phase_18_leader_snapshot_assembly(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate) -> LeaderSnapshot {
+    let caps = storage_caps(colony);
+    let alive = alive_cats(&colony.cats).collect::<Vec<_>>();
+    let active_jobs = active_or_queued_jobs(colony);
+    let busy_ids = active_jobs
+        .iter()
+        .filter_map(|job| job.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let assigned_building_ids = colony
+        .buildings
+        .iter()
+        .filter_map(|building| building.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+
+    let work_capable = alive
+        .iter()
+        .filter(|cat| can_work(get_life_stage(cat.age_hours)))
+        .count() as u32;
+    let idle_cats = alive
+        .iter()
+        .filter(|cat| {
+            can_take_new_job_with_busy(cat, &busy_ids)
+                && !assigned_building_ids.contains(&cat.id.as_str())
+        })
+        .count() as u32;
+    let workforce = alive
+        .iter()
+        .map(|cat| crate::life_sim::workforce_weight(get_life_stage(cat.age_hours)))
+        .sum::<f64>();
+
+    let active_hunts = count_jobs(&active_jobs, JobKind::HuntExpedition);
+    let active_quarries = count_jobs(&active_jobs, JobKind::Quarry);
+    let active_scouts = count_jobs(&active_jobs, JobKind::Explore);
+    let active_water_fetchers = count_jobs(&active_jobs, JobKind::FetchWater);
+    let den_plans_in_flight = active_jobs
+        .iter()
+        .filter(|job| {
+            job.kind == JobKind::LeaderPlanHouse
+                || (job.kind == JobKind::BuildHouse
+                    && job_building_type(job) == Some(BuildingType::Den))
+        })
+        .count() as u32;
+    let storage_plans_in_flight = active_jobs
+        .iter()
+        .filter(|job| {
+            job.kind == JobKind::BuildHouse
+                && job_building_type(job) == Some(BuildingType::FoodStorage)
+        })
+        .count() as u32;
+
+    let committed_capacity = colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.building_type == BuildingType::Den && building.construction_progress < 100
+        })
+        .map(|building| 2 * building.level.max(1))
+        .sum::<u32>()
+        + 2 * active_jobs
+            .iter()
+            .filter(|job| {
+                job.kind == JobKind::BuildHouse
+                    && matches!(
+                        job.metadata,
+                        JobMetadata::Construction {
+                            phase: ConstructionPhase::ConstructHouse,
+                            building_type: BuildingType::Den,
+                            ..
+                        }
+                    )
+            })
+            .count() as u32;
+
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let housing_buildings = colony
+        .buildings
+        .iter()
+        .map(|building| {
+            crate::housing::HousingBuilding::new(
+                building.building_type,
+                f64::from(building.level),
+                f64::from(building.construction_progress),
+            )
+        })
+        .collect::<Vec<_>>();
+    let storage_buildings = storage_buildings(colony);
+    let population = alive.len() as u32;
+    let food_drain = consumption_for_tick(
+        population as f64,
+        gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony),
+        idle_engine_upgrade_levels(&colony.upgrade_levels),
+    );
+    let current_threat_band = match threat_band(colony.threat_pressure) {
+        crate::threat::ThreatBand::Calm => crate::leader_ai::ThreatBand::Calm,
+        crate::threat::ThreatBand::Rising => crate::leader_ai::ThreatBand::Rising,
+        crate::threat::ThreatBand::Imminent => crate::leader_ai::ThreatBand::Imminent,
+    };
+    let starving = caps.food > 0.0 && colony.resources.food / caps.food < 0.15;
+
+    LeaderSnapshot {
+        population,
+        workforce: Some(workforce),
+        idle_cats,
+        employed_cats: work_capable.saturating_sub(idle_cats),
+        resources: LeaderResources {
+            food: colony.resources.food,
+            refined: colony.resources.refined,
+        },
+        food_capacity: caps.food,
+        food_drain_per_tick: Some(food_drain.food_use),
+        materials: colony.resources.materials,
+        materials_capacity: caps.materials,
+        water: colony.resources.water,
+        water_capacity: caps.water,
+        water_drain_per_tick: Some(food_drain.water_use),
+        housing: LeaderHousing {
+            capacity: crate::housing::housing_capacity(&housing_buildings, effects.housing_per_den)
+                as u32,
+            committed: committed_capacity,
+        },
+        active_hunts,
+        active_quarries,
+        active_scouts,
+        active_water_fetchers,
+        has_quarry_site: has_quarry_site(colony),
+        has_water_site: has_water_site(colony),
+        has_frontier: has_frontier(colony),
+        den_plans_in_flight,
+        storage_plans_in_flight,
+        storehouse_count: count_storehouses(&storage_buildings),
+        storehouse_cap: storehouse_cap(population),
+        workshops_needing_workers: buildings_needing_workers(colony, BuildingType::Workshop).len()
+            as u32,
+        research_huts_needing_workers: Some(0),
+        smithies_needing_workers: Some(
+            buildings_needing_workers(colony, BuildingType::Smithy).len() as u32,
+        ),
+        has_barracks: Some(has_complete_building(colony, BuildingType::Barracks)),
+        warrior_count: Some(
+            alive
+                .iter()
+                .filter(|cat| cat.specialization == Some(CatSpecialization::Warrior))
+                .count() as u32,
+        ),
+        training_in_flight: Some(count_jobs(&active_jobs, JobKind::TrainWarrior)),
+        threat_band: Some(current_threat_band),
+        starving: Some(starving),
+    }
+}
 
 /// Phase 19: execute leader cancellation decisions before spending labor.
-fn phase_19_leader_cancellations(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_19_leader_cancellations(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    snapshot: &LeaderSnapshot,
+) -> DirectorPlan {
+    if snapshot.population == 0 {
+        return DirectorPlan {
+            decisions: Vec::new(),
+            slots: Vec::new(),
+        };
+    }
+
+    let plan = direct_colony(snapshot);
+
+    for decision in &plan.decisions {
+        match decision {
+            LeaderDecision::CancelHunts => {
+                let cancelled = cancel_jobs(
+                    colony,
+                    gate.processed_through,
+                    JobKind::HuntExpedition,
+                    true,
+                );
+                if cancelled > 0 {
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("job_cancelled".to_owned()),
+                        format!(
+                            "The leader called off {cancelled} hunt{} - the stores are overflowing.",
+                            if cancelled == 1 { "" } else { "s" }
+                        ),
+                    );
+                }
+            }
+            LeaderDecision::CancelTraining => {
+                let cancelled =
+                    cancel_jobs(colony, gate.processed_through, JobKind::TrainWarrior, false);
+                if cancelled > 0 {
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("job_cancelled".to_owned()),
+                        format!(
+                            "The leader called {cancelled} recruit{} back from the barracks - the larder is bare.",
+                            if cancelled == 1 { "" } else { "s" }
+                        ),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    plan
+}
 
 /// Phase 20: match idle cats to leader labor slots and staff production,
 /// research, smithy, expedition, and training work.
-fn phase_20_leader_labor_assignments_and_staffing(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_20_leader_labor_assignments_and_staffing(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    policy: TickPolicy,
+    plan: &DirectorPlan,
+) {
+    let busy_ids = active_or_queued_jobs(colony)
+        .iter()
+        .filter_map(|job| job.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let assigned_building_ids = colony
+        .buildings
+        .iter()
+        .filter_map(|building| building.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let available_idle = colony
+        .cats
+        .iter()
+        .filter(|cat| {
+            can_take_new_job_with_busy(cat, &busy_ids)
+                && !assigned_building_ids.contains(&cat.id.as_str())
+        })
+        .map(cat_brief)
+        .collect::<Vec<_>>();
+
+    let assignments = match_cats_to_slots(
+        &plan.slots,
+        &available_idle,
+        MatchOptions {
+            exclude_warriors_from_training: true,
+        },
+    );
+    let mut workshop_queue = buildings_needing_workers(colony, BuildingType::Workshop);
+    let mut smithy_queue = buildings_needing_workers(colony, BuildingType::Smithy);
+
+    for assignment in assignments {
+        if !can_take_policy_action(colony, policy) {
+            continue;
+        }
+
+        match assignment.goal {
+            LaborGoalKind::Hunt => {
+                queue_job(
+                    colony,
+                    gate.processed_through,
+                    JobKind::HuntExpedition,
+                    Some(assignment.cat_id),
+                    JobMetadata::None,
+                );
+            }
+            LaborGoalKind::FetchWater => {
+                queue_job(
+                    colony,
+                    gate.processed_through,
+                    JobKind::FetchWater,
+                    Some(assignment.cat_id),
+                    JobMetadata::None,
+                );
+            }
+            LaborGoalKind::Quarry => {
+                queue_job(
+                    colony,
+                    gate.processed_through,
+                    JobKind::Quarry,
+                    Some(assignment.cat_id),
+                    JobMetadata::None,
+                );
+            }
+            LaborGoalKind::Scout => {
+                queue_job(
+                    colony,
+                    gate.processed_through,
+                    JobKind::Explore,
+                    Some(assignment.cat_id),
+                    JobMetadata::None,
+                );
+            }
+            LaborGoalKind::TrainWarrior => {
+                queue_job(
+                    colony,
+                    gate.processed_through,
+                    JobKind::TrainWarrior,
+                    Some(assignment.cat_id),
+                    JobMetadata::None,
+                );
+            }
+            LaborGoalKind::AssignWorkshop => {
+                if let Some(building_id) = workshop_queue.pop() {
+                    staff_building(
+                        colony,
+                        &building_id,
+                        &assignment.cat_id,
+                        gate.processed_through,
+                    );
+                }
+            }
+            LaborGoalKind::AssignResearch => {}
+            LaborGoalKind::AssignSmithy => {
+                if let Some(building_id) = smithy_queue.pop() {
+                    staff_building(
+                        colony,
+                        &building_id,
+                        &assignment.cat_id,
+                        gate.processed_through,
+                    );
+                }
+            }
+        }
+    }
+}
 
 /// Phase 21: execute leader capital decisions and minute-cadence tithe deposits.
-fn phase_21_leader_capital_decisions_and_tithe(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_21_leader_capital_decisions_and_tithe(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    policy: TickPolicy,
+    plan: &DirectorPlan,
+) {
+    for decision in &plan.decisions {
+        match *decision {
+            LeaderDecision::BuildStorage => {
+                if can_take_policy_action(colony, policy) {
+                    let architect = select_best_cat(colony, Some(CatSpecialization::Architect));
+                    if let Some(cat_id) = architect {
+                        queue_job(
+                            colony,
+                            gate.processed_through,
+                            JobKind::BuildHouse,
+                            Some(cat_id),
+                            JobMetadata::Construction {
+                                phase: ConstructionPhase::ConstructHouse,
+                                building_type: BuildingType::FoodStorage,
+                                building_id: None,
+                                site: None,
+                            },
+                        );
+                    }
+                }
+            }
+            LeaderDecision::BuildDen => {
+                if can_take_policy_action(colony, policy) {
+                    let architect = select_best_cat(colony, Some(CatSpecialization::Architect));
+                    queue_job(
+                        colony,
+                        gate.processed_through,
+                        JobKind::LeaderPlanHouse,
+                        architect,
+                        JobMetadata::None,
+                    );
+                }
+            }
+            LeaderDecision::Tithe {
+                food,
+                refined,
+                blessings,
+            } => {
+                if !gate.minute_rolled {
+                    continue;
+                }
+                colony.resources.food -= f64::from(food);
+                colony.resources.refined -= f64::from(refined);
+                colony.global_upgrade_points += f64::from(blessings);
+                append_event(
+                    colony,
+                    gate.processed_through,
+                    EventKind::Other("shrine_deposit".to_owned()),
+                    format!(
+                        "The leader offered surplus stores to the gods (+{blessings} blessing{}).",
+                        if blessings == 1 { "" } else { "s" }
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Phase 22: approve requested rituals when resources and policy reliability
 /// allow.
@@ -936,6 +1353,302 @@ fn append_event(
         kind,
         message: message.into(),
     });
+}
+
+fn can_take_policy_action(colony: &mut ColonyRuntime, policy: TickPolicy) -> bool {
+    next_base_roll(colony) <= policy.config.action_reliability
+}
+
+fn active_or_queued_jobs(colony: &ColonyRuntime) -> Vec<&JobRuntime> {
+    colony
+        .jobs
+        .iter()
+        .filter(|job| matches!(job.status, JobStatus::Active | JobStatus::Queued))
+        .collect()
+}
+
+fn count_jobs(jobs: &[&JobRuntime], kind: JobKind) -> u32 {
+    jobs.iter().filter(|job| job.kind == kind).count() as u32
+}
+
+fn has_conflicting_active_job(colony: &ColonyRuntime, kind: JobKind) -> bool {
+    active_or_queued_jobs(colony).iter().any(|job| match kind {
+        JobKind::LeaderPlanHunt => {
+            matches!(job.kind, JobKind::LeaderPlanHunt | JobKind::HuntExpedition)
+        }
+        JobKind::LeaderPlanHouse => {
+            matches!(job.kind, JobKind::LeaderPlanHouse | JobKind::BuildHouse)
+        }
+        _ => job.kind == kind,
+    })
+}
+
+fn job_building_type(job: &JobRuntime) -> Option<BuildingType> {
+    match job.metadata {
+        JobMetadata::Construction { building_type, .. } => Some(building_type),
+        _ => None,
+    }
+}
+
+fn storage_buildings(colony: &ColonyRuntime) -> Vec<StorageBuilding> {
+    colony
+        .buildings
+        .iter()
+        .map(|building| {
+            StorageBuilding::new(
+                building.building_type,
+                f64::from(building.construction_progress),
+                Some(f64::from(building.level)),
+            )
+        })
+        .collect()
+}
+
+fn can_take_new_job_with_busy(cat: &Cat, busy_ids: &[&str]) -> bool {
+    cat.death_time.is_none()
+        && can_work(get_life_stage(cat.age_hours))
+        && !busy_ids.contains(&cat.id.as_str())
+        && cat.activity == CatActivity::Idle
+        && cat.current_task.is_none()
+        && cat.carrying.is_none()
+        && cat.destination.is_none()
+}
+
+fn select_best_cat(
+    colony: &ColonyRuntime,
+    specialization: Option<CatSpecialization>,
+) -> Option<CatId> {
+    let busy_ids = active_or_queued_jobs(colony)
+        .iter()
+        .filter_map(|job| job.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let assigned_building_ids = colony
+        .buildings
+        .iter()
+        .filter_map(|building| building.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let available = colony
+        .cats
+        .iter()
+        .filter(|cat| {
+            can_take_new_job_with_busy(cat, &busy_ids)
+                && !assigned_building_ids.contains(&cat.id.as_str())
+        })
+        .collect::<Vec<_>>();
+
+    let preferred = available
+        .iter()
+        .copied()
+        .filter(|cat| cat.specialization == specialization && specialization.is_some())
+        .collect::<Vec<_>>();
+    let pool = if preferred.is_empty() {
+        available
+    } else {
+        preferred
+    };
+
+    let mut best: Option<&Cat> = None;
+    for cat in pool {
+        if best.is_none_or(|current| {
+            specialization_stat(cat, specialization) > specialization_stat(current, specialization)
+        }) {
+            best = Some(cat);
+        }
+    }
+    best.map(|cat| cat.id.clone())
+}
+
+fn specialization_stat(cat: &Cat, specialization: Option<CatSpecialization>) -> f64 {
+    match specialization {
+        Some(CatSpecialization::Hunter) => cat.stats.hunting,
+        Some(CatSpecialization::Architect) => cat.stats.building,
+        Some(CatSpecialization::Ritualist) => cat.stats.leadership,
+        Some(CatSpecialization::Warrior) => cat.stats.attack,
+        None => cat.stats.leadership,
+    }
+}
+
+fn queue_job(
+    colony: &mut ColonyRuntime,
+    now_ms: i64,
+    kind: JobKind,
+    assigned_cat: Option<CatId>,
+    metadata: JobMetadata,
+) {
+    let specialization = assigned_cat
+        .as_ref()
+        .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == *cat_id))
+        .and_then(|cat| cat.specialization);
+    let duration_seconds = idle_engine::get_scaled_duration_seconds(
+        kind,
+        specialization,
+        idle_engine_upgrade_levels(&colony.upgrade_levels),
+        Some(colony.test_time_scale),
+    );
+    let duration_ms = (duration_seconds * 1000.0) as i64;
+
+    if let Some(cat_id) = assigned_cat.as_deref() {
+        for building in &mut colony.buildings {
+            if building.assigned_cat.as_deref() == Some(cat_id)
+                && matches!(
+                    building.building_type,
+                    BuildingType::Workshop | BuildingType::Smithy
+                )
+            {
+                building.assigned_cat = None;
+            }
+        }
+        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+            cat.current_task = task_for_job(kind);
+            cat.activity = CatActivity::Idle;
+            cat.destination = None;
+        }
+    }
+
+    colony.jobs.push(JobRuntime {
+        id: format!("job-{}-{}", now_ms, colony.jobs.len() + 1),
+        kind,
+        status: JobStatus::Queued,
+        requested_by: JobRequester::Leader,
+        assigned_cat,
+        duration_ms,
+        speed: 1.0,
+        yield_amount: 1.0,
+        click_count: 0,
+        created_at: now_ms,
+        started_at: Some(now_ms),
+        ends_at: Some(now_ms + duration_ms),
+        completed_at: None,
+        metadata,
+    });
+    append_event(
+        colony,
+        now_ms,
+        EventKind::JobQueued,
+        format!("Queued {}", kind.as_str().replace('_', " ")),
+    );
+}
+
+fn task_for_job(kind: JobKind) -> Option<TaskType> {
+    match kind {
+        JobKind::HuntExpedition | JobKind::LeaderPlanHunt => Some(TaskType::Hunt),
+        JobKind::FetchWater => Some(TaskType::FetchWater),
+        JobKind::Quarry | JobKind::BuildHouse | JobKind::LeaderPlanHouse => Some(TaskType::Build),
+        JobKind::Explore | JobKind::ExpandVillage => Some(TaskType::Explore),
+        JobKind::TrainWarrior => Some(TaskType::Patrol),
+        JobKind::Ritual => Some(TaskType::Rest),
+        JobKind::SupplyFood | JobKind::SupplyWater => None,
+    }
+}
+
+fn cat_brief(cat: &Cat) -> CatBrief {
+    CatBrief {
+        id: cat.id.clone(),
+        specialization: cat.specialization,
+        stats: CatBriefStats {
+            hunting: cat.stats.hunting,
+            building: cat.stats.building,
+            vision: cat.stats.vision,
+            medicine: cat.stats.medicine,
+            attack: cat.stats.attack,
+            defense: cat.stats.defense,
+            leadership: cat.stats.leadership,
+        },
+    }
+}
+
+fn buildings_needing_workers(
+    colony: &ColonyRuntime,
+    building_type: BuildingType,
+) -> Vec<BuildingId> {
+    colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.building_type == building_type
+                && building.construction_progress >= 100
+                && building.assigned_cat.is_none()
+        })
+        .map(|building| building.id.clone())
+        .collect()
+}
+
+fn staff_building(colony: &mut ColonyRuntime, building_id: &str, cat_id: &str, now_ms: i64) {
+    if let Some(building) = colony
+        .buildings
+        .iter_mut()
+        .find(|building| building.id == building_id)
+    {
+        building.assigned_cat = Some(cat_id.to_owned());
+    }
+    append_event(
+        colony,
+        now_ms,
+        EventKind::Other("worker_assigned".to_owned()),
+        "The leader assigned a worker.",
+    );
+}
+
+fn cancel_jobs(
+    colony: &mut ColonyRuntime,
+    now_ms: i64,
+    kind: JobKind,
+    return_to_shrine: bool,
+) -> usize {
+    let mut assigned = Vec::new();
+    let mut cancelled = 0;
+    for job in &mut colony.jobs {
+        if job.kind == kind && job.status == JobStatus::Active {
+            job.status = JobStatus::Cancelled;
+            job.completed_at = Some(now_ms);
+            if let Some(cat_id) = &job.assigned_cat {
+                assigned.push(cat_id.clone());
+            }
+            cancelled += 1;
+        }
+    }
+
+    for cat_id in assigned {
+        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+            cat.current_task = None;
+            if return_to_shrine {
+                cat.activity = CatActivity::Returning;
+                cat.destination = Some(Position {
+                    map: crate::entities::MapType::World,
+                    x: 0.0,
+                    y: 0.0,
+                });
+            } else {
+                cat.activity = CatActivity::Idle;
+            }
+        }
+    }
+
+    cancelled
+}
+
+fn has_complete_building(colony: &ColonyRuntime, building_type: BuildingType) -> bool {
+    colony.buildings.iter().any(|building| {
+        building.building_type == building_type && building.construction_progress >= 100
+    })
+}
+
+fn has_quarry_site(colony: &ColonyRuntime) -> bool {
+    colony.world_tiles.values().any(|tile| {
+        matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
+            && tile.path_wear > 62
+    })
+}
+
+fn has_water_site(colony: &ColonyRuntime) -> bool {
+    colony
+        .world_tiles
+        .values()
+        .any(|tile| tile.resources.water > 0 && tile.path_wear > 62)
+}
+
+fn has_frontier(colony: &ColonyRuntime) -> bool {
+    colony.world_tiles.values().any(|tile| tile.path_wear <= 62)
 }
 
 fn is_open_leadership_election(election: &ElectionRuntime) -> bool {
@@ -1169,10 +1882,90 @@ mod tests {
         assert_eq!(colony.resources.herbs, 16.0);
         assert_eq!(colony.status, ColonyStatus::Thriving);
         assert_eq!(colony.last_tick, 61_000);
-        assert_eq!(colony.test_rng_seed, Some(71_072_467));
+        assert_eq!(colony.test_rng_seed, Some(2_332_836_374));
         let expected_age: f64 = 24.0 + 60.0 / 3600.0;
         assert_eq!(colony.cats[0].age_hours.to_bits(), expected_age.to_bits());
         assert_eq!(colony.cats[0].death_time, None);
+    }
+
+    #[test]
+    fn leader_assigns_water_fetchers_over_hunts_when_water_projection_is_worse() {
+        let mut cats = vec![
+            adult_idle_cat("leader", "colony-1"),
+            adult_idle_cat("hunter", "colony-1"),
+            adult_idle_cat("builder", "colony-1"),
+        ];
+        cats[0].stats.leadership = 80.0;
+        cats[1].stats.hunting = 90.0;
+        cats[2].stats.building = 80.0;
+
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                name: "MossClan".to_owned(),
+                leader_id: Some("leader".to_owned()),
+                resources: Resources {
+                    food: 30.0,
+                    water: 1.0,
+                    herbs: 16.0,
+                    materials: 24.0,
+                    refined: 0.0,
+                    weapons: 0.0,
+                    armor: 0.0,
+                    blessings: 0.0,
+                },
+                cats,
+                buildings: vec![BuildingRuntime {
+                    id: "shrine".to_owned(),
+                    building_type: BuildingType::Shrine,
+                    level: 1,
+                    position: pos(0, 0),
+                    is_complete: true,
+                    construction_progress: 100,
+                    production_progress: 0.0,
+                    assigned_cat: None,
+                }],
+                world_tiles: BTreeMap::from([(
+                    pos(3, 0),
+                    WorldTileRuntime {
+                        pos: pos(3, 0),
+                        tile_type: TileType::River,
+                        resources: TileResources {
+                            food: 0,
+                            herbs: 0,
+                            water: 100,
+                        },
+                        max_resources: MaxResources { food: 0, herbs: 0 },
+                        danger_level: 0.0,
+                        path_wear: 63,
+                        last_depleted: 0,
+                        overlay_feature: None,
+                    },
+                )]),
+                last_tick: 1_000,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let _ = world_tick(&mut world, 61_000);
+
+        let colony = &world.colonies[0];
+        let water_jobs = colony
+            .jobs
+            .iter()
+            .filter(|job| job.kind == JobKind::FetchWater)
+            .collect::<Vec<_>>();
+        assert_eq!(water_jobs.len(), 3);
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .all(|job| job.kind != JobKind::HuntExpedition)
+        );
+        assert_eq!(water_jobs[0].assigned_cat.as_deref(), Some("hunter"));
+        assert_eq!(colony.cats[1].current_task, Some(TaskType::FetchWater));
     }
 
     #[test]
