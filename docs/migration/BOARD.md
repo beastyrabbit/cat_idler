@@ -75,3 +75,70 @@ LCG ported from `lib/game/seededRng.ts`.
 acceptance: `cargo nextest run -p cat-sim` compiles and fails because RNG functions
 are still unimplemented.
 notes: TS source `lib/game/seededRng.ts`; TS tests `tests/unit/game/seededRng.test.ts`.
+
+### P1.2 Core enum taxonomy   [status: done]
+persona: test-engineer -> developer -> qa            depends_on: [P1.1]        parallel_group: P1-foundation
+scope: Port the closed string-literal enums from `types/game.ts` into one
+`cat-sim` type module: `LifeStage`, `BuildingType`, `TileType`, `TaskType`,
+`EnemyType`, `JobKind`, `JobStatus`, `CatSpecialization`, `UpgradeKey`, and
+`PolicyTier`.
+acceptance: Add table-driven Rust tests proving every TS literal is represented
+exactly once and round-trips through the chosen Rust string conversion API; then
+`cargo nextest run -p cat-sim`, `cargo clippy -p cat-sim --all-targets -- -D warnings`,
+and `cargo fmt` pass.
+notes: TS source `types/game.ts`; parity criterion is exact variant coverage and
+exact snake-case/wire-string spelling from the TS union definitions.
+
+### P1.3 Core cat/colony state fields   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P1.2]        parallel_group: P1-after-types
+scope: Add the minimal `cat-sim` state structs/value objects needed by later sim
+modules, porting `Resources`, `CatStats`, `CatNeeds`, `Position`, `Colony`, `Cat`,
+and carrying/activity support from `types/game.ts` plus schema-only fields in
+`db/schema.ts`: `worldSeed`, `threatPressure`, `destination`, `carrying`,
+`activity`, `ageHours`, `pregnancyDueAgeHours`, and `pregnancyMateId`.
+acceptance: Add Rust tests that construct a colony and cat with every schema-only
+field present and verify TS-compatible defaults/optionality for legacy rows:
+`worldSeed` absent, `threatPressure` read as `0`, `destination`/`carrying` absent,
+`activity` as `idle`, `ageHours` as `0`, and pregnancy extension fields absent
+unless pregnant; then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS sources `types/game.ts`, `db/schema.ts`; this is state shape only, with
+no SQLite/persistence implementation and no shrine deposit behavior.
+
+### P1.4 Needs, life-stage, and leader constants   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P1.2]        parallel_group: P1-after-types
+scope: Port the small scalar/range constant tables from `types/game.ts` into
+`cat-sim`: `NEEDS_DECAY_RATES`, `NEEDS_RESTORE_AMOUNTS`, `LIFE_STAGE_HOURS`, and
+`LEADER_QUALITY`.
+acceptance: Add Rust unit tests with literal parity vectors for every table entry,
+including `elder` ending at infinity and each leader tier's min/max/time/wrong
+chance; then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `types/game.ts`; parity criterion is exact numeric values and
+range boundaries.
+
+### P1.5 Combat, building, and task mapping constants   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P1.2]        parallel_group: P1-after-types
+scope: Port the enum-keyed constant tables from `types/game.ts` into `cat-sim`:
+`ENEMY_STATS`, `BUILDING_COSTS`, and `TASK_TO_SKILL`.
+acceptance: Add Rust unit tests with literal parity vectors for every enemy click
+cost/damage range, every building material cost, and every task-to-stat mapping;
+tests must also fail if a future enum variant lacks a table entry; then
+`cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `types/game.ts`; parity criterion is exact table coverage and
+exact numeric/string mapping values, including `shrine: 0` and `rest: defense`.
+
+### P1.6 Test acceleration presets   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P1.1]        parallel_group: P1-foundation
+scope: Port `lib/game/testAcceleration.ts` into a small `cat-sim` module covering
+the `off`, `fast`, `turbo`, `hyper`, and `ludicrous` presets plus
+`presetFromTimeScale`.
+acceptance: Add Rust tests mirroring `tests/unit/game/testAcceleration.test.ts`
+and extending coverage to `hyper`, `ludicrous`, `null`/missing-equivalent input,
+scale `100`, scale `10_000`, and the `120 <= scale < 10_000 && scale != 100`
+turbo rule; then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS sources `lib/game/testAcceleration.ts`,
+`tests/unit/game/testAcceleration.test.ts`; parity criterion is exact config
+values and branch ordering from the TS implementation.
