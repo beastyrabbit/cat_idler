@@ -1,0 +1,229 @@
+//! Combat, building, and task-skill constants ported from `types/game.ts`.
+
+use crate::types::{BuildingType, EnemyType, TaskType};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnemyStats {
+    pub base_clicks: u32,
+    pub damage: (u32, u32),
+}
+
+pub const ENEMY_STATS: [(EnemyType, EnemyStats); 5] = [
+    (
+        EnemyType::Fox,
+        EnemyStats {
+            base_clicks: 20,
+            damage: (30, 50),
+        },
+    ),
+    (
+        EnemyType::Hawk,
+        EnemyStats {
+            base_clicks: 15,
+            damage: (20, 40),
+        },
+    ),
+    (
+        EnemyType::Badger,
+        EnemyStats {
+            base_clicks: 40,
+            damage: (40, 60),
+        },
+    ),
+    (
+        EnemyType::Bear,
+        EnemyStats {
+            base_clicks: 75,
+            damage: (50, 70),
+        },
+    ),
+    (
+        EnemyType::RivalCat,
+        EnemyStats {
+            base_clicks: 30,
+            damage: (30, 50),
+        },
+    ),
+];
+
+pub const BUILDING_COSTS: [(BuildingType, u32); 14] = [
+    (BuildingType::Den, 0),
+    (BuildingType::FoodStorage, 5),
+    (BuildingType::WaterBowl, 3),
+    (BuildingType::Beds, 8),
+    (BuildingType::HerbGarden, 10),
+    (BuildingType::Nursery, 12),
+    (BuildingType::ElderCorner, 10),
+    (BuildingType::Walls, 15),
+    (BuildingType::MouseFarm, 25),
+    (BuildingType::Shrine, 0),
+    (BuildingType::Workshop, 20),
+    (BuildingType::Field, 15),
+    (BuildingType::Smithy, 30),
+    (BuildingType::Barracks, 30),
+];
+
+pub const TASK_TO_SKILL: [(TaskType, &str); 12] = [
+    (TaskType::Hunt, "hunting"),
+    (TaskType::GatherHerbs, "medicine"),
+    (TaskType::FetchWater, "hunting"),
+    (TaskType::Clean, "cleaning"),
+    (TaskType::Build, "building"),
+    (TaskType::Guard, "defense"),
+    (TaskType::Heal, "medicine"),
+    (TaskType::Kitsit, "leadership"),
+    (TaskType::Explore, "vision"),
+    (TaskType::Patrol, "attack"),
+    (TaskType::Teach, "leadership"),
+    (TaskType::Rest, "defense"),
+];
+
+#[must_use]
+pub fn enemy_stats(enemy_type: EnemyType) -> EnemyStats {
+    ENEMY_STATS
+        .iter()
+        .find_map(|(key, stats)| (*key == enemy_type).then_some(*stats))
+        .expect("ENEMY_STATS covers every EnemyType variant")
+}
+
+#[must_use]
+pub fn building_cost(building_type: BuildingType) -> u32 {
+    BUILDING_COSTS
+        .iter()
+        .find_map(|(key, cost)| (*key == building_type).then_some(*cost))
+        .expect("BUILDING_COSTS covers every BuildingType variant")
+}
+
+#[must_use]
+pub fn task_skill(task_type: TaskType) -> &'static str {
+    TASK_TO_SKILL
+        .iter()
+        .find_map(|(key, skill)| (*key == task_type).then_some(*skill))
+        .expect("TASK_TO_SKILL covers every TaskType variant")
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::types::{BuildingType, EnemyType, TaskType};
+
+    use super::{
+        BUILDING_COSTS, ENEMY_STATS, TASK_TO_SKILL, building_cost, enemy_stats, task_skill,
+    };
+
+    #[test]
+    fn enemy_stats_match_typescript_record_for_every_enemy_type() {
+        let expected = [
+            (EnemyType::Fox, 20, (30, 50)),
+            (EnemyType::Hawk, 15, (20, 40)),
+            (EnemyType::Badger, 40, (40, 60)),
+            (EnemyType::Bear, 75, (50, 70)),
+            (EnemyType::RivalCat, 30, (30, 50)),
+        ];
+
+        assert_eq!(ENEMY_STATS.len(), EnemyType::ALL.len());
+        assert_eq!(expected.len(), EnemyType::ALL.len());
+
+        for enemy_type in EnemyType::ALL {
+            let entries: Vec<_> = ENEMY_STATS
+                .iter()
+                .filter(|(key, _)| key == enemy_type)
+                .collect();
+            assert_eq!(
+                entries.len(),
+                1,
+                "{enemy_type:?} must have exactly one entry"
+            );
+
+            let expected_entry = expected
+                .iter()
+                .find(|(key, _, _)| key == enemy_type)
+                .expect("expected TS fixture covers enum variant");
+            let actual = entries[0].1;
+            assert_eq!(actual.base_clicks, expected_entry.1);
+            assert_eq!(actual.damage, expected_entry.2);
+            assert_eq!(enemy_stats(*enemy_type), actual);
+        }
+    }
+
+    #[test]
+    fn building_costs_match_typescript_record_for_every_building_type() {
+        let expected = [
+            (BuildingType::Den, 0),
+            (BuildingType::FoodStorage, 5),
+            (BuildingType::WaterBowl, 3),
+            (BuildingType::Beds, 8),
+            (BuildingType::HerbGarden, 10),
+            (BuildingType::Nursery, 12),
+            (BuildingType::ElderCorner, 10),
+            (BuildingType::Walls, 15),
+            (BuildingType::MouseFarm, 25),
+            (BuildingType::Shrine, 0),
+            (BuildingType::Workshop, 20),
+            (BuildingType::Field, 15),
+            (BuildingType::Smithy, 30),
+            (BuildingType::Barracks, 30),
+        ];
+
+        assert_eq!(BUILDING_COSTS.len(), BuildingType::ALL.len());
+        assert_eq!(expected.len(), BuildingType::ALL.len());
+
+        for building_type in BuildingType::ALL {
+            let entries: Vec<_> = BUILDING_COSTS
+                .iter()
+                .filter(|(key, _)| key == building_type)
+                .collect();
+            assert_eq!(
+                entries.len(),
+                1,
+                "{building_type:?} must have exactly one entry"
+            );
+
+            let expected_entry = expected
+                .iter()
+                .find(|(key, _)| key == building_type)
+                .expect("expected TS fixture covers enum variant");
+            assert_eq!(entries[0].1, expected_entry.1);
+            assert_eq!(building_cost(*building_type), expected_entry.1);
+        }
+    }
+
+    #[test]
+    fn task_to_skill_matches_typescript_record_for_every_task_type() {
+        let expected = [
+            (TaskType::Hunt, "hunting"),
+            (TaskType::GatherHerbs, "medicine"),
+            (TaskType::FetchWater, "hunting"),
+            (TaskType::Clean, "cleaning"),
+            (TaskType::Build, "building"),
+            (TaskType::Guard, "defense"),
+            (TaskType::Heal, "medicine"),
+            (TaskType::Kitsit, "leadership"),
+            (TaskType::Explore, "vision"),
+            (TaskType::Patrol, "attack"),
+            (TaskType::Teach, "leadership"),
+            (TaskType::Rest, "defense"),
+        ];
+
+        assert_eq!(TASK_TO_SKILL.len(), TaskType::ALL.len());
+        assert_eq!(expected.len(), TaskType::ALL.len());
+
+        for task_type in TaskType::ALL {
+            let entries: Vec<_> = TASK_TO_SKILL
+                .iter()
+                .filter(|(key, _)| key == task_type)
+                .collect();
+            assert_eq!(
+                entries.len(),
+                1,
+                "{task_type:?} must have exactly one entry"
+            );
+
+            let expected_entry = expected
+                .iter()
+                .find(|(key, _)| key == task_type)
+                .expect("expected TS fixture covers enum variant");
+            assert_eq!(entries[0].1, expected_entry.1);
+            assert_eq!(task_skill(*task_type), expected_entry.1);
+        }
+    }
+}

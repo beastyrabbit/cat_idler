@@ -1,17 +1,16 @@
+//! `cat-sim` — the pure, render-free, I/O-free multi-colony simulation core.
+//!
+//! Ported from the TypeScript `lib/game/*` modules and `server/game.ts:workerTick`.
+//! No rendering, networking, filesystem, clock, or `rand`; all randomness flows
+//! through [`rng`]. See `AGENTS.md` and the migration plan for the rules.
+
+#![forbid(unsafe_code)]
+
 pub mod rng;
 pub mod types;
 
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+// P1 foundation modules (filled by the P1.3–P1.6 cards).
+pub mod cost_constants;
+pub mod entities;
+pub mod needs_constants;
+pub mod test_acceleration;

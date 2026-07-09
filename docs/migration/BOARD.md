@@ -24,7 +24,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | Phase | Title | Status |
 |-------|-------|--------|
 | P0 | Foundation & safety | done |
-| P1 | Sim foundation (rng, types, test-accel) | in progress |
+| P1 | Sim foundation (rng, types, test-accel) | done |
 | P2 | World generation | pending |
 | P3 | Cat AI (pathfinding, movement, leader director) | pending |
 | P4 | Life sim | pending |
@@ -43,12 +43,12 @@ codex, plus a Claude review for high-value slices) signs off.
 ### P0.2 Archive web game → `archive/web-game` + tag `web-final`   [status: done]
 ### P0.3 Close godot + love2d worktrees   [status: done]
 ### P0.4 Scaffold Cargo workspace (6 crates) + salvage spike   [status: done]
-### P0.5 Rust toolchain + lefthook + this board   [status: dev]
+### P0.5 Rust toolchain + lefthook + this board   [status: done]
 persona: orchestrator
 scope: install cargo-nextest + cargo-llvm-cov; add glob-scoped Rust lefthook
 steps (fmt on pre-commit; clippy + nextest on pre-push); write this board;
 refresh the stale bevy README.
-### P0.6 Stand up codex persona org   [status: todo]
+### P0.6 Stand up codex persona org   [status: done]
 persona: orchestrator
 scope: `codex/personas/*.md`, per-persona codex profiles, repo `AGENTS.md`, MCP
 wired into codex, one end-to-end smoke card.
@@ -89,7 +89,7 @@ and `cargo fmt` pass.
 notes: TS source `types/game.ts`; parity criterion is exact variant coverage and
 exact snake-case/wire-string spelling from the TS union definitions.
 
-### P1.3 Core cat/colony state fields   [status: todo]
+### P1.3 Core cat/colony state fields   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P1.2]        parallel_group: P1-after-types
 scope: Add the minimal `cat-sim` state structs/value objects needed by later sim
 modules, porting `Resources`, `CatStats`, `CatNeeds`, `Position`, `Colony`, `Cat`,
@@ -105,7 +105,7 @@ unless pregnant; then `cargo nextest run -p cat-sim`,
 notes: TS sources `types/game.ts`, `db/schema.ts`; this is state shape only, with
 no SQLite/persistence implementation and no shrine deposit behavior.
 
-### P1.4 Needs, life-stage, and leader constants   [status: todo]
+### P1.4 Needs, life-stage, and leader constants   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P1.2]        parallel_group: P1-after-types
 scope: Port the small scalar/range constant tables from `types/game.ts` into
 `cat-sim`: `NEEDS_DECAY_RATES`, `NEEDS_RESTORE_AMOUNTS`, `LIFE_STAGE_HOURS`, and
@@ -117,7 +117,7 @@ chance; then `cargo nextest run -p cat-sim`,
 notes: TS source `types/game.ts`; parity criterion is exact numeric values and
 range boundaries.
 
-### P1.5 Combat, building, and task mapping constants   [status: todo]
+### P1.5 Combat, building, and task mapping constants   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P1.2]        parallel_group: P1-after-types
 scope: Port the enum-keyed constant tables from `types/game.ts` into `cat-sim`:
 `ENEMY_STATS`, `BUILDING_COSTS`, and `TASK_TO_SKILL`.
@@ -129,7 +129,7 @@ tests must also fail if a future enum variant lacks a table entry; then
 notes: TS source `types/game.ts`; parity criterion is exact table coverage and
 exact numeric/string mapping values, including `shrine: 0` and `rest: defense`.
 
-### P1.6 Test acceleration presets   [status: todo]
+### P1.6 Test acceleration presets   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P1.1]        parallel_group: P1-foundation
 scope: Port `lib/game/testAcceleration.ts` into a small `cat-sim` module covering
 the `off`, `fast`, `turbo`, `hyper`, and `ludicrous` presets plus
