@@ -1520,6 +1520,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "cat-protocol",
+ "cat-sim",
  "ewebsock",
  "serde_json",
 ]
