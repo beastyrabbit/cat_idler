@@ -492,3 +492,15 @@ types/game.ts BuildingType union omits them; TS uses string compares. Rust Build
 (strict enum, 14 variants) can't represent them -> research-hut/school staffing inert in
 world_tick P7.5. Fix: add ResearchHut/School variants + non-purchasable BUILDING_COSTS
 entries (adjust the exhaustive test). Low priority (secondary research economy).
+
+## P8 — Protocol + server (+ multi-village founding) (decomposed by orchestrator)
+### P8.1 cat-protocol wire types   [status: todo]
+persona: developer   scope: crates/cat-protocol: WorldSnapshot (multi-colony generalization of getGlobalDashboard payload) + per-colony ColonySnapshot (resources+caps, leader, cats, jobs, upgrades, events, housing, research, election, voteKick, zones, threat, raiders, buildings, storage, claimedTiles, gate, villageRadius, anchor, worldSeed, onlineCount) + ClientAction enum (~19 actions from actions/route.ts + foundVillage/joinVillage). serde, round-trip tests.
+### P8.2 apply_action (pure) in cat-sim   [status: todo]
+persona: developer   depends_on:[P8.1]   scope: cat-sim: apply a ClientAction to WorldState/ColonyRuntime (requestJob, boost, purchaseUpgrade, castVote, requestVoteKick, create/removeZone, planBuilding, unlockNode, assignWorker, trainWarrior, defendRaid, buildRoad, test controls, foundVillage->found_colony). Pure; validation + soft-fail results. Snapshot builder WorldState->WorldSnapshot.
+### P8.3 cat-server tick loop + transport   [status: todo]
+persona: developer   depends_on:[P8.2]   scope: crates/cat-server: tokio loop running world_tick each 1s; WebSocket (axum or tokio-tungstenite) broadcasting WorldSnapshot + receiving ClientAction; presence/online tracking.
+### P8.4 cat-server persistence + identity   [status: todo]
+persona: developer   depends_on:[P8.3]   scope: SQLite (rusqlite) save/load WorldState (mirror db/schema tables); identity/HMAC session sig; rate-limit (30 actions/10s). Migrations on open.
+### P8.gate P8 integration   [status: todo]
+persona: qa/orchestrator   scope: server boots, ticks, a client connects, founds a village, submits actions, receives snapshots; persistence round-trips.
