@@ -27,7 +27,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P1 | Sim foundation (rng, types, test-accel) | done |
 | P2 | World generation | done |
 | P3 | Cat AI (pathfinding, movement, leader director) | done |
-| P4 | Life sim | pending |
+| P4 | Life sim | in progress |
 | P5 | Economy + housing + roads | pending |
 | P6 | Military + governance + upgrade tree | pending |
 | P7 | Master loop (`world_tick`, multi-colony) | pending |
@@ -405,3 +405,25 @@ acceptance: decision-table parity (return->eat<30->drink<40->sleep<20).
 ### P3.10 P3 parity QA gate   [status: done (orchestrator gate: fixture-backed exact-output parity, tie-break logic spot-verified, 125 tests deterministic; codex QA timed out at xhigh even focused)]
 persona: qa (orchestrator gate if xhigh times out)        depends_on: [P3.3,P3.4,P3.5,P3.6,P3.7,P3.8,P3.9]
 scope: determinism, no orphan fixtures, JS-trap audit across the cat-AI modules.
+
+## P4 — Life sim (decomposed by orchestrator)
+### P4.1 Needs   [status: qa]
+persona: developer -> qa   depends_on: []   parallel_group: P4a
+scope: Port lib/game/needs.ts -> crates/cat-sim/src/needs.rs (decay/restore/damage/critical helpers). Fixture-backed.
+### P4.2 Age   [status: qa]
+persona: developer -> qa   depends_on: []   parallel_group: P4a
+scope: Port lib/game/age.ts -> crates/cat-sim/src/age.rs (getAgeInHours, getLifeStage, getDeathChance, getAgeSkillModifier, canPerformTask; shouldDieOfOldAge uses Math.random -> injected roll). Fixture-backed.
+### P4.3 Breeding   [status: qa]
+persona: developer -> qa   depends_on: []   parallel_group: P4a
+scope: Port lib/game/breeding.ts -> crates/cat-sim/src/breeding.rs (calculateFertilityBonus cap .5, calculateBreedingChance cap .8).
+### P4.6 Genetics   [status: qa]
+persona: developer -> qa   depends_on: []   parallel_group: P4a
+scope: Port lib/game/genetics.ts -> crates/cat-sim/src/genetics.rs (sprite-trait inheritance, traitsToSpriteParams). Math.random throughout -> injected rolls; document. Cosmetic but affects breeding output.
+### P4.4 Survival   [status: todo]
+persona: developer -> qa   depends_on: [P4.1]   parallel_group: P4b
+scope: Port lib/game/survival.ts -> crates/cat-sim/src/survival.rs (applySurvivalTick: 10-min unit normalization, availability-driven decay, damage, death; policy multipliers).
+### P4.5 Life simulation   [status: todo]
+persona: developer -> qa   depends_on: [P4.1,P4.2,P4.3]   parallel_group: P4b
+scope: Port lib/game/lifeSim.ts -> crates/cat-sim/src/life_sim.rs (stageWorkEffectiveness, canWork, workforceWeight, oldAgeDeathProbability, breeding gates+constants, colonyCanBreed, conceptionProbability, inheritStats 60/40+-8 deterministic, trade curves, leadershipAfterTenure). Fixture-backed.
+### P4.7 P4 QA gate   [status: todo]
+persona: qa (orchestrator gate if timeout)   depends_on: [P4.1,P4.2,P4.3,P4.4,P4.5,P4.6]

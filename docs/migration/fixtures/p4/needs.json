@@ -1,0 +1,2308 @@
+{
+	"source": "lib/game/needs.ts",
+	"constants": {
+		"decayRates": {
+			"hunger": 5,
+			"thirst": 3,
+			"rest": 2
+		},
+		"restoreAmounts": {
+			"eating": 30,
+			"drinking": 40,
+			"sleeping": 20,
+			"sleepingWithBeds": 30
+		}
+	},
+	"counts": {
+		"decay": 24,
+		"restore": 36,
+		"damage": 5,
+		"damageOverTime": 25,
+		"critical": 20,
+		"dead": 4,
+		"total": 114
+	},
+	"decay": [
+		{
+			"name": "full @ 0",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"tickCount": 0,
+			"expected": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636737291354636288",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full @ 0.5",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"tickCount": 0.5,
+			"expected": {
+				"hunger": 97.5,
+				"thirst": 98.5,
+				"rest": 99,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636561369494192128",
+				"thirst": "4636631738238369792",
+				"rest": "4636666922610458624",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full @ 1",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"tickCount": 1,
+			"expected": {
+				"hunger": 95,
+				"thirst": 97,
+				"rest": 98,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636385447633747968",
+				"thirst": "4636526185122103296",
+				"rest": "4636596553866280960",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full @ 2.75",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"tickCount": 2.75,
+			"expected": {
+				"hunger": 86.25,
+				"thirst": 91.75,
+				"rest": 94.5,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4635769721122193408",
+				"thirst": "4636156749215170560",
+				"rest": "4636350263261659136",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full @ 40",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"tickCount": 40,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 20,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "4626322717216342016",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full @ -1",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"tickCount": -1,
+			"expected": {
+				"hunger": 105,
+				"thirst": 103,
+				"rest": 102,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4637089135075524608",
+				"thirst": "4636948397587169280",
+				"rest": "4636878028842991616",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "partial @ 0",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"tickCount": 0,
+			"expected": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4631178160564600832",
+				"thirst": "4625548661030387712",
+				"rest": "4615063718147915776",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial @ 0.5",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"tickCount": 0.5,
+			"expected": {
+				"hunger": 40,
+				"thirst": 15.75,
+				"rest": 2.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4630826316843712512",
+				"thirst": "4625056079821144064",
+				"rest": "4612811918334230528",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial @ 1",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"tickCount": 1,
+			"expected": {
+				"hunger": 37.5,
+				"thirst": 14.25,
+				"rest": 1.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4630474473122824192",
+				"thirst": "4624211654891012096",
+				"rest": "4609434218613702656",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial @ 2.75",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"tickCount": 2.75,
+			"expected": {
+				"hunger": 28.75,
+				"thirst": 9,
+				"rest": 0,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4628785623262560256",
+				"thirst": "4621256167635550208",
+				"rest": "0",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial @ 40",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"tickCount": 40,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "0",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial @ -1",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"tickCount": -1,
+			"expected": {
+				"hunger": 47.5,
+				"thirst": 20.25,
+				"rest": 5.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4631881848006377472",
+				"thirst": "4626393085960519680",
+				"rest": "4617878467915022336",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "zeros @ 0",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"tickCount": 0,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros @ 0.5",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"tickCount": 0.5,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros @ 1",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"tickCount": 1,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros @ 2.75",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"tickCount": 2.75,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros @ 40",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"tickCount": 40,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros @ -1",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"tickCount": -1,
+			"expected": {
+				"hunger": 5,
+				"thirst": 3,
+				"rest": 2,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "4617315517961601024",
+				"thirst": "4613937818241073152",
+				"rest": "4611686018427387904",
+				"health": "0"
+			}
+		},
+		{
+			"name": "critical-boundaries @ 0",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"tickCount": 0,
+			"expected": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4624633304406124659",
+				"thirst": "4624633867356078080",
+				"rest": "4624634430306031501",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries @ 0.5",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"tickCount": 0.5,
+			"expected": {
+				"hunger": 12.499,
+				"thirst": 13.5,
+				"rest": 14.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4623225929522571379",
+				"thirst": "4623789442425946112",
+				"rest": "4624071480352610189",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries @ 1",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"tickCount": 1,
+			"expected": {
+				"hunger": 9.999,
+				"thirst": 12,
+				"rest": 13.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4621818554639018099",
+				"thirst": "4622945017495814144",
+				"rest": "4623508530399188877",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries @ 2.75",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"tickCount": 2.75,
+			"expected": {
+				"hunger": 1.2490000000000006,
+				"thirst": 6.75,
+				"rest": 9.501,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4608303815107232664",
+				"thirst": "4619285842798575616",
+				"rest": "4621538205562214285",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries @ 40",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"tickCount": 40,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "0",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries @ -1",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"tickCount": -1,
+			"expected": {
+				"hunger": 19.999000000000002,
+				"thirst": 18,
+				"rest": 17.000999999999998,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4626322435741365306",
+				"thirst": "4625759767262920704",
+				"rest": "4625478573761186758",
+				"health": "4562254508917369340"
+			}
+		}
+	],
+	"restore": [
+		{
+			"name": "full restore hunger default",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expected": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636737291354636288",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full restore hunger custom",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"amount": 12.5,
+			"expected": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636737291354636288",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full restore hunger negative",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"amount": -150,
+			"expected": {
+				"hunger": -50,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "13855605728582041600",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full restore thirst default",
+			"kind": "thirst",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expected": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636737291354636288",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full restore thirst custom",
+			"kind": "thirst",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"amount": 7.25,
+			"expected": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636737291354636288",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full restore rest no beds",
+			"kind": "rest",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"amount": 20,
+			"hasBeds": false,
+			"expected": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636737291354636288",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full restore rest beds ignore amount",
+			"kind": "rest",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"amount": 99,
+			"hasBeds": true,
+			"expected": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636737291354636288",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full restore health custom",
+			"kind": "health",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"amount": 6.5,
+			"expected": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expectedBits": {
+				"hunger": "4636737291354636288",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "4636737291354636288"
+			}
+		},
+		{
+			"name": "full restore health negative",
+			"kind": "health",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"amount": -200,
+			"expected": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": -100
+			},
+			"expectedBits": {
+				"hunger": "4636737291354636288",
+				"thirst": "4636737291354636288",
+				"rest": "4636737291354636288",
+				"health": "13860109328209412096"
+			}
+		},
+		{
+			"name": "partial restore hunger default",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"expected": {
+				"hunger": 72.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4634802150889750528",
+				"thirst": "4625548661030387712",
+				"rest": "4615063718147915776",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial restore hunger custom",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"amount": 12.5,
+			"expected": {
+				"hunger": 55,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4632937379169042432",
+				"thirst": "4625548661030387712",
+				"rest": "4615063718147915776",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial restore hunger negative",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"amount": -150,
+			"expected": {
+				"hunger": -107.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "13860637093790744576",
+				"thirst": "4625548661030387712",
+				"rest": "4615063718147915776",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial restore thirst default",
+			"kind": "thirst",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"expected": {
+				"hunger": 42.5,
+				"thirst": 57.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4631178160564600832",
+				"thirst": "4633254038517841920",
+				"rest": "4615063718147915776",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial restore thirst custom",
+			"kind": "thirst",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"amount": 7.25,
+			"expected": {
+				"hunger": 42.5,
+				"thirst": 24.5,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4631178160564600832",
+				"thirst": "4627589354611539968",
+				"rest": "4615063718147915776",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial restore rest no beds",
+			"kind": "rest",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"amount": 20,
+			"hasBeds": false,
+			"expected": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 23.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4631178160564600832",
+				"thirst": "4625548661030387712",
+				"rest": "4627307879634829312",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial restore rest beds ignore amount",
+			"kind": "rest",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"amount": 99,
+			"hasBeds": true,
+			"expected": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 33.5,
+				"health": 88.75
+			},
+			"expectedBits": {
+				"hunger": "4631178160564600832",
+				"thirst": "4625548661030387712",
+				"rest": "4629911523169402880",
+				"health": "4635945642982637568"
+			}
+		},
+		{
+			"name": "partial restore health custom",
+			"kind": "health",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"amount": 6.5,
+			"expected": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 95.25
+			},
+			"expectedBits": {
+				"hunger": "4631178160564600832",
+				"thirst": "4625548661030387712",
+				"rest": "4615063718147915776",
+				"health": "4636403039819792384"
+			}
+		},
+		{
+			"name": "partial restore health negative",
+			"kind": "health",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"amount": -200,
+			"expected": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": -111.25
+			},
+			"expectedBits": {
+				"hunger": "4631178160564600832",
+				"thirst": "4625548661030387712",
+				"rest": "4615063718147915776",
+				"health": "13860900976581410816"
+			}
+		},
+		{
+			"name": "zeros restore hunger default",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expected": {
+				"hunger": 30,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "4629137466983448576",
+				"thirst": "0",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros restore hunger custom",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"amount": 12.5,
+			"expected": {
+				"hunger": 12.5,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "4623226492472524800",
+				"thirst": "0",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros restore hunger negative",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"amount": -150,
+			"expected": {
+				"hunger": -150,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "13862853709232340992",
+				"thirst": "0",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros restore thirst default",
+			"kind": "thirst",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expected": {
+				"hunger": 0,
+				"thirst": 40,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "4630826316843712512",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros restore thirst custom",
+			"kind": "thirst",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"amount": 7.25,
+			"expected": {
+				"hunger": 0,
+				"thirst": 7.25,
+				"rest": 0,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "4619848792751996928",
+				"rest": "0",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros restore rest no beds",
+			"kind": "rest",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"amount": 20,
+			"hasBeds": false,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 20,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "4626322717216342016",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros restore rest beds ignore amount",
+			"kind": "rest",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"amount": 99,
+			"hasBeds": true,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 30,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "4629137466983448576",
+				"health": "0"
+			}
+		},
+		{
+			"name": "zeros restore health custom",
+			"kind": "health",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"amount": 6.5,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 6.5
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "0",
+				"health": "4619004367821864960"
+			}
+		},
+		{
+			"name": "zeros restore health negative",
+			"kind": "health",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"amount": -200,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": -200
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "0",
+				"health": "13864612927836782592"
+			}
+		},
+		{
+			"name": "critical-boundaries restore hunger default",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"expected": {
+				"hunger": 44.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4631529863548000797",
+				"thirst": "4624633867356078080",
+				"rest": "4624634430306031501",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries restore hunger custom",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"amount": 12.5,
+			"expected": {
+				"hunger": 27.499000000000002,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4628433498066695226",
+				"thirst": "4624633867356078080",
+				"rest": "4624634430306031501",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries restore hunger negative",
+			"kind": "hunger",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"amount": -150,
+			"expected": {
+				"hunger": -135.001,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "13862325978835380601",
+				"thirst": "4624633867356078080",
+				"rest": "4624634430306031501",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries restore thirst default",
+			"kind": "thirst",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"expected": {
+				"hunger": 14.999,
+				"thirst": 55,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4624633304406124659",
+				"thirst": "4632937379169042432",
+				"rest": "4624634430306031501",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries restore thirst custom",
+			"kind": "thirst",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"amount": 7.25,
+			"expected": {
+				"hunger": 14.999,
+				"thirst": 22.25,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4624633304406124659",
+				"thirst": "4626956035913940992",
+				"rest": "4624634430306031501",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries restore rest no beds",
+			"kind": "rest",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"amount": 20,
+			"hasBeds": false,
+			"expected": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 35.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4624633304406124659",
+				"thirst": "4624633867356078080",
+				"rest": "4630122770139424227",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries restore rest beds ignore amount",
+			"kind": "rest",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"amount": 99,
+			"hasBeds": true,
+			"expected": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 45.001,
+				"health": 0.001
+			},
+			"expectedBits": {
+				"hunger": "4624633304406124659",
+				"thirst": "4624633867356078080",
+				"rest": "4631530145022977507",
+				"health": "4562254508917369340"
+			}
+		},
+		{
+			"name": "critical-boundaries restore health custom",
+			"kind": "health",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"amount": 6.5,
+			"expected": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 6.501
+			},
+			"expectedBits": {
+				"hunger": "4624633304406124659",
+				"thirst": "4624633867356078080",
+				"rest": "4624634430306031501",
+				"health": "4619005493721771803"
+			}
+		},
+		{
+			"name": "critical-boundaries restore health negative",
+			"kind": "health",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"amount": -200,
+			"expected": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": -199.999
+			},
+			"expectedBits": {
+				"hunger": "4624633304406124659",
+				"thirst": "4624633867356078080",
+				"rest": "4624634430306031501",
+				"health": "13864612892652410503"
+			}
+		}
+	],
+	"damage": [
+		{
+			"name": "no hunger damage unless exact zero",
+			"needs": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"expected": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "4562254508917369340",
+				"thirst": "4562254508917369340",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "hunger zero",
+			"needs": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 20
+			},
+			"expected": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 15
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "4621819117588971520",
+				"rest": "4632233691727265792",
+				"health": "4624633867356078080"
+			}
+		},
+		{
+			"name": "thirst zero",
+			"needs": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 20
+			},
+			"expected": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 17
+			},
+			"expectedBits": {
+				"hunger": "4621819117588971520",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "4625478292286210048"
+			}
+		},
+		{
+			"name": "both zero stack",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 6
+			},
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "0"
+			}
+		},
+		{
+			"name": "negative needs are not exact zero",
+			"needs": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"expected": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "13830554455654793216",
+				"thirst": "13830554455654793216",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		}
+	],
+	"damageOverTime": [
+		{
+			"name": "no hunger damage unless exact zero @ -1",
+			"needs": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": -1,
+			"expected": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "4562254508917369340",
+				"thirst": "4562254508917369340",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "no hunger damage unless exact zero @ 0",
+			"needs": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 0,
+			"expected": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "4562254508917369340",
+				"thirst": "4562254508917369340",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "no hunger damage unless exact zero @ 0.25",
+			"needs": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 0.25,
+			"expected": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "4562254508917369340",
+				"thirst": "4562254508917369340",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "no hunger damage unless exact zero @ 1.5",
+			"needs": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 1.5,
+			"expected": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "4562254508917369340",
+				"thirst": "4562254508917369340",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "no hunger damage unless exact zero @ 10",
+			"needs": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 10,
+			"expected": {
+				"hunger": 0.001,
+				"thirst": 0.001,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "4562254508917369340",
+				"thirst": "4562254508917369340",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "hunger zero @ -1",
+			"needs": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": -1,
+			"expected": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "4621819117588971520",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "hunger zero @ 0",
+			"needs": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 0,
+			"expected": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "4621819117588971520",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "hunger zero @ 0.25",
+			"needs": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 0.25,
+			"expected": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 18.75
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "4621819117588971520",
+				"rest": "4632233691727265792",
+				"health": "4625970873495453696"
+			}
+		},
+		{
+			"name": "hunger zero @ 1.5",
+			"needs": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 1.5,
+			"expected": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 12.5
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "4621819117588971520",
+				"rest": "4632233691727265792",
+				"health": "4623226492472524800"
+			}
+		},
+		{
+			"name": "hunger zero @ 10",
+			"needs": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 10,
+			"expected": {
+				"hunger": 0,
+				"thirst": 10,
+				"rest": 50,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "4621819117588971520",
+				"rest": "4632233691727265792",
+				"health": "0"
+			}
+		},
+		{
+			"name": "thirst zero @ -1",
+			"needs": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": -1,
+			"expected": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "4621819117588971520",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "thirst zero @ 0",
+			"needs": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 0,
+			"expected": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "4621819117588971520",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "thirst zero @ 0.25",
+			"needs": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 0.25,
+			"expected": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 19.25
+			},
+			"expectedBits": {
+				"hunger": "4621819117588971520",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "4626111610983809024"
+			}
+		},
+		{
+			"name": "thirst zero @ 1.5",
+			"needs": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 1.5,
+			"expected": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 15.5
+			},
+			"expectedBits": {
+				"hunger": "4621819117588971520",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "4624915342332788736"
+			}
+		},
+		{
+			"name": "thirst zero @ 10",
+			"needs": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 10,
+			"expected": {
+				"hunger": 10,
+				"thirst": 0,
+				"rest": 50,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "4621819117588971520",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "0"
+			}
+		},
+		{
+			"name": "both zero stack @ -1",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 6
+			},
+			"tickCount": -1,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 6
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "4618441417868443648"
+			}
+		},
+		{
+			"name": "both zero stack @ 0",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 6
+			},
+			"tickCount": 0,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 6
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "4618441417868443648"
+			}
+		},
+		{
+			"name": "both zero stack @ 0.25",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 6
+			},
+			"tickCount": 0.25,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 4
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "4616189618054758400"
+			}
+		},
+		{
+			"name": "both zero stack @ 1.5",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 6
+			},
+			"tickCount": 1.5,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "0"
+			}
+		},
+		{
+			"name": "both zero stack @ 10",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 6
+			},
+			"tickCount": 10,
+			"expected": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 50,
+				"health": 0
+			},
+			"expectedBits": {
+				"hunger": "0",
+				"thirst": "0",
+				"rest": "4632233691727265792",
+				"health": "0"
+			}
+		},
+		{
+			"name": "negative needs are not exact zero @ -1",
+			"needs": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": -1,
+			"expected": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "13830554455654793216",
+				"thirst": "13830554455654793216",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "negative needs are not exact zero @ 0",
+			"needs": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 0,
+			"expected": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "13830554455654793216",
+				"thirst": "13830554455654793216",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "negative needs are not exact zero @ 0.25",
+			"needs": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 0.25,
+			"expected": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "13830554455654793216",
+				"thirst": "13830554455654793216",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "negative needs are not exact zero @ 1.5",
+			"needs": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 1.5,
+			"expected": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "13830554455654793216",
+				"thirst": "13830554455654793216",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		},
+		{
+			"name": "negative needs are not exact zero @ 10",
+			"needs": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"tickCount": 10,
+			"expected": {
+				"hunger": -1,
+				"thirst": -1,
+				"rest": 50,
+				"health": 20
+			},
+			"expectedBits": {
+				"hunger": "13830554455654793216",
+				"thirst": "13830554455654793216",
+				"rest": "4632233691727265792",
+				"health": "4626322717216342016"
+			}
+		}
+	],
+	"critical": [
+		{
+			"name": "full threshold 0",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"threshold": 0,
+			"expected": false
+		},
+		{
+			"name": "full threshold 0.001",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"threshold": 0.001,
+			"expected": false
+		},
+		{
+			"name": "full threshold 15",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"threshold": 15,
+			"expected": false
+		},
+		{
+			"name": "full threshold 15.001",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"threshold": 15.001,
+			"expected": false
+		},
+		{
+			"name": "full threshold 100",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"threshold": 100,
+			"expected": false
+		},
+		{
+			"name": "partial threshold 0",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"threshold": 0,
+			"expected": false
+		},
+		{
+			"name": "partial threshold 0.001",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"threshold": 0.001,
+			"expected": false
+		},
+		{
+			"name": "partial threshold 15",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"threshold": 15,
+			"expected": true
+		},
+		{
+			"name": "partial threshold 15.001",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"threshold": 15.001,
+			"expected": true
+		},
+		{
+			"name": "partial threshold 100",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"threshold": 100,
+			"expected": true
+		},
+		{
+			"name": "zeros threshold 0",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"threshold": 0,
+			"expected": false
+		},
+		{
+			"name": "zeros threshold 0.001",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"threshold": 0.001,
+			"expected": true
+		},
+		{
+			"name": "zeros threshold 15",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"threshold": 15,
+			"expected": true
+		},
+		{
+			"name": "zeros threshold 15.001",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"threshold": 15.001,
+			"expected": true
+		},
+		{
+			"name": "zeros threshold 100",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"threshold": 100,
+			"expected": true
+		},
+		{
+			"name": "critical-boundaries threshold 0",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"threshold": 0,
+			"expected": false
+		},
+		{
+			"name": "critical-boundaries threshold 0.001",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"threshold": 0.001,
+			"expected": false
+		},
+		{
+			"name": "critical-boundaries threshold 15",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"threshold": 15,
+			"expected": true
+		},
+		{
+			"name": "critical-boundaries threshold 15.001",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"threshold": 15.001,
+			"expected": true
+		},
+		{
+			"name": "critical-boundaries threshold 100",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"threshold": 100,
+			"expected": true
+		}
+	],
+	"dead": [
+		{
+			"name": "full",
+			"needs": {
+				"hunger": 100,
+				"thirst": 100,
+				"rest": 100,
+				"health": 100
+			},
+			"expected": false
+		},
+		{
+			"name": "partial",
+			"needs": {
+				"hunger": 42.5,
+				"thirst": 17.25,
+				"rest": 3.5,
+				"health": 88.75
+			},
+			"expected": false
+		},
+		{
+			"name": "zeros",
+			"needs": {
+				"hunger": 0,
+				"thirst": 0,
+				"rest": 0,
+				"health": 0
+			},
+			"expected": true
+		},
+		{
+			"name": "critical-boundaries",
+			"needs": {
+				"hunger": 14.999,
+				"thirst": 15,
+				"rest": 15.001,
+				"health": 0.001
+			},
+			"expected": false
+		}
+	]
+}

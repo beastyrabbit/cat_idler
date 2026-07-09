@@ -1,0 +1,130 @@
+{
+  "source": "lib/game/genetics.ts",
+  "note": "traitsToSpriteParams is cosmetic and normally uses raw Math.random; these cases monkey-patch Math.random so deterministic mapping parity can be asserted.",
+  "traitsToSpriteParams": [
+    {
+      "name": "base_params_preserve_fixed_sprite_fields_and_copy_traits",
+      "traits": {
+        "peltName": "Tabby",
+        "colour": "GRAY",
+        "eyeColour": "YELLOW",
+        "skinColour": "PINK",
+        "isTortie": false,
+        "tint": "none",
+        "whitePatches": "LITTLE",
+        "points": "POINTED"
+      },
+      "baseParams": {
+        "spriteNumber": 12,
+        "shading": true,
+        "reverse": false,
+        "accessories": [
+          "flower"
+        ],
+        "scars": [
+          "nick"
+        ]
+      },
+      "rolls": [
+        0.99
+      ],
+      "params": {
+        "spriteNumber": 12,
+        "peltName": "Tabby",
+        "colour": "GRAY",
+        "tint": "none",
+        "skinColour": "PINK",
+        "eyeColour": "YELLOW",
+        "shading": true,
+        "reverse": false,
+        "isTortie": false,
+        "accessories": [
+          "flower"
+        ],
+        "scars": [
+          "nick"
+        ],
+        "whitePatches": "LITTLE",
+        "points": "POINTED"
+      }
+    },
+    {
+      "name": "default_sprite_fields_and_heterochromia_use_rolls",
+      "traits": {
+        "peltName": "Smoke",
+        "colour": "BLACK",
+        "eyeColour": "GREEN",
+        "skinColour": "DARKBROWN",
+        "isTortie": false,
+        "tint": "BLUE"
+      },
+      "rolls": [
+        0,
+        0.49,
+        0.09,
+        0.01,
+        0.72
+      ],
+      "params": {
+        "spriteNumber": 3,
+        "peltName": "Smoke",
+        "colour": "BLACK",
+        "tint": "BLUE",
+        "skinColour": "DARKBROWN",
+        "eyeColour": "GREEN",
+        "shading": true,
+        "reverse": true,
+        "isTortie": false,
+        "accessories": [],
+        "scars": [],
+        "eyeColour2": "DARKBLUE"
+      }
+    },
+    {
+      "name": "tortie_traits_add_tortie_pattern_fields",
+      "traits": {
+        "peltName": "Classic",
+        "colour": "GINGER",
+        "eyeColour": "BLUE",
+        "skinColour": "LIGHTBROWN",
+        "isTortie": true,
+        "tint": "GREEN",
+        "whitePatches": "TUXEDO"
+      },
+      "baseParams": {
+        "spriteNumber": 18,
+        "shading": false,
+        "reverse": true
+      },
+      "rolls": [
+        0.95,
+        0.39,
+        0.86
+      ],
+      "params": {
+        "spriteNumber": 18,
+        "peltName": "Classic",
+        "colour": "GINGER",
+        "tint": "GREEN",
+        "skinColour": "LIGHTBROWN",
+        "eyeColour": "BLUE",
+        "shading": false,
+        "reverse": true,
+        "isTortie": true,
+        "accessories": [],
+        "scars": [],
+        "whitePatches": "TUXEDO",
+        "tortie": [
+          {
+            "mask": "ONE",
+            "pattern": "Ticked",
+            "colour": "ORANGE"
+          }
+        ],
+        "tortieMask": "ONE",
+        "tortiePattern": "Ticked",
+        "tortieColour": "ORANGE"
+      }
+    }
+  ]
+}

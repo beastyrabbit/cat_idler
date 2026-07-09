@@ -1,0 +1,411 @@
+{
+  "source": "lib/game/age.ts",
+  "note": "Rust should_die_of_old_age takes an injected roll param instead of calling Math.random().",
+  "ageInHours": [
+    {
+      "birthTime": 0,
+      "currentTime": 0,
+      "age": 0
+    },
+    {
+      "birthTime": 0,
+      "currentTime": 3600000,
+      "age": 1
+    },
+    {
+      "birthTime": 0,
+      "currentTime": 5400000,
+      "age": 1.5
+    },
+    {
+      "birthTime": 1700000000000,
+      "currentTime": 1700086400000,
+      "age": 24
+    },
+    {
+      "birthTime": 3600000,
+      "currentTime": 0,
+      "age": -1
+    }
+  ],
+  "lifeStages": [
+    {
+      "age": -1,
+      "stage": "kitten"
+    },
+    {
+      "age": 0,
+      "stage": "kitten"
+    },
+    {
+      "age": 5.999999,
+      "stage": "kitten"
+    },
+    {
+      "age": 6,
+      "stage": "young"
+    },
+    {
+      "age": 23.999999,
+      "stage": "young"
+    },
+    {
+      "age": 24,
+      "stage": "adult"
+    },
+    {
+      "age": 47.999999,
+      "stage": "adult"
+    },
+    {
+      "age": 48,
+      "stage": "elder"
+    },
+    {
+      "age": 50,
+      "stage": "elder"
+    },
+    {
+      "age": 52,
+      "stage": "elder"
+    },
+    {
+      "age": 57.599999,
+      "stage": "elder"
+    },
+    {
+      "age": 57.6,
+      "stage": "elder"
+    },
+    {
+      "age": 60,
+      "stage": "elder"
+    },
+    {
+      "age": 100,
+      "stage": "elder"
+    },
+    {
+      "age": 200,
+      "stage": "elder"
+    }
+  ],
+  "deathChances": [
+    {
+      "age": -1,
+      "isLeaderOrHealer": false,
+      "chance": 0
+    },
+    {
+      "age": -1,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 0,
+      "isLeaderOrHealer": false,
+      "chance": 0
+    },
+    {
+      "age": 0,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 5.999999,
+      "isLeaderOrHealer": false,
+      "chance": 0
+    },
+    {
+      "age": 5.999999,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 6,
+      "isLeaderOrHealer": false,
+      "chance": 0
+    },
+    {
+      "age": 6,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 23.999999,
+      "isLeaderOrHealer": false,
+      "chance": 0
+    },
+    {
+      "age": 23.999999,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 24,
+      "isLeaderOrHealer": false,
+      "chance": 0
+    },
+    {
+      "age": 24,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 47.999999,
+      "isLeaderOrHealer": false,
+      "chance": 0
+    },
+    {
+      "age": 47.999999,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 48,
+      "isLeaderOrHealer": false,
+      "chance": 0.01
+    },
+    {
+      "age": 48,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 50,
+      "isLeaderOrHealer": false,
+      "chance": 0.02
+    },
+    {
+      "age": 50,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 52,
+      "isLeaderOrHealer": false,
+      "chance": 0.03
+    },
+    {
+      "age": 52,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 57.599999,
+      "isLeaderOrHealer": false,
+      "chance": 0.057999994999999985
+    },
+    {
+      "age": 57.599999,
+      "isLeaderOrHealer": true,
+      "chance": 0
+    },
+    {
+      "age": 57.6,
+      "isLeaderOrHealer": false,
+      "chance": 0.05800000000000001
+    },
+    {
+      "age": 57.6,
+      "isLeaderOrHealer": true,
+      "chance": 0.01
+    },
+    {
+      "age": 60,
+      "isLeaderOrHealer": false,
+      "chance": 0.06999999999999999
+    },
+    {
+      "age": 60,
+      "isLeaderOrHealer": true,
+      "chance": 0.021999999999999992
+    },
+    {
+      "age": 100,
+      "isLeaderOrHealer": false,
+      "chance": 0.27
+    },
+    {
+      "age": 100,
+      "isLeaderOrHealer": true,
+      "chance": 0.222
+    },
+    {
+      "age": 200,
+      "isLeaderOrHealer": false,
+      "chance": 0.77
+    },
+    {
+      "age": 200,
+      "isLeaderOrHealer": true,
+      "chance": 0.7220000000000001
+    }
+  ],
+  "skillModifiers": [
+    {
+      "stage": "kitten",
+      "modifier": 0
+    },
+    {
+      "stage": "young",
+      "modifier": 1.5
+    },
+    {
+      "stage": "adult",
+      "modifier": 1
+    },
+    {
+      "stage": "elder",
+      "modifier": 0.5
+    }
+  ],
+  "taskPermissions": [
+    {
+      "stage": "kitten",
+      "taskRequiresOutside": false,
+      "isDangerousTask": false,
+      "canPerform": true
+    },
+    {
+      "stage": "kitten",
+      "taskRequiresOutside": false,
+      "isDangerousTask": true,
+      "canPerform": false
+    },
+    {
+      "stage": "kitten",
+      "taskRequiresOutside": true,
+      "isDangerousTask": false,
+      "canPerform": false
+    },
+    {
+      "stage": "kitten",
+      "taskRequiresOutside": true,
+      "isDangerousTask": true,
+      "canPerform": false
+    },
+    {
+      "stage": "young",
+      "taskRequiresOutside": false,
+      "isDangerousTask": false,
+      "canPerform": true
+    },
+    {
+      "stage": "young",
+      "taskRequiresOutside": false,
+      "isDangerousTask": true,
+      "canPerform": false
+    },
+    {
+      "stage": "young",
+      "taskRequiresOutside": true,
+      "isDangerousTask": false,
+      "canPerform": true
+    },
+    {
+      "stage": "young",
+      "taskRequiresOutside": true,
+      "isDangerousTask": true,
+      "canPerform": false
+    },
+    {
+      "stage": "adult",
+      "taskRequiresOutside": false,
+      "isDangerousTask": false,
+      "canPerform": true
+    },
+    {
+      "stage": "adult",
+      "taskRequiresOutside": false,
+      "isDangerousTask": true,
+      "canPerform": true
+    },
+    {
+      "stage": "adult",
+      "taskRequiresOutside": true,
+      "isDangerousTask": false,
+      "canPerform": true
+    },
+    {
+      "stage": "adult",
+      "taskRequiresOutside": true,
+      "isDangerousTask": true,
+      "canPerform": true
+    },
+    {
+      "stage": "elder",
+      "taskRequiresOutside": false,
+      "isDangerousTask": false,
+      "canPerform": true
+    },
+    {
+      "stage": "elder",
+      "taskRequiresOutside": false,
+      "isDangerousTask": true,
+      "canPerform": true
+    },
+    {
+      "stage": "elder",
+      "taskRequiresOutside": true,
+      "isDangerousTask": false,
+      "canPerform": true
+    },
+    {
+      "stage": "elder",
+      "taskRequiresOutside": true,
+      "isDangerousTask": true,
+      "canPerform": true
+    }
+  ],
+  "oldAgeRolls": [
+    {
+      "age": 47,
+      "isLeaderOrHealer": false,
+      "roll": 0,
+      "dies": false
+    },
+    {
+      "age": 48,
+      "isLeaderOrHealer": false,
+      "roll": 0.005,
+      "dies": true
+    },
+    {
+      "age": 48,
+      "isLeaderOrHealer": false,
+      "roll": 0.01,
+      "dies": false
+    },
+    {
+      "age": 48,
+      "isLeaderOrHealer": false,
+      "roll": 0.99,
+      "dies": false
+    },
+    {
+      "age": 57.6,
+      "isLeaderOrHealer": true,
+      "roll": 0.009999,
+      "dies": true
+    },
+    {
+      "age": 57.6,
+      "isLeaderOrHealer": true,
+      "roll": 0.01,
+      "dies": false
+    },
+    {
+      "age": 200,
+      "isLeaderOrHealer": false,
+      "roll": 0.5,
+      "dies": true
+    },
+    {
+      "age": 200,
+      "isLeaderOrHealer": false,
+      "roll": 0.99,
+      "dies": false
+    }
+  ]
+}

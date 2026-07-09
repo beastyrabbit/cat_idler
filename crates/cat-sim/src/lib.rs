@@ -29,3 +29,11 @@ pub mod movement;
 pub mod pathfinding;
 pub mod policy;
 pub mod tasks;
+
+// P4 life-sim modules.
+pub mod age;
+pub mod breeding;
+pub mod genetics;
+pub mod life_sim;
+pub mod needs;
+pub mod survival;
