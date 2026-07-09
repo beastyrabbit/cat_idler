@@ -467,7 +467,7 @@ persona: qa (orchestrator gate if timeout)   depends_on: [P5.1..P5.10]
 scope: lib/game/threat.ts -> threat.rs (colonyWealth, threatRatePerHour grace 8h, accrueThreat, RAID_SPAWN_THRESHOLD 100, threatBand thirds, planRaid MAX_RAID_SIZE 12, resolveRaid +-25% MAX_LOOT .3 CASUALTY .6). depends_on:[] group:P6a
 ### P6.2 Warriors   [status: qa]
 scope: lib/game/warriors.ts -> warriors.rs (combat role/stage factors, WEAPON/ARMOR bonus 25, catCombatPower, musterDefense gear-to-strongest, canFight). depends_on:[] group:P6a
-### P6.3 Combat   [status: todo]
+### P6.3 Combat   [status: qa]
 scope: lib/game/combat.ts -> combat.rs (calculateCombatResult [Math.random->injected roll], getClicksNeeded, calculateColonyDefense walls cap 100). depends_on:[] group:P6a
 ### P6.4 Elections   [status: qa]
 scope: lib/game/elections.ts -> elections.rs (KICK_THRESHOLD 5, CANDIDATE_COUNT 5, TERM_MS 24h, windows; candidatesFor, tallyVotes, electionWinner, shouldTriggerKick, electionDue). depends_on:[] group:P6a
