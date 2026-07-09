@@ -1,0 +1,2252 @@
+{
+  "source": "lib/game/terrainGen.ts",
+  "counts": {
+    "options": 3,
+    "hash": 10,
+    "lattice": 5,
+    "fade": 8,
+    "valueNoise": 5,
+    "fractalNoise": 5,
+    "fields": 210,
+    "total": 246
+  },
+  "constants": {
+    "terrainChunkSize": 12,
+    "defaultMaxHeight": 3,
+    "directions": [
+      "N",
+      "E",
+      "S",
+      "W"
+    ],
+    "worldTerrainOptions": {
+      "villageAnchor": {
+        "x": 6,
+        "y": 6
+      },
+      "plateauRadius": 8,
+      "plateauHeight": 1
+    }
+  },
+  "options": [
+    {
+      "name": "default",
+      "input": {},
+      "resolved": {
+        "maxHeight": 3,
+        "heightScale": 0.08,
+        "octaves": 4,
+        "persistence": 0.5,
+        "moistureScale": 0.06,
+        "villageAnchor": {
+          "x": 0,
+          "y": 0
+        },
+        "plateauRadius": 4,
+        "plateauHeight": 1,
+        "minRunForStair": 3,
+        "regionSize": 24,
+        "riversPerRegion": 1,
+        "maxRiverLength": 36,
+        "riverSourceMinElevation": 0.6,
+        "carveRivers": false,
+        "decorate": true
+      }
+    },
+    {
+      "name": "world",
+      "input": {
+        "villageAnchor": {
+          "x": 6,
+          "y": 6
+        },
+        "plateauRadius": 8,
+        "plateauHeight": 1
+      },
+      "resolved": {
+        "maxHeight": 3,
+        "heightScale": 0.08,
+        "octaves": 4,
+        "persistence": 0.5,
+        "moistureScale": 0.06,
+        "villageAnchor": {
+          "x": 6,
+          "y": 6
+        },
+        "plateauRadius": 8,
+        "plateauHeight": 1,
+        "minRunForStair": 3,
+        "regionSize": 24,
+        "riversPerRegion": 1,
+        "maxRiverLength": 36,
+        "riverSourceMinElevation": 0.6,
+        "carveRivers": false,
+        "decorate": true
+      }
+    },
+    {
+      "name": "custom_high_plateau",
+      "input": {
+        "maxHeight": 5,
+        "heightScale": 0.047,
+        "octaves": 5,
+        "persistence": 0.62,
+        "moistureScale": 0.091,
+        "villageAnchor": {
+          "x": -3,
+          "y": 7
+        },
+        "plateauRadius": 2,
+        "plateauHeight": 4,
+        "minRunForStair": 5,
+        "regionSize": 17,
+        "riversPerRegion": 2,
+        "maxRiverLength": 9,
+        "riverSourceMinElevation": 0.42,
+        "carveRivers": true,
+        "decorate": false
+      },
+      "resolved": {
+        "maxHeight": 5,
+        "heightScale": 0.047,
+        "octaves": 5,
+        "persistence": 0.62,
+        "moistureScale": 0.091,
+        "villageAnchor": {
+          "x": -3,
+          "y": 7
+        },
+        "plateauRadius": 2,
+        "plateauHeight": 4,
+        "minRunForStair": 5,
+        "regionSize": 17,
+        "riversPerRegion": 2,
+        "maxRiverLength": 9,
+        "riverSourceMinElevation": 0.42,
+        "carveRivers": true,
+        "decorate": false
+      }
+    }
+  ],
+  "hash": [
+    {
+      "inputs": [],
+      "value": 0
+    },
+    {
+      "inputs": [
+        0
+      ],
+      "value": 48
+    },
+    {
+      "inputs": [
+        0
+      ],
+      "value": 48
+    },
+    {
+      "inputs": [
+        1,
+        2,
+        3
+      ],
+      "value": 48690
+    },
+    {
+      "inputs": [
+        -1,
+        -2,
+        -3
+      ],
+      "value": 1334954415
+    },
+    {
+      "inputs": [
+        20260702,
+        "river",
+        -2,
+        3
+      ],
+      "value": 1241397485
+    },
+    {
+      "inputs": [
+        1781313000000,
+        "decor",
+        -13,
+        17
+      ],
+      "value": 1004856006
+    },
+    {
+      "inputs": [
+        "",
+        "space value",
+        3.14,
+        -98.75
+      ],
+      "value": 409906261
+    },
+    {
+      "inputs": [
+        4294967295,
+        "4294967295",
+        2147483648
+      ],
+      "value": 307424711
+    },
+    {
+      "inputs": [
+        "north",
+        -12,
+        "south",
+        0.5,
+        "0.5"
+      ],
+      "value": 1894793948
+    }
+  ],
+  "lattice": [
+    {
+      "seed": 0,
+      "ix": 0,
+      "iy": 0,
+      "value": 0.27664564712904394
+    },
+    {
+      "seed": 48,
+      "ix": -1,
+      "iy": 1,
+      "value": 0.06660794909112155
+    },
+    {
+      "seed": 20260702,
+      "ix": -13,
+      "iy": -12,
+      "value": 0.7476646264549345
+    },
+    {
+      "seed": -1627234585,
+      "ix": 3,
+      "iy": -4,
+      "value": 0.7289658102672547
+    },
+    {
+      "seed": 1781313000000,
+      "ix": 1024,
+      "iy": -2048,
+      "value": 0.6823506511282176
+    }
+  ],
+  "fade": [
+    {
+      "t": -1,
+      "value": 5
+    },
+    {
+      "t": -0.25,
+      "value": 0.21875
+    },
+    {
+      "t": 0,
+      "value": 0
+    },
+    {
+      "t": 0.25,
+      "value": 0.15625
+    },
+    {
+      "t": 0.5,
+      "value": 0.5
+    },
+    {
+      "t": 0.75,
+      "value": 0.84375
+    },
+    {
+      "t": 1,
+      "value": 1
+    },
+    {
+      "t": 1.25,
+      "value": 0.78125
+    }
+  ],
+  "valueNoise": [
+    {
+      "x": 0,
+      "y": 0,
+      "seed": 0,
+      "scale": 0.08,
+      "value": 0.27664564712904394
+    },
+    {
+      "x": -13,
+      "y": -12,
+      "seed": 20260702,
+      "scale": 0.08,
+      "value": 0.042925853336699925
+    },
+    {
+      "x": 6,
+      "y": 6,
+      "seed": 20260702,
+      "scale": 0.08,
+      "value": 0.39409236358246247
+    },
+    {
+      "x": 31.5,
+      "y": -27.25,
+      "seed": -17,
+      "scale": 0.047,
+      "value": 0.5027345570171156
+    },
+    {
+      "x": -0.5,
+      "y": 0.5,
+      "seed": 1781313000000,
+      "scale": 0.091,
+      "value": 0.2764433274996537
+    }
+  ],
+  "fractalNoise": [
+    {
+      "x": 0,
+      "y": 0,
+      "seed": 0,
+      "octaves": 4,
+      "persistence": 0.5,
+      "scale": 0.08,
+      "value": 0.3773232304956764
+    },
+    {
+      "x": -13,
+      "y": -12,
+      "seed": 20260702,
+      "octaves": 4,
+      "persistence": 0.5,
+      "scale": 0.08,
+      "value": 0.3752429159981647
+    },
+    {
+      "x": 14,
+      "y": 14,
+      "seed": 20260702,
+      "octaves": 4,
+      "persistence": 0.5,
+      "scale": 0.08,
+      "value": 0.6424669263096092
+    },
+    {
+      "x": 31,
+      "y": -27,
+      "seed": -17,
+      "octaves": 5,
+      "persistence": 0.62,
+      "scale": 0.047,
+      "value": 0.5053518545313814
+    },
+    {
+      "x": -3,
+      "y": 7,
+      "seed": 1781313000000,
+      "octaves": 3,
+      "persistence": 0.5,
+      "scale": 0.091,
+      "value": 0.771571136508767
+    }
+  ],
+  "fields": [
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.3773232304956764,
+      "moisture": 0.42314476649543004,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.373728441256116,
+      "moisture": 0.41339636394640017,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.37821695924117293,
+      "moisture": 0.399282719857062,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.4118892411413768,
+      "moisture": 0.5900611611543595,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.40853441429011733,
+      "moisture": 0.41694436723788153,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.48445353767948834,
+      "moisture": 0.31196376688402233,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.6324131100030354,
+      "moisture": 0.3137043511074015,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.6931839140656947,
+      "moisture": 0.3397838084177516,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.6286089667242437,
+      "moisture": 0.5633118122688109,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.687413958551191,
+      "moisture": 0.2932634203530169,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.513598357444273,
+      "moisture": 0.3960638308872482,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.6908769972344245,
+      "moisture": 0.3616184393302607,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.5102499355379371,
+      "moisture": 0.34786991437395715,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 0,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.43333255784826946,
+      "moisture": 0.46528131915602344,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.8034843750298023,
+      "moisture": 0.1789824674571199,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.7576536801097007,
+      "moisture": 0.20465095355751042,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.7740373983232736,
+      "moisture": 0.2064229700514508,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.601844399745619,
+      "moisture": 0.44346702581494163,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.6220997138183156,
+      "moisture": 0.36291134834912053,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.5898781626385089,
+      "moisture": 0.41587219168568856,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.5636520663695911,
+      "moisture": 0.4545336054127685,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.5604752448835799,
+      "moisture": 0.47018937943735695,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.4270215534380801,
+      "moisture": 0.5309764133719544,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.46906168278694654,
+      "moisture": 0.5148661447768297,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.5854483830748161,
+      "moisture": 0.4457821120772811,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.6226110800231563,
+      "moisture": 0.4747612473989525,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.5912359039209742,
+      "moisture": 0.2917884838126255,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.3636802072355253,
+      "moisture": 0.4378391999274226,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.3951633867031584,
+      "moisture": 0.6520993657011006,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.4389361467215277,
+      "moisture": 0.6287260946825339,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.391817724361766,
+      "moisture": 0.6190300407212196,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.3752429159981647,
+      "moisture": 0.4062192861372632,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.4758241853530995,
+      "moisture": 0.4722508364860077,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.46577444614969005,
+      "moisture": 0.440171377846779,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.544110925820748,
+      "moisture": 0.4107870203075984,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.5740168350008381,
+      "moisture": 0.40654727199194224,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.6424669263096092,
+      "moisture": 0.8399069254314633,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.4324598295305143,
+      "moisture": 0.5819322153850512,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.5269567693465574,
+      "moisture": 0.45473162664545164,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.4802502600485687,
+      "moisture": 0.3466005041087013,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.5633062960670521,
+      "moisture": 0.5438156415970775,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 20260702,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.569051337243764,
+      "moisture": 0.3468166413567178,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.5359588481330623,
+      "moisture": 0.3737313383524971,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.5342937004915245,
+      "moisture": 0.3752753889976007,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.5351304935820639,
+      "moisture": 0.3678421238004236,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.4954730039598053,
+      "moisture": 0.37353591074923415,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.5081108714495799,
+      "moisture": 0.2745078372103083,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.49315494219230416,
+      "moisture": 0.41292831191578766,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.44763240795466797,
+      "moisture": 0.45853005050906753,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.4189969575708561,
+      "moisture": 0.5121736316074562,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.8223833551100976,
+      "moisture": 0.701649857642246,
+      "height": 3
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.542480863871938,
+      "moisture": 0.8445927240472696,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.48694739563592776,
+      "moisture": 0.2493559078548068,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.34897719003228395,
+      "moisture": 0.21142809705731525,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.45451207400555693,
+      "moisture": 0.5378972584046328,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": -17,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.41866607793606136,
+      "moisture": 0.6056548683245951,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.5391194124395648,
+      "moisture": 0.28109311618443045,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.5149452699766092,
+      "moisture": 0.28187754217072264,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.5277493242565267,
+      "moisture": 0.26949661230406874,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.6295500604479325,
+      "moisture": 0.33194527754917724,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.5700623142732246,
+      "moisture": 0.3058511300803276,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.48797276616026974,
+      "moisture": 0.2660990032524741,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.5555158410702269,
+      "moisture": 0.2781955785012841,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.6443240811100162,
+      "moisture": 0.2958782825157223,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.6523920738502615,
+      "moisture": 0.5216020220437592,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.6158914479957432,
+      "moisture": 0.7099705959354667,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.7128160560279979,
+      "moisture": 0.4295258748549356,
+      "height": 2
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.7840684491764661,
+      "moisture": 0.41386673389251977,
+      "height": 3
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.4540139408437514,
+      "moisture": 0.5092363144984496,
+      "height": 1
+    },
+    {
+      "optionSet": "default",
+      "seed": 1781313000000,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.3246850384551431,
+      "moisture": 0.4800860868980176,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.3773232304956764,
+      "moisture": 0.42314476649543004,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.373728441256116,
+      "moisture": 0.41339636394640017,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.37821695924117293,
+      "moisture": 0.399282719857062,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.4118892411413768,
+      "moisture": 0.5900611611543595,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.40853441429011733,
+      "moisture": 0.41694436723788153,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.48445353767948834,
+      "moisture": 0.31196376688402233,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.6324131100030354,
+      "moisture": 0.3137043511074015,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.6931839140656947,
+      "moisture": 0.3397838084177516,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.6286089667242437,
+      "moisture": 0.5633118122688109,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.687413958551191,
+      "moisture": 0.2932634203530169,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.513598357444273,
+      "moisture": 0.3960638308872482,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.6908769972344245,
+      "moisture": 0.3616184393302607,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.5102499355379371,
+      "moisture": 0.34786991437395715,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 0,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.43333255784826946,
+      "moisture": 0.46528131915602344,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.8034843750298023,
+      "moisture": 0.1789824674571199,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.7576536801097007,
+      "moisture": 0.20465095355751042,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.7740373983232736,
+      "moisture": 0.2064229700514508,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.601844399745619,
+      "moisture": 0.44346702581494163,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.6220997138183156,
+      "moisture": 0.36291134834912053,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.5898781626385089,
+      "moisture": 0.41587219168568856,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.5636520663695911,
+      "moisture": 0.4545336054127685,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.5604752448835799,
+      "moisture": 0.47018937943735695,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.4270215534380801,
+      "moisture": 0.5309764133719544,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.46906168278694654,
+      "moisture": 0.5148661447768297,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.5854483830748161,
+      "moisture": 0.4457821120772811,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.6226110800231563,
+      "moisture": 0.4747612473989525,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.5912359039209742,
+      "moisture": 0.2917884838126255,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 1,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.3636802072355253,
+      "moisture": 0.4378391999274226,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.3951633867031584,
+      "moisture": 0.6520993657011006,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.4389361467215277,
+      "moisture": 0.6287260946825339,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.391817724361766,
+      "moisture": 0.6190300407212196,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.3752429159981647,
+      "moisture": 0.4062192861372632,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.4758241853530995,
+      "moisture": 0.4722508364860077,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.46577444614969005,
+      "moisture": 0.440171377846779,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.544110925820748,
+      "moisture": 0.4107870203075984,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.5740168350008381,
+      "moisture": 0.40654727199194224,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.6424669263096092,
+      "moisture": 0.8399069254314633,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.4324598295305143,
+      "moisture": 0.5819322153850512,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.5269567693465574,
+      "moisture": 0.45473162664545164,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.4802502600485687,
+      "moisture": 0.3466005041087013,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.5633062960670521,
+      "moisture": 0.5438156415970775,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 20260702,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.569051337243764,
+      "moisture": 0.3468166413567178,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.5359588481330623,
+      "moisture": 0.3737313383524971,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.5342937004915245,
+      "moisture": 0.3752753889976007,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.5351304935820639,
+      "moisture": 0.3678421238004236,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.4954730039598053,
+      "moisture": 0.37353591074923415,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.5081108714495799,
+      "moisture": 0.2745078372103083,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.49315494219230416,
+      "moisture": 0.41292831191578766,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.44763240795466797,
+      "moisture": 0.45853005050906753,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.4189969575708561,
+      "moisture": 0.5121736316074562,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.8223833551100976,
+      "moisture": 0.701649857642246,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.542480863871938,
+      "moisture": 0.8445927240472696,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.48694739563592776,
+      "moisture": 0.2493559078548068,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.34897719003228395,
+      "moisture": 0.21142809705731525,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.45451207400555693,
+      "moisture": 0.5378972584046328,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": -17,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.41866607793606136,
+      "moisture": 0.6056548683245951,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.5391194124395648,
+      "moisture": 0.28109311618443045,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.5149452699766092,
+      "moisture": 0.28187754217072264,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.5277493242565267,
+      "moisture": 0.26949661230406874,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.6295500604479325,
+      "moisture": 0.33194527754917724,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.5700623142732246,
+      "moisture": 0.3058511300803276,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.48797276616026974,
+      "moisture": 0.2660990032524741,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.5555158410702269,
+      "moisture": 0.2781955785012841,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.6443240811100162,
+      "moisture": 0.2958782825157223,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.6523920738502615,
+      "moisture": 0.5216020220437592,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.6158914479957432,
+      "moisture": 0.7099705959354667,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.7128160560279979,
+      "moisture": 0.4295258748549356,
+      "height": 2
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.7840684491764661,
+      "moisture": 0.41386673389251977,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.4540139408437514,
+      "moisture": 0.5092363144984496,
+      "height": 1
+    },
+    {
+      "optionSet": "world",
+      "seed": 1781313000000,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.3246850384551431,
+      "moisture": 0.4800860868980176,
+      "height": 1
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.3751101778020595,
+      "moisture": 0.42314476649543004,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.4229117485113275,
+      "moisture": 0.40266515858608426,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.39200429398658726,
+      "moisture": 0.38293832994695204,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.4613057067489444,
+      "moisture": 0.6683485045217559,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.3568386086444099,
+      "moisture": 0.3798712660746091,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.35564235970952024,
+      "moisture": 0.3419068153293448,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.35158987694402666,
+      "moisture": 0.3899456929161321,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.39933765319628806,
+      "moisture": 0.41132615591533195,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.67253238354166,
+      "moisture": 0.586892607244954,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.5946490152415854,
+      "moisture": 0.38099023080411726,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.3405568933972842,
+      "moisture": 0.4106835983242534,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.42045414289592614,
+      "moisture": 0.40017831588499375,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.5217872844208741,
+      "moisture": 0.5295318033897553,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 0,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.5976097748118185,
+      "moisture": 0.43495806065033954,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.8102136052740329,
+      "moisture": 0.1789824674571199,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.7732865867546491,
+      "moisture": 0.23341261495427695,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.7546837511381961,
+      "moisture": 0.2331671069046767,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.3897975242686055,
+      "moisture": 0.3300994459256201,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.6224562241137929,
+      "moisture": 0.4384634805586594,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.6399915908490035,
+      "moisture": 0.4698928165453223,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.6492727434930291,
+      "moisture": 0.43590495351045594,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.5915952046859676,
+      "moisture": 0.45705792316748955,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.3838356691767096,
+      "moisture": 0.7299246471067354,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.5335860869557731,
+      "moisture": 0.47875464231008885,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.645419631905671,
+      "moisture": 0.4691811260507618,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.6513528668938116,
+      "moisture": 0.43698123283616924,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.5575367782125732,
+      "moisture": 0.6308698855952102,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.41062829085401575,
+      "moisture": 0.5272411244723832,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.44281250059836175,
+      "moisture": 0.6520993657011006,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.42589081955605357,
+      "moisture": 0.6027351684592954,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.4170924874174094,
+      "moisture": 0.5867911484504829,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.364631830999453,
+      "moisture": 0.5524338015156877,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.41626127952339265,
+      "moisture": 0.5002059894039937,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.41401068917308514,
+      "moisture": 0.4082067660604979,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.43026602351069027,
+      "moisture": 0.499255705433622,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.42790863598169177,
+      "moisture": 0.5620276992972704,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.5602382079464839,
+      "moisture": 0.7657785906495762,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.4364861707027424,
+      "moisture": 0.5010755821051723,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.43926726863073307,
+      "moisture": 0.4402738568714849,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.4490153023620589,
+      "moisture": 0.3966358201654155,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.4602781326809578,
+      "moisture": 0.4490032463605254,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 20260702,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.6622769702111629,
+      "moisture": 0.45260802752820284,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.5234434943732109,
+      "moisture": 0.3737313383524971,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.5463548996233953,
+      "moisture": 0.3753905143191164,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.5514337560453425,
+      "moisture": 0.3584604991873747,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.5452393861348891,
+      "moisture": 0.5621669293542463,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.512342808317037,
+      "moisture": 0.29002852193528755,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.5644458160533071,
+      "moisture": 0.5169873416062672,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.5360831708305315,
+      "moisture": 0.6553631776536445,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.5182028147804486,
+      "moisture": 0.7147057995535679,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.6032813599374516,
+      "moisture": 0.6573267944680173,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.39898779033648474,
+      "moisture": 0.8578981059722041,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.5612499486923679,
+      "moisture": 0.2795066928469696,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.4856006675306968,
+      "moisture": 0.29361111828948333,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.5765146620532162,
+      "moisture": 0.697398435877988,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": -17,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.5053518545313814,
+      "moisture": 0.7035396430025251,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": 0,
+      "y": 0,
+      "elevation": 0.5719732637644065,
+      "moisture": 0.28109311618443045,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": 1,
+      "y": -1,
+      "elevation": 0.5765735335633179,
+      "moisture": 0.2846484489612541,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": -1,
+      "y": 1,
+      "elevation": 0.5645477510335536,
+      "moisture": 0.25870070250558225,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": -13,
+      "y": -12,
+      "elevation": 0.5930153051148825,
+      "moisture": 0.2485786040747636,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": -5,
+      "y": 4,
+      "elevation": 0.4710259099074026,
+      "moisture": 0.5560232166638213,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": 4,
+      "y": 4,
+      "elevation": 0.5115635471526067,
+      "moisture": 0.29816163091508596,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": 5,
+      "y": 5,
+      "elevation": 0.4706624188666915,
+      "moisture": 0.3836026073150074,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": 6,
+      "y": 6,
+      "elevation": 0.4851008662836859,
+      "moisture": 0.4396781532730229,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": 14,
+      "y": 14,
+      "elevation": 0.5835735071455621,
+      "moisture": 0.35280031693577857,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": 15,
+      "y": 6,
+      "elevation": 0.5875786987753209,
+      "moisture": 0.5104534250149536,
+      "height": 3
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": -3,
+      "y": 7,
+      "elevation": 0.4946754943443643,
+      "moisture": 0.5790025688159204,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": -1,
+      "y": 9,
+      "elevation": 0.48455048761869834,
+      "moisture": 0.5597967223942477,
+      "height": 4
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": 8,
+      "y": -9,
+      "elevation": 0.4324758230378408,
+      "moisture": 0.56358312756941,
+      "height": 2
+    },
+    {
+      "optionSet": "custom_high_plateau",
+      "seed": 1781313000000,
+      "x": 31,
+      "y": -27,
+      "elevation": 0.46126983642989416,
+      "moisture": 0.41405851276307776,
+      "height": 2
+    }
+  ]
+}

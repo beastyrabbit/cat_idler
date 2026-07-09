@@ -212,7 +212,7 @@ notes: TS sources `lib/game/worldGen.ts`, `lib/game/terrainWorld.ts`;
 recommended before P2.11-P2.14 because `terrainWorld.ts` is distinct gameplay
 mapping logic.
 
-### P2.6 Terrain options and scalar fields   [status: todo]
+### P2.6 Terrain options and scalar fields   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.4]        parallel_group: P2-terrain-core
 scope: Port the foundational slice of `lib/game/terrainGen.ts` into
 `crates/cat-sim/src/terrain_gen.rs`: public role/type vocabulary, constants
@@ -229,7 +229,7 @@ notes: TS source `lib/game/terrainGen.ts`; fixture
 `docs/migration/fixtures/p2/terrain_fields.json`; parity criterion is exact
 discrete height/options parity and JS-number-equivalent scalar fields.
 
-### P2.7 Terrain cliff and stair roles   [status: todo]
+### P2.7 Terrain cliff and stair roles   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.6]        parallel_group: P2-terrain-roles
 scope: Port the cliff and stair slice of `lib/game/terrainGen.ts` into
 `terrain_gen.rs`: direction constants, `classifyCliff`, terrain role lookup,
@@ -243,7 +243,7 @@ notes: TS source `lib/game/terrainGen.ts`; fixture
 `docs/migration/fixtures/p2/terrain_cliffs_stairs.json`; parity criterion is
 exact role/variant/facing/edge-mask output.
 
-### P2.8 Terrain river roles   [status: todo]
+### P2.8 Terrain river roles   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.6]        parallel_group: P2-terrain-roles
 scope: Port the river slice of `lib/game/terrainGen.ts` into `terrain_gen.rs`:
 `regionRiverSources`, `traceRiver`, `classifyRiverSegment`, and the chunk-local
@@ -257,7 +257,7 @@ notes: TS source `lib/game/terrainGen.ts`; fixture
 `docs/migration/fixtures/p2/terrain_rivers.json`; parity criterion is exact
 source/path tile coordinates and river role fields.
 
-### P2.9 Terrain biome and decoration roles   [status: todo]
+### P2.9 Terrain biome and decoration roles   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.6]        parallel_group: P2-terrain-roles
 scope: Port the biome and decoration slice of `lib/game/terrainGen.ts` into
 `terrain_gen.rs`: `classifyBiome`, biome decoration densities, and deterministic
@@ -270,7 +270,7 @@ notes: TS source `lib/game/terrainGen.ts`; fixture
 `docs/migration/fixtures/p2/terrain_biome_decor.json`; parity criterion is exact
 biome role and optional decoration output for fixture coordinates.
 
-### P2.10 Terrain chunk assembly   [status: todo]
+### P2.10 Terrain chunk assembly   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.7, P2.8, P2.9]        parallel_group: P2-terrain-assembly
 scope: Port `generateTerrainChunk` from `lib/game/terrainGen.ts` into
 `terrain_gen.rs`, assembling 12x12 world-coordinate tiles with elevation,
@@ -287,7 +287,7 @@ notes: TS source `lib/game/terrainGen.ts`; fixture
 tile order and exact discrete fields, with scalar float tolerance documented by
 P2.4.
 
-### P2.11 World chunk coordinate helpers   [status: todo]
+### P2.11 World chunk coordinate helpers   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.5]        parallel_group: P2-world-core
 scope: Port the coordinate and colony-anchor slice of `lib/game/worldGen.ts` into
 `crates/cat-sim/src/world_gen.rs`: chunk size usage, `COLONY_SAFE_RADIUS`,

@@ -1,0 +1,1025 @@
+{
+  "seed": 20260702,
+  "counts": {
+    "cliff": 19,
+    "stairs": 6,
+    "riverSources": 7,
+    "riverTraces": 3,
+    "riverSegments": 6,
+    "biomes": 8,
+    "decorations": 14,
+    "total": 63
+  },
+  "cliff": [
+    {
+      "name": "mask-0",
+      "center": 2,
+      "neighbors": {
+        "N": 2,
+        "E": 2,
+        "S": 2,
+        "W": 2
+      },
+      "role": {
+        "kind": "flat"
+      }
+    },
+    {
+      "name": "mask-1",
+      "center": 2,
+      "neighbors": {
+        "N": 1,
+        "E": 2,
+        "S": 2,
+        "W": 2
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 1,
+        "base": "edge",
+        "variant": "edge-N",
+        "facing": "N",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-2",
+      "center": 2,
+      "neighbors": {
+        "N": 2,
+        "E": 1,
+        "S": 2,
+        "W": 2
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 2,
+        "base": "edge",
+        "variant": "edge-E",
+        "facing": "E",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-3",
+      "center": 2,
+      "neighbors": {
+        "N": 1,
+        "E": 1,
+        "S": 2,
+        "W": 2
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 3,
+        "base": "corner",
+        "variant": "corner-NE",
+        "facing": "N",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-4",
+      "center": 2,
+      "neighbors": {
+        "N": 2,
+        "E": 2,
+        "S": 1,
+        "W": 2
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 4,
+        "base": "edge",
+        "variant": "edge-S",
+        "facing": "S",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-5",
+      "center": 2,
+      "neighbors": {
+        "N": 1,
+        "E": 2,
+        "S": 1,
+        "W": 2
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 5,
+        "base": "ridge",
+        "variant": "ridge-NS",
+        "facing": "N",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-6",
+      "center": 2,
+      "neighbors": {
+        "N": 2,
+        "E": 1,
+        "S": 1,
+        "W": 2
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 6,
+        "base": "corner",
+        "variant": "corner-SE",
+        "facing": "E",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-7",
+      "center": 2,
+      "neighbors": {
+        "N": 1,
+        "E": 1,
+        "S": 1,
+        "W": 2
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 7,
+        "base": "spur",
+        "variant": "spur-W",
+        "facing": "W",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-8",
+      "center": 2,
+      "neighbors": {
+        "N": 2,
+        "E": 2,
+        "S": 2,
+        "W": 1
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 8,
+        "base": "edge",
+        "variant": "edge-W",
+        "facing": "W",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-9",
+      "center": 2,
+      "neighbors": {
+        "N": 1,
+        "E": 2,
+        "S": 2,
+        "W": 1
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 9,
+        "base": "corner",
+        "variant": "corner-NW",
+        "facing": "W",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-10",
+      "center": 2,
+      "neighbors": {
+        "N": 2,
+        "E": 1,
+        "S": 2,
+        "W": 1
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 10,
+        "base": "ridge",
+        "variant": "ridge-EW",
+        "facing": "E",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-11",
+      "center": 2,
+      "neighbors": {
+        "N": 1,
+        "E": 1,
+        "S": 2,
+        "W": 1
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 11,
+        "base": "spur",
+        "variant": "spur-S",
+        "facing": "S",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-12",
+      "center": 2,
+      "neighbors": {
+        "N": 2,
+        "E": 2,
+        "S": 1,
+        "W": 1
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 12,
+        "base": "corner",
+        "variant": "corner-SW",
+        "facing": "S",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-13",
+      "center": 2,
+      "neighbors": {
+        "N": 1,
+        "E": 2,
+        "S": 1,
+        "W": 1
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 13,
+        "base": "spur",
+        "variant": "spur-E",
+        "facing": "E",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-14",
+      "center": 2,
+      "neighbors": {
+        "N": 2,
+        "E": 1,
+        "S": 1,
+        "W": 1
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 14,
+        "base": "spur",
+        "variant": "spur-N",
+        "facing": "N",
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "mask-15",
+      "center": 2,
+      "neighbors": {
+        "N": 1,
+        "E": 1,
+        "S": 1,
+        "W": 1
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 15,
+        "base": "pillar",
+        "variant": "pillar",
+        "facing": null,
+        "maxDrop": 1
+      }
+    },
+    {
+      "name": "corner-max-drop",
+      "center": 3,
+      "neighbors": {
+        "N": 0,
+        "E": 2,
+        "S": 3,
+        "W": 3
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 3,
+        "base": "corner",
+        "variant": "corner-NE",
+        "facing": "N",
+        "maxDrop": 3
+      }
+    },
+    {
+      "name": "pillar-max-drop",
+      "center": 3,
+      "neighbors": {
+        "N": 0,
+        "E": 0,
+        "S": 0,
+        "W": 0
+      },
+      "role": {
+        "kind": "cliff",
+        "edges": 15,
+        "base": "pillar",
+        "variant": "pillar",
+        "facing": null,
+        "maxDrop": 3
+      }
+    },
+    {
+      "name": "no-lower-neighbors",
+      "center": 2,
+      "neighbors": {
+        "N": 3,
+        "E": 2,
+        "S": 2,
+        "W": 2
+      },
+      "role": {
+        "kind": "flat"
+      }
+    }
+  ],
+  "stairs": [
+    {
+      "x": 4,
+      "y": 5,
+      "height": 2,
+      "terrain": {
+        "kind": "cliff",
+        "edges": 9,
+        "base": "corner",
+        "variant": "corner-NW",
+        "facing": "W",
+        "maxDrop": 1
+      },
+      "stairs": null,
+      "terrainStairAt": false
+    },
+    {
+      "x": 5,
+      "y": 5,
+      "height": 2,
+      "terrain": {
+        "kind": "cliff",
+        "edges": 1,
+        "base": "edge",
+        "variant": "edge-N",
+        "facing": "N",
+        "maxDrop": 1
+      },
+      "stairs": null,
+      "terrainStairAt": false
+    },
+    {
+      "x": 6,
+      "y": 5,
+      "height": 2,
+      "terrain": {
+        "kind": "cliff",
+        "edges": 1,
+        "base": "edge",
+        "variant": "edge-N",
+        "facing": "N",
+        "maxDrop": 1
+      },
+      "stairs": {
+        "kind": "stairs",
+        "facing": "N"
+      },
+      "terrainStairAt": true
+    },
+    {
+      "x": 7,
+      "y": 5,
+      "height": 2,
+      "terrain": {
+        "kind": "cliff",
+        "edges": 1,
+        "base": "edge",
+        "variant": "edge-N",
+        "facing": "N",
+        "maxDrop": 1
+      },
+      "stairs": null,
+      "terrainStairAt": false
+    },
+    {
+      "x": 8,
+      "y": 5,
+      "height": 2,
+      "terrain": {
+        "kind": "cliff",
+        "edges": 1,
+        "base": "edge",
+        "variant": "edge-N",
+        "facing": "N",
+        "maxDrop": 1
+      },
+      "stairs": null,
+      "terrainStairAt": false
+    },
+    {
+      "x": 9,
+      "y": 5,
+      "height": 2,
+      "terrain": {
+        "kind": "cliff",
+        "edges": 3,
+        "base": "corner",
+        "variant": "corner-NE",
+        "facing": "N",
+        "maxDrop": 1
+      },
+      "stairs": null,
+      "terrainStairAt": false
+    }
+  ],
+  "riverSources": [
+    {
+      "regionX": -3,
+      "regionY": -3,
+      "sources": [
+        {
+          "x": -63,
+          "y": -51
+        }
+      ]
+    },
+    {
+      "regionX": -2,
+      "regionY": -3,
+      "sources": [
+        {
+          "x": -28,
+          "y": -64
+        }
+      ]
+    },
+    {
+      "regionX": -1,
+      "regionY": -1,
+      "sources": [
+        {
+          "x": -3,
+          "y": -15
+        }
+      ]
+    },
+    {
+      "regionX": 0,
+      "regionY": 0,
+      "sources": [
+        {
+          "x": 11,
+          "y": 23
+        }
+      ]
+    },
+    {
+      "regionX": 1,
+      "regionY": 0,
+      "sources": [
+        {
+          "x": 33,
+          "y": 3
+        }
+      ]
+    },
+    {
+      "regionX": 2,
+      "regionY": -3,
+      "sources": [
+        {
+          "x": 71,
+          "y": -61
+        }
+      ]
+    },
+    {
+      "regionX": 3,
+      "regionY": 3,
+      "sources": [
+        {
+          "x": 85,
+          "y": 80
+        }
+      ]
+    }
+  ],
+  "riverTraces": [
+    {
+      "name": "short-negative-source",
+      "sx": -63,
+      "sy": -51,
+      "opts": {
+        "maxRiverLength": 6
+      },
+      "path": [
+        {
+          "x": -63,
+          "y": -51,
+          "inDir": null,
+          "outDir": "N"
+        },
+        {
+          "x": -63,
+          "y": -52,
+          "inDir": "S",
+          "outDir": "W"
+        },
+        {
+          "x": -64,
+          "y": -52,
+          "inDir": "E",
+          "outDir": "N"
+        },
+        {
+          "x": -64,
+          "y": -53,
+          "inDir": "S",
+          "outDir": "N"
+        },
+        {
+          "x": -64,
+          "y": -54,
+          "inDir": "S",
+          "outDir": "N"
+        },
+        {
+          "x": -64,
+          "y": -55,
+          "inDir": "S",
+          "outDir": "W"
+        },
+        {
+          "x": -65,
+          "y": -55,
+          "inDir": "E",
+          "outDir": null
+        }
+      ]
+    },
+    {
+      "name": "full-negative-source",
+      "sx": -63,
+      "sy": -51,
+      "opts": {},
+      "length": 14,
+      "lastFive": [
+        {
+          "x": -67,
+          "y": -56,
+          "inDir": "E",
+          "outDir": "W"
+        },
+        {
+          "x": -68,
+          "y": -56,
+          "inDir": "E",
+          "outDir": "W"
+        },
+        {
+          "x": -69,
+          "y": -56,
+          "inDir": "E",
+          "outDir": "W"
+        },
+        {
+          "x": -70,
+          "y": -56,
+          "inDir": "E",
+          "outDir": "N"
+        },
+        {
+          "x": -70,
+          "y": -57,
+          "inDir": "S",
+          "outDir": null
+        }
+      ]
+    },
+    {
+      "name": "plateau-neighbor-skip",
+      "sx": 4,
+      "sy": 5,
+      "opts": {
+        "villageAnchor": {
+          "x": 5,
+          "y": 5
+        },
+        "plateauRadius": 1
+      },
+      "path": [
+        {
+          "x": 4,
+          "y": 5,
+          "inDir": null,
+          "outDir": "W"
+        },
+        {
+          "x": 3,
+          "y": 5,
+          "inDir": "E",
+          "outDir": "N"
+        },
+        {
+          "x": 3,
+          "y": 4,
+          "inDir": "S",
+          "outDir": "N"
+        },
+        {
+          "x": 3,
+          "y": 3,
+          "inDir": "S",
+          "outDir": "N"
+        },
+        {
+          "x": 3,
+          "y": 2,
+          "inDir": "S",
+          "outDir": null
+        }
+      ]
+    }
+  ],
+  "riverSegments": [
+    {
+      "name": "start-east",
+      "tile": {
+        "x": 0,
+        "y": 0,
+        "inDir": null,
+        "outDir": "E"
+      },
+      "role": {
+        "kind": "river",
+        "segment": "start",
+        "inDir": null,
+        "outDir": "E",
+        "facing": "E"
+      }
+    },
+    {
+      "name": "end-west",
+      "tile": {
+        "x": 0,
+        "y": 0,
+        "inDir": "W",
+        "outDir": null
+      },
+      "role": {
+        "kind": "river",
+        "segment": "end",
+        "inDir": "W",
+        "outDir": null,
+        "facing": "W"
+      }
+    },
+    {
+      "name": "straight-ns",
+      "tile": {
+        "x": 0,
+        "y": 0,
+        "inDir": "N",
+        "outDir": "S"
+      },
+      "role": {
+        "kind": "river",
+        "segment": "straight",
+        "inDir": "N",
+        "outDir": "S",
+        "facing": "S"
+      }
+    },
+    {
+      "name": "straight-ew",
+      "tile": {
+        "x": 0,
+        "y": 0,
+        "inDir": "E",
+        "outDir": "W"
+      },
+      "role": {
+        "kind": "river",
+        "segment": "straight",
+        "inDir": "E",
+        "outDir": "W",
+        "facing": "W"
+      }
+    },
+    {
+      "name": "bend-ne",
+      "tile": {
+        "x": 0,
+        "y": 0,
+        "inDir": "N",
+        "outDir": "E"
+      },
+      "role": {
+        "kind": "river",
+        "segment": "bend",
+        "inDir": "N",
+        "outDir": "E",
+        "facing": "E"
+      }
+    },
+    {
+      "name": "degenerate",
+      "tile": {
+        "x": 0,
+        "y": 0,
+        "inDir": null,
+        "outDir": null
+      },
+      "role": {
+        "kind": "river",
+        "segment": "start",
+        "inDir": null,
+        "outDir": null,
+        "facing": "N"
+      }
+    }
+  ],
+  "biomes": [
+    {
+      "height": 0,
+      "maxHeight": 3,
+      "moisture": 0.5,
+      "biome": "lowland"
+    },
+    {
+      "height": 3,
+      "maxHeight": 3,
+      "moisture": 0.5,
+      "biome": "highland"
+    },
+    {
+      "height": 1,
+      "maxHeight": 3,
+      "moisture": 0.8,
+      "biome": "forest"
+    },
+    {
+      "height": 2,
+      "maxHeight": 3,
+      "moisture": 0.2,
+      "biome": "rocky"
+    },
+    {
+      "height": 1,
+      "maxHeight": 3,
+      "moisture": 0.45,
+      "biome": "grassland"
+    },
+    {
+      "height": 1,
+      "maxHeight": 3,
+      "moisture": 0.6,
+      "biome": "grassland"
+    },
+    {
+      "height": 1,
+      "maxHeight": 3,
+      "moisture": 0.33,
+      "biome": "grassland"
+    },
+    {
+      "height": 0,
+      "maxHeight": 0,
+      "moisture": 0.9,
+      "biome": "lowland"
+    }
+  ],
+  "decorations": [
+    {
+      "x": -87,
+      "y": -95,
+      "chunkX": -8,
+      "chunkY": -8,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "tree",
+        "species": 0
+      }
+    },
+    {
+      "x": -91,
+      "y": -92,
+      "chunkX": -8,
+      "chunkY": -8,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "tree",
+        "species": 1
+      }
+    },
+    {
+      "x": -91,
+      "y": -94,
+      "chunkX": -8,
+      "chunkY": -8,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "tree",
+        "species": 2
+      }
+    },
+    {
+      "x": -96,
+      "y": -95,
+      "chunkX": -8,
+      "chunkY": -8,
+      "biome": "forest",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "tree",
+        "species": 3
+      }
+    },
+    {
+      "x": -93,
+      "y": -65,
+      "chunkX": -8,
+      "chunkY": -6,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "rock",
+        "size": "small",
+        "resource": false
+      }
+    },
+    {
+      "x": -88,
+      "y": -51,
+      "chunkX": -8,
+      "chunkY": -5,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "rock",
+        "size": "small",
+        "resource": true
+      }
+    },
+    {
+      "x": -91,
+      "y": -91,
+      "chunkX": -8,
+      "chunkY": -8,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "rock",
+        "size": "medium",
+        "resource": false
+      }
+    },
+    {
+      "x": -93,
+      "y": -94,
+      "chunkX": -8,
+      "chunkY": -8,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "rock",
+        "size": "medium",
+        "resource": true
+      }
+    },
+    {
+      "x": -94,
+      "y": -81,
+      "chunkX": -8,
+      "chunkY": -7,
+      "biome": "forest",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "rock",
+        "size": "large",
+        "resource": false
+      }
+    },
+    {
+      "x": -89,
+      "y": -75,
+      "chunkX": -8,
+      "chunkY": -7,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": {
+        "kind": "rock",
+        "size": "large",
+        "resource": true
+      }
+    },
+    {
+      "x": -90,
+      "y": -90,
+      "chunkX": -8,
+      "chunkY": -8,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": null
+    },
+    {
+      "x": -36,
+      "y": -32,
+      "chunkX": -3,
+      "chunkY": -3,
+      "biome": "forest",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": {
+        "kind": "river",
+        "segment": "bend",
+        "inDir": "S",
+        "outDir": "W",
+        "facing": "W"
+      },
+      "stairs": null,
+      "decoration": null
+    },
+    {
+      "x": 11,
+      "y": 5,
+      "chunkX": 0,
+      "chunkY": 0,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": null
+    },
+    {
+      "x": 12,
+      "y": 5,
+      "chunkX": 1,
+      "chunkY": 0,
+      "biome": "grassland",
+      "terrain": {
+        "kind": "flat"
+      },
+      "river": null,
+      "stairs": null,
+      "decoration": null
+    }
+  ]
+}
