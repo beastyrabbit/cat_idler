@@ -453,7 +453,7 @@ scope: lib/game/depletion.ts + spoilage.ts -> crates/cat-sim/src/depletion.rs + 
 ### P5.8 Housing + roads   [status: todo]
 persona: developer -> qa   depends_on: []   parallel_group: P5c
 scope: lib/game/housing.ts + roads.ts -> crates/cat-sim/src/housing.rs + roads.rs (housingCapacity/pressure, villageLevel thresholds [6,12,20,30]; ROAD_PAVE_WEAR 70, selectRoadCorridor).
-### P5.9 Village layout   [status: todo]
+### P5.9 Village layout   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5c
 scope: lib/game/villageLayout.ts -> crates/cat-sim/src/village_layout.rs (VILLAGE_ANCHOR, colonyToWorld/worldToColony, ringCells, nextBuildingSite, villageRadius).
 ### P5.10 Village area   [status: todo]
