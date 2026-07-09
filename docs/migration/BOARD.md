@@ -450,7 +450,7 @@ scope: lib/game/shrine.ts + trips.ts -> crates/cat-sim/src/shrine.rs + trips.rs 
 ### P5.7 Depletion + spoilage   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5b
 scope: lib/game/depletion.ts + spoilage.ts -> crates/cat-sim/src/depletion.rs + spoilage.rs (FOREST_TYPES, regrowthAmount, CHOPPED_FOREST_FOOD_CAP 5; spoilage report).
-### P5.8 Housing + roads   [status: todo]
+### P5.8 Housing + roads   [status: dev (housing done; roads pending)]
 persona: developer -> qa   depends_on: []   parallel_group: P5c
 scope: lib/game/housing.ts + roads.ts -> crates/cat-sim/src/housing.rs + roads.rs (housingCapacity/pressure, villageLevel thresholds [6,12,20,30]; ROAD_PAVE_WEAR 70, selectRoadCorridor).
 ### P5.9 Village layout   [status: qa]
