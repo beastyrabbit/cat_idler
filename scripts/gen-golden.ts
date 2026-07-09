@@ -16,6 +16,8 @@
  *
  * Run:  bun run scripts/gen-golden.ts [--seed N] [--ticks N] [--step-sec N] [--out PATH]
  */
+import fs from "node:fs";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { createDb } from "@/db/client";
 import { colonies, worldTiles } from "@/db/schema";
@@ -132,8 +134,6 @@ function main() {
 			},
 			snapshots: snaps,
 		};
-		const fs = require("node:fs") as typeof import("node:fs");
-		const path = require("node:path") as typeof import("node:path");
 		fs.mkdirSync(path.dirname(OUT), { recursive: true });
 		fs.writeFileSync(OUT, `${JSON.stringify(out, null, 2)}\n`);
 		const last = snaps[snaps.length - 1];

@@ -1,0 +1,1252 @@
+{
+  "meta": {
+    "generator": "scripts/gen-golden.ts",
+    "seed": 1234,
+    "worldSeed": 20240703,
+    "ticks": 40,
+    "stepSec": 60,
+    "note": "Aggregate behavioural fixture; ids excluded (nanoid). Rust parity = trajectory shape."
+  },
+  "snapshots": [
+    {
+      "tick": 1,
+      "elapsedSec": 60,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 149.59,
+        "water": 99.6,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 20
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 2,
+      "elapsedSec": 120,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 149.18,
+        "water": 99.2,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "traveling": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 3,
+      "elapsedSec": 180,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 148.78,
+        "water": 98.8,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 12,
+        "traveling": 4
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 4,
+      "elapsedSec": 240,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 148.37,
+        "water": 98.4,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 5,
+      "elapsedSec": 300,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 147.96,
+        "water": 98,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 6,
+      "elapsedSec": 360,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 147.55,
+        "water": 97.6,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 7,
+      "elapsedSec": 420,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 147.15,
+        "water": 97.2,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 8,
+      "elapsedSec": 480,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 146.74,
+        "water": 96.8,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 9,
+      "elapsedSec": 540,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 146.33,
+        "water": 96.4,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 10,
+      "elapsedSec": 600,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 145.93,
+        "water": 96,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 11,
+      "elapsedSec": 660,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 145.52,
+        "water": 95.6,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 12,
+      "elapsedSec": 720,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 145.12,
+        "water": 95.2,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 13,
+      "elapsedSec": 780,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 144.71,
+        "water": 94.8,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 14,
+      "elapsedSec": 840,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 144.3,
+        "water": 94.4,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 15,
+      "elapsedSec": 900,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 143.9,
+        "water": 94,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 16,
+      "elapsedSec": 960,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 143.49,
+        "water": 93.6,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 17,
+      "elapsedSec": 1020,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 143.09,
+        "water": 93.2,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 18,
+      "elapsedSec": 1080,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 142.68,
+        "water": 92.8,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 19,
+      "elapsedSec": 1140,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 142.28,
+        "water": 92.4,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 20,
+      "elapsedSec": 1200,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 141.88,
+        "water": 92,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 21,
+      "elapsedSec": 1260,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 141.47,
+        "water": 91.6,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 22,
+      "elapsedSec": 1320,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 141.07,
+        "water": 91.2,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 23,
+      "elapsedSec": 1380,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 140.66,
+        "water": 90.8,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 24,
+      "elapsedSec": 1440,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 140.26,
+        "water": 90.4,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 25,
+      "elapsedSec": 1500,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 139.86,
+        "water": 90,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 26,
+      "elapsedSec": 1560,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 139.45,
+        "water": 89.6,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 27,
+      "elapsedSec": 1620,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 139.05,
+        "water": 89.2,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 28,
+      "elapsedSec": 1680,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 138.65,
+        "water": 88.8,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 29,
+      "elapsedSec": 1740,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 138.25,
+        "water": 88.4,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 30,
+      "elapsedSec": 1800,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 137.84,
+        "water": 88,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 31,
+      "elapsedSec": 1860,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 137.44,
+        "water": 87.6,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 32,
+      "elapsedSec": 1920,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 137.04,
+        "water": 87.2,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 33,
+      "elapsedSec": 1980,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 136.64,
+        "water": 86.8,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 34,
+      "elapsedSec": 2040,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 136.24,
+        "water": 86.4,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 35,
+      "elapsedSec": 2100,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 135.83,
+        "water": 86,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 36,
+      "elapsedSec": 2160,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 135.43,
+        "water": 85.6,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 37,
+      "elapsedSec": 2220,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 135.03,
+        "water": 85.2,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 38,
+      "elapsedSec": 2280,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 134.63,
+        "water": 84.8,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 39,
+      "elapsedSec": 2340,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 134.23,
+        "water": 84.4,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    },
+    {
+      "tick": 40,
+      "elapsedSec": 2400,
+      "status": "thriving",
+      "population": 20,
+      "resources": {
+        "food": 133.83,
+        "water": 84,
+        "herbs": 16,
+        "materials": 24,
+        "blessings": 0,
+        "refined": 0,
+        "weapons": 0,
+        "armor": 0
+      },
+      "jobsByKind": {
+        "explore": 4,
+        "fetch_water": 1,
+        "quarry": 4,
+        "hunt_expedition": 7,
+        "leader_plan_house": 1
+      },
+      "catsByActivity": {
+        "idle": 4,
+        "working": 16
+      },
+      "threatPressure": 0,
+      "threatBand": "calm",
+      "villageLevel": 2,
+      "buildings": 7
+    }
+  ]
+}
