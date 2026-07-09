@@ -7,12 +7,14 @@ use std::collections::BTreeMap;
 
 use crate::{
     biomes::MaxResources,
-    depletion::{is_forest_type, regrowth_amount},
+    depletion::{CHOPPED_FOREST_FOOD_CAP, is_forest_type, regrowth_amount},
     elections::{
         BallotVote, ELECTION_WINDOW_MS, ElectionCandidate, KICK_WINDOW_MS, TERM_MS,
         candidates_for_unbarred, election_due, election_winner, should_trigger_kick, tally_votes,
     },
-    entities::{Cat, CatActivity, ColonyStatus, Position, Resources},
+    entities::{
+        Carrying, CarryingKind, Cat, CatActivity, ColonyStatus, MapType, Position, Resources,
+    },
     idle_engine,
     idle_rules::consumption_for_tick,
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
@@ -21,15 +23,24 @@ use crate::{
         match_cats_to_slots,
     },
     life_sim::{can_work, get_life_stage, leadership_after_tenure, old_age_death_probability},
+    movement::{JobDestinationContext, WorldPos, destination_for_job, pick_wander_target},
     policy::PolicyConfig,
+    production::{WorkshopOptions, advance_workshop, field_yield},
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
+    shrine::should_deposit,
+    smithy::{SmithyOptions, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
     storage::{
         StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
     },
     threat::threat_band,
+    trips::{HUNT_TRIP_COUNT, remaining_yield, split_yield, trip_due_at},
     types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType, UpgradeKey},
-    upgrade_tree::{UpgradeTreeState, create_upgrade_tree_state, resolve_effects},
+    upgrade_tree::{
+        UpgradeTreeState, accrue_research, cat_auto_unlock, create_upgrade_tree_state, get_node,
+        points_per_tick_for, resolve_effects,
+    },
+    village_layout::{GridPos, VILLAGE_ANCHOR, colony_to_world, world_to_colony},
     world_gen::TileResources,
     zones::{ZoneKind, ZoneRect},
 };
@@ -283,6 +294,8 @@ struct TickPolicy {
 
 const EVENT_KEEP: usize = 2_000;
 const MAX_PATH_DECAY_PER_TICK: u32 = 2;
+const QUARRY_TOTAL_YIELD: f64 = 15.0;
+const WATER_TOTAL_YIELD: f64 = 40.0;
 
 impl Default for ColonyRuntime {
     fn default() -> Self {
@@ -772,14 +785,221 @@ fn phase_13_tick_local_target_caches(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 14: promote queued jobs, create scaffolds for construction jobs, and
 /// stamp started timers.
-fn phase_14_promote_queued_jobs_and_break_ground(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_14_promote_queued_jobs_and_break_ground(colony: &mut ColonyRuntime, gate: TickGate) {
+    let queued_indices = colony
+        .jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, job)| (job.status == JobStatus::Queued).then_some(index))
+        .collect::<Vec<_>>();
+    let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
+
+    for job_index in queued_indices {
+        let mut next_metadata = colony.jobs[job_index].metadata.clone();
+
+        if colony.jobs[job_index].kind == JobKind::BuildHouse
+            && matches!(
+                next_metadata,
+                JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    ..
+                }
+            )
+        {
+            let roll = roll_seeded(f64::from(movement_seed));
+            movement_seed = roll.next_seed;
+
+            if let Some(site_local) = next_claimed_building_site(colony, roll.value) {
+                let building_id = format!(
+                    "building-{}-{}",
+                    gate.processed_through,
+                    colony.buildings.len() + 1
+                );
+                let scaffold_type = match next_metadata {
+                    JobMetadata::Construction { building_type, .. } => {
+                        scaffold_building_type(building_type)
+                    }
+                    _ => BuildingType::Den,
+                };
+
+                colony.buildings.push(BuildingRuntime {
+                    id: building_id.clone(),
+                    building_type: scaffold_type,
+                    level: 1,
+                    position: site_local,
+                    is_complete: false,
+                    construction_progress: 0,
+                    production_progress: 0.0,
+                    assigned_cat: None,
+                });
+
+                if let JobMetadata::Construction {
+                    phase,
+                    building_type: _,
+                    ..
+                } = next_metadata
+                {
+                    next_metadata = JobMetadata::Construction {
+                        phase,
+                        building_type: scaffold_type,
+                        building_id: Some(building_id),
+                        site: Some(site_local),
+                    };
+                }
+            }
+        }
+
+        let job = &mut colony.jobs[job_index];
+        job.status = JobStatus::Active;
+        if job.started_at.is_none() {
+            job.started_at = Some(gate.processed_through);
+        }
+        job.metadata = next_metadata;
+    }
+}
 
 /// Phase 15: assign destinations for promoted jobs, including zoned hunt picks,
 /// quarry/water/frontier targets, expansion targets, and shrine travel.
-fn phase_15_assign_promoted_job_destinations(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: TickGate) {
+    let active_indices = colony
+        .jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, job)| {
+            (job.status == JobStatus::Active
+                && job.assigned_cat.is_some()
+                && !job_has_destination_metadata(job))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
+    let food_tiles = food_tiles_near_village(colony);
+    let quarry_site = quarry_sites_near_village(colony).into_iter().next();
+    let water_site = water_sites_near_village(colony).into_iter().next();
+    let frontier_tiles = frontier_tiles_near_village(colony);
+    let mut scout_promotions = 0usize;
+
+    for job_index in active_indices {
+        let job = colony.jobs[job_index].clone();
+        let roll = roll_seeded(f64::from(movement_seed));
+        movement_seed = roll.next_seed;
+
+        let construction_site = match job.metadata {
+            JobMetadata::Construction {
+                site: Some(site), ..
+            } => Some(tile_pos_to_world(site)),
+            _ => None,
+        };
+        let expansion_site = match job.metadata {
+            JobMetadata::Expansion { target, .. } => Some(tile_pos_to_world(target)),
+            _ => None,
+        };
+        let explore_site = if job.kind == JobKind::Explore && !frontier_tiles.is_empty() {
+            let site = frontier_tiles[scout_promotions % frontier_tiles.len()];
+            scout_promotions += 1;
+            Some(site)
+        } else {
+            None
+        };
+        let hunt_tiles = if job.kind == JobKind::HuntExpedition {
+            food_tiles.as_slice()
+        } else {
+            &[]
+        };
+        let context = JobDestinationContext {
+            anchor: village_anchor_world(),
+            shrine: village_anchor_world(),
+            food_tiles: hunt_tiles,
+            roll: roll.value,
+            site: construction_site,
+            expansion_site,
+            quarry_site,
+            water_site,
+            explore_site,
+        };
+
+        let Some(destination) = destination_for_job(job.kind.as_str(), &context) else {
+            continue;
+        };
+        let site = world_pos_to_tile(destination);
+
+        colony.jobs[job_index].metadata = match colony.jobs[job_index].kind {
+            JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater => {
+                JobMetadata::Hauling {
+                    site: Some(site),
+                    total_yield: None,
+                    trips_done: 0,
+                    next_trip_at: None,
+                    accepted: false,
+                }
+            }
+            JobKind::ExpandVillage => JobMetadata::Expansion {
+                target: site,
+                accepted: false,
+            },
+            JobKind::BuildHouse => match colony.jobs[job_index].metadata.clone() {
+                JobMetadata::Construction {
+                    phase,
+                    building_type,
+                    building_id,
+                    ..
+                } => JobMetadata::Construction {
+                    phase,
+                    building_type,
+                    building_id,
+                    site: Some(site),
+                },
+                _ => JobMetadata::Site {
+                    site,
+                    accepted: false,
+                },
+            },
+            _ => JobMetadata::Site {
+                site,
+                accepted: false,
+            },
+        };
+
+        if let Some(cat_id) = colony.jobs[job_index].assigned_cat.clone()
+            && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+        {
+            cat.destination = Some(position_from_world(village_anchor_world()));
+            cat.activity = CatActivity::Traveling;
+            cat.current_task = task_for_job(job.kind);
+        }
+    }
+}
 
 /// Phase 16: update active scaffold progress from job timer progress.
-fn phase_16_active_scaffold_progress(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_16_active_scaffold_progress(colony: &mut ColonyRuntime, gate: TickGate) {
+    for job in &colony.jobs {
+        if job.status != JobStatus::Active || job.kind != JobKind::BuildHouse {
+            continue;
+        }
+        let JobMetadata::Construction {
+            building_id: Some(building_id),
+            ..
+        } = &job.metadata
+        else {
+            continue;
+        };
+        let started_at = job.started_at.unwrap_or(gate.processed_through);
+        let ends_at = job.ends_at.unwrap_or(started_at);
+        let duration = ends_at.saturating_sub(started_at).max(1);
+        let progress = (((gate.processed_through - started_at) as f64 / duration as f64) * 100.0)
+            .round()
+            .clamp(0.0, 99.0) as u8;
+
+        if let Some(building) = colony
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == *building_id)
+        {
+            building.construction_progress = progress;
+            building.is_complete = false;
+        }
+    }
+}
 
 /// Phase 17: queue the legacy leader emergency hunt when food is below the
 /// policy threshold and no conflicting strategic job exists.
@@ -1200,11 +1420,141 @@ fn phase_22_ritual_approval(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 23: run fields, workshops, and smithies against patched resources and
 /// building progress.
-fn phase_23_production(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
+    auto_staff_idle_buildings(colony, BuildingType::Workshop, gate.processed_through);
+
+    let production_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
+    let building_ids = colony
+        .buildings
+        .iter()
+        .enumerate()
+        .filter_map(|(index, building)| {
+            (building.construction_progress >= 100).then_some((index, building.id.clone()))
+        })
+        .collect::<Vec<_>>();
+
+    for (building_index, building_id) in building_ids {
+        match colony.buildings[building_index].building_type {
+            BuildingType::Field => {
+                colony.resources.food += field_yield(production_elapsed);
+            }
+            BuildingType::Workshop => {
+                let worker = assigned_worker(colony, &building_id);
+                let step = advance_workshop(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    WorkshopOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_architect: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        materials_available: colony.resources.materials,
+                    },
+                );
+                if step.refined_produced > 0.0 {
+                    colony.resources.materials =
+                        (colony.resources.materials - step.materials_used).max(0.0);
+                    colony.resources.refined += step.refined_produced;
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("production".to_owned()),
+                        format!(
+                            "The workshop refined {} materials into {} refined good{}.",
+                            step.materials_used,
+                            step.refined_produced,
+                            if step.refined_produced == 1.0 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ),
+                    );
+                }
+                colony.buildings[building_index].production_progress = step.next_progress;
+            }
+            BuildingType::Smithy => {
+                let worker = assigned_worker(colony, &building_id);
+                let step = advance_smithy(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    SmithyOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_fast: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        refined_available: colony.resources.refined,
+                        materials_available: colony.resources.materials,
+                    },
+                );
+                if step.weapons_produced > 0.0 || step.armor_produced > 0.0 {
+                    colony.resources.refined =
+                        (colony.resources.refined - step.refined_used).max(0.0);
+                    colony.resources.materials =
+                        (colony.resources.materials - step.materials_used).max(0.0);
+                    colony.resources.weapons += step.weapons_produced;
+                    colony.resources.armor += step.armor_produced;
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("production".to_owned()),
+                        format!(
+                            "The smith forged {} weapon{} and {} armor at the smithy.",
+                            step.weapons_produced,
+                            if step.weapons_produced == 1.0 {
+                                ""
+                            } else {
+                                "s"
+                            },
+                            step.armor_produced,
+                        ),
+                    );
+                }
+                colony.buildings[building_index].production_progress = step.next_progress;
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Phase 24: accrue research from staffed research huts/schools and auto-unlock
 /// affordable upgrade-tree nodes.
-fn phase_24_research(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
+    let research_workforce = research_workforce(colony);
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let gained = points_per_tick_for(
+        research_workforce,
+        gate.elapsed_sec as f64 * normalize_time_scale(colony),
+        effects.research_rate_mult,
+    );
+
+    if gained > 0.0 {
+        colony.upgrade_tree = accrue_research(&colony.upgrade_tree, gained);
+    }
+
+    loop {
+        let result = cat_auto_unlock(&colony.upgrade_tree);
+        if !result.ok {
+            break;
+        }
+        let node_name = result
+            .node_id
+            .as_deref()
+            .and_then(get_node)
+            .map_or_else(
+                || result.node_id.as_deref().unwrap_or("something"),
+                |node| node.name,
+            )
+            .to_owned();
+        colony.upgrade_tree = result.state;
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("research_unlocked".to_owned()),
+            format!("The cats discovered {node_name}!"),
+        );
+    }
+}
 
 /// Phase 25: apply survival needs, deaths, carried-yield salvage, and
 /// death-related job retirement.
@@ -1219,30 +1569,262 @@ fn phase_27_due_job_prelude(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 28: complete supply jobs and planner jobs, including hunt and house
 /// queueing.
-fn phase_28_due_completion_supplies_and_planner_jobs(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_28_due_completion_supplies_and_planner_jobs(colony: &mut ColonyRuntime, gate: TickGate) {
+    let due_jobs = due_active_jobs(colony, gate);
+
+    for job in due_jobs {
+        match job.kind {
+            JobKind::SupplyFood => colony.resources.food += 8.0,
+            JobKind::SupplyWater => colony.resources.water += 8.0,
+            JobKind::LeaderPlanHunt => {
+                let hunter = select_best_cat(colony, Some(CatSpecialization::Hunter));
+                queue_job(
+                    colony,
+                    gate.processed_through,
+                    JobKind::HuntExpedition,
+                    hunter,
+                    JobMetadata::None,
+                );
+            }
+            JobKind::LeaderPlanHouse => {
+                let architect = select_best_cat(colony, Some(CatSpecialization::Architect));
+                queue_job(
+                    colony,
+                    gate.processed_through,
+                    JobKind::BuildHouse,
+                    architect,
+                    JobMetadata::Construction {
+                        phase: ConstructionPhase::GatherMaterials,
+                        building_type: BuildingType::Den,
+                        building_id: None,
+                        site: None,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+}
 
 /// Phase 29: complete hunt/quarry/water/explore/expansion jobs, including tile
 /// depletion and claimed-area mutation.
-fn phase_29_due_completion_gathering_explore_expansion(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_29_due_completion_gathering_explore_expansion(colony: &mut ColonyRuntime, gate: TickGate) {
+    let due_jobs = due_active_jobs(colony, gate);
+
+    for job in due_jobs {
+        match job.kind {
+            JobKind::HuntExpedition => complete_hunt(colony, &job, gate),
+            JobKind::Quarry => complete_fixed_yield_job(
+                colony,
+                &job,
+                gate,
+                QUARRY_TOTAL_YIELD,
+                CarryingKind::Materials,
+            ),
+            JobKind::FetchWater => {
+                complete_fixed_yield_job(colony, &job, gate, WATER_TOTAL_YIELD, CarryingKind::Water)
+            }
+            JobKind::Explore => {
+                append_event(
+                    colony,
+                    gate.processed_through,
+                    EventKind::Other("discovery".to_owned()),
+                    "The scout mapped the lands around the village.",
+                );
+            }
+            JobKind::ExpandVillage => complete_village_expansion(colony, &job, gate),
+            _ => {}
+        }
+    }
+}
 
 /// Phase 30: complete build/ritual/training jobs, return workers, and mark jobs
 /// completed.
 fn phase_30_due_completion_build_ritual_training_return_mark_done(
-    _: &mut ColonyRuntime,
-    _: TickGate,
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
 ) {
+    let due_jobs = due_active_jobs(colony, gate);
+
+    for job in &due_jobs {
+        match job.kind {
+            JobKind::BuildHouse => complete_build(colony, job, gate),
+            JobKind::Ritual => complete_ritual(colony, job, gate),
+            JobKind::TrainWarrior => complete_warrior_training(colony, job, gate),
+            _ => {}
+        }
+
+        if matches!(
+            job.kind,
+            JobKind::HuntExpedition
+                | JobKind::BuildHouse
+                | JobKind::Ritual
+                | JobKind::Quarry
+                | JobKind::Explore
+                | JobKind::FetchWater
+                | JobKind::ExpandVillage
+        ) {
+            return_assigned_cat(colony, job, gate);
+        }
+    }
+
+    for job in due_jobs {
+        if let Some(stored) = colony
+            .jobs
+            .iter_mut()
+            .find(|candidate| candidate.id == job.id)
+        {
+            stored.status = JobStatus::Completed;
+            stored.completed_at = Some(gate.processed_through);
+        }
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::JobCompleted,
+            format!("Completed {}.", job.kind.as_str().replace('_', " ")),
+        );
+    }
 }
 
 /// Phase 31: run mid-job hauling trips for accepted active gathering and fetch
 /// jobs.
-fn phase_31_mid_job_hauling(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate) {
+    let active_jobs = colony
+        .jobs
+        .iter()
+        .filter(|job| {
+            job.status == JobStatus::Active
+                && matches!(
+                    job.kind,
+                    JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
+                )
+                && job.assigned_cat.is_some()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for job in active_jobs {
+        let JobMetadata::Hauling {
+            site: Some(site),
+            total_yield,
+            trips_done,
+            next_trip_at,
+            accepted: true,
+        } = job.metadata
+        else {
+            continue;
+        };
+        if trips_done >= (HUNT_TRIP_COUNT - 1) as u32 {
+            continue;
+        }
+        let Some(started_at) = job.started_at else {
+            continue;
+        };
+        let Some(ends_at) = job.ends_at else {
+            continue;
+        };
+        let due_at = next_trip_at.unwrap_or_else(|| {
+            trip_due_at(started_at as f64, ends_at as f64, trips_done as i32 + 1) as i64
+        });
+        if gate.processed_through < due_at || ends_at <= gate.processed_through {
+            continue;
+        }
+        let Some(cat_id) = job.assigned_cat.as_deref() else {
+            continue;
+        };
+        let Some(cat_index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
+            continue;
+        };
+        if colony.cats[cat_index].activity != CatActivity::Working
+            || colony.cats[cat_index].carrying.is_some()
+        {
+            continue;
+        }
+
+        let total = total_yield.unwrap_or_else(|| total_yield_for_job(colony, &job, cat_index));
+        let share = split_yield(total, HUNT_TRIP_COUNT, trips_done as i32);
+        if job.kind == JobKind::HuntExpedition {
+            drain_hunt_site(colony, site, share, gate.processed_through);
+        }
+
+        if let Some(stored) = colony
+            .jobs
+            .iter_mut()
+            .find(|candidate| candidate.id == job.id)
+        {
+            stored.metadata = JobMetadata::Hauling {
+                site: Some(site),
+                total_yield: Some(total),
+                trips_done: trips_done + 1,
+                next_trip_at: Some(trip_due_at(
+                    started_at as f64,
+                    ends_at as f64,
+                    trips_done as i32 + 2,
+                ) as i64),
+                accepted: true,
+            };
+        }
+
+        colony.cats[cat_index].carrying = Some(Carrying {
+            kind: carrying_kind_for_job(job.kind),
+            amount: share,
+            job_ended_at: gate.processed_through,
+        });
+        colony.cats[cat_index].destination = Some(position_from_world(village_anchor_world()));
+        colony.cats[cat_index].activity = CatActivity::Returning;
+    }
+}
 
 /// Phase 32: prepare movement inputs and optionally queue village expansion.
 fn phase_32_movement_setup_and_village_expansion_queue(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 33: deposit carried resources, clear missing destinations, and pick
 /// idle wander targets.
-fn phase_33_movement_deposits_and_no_destination_wander(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_33_movement_deposits_and_no_destination_wander(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+) {
+    let shrine = position_from_world(village_anchor_world());
+    let cat_ids = colony
+        .cats
+        .iter()
+        .filter_map(|cat| {
+            cat.death_time
+                .is_none()
+                .then_some((cat.id.clone(), cat.position, cat.carrying.clone()))
+        })
+        .collect::<Vec<_>>();
+
+    for (cat_id, position, carrying) in cat_ids {
+        let Some(carrying) = carrying else {
+            continue;
+        };
+        if !should_deposit(&carrying, position, shrine, gate.processed_through) {
+            continue;
+        }
+
+        credit_carrying(colony, &carrying);
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("shrine_deposit".to_owned()),
+            deposit_message(&cat_id, &carrying),
+        );
+
+        let return_site = active_site_for_carrier(colony, &cat_id);
+        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+            cat.carrying = None;
+            if let Some(site) = return_site {
+                cat.destination = Some(position_from_world(tile_pos_to_world(site)));
+                cat.activity = CatActivity::Traveling;
+            }
+        }
+    }
+}
 
 /// Phase 34: move cats, accept jobs on shrine arrival, reveal tiles, and apply
 /// path wear.
@@ -1790,6 +2372,572 @@ fn prune_events_to_newest(colony: &mut ColonyRuntime, keep: usize) {
     colony.events = next_events;
 }
 
+fn village_anchor_world() -> WorldPos {
+    WorldPos {
+        x: f64::from(VILLAGE_ANCHOR.x),
+        y: f64::from(VILLAGE_ANCHOR.y),
+    }
+}
+
+fn tile_pos_to_world(pos: TilePos) -> WorldPos {
+    WorldPos {
+        x: f64::from(pos.x),
+        y: f64::from(pos.y),
+    }
+}
+
+fn world_pos_to_tile(pos: WorldPos) -> TilePos {
+    TilePos {
+        x: pos.x.round() as i32,
+        y: pos.y.round() as i32,
+    }
+}
+
+fn position_from_world(pos: WorldPos) -> Position {
+    Position {
+        map: MapType::World,
+        x: pos.x,
+        y: pos.y,
+    }
+}
+
+fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
+    match building_type {
+        BuildingType::Workshop
+        | BuildingType::Field
+        | BuildingType::FoodStorage
+        | BuildingType::Smithy
+        | BuildingType::Barracks => building_type,
+        _ => BuildingType::Den,
+    }
+}
+
+fn next_claimed_building_site(colony: &ColonyRuntime, roll: f64) -> Option<TilePos> {
+    let occupied = colony
+        .buildings
+        .iter()
+        .map(|building| building.position)
+        .collect::<Vec<_>>();
+    let mut free = colony
+        .claimed_tiles
+        .iter()
+        .copied()
+        .filter(|site| {
+            *site
+                != TilePos {
+                    x: VILLAGE_ANCHOR.x,
+                    y: VILLAGE_ANCHOR.y,
+                }
+                && !occupied.contains(site)
+                && !tile_has_water(colony.world_tiles.get(site))
+        })
+        .collect::<Vec<_>>();
+    free.sort_by_key(|site| (site.y, site.x));
+
+    if free.is_empty() {
+        let occupied_local = occupied
+            .iter()
+            .map(|site| {
+                world_to_colony(GridPos {
+                    x: site.x,
+                    y: site.y,
+                })
+            })
+            .collect::<Vec<_>>();
+        return crate::village_layout::next_building_site_default(&occupied_local, roll)
+            .map(colony_to_world)
+            .map(|site| TilePos {
+                x: site.x,
+                y: site.y,
+            })
+            .filter(|site| !tile_has_water(colony.world_tiles.get(site)));
+    }
+
+    let clamped = roll.clamp(0.0, 0.999_999);
+    Some(free[(clamped * free.len() as f64).floor() as usize])
+}
+
+fn tile_has_water(tile: Option<&WorldTileRuntime>) -> bool {
+    tile.is_some_and(|tile| {
+        tile.tile_type == TileType::River
+            || tile.overlay_feature.as_deref() == Some("river")
+            || tile.resources.water > 0
+    })
+}
+
+fn job_has_destination_metadata(job: &JobRuntime) -> bool {
+    match job.metadata {
+        JobMetadata::Hauling {
+            site: Some(_),
+            accepted: _,
+            ..
+        }
+        | JobMetadata::Site { .. }
+        | JobMetadata::Expansion { accepted: _, .. } => true,
+        JobMetadata::Construction { site: Some(_), .. } => job.kind == JobKind::BuildHouse,
+        _ => false,
+    }
+}
+
+fn food_tiles_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
+    colony
+        .world_tiles
+        .values()
+        .filter(|tile| {
+            tile.resources.food >= 25 && tile_is_explored(tile) && cheb_from_anchor(tile.pos) > 4
+        })
+        .map(|tile| tile_pos_to_world(tile.pos))
+        .collect()
+}
+
+fn quarry_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
+    let mut sites = colony
+        .world_tiles
+        .values()
+        .filter(|tile| {
+            matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
+                && tile_is_explored(tile)
+        })
+        .map(|tile| tile.pos)
+        .collect::<Vec<_>>();
+    sites.sort_by_key(|site| cheb_from_anchor(*site));
+    sites.into_iter().map(tile_pos_to_world).collect()
+}
+
+fn water_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
+    let mut sites = colony
+        .world_tiles
+        .values()
+        .filter(|tile| tile_has_water(Some(tile)) && tile_is_explored(tile))
+        .map(|tile| tile.pos)
+        .collect::<Vec<_>>();
+    sites.sort_by_key(|site| cheb_from_anchor(*site));
+    sites.into_iter().map(tile_pos_to_world).collect()
+}
+
+fn frontier_tiles_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
+    let mut sites = colony
+        .world_tiles
+        .values()
+        .filter(|tile| !tile_is_explored(tile))
+        .map(|tile| tile.pos)
+        .collect::<Vec<_>>();
+    sites.sort_by_key(|site| cheb_from_anchor(*site));
+    sites.into_iter().map(tile_pos_to_world).collect()
+}
+
+fn tile_is_explored(tile: &WorldTileRuntime) -> bool {
+    tile.path_wear > 62 || cheb_from_anchor(tile.pos) <= 6
+}
+
+fn cheb_from_anchor(pos: TilePos) -> i32 {
+    (pos.x - VILLAGE_ANCHOR.x)
+        .abs()
+        .max((pos.y - VILLAGE_ANCHOR.y).abs())
+}
+
+fn auto_staff_idle_buildings(colony: &mut ColonyRuntime, building_type: BuildingType, now_ms: i64) {
+    let mut open_buildings = buildings_needing_workers(colony, building_type);
+    if open_buildings.is_empty() {
+        return;
+    }
+    let busy_ids = active_or_queued_jobs(colony)
+        .iter()
+        .filter_map(|job| job.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let assigned_building_ids = colony
+        .buildings
+        .iter()
+        .filter_map(|building| building.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let cats = colony
+        .cats
+        .iter()
+        .filter(|cat| {
+            can_take_new_job_with_busy(cat, &busy_ids)
+                && !assigned_building_ids.contains(&cat.id.as_str())
+        })
+        .map(|cat| cat.id.clone())
+        .collect::<Vec<_>>();
+
+    for cat_id in cats {
+        let Some(building_id) = open_buildings.pop() else {
+            break;
+        };
+        staff_building(colony, &building_id, &cat_id, now_ms);
+    }
+}
+
+fn assigned_worker<'a>(colony: &'a ColonyRuntime, building_id: &str) -> Option<&'a Cat> {
+    let assigned_cat = colony
+        .buildings
+        .iter()
+        .find(|building| building.id == building_id)
+        .and_then(|building| building.assigned_cat.as_deref())?;
+    colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == assigned_cat && cat.death_time.is_none())
+}
+
+fn research_workforce(_: &ColonyRuntime) -> f64 {
+    0.0
+}
+
+fn due_active_jobs(colony: &ColonyRuntime, gate: TickGate) -> Vec<JobRuntime> {
+    colony
+        .jobs
+        .iter()
+        .filter(|job| {
+            job.status == JobStatus::Active
+                && job
+                    .ends_at
+                    .is_some_and(|ends_at| ends_at <= gate.processed_through)
+        })
+        .cloned()
+        .collect()
+}
+
+fn complete_hunt(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
+    let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
+        return;
+    };
+    let (site, total_yield, trips_done) = hauling_metadata(job);
+    let total = total_yield.unwrap_or_else(|| hunt_yield_for(&colony.cats[cat_index], colony));
+    let reward = remaining_yield(total, HUNT_TRIP_COUNT, trips_done as i32);
+    if let Some(site) = site {
+        drain_hunt_site(colony, site, reward, gate.processed_through);
+    }
+
+    let cat = &mut colony.cats[cat_index];
+    cat.role_xp.hunter += 1.0;
+    cat.specialization = idle_engine::next_specialization(
+        CatSpecialization::Hunter,
+        cat.role_xp.hunter,
+        cat.specialization,
+    );
+    cat.stats.hunting = (cat.stats.hunting + 0.4).min(100.0);
+    cat.carrying = (reward > 0.0).then_some(Carrying {
+        kind: CarryingKind::Food,
+        amount: reward,
+        job_ended_at: gate.processed_through,
+    });
+}
+
+fn complete_fixed_yield_job(
+    colony: &mut ColonyRuntime,
+    job: &JobRuntime,
+    gate: TickGate,
+    total: f64,
+    kind: CarryingKind,
+) {
+    let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
+        return;
+    };
+    let (_, total_yield, trips_done) = hauling_metadata(job);
+    let reward = remaining_yield(
+        total_yield.unwrap_or(total),
+        HUNT_TRIP_COUNT,
+        trips_done as i32,
+    );
+    colony.cats[cat_index].carrying = (reward > 0.0).then_some(Carrying {
+        kind,
+        amount: reward,
+        job_ended_at: gate.processed_through,
+    });
+}
+
+fn complete_village_expansion(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
+    let target = match job.metadata {
+        JobMetadata::Expansion { target, .. } | JobMetadata::Site { site: target, .. } => target,
+        _ => return,
+    };
+    if colony.claimed_tiles.contains(&target)
+        || !is_adjacent_to_claimed(colony, target)
+        || tile_has_water(colony.world_tiles.get(&target))
+    {
+        return;
+    }
+    colony.claimed_tiles.push(target);
+    clear_claimed_forest_tile(colony, target, gate.processed_through);
+    append_event(
+        colony,
+        gate.processed_through,
+        EventKind::Other("village_expanded".to_owned()),
+        format!(
+            "The village claimed new ground at ({}, {}).",
+            target.x, target.y
+        ),
+    );
+}
+
+fn complete_build(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
+    let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
+        return;
+    };
+
+    match job.metadata {
+        JobMetadata::Construction {
+            phase: ConstructionPhase::ConstructHouse,
+            ref building_id,
+            ..
+        } => {
+            if let Some(building_id) = building_id
+                && let Some(building) = colony
+                    .buildings
+                    .iter_mut()
+                    .find(|building| building.id == *building_id)
+            {
+                building.construction_progress = 100;
+                building.is_complete = true;
+            }
+            colony.automation_tier =
+                ((colony.automation_tier + 0.05).min(10.0) * 100.0).round() / 100.0;
+        }
+        _ => {
+            colony.resources.materials += 12.0;
+            chop_nearest_explored_forest(colony, gate.processed_through);
+        }
+    }
+
+    let cat = &mut colony.cats[cat_index];
+    cat.role_xp.architect += 1.0;
+    cat.specialization = idle_engine::next_specialization(
+        CatSpecialization::Architect,
+        cat.role_xp.architect,
+        cat.specialization,
+    );
+    cat.stats.building = (cat.stats.building + 0.4).min(100.0);
+}
+
+fn complete_ritual(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
+    let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
+        return;
+    };
+    let blessings = 1.0 + f64::from(colony.upgrade_levels.ritual_mastery / 3);
+    let cat = &mut colony.cats[cat_index];
+    cat.role_xp.ritualist += 1.0;
+    cat.specialization = idle_engine::next_specialization(
+        CatSpecialization::Ritualist,
+        cat.role_xp.ritualist,
+        cat.specialization,
+    );
+    cat.carrying = Some(Carrying {
+        kind: CarryingKind::Blessings,
+        amount: blessings,
+        job_ended_at: gate.processed_through,
+    });
+}
+
+fn complete_warrior_training(colony: &mut ColonyRuntime, job: &JobRuntime, _: TickGate) {
+    let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
+        return;
+    };
+    let cat = &mut colony.cats[cat_index];
+    cat.specialization = Some(CatSpecialization::Warrior);
+    cat.role_xp.warrior += 1.0;
+    cat.stats.attack = (cat.stats.attack + 3.0).min(100.0);
+    cat.stats.defense = (cat.stats.defense + 3.0).min(100.0);
+    cat.activity = CatActivity::Idle;
+    cat.current_task = None;
+}
+
+fn return_assigned_cat(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
+    let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
+        return;
+    };
+    let destination = if job.kind == JobKind::BuildHouse {
+        let first = roll_seeded(f64::from(movement_seed(colony.test_rng_seed.unwrap_or(1))));
+        let second = roll_seeded(f64::from(first.next_seed));
+        pick_wander_target(village_anchor_world(), first.value, second.value)
+    } else {
+        village_anchor_world()
+    };
+    let cat = &mut colony.cats[cat_index];
+    cat.destination = Some(position_from_world(destination));
+    cat.activity = CatActivity::Returning;
+    cat.current_task = None;
+    if job.kind == JobKind::TrainWarrior {
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("warrior_trained".to_owned()),
+            "A recruit completed warrior training and joined the village guard.",
+        );
+    }
+}
+
+fn assigned_alive_cat_index(colony: &ColonyRuntime, job: &JobRuntime) -> Option<usize> {
+    let cat_id = job.assigned_cat.as_deref()?;
+    colony
+        .cats
+        .iter()
+        .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+}
+
+fn hauling_metadata(job: &JobRuntime) -> (Option<TilePos>, Option<f64>, u32) {
+    match job.metadata {
+        JobMetadata::Hauling {
+            site,
+            total_yield,
+            trips_done,
+            ..
+        } => (site, total_yield, trips_done),
+        JobMetadata::Site { site, .. } => (Some(site), None, 0),
+        _ => (None, None, 0),
+    }
+}
+
+fn hunt_yield_for(cat: &Cat, colony: &ColonyRuntime) -> f64 {
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let base = idle_engine::get_hunt_reward(
+        cat.stats.hunting,
+        cat.specialization,
+        cat.role_xp.hunter,
+        idle_engine_upgrade_levels(&colony.upgrade_levels),
+    );
+    let stage_mult = crate::life_sim::stage_work_effectiveness(get_life_stage(cat.age_hours));
+    let yield_mult = crate::life_sim::trade_yield_multiplier(cat.role_xp.hunter);
+    (base * stage_mult * yield_mult * effects.hunt_yield_mult.max(0.0))
+        .floor()
+        .max(1.0)
+}
+
+fn total_yield_for_job(colony: &ColonyRuntime, job: &JobRuntime, cat_index: usize) -> f64 {
+    match job.kind {
+        JobKind::FetchWater => WATER_TOTAL_YIELD,
+        JobKind::Quarry => QUARRY_TOTAL_YIELD,
+        JobKind::HuntExpedition => hunt_yield_for(&colony.cats[cat_index], colony),
+        _ => 0.0,
+    }
+}
+
+fn carrying_kind_for_job(kind: JobKind) -> CarryingKind {
+    match kind {
+        JobKind::FetchWater => CarryingKind::Water,
+        JobKind::Quarry => CarryingKind::Materials,
+        _ => CarryingKind::Food,
+    }
+}
+
+fn drain_hunt_site(colony: &mut ColonyRuntime, site: TilePos, amount: f64, now_ms: i64) {
+    if amount <= 0.0 {
+        return;
+    }
+    if let Some(tile) = colony.world_tiles.get_mut(&site) {
+        tile.resources.food = tile.resources.food.saturating_sub(amount.floor() as u32);
+        tile.last_depleted = now_ms;
+    }
+}
+
+fn is_adjacent_to_claimed(colony: &ColonyRuntime, target: TilePos) -> bool {
+    [
+        TilePos {
+            x: target.x + 1,
+            y: target.y,
+        },
+        TilePos {
+            x: target.x - 1,
+            y: target.y,
+        },
+        TilePos {
+            x: target.x,
+            y: target.y + 1,
+        },
+        TilePos {
+            x: target.x,
+            y: target.y - 1,
+        },
+    ]
+    .iter()
+    .any(|neighbour| colony.claimed_tiles.contains(neighbour))
+}
+
+fn clear_claimed_forest_tile(colony: &mut ColonyRuntime, target: TilePos, now_ms: i64) {
+    if let Some(tile) = colony.world_tiles.get_mut(&target)
+        && is_forest_type(tile.tile_type)
+    {
+        tile.tile_type = TileType::Field;
+        tile.resources.food = 0;
+        tile.resources.herbs = 0;
+        tile.max_resources.food = CHOPPED_FOREST_FOOD_CAP as u32;
+        tile.last_depleted = now_ms;
+    }
+}
+
+fn chop_nearest_explored_forest(colony: &mut ColonyRuntime, now_ms: i64) {
+    let nearest = colony
+        .world_tiles
+        .values()
+        .filter(|tile| is_forest_type(tile.tile_type) && tile_is_explored(tile))
+        .map(|tile| tile.pos)
+        .min_by_key(|site| cheb_from_anchor(*site));
+    if let Some(site) = nearest {
+        clear_claimed_forest_tile(colony, site, now_ms);
+        append_event(
+            colony,
+            now_ms,
+            EventKind::Other("forest_chopped".to_owned()),
+            format!(
+                "A forest at ({}, {}) was chopped for lumber.",
+                site.x, site.y
+            ),
+        );
+    }
+}
+
+fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying) {
+    match carrying.kind {
+        CarryingKind::Food => colony.resources.food += carrying.amount,
+        CarryingKind::Materials => colony.resources.materials += carrying.amount,
+        CarryingKind::Water => colony.resources.water += carrying.amount,
+        CarryingKind::Blessings => colony.global_upgrade_points += carrying.amount,
+    }
+}
+
+fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
+    match carrying.kind {
+        CarryingKind::Food => format!("{cat_id} delivered {} food to the shrine.", carrying.amount),
+        CarryingKind::Materials => {
+            format!(
+                "{cat_id} hauled {} materials to the shrine.",
+                carrying.amount
+            )
+        }
+        CarryingKind::Water => {
+            format!("{cat_id} carried {} water to the shrine.", carrying.amount)
+        }
+        CarryingKind::Blessings => {
+            format!(
+                "{cat_id}'s ritual beamed {} blessings up to the players.",
+                carrying.amount
+            )
+        }
+    }
+}
+
+fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str) -> Option<TilePos> {
+    colony.jobs.iter().find_map(|job| {
+        if job.status != JobStatus::Active
+            || job.assigned_cat.as_deref() != Some(cat_id)
+            || !matches!(
+                job.kind,
+                JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
+            )
+        {
+            return None;
+        }
+        match job.metadata {
+            JobMetadata::Hauling {
+                site: Some(site),
+                accepted: true,
+                ..
+            } => Some(site),
+            _ => None,
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2056,6 +3204,159 @@ mod tests {
         assert_eq!(tiles[&pos(5, 0)].path_wear, 68);
     }
 
+    #[test]
+    fn queued_hunt_promotion_assigns_anchor_destination_and_food_site() {
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                name: "MossClan".to_owned(),
+                resources: plentiful_resources(),
+                cats: vec![adult_idle_cat("hunter", "colony-1")],
+                jobs: vec![JobRuntime {
+                    id: "hunt-1".to_owned(),
+                    kind: JobKind::HuntExpedition,
+                    status: JobStatus::Queued,
+                    assigned_cat: Some("hunter".to_owned()),
+                    duration_ms: 60_000,
+                    created_at: 0,
+                    started_at: None,
+                    ends_at: Some(600_000),
+                    ..JobRuntime::default()
+                }],
+                world_tiles: BTreeMap::from([(
+                    pos(12, 6),
+                    WorldTileRuntime {
+                        resources: TileResources {
+                            food: 30,
+                            herbs: 0,
+                            water: 0,
+                        },
+                        path_wear: 63,
+                        ..tile(12, 6, 63, None)
+                    },
+                )]),
+                last_tick: 0,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let _ = world_tick(&mut world, 1_000);
+
+        let colony = &world.colonies[0];
+        let job = &colony.jobs[0];
+        assert_eq!(job.status, JobStatus::Active);
+        assert_eq!(job.started_at, Some(1_000));
+        assert_eq!(
+            job.metadata,
+            JobMetadata::Hauling {
+                site: Some(pos(12, 6)),
+                total_yield: None,
+                trips_done: 0,
+                next_trip_at: None,
+                accepted: false,
+            }
+        );
+        assert_eq!(
+            colony.cats[0].destination,
+            Some(Position {
+                map: MapType::World,
+                x: 6.0,
+                y: 6.0,
+            })
+        );
+        assert_eq!(colony.cats[0].activity, CatActivity::Traveling);
+        assert_eq!(colony.cats[0].current_task, Some(TaskType::Hunt));
+    }
+
+    #[test]
+    fn mid_job_hunt_haul_splits_total_and_sets_carrying() {
+        let mut cat = adult_idle_cat("hunter", "colony-1");
+        cat.activity = CatActivity::Working;
+        cat.current_task = Some(TaskType::Hunt);
+        cat.position = Position {
+            map: MapType::World,
+            x: 12.0,
+            y: 6.0,
+        };
+
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                name: "MossClan".to_owned(),
+                resources: plentiful_resources(),
+                cats: vec![cat],
+                jobs: vec![JobRuntime {
+                    id: "hunt-1".to_owned(),
+                    kind: JobKind::HuntExpedition,
+                    status: JobStatus::Active,
+                    assigned_cat: Some("hunter".to_owned()),
+                    duration_ms: 9_000,
+                    created_at: 0,
+                    started_at: Some(0),
+                    ends_at: Some(9_000),
+                    metadata: JobMetadata::Hauling {
+                        site: Some(pos(12, 6)),
+                        total_yield: Some(10.0),
+                        trips_done: 0,
+                        next_trip_at: Some(3_000),
+                        accepted: true,
+                    },
+                    ..JobRuntime::default()
+                }],
+                world_tiles: BTreeMap::from([(
+                    pos(12, 6),
+                    WorldTileRuntime {
+                        resources: TileResources {
+                            food: 30,
+                            herbs: 0,
+                            water: 0,
+                        },
+                        path_wear: 63,
+                        ..tile(12, 6, 63, None)
+                    },
+                )]),
+                last_tick: 2_000,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let _ = world_tick(&mut world, 3_000);
+
+        let colony = &world.colonies[0];
+        assert_eq!(
+            colony.jobs[0].metadata,
+            JobMetadata::Hauling {
+                site: Some(pos(12, 6)),
+                total_yield: Some(10.0),
+                trips_done: 1,
+                next_trip_at: Some(6_000),
+                accepted: true,
+            }
+        );
+        assert_eq!(
+            colony.cats[0].carrying,
+            Some(Carrying {
+                kind: CarryingKind::Food,
+                amount: 4.0,
+                job_ended_at: 3_000,
+            })
+        );
+        assert_eq!(colony.cats[0].activity, CatActivity::Returning);
+        assert_eq!(
+            colony.cats[0].destination,
+            Some(Position {
+                map: MapType::World,
+                x: 6.0,
+                y: 6.0,
+            })
+        );
+        assert_eq!(colony.world_tiles[&pos(12, 6)].resources.food, 26);
+    }
+
     fn adult_idle_cat(id: &str, colony_id: &str) -> Cat {
         Cat {
             id: id.to_owned(),
@@ -2097,6 +3398,19 @@ mod tests {
             sprite_params: None,
             specialization: None,
             role_xp: Default::default(),
+        }
+    }
+
+    fn plentiful_resources() -> Resources {
+        Resources {
+            food: 100.0,
+            water: 100.0,
+            herbs: 16.0,
+            materials: 100.0,
+            refined: 20.0,
+            weapons: 0.0,
+            armor: 0.0,
+            blessings: 0.0,
         }
     }
 

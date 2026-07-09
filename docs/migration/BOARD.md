@@ -485,3 +485,10 @@ persona: developer   depends_on:[]   scope: WorldState/ColonyRuntime/JobRuntime 
 persona: developer   depends_on:[P7.1]   scope: port the 37 phases in small groups (elapsed gate/rng forks; life sim; consumption/spoilage/clamp; minute gate/elections/zones; path decay/regrowth; job promotion; leader plan/director/assignment; production/research; due-job completion; hauling; movement; roads; raids; status/persist). Validate vs golden fixtures (scripts/gen-golden.ts).
 ### P7.gate P7 parity gate   [status: todo]
 persona: qa/orchestrator   scope: seed -> N ticks aggregate trajectory matches worker-tick golden fixture; multi-colony independence.
+
+### P7.followup BuildingType research_hut/school   [status: todo]
+note: DB schema allows building types "research_hut"/"school" (upgrade-tree unlocks) but
+types/game.ts BuildingType union omits them; TS uses string compares. Rust BuildingType
+(strict enum, 14 variants) can't represent them -> research-hut/school staffing inert in
+world_tick P7.5. Fix: add ResearchHut/School variants + non-purchasable BUILDING_COSTS
+entries (adjust the exhaustive test). Low priority (secondary research economy).
