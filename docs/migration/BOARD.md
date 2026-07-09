@@ -27,7 +27,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P1 | Sim foundation (rng, types, test-accel) | done |
 | P2 | World generation | done |
 | P3 | Cat AI (pathfinding, movement, leader director) | done |
-| P4 | Life sim | in progress |
+| P4 | Life sim | done |
 | P5 | Economy + housing + roads | pending |
 | P6 | Military + governance + upgrade tree | pending |
 | P7 | Master loop (`world_tick`, multi-colony) | pending |
@@ -407,23 +407,57 @@ persona: qa (orchestrator gate if xhigh times out)        depends_on: [P3.3,P3.4
 scope: determinism, no orphan fixtures, JS-trap audit across the cat-AI modules.
 
 ## P4 — Life sim (decomposed by orchestrator)
-### P4.1 Needs   [status: qa]
+### P4.1 Needs   [status: done]
 persona: developer -> qa   depends_on: []   parallel_group: P4a
 scope: Port lib/game/needs.ts -> crates/cat-sim/src/needs.rs (decay/restore/damage/critical helpers). Fixture-backed.
-### P4.2 Age   [status: qa]
+### P4.2 Age   [status: done]
 persona: developer -> qa   depends_on: []   parallel_group: P4a
 scope: Port lib/game/age.ts -> crates/cat-sim/src/age.rs (getAgeInHours, getLifeStage, getDeathChance, getAgeSkillModifier, canPerformTask; shouldDieOfOldAge uses Math.random -> injected roll). Fixture-backed.
-### P4.3 Breeding   [status: qa]
+### P4.3 Breeding   [status: done]
 persona: developer -> qa   depends_on: []   parallel_group: P4a
 scope: Port lib/game/breeding.ts -> crates/cat-sim/src/breeding.rs (calculateFertilityBonus cap .5, calculateBreedingChance cap .8).
-### P4.6 Genetics   [status: qa]
+### P4.6 Genetics   [status: done]
 persona: developer -> qa   depends_on: []   parallel_group: P4a
 scope: Port lib/game/genetics.ts -> crates/cat-sim/src/genetics.rs (sprite-trait inheritance, traitsToSpriteParams). Math.random throughout -> injected rolls; document. Cosmetic but affects breeding output.
-### P4.4 Survival   [status: qa]
+### P4.4 Survival   [status: done]
 persona: developer -> qa   depends_on: [P4.1]   parallel_group: P4b
 scope: Port lib/game/survival.ts -> crates/cat-sim/src/survival.rs (applySurvivalTick: 10-min unit normalization, availability-driven decay, damage, death; policy multipliers).
-### P4.5 Life simulation   [status: qa]
+### P4.5 Life simulation   [status: done]
 persona: developer -> qa   depends_on: [P4.1,P4.2,P4.3]   parallel_group: P4b
 scope: Port lib/game/lifeSim.ts -> crates/cat-sim/src/life_sim.rs (stageWorkEffectiveness, canWork, workforceWeight, oldAgeDeathProbability, breeding gates+constants, colonyCanBreed, conceptionProbability, inheritStats 60/40+-8 deterministic, trade curves, leadershipAfterTenure). Fixture-backed.
-### P4.7 P4 QA gate   [status: todo]
+### P4.7 P4 QA gate   [status: done (orchestrator gate: 170 tests, fixture/hand-vector exact-value parity, deterministic; QA times out at high on this many modules)]
 persona: qa (orchestrator gate if timeout)   depends_on: [P4.1,P4.2,P4.3,P4.4,P4.5,P4.6]
+
+## P5 — Economy + housing + roads (decomposed by orchestrator)
+### P5.1 Idle engine   [status: todo]
+persona: developer -> qa   depends_on: []   parallel_group: P5a
+scope: lib/game/idleEngine.ts -> crates/cat-sim/src/idle_engine.rs (BASE_JOB_SECONDS, getDurationSeconds, getScaledDurationSeconds, getHuntReward, getResilienceHours, getUpgradeCost, nextSpecialization, applyClickBoostSeconds).
+### P5.2 Idle rules   [status: todo]
+persona: developer -> qa   depends_on: []   parallel_group: P5a
+scope: lib/game/idleRules.ts -> crates/cat-sim/src/idle_rules.rs (consumptionForTick, nextColonyStatus, shouldTrackCritical/ResetFromCritical, auto-queue rules, ritualRequestIsFresh).
+### P5.3 Production   [status: todo]
+persona: developer -> qa   depends_on: []   parallel_group: P5a
+scope: lib/game/production.ts -> crates/cat-sim/src/production.rs (workshop 5mat->1refined/600s architect x2; field 2food/hr; unlock levels).
+### P5.4 Smithy   [status: todo]
+persona: developer -> qa   depends_on: []   parallel_group: P5a
+scope: lib/game/smithy.ts -> crates/cat-sim/src/smithy.rs (2refined+3mat->1weapon+1armor/900s, fast smith x2).
+### P5.5 Storage   [status: todo]
+persona: developer -> qa   depends_on: []   parallel_group: P5b
+scope: lib/game/storage.ts -> crates/cat-sim/src/storage.rs (BASE_CAPACITY, granary/water-bowl/smithy bonuses, storageCapacities, storehouseCap, countStorehouses).
+### P5.6 Shrine + trips   [status: todo]
+persona: developer -> qa   depends_on: []   parallel_group: P5b
+scope: lib/game/shrine.ts + trips.ts -> crates/cat-sim/src/shrine.rs + trips.rs (deposit rules DEPOSIT_GRACE_MS 60000, DEPOSIT_RADIUS 1; HUNT_TRIP_COUNT 3, splitYield, tripDueAt).
+### P5.7 Depletion + spoilage   [status: todo]
+persona: developer -> qa   depends_on: []   parallel_group: P5b
+scope: lib/game/depletion.ts + spoilage.ts -> crates/cat-sim/src/depletion.rs + spoilage.rs (FOREST_TYPES, regrowthAmount, CHOPPED_FOREST_FOOD_CAP 5; spoilage report).
+### P5.8 Housing + roads   [status: todo]
+persona: developer -> qa   depends_on: []   parallel_group: P5c
+scope: lib/game/housing.ts + roads.ts -> crates/cat-sim/src/housing.rs + roads.rs (housingCapacity/pressure, villageLevel thresholds [6,12,20,30]; ROAD_PAVE_WEAR 70, selectRoadCorridor).
+### P5.9 Village layout   [status: todo]
+persona: developer -> qa   depends_on: []   parallel_group: P5c
+scope: lib/game/villageLayout.ts -> crates/cat-sim/src/village_layout.rs (VILLAGE_ANCHOR, colonyToWorld/worldToColony, ringCells, nextBuildingSite, villageRadius).
+### P5.10 Village area   [status: todo]
+persona: developer -> qa   depends_on: [P5.9]   parallel_group: P5d
+scope: lib/game/villageArea.ts -> crates/cat-sim/src/village_area.rs (organic claimed-area set, fence perimeter/mask/segments, gatePlacement, fenceBlocksMove, expandVillage, shouldExpand).
+### P5.11 P5 QA gate   [status: todo]
+persona: qa (orchestrator gate if timeout)   depends_on: [P5.1..P5.10]

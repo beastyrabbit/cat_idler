@@ -37,3 +37,18 @@ pub mod genetics;
 pub mod life_sim;
 pub mod needs;
 pub mod survival;
+
+// P5 economy/housing/roads modules.
+pub mod depletion;
+pub mod housing;
+pub mod idle_engine;
+pub mod idle_rules;
+pub mod production;
+pub mod roads;
+pub mod shrine;
+pub mod smithy;
+pub mod spoilage;
+pub mod storage;
+pub mod trips;
+pub mod village_area;
+pub mod village_layout;
