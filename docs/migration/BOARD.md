@@ -23,7 +23,7 @@ codex, plus a Claude review for high-value slices) signs off.
 ## Phase status
 | Phase | Title | Status |
 |-------|-------|--------|
-| P0 | Foundation & safety | in progress |
+| P0 | Foundation & safety | done |
 | P1 | Sim foundation (rng, types, test-accel) | in progress |
 | P2 | World generation | pending |
 | P3 | Cat AI (pathfinding, movement, leader director) | pending |
