@@ -52,3 +52,11 @@ pub mod storage;
 pub mod trips;
 pub mod village_area;
 pub mod village_layout;
+
+// P6 military/governance/upgrade-tree modules.
+pub mod combat;
+pub mod elections;
+pub mod threat;
+pub mod upgrade_tree;
+pub mod warriors;
+pub mod zones;

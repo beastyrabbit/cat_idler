@@ -461,3 +461,19 @@ persona: developer -> qa   depends_on: [P5.9]   parallel_group: P5d
 scope: lib/game/villageArea.ts -> crates/cat-sim/src/village_area.rs (organic claimed-area set, fence perimeter/mask/segments, gatePlacement, fenceBlocksMove, expandVillage, shouldExpand).
 ### P5.11 P5 QA gate   [status: done (orchestrator gate: 259 tests hand-vector/exact-value parity, deterministic)]
 persona: qa (orchestrator gate if timeout)   depends_on: [P5.1..P5.10]
+
+## P6 — Military + governance + upgrade tree (decomposed by orchestrator)
+### P6.1 Threat   [status: todo]
+scope: lib/game/threat.ts -> threat.rs (colonyWealth, threatRatePerHour grace 8h, accrueThreat, RAID_SPAWN_THRESHOLD 100, threatBand thirds, planRaid MAX_RAID_SIZE 12, resolveRaid +-25% MAX_LOOT .3 CASUALTY .6). depends_on:[] group:P6a
+### P6.2 Warriors   [status: todo]
+scope: lib/game/warriors.ts -> warriors.rs (combat role/stage factors, WEAPON/ARMOR bonus 25, catCombatPower, musterDefense gear-to-strongest, canFight). depends_on:[] group:P6a
+### P6.3 Combat   [status: todo]
+scope: lib/game/combat.ts -> combat.rs (calculateCombatResult [Math.random->injected roll], getClicksNeeded, calculateColonyDefense walls cap 100). depends_on:[] group:P6a
+### P6.4 Elections   [status: todo]
+scope: lib/game/elections.ts -> elections.rs (KICK_THRESHOLD 5, CANDIDATE_COUNT 5, TERM_MS 24h, windows; candidatesFor, tallyVotes, electionWinner, shouldTriggerKick, electionDue). depends_on:[] group:P6a
+### P6.5 Zones   [status: todo]
+scope: lib/game/zones.ts -> zones.rs (ZONE_MAX_PER_PLAYER 2, ZONE_MAX_EDGE 8, GATHER_MULTIPLIER 2, scoreTileWithZones, filterTargetsByZones, pickTargetWithZones, validateZone). depends_on:[] group:P6b
+### P6.6 Upgrade tree + research   [status: todo]
+scope: lib/game/upgradeTree.ts -> upgrade_tree.rs (11 EffectKeys, resolveEffects, UPGRADE_NODES ~18 nodes 3 eras VERBATIM, state ser/de, isOwned/prerequisitesMet/canUnlock/unlockableNodes/godPurchase; research RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK 10, accrueResearch, nextResearchTarget cheapest+id-tiebreak, catAutoUnlock). depends_on:[] group:P6b
+### P6.7 P6 QA gate   [status: todo]
+persona: qa/orchestrator   depends_on:[P6.1..P6.6]
