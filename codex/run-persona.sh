@@ -30,12 +30,14 @@ prompt="$(cat "$pfile")
 ## Your card
 ${card}"
 
-# workspace-write keeps edits inside the repo; network on so cargo can fetch crates.
+# workspace-write keeps edits inside the repo. Network is OFF: the network-namespace
+# setup intermittently HANGS the sandbox (empty output, no writes), and dev cards don't
+# need it (cargo deps are cached; hand-vector cards add none). If a card must `cargo add`
+# a new crate, pass `-c sandbox_workspace_write.network_access=true` via "$@" for that run.
 # stdin from /dev/null: codex exec otherwise blocks forever waiting for stdin EOF
 # when launched in the background (the prompt is passed as an arg, not via stdin).
 exec codex exec \
   --sandbox workspace-write \
-  -c sandbox_workspace_write.network_access=true \
   -c model_reasoning_effort="${effort}" \
   "$@" \
   "${prompt}" < /dev/null
