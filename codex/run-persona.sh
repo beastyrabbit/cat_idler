@@ -29,9 +29,11 @@ prompt="$(cat "$pfile")
 ${card}"
 
 # workspace-write keeps edits inside the repo; network on so cargo can fetch crates.
+# stdin from /dev/null: codex exec otherwise blocks forever waiting for stdin EOF
+# when launched in the background (the prompt is passed as an arg, not via stdin).
 exec codex exec \
   --sandbox workspace-write \
   -c sandbox_workspace_write.network_access=true \
   -c model_reasoning_effort="${effort}" \
   "$@" \
-  "${prompt}"
+  "${prompt}" < /dev/null
