@@ -513,7 +513,7 @@ save-frequency / no SIGTERM save-on-shutdown for very-recent state. Fix: save ev
 (or a few) and/or a graceful-shutdown save handler. Server-owns-everything needs durable saves.
 
 ## P9 — Client render + UI (dashboard + log page) (decomposed by orchestrator)
-### P9.1 cat-client foundation (Bevy app + WS + cats)   [status: qa]
+### P9.1 cat-client foundation (Bevy app + WS + cats)   [status: done]
 scope: cat-client run() Bevy app; ewebsock WS client -> WorldSnapshot resource; iso projection + camera + cat atlas lifted from reference/spike-bevy-0.19.rs; render cats from the snapshot. cat-desktop main -> cat_client::run().
 ### P9.2 terrain/buildings/raiders/zones/roads/fog render   [status: todo]
 scope: regenerate terrain from worldSeed (crate cat-sim terrain), buildings, raiders, zones, roads, fog — from the snapshot, spike sprite rules.
