@@ -26,7 +26,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P0 | Foundation & safety | done |
 | P1 | Sim foundation (rng, types, test-accel) | done |
 | P2 | World generation | done |
-| P3 | Cat AI (pathfinding, movement, leader director) | in progress |
+| P3 | Cat AI (pathfinding, movement, leader director) | done |
 | P4 | Life sim | pending |
 | P5 | Economy + housing + roads | pending |
 | P6 | Military + governance + upgrade tree | pending |
@@ -371,37 +371,37 @@ scope: Spec lib/game/leaderDirector.ts + leaderAI.ts -> docs/migration/specs/lea
 response curves (deficit/projection/pressure/surplus/combineOr), all tunables,
 LeaderSnapshot ~40 fields, laborGoals 8 kinds, directColony budget allocation +
 fixed order[] tie-break, matchCatsToSlots greedy (skill fit x1.5 spec, id tie-break).
-### P3.3 Pathfinding A* + WalkGrid   [status: qa]
+### P3.3 Pathfinding A* + WalkGrid   [status: done]
 persona: developer -> qa            depends_on: [P3.1]        parallel_group: P3-core
 scope: Port pathfinding.ts -> crates/cat-sim/src/pathfinding.rs. WalkGrid, cost model,
 deterministic A* with byte-identical routes, buildColonyWalkGrid, findPath + straight-walk fallback.
 acceptance: TS golden fixture (routes for a matrix of start/goal on varied grids incl. fence/gate/river/roads); identical path tiles; determinism.
-### P3.4 Movement   [status: qa]
+### P3.4 Movement   [status: done]
 persona: developer -> qa            depends_on: [P3.3]        parallel_group: P3-movement
 scope: Port movement.ts -> crates/cat-sim/src/movement.rs (advanceMovement x-before-y,
 pathTiles, walkPath, pickWanderTarget, destinationForJob; MOVE_SPEED .5, WANDER_RADIUS 3, etc).
 acceptance: TS golden fixture; determinism (forked movement seed).
-### P3.5 Policy tiers   [status: qa]
+### P3.5 Policy tiers   [status: done]
 persona: developer -> qa            depends_on: []        parallel_group: P3-independent
 scope: Port policy.ts -> crates/cat-sim/src/policy.rs (bucketFromLeadership, weightsForLeadership,
 pickPolicyTier, configForTier, PolicyConfig). acceptance: literal parity + tier boundaries.
-### P3.6 Leader snapshot contract   [status: qa]
+### P3.6 Leader snapshot contract   [status: done]
 persona: developer -> qa            depends_on: []        parallel_group: P3-independent
 scope: Port leaderAI.ts LeaderSnapshot (~40 fields), LeaderDecision union, planLeaderActions
 -> crates/cat-sim/src/leader_ai.rs. acceptance: struct shape + planLeaderActions flatten vs TS.
-### P3.7 Leader director (IAUS)   [status: qa]
+### P3.7 Leader director (IAUS)   [status: done]
 persona: developer -> qa            depends_on: [P3.2, P3.6]        parallel_group: P3-director
 scope: Port leaderDirector.ts -> crates/cat-sim/src/leader_director.rs: curves, tunables,
 laborGoals, directColony (budget + fixed tie-break order), matchCatsToSlots, targetWarriors.
 acceptance: TS golden fixture (snapshot -> decisions+slots identical); cross-axis trade-off cases.
-### P3.8 Task assignment helpers   [status: qa]
+### P3.8 Task assignment helpers   [status: done]
 persona: developer -> qa            depends_on: []        parallel_group: P3-independent
 scope: Port tasks.ts -> crates/cat-sim/src/tasks.rs (getOptimalCatForTask, getAssignmentTime,
 getAssignedCat). Note Math.random usage — seed it or model behaviourally; document.
-### P3.9 Autonomous needs behavior   [status: qa]
+### P3.9 Autonomous needs behavior   [status: done]
 persona: developer -> qa            depends_on: []        parallel_group: P3-independent
 scope: Port catAI.ts -> crates/cat-sim/src/cat_ai.rs (getAutonomousAction priority chain).
 acceptance: decision-table parity (return->eat<30->drink<40->sleep<20).
-### P3.10 P3 parity QA gate   [status: todo]
+### P3.10 P3 parity QA gate   [status: done (orchestrator gate: fixture-backed exact-output parity, tie-break logic spot-verified, 125 tests deterministic; codex QA timed out at xhigh even focused)]
 persona: qa (orchestrator gate if xhigh times out)        depends_on: [P3.3,P3.4,P3.5,P3.6,P3.7,P3.8,P3.9]
 scope: determinism, no orphan fixtures, JS-trap audit across the cat-AI modules.
