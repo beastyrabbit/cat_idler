@@ -1,14 +1,914 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+//! Serde wire DTOs ported from `app/api/game/actions/route.ts`,
+//! `server/game.ts` (`getGlobalDashboard`), and `hooks/useGameDashboard.ts`.
+
+#![forbid(unsafe_code)]
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorldSnapshot {
+    pub now: i64,
+    pub world_seed: i64,
+    pub colonies: Vec<ColonySnapshot>,
+    pub online_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColonySnapshot {
+    #[serde(alias = "_id")]
+    pub id: String,
+    pub name: String,
+    pub status: ColonyStatus,
+    pub resources: ResourceAmounts,
+    pub storage: StorageSnapshot,
+    pub leader: Option<LeaderSnapshot>,
+    pub cats: Vec<CatSnapshot>,
+    pub jobs: Vec<JobSnapshot>,
+    pub upgrades: Vec<UpgradeSnapshot>,
+    pub events: Vec<EventSnapshot>,
+    pub housing: HousingSnapshot,
+    pub research: ResearchSnapshot,
+    pub election: Option<ElectionSnapshot>,
+    pub vote_kick: Option<VoteKickSnapshot>,
+    pub zones: Vec<ZoneSnapshot>,
+    pub threat: ThreatSnapshot,
+    pub raiders: Vec<RaiderSnapshot>,
+    pub buildings: Vec<BuildingSnapshot>,
+    pub claimed_tiles: Vec<TilePoint>,
+    pub village_gate: Option<GatePlacement>,
+    pub village_radius: u32,
+    pub anchor: TilePoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColonyStatus {
+    Starting,
+    Thriving,
+    Struggling,
+    Dead,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceAmounts {
+    pub food: f64,
+    pub water: f64,
+    pub herbs: f64,
+    pub materials: f64,
+    pub refined: f64,
+    pub weapons: f64,
+    pub armor: f64,
+    pub blessings: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageSnapshot {
+    pub capacities: ResourceCapacities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub food_capacity: Option<f64>,
+    pub tithe_rates: TitheRates,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceCapacities {
+    pub food: f64,
+    pub water: f64,
+    pub herbs: f64,
+    pub materials: f64,
+    pub refined: f64,
+    #[serde(default)]
+    pub weapons: f64,
+    #[serde(default)]
+    pub armor: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TitheRates {
+    pub food: f64,
+    pub refined: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderSnapshot {
+    #[serde(alias = "_id")]
+    pub id: String,
+    pub name: String,
+    pub leadership: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatSnapshot {
+    #[serde(alias = "_id")]
+    pub id: String,
+    pub name: String,
+    pub position: MapPosition,
+    pub activity: CatActivity,
+    pub destination: Option<MapPosition>,
+    pub carrying: Option<Carrying>,
+    pub specialization: Option<Specialization>,
+    pub age_hours: f64,
+    pub needs: CatNeeds,
+    pub current_task: Option<String>,
+    pub assigned_building_id: Option<String>,
+    pub role_xp: RoleXp,
+    pub stats: CatStats,
+    pub death_time: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MapPosition {
+    pub map: MapName,
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MapName {
+    Colony,
+    World,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatActivity {
+    Idle,
+    Traveling,
+    Working,
+    Returning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Specialization {
+    Hunter,
+    Architect,
+    Ritualist,
+    Warrior,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Carrying {
+    pub kind: CarryingKind,
+    pub amount: f64,
+    pub job_ended_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CarryingKind {
+    Food,
+    Blessings,
+    Materials,
+    Water,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatNeeds {
+    pub hunger: f64,
+    pub thirst: f64,
+    pub rest: f64,
+    pub health: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoleXp {
+    pub hunter: f64,
+    pub architect: f64,
+    pub ritualist: f64,
+    #[serde(default)]
+    pub warrior: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatStats {
+    pub leadership: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobSnapshot {
+    #[serde(alias = "_id")]
+    pub id: String,
+    pub kind: JobKind,
+    pub status: JobStatus,
+    pub ends_at: i64,
+    pub started_at: i64,
+    pub click_time_reduced_sec: f64,
+    pub assigned_cat_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobKind {
+    SupplyFood,
+    SupplyWater,
+    LeaderPlanHunt,
+    HuntExpedition,
+    LeaderPlanHouse,
+    BuildHouse,
+    Ritual,
+    Quarry,
+    Explore,
+    FetchWater,
+    TrainWarrior,
+    ExpandVillage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStatus {
+    Queued,
+    Active,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeSnapshot {
+    pub key: UpgradeKey,
+    pub level: u32,
+    pub max_level: u32,
+    pub base_cost: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpgradeKey {
+    ClickPower,
+    SupplySpeed,
+    HuntMastery,
+    BuildMastery,
+    RitualMastery,
+    Resilience,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventSnapshot {
+    pub message: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HousingSnapshot {
+    pub population: u32,
+    pub capacity: u32,
+    pub pressure: f64,
+    pub village_level: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchSnapshot {
+    pub owned_node_ids: Vec<String>,
+    pub research_points: f64,
+    pub researcher_count: u32,
+    pub blessings: f64,
+    pub next_target: Option<ResearchTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResearchTarget {
+    pub id: String,
+    pub name: String,
+    pub cost: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectionSnapshot {
+    #[serde(alias = "_id")]
+    pub id: String,
+    pub ends_at: i64,
+    pub tally: BTreeMap<String, u32>,
+    pub total_ballots: u32,
+    pub candidates: Vec<ElectionCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectionCandidate {
+    #[serde(alias = "_id")]
+    pub id: String,
+    pub name: String,
+    pub leadership: f64,
+    pub specialization: Option<Specialization>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoteKickSnapshot {
+    #[serde(alias = "_id")]
+    pub id: String,
+    pub ends_at: i64,
+    pub target_cat_id: String,
+    pub target_name: String,
+    pub signatures: u32,
+    pub needed: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ZoneSnapshot {
+    #[serde(alias = "_id")]
+    pub id: String,
+    pub kind: ZoneKind,
+    pub x1: i32,
+    pub y1: i32,
+    pub x2: i32,
+    pub y2: i32,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneKind {
+    Avoid,
+    Gather,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreatSnapshot {
+    pub pressure: f64,
+    pub band: ThreatBand,
+    pub raid_active: bool,
+    pub warriors: u32,
+    pub weapons: f64,
+    pub armor: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreatBand {
+    Calm,
+    Rising,
+    Imminent,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RaiderSnapshot {
+    #[serde(alias = "_id")]
+    pub id: String,
+    pub position: TilePoint,
+    pub hp: f64,
+    pub strength: f64,
+    pub status: RaiderStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RaiderStatus {
+    Advancing,
+    Engaging,
+    Retreating,
+    Dead,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildingSnapshot {
+    #[serde(alias = "_id")]
+    pub id: String,
+    #[serde(rename = "type")]
+    pub building_type: BuildingType,
+    pub level: u32,
+    pub construction_progress: f64,
+    pub world_position: TilePoint,
+    pub position: TilePoint,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildingType {
+    Den,
+    FoodStorage,
+    WaterBowl,
+    Beds,
+    HerbGarden,
+    Nursery,
+    ElderCorner,
+    Walls,
+    MouseFarm,
+    Shrine,
+    Workshop,
+    Field,
+    ResearchHut,
+    School,
+    Smithy,
+    Barracks,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TilePoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatePlacement {
+    pub x: i32,
+    pub y: i32,
+    pub side: GateSide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GateSide {
+    N,
+    E,
+    S,
+    W,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "action",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ClientAction {
+    Ensure,
+    Presence {
+        session_id: String,
+        nickname: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sig: Option<String>,
+    },
+    RequestJob {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        kind: JobKind,
+    },
+    Boost {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        job_id: String,
+    },
+    PurchaseUpgrade {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        key: UpgradeKey,
+    },
+    CastVote {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        election_id: String,
+        cat_id: String,
+    },
+    RequestVoteKick {
+        session_id: String,
+        nickname: String,
+        sig: String,
+    },
+    CreateZone {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        kind: ZoneKind,
+        a: TilePoint,
+        b: TilePoint,
+        duration_ms: u64,
+    },
+    RemoveZone {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        zone_id: String,
+    },
+    PlanBuilding {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        #[serde(rename = "type")]
+        building_type: BuildingType,
+    },
+    UnlockNode {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        node_id: String,
+    },
+    AssignWorker {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        cat_id: String,
+        building_id: Option<String>,
+    },
+    TrainWarrior {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        cat_id: Option<String>,
+    },
+    DefendRaid {
+        session_id: String,
+        nickname: String,
+        sig: String,
+    },
+    BuildRoad {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        a: TilePoint,
+        b: TilePoint,
+    },
+    SetTestAcceleration {
+        preset: AccelerationPreset,
+    },
+    AdvanceTime {
+        seconds: u64,
+    },
+    SetTestRngSeed {
+        seed: Option<u32>,
+    },
+    FoundVillage {
+        name: String,
+        session_id: String,
+    },
+    JoinVillage {
+        colony_id: String,
+        session_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccelerationPreset {
+    Off,
+    Fast,
+    Turbo,
+    Hyper,
+    Ludicrous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionResult {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn client_action_round_trips_with_route_field_names() {
+        let action = ClientAction::RequestJob {
+            session_id: "session_1".to_string(),
+            nickname: "Guest Cat".to_string(),
+            sig: "signed".to_string(),
+            kind: JobKind::SupplyFood,
+        };
+
+        let encoded = serde_json::to_value(&action).expect("serialize action");
+        assert_eq!(
+            encoded,
+            json!({
+                "action": "requestJob",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "kind": "supply_food"
+            })
+        );
+
+        let decoded: ClientAction = serde_json::from_value(encoded).expect("deserialize action");
+        assert_eq!(decoded, action);
+    }
+
+    #[test]
+    fn optional_action_payloads_match_ts_null_and_omitted_shapes() {
+        let presence = ClientAction::Presence {
+            session_id: "session_1".to_string(),
+            nickname: "Guest Cat".to_string(),
+            sig: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&presence).expect("serialize presence"),
+            json!({
+                "action": "presence",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat"
+            })
+        );
+
+        let unassign = ClientAction::AssignWorker {
+            session_id: "session_1".to_string(),
+            nickname: "Guest Cat".to_string(),
+            sig: "signed".to_string(),
+            cat_id: "cat_1".to_string(),
+            building_id: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&unassign).expect("serialize assignWorker"),
+            json!({
+                "action": "assignWorker",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "catId": "cat_1",
+                "buildingId": null
+            })
+        );
+    }
+
+    #[test]
+    fn world_snapshot_round_trips_with_dashboard_field_names() {
+        let snapshot = sample_world_snapshot();
+        let encoded = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+        assert_eq!(encoded["worldSeed"], json!(123456));
+        assert_eq!(encoded["onlineCount"], json!(2));
+        assert_eq!(encoded["colonies"][0]["cats"][0]["ageHours"], json!(42.5));
+        assert_eq!(
+            encoded["colonies"][0]["cats"][0]["assignedBuildingId"],
+            json!("building_1")
+        );
+        assert_eq!(
+            encoded["colonies"][0]["jobs"][0]["clickTimeReducedSec"],
+            json!(3.5)
+        );
+        assert_eq!(
+            encoded["colonies"][0]["research"]["ownedNodeIds"],
+            json!(["root"])
+        );
+        assert_eq!(
+            encoded["colonies"][0]["voteKick"]["targetCatId"],
+            json!("cat_1")
+        );
+        assert_eq!(
+            encoded["colonies"][0]["villageGate"],
+            json!({ "x": 5, "y": 7, "side": "S" })
+        );
+
+        let decoded: WorldSnapshot = serde_json::from_value(encoded).expect("deserialize snapshot");
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn ts_dashboard_id_aliases_deserialize() {
+        let mut encoded =
+            serde_json::to_value(sample_world_snapshot()).expect("serialize snapshot");
+        let colony = encoded["colonies"][0]
+            .as_object_mut()
+            .expect("colony object");
+        colony.remove("id");
+        colony.insert("_id".to_string(), json!("colony_1"));
+        let cat = colony["cats"][0].as_object_mut().expect("cat object");
+        cat.remove("id");
+        cat.insert("_id".to_string(), json!("cat_1"));
+        let building = colony["buildings"][0]
+            .as_object_mut()
+            .expect("building object");
+        building.remove("id");
+        building.insert("_id".to_string(), json!("building_1"));
+        let zone = colony["zones"][0].as_object_mut().expect("zone object");
+        zone.remove("id");
+        zone.insert("_id".to_string(), json!("zone_1"));
+        let raider = colony["raiders"][0].as_object_mut().expect("raider object");
+        raider.remove("id");
+        raider.insert("_id".to_string(), json!("raider_1"));
+
+        let decoded: WorldSnapshot =
+            serde_json::from_value(encoded).expect("deserialize aliased snapshot");
+        let colony = &decoded.colonies[0];
+        assert_eq!(colony.id, "colony_1");
+        assert_eq!(colony.cats[0].id, "cat_1");
+        assert_eq!(colony.buildings[0].id, "building_1");
+        assert_eq!(colony.zones[0].id, "zone_1");
+        assert_eq!(colony.raiders[0].id, "raider_1");
+    }
+
+    #[test]
+    fn action_result_omits_absent_message() {
+        let ok = ActionResult {
+            ok: true,
+            message: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&ok).expect("serialize action result"),
+            json!({ "ok": true })
+        );
+
+        let failed = ActionResult {
+            ok: false,
+            message: Some("Unknown action.".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&failed).expect("serialize action result"),
+            json!({ "ok": false, "message": "Unknown action." })
+        );
+    }
+
+    fn sample_world_snapshot() -> WorldSnapshot {
+        let mut tally = BTreeMap::new();
+        tally.insert("cat_1".to_string(), 2);
+
+        WorldSnapshot {
+            now: 1_700_000_000_000,
+            world_seed: 123456,
+            online_count: 2,
+            colonies: vec![ColonySnapshot {
+                id: "colony_1".to_string(),
+                name: "Global Colony".to_string(),
+                status: ColonyStatus::Thriving,
+                resources: ResourceAmounts {
+                    food: 50.0,
+                    water: 40.0,
+                    herbs: 5.0,
+                    materials: 12.0,
+                    refined: 3.0,
+                    weapons: 2.0,
+                    armor: 1.0,
+                    blessings: 8.0,
+                },
+                storage: StorageSnapshot {
+                    capacities: ResourceCapacities {
+                        food: 200.0,
+                        water: 200.0,
+                        herbs: 100.0,
+                        materials: 100.0,
+                        refined: 100.0,
+                        weapons: 0.0,
+                        armor: 0.0,
+                    },
+                    food_capacity: Some(200.0),
+                    tithe_rates: TitheRates {
+                        food: 20.0,
+                        refined: 5.0,
+                    },
+                },
+                leader: Some(LeaderSnapshot {
+                    id: "cat_1".to_string(),
+                    name: "Moss".to_string(),
+                    leadership: 9.0,
+                }),
+                cats: vec![CatSnapshot {
+                    id: "cat_1".to_string(),
+                    name: "Moss".to_string(),
+                    position: MapPosition {
+                        map: MapName::World,
+                        x: 6,
+                        y: 6,
+                    },
+                    activity: CatActivity::Working,
+                    destination: Some(MapPosition {
+                        map: MapName::World,
+                        x: 7,
+                        y: 6,
+                    }),
+                    carrying: Some(Carrying {
+                        kind: CarryingKind::Food,
+                        amount: 4.0,
+                        job_ended_at: 1_700_000_000_100,
+                    }),
+                    specialization: Some(Specialization::Hunter),
+                    age_hours: 42.5,
+                    needs: CatNeeds {
+                        hunger: 10.0,
+                        thirst: 15.0,
+                        rest: 20.0,
+                        health: 100.0,
+                    },
+                    current_task: Some("Hunting".to_string()),
+                    assigned_building_id: Some("building_1".to_string()),
+                    role_xp: RoleXp {
+                        hunter: 1.0,
+                        architect: 0.0,
+                        ritualist: 0.0,
+                        warrior: 0.0,
+                    },
+                    stats: CatStats { leadership: 9.0 },
+                    death_time: None,
+                }],
+                jobs: vec![JobSnapshot {
+                    id: "job_1".to_string(),
+                    kind: JobKind::SupplyFood,
+                    status: JobStatus::Active,
+                    ends_at: 1_700_000_010_000,
+                    started_at: 1_700_000_000_000,
+                    click_time_reduced_sec: 3.5,
+                    assigned_cat_name: Some("Moss".to_string()),
+                }],
+                upgrades: vec![UpgradeSnapshot {
+                    key: UpgradeKey::ClickPower,
+                    level: 1,
+                    max_level: 5,
+                    base_cost: 10,
+                }],
+                events: vec![EventSnapshot {
+                    message: "Moss brought back food.".to_string(),
+                    timestamp: 1_700_000_000_500,
+                }],
+                housing: HousingSnapshot {
+                    population: 1,
+                    capacity: 4,
+                    pressure: 0.25,
+                    village_level: 1,
+                },
+                research: ResearchSnapshot {
+                    owned_node_ids: vec!["root".to_string()],
+                    research_points: 2.5,
+                    researcher_count: 1,
+                    blessings: 8.0,
+                    next_target: Some(ResearchTarget {
+                        id: "water".to_string(),
+                        name: "Water Wisdom".to_string(),
+                        cost: 5.0,
+                    }),
+                },
+                election: Some(ElectionSnapshot {
+                    id: "election_1".to_string(),
+                    ends_at: 1_700_000_030_000,
+                    tally,
+                    total_ballots: 2,
+                    candidates: vec![ElectionCandidate {
+                        id: "cat_1".to_string(),
+                        name: "Moss".to_string(),
+                        leadership: 9.0,
+                        specialization: Some(Specialization::Hunter),
+                    }],
+                }),
+                vote_kick: Some(VoteKickSnapshot {
+                    id: "kick_1".to_string(),
+                    ends_at: 1_700_000_040_000,
+                    target_cat_id: "cat_1".to_string(),
+                    target_name: "Moss".to_string(),
+                    signatures: 1,
+                    needed: 3,
+                }),
+                zones: vec![ZoneSnapshot {
+                    id: "zone_1".to_string(),
+                    kind: ZoneKind::Gather,
+                    x1: 1,
+                    y1: 2,
+                    x2: 3,
+                    y2: 4,
+                    expires_at: 1_700_000_060_000,
+                }],
+                threat: ThreatSnapshot {
+                    pressure: 12.0,
+                    band: ThreatBand::Rising,
+                    raid_active: true,
+                    warriors: 1,
+                    weapons: 2.0,
+                    armor: 1.0,
+                },
+                raiders: vec![RaiderSnapshot {
+                    id: "raider_1".to_string(),
+                    position: TilePoint { x: 10, y: 11 },
+                    hp: 7.0,
+                    strength: 10.0,
+                    status: RaiderStatus::Advancing,
+                }],
+                buildings: vec![BuildingSnapshot {
+                    id: "building_1".to_string(),
+                    building_type: BuildingType::Shrine,
+                    level: 1,
+                    construction_progress: 100.0,
+                    world_position: TilePoint { x: 6, y: 6 },
+                    position: TilePoint { x: 0, y: 0 },
+                }],
+                claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
+                village_gate: Some(GatePlacement {
+                    x: 5,
+                    y: 7,
+                    side: GateSide::S,
+                }),
+                village_radius: 4,
+                anchor: TilePoint { x: 6, y: 6 },
+            }],
+        }
     }
 }

@@ -31,7 +31,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P5 | Economy + housing + roads | done |
 | P6 | Military + governance + upgrade tree | done |
 | P7 | Master loop (`world_tick`, multi-colony) | done |
-| P8 | Protocol + server (+ multi-village founding) | pending |
+| P8 | Protocol + server (+ multi-village founding) | in progress |
 | P9 | Client render + UI (dashboard + log page) | pending |
 | P10 | WASM/web + native packaging | pending |
 | P11 | Cutover (big-bang) | pending |
@@ -494,7 +494,7 @@ world_tick P7.5. Fix: add ResearchHut/School variants + non-purchasable BUILDING
 entries (adjust the exhaustive test). Low priority (secondary research economy).
 
 ## P8 — Protocol + server (+ multi-village founding) (decomposed by orchestrator)
-### P8.1 cat-protocol wire types   [status: todo]
+### P8.1 cat-protocol wire types   [status: qa]
 persona: developer   scope: crates/cat-protocol: WorldSnapshot (multi-colony generalization of getGlobalDashboard payload) + per-colony ColonySnapshot (resources+caps, leader, cats, jobs, upgrades, events, housing, research, election, voteKick, zones, threat, raiders, buildings, storage, claimedTiles, gate, villageRadius, anchor, worldSeed, onlineCount) + ClientAction enum (~19 actions from actions/route.ts + foundVillage/joinVillage). serde, round-trip tests.
 ### P8.2 apply_action (pure) in cat-sim   [status: todo]
 persona: developer   depends_on:[P8.1]   scope: cat-sim: apply a ClientAction to WorldState/ColonyRuntime (requestJob, boost, purchaseUpgrade, castVote, requestVoteKick, create/removeZone, planBuilding, unlockNode, assignWorker, trainWarrior, defendRaid, buildRoad, test controls, foundVillage->found_colony). Pure; validation + soft-fail results. Snapshot builder WorldState->WorldSnapshot.
