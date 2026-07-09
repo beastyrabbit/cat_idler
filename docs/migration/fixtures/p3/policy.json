@@ -1,0 +1,380 @@
+{
+  "source": "lib/game/policy.ts",
+  "tiers": [
+    "simple",
+    "normal",
+    "excellent"
+  ],
+  "leadership": [
+    {
+      "leadership": -10,
+      "bucket": "bad",
+      "weights": {
+        "simple": 0.3,
+        "normal": 0.6,
+        "excellent": 0.1
+      }
+    },
+    {
+      "leadership": 0,
+      "bucket": "bad",
+      "weights": {
+        "simple": 0.3,
+        "normal": 0.6,
+        "excellent": 0.1
+      }
+    },
+    {
+      "leadership": 34.999,
+      "bucket": "bad",
+      "weights": {
+        "simple": 0.3,
+        "normal": 0.6,
+        "excellent": 0.1
+      }
+    },
+    {
+      "leadership": 35,
+      "bucket": "normal",
+      "weights": {
+        "simple": 0.1,
+        "normal": 0.8,
+        "excellent": 0.1
+      }
+    },
+    {
+      "leadership": 50,
+      "bucket": "normal",
+      "weights": {
+        "simple": 0.1,
+        "normal": 0.8,
+        "excellent": 0.1
+      }
+    },
+    {
+      "leadership": 69.999,
+      "bucket": "normal",
+      "weights": {
+        "simple": 0.1,
+        "normal": 0.8,
+        "excellent": 0.1
+      }
+    },
+    {
+      "leadership": 70,
+      "bucket": "excellent",
+      "weights": {
+        "simple": 0,
+        "normal": 0.7,
+        "excellent": 0.3
+      }
+    },
+    {
+      "leadership": 100,
+      "bucket": "excellent",
+      "weights": {
+        "simple": 0,
+        "normal": 0.7,
+        "excellent": 0.3
+      }
+    },
+    {
+      "leadership": 150,
+      "bucket": "excellent",
+      "weights": {
+        "simple": 0,
+        "normal": 0.7,
+        "excellent": 0.3
+      }
+    }
+  ],
+  "configs": {
+    "simple": {
+      "tier": "simple",
+      "actionReliability": 0.6,
+      "needsDecayMultiplier": 1.25,
+      "needsDamageMultiplier": 1.3,
+      "foodEmergencyThreshold": 8,
+      "waterEmergencyThreshold": 8,
+      "houseWaterRequired": 10,
+      "houseMaterialsRequired": 12
+    },
+    "normal": {
+      "tier": "normal",
+      "actionReliability": 0.9,
+      "needsDecayMultiplier": 1,
+      "needsDamageMultiplier": 1,
+      "foodEmergencyThreshold": 12,
+      "waterEmergencyThreshold": 12,
+      "houseWaterRequired": 8,
+      "houseMaterialsRequired": 10
+    },
+    "excellent": {
+      "tier": "excellent",
+      "actionReliability": 1,
+      "needsDecayMultiplier": 0.85,
+      "needsDamageMultiplier": 0.8,
+      "foodEmergencyThreshold": 16,
+      "waterEmergencyThreshold": 16,
+      "houseWaterRequired": 6,
+      "houseMaterialsRequired": 8
+    }
+  },
+  "picks": [
+    {
+      "leadership": 10,
+      "roll": -0.25,
+      "tier": "simple"
+    },
+    {
+      "leadership": 10,
+      "roll": 0,
+      "tier": "simple"
+    },
+    {
+      "leadership": 10,
+      "roll": 0.299999,
+      "tier": "simple"
+    },
+    {
+      "leadership": 10,
+      "roll": 0.3,
+      "tier": "normal"
+    },
+    {
+      "leadership": 10,
+      "roll": 0.899999,
+      "tier": "normal"
+    },
+    {
+      "leadership": 10,
+      "roll": 0.9,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 10,
+      "roll": 1,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 10,
+      "roll": 1.25,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 35,
+      "roll": -0.25,
+      "tier": "simple"
+    },
+    {
+      "leadership": 35,
+      "roll": 0,
+      "tier": "simple"
+    },
+    {
+      "leadership": 35,
+      "roll": 0.099999,
+      "tier": "simple"
+    },
+    {
+      "leadership": 35,
+      "roll": 0.1,
+      "tier": "normal"
+    },
+    {
+      "leadership": 35,
+      "roll": 0.899999,
+      "tier": "normal"
+    },
+    {
+      "leadership": 35,
+      "roll": 0.9,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 35,
+      "roll": 1,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 35,
+      "roll": 1.25,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 50,
+      "roll": -0.25,
+      "tier": "simple"
+    },
+    {
+      "leadership": 50,
+      "roll": 0,
+      "tier": "simple"
+    },
+    {
+      "leadership": 50,
+      "roll": 0.099999,
+      "tier": "simple"
+    },
+    {
+      "leadership": 50,
+      "roll": 0.1,
+      "tier": "normal"
+    },
+    {
+      "leadership": 50,
+      "roll": 0.899999,
+      "tier": "normal"
+    },
+    {
+      "leadership": 50,
+      "roll": 0.9,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 50,
+      "roll": 1,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 50,
+      "roll": 1.25,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 70,
+      "roll": -0.25,
+      "tier": "normal"
+    },
+    {
+      "leadership": 70,
+      "roll": 0,
+      "tier": "normal"
+    },
+    {
+      "leadership": 70,
+      "roll": 0.699999,
+      "tier": "normal"
+    },
+    {
+      "leadership": 70,
+      "roll": 0.7,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 70,
+      "roll": 0.999999,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 70,
+      "roll": 1,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 70,
+      "roll": 1.25,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 100,
+      "roll": -0.25,
+      "tier": "normal"
+    },
+    {
+      "leadership": 100,
+      "roll": 0,
+      "tier": "normal"
+    },
+    {
+      "leadership": 100,
+      "roll": 0.699999,
+      "tier": "normal"
+    },
+    {
+      "leadership": 100,
+      "roll": 0.7,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 100,
+      "roll": 0.999999,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 100,
+      "roll": 1,
+      "tier": "excellent"
+    },
+    {
+      "leadership": 100,
+      "roll": 1.25,
+      "tier": "excellent"
+    }
+  ],
+  "seededPicks": [
+    {
+      "leadership": 10,
+      "seed": 0,
+      "roll": 0.23645552527159452,
+      "nextSeed": 1015568748,
+      "tier": "simple"
+    },
+    {
+      "leadership": 10,
+      "seed": 1,
+      "roll": 0.23645552527159452,
+      "nextSeed": 1015568748,
+      "tier": "simple"
+    },
+    {
+      "leadership": 10,
+      "seed": 42,
+      "roll": 0.2523451747838408,
+      "nextSeed": 1083814273,
+      "tier": "simple"
+    },
+    {
+      "leadership": 35,
+      "seed": 99,
+      "roll": 0.27443566313013434,
+      "nextSeed": 1178692198,
+      "tier": "normal"
+    },
+    {
+      "leadership": 50,
+      "seed": 123456789,
+      "roll": 0.2142903469502926,
+      "nextSeed": 920370032,
+      "tier": "normal"
+    },
+    {
+      "leadership": 50,
+      "seed": -99,
+      "roll": 0.27443566313013434,
+      "nextSeed": 1178692198,
+      "tier": "normal"
+    },
+    {
+      "leadership": 70,
+      "seed": 3.14,
+      "roll": 0.23723063012585044,
+      "nextSeed": 1018897798,
+      "tier": "normal"
+    },
+    {
+      "leadership": 90,
+      "seed": 987654321,
+      "roll": 0.06533493753522635,
+      "nextSeed": 280611420,
+      "tier": "normal"
+    },
+    {
+      "leadership": 100,
+      "seed": 4294967295,
+      "roll": 0.2356804204173386,
+      "nextSeed": 1012239698,
+      "tier": "normal"
+    }
+  ]
+}

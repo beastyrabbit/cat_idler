@@ -26,7 +26,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P0 | Foundation & safety | done |
 | P1 | Sim foundation (rng, types, test-accel) | done |
 | P2 | World generation | done |
-| P3 | Cat AI (pathfinding, movement, leader director) | pending |
+| P3 | Cat AI (pathfinding, movement, leader director) | in progress |
 | P4 | Life sim | pending |
 | P5 | Economy + housing + roads | pending |
 | P6 | Military + governance + upgrade tree | pending |
@@ -356,3 +356,52 @@ terrain and world chunk parity, confirming deterministic reruns and no TS edits.
 notes: TS sources `lib/game/noise.ts`, `lib/game/biomes.ts`,
 `lib/game/terrainGen.ts`, `lib/game/worldGen.ts`, `lib/game/terrainWorld.ts`;
 this closes the client-parity-critical P2 wave.
+
+## P3 — Cat AI (decomposed by orchestrator; scrum-master timed out at xhigh)
+### P3.1 Pathfinding researcher spec   [status: done]
+persona: researcher            depends_on: []        parallel_group: P3-research
+scope: Spec lib/game/pathfinding.ts -> docs/migration/specs/pathfinding.md: WalkGrid
+interface, cost model (road .4/worn .6/open 1/forest 4/dense 8, MIN_STEP_COST .4),
+X_FIRST_BIAS 1e-6 tie-break, ROAD_WEAR_THRESHOLD 70, DEFAULT_MAX_EXPANSIONS 6000,
+deterministic min-heap insertion-order tie-break, buildColonyWalkGrid, findPath,
+fence/gate/river blocking. Fixture matrix for byte-identical routes.
+### P3.2 Leader director researcher spec   [status: done]
+persona: researcher            depends_on: []        parallel_group: P3-research
+scope: Spec lib/game/leaderDirector.ts + leaderAI.ts -> docs/migration/specs/leader_director.md:
+response curves (deficit/projection/pressure/surplus/combineOr), all tunables,
+LeaderSnapshot ~40 fields, laborGoals 8 kinds, directColony budget allocation +
+fixed order[] tie-break, matchCatsToSlots greedy (skill fit x1.5 spec, id tie-break).
+### P3.3 Pathfinding A* + WalkGrid   [status: todo]
+persona: developer -> qa            depends_on: [P3.1]        parallel_group: P3-core
+scope: Port pathfinding.ts -> crates/cat-sim/src/pathfinding.rs. WalkGrid, cost model,
+deterministic A* with byte-identical routes, buildColonyWalkGrid, findPath + straight-walk fallback.
+acceptance: TS golden fixture (routes for a matrix of start/goal on varied grids incl. fence/gate/river/roads); identical path tiles; determinism.
+### P3.4 Movement   [status: todo]
+persona: developer -> qa            depends_on: [P3.3]        parallel_group: P3-movement
+scope: Port movement.ts -> crates/cat-sim/src/movement.rs (advanceMovement x-before-y,
+pathTiles, walkPath, pickWanderTarget, destinationForJob; MOVE_SPEED .5, WANDER_RADIUS 3, etc).
+acceptance: TS golden fixture; determinism (forked movement seed).
+### P3.5 Policy tiers   [status: qa]
+persona: developer -> qa            depends_on: []        parallel_group: P3-independent
+scope: Port policy.ts -> crates/cat-sim/src/policy.rs (bucketFromLeadership, weightsForLeadership,
+pickPolicyTier, configForTier, PolicyConfig). acceptance: literal parity + tier boundaries.
+### P3.6 Leader snapshot contract   [status: qa]
+persona: developer -> qa            depends_on: []        parallel_group: P3-independent
+scope: Port leaderAI.ts LeaderSnapshot (~40 fields), LeaderDecision union, planLeaderActions
+-> crates/cat-sim/src/leader_ai.rs. acceptance: struct shape + planLeaderActions flatten vs TS.
+### P3.7 Leader director (IAUS)   [status: todo]
+persona: developer -> qa            depends_on: [P3.2, P3.6]        parallel_group: P3-director
+scope: Port leaderDirector.ts -> crates/cat-sim/src/leader_director.rs: curves, tunables,
+laborGoals, directColony (budget + fixed tie-break order), matchCatsToSlots, targetWarriors.
+acceptance: TS golden fixture (snapshot -> decisions+slots identical); cross-axis trade-off cases.
+### P3.8 Task assignment helpers   [status: qa]
+persona: developer -> qa            depends_on: []        parallel_group: P3-independent
+scope: Port tasks.ts -> crates/cat-sim/src/tasks.rs (getOptimalCatForTask, getAssignmentTime,
+getAssignedCat). Note Math.random usage — seed it or model behaviourally; document.
+### P3.9 Autonomous needs behavior   [status: qa]
+persona: developer -> qa            depends_on: []        parallel_group: P3-independent
+scope: Port catAI.ts -> crates/cat-sim/src/cat_ai.rs (getAutonomousAction priority chain).
+acceptance: decision-table parity (return->eat<30->drink<40->sleep<20).
+### P3.10 P3 parity QA gate   [status: todo]
+persona: qa (orchestrator gate if xhigh times out)        depends_on: [P3.3,P3.4,P3.5,P3.6,P3.7,P3.8,P3.9]
+scope: determinism, no orphan fixtures, JS-trap audit across the cat-AI modules.

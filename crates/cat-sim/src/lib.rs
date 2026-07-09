@@ -20,3 +20,12 @@ pub mod biomes;
 pub mod noise;
 pub mod terrain_gen;
 pub mod world_gen;
+
+// P3 cat-AI modules (filled by P3.3–P3.9).
+pub mod cat_ai;
+pub mod leader_ai;
+pub mod leader_director;
+pub mod movement;
+pub mod pathfinding;
+pub mod policy;
+pub mod tasks;
