@@ -171,7 +171,7 @@ notes: TS source `lib/game/noise.ts`; fixture
 `docs/migration/fixtures/p2/noise_vectors.json`; parity criterion is exact
 32-bit hash/LCG semantics and JS-number-equivalent noise values.
 
-### P2.3 Biome tables and calculators   [status: todo]
+### P2.3 Biome tables and calculators   [status: qa]
 persona: test-engineer -> developer -> qa            depends_on: [P2.1, P1.2]        parallel_group: P2-foundation
 scope: Port `lib/game/biomes.ts` into `crates/cat-sim/src/biomes.rs`: biome and
 overlay feature enums, `BIOME_PROPERTIES`, `OVERLAY_FEATURE_PROPERTIES`,
@@ -185,7 +185,7 @@ notes: TS source `lib/game/biomes.ts`; fixture
 `docs/migration/fixtures/p2/biome_vectors.json`; parity criterion is exact table
 coverage and exact calculator outputs.
 
-### P2.4 Terrain generator researcher spec   [status: todo]
+### P2.4 Terrain generator researcher spec   [status: done]
 persona: researcher            depends_on: [P2.2]        parallel_group: P2-research
 scope: Produce a port spec for `lib/game/terrainGen.ts` covering the copied
 value-noise math, `TerrainOptions`, `WORLD_TERRAIN_OPTIONS`, height/moisture,
@@ -198,7 +198,7 @@ chunk borders; no Rust product code changes.
 notes: TS source `lib/game/terrainGen.ts`; recommended before P2.6-P2.10 because
 this module is client-parity-critical.
 
-### P2.5 World generation researcher spec   [status: todo]
+### P2.5 World generation researcher spec   [status: done]
 persona: researcher            depends_on: [P2.2, P2.3]        parallel_group: P2-research
 scope: Produce a port spec for `lib/game/worldGen.ts` plus the distinct bridge
 logic in `lib/game/terrainWorld.ts`, including chunk/tile mapping, colony anchor
