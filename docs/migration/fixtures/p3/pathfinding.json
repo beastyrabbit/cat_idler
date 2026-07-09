@@ -1,0 +1,1011 @@
+{
+  "source": "lib/game/pathfinding.ts",
+  "constants": {
+    "ROAD_COST": 0.4,
+    "WORN_PATH_COST": 0.6,
+    "OPEN_COST": 1,
+    "FOREST_COST": 4,
+    "DENSE_WOODS_COST": 8,
+    "MIN_STEP_COST": 0.4,
+    "ROAD_WEAR_THRESHOLD": 70,
+    "DEFAULT_MAX_EXPANSIONS": 6000,
+    "DEFAULT_MARGIN": 16
+  },
+  "pathCases": [
+    {
+      "name": "same_tile",
+      "grid": {
+        "kind": "open"
+      },
+      "start": {
+        "x": 3,
+        "y": 3
+      },
+      "goal": {
+        "x": 3,
+        "y": 3
+      },
+      "expected": [
+        "3,3"
+      ]
+    },
+    {
+      "name": "adjacent_blocked_goal_shortcut",
+      "grid": {
+        "kind": "sets",
+        "blocked": [
+          "1,0"
+        ]
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 1,
+        "y": 0
+      },
+      "expected": [
+        "0,0",
+        "1,0"
+      ]
+    },
+    {
+      "name": "blocked_fractional_start_goal_enterable",
+      "grid": {
+        "kind": "sets",
+        "blocked": [
+          "0,0",
+          "3,0"
+        ]
+      },
+      "start": {
+        "x": 0.2,
+        "y": -0.2
+      },
+      "goal": {
+        "x": 3.49,
+        "y": 0.49
+      },
+      "options": {
+        "margin": 2
+      },
+      "expected": [
+        "0,0",
+        "1,0",
+        "2,0",
+        "3,0"
+      ]
+    },
+    {
+      "name": "js_rounds_negative_half_toward_positive_infinity",
+      "grid": {
+        "kind": "open"
+      },
+      "start": {
+        "x": -1.5,
+        "y": -0.5
+      },
+      "goal": {
+        "x": 1.5,
+        "y": 0.5
+      },
+      "expected": [
+        "-1,0",
+        "0,0",
+        "1,0",
+        "2,0",
+        "2,1"
+      ]
+    },
+    {
+      "name": "open_l_positive",
+      "grid": {
+        "kind": "open"
+      },
+      "start": {
+        "x": 12,
+        "y": 6
+      },
+      "goal": {
+        "x": 20,
+        "y": 14
+      },
+      "expected": [
+        "12,6",
+        "13,6",
+        "14,6",
+        "15,6",
+        "16,6",
+        "17,6",
+        "18,6",
+        "19,6",
+        "20,6",
+        "20,7",
+        "20,8",
+        "20,9",
+        "20,10",
+        "20,11",
+        "20,12",
+        "20,13",
+        "20,14"
+      ]
+    },
+    {
+      "name": "open_l_negative",
+      "grid": {
+        "kind": "open"
+      },
+      "start": {
+        "x": 3,
+        "y": 3
+      },
+      "goal": {
+        "x": -1,
+        "y": 0
+      },
+      "expected": [
+        "3,3",
+        "2,3",
+        "1,3",
+        "0,3",
+        "-1,3",
+        "-1,2",
+        "-1,1",
+        "-1,0"
+      ]
+    },
+    {
+      "name": "water_wall_gap",
+      "grid": {
+        "kind": "sets",
+        "blocked": [
+          "15,4",
+          "15,5",
+          "15,6",
+          "15,7",
+          "15,8",
+          "15,9",
+          "15,10",
+          "15,11",
+          "15,12",
+          "15,13",
+          "15,14",
+          "15,15",
+          "15,16",
+          "15,17",
+          "15,18",
+          "15,19",
+          "15,20"
+        ]
+      },
+      "start": {
+        "x": 12,
+        "y": 6
+      },
+      "goal": {
+        "x": 20,
+        "y": 8
+      },
+      "expected": [
+        "12,6",
+        "13,6",
+        "14,6",
+        "14,5",
+        "14,4",
+        "14,3",
+        "15,3",
+        "16,3",
+        "17,3",
+        "18,3",
+        "19,3",
+        "20,3",
+        "20,4",
+        "20,5",
+        "20,6",
+        "20,7",
+        "20,8"
+      ]
+    },
+    {
+      "name": "equal_detour_prefers_road",
+      "grid": {
+        "kind": "sets",
+        "blocked": [
+          "0,1",
+          "0,2",
+          "0,3"
+        ],
+        "roads": [
+          "1,0",
+          "1,1",
+          "1,2",
+          "1,3",
+          "1,4"
+        ]
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 0,
+        "y": 4
+      },
+      "options": {
+        "margin": 3
+      },
+      "expected": [
+        "0,0",
+        "1,0",
+        "1,1",
+        "1,2",
+        "1,3",
+        "1,4",
+        "0,4"
+      ]
+    },
+    {
+      "name": "longer_road_cheaper",
+      "grid": {
+        "kind": "costs",
+        "costs": {
+          "0,1": 0.4,
+          "1,1": 0.4,
+          "2,1": 0.4,
+          "3,1": 0.4,
+          "4,1": 0.4,
+          "5,1": 0.4,
+          "6,1": 0.4
+        }
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 6,
+        "y": 0
+      },
+      "options": {
+        "margin": 3
+      },
+      "expected": [
+        "0,0",
+        "0,1",
+        "1,1",
+        "2,1",
+        "3,1",
+        "4,1",
+        "5,1",
+        "6,1",
+        "6,0"
+      ]
+    },
+    {
+      "name": "forest_detour",
+      "grid": {
+        "kind": "costs",
+        "costs": {
+          "2,0": 4,
+          "3,0": 4,
+          "4,0": 4
+        }
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 6,
+        "y": 0
+      },
+      "options": {
+        "margin": 3
+      },
+      "expected": [
+        "0,0",
+        "1,0",
+        "1,1",
+        "2,1",
+        "3,1",
+        "4,1",
+        "5,1",
+        "6,1",
+        "6,0"
+      ]
+    },
+    {
+      "name": "small_premium_straight",
+      "grid": {
+        "kind": "costs",
+        "costs": {
+          "3,0": 1.4
+        }
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 6,
+        "y": 0
+      },
+      "options": {
+        "margin": 3
+      },
+      "expected": [
+        "0,0",
+        "1,0",
+        "2,0",
+        "3,0",
+        "4,0",
+        "5,0",
+        "6,0"
+      ]
+    },
+    {
+      "name": "walled_goal_null",
+      "grid": {
+        "kind": "sets",
+        "blocked": [
+          "9,10",
+          "11,10",
+          "10,9",
+          "10,11",
+          "9,9",
+          "11,11",
+          "9,11",
+          "11,9"
+        ]
+      },
+      "start": {
+        "x": 2,
+        "y": 2
+      },
+      "goal": {
+        "x": 10,
+        "y": 10
+      },
+      "options": {
+        "margin": 3
+      },
+      "expected": null
+    },
+    {
+      "name": "budget_exhausted_null",
+      "grid": {
+        "kind": "maze"
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 39,
+        "y": 40
+      },
+      "options": {
+        "maxExpansions": 20,
+        "margin": 4
+      },
+      "expected": null
+    },
+    {
+      "name": "determinism_rng_seed_8",
+      "grid": {
+        "kind": "matrix",
+        "mode": "determinism",
+        "rngSeed": 8
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 10,
+        "y": 10
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": [
+        "0,0",
+        "1,0",
+        "1,1",
+        "2,1",
+        "3,1",
+        "4,1",
+        "4,2",
+        "4,3",
+        "4,4",
+        "4,5",
+        "4,6",
+        "5,6",
+        "5,7",
+        "6,7",
+        "7,7",
+        "7,8",
+        "8,8",
+        "9,8",
+        "10,8",
+        "10,9",
+        "10,10"
+      ]
+    },
+    {
+      "name": "determinism_rng_seed_15",
+      "grid": {
+        "kind": "matrix",
+        "mode": "determinism",
+        "rngSeed": 15
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 10,
+        "y": 10
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": [
+        "0,0",
+        "1,0",
+        "2,0",
+        "3,0",
+        "3,1",
+        "3,2",
+        "3,3",
+        "3,4",
+        "3,5",
+        "4,5",
+        "5,5",
+        "6,5",
+        "7,5",
+        "8,5",
+        "8,6",
+        "8,7",
+        "8,8",
+        "8,9",
+        "9,9",
+        "9,10",
+        "10,10"
+      ]
+    },
+    {
+      "name": "determinism_rng_seed_22",
+      "grid": {
+        "kind": "matrix",
+        "mode": "determinism",
+        "rngSeed": 22
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 10,
+        "y": 10
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": [
+        "0,0",
+        "1,0",
+        "2,0",
+        "3,0",
+        "4,0",
+        "5,0",
+        "6,0",
+        "7,0",
+        "7,1",
+        "7,2",
+        "7,3",
+        "8,3",
+        "8,4",
+        "9,4",
+        "10,4",
+        "10,5",
+        "10,6",
+        "10,7",
+        "11,7",
+        "11,8",
+        "11,9",
+        "10,9",
+        "10,10"
+      ]
+    },
+    {
+      "name": "determinism_rng_seed_43",
+      "grid": {
+        "kind": "matrix",
+        "mode": "determinism",
+        "rngSeed": 43
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 10,
+        "y": 10
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": [
+        "0,0",
+        "-1,0",
+        "-1,1",
+        "-1,2",
+        "0,2",
+        "0,3",
+        "0,4",
+        "0,5",
+        "0,6",
+        "0,7",
+        "0,8",
+        "0,9",
+        "0,10",
+        "1,10",
+        "2,10",
+        "2,11",
+        "3,11",
+        "4,11",
+        "5,11",
+        "6,11",
+        "7,11",
+        "7,10",
+        "8,10",
+        "9,10",
+        "10,10"
+      ]
+    },
+    {
+      "name": "determinism_rng_seed_64",
+      "grid": {
+        "kind": "matrix",
+        "mode": "determinism",
+        "rngSeed": 64
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 10,
+        "y": 10
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": [
+        "0,0",
+        "-1,0",
+        "-1,1",
+        "-1,2",
+        "-1,3",
+        "0,3",
+        "0,4",
+        "1,4",
+        "2,4",
+        "3,4",
+        "4,4",
+        "4,5",
+        "4,6",
+        "5,6",
+        "6,6",
+        "7,6",
+        "7,5",
+        "8,5",
+        "9,5",
+        "10,5",
+        "10,6",
+        "10,7",
+        "10,8",
+        "10,9",
+        "10,10"
+      ]
+    },
+    {
+      "name": "sweep_rng_seed_1",
+      "grid": {
+        "kind": "matrix",
+        "mode": "sweep",
+        "rngSeed": 1
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 10,
+        "y": 10
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": [
+        "0,0",
+        "0,1",
+        "0,2",
+        "-1,2",
+        "-2,2",
+        "-3,2",
+        "-3,3",
+        "-3,4",
+        "-2,4",
+        "-2,5",
+        "-2,6",
+        "-1,6",
+        "-1,7",
+        "-1,8",
+        "0,8",
+        "1,8",
+        "1,9",
+        "1,10",
+        "1,11",
+        "1,12",
+        "2,12",
+        "3,12",
+        "3,13",
+        "4,13",
+        "5,13",
+        "6,13",
+        "7,13",
+        "8,13",
+        "9,13",
+        "10,13",
+        "10,12",
+        "10,11",
+        "10,10"
+      ]
+    },
+    {
+      "name": "sweep_rng_seed_2",
+      "grid": {
+        "kind": "matrix",
+        "mode": "sweep",
+        "rngSeed": 2
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 10,
+        "y": 10
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": [
+        "0,0",
+        "1,0",
+        "2,0",
+        "3,0",
+        "4,0",
+        "5,0",
+        "5,1",
+        "6,1",
+        "6,2",
+        "6,3",
+        "6,4",
+        "7,4",
+        "7,5",
+        "7,6",
+        "7,7",
+        "7,8",
+        "7,9",
+        "7,10",
+        "8,10",
+        "9,10",
+        "10,10"
+      ]
+    },
+    {
+      "name": "sweep_rng_seed_3",
+      "grid": {
+        "kind": "matrix",
+        "mode": "sweep",
+        "rngSeed": 3
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 10,
+        "y": 10
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": [
+        "0,0",
+        "1,0",
+        "1,-1",
+        "2,-1",
+        "3,-1",
+        "4,-1",
+        "5,-1",
+        "6,-1",
+        "7,-1",
+        "8,-1",
+        "9,-1",
+        "10,-1",
+        "10,0",
+        "11,0",
+        "11,1",
+        "11,2",
+        "11,3",
+        "12,3",
+        "12,4",
+        "12,5",
+        "12,6",
+        "12,7",
+        "11,7",
+        "10,7",
+        "10,8",
+        "10,9",
+        "10,10"
+      ]
+    }
+  ],
+  "colonyChecks": {
+    "anchor": "6,6",
+    "ringRadius": 4,
+    "gate": "6,10",
+    "tiles": [
+      {
+        "type": "river",
+        "overlayFeature": null,
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 0,
+        "y": 0
+      },
+      {
+        "type": "grass",
+        "overlayFeature": null,
+        "resources": {
+          "water": 5
+        },
+        "pathWear": 0,
+        "x": 1,
+        "y": 0
+      },
+      {
+        "type": "grass",
+        "overlayFeature": "river",
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 2,
+        "y": 0
+      },
+      {
+        "type": "grass",
+        "overlayFeature": null,
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 3,
+        "y": 0
+      },
+      {
+        "type": "grass",
+        "overlayFeature": "road_built",
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 4,
+        "y": 0
+      },
+      {
+        "type": "grass",
+        "overlayFeature": null,
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 80,
+        "x": 5,
+        "y": 0
+      },
+      {
+        "type": "grass",
+        "overlayFeature": "game_trail",
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 6,
+        "y": 0
+      },
+      {
+        "type": "grass",
+        "overlayFeature": "ancient_road",
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 7,
+        "y": 0
+      },
+      {
+        "type": "grass",
+        "overlayFeature": "trade_route",
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 8,
+        "y": 0
+      },
+      {
+        "type": "forest",
+        "overlayFeature": null,
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 9,
+        "y": 0
+      },
+      {
+        "type": "dense_woods",
+        "overlayFeature": null,
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 10,
+        "y": 0
+      },
+      {
+        "type": "forest",
+        "overlayFeature": "road_built",
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 0,
+        "x": 11,
+        "y": 0
+      },
+      {
+        "type": "forest",
+        "overlayFeature": null,
+        "resources": {
+          "water": 0
+        },
+        "pathWear": 70,
+        "x": 12,
+        "y": 0
+      }
+    ],
+    "blocked": {
+      "0,0": true,
+      "1,0": true,
+      "2,0": true,
+      "3,0": false,
+      "10,6": true,
+      "6,2": true,
+      "6,10": false,
+      "6,6": false,
+      "6,20": false
+    },
+    "costs": {
+      "4,0": 0.4,
+      "5,0": 0.6,
+      "6,0": 0.6,
+      "7,0": 0.6,
+      "8,0": 0.6,
+      "9,0": 4,
+      "10,0": 8,
+      "11,0": 0.4,
+      "12,0": 0.6,
+      "50,50": 1
+    }
+  },
+  "colonyPathCases": [
+    {
+      "name": "legacy_fence_gate",
+      "kind": "legacy",
+      "start": {
+        "x": 6,
+        "y": 6
+      },
+      "goal": {
+        "x": 6,
+        "y": 16
+      },
+      "expected": [
+        "6,6",
+        "6,7",
+        "6,8",
+        "6,9",
+        "6,10",
+        "6,11",
+        "6,12",
+        "6,13",
+        "6,14",
+        "6,15",
+        "6,16"
+      ]
+    },
+    {
+      "name": "organic_fence_gate",
+      "kind": "organic",
+      "area": [
+        "-1,-1",
+        "0,-1",
+        "1,-1",
+        "-1,0",
+        "0,0",
+        "1,0",
+        "-1,1",
+        "0,1",
+        "1,1"
+      ],
+      "areaGate": {
+        "x": 0,
+        "y": 1,
+        "side": "S"
+      },
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 0,
+        "y": 3
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": [
+        "0,0",
+        "0,1",
+        "0,2",
+        "0,3"
+      ]
+    },
+    {
+      "name": "organic_fence_no_gate_null",
+      "kind": "organic",
+      "area": [
+        "-1,-1",
+        "0,-1",
+        "1,-1",
+        "-1,0",
+        "0,0",
+        "1,0",
+        "-1,1",
+        "0,1",
+        "1,1"
+      ],
+      "areaGate": null,
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "goal": {
+        "x": 0,
+        "y": 3
+      },
+      "options": {
+        "margin": 4
+      },
+      "expected": null
+    }
+  ]
+}

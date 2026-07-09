@@ -371,7 +371,7 @@ scope: Spec lib/game/leaderDirector.ts + leaderAI.ts -> docs/migration/specs/lea
 response curves (deficit/projection/pressure/surplus/combineOr), all tunables,
 LeaderSnapshot ~40 fields, laborGoals 8 kinds, directColony budget allocation +
 fixed order[] tie-break, matchCatsToSlots greedy (skill fit x1.5 spec, id tie-break).
-### P3.3 Pathfinding A* + WalkGrid   [status: todo]
+### P3.3 Pathfinding A* + WalkGrid   [status: qa]
 persona: developer -> qa            depends_on: [P3.1]        parallel_group: P3-core
 scope: Port pathfinding.ts -> crates/cat-sim/src/pathfinding.rs. WalkGrid, cost model,
 deterministic A* with byte-identical routes, buildColonyWalkGrid, findPath + straight-walk fallback.
