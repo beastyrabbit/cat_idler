@@ -376,7 +376,7 @@ persona: developer -> qa            depends_on: [P3.1]        parallel_group: P3
 scope: Port pathfinding.ts -> crates/cat-sim/src/pathfinding.rs. WalkGrid, cost model,
 deterministic A* with byte-identical routes, buildColonyWalkGrid, findPath + straight-walk fallback.
 acceptance: TS golden fixture (routes for a matrix of start/goal on varied grids incl. fence/gate/river/roads); identical path tiles; determinism.
-### P3.4 Movement   [status: todo]
+### P3.4 Movement   [status: qa]
 persona: developer -> qa            depends_on: [P3.3]        parallel_group: P3-movement
 scope: Port movement.ts -> crates/cat-sim/src/movement.rs (advanceMovement x-before-y,
 pathTiles, walkPath, pickWanderTarget, destinationForJob; MOVE_SPEED .5, WANDER_RADIUS 3, etc).

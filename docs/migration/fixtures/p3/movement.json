@@ -1,0 +1,1007 @@
+{
+	"source": "lib/game/movement.ts",
+	"generatedBy": "/tmp/generate_p3_movement_fixture.ts",
+	"constants": {
+		"MOVE_SPEED_TILES_PER_SEC": 0.5,
+		"WANDER_RADIUS": 3,
+		"EXPLORE_SPEED_FACTOR": 0.35,
+		"HUNT_RANGE_MIN": 8,
+		"HUNT_RANGE_MAX": 14
+	},
+	"counts": {
+		"advanceMovement": 6,
+		"pathTiles": 5,
+		"walkPath": 6,
+		"pickWanderTarget": 4,
+		"destinationForJob": 17,
+		"seededWander": 3,
+		"total": 41
+	},
+	"advanceMovement": [
+		{
+			"name": "default_speed_moves_x_first_and_discards_leftover",
+			"position": {
+				"x": 0,
+				"y": 0
+			},
+			"destination": {
+				"x": 2,
+				"y": 3
+			},
+			"elapsedSec": 1,
+			"expected": {
+				"position": {
+					"x": 0.5,
+					"y": 0
+				},
+				"arrived": false
+			}
+		},
+		{
+			"name": "negative_x_never_overshoots_even_with_large_budget",
+			"position": {
+				"x": 3,
+				"y": 1
+			},
+			"destination": {
+				"x": 1,
+				"y": 4
+			},
+			"elapsedSec": 10,
+			"expected": {
+				"position": {
+					"x": 1,
+					"y": 1
+				},
+				"arrived": false
+			}
+		},
+		{
+			"name": "moves_y_only_after_x_is_aligned",
+			"position": {
+				"x": 2,
+				"y": 1
+			},
+			"destination": {
+				"x": 2,
+				"y": -1
+			},
+			"elapsedSec": 1.5,
+			"speed": 1,
+			"expected": {
+				"position": {
+					"x": 2,
+					"y": -0.5
+				},
+				"arrived": false
+			}
+		},
+		{
+			"name": "negative_elapsed_clamps_to_zero_budget",
+			"position": {
+				"x": -2,
+				"y": 5
+			},
+			"destination": {
+				"x": 4,
+				"y": 5
+			},
+			"elapsedSec": -12,
+			"speed": 2,
+			"expected": {
+				"position": {
+					"x": -2,
+					"y": 5
+				},
+				"arrived": false
+			}
+		},
+		{
+			"name": "already_at_destination_is_arrived",
+			"position": {
+				"x": 1,
+				"y": 2
+			},
+			"destination": {
+				"x": 1,
+				"y": 2
+			},
+			"elapsedSec": 1,
+			"expected": {
+				"position": {
+					"x": 1,
+					"y": 2
+				},
+				"arrived": true
+			}
+		},
+		{
+			"name": "custom_fractional_speed_preserves_fractional_position",
+			"position": {
+				"x": -1.5,
+				"y": 2.25
+			},
+			"destination": {
+				"x": -1.5,
+				"y": 5
+			},
+			"elapsedSec": 2,
+			"speed": 0.4,
+			"expected": {
+				"position": {
+					"x": -1.5,
+					"y": 3.05
+				},
+				"arrived": false
+			}
+		}
+	],
+	"pathTiles": [
+		{
+			"name": "same_fractional_negative_half_rounds_like_js",
+			"from": {
+				"x": -1.5,
+				"y": -0.5
+			},
+			"to": {
+				"x": -1.5,
+				"y": -0.5
+			},
+			"expected": [
+				{
+					"x": -1,
+					"y": 0
+				}
+			]
+		},
+		{
+			"name": "positive_l_shape_x_before_y",
+			"from": {
+				"x": 0,
+				"y": 0
+			},
+			"to": {
+				"x": 2,
+				"y": 2
+			},
+			"expected": [
+				{
+					"x": 0,
+					"y": 0
+				},
+				{
+					"x": 1,
+					"y": 0
+				},
+				{
+					"x": 2,
+					"y": 0
+				},
+				{
+					"x": 2,
+					"y": 1
+				},
+				{
+					"x": 2,
+					"y": 2
+				}
+			]
+		},
+		{
+			"name": "negative_l_shape_x_before_y",
+			"from": {
+				"x": -1.2,
+				"y": 2.6
+			},
+			"to": {
+				"x": -3.8,
+				"y": 0.4
+			},
+			"expected": [
+				{
+					"x": -1,
+					"y": 3
+				},
+				{
+					"x": -2,
+					"y": 3
+				},
+				{
+					"x": -3,
+					"y": 3
+				},
+				{
+					"x": -4,
+					"y": 3
+				},
+				{
+					"x": -4,
+					"y": 2
+				},
+				{
+					"x": -4,
+					"y": 1
+				},
+				{
+					"x": -4,
+					"y": 0
+				}
+			]
+		},
+		{
+			"name": "fractional_endpoints_round_onto_tile_grid",
+			"from": {
+				"x": 0.4,
+				"y": 1.6
+			},
+			"to": {
+				"x": 2.5,
+				"y": 1.6
+			},
+			"expected": [
+				{
+					"x": 0,
+					"y": 2
+				},
+				{
+					"x": 1,
+					"y": 2
+				},
+				{
+					"x": 2,
+					"y": 2
+				},
+				{
+					"x": 3,
+					"y": 2
+				}
+			]
+		},
+		{
+			"name": "vertical_negative_run",
+			"from": {
+				"x": 4,
+				"y": 3
+			},
+			"to": {
+				"x": 4,
+				"y": 0
+			},
+			"expected": [
+				{
+					"x": 4,
+					"y": 3
+				},
+				{
+					"x": 4,
+					"y": 2
+				},
+				{
+					"x": 4,
+					"y": 1
+				},
+				{
+					"x": 4,
+					"y": 0
+				}
+			]
+		}
+	],
+	"walkPath": [
+		{
+			"name": "zero_budget_records_start_tile_only",
+			"from": {
+				"x": 4,
+				"y": 4
+			},
+			"destination": {
+				"x": 9,
+				"y": 9
+			},
+			"budgetTiles": 0,
+			"waypoints": [],
+			"expected": {
+				"position": {
+					"x": 4,
+					"y": 4
+				},
+				"arrived": false,
+				"tiles": [
+					{
+						"x": 4,
+						"y": 4
+					}
+				]
+			}
+		},
+		{
+			"name": "spends_budget_through_x_then_y_until_exhausted",
+			"from": {
+				"x": 0,
+				"y": 0
+			},
+			"destination": {
+				"x": 2,
+				"y": 2
+			},
+			"budgetTiles": 3,
+			"waypoints": [],
+			"expected": {
+				"position": {
+					"x": 2,
+					"y": 1
+				},
+				"arrived": false,
+				"tiles": [
+					{
+						"x": 0,
+						"y": 0
+					},
+					{
+						"x": 1,
+						"y": 0
+					},
+					{
+						"x": 2,
+						"y": 0
+					},
+					{
+						"x": 2,
+						"y": 1
+					}
+				]
+			}
+		},
+		{
+			"name": "waypoint_budget_continues_to_destination",
+			"from": {
+				"x": 0,
+				"y": 0
+			},
+			"destination": {
+				"x": 2,
+				"y": 2
+			},
+			"budgetTiles": 4,
+			"waypoints": [
+				{
+					"x": 0,
+					"y": 2
+				}
+			],
+			"expected": {
+				"position": {
+					"x": 2,
+					"y": 2
+				},
+				"arrived": true,
+				"tiles": [
+					{
+						"x": 0,
+						"y": 0
+					},
+					{
+						"x": 0,
+						"y": 1
+					},
+					{
+						"x": 0,
+						"y": 2
+					},
+					{
+						"x": 1,
+						"y": 2
+					},
+					{
+						"x": 2,
+						"y": 2
+					}
+				]
+			}
+		},
+		{
+			"name": "fractional_partial_walk_records_rounded_tiles",
+			"from": {
+				"x": 0.25,
+				"y": 0.25
+			},
+			"destination": {
+				"x": 2.25,
+				"y": 1.25
+			},
+			"budgetTiles": 1.4,
+			"waypoints": [],
+			"expected": {
+				"position": {
+					"x": 1.65,
+					"y": 0.25
+				},
+				"arrived": false,
+				"tiles": [
+					{
+						"x": 0,
+						"y": 0
+					},
+					{
+						"x": 1,
+						"y": 0
+					},
+					{
+						"x": 2,
+						"y": 0
+					}
+				]
+			}
+		},
+		{
+			"name": "negative_budget_clamps_to_start_tile",
+			"from": {
+				"x": -2.4,
+				"y": 1.5
+			},
+			"destination": {
+				"x": -5,
+				"y": -2
+			},
+			"budgetTiles": -3,
+			"waypoints": [],
+			"expected": {
+				"position": {
+					"x": -2.4,
+					"y": 1.5
+				},
+				"arrived": false,
+				"tiles": [
+					{
+						"x": -2,
+						"y": 2
+					}
+				]
+			}
+		},
+		{
+			"name": "dedupes_corner_tiles_across_waypoints",
+			"from": {
+				"x": 5,
+				"y": 5
+			},
+			"destination": {
+				"x": 7,
+				"y": 7
+			},
+			"budgetTiles": 99,
+			"waypoints": [
+				{
+					"x": 7,
+					"y": 5
+				},
+				{
+					"x": 7,
+					"y": 6
+				}
+			],
+			"expected": {
+				"position": {
+					"x": 7,
+					"y": 7
+				},
+				"arrived": true,
+				"tiles": [
+					{
+						"x": 5,
+						"y": 5
+					},
+					{
+						"x": 6,
+						"y": 5
+					},
+					{
+						"x": 7,
+						"y": 5
+					},
+					{
+						"x": 7,
+						"y": 6
+					},
+					{
+						"x": 7,
+						"y": 7
+					}
+				]
+			}
+		}
+	],
+	"pickWanderTarget": [
+		{
+			"name": "minimum_rolls_hit_lower_corner",
+			"anchor": {
+				"x": 6,
+				"y": 6
+			},
+			"roll1": 0,
+			"roll2": 0,
+			"expected": {
+				"x": 3,
+				"y": 3
+			}
+		},
+		{
+			"name": "middle_rolls_pick_centerish_integer_tile",
+			"anchor": {
+				"x": 6,
+				"y": 6
+			},
+			"roll1": 0.42,
+			"roll2": 0.77,
+			"expected": {
+				"x": 5,
+				"y": 8
+			}
+		},
+		{
+			"name": "near_one_rolls_hit_upper_radius",
+			"anchor": {
+				"x": -4,
+				"y": 10
+			},
+			"roll1": 0.999999,
+			"roll2": 0.999999,
+			"expected": {
+				"x": -1,
+				"y": 13
+			}
+		},
+		{
+			"name": "exact_one_is_not_clamped_by_function",
+			"anchor": {
+				"x": 0,
+				"y": 0
+			},
+			"roll1": 1,
+			"roll2": 1,
+			"expected": {
+				"x": 4,
+				"y": 4
+			}
+		}
+	],
+	"destinationForJob": [
+		{
+			"name": "ritual_goes_to_shrine",
+			"kind": "ritual",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5
+			},
+			"expected": {
+				"x": 12,
+				"y": -3
+			}
+		},
+		{
+			"name": "build_house_uses_site",
+			"kind": "build_house",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5,
+				"site": {
+					"x": 11,
+					"y": -4
+				}
+			},
+			"expected": {
+				"x": 11,
+				"y": -4
+			}
+		},
+		{
+			"name": "build_house_without_site_falls_back_to_anchor",
+			"kind": "build_house",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5
+			},
+			"expected": {
+				"x": 10,
+				"y": -5
+			}
+		},
+		{
+			"name": "expand_village_uses_expansion_site",
+			"kind": "expand_village",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5,
+				"expansionSite": {
+					"x": 14,
+					"y": -5
+				}
+			},
+			"expected": {
+				"x": 14,
+				"y": -5
+			}
+		},
+		{
+			"name": "expand_village_without_site_returns_null",
+			"kind": "expand_village",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5
+			},
+			"expected": null
+		},
+		{
+			"name": "quarry_uses_quarry_site",
+			"kind": "quarry",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5,
+				"quarrySite": {
+					"x": -2,
+					"y": 8
+				}
+			},
+			"expected": {
+				"x": -2,
+				"y": 8
+			}
+		},
+		{
+			"name": "fetch_water_uses_water_site",
+			"kind": "fetch_water",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5,
+				"waterSite": {
+					"x": 3,
+					"y": -12
+				}
+			},
+			"expected": {
+				"x": 3,
+				"y": -12
+			}
+		},
+		{
+			"name": "explore_uses_frontier_site",
+			"kind": "explore",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5,
+				"exploreSite": {
+					"x": 30,
+					"y": -8
+				}
+			},
+			"expected": {
+				"x": 30,
+				"y": -8
+			}
+		},
+		{
+			"name": "hunt_food_roll_clamps_negative_to_first_tile",
+			"kind": "hunt_expedition",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [
+					{
+						"x": 1,
+						"y": 2
+					},
+					{
+						"x": -4,
+						"y": 5
+					},
+					{
+						"x": 9,
+						"y": -9
+					}
+				],
+				"roll": -0.25
+			},
+			"expected": {
+				"x": 1,
+				"y": 2
+			}
+		},
+		{
+			"name": "hunt_food_roll_selects_middle_tile",
+			"kind": "hunt_expedition",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [
+					{
+						"x": 1,
+						"y": 2
+					},
+					{
+						"x": -4,
+						"y": 5
+					},
+					{
+						"x": 9,
+						"y": -9
+					}
+				],
+				"roll": 0.5
+			},
+			"expected": {
+				"x": -4,
+				"y": 5
+			}
+		},
+		{
+			"name": "hunt_food_roll_exact_one_clamps_to_last_tile",
+			"kind": "hunt_expedition",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [
+					{
+						"x": 1,
+						"y": 2
+					},
+					{
+						"x": -4,
+						"y": 5
+					},
+					{
+						"x": 9,
+						"y": -9
+					}
+				],
+				"roll": 1
+			},
+			"expected": {
+				"x": 9,
+				"y": -9
+			}
+		},
+		{
+			"name": "hunt_without_food_roll_zero_heads_east",
+			"kind": "hunt_expedition",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0
+			},
+			"expected": {
+				"x": 18,
+				"y": -5
+			}
+		},
+		{
+			"name": "hunt_without_food_roll_quarter_heads_south",
+			"kind": "hunt_expedition",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.25
+			},
+			"expected": {
+				"x": 10,
+				"y": 5
+			}
+		},
+		{
+			"name": "hunt_without_food_roll_nine_tenths_uses_angle_and_range",
+			"kind": "hunt_expedition",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.9
+			},
+			"expected": {
+				"x": 21,
+				"y": -13
+			}
+		},
+		{
+			"name": "supply_food_has_no_destination",
+			"kind": "supply_food",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5
+			},
+			"expected": null
+		},
+		{
+			"name": "leader_plan_house_has_no_destination",
+			"kind": "leader_plan_house",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5
+			},
+			"expected": null
+		},
+		{
+			"name": "unknown_job_has_no_destination",
+			"kind": "unknown_job",
+			"context": {
+				"anchor": {
+					"x": 10,
+					"y": -5
+				},
+				"shrine": {
+					"x": 12,
+					"y": -3
+				},
+				"foodTiles": [],
+				"roll": 0.5
+			},
+			"expected": null
+		}
+	],
+	"seededWander": [
+		{
+			"name": "movement_seed_1",
+			"baseSeed": 1,
+			"startSeed": 1000004,
+			"roll1": 0.7900453105103225,
+			"roll2": 0.4065451673232019,
+			"nextSeed": 1746098198,
+			"anchor": {
+				"x": 6,
+				"y": 6
+			},
+			"expected": {
+				"x": 8,
+				"y": 5
+			}
+		},
+		{
+			"name": "movement_seed_123",
+			"baseSeed": 123,
+			"startSeed": 1000126,
+			"roll1": 0.8373267066199332,
+			"roll2": 0.47240451723337173,
+			"nextSeed": 2028961952,
+			"anchor": {
+				"x": 6,
+				"y": 6
+			},
+			"expected": {
+				"x": 8,
+				"y": 6
+			}
+		},
+		{
+			"name": "movement_seed_4294967295",
+			"baseSeed": 4294967295,
+			"startSeed": 1000002,
+			"roll1": 0.7892702056560665,
+			"roll2": 0.22513763699680567,
+			"nextSeed": 966958788,
+			"anchor": {
+				"x": 6,
+				"y": 6
+			},
+			"expected": {
+				"x": 8,
+				"y": 4
+			}
+		}
+	]
+}
