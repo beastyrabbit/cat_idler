@@ -1,0 +1,1713 @@
+{
+	"source": [
+		"lib/game/leaderDirector.ts",
+		"lib/game/leaderAI.ts"
+	],
+	"responseCurves": [
+		{
+			"expression": "clamp01(-2)",
+			"value": 0
+		},
+		{
+			"expression": "clamp01(0.5)",
+			"value": 0.5
+		},
+		{
+			"expression": "clamp01(2)",
+			"value": 1
+		},
+		{
+			"expression": "deficitCurve(1)",
+			"value": 0
+		},
+		{
+			"expression": "deficitCurve(1.5)",
+			"value": 0
+		},
+		{
+			"expression": "deficitCurve(0)",
+			"value": 1
+		},
+		{
+			"expression": "deficitCurve(0.5)",
+			"value": 0.25
+		},
+		{
+			"expression": "deficitCurve(0.25)",
+			"value": 0.5625
+		},
+		{
+			"expression": "projectionCurve(100, 0)",
+			"value": 0
+		},
+		{
+			"expression": "projectionCurve(100, -5)",
+			"value": 0
+		},
+		{
+			"expression": "projectionCurve(10, 10)",
+			"value": 0.8333333333333334
+		},
+		{
+			"expression": "projectionCurve(600, 10)",
+			"value": 0
+		},
+		{
+			"expression": "projectionCurve(-5, 10)",
+			"value": 1
+		},
+		{
+			"expression": "projectionCurve(10, 10, 0)",
+			"value": 0
+		},
+		{
+			"expression": "projectionGate(1)",
+			"value": 0
+		},
+		{
+			"expression": "projectionGate(0.9)",
+			"value": 0
+		},
+		{
+			"expression": "projectionGate(0)",
+			"value": 1
+		},
+		{
+			"expression": "projectionGate(0.45)",
+			"value": 0.5
+		},
+		{
+			"expression": "survivalScore(1, 200, 9999)",
+			"value": 0
+		},
+		{
+			"expression": "survivalScore(0.3, 60, 40)",
+			"value": 0.745
+		},
+		{
+			"expression": "pressureCurve(0.8)",
+			"value": 0.5
+		},
+		{
+			"expression": "pressureCurve(0.4)",
+			"value": 0.01798620996209156
+		},
+		{
+			"expression": "pressureCurve(1.2)",
+			"value": 0.9820137900379085
+		},
+		{
+			"expression": "surplusCurve(0.5, 0.6)",
+			"value": 0
+		},
+		{
+			"expression": "surplusCurve(0.6, 0.6)",
+			"value": 0
+		},
+		{
+			"expression": "surplusCurve(1, 0.6)",
+			"value": 1
+		},
+		{
+			"expression": "surplusCurve(0.8, 0.6)",
+			"value": 0.5000000000000001
+		},
+		{
+			"expression": "combineOr(0, 0)",
+			"value": 0
+		},
+		{
+			"expression": "combineOr(1, 0)",
+			"value": 1
+		},
+		{
+			"expression": "combineOr(0, 1)",
+			"value": 1
+		},
+		{
+			"expression": "combineOr(0.5, 0.5)",
+			"value": 0.75
+		}
+	],
+	"targetWarriors": [
+		{
+			"name": "no_barracks",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0,
+				"hasBarracks": false
+			},
+			"expected": 0
+		},
+		{
+			"name": "calm_40",
+			"snapshot": {
+				"population": 20,
+				"workforce": 40,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0,
+				"hasBarracks": true,
+				"threatBand": "calm"
+			},
+			"expected": 2
+		},
+		{
+			"name": "rising_40",
+			"snapshot": {
+				"population": 20,
+				"workforce": 40,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0,
+				"hasBarracks": true,
+				"threatBand": "rising"
+			},
+			"expected": 4
+		},
+		{
+			"name": "imminent_40",
+			"snapshot": {
+				"population": 20,
+				"workforce": 40,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0,
+				"hasBarracks": true,
+				"threatBand": "imminent"
+			},
+			"expected": 7
+		},
+		{
+			"name": "imminent_4",
+			"snapshot": {
+				"population": 20,
+				"workforce": 4,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0,
+				"hasBarracks": true,
+				"threatBand": "imminent"
+			},
+			"expected": 1
+		},
+		{
+			"name": "calm_zero_workforce",
+			"snapshot": {
+				"population": 20,
+				"workforce": 0,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0,
+				"hasBarracks": true,
+				"threatBand": "calm"
+			},
+			"expected": 1
+		}
+	],
+	"directColony": [
+		{
+			"name": "empty",
+			"snapshot": {
+				"population": 0,
+				"workforce": 0,
+				"idleCats": 0,
+				"employedCats": 0,
+				"resources": {
+					"food": 100,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [],
+				"slots": []
+			}
+		},
+		{
+			"name": "famine_hunts",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 0,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [],
+				"slots": [
+					{
+						"goal": "hunt",
+						"count": 10,
+						"score": 1
+					}
+				]
+			}
+		},
+		{
+			"name": "water_crisis_and_storage",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 6,
+				"employedCats": 0,
+				"resources": {
+					"food": 190,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 30,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": true,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": [
+					{
+						"goal": "fetch_water",
+						"count": 3,
+						"score": 0.7224999999999999
+					},
+					{
+						"goal": "hunt",
+						"count": 2,
+						"score": 0.0025000000000000577
+					}
+				]
+			}
+		},
+		{
+			"name": "single_workshop_not_rounded_away",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 4,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 1
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": [
+					{
+						"goal": "assign_workshop",
+						"count": 1,
+						"score": 0.45
+					}
+				]
+			}
+		},
+		{
+			"name": "vetoed_sites",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 0,
+				"materialsCapacity": 200,
+				"water": 0,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": []
+			}
+		},
+		{
+			"name": "water_in_flight_dry_tops_up_one",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 0,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 3,
+				"hasQuarrySite": false,
+				"hasWaterSite": true,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": [
+					{
+						"goal": "fetch_water",
+						"count": 1,
+						"score": 1
+					}
+				]
+			}
+		},
+		{
+			"name": "water_in_flight_10_percent_opens_zero",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 20,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 3,
+				"hasQuarrySite": false,
+				"hasWaterSite": true,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": []
+			}
+		},
+		{
+			"name": "idle_floor_frontier_exceeds_scout_cap",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 12,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": true,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": [
+					{
+						"goal": "scout",
+						"count": 10,
+						"score": 0.3
+					}
+				]
+			}
+		},
+		{
+			"name": "cancel_threshold_1_05_no_cancel",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 210,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 4,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": []
+			}
+		},
+		{
+			"name": "cancel_threshold_1_2_cancel",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 240,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 4,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "cancel_hunts"
+					},
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": []
+			}
+		},
+		{
+			"name": "starving_cancels_training",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0,
+				"starving": true,
+				"trainingInFlight": 2
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "cancel_training"
+					},
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": []
+			}
+		},
+		{
+			"name": "den_at_threshold",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 25,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "build_den"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": []
+			}
+		},
+		{
+			"name": "storehouse_cap_stops_storage_but_idle_floor_hunts",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 190,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 3,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": [
+					{
+						"goal": "hunt",
+						"count": 8,
+						"score": 0.0025000000000000577
+					}
+				]
+			}
+		},
+		{
+			"name": "tithe_food_and_refined",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 200,
+					"refined": 10
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 5,
+						"blessings": 2
+					}
+				],
+				"slots": []
+			}
+		},
+		{
+			"name": "fixed_order_staff_tie",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 6,
+				"employedCats": 0,
+				"resources": {
+					"food": 120,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 120,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 1,
+				"hasBarracks": true,
+				"warriorCount": 1,
+				"researchHutsNeedingWorkers": 1,
+				"smithiesNeedingWorkers": 1
+			},
+			"expected": {
+				"decisions": [],
+				"slots": [
+					{
+						"goal": "train_warrior",
+						"count": 1,
+						"score": 0.5
+					},
+					{
+						"goal": "assign_smithy",
+						"count": 1,
+						"score": 0.45
+					},
+					{
+						"goal": "assign_workshop",
+						"count": 1,
+						"score": 0.45
+					},
+					{
+						"goal": "assign_research",
+						"count": 1,
+						"score": 0.45
+					},
+					{
+						"goal": "hunt",
+						"count": 2,
+						"score": 0.16000000000000003
+					}
+				]
+			}
+		},
+		{
+			"name": "round_robin_idle_floor",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 10,
+				"employedCats": 0,
+				"resources": {
+					"food": 190,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 200,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": true,
+				"hasWaterSite": false,
+				"hasFrontier": true,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0
+			},
+			"expected": {
+				"decisions": [
+					{
+						"kind": "build_storage"
+					},
+					{
+						"kind": "tithe",
+						"food": 20,
+						"refined": 0,
+						"blessings": 1
+					}
+				],
+				"slots": [
+					{
+						"goal": "scout",
+						"count": 4,
+						"score": 0.3
+					},
+					{
+						"goal": "hunt",
+						"count": 2,
+						"score": 0.0025000000000000577
+					},
+					{
+						"goal": "quarry",
+						"count": 2,
+						"score": 0
+					}
+				]
+			}
+		},
+		{
+			"name": "warrior_imminent_band",
+			"snapshot": {
+				"population": 20,
+				"workforce": 20,
+				"idleCats": 8,
+				"employedCats": 0,
+				"resources": {
+					"food": 120,
+					"refined": 0
+				},
+				"foodCapacity": 200,
+				"materials": 200,
+				"materialsCapacity": 200,
+				"water": 120,
+				"waterCapacity": 200,
+				"housing": {
+					"capacity": 40,
+					"committed": 0
+				},
+				"activeHunts": 0,
+				"activeQuarries": 0,
+				"activeScouts": 0,
+				"activeWaterFetchers": 0,
+				"hasQuarrySite": false,
+				"hasWaterSite": false,
+				"hasFrontier": false,
+				"denPlansInFlight": 0,
+				"storagePlansInFlight": 0,
+				"storehouseCount": 0,
+				"storehouseCap": 3,
+				"workshopsNeedingWorkers": 0,
+				"hasBarracks": true,
+				"threatBand": "imminent",
+				"warriorCount": 2,
+				"trainingInFlight": 1
+			},
+			"expected": {
+				"decisions": [],
+				"slots": [
+					{
+						"goal": "train_warrior",
+						"count": 4,
+						"score": 0.5
+					},
+					{
+						"goal": "hunt",
+						"count": 3,
+						"score": 0.16000000000000003
+					}
+				]
+			}
+		}
+	],
+	"planLeaderActions": {
+		"snapshot": {
+			"population": 20,
+			"workforce": 20,
+			"idleCats": 6,
+			"employedCats": 0,
+			"resources": {
+				"food": 240,
+				"refined": 10
+			},
+			"foodCapacity": 200,
+			"materials": 200,
+			"materialsCapacity": 200,
+			"water": 20,
+			"waterCapacity": 200,
+			"housing": {
+				"capacity": 10,
+				"committed": 0
+			},
+			"activeHunts": 4,
+			"activeQuarries": 0,
+			"activeScouts": 0,
+			"activeWaterFetchers": 0,
+			"hasQuarrySite": false,
+			"hasWaterSite": true,
+			"hasFrontier": false,
+			"denPlansInFlight": 0,
+			"storagePlansInFlight": 0,
+			"storehouseCount": 0,
+			"storehouseCap": 3,
+			"workshopsNeedingWorkers": 0
+		},
+		"direct": {
+			"decisions": [
+				{
+					"kind": "cancel_hunts"
+				},
+				{
+					"kind": "build_storage"
+				},
+				{
+					"kind": "build_den"
+				},
+				{
+					"kind": "tithe",
+					"food": 20,
+					"refined": 5,
+					"blessings": 2
+				}
+			],
+			"slots": [
+				{
+					"goal": "fetch_water",
+					"count": 3,
+					"score": 0.81
+				}
+			]
+		},
+		"expected": [
+			{
+				"kind": "cancel_hunts"
+			},
+			{
+				"kind": "fetch_water",
+				"count": 3
+			},
+			{
+				"kind": "build_storage"
+			},
+			{
+				"kind": "build_den"
+			},
+			{
+				"kind": "tithe",
+				"food": 20,
+				"refined": 5,
+				"blessings": 2
+			}
+		]
+	},
+	"assignmentFits": [
+		{
+			"name": "hunter_specialization",
+			"cat": {
+				"id": "spec",
+				"specialization": "hunter",
+				"stats": {
+					"hunting": 50,
+					"building": 30,
+					"vision": 30,
+					"medicine": 30,
+					"attack": 30,
+					"defense": 30,
+					"leadership": 30
+				}
+			},
+			"goal": "hunt",
+			"expected": 75
+		},
+		{
+			"name": "hunter_generalist",
+			"cat": {
+				"id": "gen",
+				"specialization": null,
+				"stats": {
+					"hunting": 70,
+					"building": 30,
+					"vision": 30,
+					"medicine": 30,
+					"attack": 30,
+					"defense": 30,
+					"leadership": 30
+				}
+			},
+			"goal": "hunt",
+			"expected": 70
+		},
+		{
+			"name": "attack_defense",
+			"cat": {
+				"id": "war",
+				"specialization": null,
+				"stats": {
+					"hunting": 30,
+					"building": 30,
+					"vision": 30,
+					"medicine": 30,
+					"attack": 50,
+					"defense": 60,
+					"leadership": 30
+				}
+			},
+			"goal": "train_warrior",
+			"expected": 110
+		},
+		{
+			"name": "smithy_architect",
+			"cat": {
+				"id": "arch",
+				"specialization": "architect",
+				"stats": {
+					"hunting": 30,
+					"building": 50,
+					"vision": 30,
+					"medicine": 30,
+					"attack": 30,
+					"defense": 30,
+					"leadership": 30
+				}
+			},
+			"goal": "assign_smithy",
+			"expected": 75
+		}
+	],
+	"matchCatsToSlots": [
+		{
+			"name": "best_hunter",
+			"slots": [
+				{
+					"goal": "hunt",
+					"count": 1,
+					"score": 1
+				}
+			],
+			"cats": [
+				{
+					"id": "a",
+					"specialization": null,
+					"stats": {
+						"hunting": 40,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				},
+				{
+					"id": "b",
+					"specialization": null,
+					"stats": {
+						"hunting": 90,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				}
+			],
+			"options": {},
+			"expected": [
+				{
+					"catId": "b",
+					"goal": "hunt"
+				}
+			]
+		},
+		{
+			"name": "specialization_bonus_beats_raw_skill",
+			"slots": [
+				{
+					"goal": "hunt",
+					"count": 1,
+					"score": 1
+				}
+			],
+			"cats": [
+				{
+					"id": "gen",
+					"specialization": null,
+					"stats": {
+						"hunting": 70,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				},
+				{
+					"id": "spec",
+					"specialization": "hunter",
+					"stats": {
+						"hunting": 50,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				}
+			],
+			"options": {},
+			"expected": [
+				{
+					"catId": "spec",
+					"goal": "hunt"
+				}
+			]
+		},
+		{
+			"name": "priority_slots_first",
+			"slots": [
+				{
+					"goal": "fetch_water",
+					"count": 1,
+					"score": 0.9
+				},
+				{
+					"goal": "scout",
+					"count": 1,
+					"score": 0.3
+				}
+			],
+			"cats": [
+				{
+					"id": "sturdy",
+					"specialization": null,
+					"stats": {
+						"hunting": 90,
+						"building": 30,
+						"vision": 10,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				},
+				{
+					"id": "scout",
+					"specialization": null,
+					"stats": {
+						"hunting": 20,
+						"building": 30,
+						"vision": 90,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				}
+			],
+			"options": {},
+			"expected": [
+				{
+					"catId": "sturdy",
+					"goal": "fetch_water"
+				},
+				{
+					"catId": "scout",
+					"goal": "scout"
+				}
+			]
+		},
+		{
+			"name": "tie_keeps_input_order",
+			"slots": [
+				{
+					"goal": "hunt",
+					"count": 1,
+					"score": 1
+				}
+			],
+			"cats": [
+				{
+					"id": "z",
+					"specialization": null,
+					"stats": {
+						"hunting": 50,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				},
+				{
+					"id": "a",
+					"specialization": null,
+					"stats": {
+						"hunting": 50,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				}
+			],
+			"options": {},
+			"expected": [
+				{
+					"catId": "z",
+					"goal": "hunt"
+				}
+			]
+		},
+		{
+			"name": "exclude_existing_warriors_from_training",
+			"slots": [
+				{
+					"goal": "train_warrior",
+					"count": 1,
+					"score": 1
+				}
+			],
+			"cats": [
+				{
+					"id": "vet",
+					"specialization": "warrior",
+					"stats": {
+						"hunting": 30,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 90,
+						"defense": 90,
+						"leadership": 30
+					}
+				},
+				{
+					"id": "rookie",
+					"specialization": null,
+					"stats": {
+						"hunting": 30,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 40,
+						"defense": 40,
+						"leadership": 30
+					}
+				}
+			],
+			"options": {
+				"excludeWarriorsFromTraining": true
+			},
+			"expected": [
+				{
+					"catId": "rookie",
+					"goal": "train_warrior"
+				}
+			]
+		},
+		{
+			"name": "short_pool_assigns_each_cat_once",
+			"slots": [
+				{
+					"goal": "hunt",
+					"count": 2,
+					"score": 1
+				},
+				{
+					"goal": "scout",
+					"count": 2,
+					"score": 0.3
+				}
+			],
+			"cats": [
+				{
+					"id": "a",
+					"specialization": null,
+					"stats": {
+						"hunting": 30,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				},
+				{
+					"id": "b",
+					"specialization": null,
+					"stats": {
+						"hunting": 30,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				},
+				{
+					"id": "c",
+					"specialization": null,
+					"stats": {
+						"hunting": 30,
+						"building": 30,
+						"vision": 30,
+						"medicine": 30,
+						"attack": 30,
+						"defense": 30,
+						"leadership": 30
+					}
+				}
+			],
+			"options": {},
+			"expected": [
+				{
+					"catId": "a",
+					"goal": "hunt"
+				},
+				{
+					"catId": "b",
+					"goal": "hunt"
+				},
+				{
+					"catId": "c",
+					"goal": "scout"
+				}
+			]
+		}
+	],
+	"counts": {
+		"responseCurves": 31,
+		"targetWarriors": 6,
+		"directColony": 17,
+		"assignmentFits": 4,
+		"matchCatsToSlots": 6
+	}
+}

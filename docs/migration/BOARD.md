@@ -389,7 +389,7 @@ pickPolicyTier, configForTier, PolicyConfig). acceptance: literal parity + tier 
 persona: developer -> qa            depends_on: []        parallel_group: P3-independent
 scope: Port leaderAI.ts LeaderSnapshot (~40 fields), LeaderDecision union, planLeaderActions
 -> crates/cat-sim/src/leader_ai.rs. acceptance: struct shape + planLeaderActions flatten vs TS.
-### P3.7 Leader director (IAUS)   [status: todo]
+### P3.7 Leader director (IAUS)   [status: qa]
 persona: developer -> qa            depends_on: [P3.2, P3.6]        parallel_group: P3-director
 scope: Port leaderDirector.ts -> crates/cat-sim/src/leader_director.rs: curves, tunables,
 laborGoals, directColony (budget + fixed tie-break order), matchCatsToSlots, targetWarriors.
