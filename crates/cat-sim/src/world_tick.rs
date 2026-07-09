@@ -3,7 +3,7 @@
 //! This P7.1 module owns the in-memory runtime shapes and phase ordering. Later
 //! P7 cards fill in the no-op phase bodies with the pure module calls.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::{
     biomes::MaxResources,
@@ -23,7 +23,15 @@ use crate::{
         match_cats_to_slots,
     },
     life_sim::{can_work, get_life_stage, leadership_after_tenure, old_age_death_probability},
-    movement::{JobDestinationContext, WorldPos, destination_for_job, pick_wander_target},
+    movement::{
+        EXPLORE_SPEED_FACTOR, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC, WorldPos,
+        destination_for_job, pick_wander_target, walk_path,
+    },
+    pathfinding::{
+        self, ColonyGridParams, FindPathOptions, GatePlacement as PathGatePlacement,
+        TilePos as PathTilePos, WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType,
+        build_colony_walk_grid, find_path,
+    },
     policy::PolicyConfig,
     production::{WorkshopOptions, advance_workshop, field_yield},
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
@@ -40,9 +48,15 @@ use crate::{
         UpgradeTreeState, accrue_research, cat_auto_unlock, create_upgrade_tree_state, get_node,
         points_per_tick_for, resolve_effects,
     },
-    village_layout::{GridPos, VILLAGE_ANCHOR, colony_to_world, world_to_colony},
+    village_area::{
+        ExpandOptions, GatePlacement as AreaGatePlacement, Side, expand_village, from_tiles,
+        gate_placement_default, is_inside_village, should_expand, side_delta,
+    },
+    village_layout::{
+        GridPos, VILLAGE_ANCHOR, colony_to_world, village_ring_radius, world_to_colony,
+    },
     world_gen::TileResources,
-    zones::{ZoneKind, ZoneRect},
+    zones::{Zone, ZoneKind, ZonePos, ZoneRect, filter_targets_by_zones},
 };
 
 pub type ColonyId = String;
@@ -296,6 +310,20 @@ const EVENT_KEEP: usize = 2_000;
 const MAX_PATH_DECAY_PER_TICK: u32 = 2;
 const QUARRY_TOTAL_YIELD: f64 = 15.0;
 const WATER_TOTAL_YIELD: f64 = 40.0;
+const WALK_WEAR: u32 = 8;
+
+#[derive(Debug, Clone)]
+struct MovementPassContext {
+    movement_seed: u32,
+    movement_elapsed: f64,
+    wander_chance: f64,
+    ring_radius: i32,
+    claimed_area: crate::village_area::VillageArea,
+    area_gate: Option<AreaGatePlacement>,
+    gate: TilePos,
+    walk_tiles: Vec<WalkTile>,
+    zones: Vec<Zone>,
+}
 
 impl Default for ColonyRuntime {
     fn default() -> Self {
@@ -436,9 +464,10 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_29_due_completion_gathering_explore_expansion(colony, gate);
         phase_30_due_completion_build_ritual_training_return_mark_done(colony, gate);
         phase_31_mid_job_hauling(colony, gate);
-        phase_32_movement_setup_and_village_expansion_queue(colony, gate);
-        phase_33_movement_deposits_and_no_destination_wander(colony, gate);
-        phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate);
+        let mut movement =
+            phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy);
+        phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
         phase_35_deliberate_roads(colony, gate);
         phase_36_threat_and_raid_director(colony, gate);
         phase_37_final_clamp_critical_collapse_status_persist(colony, gate);
@@ -1780,15 +1809,98 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate) {
 }
 
 /// Phase 32: prepare movement inputs and optionally queue village expansion.
-fn phase_32_movement_setup_and_village_expansion_queue(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_32_movement_setup_and_village_expansion_queue(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    policy: TickPolicy,
+) -> MovementPassContext {
+    let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
+    let movement_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
+    let wander_chance = (0.02 * gate.elapsed_sec as f64).min(0.08);
+    let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+    let claimed_area = claimed_area(colony);
+
+    if !claimed_area.is_empty()
+        && should_expand(
+            alive_cats(&colony.cats).count() as i32,
+            claimed_area.len() as i32,
+            colony.buildings.len() as i32,
+        )
+        && !active_or_queued_jobs(colony)
+            .iter()
+            .any(|job| job.kind == JobKind::ExpandVillage)
+        && can_take_policy_action(colony, policy)
+    {
+        let water_tiles = colony
+            .world_tiles
+            .values()
+            .filter(|tile| tile_has_water(Some(tile)))
+            .map(|tile| tile.pos)
+            .collect::<HashSet<_>>();
+        let roll = roll_seeded(f64::from(movement_seed));
+        movement_seed = roll.next_seed;
+        let mut next_roll = Some(roll.value);
+        let mut rng = || next_roll.take().unwrap_or(0.0);
+        let is_water = |pos: GridPos| water_tiles.contains(&TilePos { x: pos.x, y: pos.y });
+        if let Some(target) = expand_village(
+            &claimed_area,
+            ExpandOptions {
+                is_water: Some(&is_water),
+                rng: Some(&mut rng),
+            },
+        ) {
+            queue_job(
+                colony,
+                gate.processed_through,
+                JobKind::ExpandVillage,
+                select_best_cat(colony, Some(CatSpecialization::Architect)),
+                JobMetadata::Expansion {
+                    target: TilePos {
+                        x: target.x,
+                        y: target.y,
+                    },
+                    accepted: false,
+                },
+            );
+        }
+    }
+
+    let area_gate = (!claimed_area.is_empty())
+        .then(|| gate_placement_default(&claimed_area))
+        .flatten();
+    let gate_pos = movement_gate(area_gate, ring_radius);
+
+    MovementPassContext {
+        movement_seed,
+        movement_elapsed,
+        wander_chance,
+        ring_radius,
+        claimed_area,
+        area_gate,
+        gate: gate_pos,
+        walk_tiles: colony
+            .world_tiles
+            .values()
+            .map(walk_tile_from_runtime)
+            .collect(),
+        zones: colony
+            .zones
+            .iter()
+            .map(|zone| Zone {
+                rect: zone.rect,
+                kind: zone.kind,
+            })
+            .collect(),
+    }
+}
 
 /// Phase 33: deposit carried resources, clear missing destinations, and pick
 /// idle wander targets.
 fn phase_33_movement_deposits_and_no_destination_wander(
     colony: &mut ColonyRuntime,
     gate: TickGate,
+    movement: &mut MovementPassContext,
 ) {
-    let shrine = position_from_world(village_anchor_world());
     let cat_ids = colony
         .cats
         .iter()
@@ -1800,35 +1912,200 @@ fn phase_33_movement_deposits_and_no_destination_wander(
         .collect::<Vec<_>>();
 
     for (cat_id, position, carrying) in cat_ids {
-        let Some(carrying) = carrying else {
+        if let Some(carrying) = carrying {
+            let world_pos = position_to_world(position);
+            if !should_deposit(
+                &carrying,
+                world_pos,
+                village_anchor_world(),
+                gate.processed_through,
+            ) {
+                continue;
+            }
+
+            credit_carrying(colony, &carrying);
+            append_event(
+                colony,
+                gate.processed_through,
+                EventKind::Other("shrine_deposit".to_owned()),
+                deposit_message(&cat_id, &carrying),
+            );
+
+            let return_site = active_site_for_carrier(colony, &cat_id, gate.processed_through);
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                cat.carrying = None;
+                if let Some(site) = return_site {
+                    cat.destination = Some(position_from_world(tile_pos_to_world(site)));
+                    cat.activity = CatActivity::Traveling;
+                    continue;
+                }
+            }
+        }
+
+        let Some(cat_index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
             continue;
         };
-        if !should_deposit(&carrying, position, shrine, gate.processed_through) {
+        if colony.cats[cat_index].destination.is_some() {
             continue;
         }
 
-        credit_carrying(colony, &carrying);
-        append_event(
-            colony,
-            gate.processed_through,
-            EventKind::Other("shrine_deposit".to_owned()),
-            deposit_message(&cat_id, &carrying),
-        );
-
-        let return_site = active_site_for_carrier(colony, &cat_id);
-        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
-            cat.carrying = None;
-            if let Some(site) = return_site {
-                cat.destination = Some(position_from_world(tile_pos_to_world(site)));
-                cat.activity = CatActivity::Traveling;
+        match colony.cats[cat_index].activity {
+            CatActivity::Traveling | CatActivity::Returning => {
+                colony.cats[cat_index].activity = CatActivity::Idle;
             }
+            CatActivity::Idle => {
+                if next_movement_roll(movement) >= movement.wander_chance {
+                    continue;
+                }
+                let world_pos = position_to_world(colony.cats[cat_index].position);
+                let anchor = wander_anchor(colony, &cat_id);
+                let target = pick_wander_target(
+                    anchor,
+                    next_movement_roll(movement),
+                    next_movement_roll(movement),
+                );
+                let target_zone_pos = ZonePos {
+                    x: target.x.round() as i32,
+                    y: target.y.round() as i32,
+                };
+                if filter_targets_by_zones(&[target_zone_pos], &movement.zones, false).is_empty()
+                    || target == world_pos
+                {
+                    continue;
+                }
+                colony.cats[cat_index].destination = Some(position_from_world(target));
+            }
+            CatActivity::Working => {}
         }
     }
 }
 
 /// Phase 34: move cats, accept jobs on shrine arrival, reveal tiles, and apply
 /// path wear.
-fn phase_34_movement_travel_job_acceptance_reveal_path_wear(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
+    colony: &mut ColonyRuntime,
+    _: TickGate,
+    movement: &MovementPassContext,
+) {
+    let area = pathfinding_area(&movement.claimed_area);
+    let area_gate = movement.area_gate.map(pathfinding_gate);
+    let walk_grid = build_colony_walk_grid(ColonyGridParams {
+        tiles: &movement.walk_tiles,
+        anchor: PathTilePos {
+            x: VILLAGE_ANCHOR.x,
+            y: VILLAGE_ANCHOR.y,
+        },
+        ring_radius: movement.ring_radius,
+        gate: PathTilePos {
+            x: movement.gate.x,
+            y: movement.gate.y,
+        },
+        area: (!area.is_empty()).then_some(&area),
+        area_gate,
+        terrain: None,
+    });
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let cat_ids = colony
+        .cats
+        .iter()
+        .filter_map(|cat| cat.death_time.is_none().then_some(cat.id.clone()))
+        .collect::<Vec<_>>();
+
+    for cat_id in cat_ids {
+        let Some(cat_index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
+            continue;
+        };
+        let Some(destination) = colony.cats[cat_index].destination else {
+            continue;
+        };
+
+        let world_pos = position_to_world(colony.cats[cat_index].position);
+        let destination = position_to_world(destination);
+        let activity = colony.cats[cat_index].activity;
+        let current_task = colony.cats[cat_index].current_task;
+        let standing_tile = colony.world_tiles.get(&world_pos_to_tile(world_pos));
+        let explore_slowdown =
+            if current_task == Some(TaskType::Explore) && activity == CatActivity::Traveling {
+                EXPLORE_SPEED_FACTOR
+            } else {
+                1.0
+            };
+        let speed = MOVE_SPEED_TILES_PER_SEC
+            * (1.0 + movement_speed_bonus(standing_tile))
+            * explore_slowdown
+            * effects.move_speed_mult;
+
+        let route = find_path(
+            pathfinding_pos(world_pos),
+            pathfinding_pos(destination),
+            &walk_grid,
+            FindPathOptions::default(),
+        );
+        let crosses_fence = is_inside_movement_village(world_pos_to_tile(world_pos), movement)
+            != is_inside_movement_village(world_pos_to_tile(destination), movement);
+        let at_gate = (world_pos.x - f64::from(movement.gate.x)).abs() < 1.0
+            && (world_pos.y - f64::from(movement.gate.y)).abs() < 1.0;
+        let waypoints = if let Some(route) = route.as_ref().filter(|route| route.len() > 2) {
+            route[1..route.len() - 1]
+                .iter()
+                .copied()
+                .map(movement_pos)
+                .collect::<Vec<_>>()
+        } else if crosses_fence && !at_gate {
+            vec![tile_pos_to_world(movement.gate)]
+        } else {
+            Vec::new()
+        };
+        let walk = walk_path(
+            world_pos,
+            destination,
+            movement.movement_elapsed * speed,
+            &waypoints,
+        );
+        let arrived = walk.arrived;
+
+        if arrived
+            && activity == CatActivity::Traveling
+            && let Some((job_index, site)) = unaccepted_active_job_site(colony, &cat_id)
+        {
+            accept_job(colony, job_index);
+            let cat = &mut colony.cats[cat_index];
+            cat.position = position_from_world(walk.position);
+            cat.destination = Some(position_from_world(tile_pos_to_world(site)));
+            continue;
+        }
+
+        let moved = walk.position != world_pos;
+        if !moved && !arrived {
+            continue;
+        }
+
+        {
+            let cat = &mut colony.cats[cat_index];
+            cat.position = position_from_world(walk.position);
+            if arrived {
+                cat.destination = None;
+                cat.activity = if activity == CatActivity::Traveling {
+                    CatActivity::Working
+                } else {
+                    CatActivity::Idle
+                };
+            }
+        }
+
+        if moved {
+            reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, current_task);
+        }
+    }
+}
 
 /// Phase 35: pave deliberate road corridors once per minute while preserving the
 /// materials reserve.
@@ -2401,6 +2678,253 @@ fn position_from_world(pos: WorldPos) -> Position {
     }
 }
 
+fn position_to_world(pos: Position) -> WorldPos {
+    match pos.map {
+        MapType::World => WorldPos { x: pos.x, y: pos.y },
+        MapType::Colony => WorldPos {
+            x: pos.x + f64::from(VILLAGE_ANCHOR.x),
+            y: pos.y + f64::from(VILLAGE_ANCHOR.y),
+        },
+    }
+}
+
+fn pathfinding_pos(pos: WorldPos) -> pathfinding::WorldPos {
+    pathfinding::WorldPos { x: pos.x, y: pos.y }
+}
+
+fn movement_pos(pos: pathfinding::WorldPos) -> WorldPos {
+    WorldPos { x: pos.x, y: pos.y }
+}
+
+fn next_movement_roll(movement: &mut MovementPassContext) -> f64 {
+    let roll = roll_seeded(f64::from(movement.movement_seed));
+    movement.movement_seed = roll.next_seed;
+    roll.value
+}
+
+fn claimed_area(colony: &ColonyRuntime) -> crate::village_area::VillageArea {
+    let tiles = colony
+        .claimed_tiles
+        .iter()
+        .map(|tile| GridPos {
+            x: tile.x,
+            y: tile.y,
+        })
+        .collect::<Vec<_>>();
+    from_tiles(&tiles)
+}
+
+fn movement_gate(area_gate: Option<AreaGatePlacement>, ring_radius: i32) -> TilePos {
+    if let Some(gate) = area_gate {
+        let delta = side_delta(gate.side);
+        return TilePos {
+            x: gate.x + delta.x,
+            y: gate.y + delta.y,
+        };
+    }
+
+    TilePos {
+        x: VILLAGE_ANCHOR.x,
+        y: VILLAGE_ANCHOR.y + ring_radius,
+    }
+}
+
+fn pathfinding_area(area: &crate::village_area::VillageArea) -> pathfinding::VillageArea {
+    area.iter()
+        .map(|key| {
+            let pos = crate::village_area::pos_of(key);
+            PathTilePos { x: pos.x, y: pos.y }
+        })
+        .collect()
+}
+
+fn pathfinding_gate(gate: AreaGatePlacement) -> PathGatePlacement {
+    PathGatePlacement {
+        x: gate.x,
+        y: gate.y,
+        side: match gate.side {
+            Side::N => pathfinding::FenceSide::N,
+            Side::E => pathfinding::FenceSide::E,
+            Side::S => pathfinding::FenceSide::S,
+            Side::W => pathfinding::FenceSide::W,
+        },
+    }
+}
+
+fn walk_tile_from_runtime(tile: &WorldTileRuntime) -> WalkTile {
+    WalkTile {
+        x: tile.pos.x,
+        y: tile.pos.y,
+        tile_type: walk_tile_type(tile.tile_type),
+        overlay_feature: tile.overlay_feature.as_deref().map(walk_overlay_feature),
+        resources: Some(WalkTileResources {
+            water: tile.resources.water,
+        }),
+        path_wear: tile.path_wear,
+    }
+}
+
+fn walk_tile_type(tile_type: TileType) -> WalkTileType {
+    match tile_type {
+        TileType::River => WalkTileType::River,
+        TileType::DenseWoods => WalkTileType::DenseWoods,
+        tile_type if is_forest_type(tile_type) => WalkTileType::Forest,
+        _ => WalkTileType::Other,
+    }
+}
+
+fn walk_overlay_feature(overlay: &str) -> WalkOverlayFeature {
+    match overlay {
+        "river" => WalkOverlayFeature::River,
+        "road_built" => WalkOverlayFeature::RoadBuilt,
+        "game_trail" => WalkOverlayFeature::GameTrail,
+        "ancient_road" => WalkOverlayFeature::AncientRoad,
+        "trade_route" => WalkOverlayFeature::TradeRoute,
+        _ => WalkOverlayFeature::Other,
+    }
+}
+
+fn movement_speed_bonus(tile: Option<&WorldTileRuntime>) -> f64 {
+    let Some(tile) = tile else {
+        return 0.0;
+    };
+    if tile.overlay_feature.as_deref() == Some("road_built") {
+        0.6
+    } else {
+        get_path_speed_bonus(tile.path_wear)
+    }
+}
+
+fn get_path_speed_bonus(path_wear: u32) -> f64 {
+    if path_wear < 30 {
+        0.0
+    } else if path_wear < 60 {
+        0.1
+    } else if path_wear < 90 {
+        0.25
+    } else {
+        0.4
+    }
+}
+
+fn add_path_wear(current_wear: u32, amount: u32) -> u32 {
+    current_wear.saturating_add(amount).min(100)
+}
+
+fn wander_anchor(colony: &ColonyRuntime, cat_id: &str) -> WorldPos {
+    colony
+        .buildings
+        .iter()
+        .find(|building| building.assigned_cat.as_deref() == Some(cat_id))
+        .map_or_else(village_anchor_world, |building| {
+            tile_pos_to_world(building.position)
+        })
+}
+
+fn is_inside_movement_village(pos: TilePos, movement: &MovementPassContext) -> bool {
+    if movement.claimed_area.is_empty() {
+        return cheb_from_anchor(pos) < movement.ring_radius;
+    }
+    is_inside_village(GridPos { x: pos.x, y: pos.y }, &movement.claimed_area)
+}
+
+fn unaccepted_active_job_site(colony: &ColonyRuntime, cat_id: &str) -> Option<(usize, TilePos)> {
+    colony.jobs.iter().enumerate().find_map(|(index, job)| {
+        if job.status != JobStatus::Active || job.assigned_cat.as_deref() != Some(cat_id) {
+            return None;
+        }
+        match job.metadata {
+            JobMetadata::Hauling {
+                site: Some(site),
+                accepted: false,
+                ..
+            }
+            | JobMetadata::Site {
+                site,
+                accepted: false,
+            } => Some((index, site)),
+            JobMetadata::Expansion {
+                target,
+                accepted: false,
+            } => Some((index, target)),
+            _ => None,
+        }
+    })
+}
+
+fn accept_job(colony: &mut ColonyRuntime, job_index: usize) {
+    let metadata = colony.jobs[job_index].metadata.clone();
+    colony.jobs[job_index].metadata = match metadata {
+        JobMetadata::Hauling {
+            site,
+            total_yield,
+            trips_done,
+            next_trip_at,
+            ..
+        } => JobMetadata::Hauling {
+            site,
+            total_yield,
+            trips_done,
+            next_trip_at,
+            accepted: true,
+        },
+        JobMetadata::Site { site, .. } => JobMetadata::Site {
+            site,
+            accepted: true,
+        },
+        JobMetadata::Expansion { target, .. } => JobMetadata::Expansion {
+            target,
+            accepted: true,
+        },
+        other => other,
+    };
+}
+
+fn reveal_and_wear_walked_tiles(
+    colony: &mut ColonyRuntime,
+    movement: &MovementPassContext,
+    walked: &[WorldPos],
+    current_task: Option<TaskType>,
+) {
+    if walked.is_empty() {
+        return;
+    }
+
+    let reveal_radius = if current_task == Some(TaskType::Explore) {
+        2
+    } else {
+        1
+    };
+    let walked_tiles = walked
+        .iter()
+        .map(|pos| world_pos_to_tile(*pos))
+        .collect::<Vec<_>>();
+    let walked_keys = walked_tiles.iter().copied().collect::<HashSet<_>>();
+    let min_x = walked_tiles.iter().map(|pos| pos.x).min().unwrap_or(0) - reveal_radius;
+    let max_x = walked_tiles.iter().map(|pos| pos.x).max().unwrap_or(0) + reveal_radius;
+    let min_y = walked_tiles.iter().map(|pos| pos.y).min().unwrap_or(0) - reveal_radius;
+    let max_y = walked_tiles.iter().map(|pos| pos.y).max().unwrap_or(0) + reveal_radius;
+
+    for x in min_x..=max_x {
+        for y in min_y..=max_y {
+            let pos = TilePos { x, y };
+            if is_inside_movement_village(pos, movement) {
+                continue;
+            }
+            let Some(tile) = colony.world_tiles.get_mut(&pos) else {
+                continue;
+            };
+            if walked_keys.contains(&pos) {
+                tile.path_wear = add_path_wear(tile.path_wear, WALK_WEAR).max(64);
+            } else if walked_tiles.iter().any(|walked| {
+                (walked.x - pos.x).abs().max((walked.y - pos.y).abs()) <= reveal_radius
+            }) {
+                tile.path_wear = tile.path_wear.max(63);
+            }
+        }
+    }
+}
+
 fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
     match building_type {
         BuildingType::Workshop
@@ -2916,10 +3440,11 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
     }
 }
 
-fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str) -> Option<TilePos> {
+fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str, now_ms: i64) -> Option<TilePos> {
     colony.jobs.iter().find_map(|job| {
         if job.status != JobStatus::Active
             || job.assigned_cat.as_deref() != Some(cat_id)
+            || job.ends_at.is_some_and(|ends_at| ends_at <= now_ms)
             || !matches!(
                 job.kind,
                 JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
@@ -3255,14 +3780,14 @@ mod tests {
                 total_yield: None,
                 trips_done: 0,
                 next_trip_at: None,
-                accepted: false,
+                accepted: true,
             }
         );
         assert_eq!(
             colony.cats[0].destination,
             Some(Position {
                 map: MapType::World,
-                x: 6.0,
+                x: 12.0,
                 y: 6.0,
             })
         );
@@ -3355,6 +3880,81 @@ mod tests {
             })
         );
         assert_eq!(colony.world_tiles[&pos(12, 6)].resources.food, 26);
+    }
+
+    #[test]
+    fn movement_advances_toward_destination_and_wears_traversed_tiles() {
+        let mut cat = adult_idle_cat("walker", "colony-1");
+        cat.position = Position {
+            map: MapType::World,
+            x: 10.0,
+            y: 6.0,
+        };
+        cat.destination = Some(Position {
+            map: MapType::World,
+            x: 12.0,
+            y: 6.0,
+        });
+        cat.activity = CatActivity::Traveling;
+
+        let mut world_tiles = BTreeMap::new();
+        for x in 9..=13 {
+            for y in 5..=7 {
+                world_tiles.insert(pos(x, y), tile(x, y, 0, None));
+            }
+        }
+
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: plentiful_resources(),
+            cats: vec![cat],
+            world_tiles,
+            test_rng_seed: Some(123),
+            ..ColonyRuntime::default()
+        };
+        let movement = MovementPassContext {
+            movement_seed: movement_seed(123),
+            movement_elapsed: 8.0,
+            wander_chance: 0.0,
+            ring_radius: 4,
+            claimed_area: Default::default(),
+            area_gate: None,
+            gate: pos(6, 10),
+            walk_tiles: colony
+                .world_tiles
+                .values()
+                .map(walk_tile_from_runtime)
+                .collect(),
+            zones: Vec::new(),
+        };
+
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 8,
+                processed_through: 8_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+            &movement,
+        );
+
+        let cat = &colony.cats[0];
+        assert_eq!(
+            cat.position,
+            Position {
+                map: MapType::World,
+                x: 12.0,
+                y: 6.0,
+            }
+        );
+        assert_eq!(cat.destination, None);
+        assert_eq!(cat.activity, CatActivity::Working);
+        assert_eq!(colony.world_tiles[&pos(10, 6)].path_wear, 64);
+        assert_eq!(colony.world_tiles[&pos(11, 6)].path_wear, 64);
+        assert_eq!(colony.world_tiles[&pos(12, 6)].path_wear, 64);
+        assert_eq!(colony.world_tiles[&pos(11, 5)].path_wear, 63);
+        assert_eq!(colony.world_tiles[&pos(11, 7)].path_wear, 63);
     }
 
     fn adult_idle_cat(id: &str, colony_id: &str) -> Cat {
