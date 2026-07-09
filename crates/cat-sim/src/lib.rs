@@ -63,3 +63,6 @@ pub mod zones;
 
 // P7 master loop.
 pub mod world_tick;
+
+// P8 action application + snapshot building.
+pub mod actions;
