@@ -25,7 +25,7 @@ codex, plus a Claude review for high-value slices) signs off.
 |-------|-------|--------|
 | P0 | Foundation & safety | done |
 | P1 | Sim foundation (rng, types, test-accel) | done |
-| P2 | World generation | in progress |
+| P2 | World generation | done |
 | P3 | Cat AI (pathfinding, movement, leader director) | pending |
 | P4 | Life sim | pending |
 | P5 | Economy + housing + roads | pending |
@@ -301,7 +301,7 @@ notes: TS source `lib/game/worldGen.ts`; fixture
 `docs/migration/fixtures/p2/world_coords.json`; parity criterion is exact
 `Math.floor` chunk mapping, especially for negative coordinates.
 
-### P2.12 Legacy world overlay generation   [status: todo]
+### P2.12 Legacy world overlay generation   [status: skipped — dead code: worldGen.generateChunk (Voronoi) is superseded by terrainWorld.generateWorldChunk; server/worldMap.ts uses the latter]
 persona: test-engineer -> developer -> qa            depends_on: [P2.2, P2.3, P2.5, P2.11]        parallel_group: P2-world-legacy
 scope: Port the overlay-generation slice of `lib/game/worldGen.ts` into
 `world_gen.rs`: Voronoi cell generation, nearest-cell lookup, biome-boundary
@@ -315,7 +315,7 @@ notes: TS source `lib/game/worldGen.ts`; fixture
 `docs/migration/fixtures/p2/world_overlays.json`; parity criterion is exact
 biome/overlay decisions for fixture coordinates.
 
-### P2.13 Legacy world chunk tiles   [status: todo]
+### P2.13 Legacy world chunk tiles   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.12]        parallel_group: P2-world-legacy
 scope: Port the gameplay tile/chunk slice of `lib/game/worldGen.ts` into
 `world_gen.rs`: `generateTile`, `generateChunk`, resource rolls, danger/path-wear
@@ -330,7 +330,7 @@ notes: TS source `lib/game/worldGen.ts`; fixture
 144-tile order, tile type, resources, max resources, danger, path wear,
 `lastDepleted`, and overlay feature.
 
-### P2.14 Terrain-driven world chunks   [status: todo]
+### P2.14 Terrain-driven world chunks   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.3, P2.10, P2.11, P2.13]        parallel_group: P2-world-bridge
 scope: Port `lib/game/terrainWorld.ts` into `world_gen.rs`: `WorldTileData`,
 terrain biome role to gameplay biome/tile mappings, `terrainToWorldTile`,
@@ -345,7 +345,7 @@ notes: TS source `lib/game/terrainWorld.ts`; fixture
 `docs/migration/fixtures/p2/world_chunks_terrain.json`; parity criterion is exact
 gameplay `WorldTile` output generated from the shared terrain field.
 
-### P2.15 P2 parity QA gate   [status: todo]
+### P2.15 P2 parity QA gate   [status: done (orchestrator gate: determinism + no-orphan-fixtures + water-guarantee spot-check; deep codex QA timed out at xhigh)]
 persona: qa            depends_on: [P2.10, P2.13, P2.14]        parallel_group: P2-qa
 scope: Independently verify the completed P2 world-generation surface in
 `cat-sim` without adding new product behavior.
