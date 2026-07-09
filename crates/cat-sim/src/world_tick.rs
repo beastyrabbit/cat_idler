@@ -8,8 +8,14 @@ use std::collections::BTreeMap;
 use crate::{
     biomes::MaxResources,
     entities::{Cat, ColonyStatus, Position, Resources},
-    types::{BuildingType, JobKind, JobStatus, PolicyTier, TileType, UpgradeKey},
-    upgrade_tree::{UpgradeTreeState, create_upgrade_tree_state},
+    idle_engine,
+    idle_rules::consumption_for_tick,
+    life_sim::{leadership_after_tenure, old_age_death_probability},
+    rng::{life_seed, movement_seed, raid_seed, roll_seeded},
+    spoilage::apply_food_spoilage_after_consumption,
+    storage::{StorageBuilding, StorageCapacities, storage_capacities},
+    types::{BuildingType, JobKind, JobStatus, TileType, UpgradeKey},
+    upgrade_tree::{UpgradeTreeState, create_upgrade_tree_state, resolve_effects},
     world_gen::TileResources,
     zones::{ZoneKind, ZoneRect},
 };
@@ -437,25 +443,124 @@ fn phase_2_runtime_upgrades_and_effects(_: &mut ColonyRuntime, gate: TickGate) {
 
 /// Phase 3: initialize the base seeded RNG and derive movement, life, and raid
 /// fork roots without persisting fork state.
-fn phase_3_base_rng_and_fork_roots(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_3_base_rng_and_fork_roots(colony: &mut ColonyRuntime, _: TickGate) {
+    let base_seed = colony.test_rng_seed.unwrap_or(1).max(1);
+    let _ = (
+        movement_seed(base_seed),
+        life_seed(base_seed),
+        raid_seed(base_seed),
+    );
+    colony.test_rng_seed = Some(base_seed);
+}
 
 /// Phase 4: choose or repair the leader, log leader changes, roll policy tier,
 /// and compute policy action reliability.
-fn phase_4_leader_bootstrap_and_policy(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_4_leader_bootstrap_and_policy(colony: &mut ColonyRuntime, _: TickGate) {
+    let leader_missing_or_dead = colony
+        .leader_id
+        .as_ref()
+        .is_none_or(|leader_id| !alive_cats(&colony.cats).any(|cat| cat.id == *leader_id));
+
+    if leader_missing_or_dead {
+        let mut best_leader: Option<&Cat> = None;
+        for candidate in alive_cats(&colony.cats) {
+            if best_leader.is_none_or(|best| candidate.stats.leadership > best.stats.leadership) {
+                best_leader = Some(candidate);
+            }
+        }
+        if let Some(leader) = best_leader {
+            colony.leader_id = Some(leader.id.clone());
+        }
+    }
+
+    let leadership = colony
+        .leader_id
+        .as_ref()
+        .and_then(|leader_id| {
+            alive_cats(&colony.cats)
+                .find(|cat| cat.id == *leader_id)
+                .map(|cat| cat.stats.leadership)
+        })
+        .unwrap_or(50.0);
+
+    let policy_roll = next_base_roll(colony);
+    let policy_tier = crate::policy::pick_policy_tier(leadership, policy_roll);
+    let policy_config = crate::policy::config_for_tier(policy_tier);
+    let _can_take_policy_action = next_base_roll(colony) <= policy_config.action_reliability;
+}
 
 /// Phase 5: snapshot alive cats/buildings and compute initial storage caps.
 fn phase_5_initial_roster_buildings_and_caps(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 6: age cats, process old-age deaths, leadership tenure, milestones,
 /// births, conceptions, and death-related job cancellation.
-fn phase_6_life_simulation(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
+    let elapsed_game_hours = elapsed_game_hours(colony, gate);
+    if elapsed_game_hours <= 0.0 {
+        return;
+    }
+
+    let mut life_rng_seed = life_seed(colony.test_rng_seed.unwrap_or(1));
+    let leader_id = colony.leader_id.clone();
+
+    for cat in &mut colony.cats {
+        if cat.death_time.is_some() {
+            continue;
+        }
+
+        cat.age_hours += elapsed_game_hours;
+
+        let is_leader_or_healer =
+            leader_id.as_ref() == Some(&cat.id) || cat.stats.medicine >= cat.stats.leadership;
+        let death_probability =
+            old_age_death_probability(cat.age_hours, is_leader_or_healer, elapsed_game_hours);
+        if death_probability > 0.0 {
+            let roll = roll_seeded(f64::from(life_rng_seed));
+            life_rng_seed = roll.next_seed;
+            if roll.value < death_probability {
+                cat.death_time = Some(gate.processed_through);
+                cat.activity = Default::default();
+                cat.destination = None;
+                cat.carrying = None;
+                continue;
+            }
+        }
+
+        if leader_id.as_ref() == Some(&cat.id) {
+            cat.stats.leadership =
+                leadership_after_tenure(cat.stats.leadership, elapsed_game_hours);
+        }
+    }
+}
 
 /// Phase 7: consume food/water, apply spoilage and resource caps, prepare
 /// `nextResources`, and compute minute cadence.
 fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
-    _: &mut ColonyRuntime,
-    _: TickGate,
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
 ) {
+    let cat_count = alive_cats(&colony.cats).count() as f64;
+    let elapsed_for_decay = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
+    let consumption = consumption_for_tick(
+        cat_count,
+        elapsed_for_decay,
+        idle_engine_upgrade_levels(&colony.upgrade_levels),
+    );
+    let caps = storage_caps(colony);
+
+    colony.resources.food = apply_food_spoilage_after_consumption(
+        colony.resources.food,
+        consumption.food_use,
+        caps.food,
+        elapsed_for_decay,
+    );
+    colony.resources.water =
+        clamp_resource(colony.resources.water - consumption.water_use, caps.water);
+    colony.resources.herbs = clamp_resource(colony.resources.herbs, caps.herbs);
+    colony.resources.materials = clamp_resource(colony.resources.materials, caps.materials);
+    colony.resources.refined = clamp_resource(colony.resources.refined, caps.refined);
+    colony.resources.weapons = clamp_resource(colony.resources.weapons, caps.weapons);
+    colony.resources.armor = clamp_resource(colony.resources.armor, caps.armor);
 }
 
 /// Phase 8: append the water crisis edge event when water crosses the low
@@ -574,13 +679,96 @@ fn phase_36_threat_and_raid_director(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 37: clamp resources, handle critical collapse, update status, persist
 /// final state, and record `last_tick = processed_through`.
-fn phase_37_final_clamp_critical_collapse_status_persist(_: &mut ColonyRuntime, _: TickGate) {
-    let _ = PolicyTier::Normal;
+fn phase_37_final_clamp_critical_collapse_status_persist(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+) {
+    let caps = storage_caps(colony);
+    clamp_resources_to_caps(&mut colony.resources, caps);
+    colony.status = crate::idle_rules::next_colony_status(&colony.resources);
+    colony.last_tick = gate.processed_through;
+}
+
+fn next_base_roll(colony: &mut ColonyRuntime) -> f64 {
+    let seed = colony.test_rng_seed.unwrap_or(1);
+    let roll = roll_seeded(f64::from(seed));
+    colony.test_rng_seed = Some(roll.next_seed);
+    roll.value
+}
+
+fn alive_cats(cats: &[Cat]) -> impl Iterator<Item = &Cat> {
+    cats.iter().filter(|cat| cat.death_time.is_none())
+}
+
+fn elapsed_game_hours(colony: &ColonyRuntime, gate: TickGate) -> f64 {
+    (gate.elapsed_sec as f64 * normalize_time_scale(colony)) / 3600.0
+}
+
+fn normalize_time_scale(colony: &ColonyRuntime) -> f64 {
+    if colony.test_time_scale.is_finite() {
+        colony.test_time_scale.max(1.0)
+    } else {
+        1.0
+    }
+}
+
+fn normalize_resource_decay_multiplier(colony: &ColonyRuntime) -> f64 {
+    if colony.test_resource_decay_multiplier.is_finite() {
+        colony.test_resource_decay_multiplier.max(1.0)
+    } else {
+        1.0
+    }
+}
+
+fn idle_engine_upgrade_levels(upgrades: &UpgradeLevels) -> idle_engine::UpgradeLevels {
+    idle_engine::UpgradeLevels {
+        click_power: f64::from(upgrades.click_power),
+        supply_speed: f64::from(upgrades.supply_speed),
+        hunt_mastery: f64::from(upgrades.hunt_mastery),
+        build_mastery: f64::from(upgrades.build_mastery),
+        ritual_mastery: f64::from(upgrades.ritual_mastery),
+        resilience: f64::from(upgrades.resilience),
+    }
+}
+
+fn storage_caps(colony: &ColonyRuntime) -> StorageCapacities {
+    let buildings: Vec<StorageBuilding> = colony
+        .buildings
+        .iter()
+        .map(|building| {
+            StorageBuilding::new(
+                building.building_type,
+                f64::from(building.construction_progress),
+                Some(f64::from(building.level)),
+            )
+        })
+        .collect();
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+
+    storage_capacities(&buildings, effects.storage_per_level_mult)
+}
+
+fn clamp_resources_to_caps(resources: &mut Resources, caps: StorageCapacities) {
+    resources.food = clamp_resource(resources.food, caps.food);
+    resources.water = clamp_resource(resources.water, caps.water);
+    resources.herbs = clamp_resource(resources.herbs, caps.herbs);
+    resources.materials = clamp_resource(resources.materials, caps.materials);
+    resources.refined = clamp_resource(resources.refined, caps.refined);
+    resources.weapons = clamp_resource(resources.weapons, caps.weapons);
+    resources.armor = clamp_resource(resources.armor, caps.armor);
+}
+
+fn clamp_resource(value: f64, cap: f64) -> f64 {
+    value.max(0.0).min(cap)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        entities::{CatActivity, CatNeeds, CatStats, MapType},
+        storage::BASE_CAPACITY,
+    };
 
     #[test]
     fn empty_world_returns_empty_reports() {
@@ -614,5 +802,105 @@ mod tests {
             }]
         );
         assert_eq!(world.colonies[0].last_tick, 9_001);
+    }
+
+    #[test]
+    fn single_adult_idle_cat_consumes_spoils_and_persists_tick_and_seed() {
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                name: "MossClan".to_owned(),
+                resources: Resources {
+                    food: 100.0,
+                    water: 100.0,
+                    herbs: 16.0,
+                    materials: 0.0,
+                    refined: 0.0,
+                    weapons: 0.0,
+                    armor: 0.0,
+                    blessings: 0.0,
+                },
+                cats: vec![adult_idle_cat("cat-1", "colony-1")],
+                last_tick: 1_000,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let reports = world_tick(&mut world, 61_000);
+
+        assert_eq!(
+            reports,
+            vec![TickReport {
+                colony_id: "colony-1".to_owned(),
+                skipped: false,
+                reset_reason: None,
+            }]
+        );
+
+        let colony = &world.colonies[0];
+        let consumption = consumption_for_tick(1.0, 60.0, idle_engine::UpgradeLevels::default());
+        let expected_food = apply_food_spoilage_after_consumption(
+            100.0,
+            consumption.food_use,
+            BASE_CAPACITY.food,
+            60.0,
+        );
+        let expected_water = 100.0 - consumption.water_use;
+
+        assert_eq!(colony.resources.food.to_bits(), expected_food.to_bits());
+        assert_eq!(colony.resources.water.to_bits(), expected_water.to_bits());
+        assert_eq!(colony.resources.herbs, 16.0);
+        assert_eq!(colony.status, ColonyStatus::Thriving);
+        assert_eq!(colony.last_tick, 61_000);
+        assert_eq!(colony.test_rng_seed, Some(71_072_467));
+        let expected_age: f64 = 24.0 + 60.0 / 3600.0;
+        assert_eq!(colony.cats[0].age_hours.to_bits(), expected_age.to_bits());
+        assert_eq!(colony.cats[0].death_time, None);
+    }
+
+    fn adult_idle_cat(id: &str, colony_id: &str) -> Cat {
+        Cat {
+            id: id.to_owned(),
+            colony_id: colony_id.to_owned(),
+            name: "Poppy".to_owned(),
+            parent_ids: Vec::new(),
+            birth_time: 0,
+            death_time: None,
+            stats: CatStats {
+                attack: 10.0,
+                defense: 10.0,
+                hunting: 10.0,
+                medicine: 10.0,
+                cleaning: 10.0,
+                building: 10.0,
+                leadership: 50.0,
+                vision: 10.0,
+            },
+            needs: CatNeeds {
+                hunger: 100.0,
+                thirst: 100.0,
+                rest: 100.0,
+                health: 100.0,
+            },
+            current_task: None,
+            position: Position {
+                map: MapType::Colony,
+                x: 0.0,
+                y: 0.0,
+            },
+            destination: None,
+            carrying: None,
+            activity: CatActivity::Idle,
+            is_pregnant: false,
+            pregnancy_due_time: None,
+            age_hours: 24.0,
+            pregnancy_due_age_hours: None,
+            pregnancy_mate_id: None,
+            sprite_params: None,
+            specialization: None,
+            role_xp: Default::default(),
+        }
     }
 }
