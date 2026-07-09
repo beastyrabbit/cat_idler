@@ -13,8 +13,10 @@ use crate::{
         candidates_for_unbarred, election_due, election_winner, should_trigger_kick, tally_votes,
     },
     entities::{
-        Carrying, CarryingKind, Cat, CatActivity, ColonyStatus, MapType, Position, Resources,
+        Carrying, CarryingKind, Cat, CatActivity, CatNeeds, CatStats, ColonyStatus, MapType,
+        Position, Resources, RoleXp,
     },
+    genetics::{RollSource, SeededRollSource, inherit_traits, traits_to_sprite_params},
     idle_engine,
     idle_rules::consumption_for_tick,
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
@@ -57,13 +59,14 @@ use crate::{
         gate_placement_default, is_inside_village, should_expand, side_delta,
     },
     village_layout::{
-        GridPos, VILLAGE_ANCHOR, colony_to_world, village_ring_radius, world_to_colony,
+        GridPos, SHRINE_LOCAL, VILLAGE_ANCHOR, colony_to_world, next_building_site_default,
+        ring_cells, village_ring_radius, world_to_colony,
     },
     warriors::{
         CombatModifiers, DefenseStock, MusterCombatant, WARRIOR_XP_PER_RAID, can_fight,
         muster_defense,
     },
-    world_gen::TileResources,
+    world_gen::{TileResources, generate_world_chunk, get_colony_position},
     zones::{Zone, ZoneKind, ZonePos, ZoneRect, filter_targets_by_zones},
 };
 
@@ -325,6 +328,10 @@ const RAIDER_SPEED_TILES_PER_SEC: f64 = 0.4;
 const RAID_SPAWN_DISTANCE: f64 = 14.0;
 const ENGAGE_RANGE: f64 = 1.5;
 const DEFEND_CLICK_DAMAGE: f64 = 6.0;
+const STARTER_CAT_COUNT: usize = 20;
+const STARTER_AGE_MIN_HOURS: f64 = 6.0;
+const STARTER_AGE_MAX_HOURS: f64 = 30.0;
+const VILLAGE_START_RADIUS: i32 = 3;
 
 #[derive(Debug, Clone)]
 struct MovementPassContext {
@@ -429,6 +436,270 @@ impl UpgradeLevels {
             UpgradeKey::Resilience => self.resilience,
         }
     }
+}
+
+#[must_use]
+pub const fn new_world(world_seed: u32) -> WorldState {
+    WorldState {
+        world_seed,
+        colonies: Vec::new(),
+    }
+}
+
+#[must_use]
+pub fn found_colony(
+    world_seed: u32,
+    colony_id: impl Into<ColonyId>,
+    now_ms: i64,
+    seed: u32,
+) -> ColonyRuntime {
+    let colony_id = colony_id.into();
+    ColonyRuntime {
+        id: colony_id.clone(),
+        name: format!("Colony {colony_id}"),
+        status: ColonyStatus::Starting,
+        resources: starting_resources(),
+        cats: create_starter_cats(&colony_id, now_ms, seed),
+        buildings: starter_buildings(),
+        world_tiles: starter_world_tiles(world_seed),
+        claimed_tiles: founding_claimed_tiles(),
+        run_number: 1,
+        run_started_at: now_ms,
+        created_at: now_ms,
+        last_player_activity_at: Some(now_ms),
+        last_tick: now_ms,
+        test_rng_seed: Some(seed),
+        ..ColonyRuntime::default()
+    }
+}
+
+fn starting_resources() -> Resources {
+    Resources {
+        food: 150.0,
+        water: 100.0,
+        herbs: 16.0,
+        materials: 24.0,
+        refined: 0.0,
+        weapons: 0.0,
+        armor: 0.0,
+        blessings: 0.0,
+    }
+}
+
+fn create_starter_cats(colony_id: &str, now_ms: i64, seed: u32) -> Vec<Cat> {
+    let names = starter_names();
+    let mut rolls = SeededRollSource::new(seed);
+
+    (0..STARTER_CAT_COUNT)
+        .map(|index| {
+            let spot = starter_cat_spot(index);
+            Cat {
+                id: format!("{colony_id}-cat-{}", index + 1),
+                colony_id: colony_id.to_owned(),
+                name: names[index].clone(),
+                parent_ids: vec![None, None],
+                birth_time: now_ms,
+                death_time: None,
+                stats: CatStats {
+                    attack: starter_stat(&mut rolls, 30, 60),
+                    defense: starter_stat(&mut rolls, 30, 60),
+                    hunting: starter_stat(&mut rolls, 30, 60),
+                    medicine: starter_stat(&mut rolls, 20, 50),
+                    cleaning: starter_stat(&mut rolls, 25, 55),
+                    building: starter_stat(&mut rolls, 20, 50),
+                    leadership: starter_stat(&mut rolls, 20, 60),
+                    vision: starter_stat(&mut rolls, 30, 60),
+                },
+                needs: CatNeeds {
+                    hunger: 100.0,
+                    thirst: 100.0,
+                    rest: 100.0,
+                    health: 100.0,
+                },
+                current_task: None,
+                position: Position {
+                    map: MapType::Colony,
+                    x: f64::from(spot.x),
+                    y: f64::from(spot.y),
+                },
+                destination: None,
+                carrying: None,
+                activity: CatActivity::Idle,
+                is_pregnant: false,
+                pregnancy_due_time: None,
+                age_hours: starter_age_hours(index),
+                pregnancy_due_age_hours: None,
+                pregnancy_mate_id: None,
+                sprite_params: starter_sprite_params(&mut rolls),
+                specialization: None,
+                role_xp: RoleXp::default(),
+            }
+        })
+        .collect()
+}
+
+fn starter_names() -> Vec<String> {
+    let mut names = ["Whiskers", "Shadow", "Luna", "Max", "Bella"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut seed = 424_242;
+    while names.len() < STARTER_CAT_COUNT {
+        let name = generate_starter_name(seed);
+        seed += 1;
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+fn generate_starter_name(seed: u32) -> String {
+    const PREFIXES: &[&str] = &[
+        "Shadow", "Thorn", "Storm", "Ember", "Frost", "Bramble", "Ivy", "Ash", "Fern", "Willow",
+        "Birch", "Hawk", "Raven", "Cedar", "Moss", "Flame", "Breeze", "Dusk", "Dawn", "Flint",
+        "Stone", "Cloud", "Sage", "Briar", "Alder", "Maple", "Pine", "Otter", "Fox", "Wren",
+    ];
+    const SUFFIXES: &[&str] = &[
+        "claw", "whisker", "heart", "fur", "stripe", "tail", "fang", "pelt", "thorn", "leaf",
+        "brook", "blaze", "shade", "pool", "flight",
+    ];
+
+    let prefix_roll = roll_seeded(f64::from(seed));
+    let prefix = PREFIXES[(prefix_roll.value * PREFIXES.len() as f64).floor() as usize];
+    let first_suffix_roll = roll_seeded(f64::from(prefix_roll.next_seed));
+    let suffix_roll = roll_seeded(f64::from(first_suffix_roll.next_seed));
+    let suffix = SUFFIXES[(suffix_roll.value * SUFFIXES.len() as f64).floor() as usize];
+
+    format!("{prefix}{suffix}")
+}
+
+fn starter_cat_spot(index: usize) -> GridPos {
+    let spots = ring_cells(2)
+        .into_iter()
+        .chain(ring_cells(3))
+        .collect::<Vec<_>>();
+    spots[index % spots.len()]
+}
+
+fn starter_age_hours(index: usize) -> f64 {
+    let span = STARTER_AGE_MAX_HOURS - STARTER_AGE_MIN_HOURS;
+    let denom = (STARTER_CAT_COUNT - 1).max(1) as f64;
+    STARTER_AGE_MIN_HOURS + ((index as f64 / denom) * span).round()
+}
+
+fn starter_stat(rolls: &mut impl RollSource, min: u32, max: u32) -> f64 {
+    let width = max - min + 1;
+    f64::from(min + (rolls.roll() * f64::from(width)).floor() as u32)
+}
+
+fn starter_sprite_params(
+    rolls: &mut impl RollSource,
+) -> Option<BTreeMap<String, serde_json::Value>> {
+    let traits = inherit_traits(None, None, rolls);
+    let params = traits_to_sprite_params(&traits, None, rolls);
+    let value = serde_json::to_value(params).ok()?;
+    match value {
+        serde_json::Value::Object(map) => Some(map.into_iter().collect()),
+        _ => None,
+    }
+}
+
+fn starter_buildings() -> Vec<BuildingRuntime> {
+    let mut occupied = Vec::new();
+    let mut buildings = vec![BuildingRuntime {
+        id: "building-shrine".to_owned(),
+        building_type: BuildingType::Shrine,
+        level: 1,
+        position: grid_to_tile(colony_to_world(SHRINE_LOCAL)),
+        is_complete: true,
+        construction_progress: 100,
+        production_progress: 0.0,
+        assigned_cat: None,
+    }];
+    let starter_specs = [
+        (BuildingType::Den, 0.05, 2),
+        (BuildingType::Den, 0.3, 2),
+        (BuildingType::Den, 0.55, 2),
+        (BuildingType::Den, 0.8, 2),
+        (BuildingType::Den, 0.95, 1),
+        (BuildingType::FoodStorage, 0.4, 1),
+    ];
+
+    for (index, (building_type, roll, level)) in starter_specs.into_iter().enumerate() {
+        let Some(local_site) = next_building_site_default(&occupied, roll) else {
+            break;
+        };
+        occupied.push(local_site);
+        buildings.push(BuildingRuntime {
+            id: format!("building-starter-{}", index + 1),
+            building_type,
+            level,
+            position: grid_to_tile(colony_to_world(local_site)),
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 0.0,
+            assigned_cat: None,
+        });
+    }
+
+    buildings
+}
+
+fn founding_claimed_tiles() -> Vec<TilePos> {
+    let mut tiles = Vec::new();
+    for dy in -VILLAGE_START_RADIUS..=VILLAGE_START_RADIUS {
+        for dx in -VILLAGE_START_RADIUS..=VILLAGE_START_RADIUS {
+            tiles.push(TilePos {
+                x: VILLAGE_ANCHOR.x + dx,
+                y: VILLAGE_ANCHOR.y + dy,
+            });
+        }
+    }
+    tiles
+}
+
+fn starter_world_tiles(world_seed: u32) -> BTreeMap<TilePos, WorldTileRuntime> {
+    let colony_pos = get_colony_position();
+    let mut tiles = BTreeMap::new();
+
+    for chunk_y in -1..=1 {
+        for chunk_x in -1..=1 {
+            for tile in generate_world_chunk(
+                chunk_x,
+                chunk_y,
+                i64::from(world_seed),
+                colony_pos.x,
+                colony_pos.y,
+            ) {
+                let pos = TilePos {
+                    x: tile.x,
+                    y: tile.y,
+                };
+                tiles.insert(
+                    pos,
+                    WorldTileRuntime {
+                        pos,
+                        tile_type: tile.tile_type,
+                        resources: tile.resources,
+                        max_resources: tile.max_resources,
+                        danger_level: tile.danger_level,
+                        path_wear: tile.path_wear,
+                        last_depleted: tile.last_depleted,
+                        overlay_feature: tile
+                            .overlay_feature
+                            .map(|feature| feature.as_str().to_owned()),
+                    },
+                );
+            }
+        }
+    }
+
+    tiles
+}
+
+fn grid_to_tile(pos: GridPos) -> TilePos {
+    TilePos { x: pos.x, y: pos.y }
 }
 
 #[must_use]
@@ -4792,6 +5063,99 @@ mod tests {
         assert_eq!(colony.elections[0].winner_cat_id, None);
     }
 
+    #[test]
+    fn founded_colony_world_tick_is_deterministic_for_same_seed() {
+        let mut left = new_world(987_654);
+        left.colonies
+            .push(found_colony(left.world_seed, "colony-1", 1_000, 55_555));
+        let mut right = new_world(987_654);
+        right
+            .colonies
+            .push(found_colony(right.world_seed, "colony-1", 1_000, 55_555));
+
+        for step in 1..=40 {
+            let now = 1_000 + i64::from(step) * 60_000;
+            assert_eq!(world_tick(&mut left, now), world_tick(&mut right, now));
+        }
+
+        assert_eq!(
+            founded_snapshot(&left.colonies[0]),
+            founded_snapshot(&right.colonies[0])
+        );
+    }
+
+    #[test]
+    fn founded_colony_survives_opening_ticks() {
+        let mut world = new_world(1234);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
+
+        for step in 1..=40 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None);
+        }
+
+        let colony = &world.colonies[0];
+        assert!(alive_cats(&colony.cats).count() > 0);
+        assert_ne!(colony.status, ColonyStatus::Dead);
+    }
+
+    #[test]
+    fn world_tick_processes_founded_colonies_in_stable_order_without_cross_mutation() {
+        let start = 20_000;
+        let mut world = new_world(777);
+        let mut beta = found_colony(world.world_seed, "beta", start, 200);
+        let mut alpha = found_colony(world.world_seed, "alpha", start, 100);
+        beta.jobs.push(due_supply_job("beta-food", start, 1));
+        alpha.jobs.push(due_supply_job("alpha-food", start, 2));
+        world.colonies.push(beta);
+        world.colonies.push(alpha);
+
+        let reports = world_tick(&mut world, start + 60_000);
+
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report.colony_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"]
+        );
+
+        let alpha = world
+            .colonies
+            .iter()
+            .find(|colony| colony.id == "alpha")
+            .expect("alpha colony remains present");
+        let beta = world
+            .colonies
+            .iter()
+            .find(|colony| colony.id == "beta")
+            .expect("beta colony remains present");
+
+        assert_eq!(
+            alpha
+                .jobs
+                .iter()
+                .find(|job| job.id == "alpha-food")
+                .map(|job| job.status),
+            Some(JobStatus::Completed)
+        );
+        assert_eq!(
+            beta.jobs
+                .iter()
+                .find(|job| job.id == "beta-food")
+                .map(|job| job.status),
+            Some(JobStatus::Completed)
+        );
+        assert!(alpha.cats.iter().all(|cat| cat.colony_id == "alpha"));
+        assert!(beta.cats.iter().all(|cat| cat.colony_id == "beta"));
+        assert!(alpha.jobs.iter().all(|job| !job.id.starts_with("beta")));
+        assert!(beta.jobs.iter().all(|job| !job.id.starts_with("alpha")));
+        assert_ne!(alpha.test_rng_seed, beta.test_rng_seed);
+    }
+
     fn adult_idle_cat(id: &str, colony_id: &str) -> Cat {
         Cat {
             id: id.to_owned(),
@@ -4833,6 +5197,54 @@ mod tests {
             sprite_params: None,
             specialization: None,
             role_xp: Default::default(),
+        }
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct FoundedSnapshot {
+        resources: Resources,
+        population: usize,
+        status: ColonyStatus,
+        jobs: Vec<(JobId, JobKind, JobStatus, Option<CatId>, JobMetadata)>,
+    }
+
+    fn founded_snapshot(colony: &ColonyRuntime) -> FoundedSnapshot {
+        FoundedSnapshot {
+            resources: colony.resources.clone(),
+            population: alive_cats(&colony.cats).count(),
+            status: colony.status,
+            jobs: colony
+                .jobs
+                .iter()
+                .map(|job| {
+                    (
+                        job.id.clone(),
+                        job.kind,
+                        job.status,
+                        job.assigned_cat.clone(),
+                        job.metadata.clone(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn due_supply_job(id: &str, start: i64, click_count: u32) -> JobRuntime {
+        JobRuntime {
+            id: id.to_owned(),
+            kind: JobKind::SupplyFood,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Player,
+            assigned_cat: None,
+            duration_ms: 60_000,
+            speed: 1.0,
+            yield_amount: 1.0,
+            click_count,
+            created_at: start,
+            started_at: Some(start),
+            ends_at: Some(start + 60_000),
+            completed_at: None,
+            metadata: JobMetadata::None,
         }
     }
 
