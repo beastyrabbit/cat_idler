@@ -29,7 +29,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P3 | Cat AI (pathfinding, movement, leader director) | done |
 | P4 | Life sim | done |
 | P5 | Economy + housing + roads | done |
-| P6 | Military + governance + upgrade tree | pending |
+| P6 | Military + governance + upgrade tree | in progress |
 | P7 | Master loop (`world_tick`, multi-colony) | pending |
 | P8 | Protocol + server (+ multi-village founding) | pending |
 | P9 | Client render + UI (dashboard + log page) | pending |
@@ -463,7 +463,7 @@ scope: lib/game/villageArea.ts -> crates/cat-sim/src/village_area.rs (organic cl
 persona: qa (orchestrator gate if timeout)   depends_on: [P5.1..P5.10]
 
 ## P6 — Military + governance + upgrade tree (decomposed by orchestrator)
-### P6.1 Threat   [status: todo]
+### P6.1 Threat   [status: qa]
 scope: lib/game/threat.ts -> threat.rs (colonyWealth, threatRatePerHour grace 8h, accrueThreat, RAID_SPAWN_THRESHOLD 100, threatBand thirds, planRaid MAX_RAID_SIZE 12, resolveRaid +-25% MAX_LOOT .3 CASUALTY .6). depends_on:[] group:P6a
 ### P6.2 Warriors   [status: todo]
 scope: lib/game/warriors.ts -> warriors.rs (combat role/stage factors, WEAPON/ARMOR bonus 25, catCombatPower, musterDefense gear-to-strongest, canFight). depends_on:[] group:P6a
