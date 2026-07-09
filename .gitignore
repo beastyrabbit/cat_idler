@@ -56,3 +56,14 @@ map-screen-verify*.png
 # local asset libraries (source packs — copy needed files into public/images)
 /public/Kenney Game Assets All-in-1 3.5.0/
 /public/Paws & Whiskers - Isometric Cats Pack (Free)/
+
+# stray renderer screenshots (engine-eval scratch)
+/dom-game*.png
+/pixi-*.png
+/issue-1-*.png
+# rust build artifacts (bevy/rust migration)
+/target/
+**/target/
+# agent-skills tooling scratch
+/.agents/
+/skills-lock.json
