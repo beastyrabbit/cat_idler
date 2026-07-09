@@ -1,3 +1,4 @@
+//! Native desktop entry point for the Cat Colony Bevy client.
 fn main() {
-    println!("Hello, world!");
+    cat_client::run();
 }

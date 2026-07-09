@@ -32,7 +32,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P6 | Military + governance + upgrade tree | done |
 | P7 | Master loop (`world_tick`, multi-colony) | done |
 | P8 | Protocol + server (+ multi-village founding) | done |
-| P9 | Client render + UI (dashboard + log page) | pending |
+| P9 | Client render + UI (dashboard + log page) | in progress |
 | P10 | WASM/web + native packaging | pending |
 | P11 | Cutover (big-bang) | pending |
 
@@ -513,7 +513,7 @@ save-frequency / no SIGTERM save-on-shutdown for very-recent state. Fix: save ev
 (or a few) and/or a graceful-shutdown save handler. Server-owns-everything needs durable saves.
 
 ## P9 — Client render + UI (dashboard + log page) (decomposed by orchestrator)
-### P9.1 cat-client foundation (Bevy app + WS + cats)   [status: todo]
+### P9.1 cat-client foundation (Bevy app + WS + cats)   [status: qa]
 scope: cat-client run() Bevy app; ewebsock WS client -> WorldSnapshot resource; iso projection + camera + cat atlas lifted from reference/spike-bevy-0.19.rs; render cats from the snapshot. cat-desktop main -> cat_client::run().
 ### P9.2 terrain/buildings/raiders/zones/roads/fog render   [status: todo]
 scope: regenerate terrain from worldSeed (crate cat-sim terrain), buildings, raiders, zones, roads, fog — from the snapshot, spike sprite rules.
