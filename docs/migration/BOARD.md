@@ -52,11 +52,15 @@ refresh the stale bevy README.
 persona: orchestrator
 scope: `codex/personas/*.md`, per-persona codex profiles, repo `AGENTS.md`, MCP
 wired into codex, one end-to-end smoke card.
-### P0.7 Golden-master fixture generator   [status: todo]
+### P0.7 Golden-master fixture generator   [status: done (execution deferred to P7)]
 persona: orchestrator
-scope: TS script emitting `seed → N ticks → {resources, cat positions, jobs}`
-snapshots from the current sim, committed under `docs/migration/fixtures/` for
-Rust parity tests.
+scope: `scripts/gen-golden.ts` drives the TS sim headlessly (pinned Math.random +
+worldSeed + tick RNG) and emits per-tick AGGREGATE snapshots (resources, pop,
+job/activity counts, threat, status) under `docs/migration/fixtures/`.
+note: Tooling written + committed. First run is deferred to P7 (full-tick parity):
+the archived app's `node_modules` is partial, so running it needs `bun install`.
+P1–P6 use module-level fixtures / hand-computed vectors (see P1.1) instead, per the
+"same idea" fidelity bar (bit-exact full-tick determinism is out of scope).
 
 ---
 
