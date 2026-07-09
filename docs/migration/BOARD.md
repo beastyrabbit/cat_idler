@@ -157,7 +157,7 @@ notes: Rust module targets `crates/cat-sim/src/noise.rs`,
 `crates/cat-sim/src/biomes.rs`, `crates/cat-sim/src/terrain_gen.rs`,
 `crates/cat-sim/src/world_gen.rs`; this is a parallel-safety setup card.
 
-### P2.2 Seeded noise utilities   [status: todo]
+### P2.2 Seeded noise utilities   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.1]        parallel_group: P2-foundation
 scope: Port `lib/game/noise.ts` into `crates/cat-sim/src/noise.rs`: the local
 `SeededRandom` API shape needed by world generation, `hashSeed`, `noise2D`, and

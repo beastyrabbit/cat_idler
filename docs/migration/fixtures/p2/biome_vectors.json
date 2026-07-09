@@ -1,0 +1,2988 @@
+{
+	"source": "lib/game/biomes.ts",
+	"biomes": [
+		"oak_forest",
+		"pine_forest",
+		"jungle",
+		"dead_forest",
+		"mountains",
+		"swamp",
+		"desert",
+		"tundra",
+		"meadow",
+		"cave_entrance",
+		"enemy_lair"
+	],
+	"overlays": [
+		null,
+		"river",
+		"ancient_road",
+		"game_trail",
+		"trade_route"
+	],
+	"distances": [
+		-10,
+		0,
+		1,
+		2.5,
+		10,
+		42.5,
+		100
+	],
+	"biomeProperties": {
+		"oak_forest": {
+			"type": "oak_forest",
+			"baseDanger": 20,
+			"baseResources": {
+				"food": {
+					"min": 15,
+					"max": 40
+				},
+				"herbs": {
+					"min": 0,
+					"max": 5
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 50,
+				"herbs": 8
+			},
+			"travelSpeed": 1,
+			"name": "Oak Forest"
+		},
+		"pine_forest": {
+			"type": "pine_forest",
+			"baseDanger": 30,
+			"baseResources": {
+				"food": {
+					"min": 10,
+					"max": 30
+				},
+				"herbs": {
+					"min": 2,
+					"max": 10
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 40,
+				"herbs": 15
+			},
+			"travelSpeed": 0.9,
+			"name": "Pine Forest"
+		},
+		"jungle": {
+			"type": "jungle",
+			"baseDanger": 45,
+			"baseResources": {
+				"food": {
+					"min": 30,
+					"max": 60
+				},
+				"herbs": {
+					"min": 10,
+					"max": 25
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 80,
+				"herbs": 35
+			},
+			"travelSpeed": 0.6,
+			"name": "Jungle"
+		},
+		"dead_forest": {
+			"type": "dead_forest",
+			"baseDanger": 55,
+			"baseResources": {
+				"food": {
+					"min": 0,
+					"max": 15
+				},
+				"herbs": {
+					"min": 15,
+					"max": 35
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 20,
+				"herbs": 45
+			},
+			"travelSpeed": 0.8,
+			"name": "Dead Forest"
+		},
+		"mountains": {
+			"type": "mountains",
+			"baseDanger": 50,
+			"baseResources": {
+				"food": {
+					"min": 0,
+					"max": 10
+				},
+				"herbs": {
+					"min": 0,
+					"max": 5
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 15,
+				"herbs": 8
+			},
+			"travelSpeed": 0.5,
+			"name": "Mountains"
+		},
+		"swamp": {
+			"type": "swamp",
+			"baseDanger": 40,
+			"baseResources": {
+				"food": {
+					"min": 5,
+					"max": 25
+				},
+				"herbs": {
+					"min": 20,
+					"max": 40
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 35,
+				"herbs": 50
+			},
+			"travelSpeed": 0.7,
+			"name": "Swamp"
+		},
+		"desert": {
+			"type": "desert",
+			"baseDanger": 35,
+			"baseResources": {
+				"food": {
+					"min": 0,
+					"max": 5
+				},
+				"herbs": {
+					"min": 0,
+					"max": 2
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 8,
+				"herbs": 4
+			},
+			"travelSpeed": 1.3,
+			"name": "Desert"
+		},
+		"tundra": {
+			"type": "tundra",
+			"baseDanger": 45,
+			"baseResources": {
+				"food": {
+					"min": 0,
+					"max": 8
+				},
+				"herbs": {
+					"min": 0,
+					"max": 0
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 12,
+				"herbs": 0
+			},
+			"travelSpeed": 0.9,
+			"name": "Tundra"
+		},
+		"meadow": {
+			"type": "meadow",
+			"baseDanger": 10,
+			"baseResources": {
+				"food": {
+					"min": 8,
+					"max": 25
+				},
+				"herbs": {
+					"min": 0,
+					"max": 4
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 30,
+				"herbs": 6
+			},
+			"travelSpeed": 1.2,
+			"name": "Meadow"
+		},
+		"cave_entrance": {
+			"type": "cave_entrance",
+			"baseDanger": 60,
+			"baseResources": {
+				"food": {
+					"min": 0,
+					"max": 0
+				},
+				"herbs": {
+					"min": 0,
+					"max": 0
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 0,
+				"herbs": 0
+			},
+			"travelSpeed": 1,
+			"name": "Cave Entrance"
+		},
+		"enemy_lair": {
+			"type": "enemy_lair",
+			"baseDanger": 80,
+			"baseResources": {
+				"food": {
+					"min": 0,
+					"max": 0
+				},
+				"herbs": {
+					"min": 0,
+					"max": 0
+				},
+				"water": 0
+			},
+			"maxResources": {
+				"food": 0,
+				"herbs": 0
+			},
+			"travelSpeed": 0.8,
+			"name": "Enemy Lair"
+		}
+	},
+	"overlayFeatureProperties": {
+		"river": {
+			"dangerModifier": 5,
+			"speedModifier": 0.8,
+			"initialPathWear": 0,
+			"name": "River"
+		},
+		"ancient_road": {
+			"dangerModifier": -15,
+			"speedModifier": 0.5,
+			"initialPathWear": 60,
+			"name": "Ancient Road"
+		},
+		"game_trail": {
+			"dangerModifier": -5,
+			"speedModifier": 0.2,
+			"initialPathWear": 45,
+			"name": "Game Trail"
+		},
+		"trade_route": {
+			"dangerModifier": -10,
+			"speedModifier": 0.3,
+			"initialPathWear": 50,
+			"name": "Trade Route"
+		}
+	},
+	"vectors": [
+		{
+			"biome": "oak_forest",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 20,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 22,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 25,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 40,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 7,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 10,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 25,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 90,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 15,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 17,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 20,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 35,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 10,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 12,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 15,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 30,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "oak_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 10,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 30,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 32,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 35,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 50,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 15,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 17,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 20,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 35,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 25,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 27,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 30,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 45,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 20,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 22,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 25,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 40,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "pine_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "jungle",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 25,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 45,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 47,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 50,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 65,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "jungle",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 10,
+			"travelSpeed": 0.8999999999999999
+		},
+		{
+			"biome": "jungle",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 30,
+			"travelSpeed": 0.8999999999999999
+		},
+		{
+			"biome": "jungle",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 32,
+			"travelSpeed": 0.8999999999999999
+		},
+		{
+			"biome": "jungle",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 35,
+			"travelSpeed": 0.8999999999999999
+		},
+		{
+			"biome": "jungle",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 50,
+			"travelSpeed": 0.8999999999999999
+		},
+		{
+			"biome": "jungle",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.8999999999999999
+		},
+		{
+			"biome": "jungle",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.8999999999999999
+		},
+		{
+			"biome": "jungle",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 20,
+			"travelSpeed": 0.72
+		},
+		{
+			"biome": "jungle",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 40,
+			"travelSpeed": 0.72
+		},
+		{
+			"biome": "jungle",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 42,
+			"travelSpeed": 0.72
+		},
+		{
+			"biome": "jungle",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 45,
+			"travelSpeed": 0.72
+		},
+		{
+			"biome": "jungle",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 60,
+			"travelSpeed": 0.72
+		},
+		{
+			"biome": "jungle",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.72
+		},
+		{
+			"biome": "jungle",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.72
+		},
+		{
+			"biome": "jungle",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 15,
+			"travelSpeed": 0.78
+		},
+		{
+			"biome": "jungle",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 35,
+			"travelSpeed": 0.78
+		},
+		{
+			"biome": "jungle",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 37,
+			"travelSpeed": 0.78
+		},
+		{
+			"biome": "jungle",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 40,
+			"travelSpeed": 0.78
+		},
+		{
+			"biome": "jungle",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 55,
+			"travelSpeed": 0.78
+		},
+		{
+			"biome": "jungle",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.78
+		},
+		{
+			"biome": "jungle",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.78
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 35,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 55,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 57,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 60,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 75,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 20,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 40,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 42,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 45,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 60,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 30,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 50,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 52,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 55,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 70,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 25,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 45,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 47,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 50,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 65,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "dead_forest",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "mountains",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 30,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 50,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 52,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 55,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 70,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 0.5
+		},
+		{
+			"biome": "mountains",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 15,
+			"travelSpeed": 0.75
+		},
+		{
+			"biome": "mountains",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 35,
+			"travelSpeed": 0.75
+		},
+		{
+			"biome": "mountains",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 37,
+			"travelSpeed": 0.75
+		},
+		{
+			"biome": "mountains",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 40,
+			"travelSpeed": 0.75
+		},
+		{
+			"biome": "mountains",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 55,
+			"travelSpeed": 0.75
+		},
+		{
+			"biome": "mountains",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.75
+		},
+		{
+			"biome": "mountains",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.75
+		},
+		{
+			"biome": "mountains",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 25,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "mountains",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 45,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "mountains",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 47,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "mountains",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 50,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "mountains",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 65,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "mountains",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "mountains",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.6
+		},
+		{
+			"biome": "mountains",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 20,
+			"travelSpeed": 0.65
+		},
+		{
+			"biome": "mountains",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 40,
+			"travelSpeed": 0.65
+		},
+		{
+			"biome": "mountains",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 42,
+			"travelSpeed": 0.65
+		},
+		{
+			"biome": "mountains",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 45,
+			"travelSpeed": 0.65
+		},
+		{
+			"biome": "mountains",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 60,
+			"travelSpeed": 0.65
+		},
+		{
+			"biome": "mountains",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.65
+		},
+		{
+			"biome": "mountains",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.65
+		},
+		{
+			"biome": "swamp",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 20,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 40,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 42,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 45,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 60,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 0.7
+		},
+		{
+			"biome": "swamp",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 1.0499999999999998
+		},
+		{
+			"biome": "swamp",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 25,
+			"travelSpeed": 1.0499999999999998
+		},
+		{
+			"biome": "swamp",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 27,
+			"travelSpeed": 1.0499999999999998
+		},
+		{
+			"biome": "swamp",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 30,
+			"travelSpeed": 1.0499999999999998
+		},
+		{
+			"biome": "swamp",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 45,
+			"travelSpeed": 1.0499999999999998
+		},
+		{
+			"biome": "swamp",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.0499999999999998
+		},
+		{
+			"biome": "swamp",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.0499999999999998
+		},
+		{
+			"biome": "swamp",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 15,
+			"travelSpeed": 0.84
+		},
+		{
+			"biome": "swamp",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 35,
+			"travelSpeed": 0.84
+		},
+		{
+			"biome": "swamp",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 37,
+			"travelSpeed": 0.84
+		},
+		{
+			"biome": "swamp",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 40,
+			"travelSpeed": 0.84
+		},
+		{
+			"biome": "swamp",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 55,
+			"travelSpeed": 0.84
+		},
+		{
+			"biome": "swamp",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.84
+		},
+		{
+			"biome": "swamp",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.84
+		},
+		{
+			"biome": "swamp",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 10,
+			"travelSpeed": 0.9099999999999999
+		},
+		{
+			"biome": "swamp",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 30,
+			"travelSpeed": 0.9099999999999999
+		},
+		{
+			"biome": "swamp",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 32,
+			"travelSpeed": 0.9099999999999999
+		},
+		{
+			"biome": "swamp",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 35,
+			"travelSpeed": 0.9099999999999999
+		},
+		{
+			"biome": "swamp",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 50,
+			"travelSpeed": 0.9099999999999999
+		},
+		{
+			"biome": "swamp",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.9099999999999999
+		},
+		{
+			"biome": "swamp",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.9099999999999999
+		},
+		{
+			"biome": "desert",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 15,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 35,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 37,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 40,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 55,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "desert",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.9500000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 20,
+			"travelSpeed": 1.9500000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 22,
+			"travelSpeed": 1.9500000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 25,
+			"travelSpeed": 1.9500000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 40,
+			"travelSpeed": 1.9500000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.9500000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.9500000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 10,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "desert",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 30,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "desert",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 32,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "desert",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 35,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "desert",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 50,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "desert",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "desert",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "desert",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 1.6900000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 25,
+			"travelSpeed": 1.6900000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 27,
+			"travelSpeed": 1.6900000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 30,
+			"travelSpeed": 1.6900000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 45,
+			"travelSpeed": 1.6900000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.6900000000000002
+		},
+		{
+			"biome": "desert",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.6900000000000002
+		},
+		{
+			"biome": "tundra",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 25,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 45,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 47,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 50,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 65,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 0.9
+		},
+		{
+			"biome": "tundra",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 10,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "tundra",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 30,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "tundra",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 32,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "tundra",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 35,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "tundra",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 50,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "tundra",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "tundra",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.35
+		},
+		{
+			"biome": "tundra",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 20,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "tundra",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 40,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "tundra",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 42,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "tundra",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 45,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "tundra",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 60,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "tundra",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "tundra",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.08
+		},
+		{
+			"biome": "tundra",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 15,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "tundra",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 35,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "tundra",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 37,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "tundra",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 40,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "tundra",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 55,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "tundra",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "tundra",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.1700000000000002
+		},
+		{
+			"biome": "meadow",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 10,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 12,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 15,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 30,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "meadow",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.7999999999999998
+		},
+		{
+			"biome": "meadow",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 0,
+			"travelSpeed": 1.7999999999999998
+		},
+		{
+			"biome": "meadow",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 2,
+			"travelSpeed": 1.7999999999999998
+		},
+		{
+			"biome": "meadow",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1.7999999999999998
+		},
+		{
+			"biome": "meadow",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 20,
+			"travelSpeed": 1.7999999999999998
+		},
+		{
+			"biome": "meadow",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 85,
+			"travelSpeed": 1.7999999999999998
+		},
+		{
+			"biome": "meadow",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.7999999999999998
+		},
+		{
+			"biome": "meadow",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.44
+		},
+		{
+			"biome": "meadow",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 1.44
+		},
+		{
+			"biome": "meadow",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 7,
+			"travelSpeed": 1.44
+		},
+		{
+			"biome": "meadow",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 10,
+			"travelSpeed": 1.44
+		},
+		{
+			"biome": "meadow",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 25,
+			"travelSpeed": 1.44
+		},
+		{
+			"biome": "meadow",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 90,
+			"travelSpeed": 1.44
+		},
+		{
+			"biome": "meadow",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.44
+		},
+		{
+			"biome": "meadow",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 0,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "meadow",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 0,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "meadow",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 2,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "meadow",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "meadow",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 20,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "meadow",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 85,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "meadow",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.56
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 40,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 60,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 62,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 65,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 80,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 1
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 25,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 45,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 47,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 50,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 65,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.5
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 35,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 55,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 57,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 60,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 75,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 30,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 50,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 52,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 55,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 70,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "cave_entrance",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.3
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": null,
+			"distanceFromColony": -10,
+			"dangerLevel": 60,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": null,
+			"distanceFromColony": 0,
+			"dangerLevel": 80,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": null,
+			"distanceFromColony": 1,
+			"dangerLevel": 82,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": null,
+			"distanceFromColony": 2.5,
+			"dangerLevel": 85,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": null,
+			"distanceFromColony": 10,
+			"dangerLevel": 95,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": null,
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": null,
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "river",
+			"distanceFromColony": -10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "river",
+			"distanceFromColony": 0,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "river",
+			"distanceFromColony": 1,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "river",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "river",
+			"distanceFromColony": 10,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "river",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "river",
+			"distanceFromColony": 100,
+			"dangerLevel": 5,
+			"travelSpeed": 0.8
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "ancient_road",
+			"distanceFromColony": -10,
+			"dangerLevel": 45,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "ancient_road",
+			"distanceFromColony": 0,
+			"dangerLevel": 65,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "ancient_road",
+			"distanceFromColony": 1,
+			"dangerLevel": 67,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "ancient_road",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 70,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "ancient_road",
+			"distanceFromColony": 10,
+			"dangerLevel": 85,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "ancient_road",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "ancient_road",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.2000000000000002
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "game_trail",
+			"distanceFromColony": -10,
+			"dangerLevel": 55,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "game_trail",
+			"distanceFromColony": 0,
+			"dangerLevel": 75,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "game_trail",
+			"distanceFromColony": 1,
+			"dangerLevel": 77,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "game_trail",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 80,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "game_trail",
+			"distanceFromColony": 10,
+			"dangerLevel": 95,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "game_trail",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "game_trail",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 0.96
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "trade_route",
+			"distanceFromColony": -10,
+			"dangerLevel": 50,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "trade_route",
+			"distanceFromColony": 0,
+			"dangerLevel": 70,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "trade_route",
+			"distanceFromColony": 1,
+			"dangerLevel": 72,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "trade_route",
+			"distanceFromColony": 2.5,
+			"dangerLevel": 75,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "trade_route",
+			"distanceFromColony": 10,
+			"dangerLevel": 90,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "trade_route",
+			"distanceFromColony": 42.5,
+			"dangerLevel": 95,
+			"travelSpeed": 1.04
+		},
+		{
+			"biome": "enemy_lair",
+			"overlay": "trade_route",
+			"distanceFromColony": 100,
+			"dangerLevel": 95,
+			"travelSpeed": 1.04
+		}
+	]
+}
