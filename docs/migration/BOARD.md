@@ -500,7 +500,7 @@ persona: developer   scope: crates/cat-protocol: WorldSnapshot (multi-colony gen
 persona: developer   depends_on:[P8.1]   scope: cat-sim: apply a ClientAction to WorldState/ColonyRuntime (requestJob, boost, purchaseUpgrade, castVote, requestVoteKick, create/removeZone, planBuilding, unlockNode, assignWorker, trainWarrior, defendRaid, buildRoad, test controls, foundVillage->found_colony). Pure; validation + soft-fail results. Snapshot builder WorldState->WorldSnapshot.
 ### P8.3 cat-server tick loop + transport   [status: qa]
 persona: developer   depends_on:[P8.2]   scope: crates/cat-server: tokio loop running world_tick each 1s; WebSocket (axum or tokio-tungstenite) broadcasting WorldSnapshot + receiving ClientAction; presence/online tracking.
-### P8.4 cat-server persistence + identity   [status: todo]
+### P8.4 cat-server persistence + identity   [status: qa]
 persona: developer   depends_on:[P8.3]   scope: SQLite (rusqlite) save/load WorldState (mirror db/schema tables); identity/HMAC session sig; rate-limit (30 actions/10s). Migrations on open.
 ### P8.gate P8 integration   [status: todo]
 persona: qa/orchestrator   scope: server boots, ticks, a client connects, founds a village, submits actions, receives snapshots; persistence round-trips.
