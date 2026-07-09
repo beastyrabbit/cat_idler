@@ -37,8 +37,13 @@ only as the reference during migration.
    bar — not bit-identical `Math.random` (the TS uses raw `Math.random` in a few
    cosmetic spots; seed those or accept behavioural equivalence, and say which).
 4. **Small & scoped.** One card = ≤1 module or slice. Don't touch unrelated files.
-5. **Rust only.** Do not run the JS toolchain (`bun`, `vitest`, `tsc`). Do not edit
-   anything outside `crates/`, `docs/migration/`, `codex/` unless your card says so.
+5. **Rust only — one exception.** Do not run `bun`, `vitest`, or `tsc`. The SOLE
+   permitted JS use: to build a golden-master parity fixture you MAY run a *pure*
+   `lib/game/*` module with `npx tsx` (a tiny throwaway script that imports the
+   module, samples a seed/coordinate matrix, and writes JSON to
+   `docs/migration/fixtures/`). Never modify the TS source. Then write Rust tests
+   that assert against the committed fixture. Do not edit anything outside
+   `crates/`, `docs/migration/`, `codex/` unless your card says so.
 6. **Newest versions.** Add deps with `cargo add` (never hand-edit versions).
    Edition 2024. Bevy 0.19.
 7. **Green before done.** `cargo nextest run -p <crate>` and

@@ -25,7 +25,7 @@ codex, plus a Claude review for high-value slices) signs off.
 |-------|-------|--------|
 | P0 | Foundation & safety | done |
 | P1 | Sim foundation (rng, types, test-accel) | done |
-| P2 | World generation | pending |
+| P2 | World generation | in progress |
 | P3 | Cat AI (pathfinding, movement, leader director) | pending |
 | P4 | Life sim | pending |
 | P5 | Economy + housing + roads | pending |
@@ -142,3 +142,217 @@ turbo rule; then `cargo nextest run -p cat-sim`,
 notes: TS sources `lib/game/testAcceleration.ts`,
 `tests/unit/game/testAcceleration.test.ts`; parity criterion is exact config
 values and branch ordering from the TS implementation.
+
+---
+
+## P2 — World generation
+### P2.1 Predeclare world-generation modules   [status: done]
+persona: orchestrator            depends_on: [P1.1, P1.2]        parallel_group: P2-scaffold
+scope: Prepare the `cat-sim` module surface for parallel P2 work by declaring
+`noise`, `biomes`, `terrain_gen`, and `world_gen` under `crates/cat-sim/src/`
+without implementing terrain behavior.
+acceptance: `cargo nextest run -p cat-sim` still compiles after the empty module
+surface is in place; no TS files or product logic are changed.
+notes: Rust module targets `crates/cat-sim/src/noise.rs`,
+`crates/cat-sim/src/biomes.rs`, `crates/cat-sim/src/terrain_gen.rs`,
+`crates/cat-sim/src/world_gen.rs`; this is a parallel-safety setup card.
+
+### P2.2 Seeded noise utilities   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.1]        parallel_group: P2-foundation
+scope: Port `lib/game/noise.ts` into `crates/cat-sim/src/noise.rs`: the local
+`SeededRandom` API shape needed by world generation, `hashSeed`, `noise2D`, and
+`fractalNoise2D`.
+acceptance: Add Rust tests from a TS-generated vector fixture covering
+`hashSeed` with mixed number/string inputs, `next`/`int`/`float`, `noise2D`, and
+`fractalNoise2D` across positive and negative coordinates; repeated calls with
+the same seed must be byte-identical, then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `lib/game/noise.ts`; fixture
+`docs/migration/fixtures/p2/noise_vectors.json`; parity criterion is exact
+32-bit hash/LCG semantics and JS-number-equivalent noise values.
+
+### P2.3 Biome tables and calculators   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.1, P1.2]        parallel_group: P2-foundation
+scope: Port `lib/game/biomes.ts` into `crates/cat-sim/src/biomes.rs`: biome and
+overlay feature enums, `BIOME_PROPERTIES`, `OVERLAY_FEATURE_PROPERTIES`,
+`calculateDangerLevel`, and `calculateTravelSpeed`.
+acceptance: Add table-driven Rust tests proving every biome/overlay literal,
+resource range, max resource, danger modifier, speed modifier, path-wear value,
+and display name matches TS; include distance/danger clamp vectors and repeated
+determinism checks, then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `lib/game/biomes.ts`; fixture
+`docs/migration/fixtures/p2/biome_vectors.json`; parity criterion is exact table
+coverage and exact calculator outputs.
+
+### P2.4 Terrain generator researcher spec   [status: todo]
+persona: researcher            depends_on: [P2.2]        parallel_group: P2-research
+scope: Produce a port spec for `lib/game/terrainGen.ts` covering the copied
+value-noise math, `TerrainOptions`, `WORLD_TERRAIN_OPTIONS`, height/moisture,
+plateau behavior, cliff/stair roles, river source/path logic, biome/decoration
+classification, and `generateTerrainChunk`.
+acceptance: Write `docs/migration/p2-terrain-gen-spec.md` with exported Rust API
+names, internal helper behavior that must be preserved, fixture seed/chunk
+matrix, float-comparison policy, and hard edge cases for negative chunks and
+chunk borders; no Rust product code changes.
+notes: TS source `lib/game/terrainGen.ts`; recommended before P2.6-P2.10 because
+this module is client-parity-critical.
+
+### P2.5 World generation researcher spec   [status: todo]
+persona: researcher            depends_on: [P2.2, P2.3]        parallel_group: P2-research
+scope: Produce a port spec for `lib/game/worldGen.ts` plus the distinct bridge
+logic in `lib/game/terrainWorld.ts`, including chunk/tile mapping, colony anchor
+constants, legacy Voronoi chunk generation, starter-water guarantees, and the
+terrain-to-gameplay `WorldTile` mapping.
+acceptance: Write `docs/migration/p2-world-gen-spec.md` with exported Rust API
+names, exact dependency boundaries between `terrain_gen.rs` and `world_gen.rs`,
+fixture seed/chunk matrix, and edge cases for safe-radius water suppression and
+starter pond selection; no Rust product code changes.
+notes: TS sources `lib/game/worldGen.ts`, `lib/game/terrainWorld.ts`;
+recommended before P2.11-P2.14 because `terrainWorld.ts` is distinct gameplay
+mapping logic.
+
+### P2.6 Terrain options and scalar fields   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.4]        parallel_group: P2-terrain-core
+scope: Port the foundational slice of `lib/game/terrainGen.ts` into
+`crates/cat-sim/src/terrain_gen.rs`: public role/type vocabulary, constants
+`TERRAIN_CHUNK_SIZE` and `DEFAULT_MAX_HEIGHT`, option resolution,
+`WORLD_TERRAIN_OPTIONS`, copied `hashSeed`/`latticeValue`/`fade`/`valueNoise`/
+`fractalNoise`, `terrainElevationAt`, `terrainMoistureAt`, and
+`terrainHeightAt` with plateau behavior.
+acceptance: Add Rust tests from TS vectors for resolved defaults, world terrain
+options, elevation/moisture samples, height quantization, plateau override, and
+negative coordinates; repeated calls with the same seed/options must be
+identical, then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `lib/game/terrainGen.ts`; fixture
+`docs/migration/fixtures/p2/terrain_fields.json`; parity criterion is exact
+discrete height/options parity and JS-number-equivalent scalar fields.
+
+### P2.7 Terrain cliff and stair roles   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.6]        parallel_group: P2-terrain-roles
+scope: Port the cliff and stair slice of `lib/game/terrainGen.ts` into
+`terrain_gen.rs`: direction constants, `classifyCliff`, terrain role lookup,
+`stairEdgeDir`, run scanning, `deriveStairs`, and public `terrainStairAt`.
+acceptance: Add direct fixture tests for every cliff mask family
+(`flat`, `edge`, `corner`, `ridge`, `spur`, `pillar`), max-drop calculation,
+single-floor stair eligibility, minimum-run midpoint placement, and deterministic
+repeat calls, then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `lib/game/terrainGen.ts`; fixture
+`docs/migration/fixtures/p2/terrain_cliffs_stairs.json`; parity criterion is
+exact role/variant/facing/edge-mask output.
+
+### P2.8 Terrain river roles   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.6]        parallel_group: P2-terrain-roles
+scope: Port the river slice of `lib/game/terrainGen.ts` into `terrain_gen.rs`:
+`regionRiverSources`, `traceRiver`, `classifyRiverSegment`, and the chunk-local
+river collection behavior used by `generateTerrainChunk`.
+acceptance: Add TS-vector tests for source selection by region, threshold
+filtering, plateau avoidance, steepest-descent path tracing, segment
+classification (`start`, `straight`, `bend`, `end`), max-length stopping, and
+deterministic repeated calls, then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `lib/game/terrainGen.ts`; fixture
+`docs/migration/fixtures/p2/terrain_rivers.json`; parity criterion is exact
+source/path tile coordinates and river role fields.
+
+### P2.9 Terrain biome and decoration roles   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.6]        parallel_group: P2-terrain-roles
+scope: Port the biome and decoration slice of `lib/game/terrainGen.ts` into
+`terrain_gen.rs`: `classifyBiome`, biome decoration densities, and deterministic
+tree/rock decoration derivation.
+acceptance: Add Rust tests for height/moisture biome thresholds, all decoration
+density bands, tree species, rock size/resource selection, decoration absence,
+and deterministic repeated calls, then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `lib/game/terrainGen.ts`; fixture
+`docs/migration/fixtures/p2/terrain_biome_decor.json`; parity criterion is exact
+biome role and optional decoration output for fixture coordinates.
+
+### P2.10 Terrain chunk assembly   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.7, P2.8, P2.9]        parallel_group: P2-terrain-assembly
+scope: Port `generateTerrainChunk` from `lib/game/terrainGen.ts` into
+`terrain_gen.rs`, assembling 12x12 world-coordinate tiles with elevation,
+moisture, height, biome, terrain, river, stairs, optional decoration, optional
+river carving, and stable tile ordering.
+acceptance: Add golden tests for multiple `(seed, chunkX, chunkY, opts)` cases,
+including `(0,0)`, negative chunks, adjacent chunk borders, default options,
+`WORLD_TERRAIN_OPTIONS`, `carveRivers`, and `decorate: false`; same seed+chunk
+must produce tiles matching archived TS tile-for-tile and repeated Rust calls
+must be identical, then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `lib/game/terrainGen.ts`; fixture
+`docs/migration/fixtures/p2/terrain_chunks.json`; parity criterion is exact
+tile order and exact discrete fields, with scalar float tolerance documented by
+P2.4.
+
+### P2.11 World chunk coordinate helpers   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.5]        parallel_group: P2-world-core
+scope: Port the coordinate and colony-anchor slice of `lib/game/worldGen.ts` into
+`crates/cat-sim/src/world_gen.rs`: chunk size usage, `COLONY_SAFE_RADIUS`,
+`COLONY_WATER_RADIUS`, `tileToChunk`, `chunkToTile`, and `getColonyPosition`.
+acceptance: Add Rust tests mirroring TS for positive, zero, and negative tile
+coordinates, top-left chunk origin conversion, constants, colony position
+`{ x: 6, y: 6 }`, and deterministic repeated calls, then
+`cargo nextest run -p cat-sim`, `cargo clippy -p cat-sim --all-targets -- -D warnings`,
+and `cargo fmt` pass.
+notes: TS source `lib/game/worldGen.ts`; fixture
+`docs/migration/fixtures/p2/world_coords.json`; parity criterion is exact
+`Math.floor` chunk mapping, especially for negative coordinates.
+
+### P2.12 Legacy world overlay generation   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.2, P2.3, P2.5, P2.11]        parallel_group: P2-world-legacy
+scope: Port the overlay-generation slice of `lib/game/worldGen.ts` into
+`world_gen.rs`: Voronoi cell generation, nearest-cell lookup, biome-boundary
+check, river/path predicates, and overlay priority in `getOverlayFeature`.
+acceptance: Add TS-vector tests for cell placement, nearest biome selection,
+boundary detection, river/path thresholds, overlay priority, orthogonal river
+connection handling, and deterministic repeated calls, then
+`cargo nextest run -p cat-sim`, `cargo clippy -p cat-sim --all-targets -- -D warnings`,
+and `cargo fmt` pass.
+notes: TS source `lib/game/worldGen.ts`; fixture
+`docs/migration/fixtures/p2/world_overlays.json`; parity criterion is exact
+biome/overlay decisions for fixture coordinates.
+
+### P2.13 Legacy world chunk tiles   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.12]        parallel_group: P2-world-legacy
+scope: Port the gameplay tile/chunk slice of `lib/game/worldGen.ts` into
+`world_gen.rs`: `generateTile`, `generateChunk`, resource rolls, danger/path-wear
+mapping, backward-compatible tile type selection, and `ensureWaterNearColony`.
+acceptance: Add golden tests for same `(seed, chunkX, chunkY, colonyX, colonyY)`
+fixtures against archived TS `generateChunk`, including colony chunk starter
+water, non-colony chunks, safe-radius river suppression, and deterministic
+repeated calls, then `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
+notes: TS source `lib/game/worldGen.ts`; fixture
+`docs/migration/fixtures/p2/world_chunks_legacy.json`; parity criterion is exact
+144-tile order, tile type, resources, max resources, danger, path wear,
+`lastDepleted`, and overlay feature.
+
+### P2.14 Terrain-driven world chunks   [status: todo]
+persona: test-engineer -> developer -> qa            depends_on: [P2.3, P2.10, P2.11, P2.13]        parallel_group: P2-world-bridge
+scope: Port `lib/game/terrainWorld.ts` into `world_gen.rs`: `WorldTileData`,
+terrain biome role to gameplay biome/tile mappings, `terrainToWorldTile`,
+terrain-backed `ensureWaterNearColony`, and `generateWorldChunk`.
+acceptance: Add golden tests for same `(seed, chunkX, chunkY, colonyX, colonyY)`
+fixtures against archived TS `generateWorldChunk`, including river tiles,
+non-river resource rolls, terrain biome mappings, starter pond forcing, and
+deterministic repeated calls; same seed+chunk must match TS tile-for-tile, then
+`cargo nextest run -p cat-sim`, `cargo clippy -p cat-sim --all-targets -- -D warnings`,
+and `cargo fmt` pass.
+notes: TS source `lib/game/terrainWorld.ts`; fixture
+`docs/migration/fixtures/p2/world_chunks_terrain.json`; parity criterion is exact
+gameplay `WorldTile` output generated from the shared terrain field.
+
+### P2.15 P2 parity QA gate   [status: todo]
+persona: qa            depends_on: [P2.10, P2.13, P2.14]        parallel_group: P2-qa
+scope: Independently verify the completed P2 world-generation surface in
+`cat-sim` without adding new product behavior.
+acceptance: Run the full P2 fixture suite plus `cargo nextest run -p cat-sim`,
+`cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt --check`;
+spot-check at least three seeds across origin, negative, and adjacent chunks for
+terrain and world chunk parity, confirming deterministic reruns and no TS edits.
+notes: TS sources `lib/game/noise.ts`, `lib/game/biomes.ts`,
+`lib/game/terrainGen.ts`, `lib/game/worldGen.ts`, `lib/game/terrainWorld.ts`;
+this closes the client-parity-critical P2 wave.

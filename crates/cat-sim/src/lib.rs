@@ -14,3 +14,9 @@ pub mod cost_constants;
 pub mod entities;
 pub mod needs_constants;
 pub mod test_acceleration;
+
+// P2 world-generation modules (filled by P2.2–P2.14).
+pub mod biomes;
+pub mod noise;
+pub mod terrain_gen;
+pub mod world_gen;
