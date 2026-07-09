@@ -422,7 +422,7 @@ scope: Port lib/game/genetics.ts -> crates/cat-sim/src/genetics.rs (sprite-trait
 ### P4.4 Survival   [status: qa]
 persona: developer -> qa   depends_on: [P4.1]   parallel_group: P4b
 scope: Port lib/game/survival.ts -> crates/cat-sim/src/survival.rs (applySurvivalTick: 10-min unit normalization, availability-driven decay, damage, death; policy multipliers).
-### P4.5 Life simulation   [status: todo]
+### P4.5 Life simulation   [status: qa]
 persona: developer -> qa   depends_on: [P4.1,P4.2,P4.3]   parallel_group: P4b
 scope: Port lib/game/lifeSim.ts -> crates/cat-sim/src/life_sim.rs (stageWorkEffectiveness, canWork, workforceWeight, oldAgeDeathProbability, breeding gates+constants, colonyCanBreed, conceptionProbability, inheritStats 60/40+-8 deterministic, trade curves, leadershipAfterTenure). Fixture-backed.
 ### P4.7 P4 QA gate   [status: todo]
