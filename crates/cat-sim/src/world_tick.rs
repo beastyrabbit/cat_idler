@@ -7,6 +7,11 @@ use std::collections::BTreeMap;
 
 use crate::{
     biomes::MaxResources,
+    depletion::{is_forest_type, regrowth_amount},
+    elections::{
+        BallotVote, ELECTION_WINDOW_MS, ElectionCandidate, KICK_WINDOW_MS, TERM_MS,
+        candidates_for_unbarred, election_due, election_winner, should_trigger_kick, tally_votes,
+    },
     entities::{Cat, ColonyStatus, Position, Resources},
     idle_engine,
     idle_rules::consumption_for_tick,
@@ -258,7 +263,12 @@ pub enum RunResetReason {
 struct TickGate {
     elapsed_sec: i64,
     processed_through: i64,
+    minute_rolled: bool,
+    previous_water: u64,
 }
+
+const EVENT_KEEP: usize = 2_000;
+const MAX_PATH_DECAY_PER_TICK: u32 = 2;
 
 impl Default for ColonyRuntime {
     fn default() -> Self {
@@ -432,6 +442,9 @@ fn phase_1_colony_selection_and_elapsed_time_gate(
         processed_through: colony
             .last_tick
             .saturating_add(elapsed_sec.saturating_mul(1000)),
+        minute_rolled: elapsed_sec >= 60
+            || now_ms.div_euclid(60_000) != colony.last_tick.div_euclid(60_000),
+        previous_water: colony.resources.water.to_bits(),
     })
 }
 
@@ -565,22 +578,171 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
 
 /// Phase 8: append the water crisis edge event when water crosses the low
 /// threshold.
-fn phase_8_water_low_crisis_edge(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_8_water_low_crisis_edge(colony: &mut ColonyRuntime, gate: TickGate) {
+    let previous_water = f64::from_bits(gate.previous_water);
+    if previous_water > 3.0 && colony.resources.water <= 3.0 {
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::ResourceCrisis,
+            "CRISIS: WATER RESERVES DANGEROUSLY LOW",
+        );
+    }
+}
 
 /// Phase 9: resolve due elections/vote-kicks and open scheduled or snap
 /// elections.
-fn phase_9_elections_lifecycle(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_9_elections_lifecycle(colony: &mut ColonyRuntime, gate: TickGate) {
+    let open_leadership = colony
+        .elections
+        .iter()
+        .position(is_open_leadership_election);
+    let open_kick = colony.elections.iter().position(|election| {
+        election.kind == ElectionKind::VoteKick && election.resolved_at.is_none()
+    });
+
+    let mut open_leadership_after_resolution = open_leadership;
+    if let Some(index) =
+        open_leadership.filter(|index| colony.elections[*index].closes_at <= gate.processed_through)
+    {
+        let election_id = colony.elections[index].id.clone();
+        let candidates = current_election_candidates(colony);
+        let ballots = ballots_for(colony, &election_id);
+        let tally = tally_votes(&ballots);
+        let winner_id = election_winner(&candidates, &tally);
+
+        colony.elections[index].resolved_at = Some(gate.processed_through);
+        colony.elections[index].winner_cat_id = winner_id.clone();
+        open_leadership_after_resolution = None;
+
+        if let Some(winner_id) = winner_id {
+            colony.leader_id = Some(winner_id.clone());
+            let winner_name = alive_cats(&colony.cats)
+                .find(|cat| cat.id == winner_id)
+                .map_or("The winner", |cat| cat.name.as_str())
+                .to_owned();
+            append_event(
+                colony,
+                gate.processed_through,
+                EventKind::Election,
+                format!(
+                    "{winner_name} won the leadership election with {} ballot{} cast.",
+                    ballots.len(),
+                    if ballots.len() == 1 { "" } else { "s" }
+                ),
+            );
+        }
+    }
+
+    if let Some(index) =
+        open_kick.filter(|index| colony.elections[*index].closes_at <= gate.processed_through)
+    {
+        let election_id = colony.elections[index].id.clone();
+        let ballots = ballots_for(colony, &election_id);
+        let target_id = vote_kick_target(&ballots);
+        let kicked = colony.leader_id.is_some()
+            && target_id.as_ref() == colony.leader_id.as_ref()
+            && should_trigger_kick(&ballots);
+
+        colony.elections[index].resolved_at = Some(gate.processed_through);
+        colony.elections[index].winner_cat_id = kicked.then(|| target_id.clone()).flatten();
+
+        if kicked {
+            if let Some(target_id) = target_id {
+                let target_name = alive_cats(&colony.cats)
+                    .find(|cat| cat.id == target_id)
+                    .map_or("The leader", |cat| cat.name.as_str())
+                    .to_owned();
+                append_event(
+                    colony,
+                    gate.processed_through,
+                    EventKind::Election,
+                    format!("{target_name} was voted out by the players!"),
+                );
+                colony.leader_id = choose_interim_leader_excluding(colony, Some(&target_id));
+            }
+
+            if open_leadership_after_resolution.is_none() {
+                open_leadership_election(colony, gate.processed_through, ElectionKind::Snap);
+                open_leadership_after_resolution = colony
+                    .elections
+                    .iter()
+                    .position(is_open_leadership_election);
+            }
+        }
+    }
+
+    if open_leadership_after_resolution.is_none()
+        && election_due(
+            last_resolved_leadership_election_at(colony).map(|at| at as f64),
+            gate.processed_through as f64,
+            scaled_term_ms(colony),
+        )
+    {
+        open_leadership_election(colony, gate.processed_through, ElectionKind::Scheduled);
+    }
+}
 
 /// Phase 10: expire zones and prune the event log to the newest retained events
 /// on the minute cadence.
-fn phase_10_zones_and_event_pruning(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_10_zones_and_event_pruning(colony: &mut ColonyRuntime, gate: TickGate) {
+    colony
+        .zones
+        .retain(|zone| zone.expires_at > gate.processed_through);
+
+    if gate.minute_rolled {
+        prune_events_to_newest(colony, EVENT_KEEP);
+    }
+}
 
 /// Phase 11: decay path wear while preserving built roads and explored trail
 /// thresholds.
-fn phase_11_path_wear_decay(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_11_path_wear_decay(colony: &mut ColonyRuntime, gate: TickGate) {
+    let decay_amount = ((gate.elapsed_sec as f64 * normalize_time_scale(colony)) / 60.0)
+        .floor()
+        .clamp(0.0, f64::from(MAX_PATH_DECAY_PER_TICK)) as u32;
+    if decay_amount == 0 {
+        return;
+    }
+
+    for tile in colony.world_tiles.values_mut() {
+        if tile.path_wear == 0 || tile.overlay_feature.as_deref() == Some("road_built") {
+            continue;
+        }
+
+        if tile.path_wear >= 70 {
+            tile.path_wear = tile.path_wear.saturating_sub(decay_amount).max(63);
+        } else if tile.path_wear > 62 {
+            continue;
+        } else {
+            tile.path_wear = tile.path_wear.saturating_sub(decay_amount).max(1);
+        }
+    }
+}
 
 /// Phase 12: regrow depleted non-forest food resources once per minute.
-fn phase_12_resource_regrowth(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_12_resource_regrowth(colony: &mut ColonyRuntime, gate: TickGate) {
+    if !gate.minute_rolled {
+        return;
+    }
+
+    let amount = regrowth_amount(gate.elapsed_sec as f64 * normalize_time_scale(colony)).floor();
+    if amount <= 0.0 {
+        return;
+    }
+    let amount = amount as u32;
+
+    for tile in colony.world_tiles.values_mut() {
+        if tile.last_depleted <= 0 || is_forest_type(tile.tile_type) {
+            continue;
+        }
+        tile.resources.food = tile
+            .resources
+            .food
+            .saturating_add(amount)
+            .min(tile.max_resources.food);
+    }
+}
 
 /// Phase 13: build tick-local target caches and movement RNG helpers for food,
 /// quarry, water, frontier, zones, and hunt-site draining.
@@ -762,6 +924,159 @@ fn clamp_resource(value: f64, cap: f64) -> f64 {
     value.max(0.0).min(cap)
 }
 
+fn append_event(
+    colony: &mut ColonyRuntime,
+    at_ms: i64,
+    kind: EventKind,
+    message: impl Into<String>,
+) {
+    colony.events.push(EventLog {
+        id: format!("event-{}-{}", at_ms, colony.events.len() + 1),
+        at_ms,
+        kind,
+        message: message.into(),
+    });
+}
+
+fn is_open_leadership_election(election: &ElectionRuntime) -> bool {
+    matches!(election.kind, ElectionKind::Scheduled | ElectionKind::Snap)
+        && election.resolved_at.is_none()
+}
+
+fn current_election_candidates(colony: &ColonyRuntime) -> Vec<ElectionCandidate> {
+    let candidates = alive_cats(&colony.cats)
+        .map(|cat| ElectionCandidate {
+            id: cat.id.clone(),
+            leadership: cat.stats.leadership,
+        })
+        .collect::<Vec<_>>();
+    let candidate_ids = candidates_for_unbarred(&candidates);
+
+    candidate_ids
+        .iter()
+        .filter_map(|id| candidates.iter().find(|candidate| candidate.id == *id))
+        .cloned()
+        .collect()
+}
+
+fn ballots_for(colony: &ColonyRuntime, election_id: &str) -> Vec<BallotVote> {
+    colony
+        .votes
+        .iter()
+        .filter(|vote| vote.election_id == election_id)
+        .map(|vote| BallotVote {
+            player_id: vote.voter_id.clone(),
+            cat_id: vote.cat_id.clone(),
+        })
+        .collect()
+}
+
+fn vote_kick_target(ballots: &[BallotVote]) -> Option<CatId> {
+    ballots.first().map(|ballot| ballot.cat_id.clone())
+}
+
+fn choose_interim_leader_excluding(
+    colony: &ColonyRuntime,
+    excluded_cat_id: Option<&str>,
+) -> Option<CatId> {
+    let mut best_leader: Option<&Cat> = None;
+    for candidate in alive_cats(&colony.cats) {
+        if excluded_cat_id == Some(candidate.id.as_str()) {
+            continue;
+        }
+        if best_leader.is_none_or(|best| candidate.stats.leadership > best.stats.leadership) {
+            best_leader = Some(candidate);
+        }
+    }
+    best_leader.map(|cat| cat.id.clone())
+}
+
+fn last_resolved_leadership_election_at(colony: &ColonyRuntime) -> Option<i64> {
+    colony
+        .elections
+        .iter()
+        .filter(|election| {
+            matches!(election.kind, ElectionKind::Scheduled | ElectionKind::Snap)
+                && election.resolved_at.is_some()
+        })
+        .map(|election| election.closes_at)
+        .max()
+}
+
+fn scaled_term_ms(colony: &ColonyRuntime) -> f64 {
+    (TERM_MS / normalize_time_scale(colony)).max(10_000.0)
+}
+
+fn scaled_election_window_ms(colony: &ColonyRuntime, kind: ElectionKind) -> i64 {
+    let base = match kind {
+        ElectionKind::Scheduled | ElectionKind::Snap => ELECTION_WINDOW_MS,
+        ElectionKind::VoteKick => KICK_WINDOW_MS,
+    };
+    (base / normalize_time_scale(colony)).max(5_000.0) as i64
+}
+
+fn open_leadership_election(colony: &mut ColonyRuntime, now_ms: i64, kind: ElectionKind) {
+    if current_election_candidates(colony).is_empty() {
+        return;
+    }
+
+    let id = format!(
+        "{}-{}-{}",
+        match kind {
+            ElectionKind::Scheduled => "election",
+            ElectionKind::Snap => "snap-election",
+            ElectionKind::VoteKick => "vote-kick",
+        },
+        now_ms,
+        colony.elections.len() + 1
+    );
+    colony.elections.push(ElectionRuntime {
+        id,
+        opened_at: now_ms,
+        closes_at: now_ms + scaled_election_window_ms(colony, kind),
+        resolved_at: None,
+        winner_cat_id: None,
+        kind,
+    });
+    append_event(
+        colony,
+        now_ms,
+        EventKind::Election,
+        "The colony is holding a leadership election - cast your vote!",
+    );
+}
+
+fn prune_events_to_newest(colony: &mut ColonyRuntime, keep: usize) {
+    if colony.events.len() <= keep {
+        return;
+    }
+
+    let mut by_newest = colony
+        .events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| (index, event.at_ms))
+        .collect::<Vec<_>>();
+    by_newest.sort_by(|(left_index, left_at), (right_index, right_at)| {
+        right_at
+            .cmp(left_at)
+            .then_with(|| right_index.cmp(left_index))
+    });
+
+    let mut keep_indices = by_newest
+        .into_iter()
+        .take(keep)
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    keep_indices.sort_unstable();
+
+    let mut next_events = Vec::with_capacity(keep);
+    for index in keep_indices {
+        next_events.push(colony.events[index].clone());
+    }
+    colony.events = next_events;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -860,6 +1175,94 @@ mod tests {
         assert_eq!(colony.cats[0].death_time, None);
     }
 
+    #[test]
+    fn tick_sweeps_expired_zones_by_processed_time() {
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                zones: vec![
+                    zone(1, 59_999),
+                    zone(2, 60_000),
+                    zone(3, 60_001),
+                    zone(4, 120_000),
+                ],
+                last_tick: 0,
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let reports = world_tick(&mut world, 60_999);
+
+        assert!(!reports[0].skipped);
+        assert_eq!(
+            world.colonies[0]
+                .zones
+                .iter()
+                .map(|zone| zone.created_at)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+    }
+
+    #[test]
+    fn event_log_prune_keeps_newest_two_thousand_once_per_minute() {
+        let events = (0..2_005)
+            .map(|index| EventLog {
+                id: format!("event-{index}"),
+                at_ms: index,
+                kind: EventKind::Other("test".to_owned()),
+                message: format!("event {index}"),
+            })
+            .collect();
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                events,
+                last_tick: 59_000,
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let _ = world_tick(&mut world, 60_000);
+
+        let events = &world.colonies[0].events;
+        assert_eq!(events.len(), 2_000);
+        assert_eq!(events.first().map(|event| event.at_ms), Some(5));
+        assert_eq!(events.last().map(|event| event.at_ms), Some(2_004));
+    }
+
+    #[test]
+    fn path_decay_is_clamped_and_preserves_roads_and_revealed_tiles() {
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                world_tiles: BTreeMap::from([
+                    (pos(0, 0), tile(0, 0, 80, None)),
+                    (pos(1, 0), tile(1, 0, 80, Some("road_built"))),
+                    (pos(2, 0), tile(2, 0, 64, None)),
+                    (pos(3, 0), tile(3, 0, 2, None)),
+                    (pos(4, 0), tile(4, 0, 0, None)),
+                    (pos(5, 0), tile(5, 0, 70, None)),
+                ]),
+                last_tick: 0,
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let _ = world_tick(&mut world, 10 * 60 * 1000);
+
+        let tiles = &world.colonies[0].world_tiles;
+        assert_eq!(tiles[&pos(0, 0)].path_wear, 78);
+        assert_eq!(tiles[&pos(1, 0)].path_wear, 80);
+        assert_eq!(tiles[&pos(2, 0)].path_wear, 64);
+        assert_eq!(tiles[&pos(3, 0)].path_wear, 1);
+        assert_eq!(tiles[&pos(4, 0)].path_wear, 0);
+        assert_eq!(tiles[&pos(5, 0)].path_wear, 68);
+    }
+
     fn adult_idle_cat(id: &str, colony_id: &str) -> Cat {
         Cat {
             id: id.to_owned(),
@@ -901,6 +1304,42 @@ mod tests {
             sprite_params: None,
             specialization: None,
             role_xp: Default::default(),
+        }
+    }
+
+    fn zone(created_at: i64, expires_at: i64) -> ZoneRuntime {
+        ZoneRuntime {
+            rect: ZoneRect {
+                x1: 0,
+                y1: 0,
+                x2: 1,
+                y2: 1,
+            },
+            kind: ZoneKind::Avoid,
+            created_at,
+            expires_at,
+            player_id: None,
+        }
+    }
+
+    fn pos(x: i32, y: i32) -> TilePos {
+        TilePos { x, y }
+    }
+
+    fn tile(x: i32, y: i32, path_wear: u32, overlay_feature: Option<&str>) -> WorldTileRuntime {
+        WorldTileRuntime {
+            pos: pos(x, y),
+            tile_type: TileType::Meadow,
+            resources: TileResources {
+                food: 0,
+                herbs: 0,
+                water: 0,
+            },
+            max_resources: MaxResources { food: 0, herbs: 0 },
+            danger_level: 0.0,
+            path_wear,
+            last_depleted: 0,
+            overlay_feature: overlay_feature.map(str::to_owned),
         }
     }
 }
