@@ -30,7 +30,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P4 | Life sim | done |
 | P5 | Economy + housing + roads | done |
 | P6 | Military + governance + upgrade tree | done |
-| P7 | Master loop (`world_tick`, multi-colony) | pending |
+| P7 | Master loop (`world_tick`, multi-colony) | in progress |
 | P8 | Protocol + server (+ multi-village founding) | pending |
 | P9 | Client render + UI (dashboard + log page) | pending |
 | P10 | WASM/web + native packaging | pending |
@@ -477,3 +477,11 @@ scope: lib/game/zones.ts -> zones.rs (ZONE_MAX_PER_PLAYER 2, ZONE_MAX_EDGE 8, GA
 scope: lib/game/upgradeTree.ts -> upgrade_tree.rs (11 EffectKeys, resolveEffects, UPGRADE_NODES ~18 nodes 3 eras VERBATIM, state ser/de, isOwned/prerequisitesMet/canUnlock/unlockableNodes/godPurchase; research RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK 10, accrueResearch, nextResearchTarget cheapest+id-tiebreak, catAutoUnlock). depends_on:[] group:P6b
 ### P6.7 P6 QA gate   [status: done (orchestrator gate: 312 tests hand-vector exact-value parity, deterministic)]
 persona: qa/orchestrator   depends_on:[P6.1..P6.6]
+
+## P7 — Master loop (world_tick, multi-colony) (decomposed by orchestrator)
+### P7.1 Runtime state + world_tick skeleton   [status: todo]
+persona: developer   depends_on:[]   scope: WorldState/ColonyRuntime/JobRuntime structs (per spec) + world_tick(state, now) iterating colonies, calling 37 phase fns as stubs; compiles + empty-world test. crates/cat-sim/src/world_tick.rs.
+### P7.2..P7.N Phase ports   [status: todo]
+persona: developer   depends_on:[P7.1]   scope: port the 37 phases in small groups (elapsed gate/rng forks; life sim; consumption/spoilage/clamp; minute gate/elections/zones; path decay/regrowth; job promotion; leader plan/director/assignment; production/research; due-job completion; hauling; movement; roads; raids; status/persist). Validate vs golden fixtures (scripts/gen-golden.ts).
+### P7.gate P7 parity gate   [status: todo]
+persona: qa/orchestrator   scope: seed -> N ticks aggregate trajectory matches worker-tick golden fixture; multi-colony independence.
