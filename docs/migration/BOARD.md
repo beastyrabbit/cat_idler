@@ -419,7 +419,7 @@ scope: Port lib/game/breeding.ts -> crates/cat-sim/src/breeding.rs (calculateFer
 ### P4.6 Genetics   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P4a
 scope: Port lib/game/genetics.ts -> crates/cat-sim/src/genetics.rs (sprite-trait inheritance, traitsToSpriteParams). Math.random throughout -> injected rolls; document. Cosmetic but affects breeding output.
-### P4.4 Survival   [status: todo]
+### P4.4 Survival   [status: qa]
 persona: developer -> qa   depends_on: [P4.1]   parallel_group: P4b
 scope: Port lib/game/survival.ts -> crates/cat-sim/src/survival.rs (applySurvivalTick: 10-min unit normalization, availability-driven decay, damage, death; policy multipliers).
 ### P4.5 Life simulation   [status: todo]
