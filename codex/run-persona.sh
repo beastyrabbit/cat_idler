@@ -15,9 +15,11 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pfile="$root/codex/personas/${persona}.md"
 [ -f "$pfile" ] || { echo "unknown persona: $persona (see codex/personas/)" >&2; exit 2; }
 
-# Reasoning effort per role (cheap mechanical roles lower; judgement roles higher).
+# Reasoning effort per role. NOTE: xhigh reliably TIMES OUT on big modules/specs,
+# so QA and researcher run at high (still catches real bugs; finishes in budget).
 case "$persona" in
-  scrum-master|researcher|qa) effort=xhigh ;;
+  scrum-master)               effort=high  ;;
+  researcher|qa)              effort=high  ;;
   developer|test-engineer)    effort=high  ;;
   integrator)                 effort=medium ;;
   *)                          effort=high  ;;
