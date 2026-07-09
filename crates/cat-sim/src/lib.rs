@@ -60,3 +60,6 @@ pub mod threat;
 pub mod upgrade_tree;
 pub mod warriors;
 pub mod zones;
+
+// P7 master loop.
+pub mod world_tick;

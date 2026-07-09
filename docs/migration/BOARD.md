@@ -479,7 +479,7 @@ scope: lib/game/upgradeTree.ts -> upgrade_tree.rs (11 EffectKeys, resolveEffects
 persona: qa/orchestrator   depends_on:[P6.1..P6.6]
 
 ## P7 — Master loop (world_tick, multi-colony) (decomposed by orchestrator)
-### P7.1 Runtime state + world_tick skeleton   [status: todo]
+### P7.1 Runtime state + world_tick skeleton   [status: qa]
 persona: developer   depends_on:[]   scope: WorldState/ColonyRuntime/JobRuntime structs (per spec) + world_tick(state, now) iterating colonies, calling 37 phase fns as stubs; compiles + empty-world test. crates/cat-sim/src/world_tick.rs.
 ### P7.2..P7.N Phase ports   [status: todo]
 persona: developer   depends_on:[P7.1]   scope: port the 37 phases in small groups (elapsed gate/rng forks; life sim; consumption/spoilage/clamp; minute gate/elections/zones; path decay/regrowth; job promotion; leader plan/director/assignment; production/research; due-job completion; hauling; movement; roads; raids; status/persist). Validate vs golden fixtures (scripts/gen-golden.ts).
