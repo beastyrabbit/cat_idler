@@ -29,7 +29,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P3 | Cat AI (pathfinding, movement, leader director) | done |
 | P4 | Life sim | done |
 | P5 | Economy + housing + roads | done |
-| P6 | Military + governance + upgrade tree | in progress |
+| P6 | Military + governance + upgrade tree | done |
 | P7 | Master loop (`world_tick`, multi-colony) | pending |
 | P8 | Protocol + server (+ multi-village founding) | pending |
 | P9 | Client render + UI (dashboard + log page) | pending |
@@ -463,17 +463,17 @@ scope: lib/game/villageArea.ts -> crates/cat-sim/src/village_area.rs (organic cl
 persona: qa (orchestrator gate if timeout)   depends_on: [P5.1..P5.10]
 
 ## P6 — Military + governance + upgrade tree (decomposed by orchestrator)
-### P6.1 Threat   [status: qa]
+### P6.1 Threat   [status: done]
 scope: lib/game/threat.ts -> threat.rs (colonyWealth, threatRatePerHour grace 8h, accrueThreat, RAID_SPAWN_THRESHOLD 100, threatBand thirds, planRaid MAX_RAID_SIZE 12, resolveRaid +-25% MAX_LOOT .3 CASUALTY .6). depends_on:[] group:P6a
-### P6.2 Warriors   [status: qa]
+### P6.2 Warriors   [status: done]
 scope: lib/game/warriors.ts -> warriors.rs (combat role/stage factors, WEAPON/ARMOR bonus 25, catCombatPower, musterDefense gear-to-strongest, canFight). depends_on:[] group:P6a
-### P6.3 Combat   [status: qa]
+### P6.3 Combat   [status: done]
 scope: lib/game/combat.ts -> combat.rs (calculateCombatResult [Math.random->injected roll], getClicksNeeded, calculateColonyDefense walls cap 100). depends_on:[] group:P6a
-### P6.4 Elections   [status: qa]
+### P6.4 Elections   [status: done]
 scope: lib/game/elections.ts -> elections.rs (KICK_THRESHOLD 5, CANDIDATE_COUNT 5, TERM_MS 24h, windows; candidatesFor, tallyVotes, electionWinner, shouldTriggerKick, electionDue). depends_on:[] group:P6a
-### P6.5 Zones   [status: qa]
+### P6.5 Zones   [status: done]
 scope: lib/game/zones.ts -> zones.rs (ZONE_MAX_PER_PLAYER 2, ZONE_MAX_EDGE 8, GATHER_MULTIPLIER 2, scoreTileWithZones, filterTargetsByZones, pickTargetWithZones, validateZone). depends_on:[] group:P6b
-### P6.6 Upgrade tree + research   [status: todo]
+### P6.6 Upgrade tree + research   [status: done]
 scope: lib/game/upgradeTree.ts -> upgrade_tree.rs (11 EffectKeys, resolveEffects, UPGRADE_NODES ~18 nodes 3 eras VERBATIM, state ser/de, isOwned/prerequisitesMet/canUnlock/unlockableNodes/godPurchase; research RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK 10, accrueResearch, nextResearchTarget cheapest+id-tiebreak, catAutoUnlock). depends_on:[] group:P6b
-### P6.7 P6 QA gate   [status: todo]
+### P6.7 P6 QA gate   [status: done (orchestrator gate: 312 tests hand-vector exact-value parity, deterministic)]
 persona: qa/orchestrator   depends_on:[P6.1..P6.6]
