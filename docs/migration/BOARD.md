@@ -441,13 +441,13 @@ scope: lib/game/production.ts -> crates/cat-sim/src/production.rs (workshop 5mat
 ### P5.4 Smithy   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5a
 scope: lib/game/smithy.ts -> crates/cat-sim/src/smithy.rs (2refined+3mat->1weapon+1armor/900s, fast smith x2).
-### P5.5 Storage   [status: todo]
+### P5.5 Storage   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5b
 scope: lib/game/storage.ts -> crates/cat-sim/src/storage.rs (BASE_CAPACITY, granary/water-bowl/smithy bonuses, storageCapacities, storehouseCap, countStorehouses).
-### P5.6 Shrine + trips   [status: todo]
+### P5.6 Shrine + trips   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5b
 scope: lib/game/shrine.ts + trips.ts -> crates/cat-sim/src/shrine.rs + trips.rs (deposit rules DEPOSIT_GRACE_MS 60000, DEPOSIT_RADIUS 1; HUNT_TRIP_COUNT 3, splitYield, tripDueAt).
-### P5.7 Depletion + spoilage   [status: todo]
+### P5.7 Depletion + spoilage   [status: qa]
 persona: developer -> qa   depends_on: []   parallel_group: P5b
 scope: lib/game/depletion.ts + spoilage.ts -> crates/cat-sim/src/depletion.rs + spoilage.rs (FOREST_TYPES, regrowthAmount, CHOPPED_FOREST_FOOD_CAP 5; spoilage report).
 ### P5.8 Housing + roads   [status: todo]
