@@ -1,17 +1,32 @@
+# Hooks span the TS web game (archived at cutover) and the Rust/Bevy rewrite.
+# Steps are glob-scoped so a Rust-only commit never runs the JS toolchain and
+# vice-versa. Heavy Rust steps (clippy, tests) live on pre-push to keep commits
+# fast while Bevy is a dependency.
 pre-commit:
   parallel: true
   commands:
     gitleaks:
-      glob: "*.{ts,tsx,js,jsx,json,env,yaml,yml,toml}"
+      glob: "*.{ts,tsx,js,jsx,json,env,yaml,yml,toml,rs}"
       run: gitleaks protect --staged --no-banner
     lint:
       glob: "*.{ts,tsx,js,jsx,mjs}"
       run: bun run lint
     typecheck:
+      glob: "*.{ts,tsx}"
       run: bun run typecheck
+    rustfmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
 
 pre-push:
   parallel: true
   commands:
     test:
+      glob: "*.{ts,tsx,js,jsx,mjs}"
       run: bun run test
+    rust-clippy:
+      glob: "*.rs"
+      run: cargo clippy --workspace --all-targets -- -D warnings
+    rust-test:
+      glob: "*.rs"
+      run: cargo nextest run --workspace
