@@ -35,13 +35,17 @@ use crate::{
     policy::PolicyConfig,
     production::{WorkshopOptions, advance_workshop, field_yield},
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
+    roads::{RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::should_deposit,
     smithy::{SmithyOptions, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
     storage::{
         StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
     },
-    threat::threat_band,
+    threat::{
+        ThreatSnapshot, accrue_threat, colony_wealth, plan_raid, resolve_raid, should_spawn_raid,
+        threat_band,
+    },
     trips::{HUNT_TRIP_COUNT, remaining_yield, split_yield, trip_due_at},
     types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType, UpgradeKey},
     upgrade_tree::{
@@ -54,6 +58,10 @@ use crate::{
     },
     village_layout::{
         GridPos, VILLAGE_ANCHOR, colony_to_world, village_ring_radius, world_to_colony,
+    },
+    warriors::{
+        CombatModifiers, DefenseStock, MusterCombatant, WARRIOR_XP_PER_RAID, can_fight,
+        muster_defense,
     },
     world_gen::TileResources,
     zones::{Zone, ZoneKind, ZonePos, ZoneRect, filter_targets_by_zones},
@@ -309,8 +317,14 @@ struct TickPolicy {
 const EVENT_KEEP: usize = 2_000;
 const MAX_PATH_DECAY_PER_TICK: u32 = 2;
 const QUARRY_TOTAL_YIELD: f64 = 15.0;
+const ROAD_MATERIALS_RESERVE: f64 = 30.0;
+const ROAD_MAX_PAVE_PER_BATCH: i32 = 6;
 const WATER_TOTAL_YIELD: f64 = 40.0;
 const WALK_WEAR: u32 = 8;
+const RAIDER_SPEED_TILES_PER_SEC: f64 = 0.4;
+const RAID_SPAWN_DISTANCE: f64 = 14.0;
+const ENGAGE_RANGE: f64 = 1.5;
+const DEFEND_CLICK_DAMAGE: f64 = 6.0;
 
 #[derive(Debug, Clone)]
 struct MovementPassContext {
@@ -458,7 +472,14 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_23_production(colony, gate);
         phase_24_research(colony, gate);
         phase_25_survival_deaths_and_carried_yield_salvage(colony, gate);
-        phase_26_empty_colony_reset(colony, gate);
+        if let Some(reset_reason) = phase_26_empty_colony_reset(colony, gate) {
+            reports.push(TickReport {
+                colony_id: colony.id.clone(),
+                skipped: false,
+                reset_reason: Some(reset_reason),
+            });
+            continue;
+        }
         phase_27_due_job_prelude(colony, gate);
         phase_28_due_completion_supplies_and_planner_jobs(colony, gate);
         phase_29_due_completion_gathering_explore_expansion(colony, gate);
@@ -469,13 +490,20 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
         phase_35_deliberate_roads(colony, gate);
-        phase_36_threat_and_raid_director(colony, gate);
-        phase_37_final_clamp_critical_collapse_status_persist(colony, gate);
+        if let Some(reset_reason) = phase_36_threat_and_raid_director(colony, gate) {
+            reports.push(TickReport {
+                colony_id: colony.id.clone(),
+                skipped: false,
+                reset_reason: Some(reset_reason),
+            });
+            continue;
+        }
+        let reset_reason = phase_37_final_clamp_critical_collapse_status_persist(colony, gate);
 
         reports.push(TickReport {
             colony_id: colony.id.clone(),
             skipped: false,
-            reset_reason: None,
+            reset_reason,
         });
     }
 
@@ -1590,7 +1618,20 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
 fn phase_25_survival_deaths_and_carried_yield_salvage(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 26: reset empty colonies and short-circuit the remaining phases.
-fn phase_26_empty_colony_reset(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_26_empty_colony_reset(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+) -> Option<RunResetReason> {
+    if colony.cats.is_empty() {
+        return None;
+    }
+    if alive_cats(&colony.cats).next().is_some() {
+        return None;
+    }
+
+    reset_run(colony, gate.processed_through, RunResetReason::AllCatsDead);
+    Some(RunResetReason::AllCatsDead)
+}
 
 /// Phase 27: collect due active jobs and preserve the phase-14 queued snapshot
 /// needed by completion parity.
@@ -2109,22 +2150,630 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
 
 /// Phase 35: pave deliberate road corridors once per minute while preserving the
 /// materials reserve.
-fn phase_35_deliberate_roads(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate) {
+    if !gate.minute_rolled || colony.resources.materials <= ROAD_MATERIALS_RESERVE {
+        return;
+    }
+
+    let max_tiles = ROAD_MAX_PAVE_PER_BATCH
+        .min((colony.resources.materials - ROAD_MATERIALS_RESERVE).floor() as i32);
+    if max_tiles <= 0 {
+        return;
+    }
+
+    let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+    let road_tiles = colony
+        .world_tiles
+        .values()
+        .filter(|tile| tile.path_wear >= crate::roads::ROAD_PAVE_WEAR as u32)
+        .map(|tile| RoadTile {
+            x: tile.pos.x,
+            y: tile.pos.y,
+            path_wear: f64::from(tile.path_wear),
+            is_paved: tile.overlay_feature.as_deref() == Some("road_built"),
+        })
+        .collect::<Vec<_>>();
+    let corridor = select_road_corridor(
+        &road_tiles,
+        RoadCorridorOptions {
+            anchor_x: VILLAGE_ANCHOR.x,
+            anchor_y: VILLAGE_ANCHOR.y,
+            ring_radius,
+            max_tiles,
+            wear_threshold: None,
+        },
+    );
+
+    if corridor.is_empty() {
+        return;
+    }
+
+    let mut paved = 0usize;
+    for road in &corridor {
+        if colony.resources.materials <= ROAD_MATERIALS_RESERVE {
+            break;
+        }
+        if let Some(tile) = colony.world_tiles.get_mut(&TilePos {
+            x: road.x,
+            y: road.y,
+        }) {
+            tile.overlay_feature = Some("road_built".to_owned());
+            tile.path_wear = 100;
+            colony.resources.materials -= 1.0;
+            paved += 1;
+        }
+    }
+
+    if paved > 0 {
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("road_built".to_owned()),
+            format!(
+                "The leader had a well-worn trail paved into a road ({paved} tile{}).",
+                if paved == 1 { "" } else { "s" }
+            ),
+        );
+    }
+}
 
 /// Phase 36: run threat pressure, raid spawning/marching/combat, loot, and
 /// raid-wipeout reset checks.
-fn phase_36_threat_and_raid_director(_: &mut ColonyRuntime, _: TickGate) {}
+fn phase_36_threat_and_raid_director(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+) -> Option<RunResetReason> {
+    let mut raid_rng_seed = raid_seed(colony.test_rng_seed.unwrap_or(1));
+    let mut next_raid_roll = || {
+        let roll = roll_seeded(f64::from(raid_rng_seed));
+        raid_rng_seed = roll.next_seed;
+        roll.value
+    };
+
+    let snapshot = threat_snapshot(colony, gate);
+
+    if colony.active_raid.is_none() {
+        let pressure = accrue_threat(
+            colony.threat_pressure,
+            snapshot,
+            gate.elapsed_sec as f64 * normalize_time_scale(colony),
+        );
+        if should_spawn_raid(pressure) {
+            spawn_raid(colony, gate, snapshot, &mut next_raid_roll);
+        } else {
+            colony.threat_pressure = pressure;
+        }
+        return None;
+    }
+
+    apply_banked_raid_clicks(colony, gate);
+    let active_raid_id = colony.active_raid.clone()?;
+
+    let live_units = live_raider_indices(colony, &active_raid_id);
+    if live_units.is_empty() {
+        end_raid(colony, &active_raid_id);
+        return None;
+    }
+
+    let gate_pos = raid_gate_position(colony);
+    let movement_budget =
+        gate.elapsed_sec as f64 * normalize_time_scale(colony) * RAIDER_SPEED_TILES_PER_SEC;
+    let mut any_at_gate = false;
+    for index in live_units {
+        let current = WorldPos {
+            x: colony.raiders[index].position.x,
+            y: colony.raiders[index].position.y,
+        };
+        let walk = walk_path(current, tile_pos_to_world(gate_pos), movement_budget, &[]);
+        colony.raiders[index].position = position_from_world(walk.position);
+        colony.raiders[index].destination = Some(position_from_world(tile_pos_to_world(gate_pos)));
+        if cheb_distance_world(walk.position, tile_pos_to_world(gate_pos)) <= ENGAGE_RANGE {
+            any_at_gate = true;
+        }
+    }
+
+    if any_at_gate {
+        resolve_active_raid(colony, gate, &active_raid_id, &mut next_raid_roll);
+    }
+
+    if alive_cats(&colony.cats).next().is_none() {
+        reset_run(colony, gate.processed_through, RunResetReason::RaidWipeout);
+        return Some(RunResetReason::RaidWipeout);
+    }
+
+    None
+}
 
 /// Phase 37: clamp resources, handle critical collapse, update status, persist
 /// final state, and record `last_tick = processed_through`.
 fn phase_37_final_clamp_critical_collapse_status_persist(
     colony: &mut ColonyRuntime,
     gate: TickGate,
-) {
+) -> Option<RunResetReason> {
     let caps = storage_caps(colony);
     clamp_resources_to_caps(&mut colony.resources, caps);
+
+    let unattended_hours = colony.last_player_activity_at.map_or(0.0, |last_activity| {
+        (gate.processed_through - last_activity) as f64 / 3_600_000.0
+    });
+    let resilience_hours = colony.test_resilience_hours_override.unwrap_or_else(|| {
+        idle_engine::get_resilience_hours(
+            idle_engine_upgrade_levels(&colony.upgrade_levels),
+            colony.automation_tier,
+        )
+    });
+    let critical_ms = colony.test_critical_ms_override.max(1_000);
+    if crate::idle_rules::should_track_critical(
+        &colony.resources,
+        unattended_hours,
+        resilience_hours,
+    ) {
+        if colony.critical_since.is_none() {
+            colony.critical_since = Some(gate.processed_through);
+        }
+        if crate::idle_rules::should_reset_from_critical_after(
+            colony.critical_since,
+            gate.processed_through,
+            critical_ms,
+        ) {
+            reset_run(
+                colony,
+                gate.processed_through,
+                RunResetReason::UnattendedCollapse,
+            );
+            return Some(RunResetReason::UnattendedCollapse);
+        }
+    } else {
+        colony.critical_since = None;
+    }
+
+    let previous_water = f64::from_bits(gate.previous_water);
+    if previous_water <= 3.0 && colony.resources.water > 6.0 {
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::ResourceRecovered,
+            "Water reserves restored to safe levels.",
+        );
+    }
+
     colony.status = crate::idle_rules::next_colony_status(&colony.resources);
     colony.last_tick = gate.processed_through;
+    None
+}
+
+fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
+    let blessings = colony.resources.blessings;
+    colony.jobs.clear();
+    colony.raiders.clear();
+    colony
+        .buildings
+        .retain(|building| building.construction_progress >= 100);
+    for election in &mut colony.elections {
+        if election.resolved_at.is_none() {
+            election.resolved_at = Some(now_ms);
+            election.winner_cat_id = None;
+        }
+    }
+    for cat in colony
+        .cats
+        .iter_mut()
+        .filter(|cat| cat.death_time.is_none())
+    {
+        cat.needs.hunger = 100.0;
+        cat.needs.thirst = 100.0;
+        cat.needs.rest = 100.0;
+        cat.needs.health = 100.0;
+        cat.current_task = None;
+        cat.position = Position {
+            map: MapType::Colony,
+            x: 0.0,
+            y: 0.0,
+        };
+        cat.destination = None;
+        cat.carrying = None;
+        cat.activity = CatActivity::Idle;
+    }
+
+    colony.resources = starting_resources_with_blessings(blessings);
+    colony.status = ColonyStatus::Starting;
+    colony.leader_id = choose_interim_leader_excluding(colony, None);
+    colony.run_number = colony.run_number.saturating_add(1);
+    colony.run_started_at = now_ms;
+    colony.last_tick = now_ms;
+    colony.critical_since = None;
+    colony.ritual_requested_at = None;
+    colony.threat_pressure = 0.0;
+    colony.active_raid = None;
+    colony.raid_clicks = 0.0;
+    colony.last_raid_at = None;
+
+    append_event(
+        colony,
+        now_ms,
+        EventKind::Reset,
+        format!(
+            "The colony collapsed and started run {}.",
+            colony.run_number
+        ),
+    );
+    append_event(
+        colony,
+        now_ms,
+        EventKind::Other("reset_reason".to_owned()),
+        reset_reason_wire(reason),
+    );
+}
+
+fn starting_resources_with_blessings(blessings: f64) -> Resources {
+    Resources {
+        food: 150.0,
+        water: 100.0,
+        herbs: 16.0,
+        materials: 24.0,
+        refined: 0.0,
+        weapons: 0.0,
+        armor: 0.0,
+        blessings,
+    }
+}
+
+fn reset_reason_wire(reason: RunResetReason) -> &'static str {
+    match reason {
+        RunResetReason::AllCatsDead => "all-cats-dead",
+        RunResetReason::RaidWipeout => "raid-wipeout",
+        RunResetReason::UnattendedCollapse => "unattended-collapse",
+    }
+}
+
+fn threat_snapshot(colony: &ColonyRuntime, gate: TickGate) -> ThreatSnapshot {
+    let alive = alive_cats(&colony.cats).collect::<Vec<_>>();
+    ThreatSnapshot {
+        wealth: colony_wealth(&colony.resources),
+        population: alive.len() as f64,
+        warriors: alive
+            .iter()
+            .filter(|cat| cat.specialization == Some(CatSpecialization::Warrior))
+            .count() as f64,
+        colony_age_sec: (gate.processed_through
+            - if colony.run_started_at > 0 {
+                colony.run_started_at
+            } else {
+                colony.created_at
+            })
+        .max(0) as f64
+            / 1000.0
+            * normalize_time_scale(colony),
+    }
+}
+
+fn spawn_raid(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    snapshot: ThreatSnapshot,
+    next_raid_roll: &mut impl FnMut() -> f64,
+) {
+    let plan = plan_raid(snapshot);
+    let gate_pos = raid_gate_position(colony);
+    let angle = next_raid_roll() * std::f64::consts::TAU;
+    let origin = TilePos {
+        x: (f64::from(VILLAGE_ANCHOR.x) + angle.cos() * RAID_SPAWN_DISTANCE).round() as i32,
+        y: (f64::from(VILLAGE_ANCHOR.y) + angle.sin() * RAID_SPAWN_DISTANCE).round() as i32,
+    };
+    let raid_id = format!(
+        "raid-{}-{}",
+        gate.processed_through,
+        colony.raiders.len() + 1
+    );
+    let count = plan.count.max(0.0).floor() as usize;
+
+    for index in 0..count {
+        let jitter_x = match index % 3 {
+            0 => 0,
+            1 => 1,
+            _ => -1,
+        };
+        let jitter_y = if (index / 3).is_multiple_of(2) { 0 } else { 1 };
+        colony.raiders.push(RaiderRuntime {
+            id: format!("{raid_id}-raider-{}", index + 1),
+            raid_id: raid_id.clone(),
+            position: Position {
+                map: MapType::World,
+                x: f64::from(origin.x + jitter_x),
+                y: f64::from(origin.y + jitter_y),
+            },
+            destination: Some(position_from_world(tile_pos_to_world(gate_pos))),
+            attack: plan.strength_each,
+            defense: plan.strength_each,
+            health: plan.strength_each,
+        });
+    }
+
+    colony.active_raid = Some(raid_id.clone());
+    colony.raid_clicks = 0.0;
+    colony.last_raid_at = Some(gate.processed_through);
+    colony.threat_pressure = 0.0;
+    append_event(
+        colony,
+        gate.processed_through,
+        EventKind::Raid,
+        format!(
+            "A warband of {} raider{} was spotted advancing on the village!",
+            count,
+            if count == 1 { "" } else { "s" }
+        ),
+    );
+}
+
+fn apply_banked_raid_clicks(colony: &mut ColonyRuntime, gate: TickGate) {
+    let clicks = colony.raid_clicks.floor().max(0.0) as u32;
+    if clicks == 0 {
+        return;
+    }
+    let Some(active_raid_id) = colony.active_raid.clone() else {
+        colony.raid_clicks = 0.0;
+        return;
+    };
+    let gate_pos = tile_pos_to_world(raid_gate_position(colony));
+
+    for _ in 0..clicks {
+        let target = colony
+            .raiders
+            .iter()
+            .enumerate()
+            .filter(|(_, raider)| raider.raid_id == active_raid_id && raider.health > 0.0)
+            .min_by(|(_, left), (_, right)| {
+                cheb_distance_world(position_to_world(left.position), gate_pos)
+                    .partial_cmp(&cheb_distance_world(
+                        position_to_world(right.position),
+                        gate_pos,
+                    ))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(index, _)| index);
+        let Some(target) = target else {
+            break;
+        };
+        colony.raiders[target].health =
+            (colony.raiders[target].health - DEFEND_CLICK_DAMAGE).max(0.0);
+    }
+
+    colony.raid_clicks = 0.0;
+    if live_raider_indices(colony, &active_raid_id).is_empty() {
+        end_raid(colony, &active_raid_id);
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Raid,
+            "The defenders cut down the raiders before they reached the gate.",
+        );
+    }
+}
+
+fn resolve_active_raid(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    raid_id: &str,
+    next_raid_roll: &mut impl FnMut() -> f64,
+) {
+    let combatants = raid_combatants(colony);
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let muster = muster_defense(
+        &combatants,
+        DefenseStock {
+            weapons: colony.resources.weapons,
+            armor: colony.resources.armor,
+        },
+        CombatModifiers {
+            combat_power_mult: effects.combat_power_mult,
+            defense_mult: effects.defense_mult,
+        },
+    );
+    let raider_power = colony
+        .raiders
+        .iter()
+        .filter(|raider| raider.raid_id == raid_id && raider.health > 0.0)
+        .map(|raider| raider.health.max(0.0))
+        .sum::<f64>();
+    let outcome = resolve_raid(muster.total_power, raider_power, next_raid_roll());
+
+    colony.resources.weapons = (colony.resources.weapons - f64::from(muster.weapons_used)).max(0.0);
+    colony.resources.armor = (colony.resources.armor - f64::from(muster.armor_used)).max(0.0);
+
+    if outcome.defenders_win {
+        for mustered in &muster.per_cat {
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| {
+                cat.id == mustered.id && cat.specialization == Some(CatSpecialization::Warrior)
+            }) {
+                cat.role_xp.warrior += WARRIOR_XP_PER_RAID;
+            }
+        }
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Raid,
+            if muster.combatants > 0 {
+                format!(
+                    "The village guard drove the raiders off at the gate - {} defender{} held the line and the warband broke.",
+                    muster.combatants,
+                    if muster.combatants == 1 { "" } else { "s" },
+                )
+            } else {
+                "The raiders battered at the fence but found nothing worth the fight and melted back into the wilds.".to_owned()
+            },
+        );
+    } else {
+        let stolen = loot_resources(&mut colony.resources, outcome.loot_fraction);
+        if outcome.defender_casualties > 0 {
+            let victim_id = weakest_mustered_victim(&muster.per_cat)
+                .or_else(|| random_alive_cat(colony, next_raid_roll()));
+            if let Some(victim_id) = victim_id {
+                mark_cat_dead(colony, &victim_id, gate.processed_through);
+                let victim_name = colony
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == victim_id)
+                    .map_or("A villager", |cat| cat.name.as_str())
+                    .to_owned();
+                append_event(
+                    colony,
+                    gate.processed_through,
+                    EventKind::Raid,
+                    format!("{victim_name} fell defending the gate as the raiders broke through."),
+                );
+            }
+        }
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Raid,
+            format!(
+                "Raiders overran the fence and made off with {}. The village licks its wounds.",
+                loot_line(&stolen)
+            ),
+        );
+    }
+
+    end_raid(colony, raid_id);
+}
+
+fn raid_combatants(colony: &ColonyRuntime) -> Vec<MusterCombatant> {
+    alive_cats(&colony.cats)
+        .filter_map(|cat| {
+            let stage = get_life_stage(cat.age_hours);
+            (can_work(stage) && can_fight(cat.specialization)).then(|| MusterCombatant {
+                id: cat.id.clone(),
+                attack: cat.stats.attack,
+                defense: cat.stats.defense,
+                specialization: cat.specialization,
+                warrior_xp: cat.role_xp.warrior,
+                life_stage: Some(stage),
+            })
+        })
+        .collect()
+}
+
+fn weakest_mustered_victim(mustered: &[crate::warriors::MusteredCat]) -> Option<CatId> {
+    mustered
+        .iter()
+        .min_by(|left, right| {
+            left.power
+                .partial_cmp(&right.power)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|cat| cat.id.clone())
+}
+
+fn random_alive_cat(colony: &ColonyRuntime, roll: f64) -> Option<CatId> {
+    let alive = alive_cats(&colony.cats).collect::<Vec<_>>();
+    if alive.is_empty() {
+        return None;
+    }
+    let index =
+        ((roll.clamp(0.0, 0.999_999) * alive.len() as f64).floor() as usize).min(alive.len() - 1);
+    Some(alive[index].id.clone())
+}
+
+fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
+    for job in &mut colony.jobs {
+        if job.assigned_cat.as_deref() == Some(cat_id)
+            && matches!(job.status, JobStatus::Active | JobStatus::Queued)
+        {
+            job.status = JobStatus::Cancelled;
+            job.completed_at = Some(now_ms);
+        }
+    }
+    for building in &mut colony.buildings {
+        if building.assigned_cat.as_deref() == Some(cat_id) {
+            building.assigned_cat = None;
+        }
+    }
+    if let Some(cat) = colony
+        .cats
+        .iter_mut()
+        .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+    {
+        cat.death_time = Some(now_ms);
+        cat.current_task = None;
+        cat.carrying = None;
+        cat.destination = None;
+        cat.activity = CatActivity::Idle;
+    }
+}
+
+fn loot_resources(resources: &mut Resources, loot_fraction: f64) -> Vec<(&'static str, f64)> {
+    let mut stolen = Vec::new();
+    loot_one("food", &mut resources.food, loot_fraction, &mut stolen);
+    loot_one("water", &mut resources.water, loot_fraction, &mut stolen);
+    loot_one("herbs", &mut resources.herbs, loot_fraction, &mut stolen);
+    loot_one(
+        "materials",
+        &mut resources.materials,
+        loot_fraction,
+        &mut stolen,
+    );
+    loot_one(
+        "refined",
+        &mut resources.refined,
+        loot_fraction,
+        &mut stolen,
+    );
+    stolen
+}
+
+fn loot_one(
+    label: &'static str,
+    store: &mut f64,
+    loot_fraction: f64,
+    stolen: &mut Vec<(&'static str, f64)>,
+) {
+    let take = (*store * loot_fraction).floor();
+    if take > 0.0 {
+        *store -= take;
+        stolen.push((label, take));
+    }
+}
+
+fn loot_line(stolen: &[(&'static str, f64)]) -> String {
+    if stolen.is_empty() {
+        return "little of value".to_owned();
+    }
+    stolen
+        .iter()
+        .map(|(label, amount)| format!("{amount} {label}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn live_raider_indices(colony: &ColonyRuntime, raid_id: &str) -> Vec<usize> {
+    colony
+        .raiders
+        .iter()
+        .enumerate()
+        .filter_map(|(index, raider)| {
+            (raider.raid_id == raid_id && raider.health > 0.0).then_some(index)
+        })
+        .collect()
+}
+
+fn end_raid(colony: &mut ColonyRuntime, raid_id: &str) {
+    colony.raiders.retain(|raider| raider.raid_id != raid_id);
+    if colony.active_raid.as_deref() == Some(raid_id) {
+        colony.active_raid = None;
+    }
+    colony.raid_clicks = 0.0;
+    colony.threat_pressure = 0.0;
+}
+
+fn raid_gate_position(colony: &ColonyRuntime) -> TilePos {
+    TilePos {
+        x: VILLAGE_ANCHOR.x,
+        y: VILLAGE_ANCHOR.y + village_ring_radius(colony.buildings.len() as i32),
+    }
+}
+
+fn cheb_distance_world(left: WorldPos, right: WorldPos) -> f64 {
+    (left.x - right.x).abs().max((left.y - right.y).abs())
 }
 
 fn next_base_roll(colony: &mut ColonyRuntime) -> f64 {
@@ -3955,6 +4604,192 @@ mod tests {
         assert_eq!(colony.world_tiles[&pos(12, 6)].path_wear, 64);
         assert_eq!(colony.world_tiles[&pos(11, 5)].path_wear, 63);
         assert_eq!(colony.world_tiles[&pos(11, 7)].path_wear, 63);
+    }
+
+    #[test]
+    fn deliberate_roads_pick_corridor_and_keep_material_reserve() {
+        let mut world_tiles = BTreeMap::new();
+        for x in 20..=27 {
+            world_tiles.insert(pos(x, 6), tile(x, 6, 90, None));
+        }
+
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                resources: Resources {
+                    materials: 38.0,
+                    ..Resources::default()
+                },
+                world_tiles,
+                last_tick: 0,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let reports = world_tick(&mut world, 60_000);
+
+        assert_eq!(reports[0].reset_reason, None);
+        let colony = &world.colonies[0];
+        assert_eq!(colony.resources.materials, 32.0);
+        for x in 20..=25 {
+            let paved = &colony.world_tiles[&pos(x, 6)];
+            assert_eq!(paved.overlay_feature.as_deref(), Some("road_built"));
+            assert_eq!(paved.path_wear, 100);
+        }
+        assert_eq!(
+            colony.world_tiles[&pos(26, 6)].overlay_feature.as_deref(),
+            None
+        );
+        assert!(colony.resources.materials >= ROAD_MATERIALS_RESERVE);
+    }
+
+    #[test]
+    fn raid_rolls_do_not_advance_base_test_rng_seed() {
+        let mut defender = adult_idle_cat("warrior", "colony-1");
+        defender.specialization = Some(CatSpecialization::Warrior);
+        defender.stats.attack = 200.0;
+        defender.stats.defense = 200.0;
+
+        let base_colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: plentiful_resources(),
+            cats: vec![defender.clone()],
+            run_started_at: 0,
+            created_at: 0,
+            last_tick: 0,
+            test_rng_seed: Some(12_345),
+            ..ColonyRuntime::default()
+        };
+        let mut active_raid_colony = base_colony.clone();
+        active_raid_colony.active_raid = Some("raid-1".to_owned());
+        active_raid_colony.raiders = vec![RaiderRuntime {
+            id: "raider-1".to_owned(),
+            raid_id: "raid-1".to_owned(),
+            position: position_from_world(tile_pos_to_world(raid_gate_position(
+                &active_raid_colony,
+            ))),
+            destination: None,
+            attack: 1.0,
+            defense: 1.0,
+            health: 1.0,
+        }];
+
+        let mut peaceful = WorldState {
+            world_seed: 123,
+            colonies: vec![base_colony],
+        };
+        let mut raided = WorldState {
+            world_seed: 123,
+            colonies: vec![active_raid_colony],
+        };
+
+        let _ = world_tick(&mut peaceful, 1_000);
+        let _ = world_tick(&mut raided, 1_000);
+
+        assert_eq!(
+            peaceful.colonies[0].test_rng_seed,
+            raided.colonies[0].test_rng_seed
+        );
+        assert!(raided.colonies[0].active_raid.is_none());
+        assert!(raided.colonies[0].raiders.is_empty());
+    }
+
+    #[test]
+    fn all_dead_roster_resets_run_and_skips_later_phases() {
+        let mut dead = adult_idle_cat("cat-1", "colony-1");
+        dead.death_time = Some(1);
+
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                resources: Resources {
+                    food: 1.0,
+                    water: 2.0,
+                    herbs: 3.0,
+                    materials: 99.0,
+                    refined: 4.0,
+                    weapons: 5.0,
+                    armor: 6.0,
+                    blessings: 7.0,
+                },
+                cats: vec![dead],
+                jobs: vec![JobRuntime {
+                    id: "job-1".to_owned(),
+                    kind: JobKind::HuntExpedition,
+                    status: JobStatus::Active,
+                    assigned_cat: Some("cat-1".to_owned()),
+                    ..JobRuntime::default()
+                }],
+                buildings: vec![
+                    BuildingRuntime {
+                        id: "complete-den".to_owned(),
+                        construction_progress: 100,
+                        is_complete: true,
+                        ..BuildingRuntime::default()
+                    },
+                    BuildingRuntime {
+                        id: "unfinished-den".to_owned(),
+                        construction_progress: 50,
+                        is_complete: false,
+                        ..BuildingRuntime::default()
+                    },
+                ],
+                world_tiles: BTreeMap::from([(pos(20, 6), tile(20, 6, 90, None))]),
+                elections: vec![ElectionRuntime {
+                    id: "election-1".to_owned(),
+                    opened_at: 0,
+                    closes_at: 120_000,
+                    resolved_at: None,
+                    winner_cat_id: Some("cat-1".to_owned()),
+                    kind: ElectionKind::Scheduled,
+                }],
+                raiders: vec![RaiderRuntime {
+                    id: "raider-1".to_owned(),
+                    raid_id: "raid-1".to_owned(),
+                    position: Position::default(),
+                    destination: None,
+                    attack: 1.0,
+                    defense: 1.0,
+                    health: 1.0,
+                }],
+                active_raid: Some("raid-1".to_owned()),
+                threat_pressure: 90.0,
+                raid_clicks: 3.0,
+                run_number: 4,
+                last_tick: 0,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let reports = world_tick(&mut world, 60_000);
+
+        assert_eq!(
+            reports,
+            vec![TickReport {
+                colony_id: "colony-1".to_owned(),
+                skipped: false,
+                reset_reason: Some(RunResetReason::AllCatsDead),
+            }]
+        );
+        let colony = &world.colonies[0];
+        assert_eq!(colony.resources, starting_resources_with_blessings(7.0));
+        assert!(colony.jobs.is_empty());
+        assert!(colony.raiders.is_empty());
+        assert_eq!(colony.active_raid, None);
+        assert_eq!(colony.threat_pressure, 0.0);
+        assert_eq!(colony.raid_clicks, 0.0);
+        assert_eq!(colony.run_number, 5);
+        assert_eq!(colony.run_started_at, 60_000);
+        assert_eq!(colony.last_tick, 60_000);
+        assert_eq!(colony.buildings.len(), 1);
+        assert_eq!(colony.buildings[0].id, "complete-den");
+        assert!(colony.world_tiles.contains_key(&pos(20, 6)));
+        assert_eq!(colony.elections[0].resolved_at, Some(60_000));
+        assert_eq!(colony.elections[0].winner_cat_id, None);
     }
 
     fn adult_idle_cat(id: &str, colony_id: &str) -> Cat {
