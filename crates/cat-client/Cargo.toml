@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bevy = { version = "0.19", default-features = false, features = ["bevy_asset", "bevy_core_pipeline", "bevy_render", "bevy_sprite", "bevy_text", "bevy_ui", "bevy_winit", "default_font", "multi_threaded", "png", "x11", "wayland"] }
+cat-protocol.workspace = true
+ewebsock = "0.8.0"
+serde_json.workspace = true
