@@ -289,7 +289,8 @@ struct TerrainArt {
     water_edge: Handle<Image>,
     tree_oak: Handle<Image>,
     tree_pine: Handle<Image>,
-    stump: Handle<Image>,
+    tree_snow_pine: Handle<Image>,
+    tree_dead: Handle<Image>,
     rock: Handle<Image>,
 }
 
@@ -311,7 +312,8 @@ impl TerrainArt {
             water_edge: assets.load("public/images/game/terrain/water_edge.png"),
             tree_oak: assets.load("public/images/game/nature/tree_oak.png"),
             tree_pine: assets.load("public/images/game/nature/tree_pine.png"),
-            stump: assets.load("public/images/game/nature/stump.png"),
+            tree_snow_pine: assets.load("public/images/game/nature/tree_snow_pine.png"),
+            tree_dead: assets.load("public/images/game/nature/tree_dead.png"),
             rock: assets.load("public/images/game/props/stone_pile.png"),
         }
     }
@@ -321,8 +323,9 @@ impl TerrainArt {
         match sprite {
             TreeSprite::Oak => (self.tree_oak.clone(), 2.0),
             TreeSprite::Pine => (self.tree_pine.clone(), 2.0),
-            // Stumps/dead trees are a single tile tall (swamps read bare).
-            TreeSprite::Stump => (self.stump.clone(), 1.0),
+            // Tiny Ski sprites are single-cell; render a touch over a tile.
+            TreeSprite::SnowPine => (self.tree_snow_pine.clone(), 1.4),
+            TreeSprite::DeadTree => (self.tree_dead.clone(), 1.2),
         }
     }
 
@@ -1815,17 +1818,20 @@ fn rock_scale(size: RockSize) -> f32 {
 enum TreeSprite {
     Oak,
     Pine,
-    Stump,
+    SnowPine,
+    DeadTree,
 }
 
-/// Biome-appropriate tree species: conifers in cold/boreal biomes, bare stumps
-/// in wetlands, broadleaf oaks everywhere else. (Cactus/dead-tree art isn't in
-/// the sheet yet; those biomes carry almost no trees anyway.)
+/// Biome-appropriate tree species: snow-capped conifers in snowy biomes, plain
+/// conifers in cool/boreal, bare dead trees in hot-dry and wetland biomes, and
+/// broadleaf oaks everywhere else. (No true cactus exists in the pixel packs, so
+/// hot-dry biomes get the sparse dead tree instead — see the biome-render notes.)
 fn biome_tree(biome: Biome) -> TreeSprite {
     use Biome::*;
     match biome {
-        PineForest | Taiga | SnowyTaiga | Tundra | SnowyPlains | Mountains => TreeSprite::Pine,
-        Swamp | Marsh => TreeSprite::Stump,
+        SnowyTaiga | SnowyPlains | Tundra => TreeSprite::SnowPine,
+        PineForest | Taiga | Mountains => TreeSprite::Pine,
+        Desert | Savanna | Badlands | Swamp | Marsh => TreeSprite::DeadTree,
         _ => TreeSprite::Oak,
     }
 }
@@ -4350,18 +4356,24 @@ mod tests {
     }
 
     #[test]
-    fn biome_trees_pick_conifer_stump_or_broadleaf_and_shore_detection() {
-        // Cold/boreal biomes get conifers, wetlands get stumps, the rest oaks.
-        for b in [
-            Biome::PineForest,
-            Biome::Taiga,
-            Biome::SnowyTaiga,
-            Biome::Tundra,
-        ] {
+    fn biome_trees_pick_conifer_deadtree_or_broadleaf_and_shore_detection() {
+        // Snowy biomes get snow-capped conifers; cool/boreal plain conifers.
+        for b in [Biome::SnowyTaiga, Biome::SnowyPlains, Biome::Tundra] {
+            assert_eq!(biome_tree(b), TreeSprite::SnowPine, "{b:?}");
+        }
+        for b in [Biome::PineForest, Biome::Taiga, Biome::Mountains] {
             assert_eq!(biome_tree(b), TreeSprite::Pine, "{b:?}");
         }
-        assert_eq!(biome_tree(Biome::Swamp), TreeSprite::Stump);
-        assert_eq!(biome_tree(Biome::Marsh), TreeSprite::Stump);
+        // Hot-dry and wetland biomes get bare dead trees (no cactus in the packs).
+        for b in [
+            Biome::Desert,
+            Biome::Savanna,
+            Biome::Badlands,
+            Biome::Swamp,
+            Biome::Marsh,
+        ] {
+            assert_eq!(biome_tree(b), TreeSprite::DeadTree, "{b:?}");
+        }
         for b in [
             Biome::OakForest,
             Biome::BirchForest,
