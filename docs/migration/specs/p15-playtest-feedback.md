@@ -5,8 +5,12 @@ Captured from live `cargo dev` playtesting. Triaged; "already there" notes from 
 ## Bugs / feel (do first)
 - **Cats appear static / "moving in place".** Sim DOES move cats (`world_tick` phase_33/34 set
   `cat.position` via `walk_path`), but snapshot positions are per-tile integers updated ~1×/s.
-  Client fix: interpolate the sprite between old→new tile across the snapshot interval (smooth
-  travel), and only play the walk cycle when the tile actually changed (idle-frame otherwise).
+  Client fix: **constant walk-SPEED chase** — advance the rendered position toward the latest
+  snapshot tile at a fixed pace (~2–4 tiles/s) every frame; never snap/teleport, so cats visibly
+  walk tile-to-tile even when the sim advances them several tiles between snapshots (falling a
+  little behind the sim is fine). Walk-anim only while moving; idle-frame when arrived. User wants
+  it "realistic": cats always walk one tile to the next, never jump. (Sim already walks every tile
+  internally; this is purely the client render. If a fast cat lags badly, cap the max lag.)
 - **Too many idle cats.** User: nearly every cat should normally have a job; idle should be rare.
   Sim: raise job saturation (leader director / job generation keeps cats busy — "more jobs than
   cats"). Today ~16 jobs / 20 cats leaves several idle.
