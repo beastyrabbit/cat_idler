@@ -281,6 +281,7 @@ struct TerrainArt {
     farmland: Handle<Image>,
     rocky: Handle<Image>,
     sand: Handle<Image>,
+    snow: Handle<Image>,
     flowers_red: Handle<Image>,
     flowers_white: Handle<Image>,
     flowers_blue: Handle<Image>,
@@ -302,6 +303,7 @@ impl TerrainArt {
             rocky: assets.load("public/images/game/terrain/rocky.png"),
             // The `highland` sheet tile is tan/sand — used for sandy biomes.
             sand: assets.load("public/images/game/terrain/highland.png"),
+            snow: assets.load("public/images/game/terrain/snow.png"),
             flowers_red: assets.load("public/images/game/terrain/flowers_red.png"),
             flowers_white: assets.load("public/images/game/terrain/flowers_white.png"),
             flowers_blue: assets.load("public/images/game/terrain/flowers_blue.png"),
@@ -332,6 +334,7 @@ impl TerrainArt {
             GroundTexture::Farmland => self.farmland.clone(),
             GroundTexture::Rocky => self.rocky.clone(),
             GroundTexture::Sand => self.sand.clone(),
+            GroundTexture::Snow => self.snow.clone(),
             GroundTexture::FlowersRed => self.flowers_red.clone(),
             GroundTexture::FlowersWhite => self.flowers_white.clone(),
             GroundTexture::FlowersBlue => self.flowers_blue.clone(),
@@ -348,6 +351,7 @@ enum GroundTexture {
     Farmland,
     Rocky,
     Sand,
+    Snow,
     FlowersRed,
     FlowersWhite,
     FlowersBlue,
@@ -1763,6 +1767,8 @@ fn ground_texture(tile: &TerrainTile) -> GroundTexture {
         StonyShore | Mountains => GroundTexture::Rocky,
         // Red-clay badlands → bare earth.
         Badlands => GroundTexture::Dirt,
+        // Cold land → the snow tile (Ice is a water biome, handled separately).
+        Tundra | SnowyPlains | SnowyTaiga => GroundTexture::Snow,
         // Wet lowlands → dark tilled/mud earth.
         Swamp | Marsh => GroundTexture::Farmland,
         // Flower fields get an actual flowered tile, cycled by position so the
@@ -1774,8 +1780,7 @@ fn ground_texture(tile: &TerrainTile) -> GroundTexture {
         },
         // Lusher / broken-up grass variants.
         Meadow | Hills | MushroomFields => GroundTexture::GrassVar,
-        // Everything else (plains, all forests, jungle, tundra, snowy — snow has
-        // no dedicated tile yet, so it rides grass + a pale tint) → grass, with a
+        // Everything else (plains, all forests, jungle) → grass, with a
         // deterministic variant sprinkle to break up expanses.
         _ if (tile.x + tile.y).rem_euclid(5) == 0 => GroundTexture::GrassVar,
         _ => GroundTexture::Grass,
@@ -4300,6 +4305,13 @@ mod tests {
             ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Meadow, 0, 0)),
             GroundTexture::GrassVar
         );
+        // Cold land now has a dedicated snow tile.
+        for b in [Biome::Tundra, Biome::SnowyPlains, Biome::SnowyTaiga] {
+            assert_eq!(
+                ground_texture(&climate_tile(BiomeRole::Grassland, b, 0, 0)),
+                GroundTexture::Snow
+            );
+        }
         // Forests and plains land on grass; grassland gets the variant sprite on
         // the deterministic subset only.
         assert_eq!(
