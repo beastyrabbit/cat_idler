@@ -3,6 +3,8 @@
 //! Players steer the colony by marking rectangles: `gather` doubles a tile's
 //! appeal, `avoid` excludes it — unless a critical need leaves no other option.
 
+use serde::{Deserialize, Serialize};
+
 /// A tile position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZonePos {
@@ -11,7 +13,7 @@ pub struct ZonePos {
 }
 
 /// A normalized, inclusive-edge rectangle in tile coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZoneRect {
     pub x1: i32,
     pub y1: i32,

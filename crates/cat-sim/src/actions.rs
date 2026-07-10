@@ -16,6 +16,7 @@ use crate::{
     officers::OfficerRole,
     production,
     skills::Labor,
+    stockpiles,
     storage::{self, StorageBuilding},
     threat,
     types::{self, BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, UpgradeKey},
@@ -25,7 +26,7 @@ use crate::{
     world_tick::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, TilePos, VoteRuntime, WorldState,
-        ZoneRuntime, found_colony, world_tick,
+        ZoneRuntime, found_colony, reconcile_colony_stockpiles, world_tick,
     },
     zones,
 };
@@ -159,6 +160,16 @@ pub fn apply_action(
         proto::ClientAction::UnassignOfficer { role, .. } => with_colony(world, ctx, |colony| {
             unassign_officer(colony, proto_to_sim_officer_role(*role), ctx)
         }),
+        proto::ClientAction::DesignateStockpile { a, b, accepts, .. } => {
+            with_colony(world, ctx, |colony| {
+                designate_stockpile(colony, *a, *b, accepts, ctx)
+            })
+        }
+        proto::ClientAction::RemoveStockpile { stockpile_id, .. } => {
+            with_colony(world, ctx, |colony| {
+                remove_stockpile(colony, stockpile_id, ctx)
+            })
+        }
     }
 }
 
@@ -578,6 +589,78 @@ fn unassign_officer(
     ok()
 }
 
+/// Designate a player stockpile over the rect `a..b` accepting `accepts`. Reuses the
+/// zone edge cap; enforces a per-colony designated-pile limit and a non-empty accept set.
+fn designate_stockpile(
+    colony: &mut ColonyRuntime,
+    a: proto::TilePoint,
+    b: proto::TilePoint,
+    accepts: &[proto::ResourceKind],
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if accepts.is_empty() {
+        return fail("A stockpile must accept at least one resource.");
+    }
+    let rect = zones::normalize_rect(
+        f64::from(a.x),
+        f64::from(a.y),
+        f64::from(b.x),
+        f64::from(b.y),
+    );
+    if rect.x2 - rect.x1 + 1 > stockpiles::STOCKPILE_MAX_EDGE
+        || rect.y2 - rect.y1 + 1 > stockpiles::STOCKPILE_MAX_EDGE
+    {
+        return fail(format!(
+            "Stockpiles are limited to {}x{} tiles.",
+            stockpiles::STOCKPILE_MAX_EDGE,
+            stockpiles::STOCKPILE_MAX_EDGE
+        ));
+    }
+    let designated = colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_shrine())
+        .count();
+    if designated >= stockpiles::MAX_DESIGNATED_STOCKPILES {
+        return fail(format!(
+            "You already have {} stockpiles.",
+            stockpiles::MAX_DESIGNATED_STOCKPILES
+        ));
+    }
+
+    let id = format!("stockpile-{}-{}", ctx.now_ms, colony.stockpiles.len() + 1);
+    colony.stockpiles.push(stockpiles::Stockpile {
+        id,
+        rect,
+        accepts: accepts
+            .iter()
+            .map(|kind| proto_to_sim_resource_kind(*kind))
+            .collect(),
+        contents: entities::Resources::default(),
+    });
+    reconcile_colony_stockpiles(colony);
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+/// Remove a designated stockpile by id. The shrine reservoir cannot be removed; an
+/// unknown id is a no-op. Removed contents fold back into the reservoir via reconcile.
+fn remove_stockpile(
+    colony: &mut ColonyRuntime,
+    stockpile_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if stockpile_id == stockpiles::SHRINE_STOCKPILE_ID {
+        return fail("The shrine reservoir cannot be removed.");
+    }
+    colony
+        .stockpiles
+        .retain(|pile| pile.id != stockpile_id || pile.is_shrine());
+    reconcile_colony_stockpiles(colony);
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
 fn train_warrior(
     colony: &mut ColonyRuntime,
     cat_id: Option<&str>,
@@ -822,6 +905,23 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .iter()
             .map(|(role, cat_id)| (sim_to_proto_officer_role(*role), cat_id.clone()))
             .collect(),
+        stockpiles: colony.stockpiles.iter().map(stockpile_snapshot).collect(),
+    }
+}
+
+fn stockpile_snapshot(pile: &stockpiles::Stockpile) -> proto::StockpileSnapshot {
+    proto::StockpileSnapshot {
+        id: pile.id.clone(),
+        x1: pile.rect.x1,
+        y1: pile.rect.y1,
+        x2: pile.rect.x2,
+        y2: pile.rect.y2,
+        accepts: pile
+            .accepts
+            .iter()
+            .map(|kind| sim_to_proto_resource_kind(*kind))
+            .collect(),
+        contents: resources_snapshot(&pile.contents),
     }
 }
 
@@ -1530,6 +1630,34 @@ fn sim_to_proto_officer_role(role: OfficerRole) -> proto::OfficerRole {
     }
 }
 
+fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::ResourceKind {
+    use stockpiles::ResourceKind;
+    match kind {
+        proto::ResourceKind::Food => ResourceKind::Food,
+        proto::ResourceKind::Water => ResourceKind::Water,
+        proto::ResourceKind::Herbs => ResourceKind::Herbs,
+        proto::ResourceKind::Materials => ResourceKind::Materials,
+        proto::ResourceKind::Refined => ResourceKind::Refined,
+        proto::ResourceKind::Weapons => ResourceKind::Weapons,
+        proto::ResourceKind::Armor => ResourceKind::Armor,
+        proto::ResourceKind::Blessings => ResourceKind::Blessings,
+    }
+}
+
+fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::ResourceKind {
+    use stockpiles::ResourceKind;
+    match kind {
+        ResourceKind::Food => proto::ResourceKind::Food,
+        ResourceKind::Water => proto::ResourceKind::Water,
+        ResourceKind::Herbs => proto::ResourceKind::Herbs,
+        ResourceKind::Materials => proto::ResourceKind::Materials,
+        ResourceKind::Refined => proto::ResourceKind::Refined,
+        ResourceKind::Weapons => proto::ResourceKind::Weapons,
+        ResourceKind::Armor => proto::ResourceKind::Armor,
+        ResourceKind::Blessings => proto::ResourceKind::Blessings,
+    }
+}
+
 fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
     match kind {
         proto::JobKind::SupplyFood => JobKind::SupplyFood,
@@ -1888,6 +2016,161 @@ mod tests {
                 .officers
                 .get(&proto::OfficerRole::Loremaster),
             Some(&cat_id)
+        );
+    }
+
+    // ---- P12.3 stockpile actions ----
+
+    fn tp(x: i32, y: i32) -> proto::TilePoint {
+        proto::TilePoint { x, y }
+    }
+
+    fn designate_action(
+        a: proto::TilePoint,
+        b: proto::TilePoint,
+        accepts: Vec<proto::ResourceKind>,
+    ) -> proto::ClientAction {
+        proto::ClientAction::DesignateStockpile {
+            session_id: "sess_1".to_string(),
+            nickname: "Guest".to_string(),
+            sig: "sig".to_string(),
+            a,
+            b,
+            accepts,
+        }
+    }
+
+    fn assert_stockpile_invariant(colony: &ColonyRuntime) {
+        for &kind in stockpiles::ResourceKind::ALL {
+            let sum: f64 = colony
+                .stockpiles
+                .iter()
+                .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
+                .sum();
+            let total = stockpiles::resource_amount(&colony.resources, kind);
+            assert!(
+                (sum - total).abs() <= 1e-6,
+                "{kind:?}: pile sum {sum} != resources {total}"
+            );
+        }
+    }
+
+    #[test]
+    fn designate_stockpile_adds_a_pile_and_keeps_the_invariant() {
+        let mut world = world_with_one_colony();
+        let before = world.colonies[0].stockpiles.len();
+        let res = apply_action(
+            &mut world,
+            &designate_action(tp(8, 8), tp(9, 9), vec![proto::ResourceKind::Food]),
+            &ctx(),
+        );
+        assert!(res.ok, "{res:?}");
+        assert_eq!(world.colonies[0].stockpiles.len(), before + 1);
+        assert_stockpile_invariant(&world.colonies[0]);
+    }
+
+    #[test]
+    fn designate_stockpile_rejects_oversized_or_empty_accepts() {
+        let mut world = world_with_one_colony();
+        let before = world.colonies[0].stockpiles.len();
+
+        let too_big = apply_action(
+            &mut world,
+            &designate_action(tp(0, 0), tp(20, 0), vec![proto::ResourceKind::Food]),
+            &ctx(),
+        );
+        assert!(!too_big.ok, "oversized rect rejected");
+
+        let empty = apply_action(
+            &mut world,
+            &designate_action(tp(8, 8), tp(8, 8), vec![]),
+            &ctx(),
+        );
+        assert!(!empty.ok, "empty accept set rejected");
+        assert_eq!(world.colonies[0].stockpiles.len(), before);
+    }
+
+    #[test]
+    fn remove_stockpile_refuses_shrine_and_folds_designated_back() {
+        let mut world = world_with_one_colony();
+        let refuse = apply_action(
+            &mut world,
+            &proto::ClientAction::RemoveStockpile {
+                session_id: "sess_1".to_string(),
+                nickname: "Guest".to_string(),
+                sig: "sig".to_string(),
+                stockpile_id: stockpiles::SHRINE_STOCKPILE_ID.to_string(),
+            },
+            &ctx(),
+        );
+        assert!(!refuse.ok, "shrine reservoir cannot be removed");
+
+        let _ = apply_action(
+            &mut world,
+            &designate_action(tp(8, 8), tp(8, 8), vec![proto::ResourceKind::Food]),
+            &ctx(),
+        );
+        let pile_id = world.colonies[0]
+            .stockpiles
+            .iter()
+            .find(|p| !p.is_shrine())
+            .unwrap()
+            .id
+            .clone();
+        world.colonies[0]
+            .stockpiles
+            .iter_mut()
+            .find(|p| p.id == pile_id)
+            .unwrap()
+            .contents
+            .food = 12.0;
+
+        let removed = apply_action(
+            &mut world,
+            &proto::ClientAction::RemoveStockpile {
+                session_id: "sess_1".to_string(),
+                nickname: "Guest".to_string(),
+                sig: "sig".to_string(),
+                stockpile_id: pile_id.clone(),
+            },
+            &ctx(),
+        );
+        assert!(removed.ok, "{removed:?}");
+        assert!(!world.colonies[0].stockpiles.iter().any(|p| p.id == pile_id));
+        assert_stockpile_invariant(&world.colonies[0]);
+
+        let noop = apply_action(
+            &mut world,
+            &proto::ClientAction::RemoveStockpile {
+                session_id: "sess_1".to_string(),
+                nickname: "Guest".to_string(),
+                sig: "sig".to_string(),
+                stockpile_id: "stockpile-nope".to_string(),
+            },
+            &ctx(),
+        );
+        assert!(noop.ok, "unknown id is a no-op");
+    }
+
+    #[test]
+    fn build_snapshot_exposes_stockpiles() {
+        let mut world = world_with_one_colony();
+        let _ = apply_action(
+            &mut world,
+            &designate_action(tp(8, 8), tp(9, 9), vec![proto::ResourceKind::Food]),
+            &ctx(),
+        );
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        assert!(
+            snap.colonies[0]
+                .stockpiles
+                .iter()
+                .any(|pile| pile.id == stockpiles::SHRINE_STOCKPILE_ID),
+            "shrine reservoir exposed"
+        );
+        assert!(
+            snap.colonies[0].stockpiles.len() >= 2,
+            "designated pile exposed"
         );
     }
 }

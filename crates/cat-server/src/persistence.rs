@@ -8,6 +8,7 @@ use cat_sim::{
     entities::{Carrying, Cat, CatActivity, ColonyStatus, Position, Resources, RoleXp},
     officers::OfficerRole,
     skills::Labor,
+    stockpiles::Stockpile,
     types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType},
     upgrade_tree::{UpgradeTreeState, create_upgrade_tree_state},
     world_gen::TileResources,
@@ -78,7 +79,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             testResilienceHoursOverride REAL,
             testCriticalMsOverride INTEGER,
             testRngSeed INTEGER,
-            officers TEXT
+            officers TEXT,
+            stockpiles TEXT
         );
 
         CREATE TABLE IF NOT EXISTS cats (
@@ -265,7 +267,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 ritualRequestedAt, criticalSince, claimedTiles, threatPressure,
                 lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
-                testCriticalMsOverride, testRngSeed, officers
+                testCriticalMsOverride, testRngSeed, officers, stockpiles
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -289,10 +291,11 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             globalUpgradePoints, upgradeTree, upgradeLevels, ritualRequestedAt,
             criticalSince, claimedTiles, threatPressure, lastRaidAt, activeRaidId,
             raidClicks, testTimeScale, testResourceDecayMultiplier,
-            testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers
+            testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
+            stockpiles
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
         )",
         params![
             colony.id,
@@ -323,6 +326,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.test_critical_ms_override,
             colony.test_rng_seed.map(i64::from),
             serde_json::to_string(&colony.officers).map_err(to_sql_json)?,
+            serde_json::to_string(&colony.stockpiles).map_err(to_sql_json)?,
         ],
     )?;
 
@@ -364,6 +368,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let upgrade_levels_json: Option<String> = row.get("upgradeLevels")?;
     let claimed_tiles_json: Option<String> = row.get("claimedTiles")?;
     let officers_json: Option<String> = row.get("officers")?;
+    let stockpiles_json: Option<String> = row.get("stockpiles")?;
 
     Ok(ColonyRuntime {
         id: id.clone(),
@@ -393,6 +398,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .map(|raw| {
                 serde_json::from_str::<BTreeMap<OfficerRole, String>>(&raw).map_err(from_sql_json)
             })
+            .transpose()?
+            .unwrap_or_default(),
+        stockpiles: stockpiles_json
+            .map(|raw| serde_json::from_str::<Vec<Stockpile>>(&raw).map_err(from_sql_json))
             .transpose()?
             .unwrap_or_default(),
         threat_pressure: row.get::<_, Option<f64>>("threatPressure")?.unwrap_or(0.0),
@@ -1331,12 +1340,28 @@ mod tests {
         );
         assert!(result.ok, "{result:?}");
 
-        // P12.1/P12.2 state must survive the round trip.
+        // P12.1/P12.2/P12.3 state must survive the round trip.
         let officer_cat = world.colonies[0].cats[0].id.clone();
         world.colonies[0].cats[0].gain_skill(cat_sim::skills::Labor::Hunt, 3.0);
         world.colonies[0]
             .officers
             .insert(cat_sim::officers::OfficerRole::Captain, officer_cat);
+        // A designated stockpile (the shrine reservoir was seeded at founding).
+        world.colonies[0]
+            .stockpiles
+            .push(cat_sim::stockpiles::Stockpile {
+                id: "stockpile-a".to_owned(),
+                rect: cat_sim::zones::ZoneRect {
+                    x1: 8,
+                    y1: 8,
+                    x2: 9,
+                    y2: 9,
+                },
+                accepts: [cat_sim::stockpiles::ResourceKind::Food]
+                    .into_iter()
+                    .collect(),
+                contents: cat_sim::entities::Resources::default(),
+            });
 
         save_world(&conn, &world).expect("save world");
         let loaded = load_world(&conn)
@@ -1349,10 +1374,11 @@ mod tests {
         assert_eq!(loaded.colonies[0].cats, world.colonies[0].cats);
         assert_eq!(loaded.colonies[0].jobs, world.colonies[0].jobs);
         assert_eq!(loaded.colonies[0].officers, world.colonies[0].officers);
+        assert_eq!(loaded.colonies[0].stockpiles, world.colonies[0].stockpiles);
     }
 
     #[test]
-    fn legacy_colony_rows_without_officers_load_empty() {
+    fn legacy_colony_rows_without_officers_or_stockpiles_load_empty() {
         let conn = Connection::open_in_memory().expect("open sqlite");
         init_schema(&conn).expect("init schema");
 
@@ -1362,12 +1388,13 @@ mod tests {
             .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
         save_world(&conn, &world).expect("save world");
 
-        // Simulate a pre-P12.2 row: officers column NULL.
-        conn.execute("UPDATE colonies SET officers = NULL", [])
-            .expect("null officers");
+        // Simulate a pre-P12.2/P12.3 row: officers + stockpiles columns NULL.
+        conn.execute("UPDATE colonies SET officers = NULL, stockpiles = NULL", [])
+            .expect("null columns");
         let loaded = load_world(&conn)
             .expect("load world")
             .expect("world should exist");
         assert!(loaded.colonies[0].officers.is_empty());
+        assert!(loaded.colonies[0].stockpiles.is_empty());
     }
 }

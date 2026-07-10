@@ -43,6 +43,7 @@ use crate::{
     skills::{HAUL_SKILL_GAIN, Labor, SKILL_GAIN_PER_JOB},
     smithy::{SmithyOptions, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
+    stockpiles::{self, ResourceKind, Stockpile},
     storage::{
         StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
     },
@@ -114,6 +115,9 @@ pub struct ColonyRuntime {
     pub claimed_tiles: Vec<TilePos>,
     /// Appointed officers (role → cat id). P12.2 additive layer; empty = no effect.
     pub officers: BTreeMap<OfficerRole, String>,
+    /// On-map stockpiles (P12.3). Always includes the shrine reservoir after a tick;
+    /// their contents sum to `resources` per the balancing-reservoir invariant.
+    pub stockpiles: Vec<Stockpile>,
     pub threat_pressure: f64,
     pub last_raid_at: Option<i64>,
     pub active_raid: Option<RaidId>,
@@ -375,6 +379,7 @@ impl Default for ColonyRuntime {
             critical_since: None,
             claimed_tiles: Vec::new(),
             officers: BTreeMap::new(),
+            stockpiles: Vec::new(),
             threat_pressure: 0.0,
             last_raid_at: None,
             active_raid: None,
@@ -459,7 +464,7 @@ pub fn found_colony(
     seed: u32,
 ) -> ColonyRuntime {
     let colony_id = colony_id.into();
-    ColonyRuntime {
+    let mut colony = ColonyRuntime {
         id: colony_id.clone(),
         name: format!("Colony {colony_id}"),
         status: ColonyStatus::Starting,
@@ -475,7 +480,10 @@ pub fn found_colony(
         last_tick: now_ms,
         test_rng_seed: Some(seed),
         ..ColonyRuntime::default()
-    }
+    };
+    // Seed the shrine reservoir so the stockpile invariant holds before the first tick.
+    reconcile_colony_stockpiles(&mut colony);
+    colony
 }
 
 fn starting_resources() -> Resources {
@@ -750,6 +758,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_24_research(colony, gate);
         phase_25_survival_deaths_and_carried_yield_salvage(colony, gate);
         if let Some(reset_reason) = phase_26_empty_colony_reset(colony, gate) {
+            reconcile_colony_stockpiles(colony);
             reports.push(TickReport {
                 colony_id: colony.id.clone(),
                 skipped: false,
@@ -768,6 +777,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
         phase_35_deliberate_roads(colony, gate);
         if let Some(reset_reason) = phase_36_threat_and_raid_director(colony, gate) {
+            reconcile_colony_stockpiles(colony);
             reports.push(TickReport {
                 colony_id: colony.id.clone(),
                 skipped: false,
@@ -776,6 +786,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             continue;
         }
         let reset_reason = phase_37_final_clamp_critical_collapse_status_persist(colony, gate);
+        reconcile_colony_stockpiles(colony);
 
         reports.push(TickReport {
             colony_id: colony.id.clone(),
@@ -2244,7 +2255,7 @@ fn phase_33_movement_deposits_and_no_destination_wander(
                 continue;
             }
 
-            credit_carrying(colony, &carrying);
+            credit_carrying(colony, &carrying, world_pos);
             append_event(
                 colony,
                 gate.processed_through,
@@ -2656,6 +2667,8 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     }
 
     colony.resources = starting_resources_with_blessings(blessings);
+    // Drop player piles; the end-of-tick reconcile reseeds the shrine reservoir.
+    colony.stockpiles.clear();
     colony.status = ColonyStatus::Starting;
     colony.leader_id = choose_interim_leader_excluding(colony, None);
     colony.run_number = colony.run_number.saturating_add(1);
@@ -4368,12 +4381,39 @@ fn chop_nearest_explored_forest(colony: &mut ColonyRuntime, now_ms: i64) {
     }
 }
 
-fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying) {
-    match carrying.kind {
-        CarryingKind::Food => colony.resources.food += carrying.amount,
-        CarryingKind::Materials => colony.resources.materials += carrying.amount,
-        CarryingKind::Water => colony.resources.water += carrying.amount,
-        CarryingKind::Blessings => colony.global_upgrade_points += carrying.amount,
+/// The shrine reservoir's footprint at this world's village anchor.
+fn shrine_stockpile_rect() -> ZoneRect {
+    stockpiles::shrine_rect(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y)
+}
+
+/// Restore the stockpile balancing-reservoir invariant for a colony (seeds the shrine
+/// reservoir if absent). Runs at the end of every tick and after stockpile actions.
+pub fn reconcile_colony_stockpiles(colony: &mut ColonyRuntime) {
+    stockpiles::reconcile(
+        &mut colony.stockpiles,
+        &colony.resources,
+        shrine_stockpile_rect(),
+    );
+}
+
+fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: WorldPos) {
+    // Blessings never enter `resources` (they fund the global upgrade pool), so they are
+    // not placed in a pile — keeping `sum(piles) == resources` intact.
+    let kind = match carrying.kind {
+        CarryingKind::Food => ResourceKind::Food,
+        CarryingKind::Materials => ResourceKind::Materials,
+        CarryingKind::Water => ResourceKind::Water,
+        CarryingKind::Blessings => {
+            colony.global_upgrade_points += carrying.amount;
+            return;
+        }
+    };
+
+    stockpiles::add_resource(&mut colony.resources, kind, carrying.amount);
+    if let Some(idx) =
+        stockpiles::deposit_index(&colony.stockpiles, kind, deposit_at.x, deposit_at.y)
+    {
+        stockpiles::add_resource(&mut colony.stockpiles[idx].contents, kind, carrying.amount);
     }
 }
 
@@ -5274,6 +5314,101 @@ mod tests {
             founded_snapshot(&left.colonies[0]),
             founded_snapshot(&right.colonies[0])
         );
+    }
+
+    // ---- P12.3 spatial stockpiles ----
+
+    fn designated_pile(id: &str, rect: ZoneRect, accepts: &[ResourceKind]) -> Stockpile {
+        Stockpile {
+            id: id.to_owned(),
+            rect,
+            accepts: accepts.iter().copied().collect(),
+            contents: Resources::default(),
+        }
+    }
+
+    #[test]
+    fn stockpile_contents_sum_to_resources_every_tick() {
+        let mut world = new_world(424_242);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000, 9_090));
+        world.colonies[0].stockpiles.push(designated_pile(
+            "stockpile-a",
+            ZoneRect {
+                x1: 7,
+                y1: 7,
+                x2: 8,
+                y2: 8,
+            },
+            &[ResourceKind::Food],
+        ));
+
+        for step in 1..=40 {
+            let now = 1_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut world, now);
+            let colony = &world.colonies[0];
+            assert!(
+                colony.stockpiles.iter().any(Stockpile::is_shrine),
+                "shrine reservoir present at step {step}"
+            );
+            for &kind in ResourceKind::ALL {
+                let sum: f64 = colony
+                    .stockpiles
+                    .iter()
+                    .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
+                    .sum();
+                let total = stockpiles::resource_amount(&colony.resources, kind);
+                assert!(
+                    (sum - total).abs() <= 1e-6,
+                    "{kind:?}: pile sum {sum} != resources {total} at step {step}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_designated_pile_does_not_change_the_resource_trajectory() {
+        // #1 regression: stockpiles are a view, never the economy. A designated pile
+        // (which reroutes deposits) must leave `resources` bit-identical to the
+        // shrine-only baseline every tick.
+        let mut plain = new_world(31_337);
+        plain
+            .colonies
+            .push(found_colony(plain.world_seed, "colony-1", 1_000, 4_242));
+        let mut with_pile = new_world(31_337);
+        with_pile
+            .colonies
+            .push(found_colony(with_pile.world_seed, "colony-1", 1_000, 4_242));
+        with_pile.colonies[0].stockpiles.push(designated_pile(
+            "stockpile-a",
+            ZoneRect {
+                x1: 6,
+                y1: 6,
+                x2: 7,
+                y2: 7,
+            },
+            &[
+                ResourceKind::Food,
+                ResourceKind::Water,
+                ResourceKind::Materials,
+            ],
+        ));
+
+        for step in 1..=40 {
+            let now = 1_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut plain, now);
+            let _ = world_tick(&mut with_pile, now);
+            let baseline = &plain.colonies[0].resources;
+            let observed = &with_pile.colonies[0].resources;
+            for &kind in ResourceKind::ALL {
+                assert_eq!(
+                    stockpiles::resource_amount(baseline, kind).to_bits(),
+                    stockpiles::resource_amount(observed, kind).to_bits(),
+                    "{kind:?} diverged at step {step}"
+                );
+            }
+        }
     }
 
     #[test]

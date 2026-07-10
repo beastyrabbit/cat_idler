@@ -45,6 +45,35 @@ pub struct ColonySnapshot {
     /// Appointed officers (role → cat id). P12.2; empty/absent when none appointed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub officers: BTreeMap<OfficerRole, String>,
+    /// On-map stockpiles (P12.3), including the shrine reservoir. Rendered as visible
+    /// piles sized to contents. Empty/absent for pre-P12.3 snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stockpiles: Vec<StockpileSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockpileSnapshot {
+    pub id: String,
+    pub x1: i32,
+    pub y1: i32,
+    pub x2: i32,
+    pub y2: i32,
+    pub accepts: Vec<ResourceKind>,
+    pub contents: ResourceAmounts,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    Food,
+    Water,
+    Herbs,
+    Materials,
+    Refined,
+    Weapons,
+    Armor,
+    Blessings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -583,6 +612,20 @@ pub enum ClientAction {
         sig: String,
         role: OfficerRole,
     },
+    DesignateStockpile {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        a: TilePoint,
+        b: TilePoint,
+        accepts: Vec<ResourceKind>,
+    },
+    RemoveStockpile {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        stockpile_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -935,6 +978,7 @@ mod tests {
                 village_radius: 4,
                 anchor: TilePoint { x: 6, y: 6 },
                 officers: BTreeMap::new(),
+                stockpiles: Vec::new(),
             }],
         }
     }
@@ -964,6 +1008,68 @@ mod tests {
             serde_json::from_value::<ClientAction>(encoded).expect("deserialize"),
             action
         );
+    }
+
+    #[test]
+    fn designate_stockpile_action_round_trips_with_camel_case_fields() {
+        let action = ClientAction::DesignateStockpile {
+            session_id: "session_1".to_string(),
+            nickname: "Guest Cat".to_string(),
+            sig: "signed".to_string(),
+            a: TilePoint { x: 3, y: 4 },
+            b: TilePoint { x: 5, y: 6 },
+            accepts: vec![ResourceKind::Food, ResourceKind::Water],
+        };
+        let encoded = serde_json::to_value(&action).expect("serialize designateStockpile");
+        assert_eq!(
+            encoded,
+            json!({
+                "action": "designateStockpile",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "a": { "x": 3, "y": 4 },
+                "b": { "x": 5, "y": 6 },
+                "accepts": ["food", "water"]
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(encoded).expect("deserialize"),
+            action
+        );
+    }
+
+    #[test]
+    fn colony_snapshot_stockpiles_round_trip_and_default_empty() {
+        // Absent `stockpiles` deserializes to empty (back-compat).
+        let mut value = serde_json::to_value(sample_world_snapshot()).expect("serialize");
+        assert!(value["colonies"][0].get("stockpiles").is_none());
+        value["colonies"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("stockpiles");
+        let back: WorldSnapshot = serde_json::from_value(value).expect("deserialize");
+        assert!(back.colonies[0].stockpiles.is_empty());
+
+        // A populated stockpile round-trips.
+        let mut snap = sample_world_snapshot();
+        let contents = snap.colonies[0].resources;
+        snap.colonies[0].stockpiles.push(StockpileSnapshot {
+            id: "stockpile-shrine".to_string(),
+            x1: 6,
+            y1: 6,
+            x2: 6,
+            y2: 6,
+            accepts: vec![ResourceKind::Food],
+            contents,
+        });
+        let encoded = serde_json::to_value(&snap).expect("serialize");
+        assert_eq!(
+            encoded["colonies"][0]["stockpiles"][0]["id"],
+            json!("stockpile-shrine")
+        );
+        let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
+        assert_eq!(round.colonies[0].stockpiles, snap.colonies[0].stockpiles);
     }
 
     #[test]

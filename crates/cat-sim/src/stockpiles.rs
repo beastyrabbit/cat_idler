@@ -1,0 +1,385 @@
+//! Spatial stockpiles (P12.3) — goods physically live in on-map containers.
+//!
+//! **Balancing-reservoir model.** The economy of record stays `ColonyRuntime.resources`;
+//! stockpiles are a *view* that must always sum back to it:
+//!
+//! > INVARIANT: `sum(stockpile.contents) == colony.resources` for every resource, every tick.
+//!
+//! Exactly one stockpile — the **shrine reservoir** ([`SHRINE_STOCKPILE_ID`], accepts every
+//! resource, centered on the village anchor) — absorbs the balance. Deposits (hauling
+//! arrivals) route their carried goods to the nearest accepting player pile with headroom
+//! (falling back to the reservoir) while still crediting `colony.resources` exactly as
+//! before. Every *other* resource change (consumption, spoilage, production, caps, tithe,
+//! upgrades) keeps mutating `colony.resources` untouched; [`reconcile`] then folds the whole
+//! net change into the reservoir at end of tick. With no player piles, deposits and the
+//! reservoir both land at the shrine, so the economy is byte-identical to pre-P12.3.
+
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+
+use crate::{entities::Resources, zones::ZoneRect};
+
+/// Reserved id of the shrine reservoir stockpile (the always-present balancing pile).
+pub const SHRINE_STOCKPILE_ID: &str = "stockpile-shrine";
+
+/// Per-tile capacity of a *designated* (player) stockpile, per resource. The shrine
+/// reservoir is unbounded. Only gates deposit routing among piles — never the economy.
+pub const STOCKPILE_TILE_CAPACITY: f64 = 40.0;
+
+/// Largest square edge (in tiles) a designated stockpile may span — reuses the zone cap.
+pub const STOCKPILE_MAX_EDGE: i32 = crate::zones::ZONE_MAX_EDGE;
+
+/// Most designated (non-shrine) stockpiles a colony may hold at once.
+pub const MAX_DESIGNATED_STOCKPILES: usize = 8;
+
+/// A resource kind — the eight fields of [`Resources`], usable as a set element / map key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceKind {
+    Food,
+    Water,
+    Herbs,
+    Materials,
+    Refined,
+    Weapons,
+    Armor,
+    Blessings,
+}
+
+impl ResourceKind {
+    /// Every resource kind, in a stable order (deterministic reconcile / iteration).
+    pub const ALL: &'static [Self] = &[
+        Self::Food,
+        Self::Water,
+        Self::Herbs,
+        Self::Materials,
+        Self::Refined,
+        Self::Weapons,
+        Self::Armor,
+        Self::Blessings,
+    ];
+}
+
+/// Read a resource amount by kind.
+#[must_use]
+pub fn resource_amount(resources: &Resources, kind: ResourceKind) -> f64 {
+    match kind {
+        ResourceKind::Food => resources.food,
+        ResourceKind::Water => resources.water,
+        ResourceKind::Herbs => resources.herbs,
+        ResourceKind::Materials => resources.materials,
+        ResourceKind::Refined => resources.refined,
+        ResourceKind::Weapons => resources.weapons,
+        ResourceKind::Armor => resources.armor,
+        ResourceKind::Blessings => resources.blessings,
+    }
+}
+
+/// Overwrite a resource amount by kind.
+pub fn set_resource(resources: &mut Resources, kind: ResourceKind, value: f64) {
+    match kind {
+        ResourceKind::Food => resources.food = value,
+        ResourceKind::Water => resources.water = value,
+        ResourceKind::Herbs => resources.herbs = value,
+        ResourceKind::Materials => resources.materials = value,
+        ResourceKind::Refined => resources.refined = value,
+        ResourceKind::Weapons => resources.weapons = value,
+        ResourceKind::Armor => resources.armor = value,
+        ResourceKind::Blessings => resources.blessings = value,
+    }
+}
+
+/// Add to a resource amount by kind.
+pub fn add_resource(resources: &mut Resources, kind: ResourceKind, delta: f64) {
+    set_resource(resources, kind, resource_amount(resources, kind) + delta);
+}
+
+/// A designatable, on-map container holding real resources.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stockpile {
+    pub id: String,
+    pub rect: ZoneRect,
+    pub accepts: BTreeSet<ResourceKind>,
+    pub contents: Resources,
+}
+
+impl Stockpile {
+    #[must_use]
+    pub fn is_shrine(&self) -> bool {
+        self.id == SHRINE_STOCKPILE_ID
+    }
+
+    /// Tile count of the (inclusive-edge) footprint.
+    #[must_use]
+    pub fn tiles(&self) -> f64 {
+        let w = (self.rect.x2 - self.rect.x1 + 1).max(0);
+        let h = (self.rect.y2 - self.rect.y1 + 1).max(0);
+        f64::from(w) * f64::from(h)
+    }
+
+    /// Per-resource capacity: unbounded for the shrine reservoir, else area-scaled.
+    #[must_use]
+    pub fn capacity(&self) -> Option<f64> {
+        if self.is_shrine() {
+            None
+        } else {
+            Some(self.tiles() * STOCKPILE_TILE_CAPACITY)
+        }
+    }
+
+    /// Whether this pile will accept more of `kind` right now.
+    #[must_use]
+    pub fn has_headroom(&self, kind: ResourceKind) -> bool {
+        if !self.accepts.contains(&kind) {
+            return false;
+        }
+        self.capacity()
+            .is_none_or(|cap| resource_amount(&self.contents, kind) < cap)
+    }
+}
+
+/// The shrine reservoir's footprint, centered on the village anchor tile.
+#[must_use]
+pub fn shrine_rect(anchor_x: i32, anchor_y: i32) -> ZoneRect {
+    ZoneRect {
+        x1: anchor_x,
+        y1: anchor_y,
+        x2: anchor_x,
+        y2: anchor_y,
+    }
+}
+
+/// A fresh shrine reservoir (accepts every resource, empty contents).
+#[must_use]
+pub fn make_shrine(rect: ZoneRect) -> Stockpile {
+    Stockpile {
+        id: SHRINE_STOCKPILE_ID.to_owned(),
+        rect,
+        accepts: ResourceKind::ALL.iter().copied().collect(),
+        contents: Resources::default(),
+    }
+}
+
+fn shrine_index(stockpiles: &mut Vec<Stockpile>, shrine_rect: ZoneRect) -> usize {
+    if let Some(idx) = stockpiles.iter().position(Stockpile::is_shrine) {
+        return idx;
+    }
+    stockpiles.push(make_shrine(shrine_rect));
+    stockpiles.len() - 1
+}
+
+fn rect_center(rect: ZoneRect) -> (f64, f64) {
+    (
+        f64::from(rect.x1 + rect.x2) / 2.0,
+        f64::from(rect.y1 + rect.y2) / 2.0,
+    )
+}
+
+/// Choose the stockpile a deposit of `kind` arriving at `(from_x, from_y)` should land in:
+/// the nearest accepting pile with headroom, tie-broken by id; the shrine reservoir is the
+/// guaranteed fallback. Returns `None` only if no pile can hold it (no shrine present).
+#[must_use]
+pub fn deposit_index(
+    stockpiles: &[Stockpile],
+    kind: ResourceKind,
+    from_x: f64,
+    from_y: f64,
+) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (idx, pile) in stockpiles.iter().enumerate() {
+        if !pile.has_headroom(kind) {
+            continue;
+        }
+        let (cx, cy) = rect_center(pile.rect);
+        let dist = (cx - from_x).powi(2) + (cy - from_y).powi(2);
+        let better = match best {
+            None => true,
+            Some((best_idx, best_dist)) => {
+                dist < best_dist || (dist == best_dist && pile.id < stockpiles[best_idx].id)
+            }
+        };
+        if better {
+            best = Some((idx, dist));
+        }
+    }
+    best.map(|(idx, _)| idx)
+        .or_else(|| stockpiles.iter().position(Stockpile::is_shrine))
+}
+
+/// Restore the invariant: set the shrine reservoir to `resources − sum(player piles)` per
+/// resource, draining player piles (deterministically, by id) when they hold more than the
+/// current total. Never mutates `resources`, so the economy stays byte-identical. Creates
+/// the shrine reservoir if absent (legacy rows / freshly reset runs).
+pub fn reconcile(stockpiles: &mut Vec<Stockpile>, resources: &Resources, shrine_rect: ZoneRect) {
+    let shrine_idx = shrine_index(stockpiles, shrine_rect);
+
+    let mut player: Vec<usize> = (0..stockpiles.len())
+        .filter(|&idx| idx != shrine_idx)
+        .collect();
+    player.sort_by(|&a, &b| stockpiles[a].id.cmp(&stockpiles[b].id));
+
+    for &kind in ResourceKind::ALL {
+        let total = resource_amount(resources, kind);
+        let player_sum: f64 = player
+            .iter()
+            .map(|&idx| resource_amount(&stockpiles[idx].contents, kind))
+            .sum();
+
+        if player_sum > total {
+            // Player piles hold more than the world now has (consumption ate into it):
+            // drain the shortfall in id order and zero the reservoir.
+            let mut overflow = player_sum - total;
+            for &idx in &player {
+                if overflow <= 0.0 {
+                    break;
+                }
+                let have = resource_amount(&stockpiles[idx].contents, kind);
+                let take = have.min(overflow);
+                set_resource(&mut stockpiles[idx].contents, kind, have - take);
+                overflow -= take;
+            }
+            set_resource(&mut stockpiles[shrine_idx].contents, kind, 0.0);
+        } else {
+            set_resource(
+                &mut stockpiles[shrine_idx].contents,
+                kind,
+                total - player_sum,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn res(food: f64, water: f64, materials: f64) -> Resources {
+        Resources {
+            food,
+            water,
+            materials,
+            ..Resources::default()
+        }
+    }
+
+    fn player_pile(id: &str, rect: ZoneRect, accepts: &[ResourceKind]) -> Stockpile {
+        Stockpile {
+            id: id.to_owned(),
+            rect,
+            accepts: accepts.iter().copied().collect(),
+            contents: Resources::default(),
+        }
+    }
+
+    fn small_rect(x: i32, y: i32) -> ZoneRect {
+        ZoneRect {
+            x1: x,
+            y1: y,
+            x2: x,
+            y2: y,
+        }
+    }
+
+    fn pile_sum(stockpiles: &[Stockpile], kind: ResourceKind) -> f64 {
+        stockpiles
+            .iter()
+            .map(|pile| resource_amount(&pile.contents, kind))
+            .sum()
+    }
+
+    #[test]
+    fn reconcile_seeds_shrine_and_holds_the_whole_total() {
+        let mut piles = Vec::new();
+        let resources = res(150.0, 100.0, 24.0);
+        reconcile(&mut piles, &resources, small_rect(6, 6));
+
+        assert_eq!(piles.len(), 1);
+        assert!(piles[0].is_shrine());
+        for &kind in ResourceKind::ALL {
+            assert_eq!(
+                pile_sum(&piles, kind).to_bits(),
+                resource_amount(&resources, kind).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_with_a_player_pile_keeps_the_invariant_exactly() {
+        let mut piles = vec![
+            make_shrine(small_rect(6, 6)),
+            player_pile("stockpile-a", small_rect(8, 8), &[ResourceKind::Food]),
+        ];
+        // A deposit already filled the player pile with 30 food.
+        piles[1].contents.food = 30.0;
+        let resources = res(150.0, 100.0, 24.0);
+        reconcile(&mut piles, &resources, small_rect(6, 6));
+
+        assert_eq!(pile_sum(&piles, ResourceKind::Food), 150.0);
+        assert_eq!(piles[1].contents.food, 30.0, "player pile retained");
+        // Shrine holds the balance.
+        let shrine = piles.iter().find(|p| p.is_shrine()).unwrap();
+        assert_eq!(shrine.contents.food, 120.0);
+    }
+
+    #[test]
+    fn reconcile_drains_player_piles_when_total_falls_below_their_holdings() {
+        let mut piles = vec![
+            make_shrine(small_rect(6, 6)),
+            player_pile("stockpile-a", small_rect(8, 8), &[ResourceKind::Food]),
+            player_pile("stockpile-b", small_rect(9, 9), &[ResourceKind::Food]),
+        ];
+        piles[1].contents.food = 40.0;
+        piles[2].contents.food = 40.0;
+        // Consumption dropped the world total below the 80 held in piles.
+        let resources = res(50.0, 0.0, 0.0);
+        reconcile(&mut piles, &resources, small_rect(6, 6));
+
+        assert_eq!(pile_sum(&piles, ResourceKind::Food), 50.0);
+        // Drained in id order: "stockpile-a" first (loses 30 → 10), "stockpile-b" untouched.
+        assert_eq!(piles[1].contents.food, 10.0);
+        assert_eq!(piles[2].contents.food, 40.0);
+        assert_eq!(piles[0].contents.food, 0.0, "shrine zeroed");
+    }
+
+    #[test]
+    fn deposit_routes_to_the_nearest_accepting_pile_then_shrine() {
+        let piles = vec![
+            make_shrine(small_rect(6, 6)),
+            player_pile("stockpile-far", small_rect(20, 20), &[ResourceKind::Food]),
+            player_pile("stockpile-near", small_rect(8, 8), &[ResourceKind::Food]),
+        ];
+        // Depositing food near (8,8) picks the near food pile.
+        assert_eq!(deposit_index(&piles, ResourceKind::Food, 8.0, 8.0), Some(2));
+        // Water is accepted only by the shrine → routes there.
+        assert_eq!(
+            deposit_index(&piles, ResourceKind::Water, 8.0, 8.0),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn deposit_skips_a_full_pile_and_falls_back() {
+        let mut piles = vec![
+            make_shrine(small_rect(6, 6)),
+            player_pile("stockpile-near", small_rect(8, 8), &[ResourceKind::Food]),
+        ];
+        // Fill the 1-tile pile to capacity (40) → no headroom → shrine fallback.
+        piles[1].contents.food = STOCKPILE_TILE_CAPACITY;
+        assert_eq!(deposit_index(&piles, ResourceKind::Food, 8.0, 8.0), Some(0));
+    }
+
+    #[test]
+    fn stockpile_round_trips_through_serde() {
+        let pile = player_pile(
+            "stockpile-a",
+            small_rect(3, 4),
+            &[ResourceKind::Food, ResourceKind::Water],
+        );
+        let json = serde_json::to_value(&pile).unwrap();
+        assert_eq!(json["accepts"], serde_json::json!(["food", "water"]));
+        let back: Stockpile = serde_json::from_value(json).unwrap();
+        assert_eq!(back, pile);
+    }
+}
