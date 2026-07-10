@@ -1313,12 +1313,29 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
             },
         };
 
-        if let Some(cat_id) = colony.jobs[job_index].assigned_cat.clone()
-            && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
-        {
-            cat.destination = Some(position_from_world(village_anchor_world()));
-            cat.activity = CatActivity::Traveling;
-            cat.current_task = task_for_job(job.kind);
+        if let Some(cat_id) = colony.jobs[job_index].assigned_cat.clone() {
+            // Gathering cats head toward the pile they will ultimately haul to (nearest
+            // designated pile accepting their yield); every other job still forms up at the
+            // village anchor. With no designated piles both resolve to the anchor, so this is
+            // byte-identical to pre-haul-fill.
+            let dest = if matches!(
+                job.kind,
+                JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
+            ) && let Some(cat_pos) = colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == cat_id)
+                .map(|cat| position_to_world(cat.position))
+            {
+                haul_destination(colony, carrying_kind_for_job(job.kind), cat_pos)
+            } else {
+                village_anchor_world()
+            };
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                cat.destination = Some(position_from_world(dest));
+                cat.activity = CatActivity::Traveling;
+                cat.current_task = task_for_job(job.kind);
+            }
         }
     }
 }
@@ -2205,12 +2222,15 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate) {
         }
 
         colony.cats[cat_index].gain_skill(Labor::Haul, HAUL_SKILL_GAIN);
+        let carrying_kind = carrying_kind_for_job(job.kind);
+        let haul_from = position_to_world(colony.cats[cat_index].position);
+        let haul_to = haul_destination(colony, carrying_kind, haul_from);
         colony.cats[cat_index].carrying = Some(Carrying {
-            kind: carrying_kind_for_job(job.kind),
+            kind: carrying_kind,
             amount: share,
             job_ended_at: gate.processed_through,
         });
-        colony.cats[cat_index].destination = Some(position_from_world(village_anchor_world()));
+        colony.cats[cat_index].destination = Some(position_from_world(haul_to));
         colony.cats[cat_index].activity = CatActivity::Returning;
     }
 }
@@ -2321,12 +2341,11 @@ fn phase_33_movement_deposits_and_no_destination_wander(
     for (cat_id, position, carrying) in cat_ids {
         if let Some(carrying) = carrying {
             let world_pos = position_to_world(position);
-            if !should_deposit(
-                &carrying,
-                world_pos,
-                village_anchor_world(),
-                gate.processed_through,
-            ) {
+            // Deposit once the carrier reaches its haul destination — the pile it walked to,
+            // or the shrine anchor when no designated pile accepts the resource. With no
+            // designated piles this is exactly the shrine anchor, matching pre-haul-fill.
+            let deposit_target = haul_destination(colony, carrying.kind, world_pos);
+            if !should_deposit(&carrying, world_pos, deposit_target, gate.processed_through) {
                 continue;
             }
 
@@ -4306,6 +4325,15 @@ fn return_assigned_cat(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickG
         let first = roll_seeded(f64::from(movement_seed(colony.test_rng_seed.unwrap_or(1))));
         let second = roll_seeded(f64::from(first.next_seed));
         pick_wander_target(village_anchor_world(), first.value, second.value)
+    } else if matches!(
+        job.kind,
+        JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
+    ) {
+        // The completing gatherer carries its final trip's yield home; route it to the pile
+        // that yield belongs in (nearest designated pile accepting it), falling back to the
+        // shrine anchor when none does — byte-identical with no designated piles.
+        let from = position_to_world(colony.cats[cat_index].position);
+        haul_destination(colony, carrying_kind_for_job(job.kind), from)
     } else {
         village_anchor_world()
     };
@@ -4470,6 +4498,60 @@ pub fn reconcile_colony_stockpiles(colony: &mut ColonyRuntime) {
         &colony.resources,
         shrine_stockpile_rect(),
     );
+}
+
+/// Map a carried resource to its stockpile [`ResourceKind`], if it can be stockpiled.
+/// Blessings fund the global upgrade pool and never enter piles (see [`credit_carrying`]),
+/// so they have no kind — carriers of Blessings always fall back to the shrine anchor.
+fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
+    match kind {
+        CarryingKind::Food => Some(ResourceKind::Food),
+        CarryingKind::Materials => Some(ResourceKind::Materials),
+        CarryingKind::Water => Some(ResourceKind::Water),
+        CarryingKind::Blessings => None,
+    }
+}
+
+/// Where a cat carrying `carrying_kind` (picked up at `from_pos`) should haul to: the nearest
+/// *designated* stockpile that accepts the resource (Euclidean distance from `from_pos`,
+/// tie-broken by stockpile id for determinism), or the shrine anchor when none accepts it.
+///
+/// The shrine reservoir is only the fallback, never a preferred target, so designated piles
+/// win when they accept the resource. Selection uses no RNG. **With no designated piles (only
+/// the shrine reservoir) this always returns the shrine anchor**, so hauling stays
+/// byte-identical to pre-haul-fill.
+fn haul_destination(
+    colony: &ColonyRuntime,
+    carrying_kind: CarryingKind,
+    from_pos: WorldPos,
+) -> WorldPos {
+    let Some(kind) = carrying_resource_kind(carrying_kind) else {
+        return village_anchor_world();
+    };
+    let mut best: Option<(&Stockpile, f64)> = None;
+    for pile in &colony.stockpiles {
+        if pile.is_shrine() || !pile.accepts.contains(&kind) {
+            continue;
+        }
+        let (cx, cy) = pile.center();
+        let dist = (cx - from_pos.x).powi(2) + (cy - from_pos.y).powi(2);
+        let better = match best {
+            None => true,
+            Some((best_pile, best_dist)) => {
+                dist < best_dist || (dist == best_dist && pile.id < best_pile.id)
+            }
+        };
+        if better {
+            best = Some((pile, dist));
+        }
+    }
+    match best {
+        Some((pile, _)) => {
+            let (cx, cy) = pile.center();
+            WorldPos { x: cx, y: cy }
+        }
+        None => village_anchor_world(),
+    }
 }
 
 fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: WorldPos) {
@@ -5482,6 +5564,324 @@ mod tests {
                     stockpiles::resource_amount(baseline, kind).to_bits(),
                     stockpiles::resource_amount(observed, kind).to_bits(),
                     "{kind:?} diverged at step {step}"
+                );
+            }
+        }
+    }
+
+    // ---- Haul-fill: carrying cats deliver to designated stockpiles ----
+
+    fn tile_rect(x: i32, y: i32) -> ZoneRect {
+        ZoneRect {
+            x1: x,
+            y1: y,
+            x2: x,
+            y2: y,
+        }
+    }
+
+    fn haul_movement_ctx() -> MovementPassContext {
+        MovementPassContext {
+            movement_seed: movement_seed(1),
+            movement_elapsed: 0.0,
+            // No wandering, so a deposited carrier keeps a stable (None) destination.
+            wander_chance: 0.0,
+            ring_radius: 4,
+            claimed_area: Default::default(),
+            area_gate: None,
+            gate: pos(6, 10),
+            walk_tiles: Vec::new(),
+            zones: Vec::new(),
+        }
+    }
+
+    fn carrying_cat_at(id: &str, kind: CarryingKind, amount: f64, at: WorldPos) -> Cat {
+        let mut cat = adult_idle_cat(id, "colony-1");
+        cat.position = position_from_world(at);
+        cat.activity = CatActivity::Returning;
+        cat.carrying = Some(Carrying {
+            kind,
+            amount,
+            job_ended_at: 0,
+        });
+        cat
+    }
+
+    #[test]
+    fn haul_destination_falls_back_to_the_shrine_anchor_with_no_designated_piles() {
+        // #1 regression: with only the shrine reservoir, hauling targets the anchor exactly —
+        // byte-identical to pre-haul-fill regardless of where the carrier stands.
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony); // seeds only the shrine reservoir
+        for from in [WorldPos { x: 6.0, y: 6.0 }, WorldPos { x: 40.0, y: 3.0 }] {
+            assert_eq!(
+                haul_destination(&colony, CarryingKind::Food, from),
+                village_anchor_world()
+            );
+        }
+    }
+
+    #[test]
+    fn haul_destination_picks_the_nearest_accepting_pile_then_ties_by_id() {
+        let colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            stockpiles: vec![
+                designated_pile("stockpile-b", tile_rect(10, 6), &[ResourceKind::Food]),
+                designated_pile("stockpile-a", tile_rect(2, 6), &[ResourceKind::Food]),
+                designated_pile("stockpile-c", tile_rect(20, 6), &[ResourceKind::Materials]),
+            ],
+            ..ColonyRuntime::default()
+        };
+
+        // Nearest accepting food pile to (9,6) is the one at (10,6).
+        assert_eq!(
+            haul_destination(&colony, CarryingKind::Food, WorldPos { x: 9.0, y: 6.0 }),
+            WorldPos { x: 10.0, y: 6.0 }
+        );
+        // Equidistant from the anchor (6,6): (2,6) and (10,6) both at dist 16 → lower id wins.
+        assert_eq!(
+            haul_destination(&colony, CarryingKind::Food, WorldPos { x: 6.0, y: 6.0 }),
+            WorldPos { x: 2.0, y: 6.0 }
+        );
+        // Materials only pile at (20,6) serves a materials carrier.
+        assert_eq!(
+            haul_destination(
+                &colony,
+                CarryingKind::Materials,
+                WorldPos { x: 18.0, y: 6.0 }
+            ),
+            WorldPos { x: 20.0, y: 6.0 }
+        );
+    }
+
+    #[test]
+    fn haul_destination_skips_piles_that_reject_the_kind_and_blessings_never_pile() {
+        let colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            stockpiles: vec![designated_pile(
+                "stockpile-mat",
+                tile_rect(10, 6),
+                &[ResourceKind::Materials],
+            )],
+            ..ColonyRuntime::default()
+        };
+
+        // A food carrier ignores a materials-only pile and heads for the shrine anchor.
+        assert_eq!(
+            haul_destination(&colony, CarryingKind::Food, WorldPos { x: 9.0, y: 6.0 }),
+            village_anchor_world()
+        );
+        // Blessings fund the global pool (never piled), so they always fall back to the anchor.
+        assert_eq!(
+            haul_destination(
+                &colony,
+                CarryingKind::Blessings,
+                WorldPos { x: 9.0, y: 6.0 }
+            ),
+            village_anchor_world()
+        );
+    }
+
+    #[test]
+    fn carrying_cat_fills_the_designated_pile_it_reaches_not_the_shrine() {
+        // A food carrier standing on its food pile deposits there this tick — the player pile
+        // fills, the shrine reservoir does not.
+        let pile_at = WorldPos { x: 10.0, y: 6.0 };
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![carrying_cat_at("hauler", CarryingKind::Food, 8.0, pile_at)],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        colony.stockpiles.push(designated_pile(
+            "stockpile-food",
+            tile_rect(10, 6),
+            &[ResourceKind::Food],
+        ));
+
+        // `now` well inside the grace window, so only reaching the pile (not force-deposit)
+        // can trigger the deposit.
+        let gate = production_gate(1, 1_000);
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut colony,
+            gate,
+            &mut haul_movement_ctx(),
+        );
+
+        let pile = colony
+            .stockpiles
+            .iter()
+            .find(|p| p.id == "stockpile-food")
+            .expect("food pile present");
+        assert_eq!(pile.contents.food, 8.0, "player pile filled on arrival");
+        let shrine = colony
+            .stockpiles
+            .iter()
+            .find(|p| p.is_shrine())
+            .expect("shrine present");
+        assert_eq!(
+            shrine.contents.food, 0.0,
+            "goods went to the player pile, not the shrine reservoir"
+        );
+        assert_eq!(
+            colony.resources.food, 8.0,
+            "resources credited exactly once"
+        );
+        assert!(colony.cats[0].carrying.is_none(), "carrier unloaded");
+    }
+
+    #[test]
+    fn carrying_cat_at_a_rejecting_pile_delivers_to_the_shrine() {
+        // The only nearby pile rejects Food. haul_destination is the shrine anchor, so the
+        // carrier only deposits once the grace window forces it — and the goods land in the
+        // shrine reservoir, never the rejecting pile.
+        let mat_pile_at = WorldPos { x: 10.0, y: 6.0 };
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![carrying_cat_at(
+                "hauler",
+                CarryingKind::Food,
+                5.0,
+                mat_pile_at,
+            )],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        colony.stockpiles.push(designated_pile(
+            "stockpile-mat",
+            tile_rect(10, 6),
+            &[ResourceKind::Materials],
+        ));
+
+        // Past the grace window → force-deposit at the carrier's position.
+        let gate = production_gate(1, crate::shrine::DEPOSIT_GRACE_MS + 1);
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut colony,
+            gate,
+            &mut haul_movement_ctx(),
+        );
+
+        let mat_pile = colony
+            .stockpiles
+            .iter()
+            .find(|p| p.id == "stockpile-mat")
+            .expect("materials pile present");
+        assert_eq!(mat_pile.contents.food, 0.0, "rejecting pile stayed empty");
+        let shrine = colony
+            .stockpiles
+            .iter()
+            .find(|p| p.is_shrine())
+            .expect("shrine present");
+        assert_eq!(shrine.contents.food, 5.0, "food fell back to the shrine");
+    }
+
+    #[test]
+    fn mid_job_haul_routes_the_carrier_toward_a_designated_food_pile() {
+        // Same setup as `mid_job_hunt_haul_splits_total_and_sets_carrying`, but a designated
+        // food pile exists: the carrier now heads for the pile (14,6) instead of the anchor.
+        let mut cat = adult_idle_cat("hunter", "colony-1");
+        cat.activity = CatActivity::Working;
+        cat.current_task = Some(TaskType::Hunt);
+        cat.position = Position {
+            map: MapType::World,
+            x: 12.0,
+            y: 6.0,
+        };
+
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                name: "MossClan".to_owned(),
+                resources: plentiful_resources(),
+                cats: vec![cat],
+                stockpiles: vec![designated_pile(
+                    "stockpile-food",
+                    tile_rect(14, 6),
+                    &[ResourceKind::Food],
+                )],
+                jobs: vec![JobRuntime {
+                    id: "hunt-1".to_owned(),
+                    kind: JobKind::HuntExpedition,
+                    status: JobStatus::Active,
+                    assigned_cat: Some("hunter".to_owned()),
+                    duration_ms: 9_000,
+                    created_at: 0,
+                    started_at: Some(0),
+                    ends_at: Some(9_000),
+                    metadata: JobMetadata::Hauling {
+                        site: Some(pos(12, 6)),
+                        total_yield: Some(10.0),
+                        trips_done: 0,
+                        next_trip_at: Some(3_000),
+                        accepted: true,
+                    },
+                    ..JobRuntime::default()
+                }],
+                world_tiles: BTreeMap::from([(
+                    pos(12, 6),
+                    WorldTileRuntime {
+                        resources: TileResources {
+                            food: 30,
+                            herbs: 0,
+                            water: 0,
+                        },
+                        path_wear: 63,
+                        ..tile(12, 6, 63, None)
+                    },
+                )]),
+                last_tick: 2_000,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let _ = world_tick(&mut world, 3_000);
+
+        let cat = &world.colonies[0].cats[0];
+        assert_eq!(cat.activity, CatActivity::Returning);
+        assert_eq!(
+            cat.destination,
+            Some(Position {
+                map: MapType::World,
+                x: 14.0,
+                y: 6.0,
+            }),
+            "carrier routed to the food pile, not the anchor"
+        );
+    }
+
+    #[test]
+    fn no_designated_piles_hauling_trajectory_stays_in_the_shrine_bit_for_bit() {
+        // #1 regression over a live founded colony (life sim + hunting/hauling active): with no
+        // player piles, every resource sits in the shrine reservoir bit-for-bit each tick, so
+        // the haul-fill routing is a pure no-op on the economy.
+        let mut world = new_world(31_337);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000, 4_242));
+
+        for step in 1..=60 {
+            let now = 1_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut world, now);
+            let colony = &world.colonies[0];
+
+            let player_piles = colony.stockpiles.iter().filter(|p| !p.is_shrine()).count();
+            assert_eq!(player_piles, 0, "no player piles appear at step {step}");
+
+            let shrine = colony
+                .stockpiles
+                .iter()
+                .find(|p| p.is_shrine())
+                .expect("shrine present");
+            for &kind in ResourceKind::ALL {
+                assert_eq!(
+                    stockpiles::resource_amount(&shrine.contents, kind).to_bits(),
+                    stockpiles::resource_amount(&colony.resources, kind).to_bits(),
+                    "{kind:?}: shrine != resources at step {step}"
                 );
             }
         }

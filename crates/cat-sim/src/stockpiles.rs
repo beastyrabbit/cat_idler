@@ -129,6 +129,13 @@ impl Stockpile {
         }
     }
 
+    /// Center of this pile's footprint — the same point deposit routing measures distance
+    /// from, so hauling destinations and [`deposit_index`] agree on where a pile "is".
+    #[must_use]
+    pub fn center(&self) -> (f64, f64) {
+        rect_center(self.rect)
+    }
+
     /// Whether this pile will accept more of `kind` right now.
     #[must_use]
     pub fn has_headroom(&self, kind: ResourceKind) -> bool {
