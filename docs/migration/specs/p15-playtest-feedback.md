@@ -22,8 +22,22 @@ Captured from live `cargo dev` playtesting. Triaged; "already there" notes from 
 ## Controls (client)
 - **Middle-drag = pan map** (keep as-is). **Right-click = select building.**
   **Left-click = select cat** (already). (Revised 2026-07-10: middle stays pan, building→right.)
-- **Click on ALL items** — buildings + stockpiles + cats all inspectable (building inspector:
-  type/level/complete/production/assigned cat). Today only cats + stockpile-remove.
+- **Click on ALL items** — buildings + stockpiles + cats all inspectable. Done (b52ea92/9fac089):
+  cats (left-click) + building panel (right-click) + stockpile-remove.
+
+## Inspection UX — hover (small) vs open (big), + cycle (client + sim data)
+Two-tier inspector, driven by the cursor:
+- **Hover** (no click) → a **small tooltip** of whatever is under the mouse (any entity: cat /
+  building / stockpile / tile). Name + key LIVE status. e.g. a **workshop**: its name, what it's
+  currently producing, and which cat is using it.
+- **Right-click** → the **big detailed menu** for the thing under the cursor. e.g. a **workshop**:
+  production **queue length**, what's **inbound** (being hauled to it), what's in its **storage**,
+  staffing, etc.
+- **Shift + right-click** → **cycle** through overlapping entities under the cursor (a cat on a
+  workshop tile, stacked piles, …) to target the one you want.
+- **Requires sim data**: the big menu needs the snapshot to expose richer per-building state —
+  current production item + progress, queue, inbound hauls, on-site storage, assigned cats. Small
+  sim/protocol addition alongside the workshop/production work (P12.4b).
 
 ## Features (sequence)
 - **Roads visible.** Sim paves wear-trails (`roads.rs`) but roads aren't in the snapshot or
