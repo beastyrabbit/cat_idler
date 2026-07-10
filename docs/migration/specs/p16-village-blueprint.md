@@ -47,6 +47,20 @@ New resource types + chains:
 - **Fields can only be placed on grass** tiles (farm-plot placement validates grass, like the
   building footprint occupancy checks).
 
+## Gather spots (temp drop points — decouple gathering from hauling)
+- Player/leader can **build a "gather spot"** — a **temporary**, resource-specific drop point that
+  may be placed **outside the village** (unlike the general stockpile). Types: wood, farm, fishing,
+  mining, etc.
+- **Split the work**: a **gatherer** (wood cutter / farmer / fisher / miner) works the nearby
+  resource and drops yield into the adjacent gather spot (short trips → stays productive); a
+  **mover/hauler** then carries the goods from the gather spot back to the village stockpiles/shrine
+  (the long trips). Net: faster throughput, specialists don't waste time walking.
+- Implementation: a gather spot is essentially a **temp, single-resource stockpile placeable
+  outside claimed ground**, plus a **hauling job** (mover role, ties to Steward/logistics) that
+  routes gather-spot → village stockpile. Reuses P12.3 stockpiles + haul-fill (deposit at nearest
+  accepting pile) + the officer/role system. "Temporary" = expires or is cleared when the nearby
+  resource is exhausted.
+
 ## Build order (foundational → dependent)
 1. **Tile recalibration + footprints** (render TILE shrink + footprint sizes; recal P14.1). Client
    render + sim footprint constants. Do with the footprint-render/y-sort card (P14.5).
