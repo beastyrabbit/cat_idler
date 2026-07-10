@@ -521,12 +521,12 @@ visible storage/stockpiles, camera, dashboard, manual action tools first. Deeper
 phase P12 after the visible world is up.
 ### P9.1 cat-client foundation (Bevy app + WS + cats)   [status: done]
 scope: cat-client run() Bevy app; ewebsock WS client -> WorldSnapshot resource; iso projection + camera + cat atlas lifted from reference/spike-bevy-0.19.rs; render cats from the snapshot. cat-desktop main -> cat_client::run().
-### P9.2 terrain/buildings/raiders/zones/roads/fog render   [status: todo]
-scope: regenerate terrain from worldSeed (crate cat-sim terrain), buildings, raiders, zones, roads, fog — from the snapshot, spike sprite rules.
-### P9.3 input + camera + tool modes   [status: todo]
-scope: pan/zoom/pinch, tool modes (inspect/priority/avoid/road/build), zone+road two-click draw, cat select -> inspector.
-### P9.4 dashboard + log page + action buttons   [status: todo]
-scope: HUD panels (resources/status/housing/threat/jobs/leadership/production/zones/lend-a-paw/upgrades), event-log page, all buttons -> ClientAction over WS; found-a-village flow.
+### P9.2 terrain/buildings/raiders/zones render (TOP-DOWN)   [status: done]
+scope: REWRITTEN flat top-down (per docs/GAME_VISION.md — no iso). Terrain regenerated from worldSeed via cat-sim generate_terrain_chunk (biome colours + blue rivers + tree/rock decoration dots), labelled building markers, cats coloured by specialization + carried-item glyph, raiders, avoid/gather zone overlays, on-map stockpile readout near the shrine. Framebuffer-verified.
+### P9.3 input + camera   [status: done]
+scope: WASD/arrow pan, middle-drag pan, wheel zoom, R reset — centred on the village anchor. (tool modes/selection inspector deferred.)
+### P9.4 dashboard + action buttons   [status: done]
+scope: HUD dashboard (resources w/ caps, status, leader, pop/housing, threat, jobs) + event-log panel from the snapshot; toolbar buttons (Supply food/water, Plan hunt, Found village) -> ClientAction over WS after a Presence handshake issues the signed session. Round-trip framebuffer-verified (Supply food -> supply_food job appears next snapshot).
 ### P9.5 bevy_brp_extras + polish   [status: todo]
 scope: add BrpExtrasPlugin (brp_status green + screenshot/input MCP tools); life-stage cat scale, hats/crown/badges.
 ### P9.gate   [status: todo]
