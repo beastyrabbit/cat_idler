@@ -35,6 +35,19 @@ pub const WATER_MAX_SLOTS: u32 = 4;
 pub const QUARRY_MAX_SLOTS: u32 = 2;
 pub const SCOUT_MAX_SLOTS: u32 = 2;
 pub const SCOUT_BASE_SCORE: f64 = 0.3;
+/// Fill ratio below which a wild-findable resource (materials/food) counts as
+/// "short" and starts pulling extra scouts out to discover new resource/hunt tiles.
+/// At or above it the store is comfortable and contributes no scouting demand, so a
+/// well-stocked colony fields fewer scouts than a resource-starved one.
+pub const SCOUT_COMFORT_RATIO: f64 = 0.5;
+/// How much a full wild-resource deficit lifts the scout goal's score above its
+/// [`SCOUT_BASE_SCORE`] idle baseline. Capped (0.3 → at most 0.8) so a genuine
+/// food/water survival crisis — whose survival curves reach 1.0 — always still
+/// out-ranks scouting, keeping the food/water loop staffed first.
+pub const SCOUT_DEFICIT_SCORE_WEIGHT: f64 = 0.5;
+/// Extra scout slots a full wild-resource deficit unlocks on top of
+/// [`SCOUT_MAX_SLOTS`], letting a short colony field more scouts than a stocked one.
+pub const SCOUT_DEFICIT_EXTRA_SLOTS: u32 = 2;
 pub const STAFF_BASE_SCORE: f64 = 0.45;
 pub const WARRIOR_BASE_SCORE: f64 = 0.5;
 pub const WARRIOR_MAX_RATIO: f64 = 0.4;
@@ -600,6 +613,34 @@ fn apply_officer_slot_bonus(
     }
 }
 
+/// Re-scale a store's shortfall within the comfort band and reuse the director's
+/// quadratic [`deficit_curve`], so scouting shares the same response shape as the
+/// hunt/water/quarry goals. Zero at/above [`SCOUT_COMFORT_RATIO`]; approaches 1 as
+/// the store empties.
+#[must_use]
+fn deficit_below_comfort(fill_ratio: f64) -> f64 {
+    if fill_ratio >= SCOUT_COMFORT_RATIO {
+        0.0
+    } else {
+        deficit_curve(fill_ratio / SCOUT_COMFORT_RATIO)
+    }
+}
+
+/// Deficit signal in [0,1] for the resources a scout can find in the wild —
+/// materials (new quarry/forage tiles) and food (new hunt tiles). Zero when both
+/// stores are comfortable or when there is no frontier left to map, so a stocked or
+/// fully-explored colony gets no scouting boost; rises toward 1 as a wild-findable
+/// store runs short, driving the leader to dispatch more scouts.
+#[must_use]
+pub fn scout_wild_deficit(snapshot: &LeaderSnapshot) -> f64 {
+    if !snapshot.has_frontier {
+        return 0.0;
+    }
+    let materials_r = ratio(snapshot.materials, snapshot.materials_capacity);
+    let food_r = ratio(snapshot.resources.food, snapshot.food_capacity);
+    deficit_below_comfort(materials_r).max(deficit_below_comfort(food_r))
+}
+
 fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
     let budget = (workforce_of(snapshot) * EMPLOYMENT_TARGET_RATIO).floor();
     let food_r = ratio(snapshot.resources.food, snapshot.food_capacity);
@@ -625,6 +666,15 @@ fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
     let hunt_slots = (budget * HUNT_MAX_SLOTS_RATIO).ceil() as u32;
     let research_huts = snapshot.research_huts_needing_workers.unwrap_or(0);
     let smithies = snapshot.smithies_needing_workers.unwrap_or(0);
+
+    // Deficit-driven scouting: a wild-resource shortfall raises both the scout goal's
+    // priority and how many scouts the leader will field. At zero deficit this is
+    // exactly the historical (SCOUT_BASE_SCORE, SCOUT_MAX_SLOTS), so a comfortable or
+    // fully-mapped colony is byte-identical to before.
+    let scout_deficit = scout_wild_deficit(snapshot);
+    let scout_score = clamp01(SCOUT_BASE_SCORE + SCOUT_DEFICIT_SCORE_WEIGHT * scout_deficit);
+    let scout_slots =
+        SCOUT_MAX_SLOTS + (f64::from(SCOUT_DEFICIT_EXTRA_SLOTS) * scout_deficit).round() as u32;
 
     vec![
         LaborGoal {
@@ -656,10 +706,10 @@ fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
         },
         LaborGoal {
             kind: LaborGoalKind::Scout,
-            score: SCOUT_BASE_SCORE,
-            max_slots: SCOUT_MAX_SLOTS,
+            score: scout_score,
+            max_slots: scout_slots,
             in_flight: snapshot.active_scouts,
-            hard_cap: SCOUT_MAX_SLOTS,
+            hard_cap: scout_slots,
             vetoed: !snapshot.has_frontier,
             mode: LaborGoalMode::Fixed,
         },
@@ -1282,6 +1332,120 @@ mod tests {
                 "starving colony must not open {banned:?} slots"
             );
         }
+    }
+
+    /// Base for the deficit-driven scout scenarios: a frontier colony with a limited
+    /// idle pool, full food/water (so hunt/water never compete) and a lone competing
+    /// comfort goal (unstaffed workshops). Only the materials level is left to vary.
+    fn scout_scenario(idle: u32) -> LeaderSnapshot {
+        let mut snapshot = healthy_snapshot(idle, 0);
+        snapshot.has_frontier = true;
+        snapshot.has_water_site = false;
+        snapshot.has_quarry_site = false;
+        snapshot.workshops_needing_workers = 2;
+        snapshot.research_huts_needing_workers = Some(0);
+        snapshot.smithies_needing_workers = Some(0);
+        snapshot.has_barracks = Some(false);
+        snapshot.warrior_count = Some(0);
+        snapshot.training_in_flight = Some(0);
+        snapshot.water = snapshot.water_capacity;
+        snapshot.resources.food = snapshot.food_capacity;
+        snapshot
+    }
+
+    fn scout_slots(snapshot: &LeaderSnapshot) -> u32 {
+        direct_colony(snapshot)
+            .slots
+            .iter()
+            .find(|slot| slot.goal == LaborGoalKind::Scout)
+            .map_or(0, |slot| slot.count)
+    }
+
+    fn scout_slot_score(snapshot: &LeaderSnapshot) -> f64 {
+        direct_colony(snapshot)
+            .slots
+            .iter()
+            .find(|slot| slot.goal == LaborGoalKind::Scout)
+            .map_or(0.0, |slot| slot.score)
+    }
+
+    #[test]
+    fn scout_demand_is_zero_when_stocked_or_fully_mapped() {
+        let mut stocked = scout_scenario(6);
+        stocked.materials = stocked.materials_capacity;
+        assert_eq!(
+            scout_wild_deficit(&stocked),
+            0.0,
+            "a comfortable colony must generate no scouting demand"
+        );
+
+        let mut mapped = scout_scenario(6);
+        mapped.materials = 0.0;
+        mapped.has_frontier = false;
+        assert_eq!(
+            scout_wild_deficit(&mapped),
+            0.0,
+            "a fully-mapped colony must generate no scouting demand"
+        );
+    }
+
+    #[test]
+    fn scout_demand_rises_as_a_wild_resource_runs_short() {
+        let mut colony = scout_scenario(6);
+        colony.materials = 0.0;
+        let empty = scout_wild_deficit(&colony);
+        assert!(
+            empty > 0.9,
+            "an empty materials store should drive strong scout demand, got {empty}"
+        );
+
+        colony.materials = colony.materials_capacity * SCOUT_COMFORT_RATIO * 0.5;
+        let partial = scout_wild_deficit(&colony);
+        assert!(
+            partial > 0.0 && partial < empty,
+            "a partial shortfall sits between comfort and empty, got {partial}"
+        );
+    }
+
+    #[test]
+    fn deficit_driven_short_colony_dispatches_more_scouts_than_a_stocked_one() {
+        // Both colonies share the same frontier, idle pool and competing workshop; only
+        // the materials store differs. The short colony's boosted scout score wins the
+        // scarce labour, so it fields strictly more scouts at a strictly higher priority.
+        let stocked = {
+            let mut s = scout_scenario(4);
+            s.materials = s.materials_capacity;
+            s
+        };
+        let short = {
+            let mut s = scout_scenario(4);
+            s.materials = 0.0;
+            s
+        };
+
+        assert!(
+            scout_slot_score(&short) > scout_slot_score(&stocked),
+            "short colony must value scouting more (short {}, stocked {})",
+            scout_slot_score(&short),
+            scout_slot_score(&stocked)
+        );
+        assert!(
+            scout_slots(&short) > scout_slots(&stocked),
+            "short colony must field more scouts (short {}, stocked {})",
+            scout_slots(&short),
+            scout_slots(&stocked)
+        );
+    }
+
+    #[test]
+    fn deficit_driven_scouting_is_deterministic() {
+        let mut short = scout_scenario(4);
+        short.materials = 0.0;
+        assert_plan_eq(
+            &direct_colony(&short),
+            &direct_colony(&short),
+            "deficit scouting",
+        );
     }
 
     #[test]

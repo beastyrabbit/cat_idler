@@ -28,7 +28,7 @@ use crate::{
     life_sim::{can_work, get_life_stage, leadership_after_tenure, old_age_death_probability},
     movement::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
-        effective_move_speed, pick_wander_target, walk_path,
+        effective_move_speed, pick_wander_target, scout_wander_target, walk_path,
     },
     officers::OfficerRole,
     pathfinding::{
@@ -1507,8 +1507,6 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
     let food_tiles = food_tiles_near_village(colony);
     let quarry_site = quarry_sites_near_village(colony).into_iter().next();
     let water_site = water_sites_near_village(colony).into_iter().next();
-    let frontier_tiles = frontier_tiles_near_village(colony);
-    let mut scout_promotions = 0usize;
 
     for job_index in active_indices {
         let job = colony.jobs[job_index].clone();
@@ -1525,10 +1523,25 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
             JobMetadata::Expansion { target, .. } => Some(tile_pos_to_world(target)),
             _ => None,
         };
-        let explore_site = if job.kind == JobKind::Explore && !frontier_tiles.is_empty() {
-            let site = frontier_tiles[scout_promotions % frontier_tiles.len()];
-            scout_promotions += 1;
-            Some(site)
+        // Scouts random-walk rather than beeline a fixed frontier tile: the first leg
+        // heads outward from wherever the scout is forming up (the anchor at promotion),
+        // and phase 33 re-picks a fresh outward leg each time it arrives. Two extra draws
+        // off the seeded movement chain keep the meander deterministic.
+        let explore_site = if job.kind == JobKind::Explore {
+            let from = job
+                .assigned_cat
+                .as_deref()
+                .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == cat_id))
+                .map_or_else(village_anchor_world, |cat| position_to_world(cat.position));
+            let dir = roll_seeded(f64::from(movement_seed));
+            let len = roll_seeded(f64::from(dir.next_seed));
+            movement_seed = len.next_seed;
+            Some(scout_wander_target(
+                from,
+                village_anchor_world(),
+                dir.value,
+                len.value,
+            ))
         } else {
             None
         };
@@ -2656,6 +2669,18 @@ fn phase_33_movement_deposits_and_no_destination_wander(
             continue;
         };
         if colony.cats[cat_index].destination.is_some() {
+            continue;
+        }
+
+        // Random-walk scouting: a cat still on an explore job that has reached its last
+        // wander target picks a fresh outward leg (it may be Idle or Working after an
+        // arrival). This meanders the scout across new fog until its explore job
+        // completes, at which point phase 30 turns it around toward the shrine.
+        if colony.cats[cat_index].current_task == Some(TaskType::Explore)
+            && let Some(target) = next_scout_leg(colony, &cat_id, movement)
+        {
+            colony.cats[cat_index].destination = Some(position_from_world(target));
+            colony.cats[cat_index].activity = CatActivity::Traveling;
             continue;
         }
 
@@ -4034,6 +4059,32 @@ fn next_movement_roll(movement: &mut MovementPassContext) -> f64 {
     roll.value
 }
 
+/// Next outward wander leg for a scout whose explore job is still running, or `None`
+/// once the job is done (so the completing job's return-to-shrine takes over). Two
+/// draws off the shared seeded movement chain keep the meander deterministic.
+fn next_scout_leg(
+    colony: &ColonyRuntime,
+    cat_id: &str,
+    movement: &mut MovementPassContext,
+) -> Option<WorldPos> {
+    let has_active_explore = colony.jobs.iter().any(|job| {
+        job.kind == JobKind::Explore
+            && job.status == JobStatus::Active
+            && job.assigned_cat.as_deref() == Some(cat_id)
+    });
+    if !has_active_explore {
+        return None;
+    }
+    let from = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id)
+        .map(|cat| position_to_world(cat.position))?;
+    let dir = next_movement_roll(movement);
+    let len = next_movement_roll(movement);
+    Some(scout_wander_target(from, village_anchor_world(), dir, len))
+}
+
 fn claimed_area(colony: &ColonyRuntime) -> crate::village_area::VillageArea {
     let tiles = colony
         .claimed_tiles
@@ -4387,17 +4438,6 @@ fn water_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
         .world_tiles
         .values()
         .filter(|tile| tile_has_water(Some(tile)) && tile_is_explored(tile))
-        .map(|tile| tile.pos)
-        .collect::<Vec<_>>();
-    sites.sort_by_key(|site| cheb_from_anchor(*site));
-    sites.into_iter().map(tile_pos_to_world).collect()
-}
-
-fn frontier_tiles_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
-    let mut sites = colony
-        .world_tiles
-        .values()
-        .filter(|tile| !tile_is_explored(tile))
         .map(|tile| tile.pos)
         .collect::<Vec<_>>();
     sites.sort_by_key(|site| cheb_from_anchor(*site));
@@ -6488,6 +6528,51 @@ mod tests {
         assert!(
             after_revealed > founding_revealed,
             "cats walking should uncover more tiles ({after_revealed} vs {founding_revealed})"
+        );
+    }
+
+    #[test]
+    fn scouts_random_walk_outward_and_reveal_new_fog_deterministically() {
+        // Drive two identical founded colonies. Confirm (a) the leader dispatches
+        // scouts (explore jobs fire), (b) their outward random walk reveals fog well
+        // beyond the founding ring, and (c) the whole thing is bit-for-bit
+        // deterministic across the twin runs.
+        let run = || {
+            let mut world = new_world(4242);
+            world
+                .colonies
+                .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
+            let mut saw_explore = false;
+            let mut max_reveal_cheb = 0;
+            for step in 1..=200 {
+                let now = 10_000 + i64::from(step) * 60_000;
+                let _ = world_tick(&mut world, now);
+                let colony = &world.colonies[0];
+                if colony.jobs.iter().any(|job| job.kind == JobKind::Explore) {
+                    saw_explore = true;
+                }
+                for tile in &colony.revealed_tiles {
+                    max_reveal_cheb = max_reveal_cheb.max(cheb_from_anchor(*tile));
+                }
+            }
+            let revealed = world.colonies[0]
+                .revealed_tiles
+                .iter()
+                .copied()
+                .collect::<Vec<_>>();
+            (saw_explore, max_reveal_cheb, revealed)
+        };
+        let (saw_explore, max_cheb, left) = run();
+        let (_, _, right) = run();
+
+        assert!(saw_explore, "the leader should dispatch at least one scout");
+        assert!(
+            max_cheb > 8,
+            "outward scouting should reveal fog past the founding ring, reached cheb {max_cheb}"
+        );
+        assert_eq!(
+            left, right,
+            "scouting + reveal must be deterministic across identical runs"
         );
     }
 

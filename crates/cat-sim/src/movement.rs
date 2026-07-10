@@ -266,6 +266,47 @@ pub fn walk_path(
     }
 }
 
+/// Minimum / maximum length (in tiles) of a single scout wander leg. Each leg is a
+/// short stretch in one randomly-chosen heading; stringing legs together makes a
+/// scout meander outward across the fog instead of beelining a fixed frontier tile.
+pub const SCOUT_LEG_MIN: f64 = 4.0;
+pub const SCOUT_LEG_MAX: f64 = 9.0;
+/// Half-width of the random heading turn applied to the outward radial, in radians.
+/// `PI` keeps each leg somewhere in the outward half-plane (heading within ±90° of
+/// straight-away-from-home), so the meander always has an outward component and the
+/// scout tends into unrevealed territory rather than doubling back on the village.
+pub const SCOUT_TURN_SPREAD: f64 = std::f64::consts::PI;
+
+/// Pick the next scout wander target: a random-heading step of random length, biased
+/// OUTWARD from the village so a scout tends away from home into unrevealed land.
+///
+/// `roll_dir` / `roll_len` are two draws from the seeded movement chain, so the same
+/// seed reproduces the same meander (determinism). From the anchor itself the heading
+/// is a free 360° pick (there is no outward radial yet); anywhere else it is the
+/// outward radial from `anchor` through `from` plus a random turn of up to
+/// ±[`SCOUT_TURN_SPREAD`] / 2. Re-picking each time the scout arrives changes its
+/// direction, producing the random walk.
+#[must_use]
+pub fn scout_wander_target(
+    from: WorldPos,
+    anchor: WorldPos,
+    roll_dir: f64,
+    roll_len: f64,
+) -> WorldPos {
+    let dx = from.x - anchor.x;
+    let dy = from.y - anchor.y;
+    let heading = if dx == 0.0 && dy == 0.0 {
+        roll_dir * std::f64::consts::TAU
+    } else {
+        dy.atan2(dx) + (roll_dir - 0.5) * SCOUT_TURN_SPREAD
+    };
+    let leg = SCOUT_LEG_MIN + roll_len.clamp(0.0, 1.0) * (SCOUT_LEG_MAX - SCOUT_LEG_MIN);
+    WorldPos {
+        x: (from.x + heading.cos() * leg).round(),
+        y: (from.y + heading.sin() * leg).round(),
+    }
+}
+
 #[must_use]
 pub fn pick_wander_target(anchor: WorldPos, roll1: f64, roll2: f64) -> WorldPos {
     let span = f64::from(WANDER_RADIUS * 2 + 1);
@@ -341,12 +382,96 @@ mod tests {
     use super::{
         BASE_MOVE_SPEED_TILES_PER_SEC, EXPLORE_SPEED_FACTOR, GAIT_MAX, GAIT_MIN, HUNT_RANGE_MAX,
         HUNT_RANGE_MIN, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC, MovementStep, PathWalk,
-        SURFACE_FACTOR_FOREST, SURFACE_FACTOR_GRASSLAND, SURFACE_FACTOR_HIGHLAND,
-        SURFACE_FACTOR_LOWLAND, SURFACE_FACTOR_ROCKY, SURFACE_FACTOR_SAND, WANDER_RADIUS, WorldPos,
-        advance_movement, advance_movement_default, cat_gait, destination_for_job,
-        effective_move_speed, life_stage_gait, path_tiles, pick_wander_target,
-        terrain_surface_factor, walk_path,
+        SCOUT_LEG_MAX, SCOUT_LEG_MIN, SURFACE_FACTOR_FOREST, SURFACE_FACTOR_GRASSLAND,
+        SURFACE_FACTOR_HIGHLAND, SURFACE_FACTOR_LOWLAND, SURFACE_FACTOR_ROCKY, SURFACE_FACTOR_SAND,
+        WANDER_RADIUS, WorldPos, advance_movement, advance_movement_default, cat_gait,
+        destination_for_job, effective_move_speed, life_stage_gait, path_tiles, pick_wander_target,
+        scout_wander_target, terrain_surface_factor, walk_path,
     };
+
+    fn dist(a: WorldPos, b: WorldPos) -> f64 {
+        ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn scout_wander_target_is_deterministic() {
+        let from = WorldPos { x: 12.0, y: 7.0 };
+        let anchor = WorldPos { x: 0.0, y: 0.0 };
+        assert_eq!(
+            scout_wander_target(from, anchor, 0.3, 0.6),
+            scout_wander_target(from, anchor, 0.3, 0.6),
+        );
+    }
+
+    #[test]
+    fn scout_wander_legs_are_length_bounded() {
+        let from = WorldPos { x: 8.0, y: -3.0 };
+        let anchor = WorldPos { x: 0.0, y: 0.0 };
+        // Rounding to whole tiles moves each axis by up to 0.5, so the realised leg
+        // length can sit ~0.71 outside the [min, max] band — allow a small tolerance.
+        for i in 0..=20 {
+            let roll_dir = f64::from(i) / 20.0;
+            for j in 0..=20 {
+                let roll_len = f64::from(j) / 20.0;
+                let target = scout_wander_target(from, anchor, roll_dir, roll_len);
+                let leg = dist(target, from);
+                assert!(
+                    (SCOUT_LEG_MIN - 1.0..=SCOUT_LEG_MAX + 1.0).contains(&leg),
+                    "leg {leg} out of bounds for rolls ({roll_dir}, {roll_len})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scout_wander_tends_outward_from_the_village() {
+        // From anywhere outside the anchor, every heading stays in the outward
+        // half-plane, so the target is never meaningfully closer to home than the
+        // scout already is (allowing ~1 tile of rounding slack).
+        let anchor = WorldPos { x: 0.0, y: 0.0 };
+        let from = WorldPos { x: 10.0, y: 4.0 };
+        let from_dist = dist(from, anchor);
+        for i in 0..=36 {
+            let roll_dir = f64::from(i) / 36.0;
+            let target = scout_wander_target(from, anchor, roll_dir, 0.5);
+            assert!(
+                dist(target, anchor) >= from_dist - 1.5,
+                "scout stepped inward: from_dist {from_dist}, new {} (roll {roll_dir})",
+                dist(target, anchor)
+            );
+        }
+    }
+
+    #[test]
+    fn scout_wander_changes_direction_with_the_heading_roll() {
+        // Different heading rolls fan the scout out along different bearings — the
+        // "changes direction" half of the random walk.
+        let from = WorldPos { x: 6.0, y: 6.0 };
+        let anchor = WorldPos { x: 0.0, y: 0.0 };
+        let a = scout_wander_target(from, anchor, 0.05, 0.5);
+        let b = scout_wander_target(from, anchor, 0.95, 0.5);
+        assert_ne!(
+            a, b,
+            "distinct heading rolls must aim the scout differently"
+        );
+    }
+
+    #[test]
+    fn scout_wander_from_the_anchor_sweeps_a_full_circle() {
+        // With no outward radial yet, the heading is a free 360° pick: roll 0 heads
+        // +x, roll 0.25 heads +y, so the first leg out of the village can go anywhere.
+        let anchor = WorldPos { x: 0.0, y: 0.0 };
+        let east = scout_wander_target(anchor, anchor, 0.0, 1.0);
+        let north = scout_wander_target(anchor, anchor, 0.25, 1.0);
+        assert!(
+            east.x > 0.0 && east.y.abs() < 1.0,
+            "roll 0 should head +x: {east:?}"
+        );
+        assert!(
+            north.y > 0.0 && north.x.abs() < 1.0,
+            "roll 0.25 should head +y: {north:?}"
+        );
+    }
 
     #[derive(Debug, Deserialize)]
     struct Fixture {
