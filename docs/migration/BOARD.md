@@ -512,7 +512,13 @@ save/load mechanism is correct (unit test passes) + periodic save works; the gap
 save-frequency / no SIGTERM save-on-shutdown for very-recent state. Fix: save every tick
 (or a few) and/or a graceful-shutdown save handler. Server-owns-everything needs durable saves.
 
-## P9 — Client render + UI (dashboard + log page) (decomposed by orchestrator)
+## P9 — Client render + UI — TOP-DOWN (design pivot: see docs/GAME_VISION.md)
+NOTE: pivoted from isometric to a flat TOP-DOWN grid (single level), per the
+"Idle Cat Forest = idle Dwarf Fortress, cats, forest" vision. Render the live
+snapshot top-down: terrain grid, cats (+carried item), labelled workshops/buildings,
+visible storage/stockpiles, camera, dashboard, manual action tools first. Deeper sim
+(role/officer system, spatial stockpiles, more workshops + hauling chains) = new
+phase P12 after the visible world is up.
 ### P9.1 cat-client foundation (Bevy app + WS + cats)   [status: done]
 scope: cat-client run() Bevy app; ewebsock WS client -> WorldSnapshot resource; iso projection + camera + cat atlas lifted from reference/spike-bevy-0.19.rs; render cats from the snapshot. cat-desktop main -> cat_client::run().
 ### P9.2 terrain/buildings/raiders/zones/roads/fog render   [status: todo]
