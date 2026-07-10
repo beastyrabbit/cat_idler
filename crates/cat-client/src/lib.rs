@@ -19,8 +19,8 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use cat_protocol::{
-    BuildingType, CarryingKind, ClientAction, ColonySnapshot, JobKind, Specialization,
-    WorldSnapshot, ZoneKind,
+    BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction, ColonySnapshot, JobKind,
+    Specialization, WorldSnapshot, ZoneKind,
 };
 use cat_sim::terrain_gen::{
     BiomeRole, DecorationRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
@@ -71,6 +71,12 @@ struct Session {
 /// Outbound action queue drained onto the socket by [`flush_outgoing`].
 #[derive(Resource, Default)]
 struct OutgoingActions(Vec<ClientAction>);
+
+/// The currently inspected cat (by id), re-resolved from the snapshot each tick.
+#[derive(Resource, Default)]
+struct Selection {
+    selected: Option<String>,
+}
 
 /// Tracks one-time terrain spawn (terrain is static per `world_seed`).
 #[derive(Resource, Default)]
@@ -137,6 +143,15 @@ struct CatSprite;
 /// Marker for a carried-item glyph.
 #[derive(Component)]
 struct CatItem;
+/// Marker for the highlight ring under the selected cat.
+#[derive(Component)]
+struct CatHighlight;
+/// Marker for the cat-inspector panel node (shown only when a cat is selected).
+#[derive(Component)]
+struct InspectorPanel;
+/// Marker for the cat-inspector text.
+#[derive(Component)]
+struct InspectorText;
 /// Marker for a building marker sprite.
 #[derive(Component)]
 struct BuildingSprite;
@@ -165,8 +180,8 @@ struct ActionButton(ButtonAction);
 
 /// Query filter for the per-tick redraw of building marker + label entities.
 type BuildingEntities = Or<(With<BuildingSprite>, With<BuildingLabel>)>;
-/// Query filter for the per-tick redraw of cat body + carried-item entities.
-type CatEntities = Or<(With<CatSprite>, With<CatItem>)>;
+/// Query filter for the per-tick redraw of cat body + carried-item + highlight.
+type CatEntities = Or<(With<CatSprite>, With<CatItem>, With<CatHighlight>)>;
 /// Change filter for toolbar button interactions.
 type ButtonQuery<'w, 's> = Query<
     'w,
@@ -223,6 +238,7 @@ pub fn run() {
         .insert_resource(Session::default())
         .insert_resource(OutgoingActions::default())
         .insert_resource(WorldRender::default())
+        .insert_resource(Selection::default())
         .insert_resource(ClearColor(Color::srgb(0.06, 0.09, 0.08)))
         .add_systems(Startup, (setup, connect_ws))
         .add_systems(
@@ -236,6 +252,8 @@ pub fn run() {
                 render_cats,
                 render_raiders,
                 camera_controls,
+                select_cat,
+                update_inspector,
                 update_hud,
                 update_event_log,
                 update_stock_indicator,
@@ -288,6 +306,31 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
             },
             TextColor(Color::srgb(0.86, 0.90, 0.80)),
             EventLogText,
+        )],
+    ));
+
+    // Cat inspector (top-right), hidden until a cat is selected.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(8.0),
+            top: Val::Px(8.0),
+            width: Val::Px(250.0),
+            padding: UiRect::all(Val::Px(12.0)),
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.03, 0.04, 0.035, 0.86)),
+        BorderColor::all(Color::srgba(0.80, 0.67, 0.42, 0.5)),
+        InspectorPanel,
+        children![(
+            Text::new(""),
+            TextFont {
+                font_size: FontSize::Px(13.0),
+                ..default()
+            },
+            TextColor(Color::srgb(1.0, 0.95, 0.84)),
+            InspectorText,
         )],
     ));
 
@@ -602,9 +645,11 @@ fn render_zones(
 fn render_cats(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
+    selection: Res<Selection>,
     existing: Query<Entity, CatEntities>,
 ) {
-    if !latest.is_changed() {
+    // Redraw when either the world or the selection changes.
+    if !latest.is_changed() && !selection.is_changed() {
         return;
     }
     for entity in &existing {
@@ -618,6 +663,14 @@ fn render_cats(
             continue;
         }
         let p = grid_to_world(cat.position.x, cat.position.y);
+        if selection.selected.as_deref() == Some(cat.id.as_str()) {
+            // Highlight ring behind the selected cat.
+            commands.spawn((
+                Sprite::from_color(Color::srgb(1.0, 0.93, 0.30), Vec2::splat(TILE * 0.78)),
+                Transform::from_xyz(p.x, p.y, Z_CAT - 0.5),
+                CatHighlight,
+            ));
+        }
         commands.spawn((
             Sprite::from_color(cat_color(cat.specialization), Vec2::splat(TILE * 0.5)),
             Transform::from_xyz(p.x, p.y, Z_CAT),
@@ -655,6 +708,85 @@ fn render_raiders(
             RaiderSprite,
         ));
     }
+}
+
+/// Left-click a cat marker to inspect it; click empty ground or the same cat to
+/// deselect. Read-only — resolves the nearest cat within half a tile.
+fn select_cat(
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    ui: Query<&Interaction, With<Button>>,
+    latest: Res<LatestSnapshot>,
+    mut selection: ResMut<Selection>,
+) {
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    // Ignore clicks that land on a toolbar button.
+    if ui.iter().any(|i| !matches!(i, Interaction::None)) {
+        return;
+    }
+    let Some(world) = cursor_world(&windows, &camera) else {
+        return;
+    };
+    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+        return;
+    };
+    let cats: Vec<(String, Vec2)> = colony
+        .cats
+        .iter()
+        .filter(|c| c.death_time.is_none())
+        .map(|c| (c.id.clone(), grid_to_world(c.position.x, c.position.y)))
+        .collect();
+    let picked = nearest_cat_id(world, &cats, TILE * 0.5);
+    selection.selected = toggle_selection(selection.selected.as_deref(), picked);
+}
+
+/// Re-resolve the selected cat by id each tick and repaint the inspector panel;
+/// hide it (and clear the selection) when the cat is gone or dead.
+fn update_inspector(
+    latest: Res<LatestSnapshot>,
+    mut selection: ResMut<Selection>,
+    mut panel: Query<&mut Node, With<InspectorPanel>>,
+    mut text: Query<&mut Text, With<InspectorText>>,
+) {
+    if !latest.is_changed() && !selection.is_changed() {
+        return;
+    }
+    let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
+        return;
+    };
+    let cat = selection.selected.as_deref().and_then(|id| {
+        latest
+            .0
+            .as_ref()
+            .and_then(|w| w.colonies.first())
+            .and_then(|c| c.cats.iter().find(|k| k.id == id && k.death_time.is_none()))
+    });
+    match cat {
+        Some(cat) => {
+            node.display = Display::Flex;
+            text.0 = inspector_text(cat);
+        }
+        None => {
+            node.display = Display::None;
+            if selection.selected.is_some() {
+                selection.selected = None;
+            }
+        }
+    }
+}
+
+/// Cursor position in world space, or `None` if off-window / no camera.
+fn cursor_world(
+    windows: &Query<&Window>,
+    camera: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+) -> Option<Vec2> {
+    let window = windows.single().ok()?;
+    let cursor = window.cursor_position()?;
+    let (camera, cam_tf) = camera.single().ok()?;
+    camera.viewport_to_world_2d(cam_tf, cursor).ok()
 }
 
 fn camera_controls(
@@ -716,7 +848,7 @@ fn update_hud(latest: Res<LatestSnapshot>, mut hud: Query<&mut Text, With<HudTex
     };
     let Some(colony) = world.colonies.first() else {
         text.0 = format!(
-            "Idle Cat Forest\nonline: {}\nNo colony yet — press Found village.",
+            "Idle Cat Forest\nonline: {}\nNo colony yet - press Found village.",
             world.online_count
         );
         return;
@@ -730,7 +862,7 @@ fn dashboard_text(colony: &ColonySnapshot, online: u32) -> String {
     let leader = colony
         .leader
         .as_ref()
-        .map_or_else(|| "—".to_string(), |l| l.name.clone());
+        .map_or_else(|| "none".to_string(), |l| l.name.clone());
     let active_jobs = colony
         .jobs
         .iter()
@@ -793,7 +925,7 @@ fn update_event_log(latest: Res<LatestSnapshot>, mut log: Query<&mut Text, With<
         .iter()
         .rev()
         .take(6)
-        .map(|e| format!("• {}", e.message))
+        .map(|e| format!("- {}", e.message))
         .collect();
     text.0 = if lines.is_empty() {
         "no recent events".to_string()
@@ -902,6 +1034,93 @@ fn flush_outgoing(conn: Option<NonSendMut<WsConn>>, mut outgoing: ResMut<Outgoin
             conn.sender.send(WsMessage::Text(json));
         }
     }
+}
+
+// ---- pure selection / inspector helpers (unit-tested) ----
+
+/// Nearest cat id to `click` within `radius`, or `None`.
+fn nearest_cat_id(click: Vec2, cats: &[(String, Vec2)], radius: f32) -> Option<String> {
+    let r2 = radius * radius;
+    let mut best: Option<(&str, f32)> = None;
+    for (id, pos) in cats {
+        let d2 = pos.distance_squared(click);
+        if d2 <= r2 && best.is_none_or(|(_, bd)| d2 < bd) {
+            best = Some((id, d2));
+        }
+    }
+    best.map(|(id, _)| id.to_string())
+}
+
+/// Selection toggle: re-clicking the current cat (or empty ground) deselects;
+/// clicking a different cat selects it.
+fn toggle_selection(current: Option<&str>, picked: Option<String>) -> Option<String> {
+    match (current, picked) {
+        (Some(cur), Some(p)) if cur == p => None,
+        (_, picked) => picked,
+    }
+}
+
+/// Life stage from accelerated age (game-hours): kitten 0–6, young 6–24,
+/// adult 24–48, elder 48+.
+fn life_stage(age_hours: f64) -> &'static str {
+    match age_hours {
+        a if a < 6.0 => "kitten",
+        a if a < 24.0 => "young",
+        a if a < 48.0 => "adult",
+        _ => "elder",
+    }
+}
+
+fn activity_name(activity: CatActivity) -> &'static str {
+    match activity {
+        CatActivity::Idle => "idle",
+        CatActivity::Traveling => "traveling",
+        CatActivity::Working => "working",
+        CatActivity::Returning => "returning",
+    }
+}
+
+fn specialization_name(spec: Option<Specialization>) -> &'static str {
+    match spec {
+        Some(Specialization::Hunter) => "hunter",
+        Some(Specialization::Architect) => "architect",
+        Some(Specialization::Ritualist) => "ritualist",
+        Some(Specialization::Warrior) => "warrior",
+        None => "none",
+    }
+}
+
+/// Multi-line read-only inspector body for a cat.
+fn inspector_text(cat: &CatSnapshot) -> String {
+    let dest = cat
+        .destination
+        .map_or_else(|| "none".to_string(), |d| format!("{},{}", d.x, d.y));
+    let carrying = cat.carrying.as_ref().map_or_else(
+        || "none".to_string(),
+        |c| format!("{:?} x{:.0}", c.kind, c.amount),
+    );
+    let n = &cat.needs;
+    format!(
+        "{name}\n\
+         {spec} - {stage} ({age:.0}h)\n\
+         at {x},{y} - {activity}\n\
+         dest {dest}\n\
+         carrying {carrying}\n\
+         \n\
+         hunger {hunger:>3.0}   thirst {thirst:>3.0}\n\
+         rest   {rest:>3.0}   health {health:>3.0}",
+        name = cat.name,
+        spec = specialization_name(cat.specialization),
+        stage = life_stage(cat.age_hours),
+        age = cat.age_hours,
+        x = cat.position.x,
+        y = cat.position.y,
+        activity = activity_name(cat.activity),
+        hunger = n.hunger,
+        thirst = n.thirst,
+        rest = n.rest,
+        health = n.health,
+    )
 }
 
 // ---- pure colour / label helpers (unit-tested) ----
@@ -1081,6 +1300,58 @@ mod tests {
             water.insert((5 + d.0, 5 + d.1));
         }
         assert!(!is_shore(5, 5, &water));
+    }
+
+    #[test]
+    fn nearest_cat_pick_respects_radius_and_picks_closest() {
+        let cats = vec![
+            ("a".to_string(), Vec2::new(0.0, 0.0)),
+            ("b".to_string(), Vec2::new(10.0, 0.0)),
+        ];
+        // Click near b, within radius → b.
+        assert_eq!(
+            nearest_cat_id(Vec2::new(9.0, 0.0), &cats, TILE * 0.5),
+            Some("b".to_string())
+        );
+        // Click near a → a.
+        assert_eq!(
+            nearest_cat_id(Vec2::new(1.0, 0.0), &cats, TILE * 0.5),
+            Some("a".to_string())
+        );
+        // Click far from both → none.
+        assert_eq!(
+            nearest_cat_id(Vec2::new(100.0, 100.0), &cats, TILE * 0.5),
+            None
+        );
+    }
+
+    #[test]
+    fn selection_toggle_state_machine() {
+        // New cat selects it.
+        assert_eq!(
+            toggle_selection(None, Some("a".to_string())),
+            Some("a".to_string())
+        );
+        // Re-clicking the same cat deselects.
+        assert_eq!(toggle_selection(Some("a"), Some("a".to_string())), None);
+        // Clicking a different cat switches.
+        assert_eq!(
+            toggle_selection(Some("a"), Some("b".to_string())),
+            Some("b".to_string())
+        );
+        // Clicking empty ground deselects.
+        assert_eq!(toggle_selection(Some("a"), None), None);
+    }
+
+    #[test]
+    fn life_stage_boundaries() {
+        assert_eq!(life_stage(0.0), "kitten");
+        assert_eq!(life_stage(5.9), "kitten");
+        assert_eq!(life_stage(6.0), "young");
+        assert_eq!(life_stage(23.9), "young");
+        assert_eq!(life_stage(24.0), "adult");
+        assert_eq!(life_stage(47.9), "adult");
+        assert_eq!(life_stage(48.0), "elder");
     }
 
     #[test]
