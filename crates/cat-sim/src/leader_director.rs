@@ -809,6 +809,7 @@ mod tests {
     use serde::Deserialize;
 
     use super::*;
+    use crate::leader_ai::{LeaderHousing, LeaderResources};
 
     const EPSILON: f64 = 1e-12;
 
@@ -1445,6 +1446,158 @@ mod tests {
             &direct_colony(&short),
             &direct_colony(&short),
             "deficit scouting",
+        );
+    }
+
+    // ---- P16.x founding craft-bench staffing (AssignWorkshop construction demand) ----
+
+    /// A fresh 5-cat founding colony mirroring `world_tick`'s `STARTER_BLUEPRINT`:
+    /// comfortable food/water and three unstaffed P16 raw-material craft benches folded
+    /// into `workshops_needing_workers` (per
+    /// `world_tick::phase_18_leader_snapshot_assembly`).
+    fn founding_five_cat_snapshot() -> LeaderSnapshot {
+        LeaderSnapshot {
+            population: 5,
+            workforce: Some(5.0),
+            idle_cats: 5,
+            employed_cats: 0,
+            resources: LeaderResources {
+                food: 120.0,
+                refined: 0.0,
+            },
+            food_capacity: 200.0,
+            food_drain_per_tick: Some(0.5),
+            materials: 40.0,
+            materials_capacity: 100.0,
+            water: 150.0,
+            water_capacity: 200.0,
+            water_drain_per_tick: Some(0.3),
+            housing: LeaderHousing {
+                capacity: 10,
+                committed: 0,
+            },
+            active_hunts: 0,
+            active_quarries: 0,
+            active_scouts: 0,
+            active_water_fetchers: 0,
+            has_quarry_site: true,
+            has_water_site: true,
+            has_frontier: true,
+            den_plans_in_flight: 0,
+            storage_plans_in_flight: 0,
+            storehouse_count: 0,
+            storehouse_cap: 3,
+            workshops_needing_workers: 3,
+            research_huts_needing_workers: Some(0),
+            smithies_needing_workers: Some(0),
+            has_barracks: Some(false),
+            warrior_count: Some(0),
+            training_in_flight: Some(0),
+            threat_band: Some(ThreatBand::Calm),
+            starving: Some(false),
+            officers: BTreeMap::new(),
+        }
+    }
+
+    fn assign_workshop_slot_count(snapshot: &LeaderSnapshot) -> u32 {
+        direct_colony(snapshot)
+            .slots
+            .iter()
+            .find(|slot| slot.goal == LaborGoalKind::AssignWorkshop)
+            .map_or(0, |slot| slot.count)
+    }
+
+    #[test]
+    fn founding_colony_staffs_at_least_one_craft_bench() {
+        // Regression test for the P16 founding stall: a fresh 5-cat colony with three
+        // unstaffed craft benches (`workshops_needing_workers: 3`, mirroring what
+        // `world_tick`'s snapshot builder now reports once it folds the raw-material
+        // benches in) must claim at least one idle cat for AssignWorkshop instead of
+        // pouring every idle cat into Hunt/Scout/Quarry and leaving the benches — and
+        // therefore planks/blocks production — stalled forever. Before the fix this goal
+        // was hard-*vetoed* at `workshops_needing_workers == 0` because the snapshot
+        // builder only ever counted the (founding-absent) general Workshop building;
+        // this proves the ranked loop reliably grants it a slot once that count is
+        // fixed, at the flat historical score.
+        let snapshot = founding_five_cat_snapshot();
+        let count = assign_workshop_slot_count(&snapshot);
+        assert!(
+            count >= 1,
+            "expected at least one AssignWorkshop slot on a fresh founding colony, got {count}"
+        );
+    }
+
+    #[test]
+    fn founding_colony_craft_bench_staffing_is_deterministic() {
+        let snapshot = founding_five_cat_snapshot();
+        assert_plan_eq(
+            &direct_colony(&snapshot),
+            &direct_colony(&snapshot),
+            "founding craft bench staffing",
+        );
+    }
+
+    #[test]
+    fn craft_bench_demand_never_outranks_a_genuine_survival_crisis() {
+        // Guardrail: construction demand may win idle labour when the colony is
+        // comfortable (proven above), but a genuine food/water crisis must still claim
+        // every idle cat first — AssignWorkshop must not open a single slot.
+
+        // (a) The existing `starving` veto (food < 15% fill, world_tick's definition of
+        // a survival crisis) still hard-vetoes AssignWorkshop outright.
+        let mut starving = founding_five_cat_snapshot();
+        starving.resources.food = 0.0;
+        starving.food_drain_per_tick = Some(10.0);
+        starving.starving = Some(true);
+        assert_eq!(
+            assign_workshop_slot_count(&starving),
+            0,
+            "a starving colony must not staff craft benches"
+        );
+
+        // (b) Even without the starving flag, a simultaneous food+water crisis outranks
+        // and out-competes AssignWorkshop for the (scarce) idle labour on pure score +
+        // capacity grounds — hunt/water win every idle cat before workshop gets a turn.
+        let mut crisis = founding_five_cat_snapshot();
+        crisis.resources.food = 0.0;
+        crisis.food_drain_per_tick = Some(10.0);
+        crisis.water = 0.0;
+        crisis.water_drain_per_tick = Some(10.0);
+        assert_eq!(
+            assign_workshop_slot_count(&crisis),
+            0,
+            "a food+water crisis must claim all idle labour before AssignWorkshop"
+        );
+    }
+
+    #[test]
+    fn craft_bench_staffing_does_not_permanently_starve_scouting() {
+        // Regression guard for a real bug caught while building this fix: an earlier
+        // draft gave AssignWorkshop a deficit-driven score boost (rising toward 1.0 as
+        // planks/blocks ran short). Because AssignWorkshop grants in `Fixed` mode (it
+        // always wants all `workshops_needing_workers` benches at once, not a
+        // score-scaled slice), that boost let it consistently outrank and out-compete
+        // every other early-game goal on the very first tick, and because craft-bench
+        // assignment is sticky (never re-contested once granted, unlike a job), it could
+        // permanently claim 3 of a 5-cat colony's workers, leaving zero labour for
+        // Scout ever again. `world_tick::tests::
+        // scouts_random_walk_outward_and_reveal_new_fog_deterministically` caught this
+        // over a 200-tick founding run. The fix here is the flat STAFF_BASE_SCORE: it
+        // still reliably bootstraps craft-bench staffing (proven above) without
+        // monopolizing every idle cat, so Scout and Hunt still get a fair share. This
+        // test asserts Scout still opens at least one slot on a comfortable founding
+        // colony with unstaffed craft benches, guarding against a future score-driven
+        // regression reintroducing the starvation.
+        let snapshot = founding_five_cat_snapshot();
+        let scout_count = direct_colony(&snapshot)
+            .slots
+            .iter()
+            .find(|slot| slot.goal == LaborGoalKind::Scout)
+            .map_or(0, |slot| slot.count);
+        assert!(
+            scout_count >= 1,
+            "AssignWorkshop must not monopolize every idle cat away from Scout, got scout \
+             count {scout_count}"
         );
     }
 

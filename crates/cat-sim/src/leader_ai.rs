@@ -77,7 +77,11 @@ pub struct LeaderSnapshot {
     pub storehouse_count: u32,
     /// Cap on total storehouses (scales with population).
     pub storehouse_cap: u32,
-    /// Completed workshops that have no assigned worker.
+    /// Completed workshops that have no assigned worker — the TS-ported general
+    /// refinement workshop (`materials` -> `refined`) PLUS the Rust-only P16 raw-material
+    /// craft benches (wood-cutter/stone-prep/woodworking) that have no TS equivalent.
+    /// A pre-P16 caller that only ever had the general workshop still gets the same
+    /// count it always did.
     pub workshops_needing_workers: u32,
     /// Completed research huts that have no assigned researcher.
     #[serde(default, skip_serializing_if = "Option::is_none")]

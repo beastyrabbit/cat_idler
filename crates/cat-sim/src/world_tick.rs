@@ -1819,6 +1819,15 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         crate::threat::ThreatBand::Imminent => crate::leader_ai::ThreatBand::Imminent,
     };
     let starving = caps.food > 0.0 && colony.resources.food / caps.food < 0.15;
+    // The P16 raw-material craft benches (wood-cutter/stone-prep/woodworking) have no TS
+    // equivalent and no labour goal of their own; fold their staffing need into the
+    // ported `AssignWorkshop` goal (P16.x) so a founding colony's first idle cats can
+    // actually claim one instead of the fill pass exhausting every idle cat on
+    // Hunt/Scout/Quarry before phase 23's non-sticky bench mop-up ever sees a candidate.
+    let craft_benches_needing_workers: u32 = RAW_MATERIAL_WORKSHOPS
+        .iter()
+        .map(|&bench_type| buildings_needing_workers(colony, bench_type).len() as u32)
+        .sum();
 
     LeaderSnapshot {
         population,
@@ -1853,7 +1862,8 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         storehouse_count: count_storehouses(&storage_buildings),
         storehouse_cap: storehouse_cap(population),
         workshops_needing_workers: buildings_needing_workers(colony, BuildingType::Workshop).len()
-            as u32,
+            as u32
+            + craft_benches_needing_workers,
         research_huts_needing_workers: Some(0),
         smithies_needing_workers: Some(
             buildings_needing_workers(colony, BuildingType::Smithy).len() as u32,
@@ -1970,7 +1980,16 @@ fn phase_20_leader_labor_assignments_and_staffing(
             exclude_warriors_from_training: true,
         },
     );
+    // Include the raw-material benches in the same queue AssignWorkshop draws from: the
+    // release call just above frees them, so — for a bench with no prior worker — this
+    // is what finally lets the founding colony's leader bind a cat to one instead of
+    // relying solely on phase 23's leftover-idle mop-up, which never sees a candidate
+    // while the idle-employment-floor fill pass (below `direct_colony`) keeps claiming
+    // every idle cat for Hunt/Scout/Quarry first.
     let mut workshop_queue = buildings_needing_workers(colony, BuildingType::Workshop);
+    for bench_type in RAW_MATERIAL_WORKSHOPS {
+        workshop_queue.extend(buildings_needing_workers(colony, bench_type));
+    }
     let mut smithy_queue = buildings_needing_workers(colony, BuildingType::Smithy);
 
     for assignment in assignments {
@@ -4657,7 +4676,12 @@ fn cheb_from_anchor(pos: TilePos) -> i32 {
 /// The P12.4b raw-material refinement benches. The leader staffs these as a mop-up
 /// (non-sticky) set: every tick they are released back to the labour pool at the top
 /// of phase 20 and re-filled from the leftover idle surplus in phase 23, so food and
-/// water work always draws the cats first and the 5-cat start never starves at a bench.
+/// water work always draws the cats first. First-time staffing (P16.x) instead goes
+/// through phase 20's `AssignWorkshop` goal — see the `craft_benches_needing_workers`
+/// local in `phase_18_leader_snapshot_assembly`, folded into the snapshot's
+/// `workshops_needing_workers` — which is what actually gets a founding colony's cats
+/// onto an empty bench on the very first tick. Once a bench has a worker, phase 23's
+/// mop-up keeps it staffed tick over tick.
 const RAW_MATERIAL_WORKSHOPS: [BuildingType; 3] = [
     BuildingType::WoodCutter,
     BuildingType::StonePrep,
@@ -4666,7 +4690,9 @@ const RAW_MATERIAL_WORKSHOPS: [BuildingType; 3] = [
 
 /// Release every cat bound to a raw-material refinement bench so the leader's labour
 /// pass can re-draft them for hunting/water first. Whatever remains genuinely idle is
-/// re-staffed by phase 23's mop-up. Keeps the benches non-sticky (survival guardrail).
+/// re-staffed by phase 23's mop-up (or claimed directly by `AssignWorkshop` in phase 20
+/// on the tick a bench first needs a worker). Keeps the benches non-sticky (survival
+/// guardrail).
 fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
     for building in &mut colony.buildings {
         if RAW_MATERIAL_WORKSHOPS.contains(&building.building_type) {
@@ -7980,5 +8006,108 @@ mod tests {
                 "seed {seed}: the village has no reachable water source"
             );
         }
+    }
+
+    // --- P16.x: founding craft-bench staffing (workshop-staffing bug regression) ---
+
+    /// Run a fresh founding colony through `world_tick` with zero player input for 45
+    /// simulated minutes (one-minute ticks; `test_time_scale` defaults to 1.0 so this is
+    /// 2700 real/production seconds — four-plus full 600s workshop cycles of headroom
+    /// past the very first tick, which is when the fix staffs a bench). Returns the
+    /// final colony plus whether planks and blocks were ever simultaneously banked
+    /// (`> 0.0`) at the end of some tick during the run.
+    ///
+    /// 45 ticks is a deliberately snug window, not just "long enough": without the fix,
+    /// the founding stall isn't perfectly permanent — once a *short* `explore` job
+    /// finishes it can incidentally free a cat for phase 23's pre-existing mop-up, and
+    /// empirically (seed 4242) that eventually produces both planks and blocks by tick
+    /// ~54. A 60-tick window would pass either way and prove nothing; 45 sits above the
+    /// fix's own bootstrap (both banked by tick ~32) but below that incidental-healing
+    /// floor, so this test actually discriminates "staffed promptly by the fix" from
+    /// "eventually self-healed by an unrelated mechanic."
+    ///
+    /// The end-of-run snapshot alone is also not a reliable enough signal: the
+    /// woodworking bench is a "luxury tier" that spends 2 planks + 2 blocks per tool
+    /// cycle once both are stocked (see `phase_23_production`'s `BuildingType::
+    /// Woodworking` arm), so a founding colony's planks/blocks stock legitimately saws
+    /// up and back down to 0 over time. Tracking "ever banked both simultaneously"
+    /// proves the craft benches were staffed and produced, without being sensitive to
+    /// which exact tick the woodworking bench next drains the stockpile.
+    fn run_founding_colony_for_45_minutes(seed: u32) -> (ColonyRuntime, bool) {
+        let mut world = new_world(seed);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
+
+        let mut banked_planks_and_blocks = false;
+        for step in 1..=45 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None, "step {step}: colony reset");
+            let resources = &world.colonies[0].resources;
+            if resources.planks > 0.0 && resources.blocks > 0.0 {
+                banked_planks_and_blocks = true;
+            }
+        }
+
+        (world.colonies.remove(0), banked_planks_and_blocks)
+    }
+
+    #[test]
+    fn founding_colony_staffs_a_craft_bench_on_the_first_tick() {
+        // Sharpest form of the regression test: before the fix, the leader director's
+        // idle-employment-floor fill pass claimed every idle cat for Hunt/Scout/Quarry
+        // on the very first tick (the wood-cutter/stone-prep/woodworking benches carried
+        // no labour-goal demand at all, since `workshops_needing_workers` only ever
+        // counted the general, founding-absent Workshop building), so none of the three
+        // craft benches ever got a worker on tick 1. With the fix, at least one must.
+        let mut world = new_world(4242);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
+        let _ = world_tick(&mut world, 70_000);
+
+        let staffed_benches = world.colonies[0]
+            .buildings
+            .iter()
+            .filter(|building| {
+                matches!(
+                    building.building_type,
+                    BuildingType::WoodCutter | BuildingType::StonePrep | BuildingType::Woodworking
+                ) && building.assigned_cat.is_some()
+            })
+            .count();
+        assert!(
+            staffed_benches >= 1,
+            "expected at least one craft bench staffed after the first tick, got {staffed_benches}"
+        );
+    }
+
+    #[test]
+    fn founding_colony_produces_planks_and_blocks_without_player_input() {
+        // With zero player input, a fresh 5-cat colony must staff its craft benches and
+        // bank both planks and blocks promptly — not just eventually — since `phase_14`
+        // scaffolds cost SCAFFOLD_PLANK_COST/SCAFFOLD_BLOCK_COST (2.0 each) that gate
+        // colony growth on a den ever breaking ground. See `run_founding_colony_for_45_
+        // minutes` for why 45 ticks is the right, deliberately snug window.
+        let (_, banked_planks_and_blocks) = run_founding_colony_for_45_minutes(4242);
+        assert!(
+            banked_planks_and_blocks,
+            "expected planks > 0 and blocks > 0 simultaneously at some point in 45 minutes of \
+             unaided founding play"
+        );
+    }
+
+    #[test]
+    fn founding_colony_plank_and_block_production_is_deterministic() {
+        let run = || {
+            let (colony, banked_planks_and_blocks) = run_founding_colony_for_45_minutes(4242);
+            (
+                colony.resources.planks,
+                colony.resources.blocks,
+                banked_planks_and_blocks,
+            )
+        };
+        assert_eq!(run(), run());
     }
 }
