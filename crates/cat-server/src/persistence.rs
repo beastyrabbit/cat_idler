@@ -222,7 +222,40 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             spawnedAt INTEGER NOT NULL
         );
         "#,
-    )
+    )?;
+    migrate_add_missing_columns(conn)
+}
+
+/// Add columns introduced after a database was first created. `CREATE TABLE IF NOT
+/// EXISTS` never alters an existing table, so a DB made before P12 lacks these and the
+/// load `SELECT` (which lists them) fails with "no such column". SQLite's `ALTER TABLE
+/// ADD COLUMN` is not idempotent, so we only add the ones that are missing.
+fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
+    const ADDITIONS: &[(&str, &str, &str)] = &[
+        ("colonies", "officers", "TEXT"),
+        ("colonies", "stockpiles", "TEXT"),
+        ("colonies", "stockLedger", "TEXT"),
+        ("cats", "skills", "TEXT"),
+    ];
+    for (table, column, decl) in ADDITIONS {
+        if !column_exists(conn, table, column)? {
+            // `table`/`column`/`decl` are compile-time constants, not user input.
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+        }
+    }
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        // PRAGMA table_info columns: 0=cid, 1=name, ...
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()> {
@@ -1318,6 +1351,49 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn init_schema_backfills_post_p12_columns_on_a_legacy_database() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        // Simulate a DB created before P12: colonies/cats tables exist but lack the
+        // officers/stockpiles/stockLedger/skills columns. CREATE TABLE IF NOT EXISTS
+        // in init_schema must NOT recreate them; the migration must add the columns.
+        conn.execute_batch(
+            "CREATE TABLE colonies (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                 status TEXT NOT NULL, resources TEXT NOT NULL, gridSize INTEGER NOT NULL,
+                 createdAt INTEGER NOT NULL, lastTick INTEGER NOT NULL,
+                 lastAttack INTEGER NOT NULL, isPregnant INTEGER);
+             CREATE TABLE cats (id TEXT PRIMARY KEY, colonyId TEXT NOT NULL,
+                 name TEXT NOT NULL);",
+        )
+        .expect("legacy tables");
+
+        for (table, column) in [
+            ("colonies", "officers"),
+            ("colonies", "stockpiles"),
+            ("colonies", "stockLedger"),
+            ("cats", "skills"),
+        ] {
+            assert!(!column_exists(&conn, table, column).unwrap());
+        }
+
+        init_schema(&conn).expect("init schema migrates the legacy tables");
+
+        for (table, column) in [
+            ("colonies", "officers"),
+            ("colonies", "stockpiles"),
+            ("colonies", "stockLedger"),
+            ("cats", "skills"),
+        ] {
+            assert!(
+                column_exists(&conn, table, column).unwrap(),
+                "{table}.{column} should be back-filled"
+            );
+        }
+
+        // Idempotent: running again does not error (columns already present).
+        init_schema(&conn).expect("re-running init_schema is a no-op");
+    }
 
     #[test]
     fn save_world_load_world_round_trips_colony_resources_cats_and_jobs() {
