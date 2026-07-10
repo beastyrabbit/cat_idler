@@ -288,6 +288,7 @@ struct TerrainArt {
     water_edge: Handle<Image>,
     tree_oak: Handle<Image>,
     tree_pine: Handle<Image>,
+    stump: Handle<Image>,
     rock: Handle<Image>,
 }
 
@@ -308,7 +309,18 @@ impl TerrainArt {
             water_edge: assets.load("public/images/game/terrain/water_edge.png"),
             tree_oak: assets.load("public/images/game/nature/tree_oak.png"),
             tree_pine: assets.load("public/images/game/nature/tree_pine.png"),
+            stump: assets.load("public/images/game/nature/stump.png"),
             rock: assets.load("public/images/game/props/stone_pile.png"),
+        }
+    }
+
+    /// The nature sprite + its height in tiles for a biome's trees.
+    fn tree(&self, sprite: TreeSprite) -> (Handle<Image>, f32) {
+        match sprite {
+            TreeSprite::Oak => (self.tree_oak.clone(), 2.0),
+            TreeSprite::Pine => (self.tree_pine.clone(), 2.0),
+            // Stumps/dead trees are a single tile tall (swamps read bare).
+            TreeSprite::Stump => (self.stump.clone(), 1.0),
         }
     }
 
@@ -1695,19 +1707,16 @@ fn spawn_terrain(
             derive_biome_decoration(tile.x, tile.y, seed, tile.climate_biome)
         };
         match decoration {
-            Some(DecorationRole::Tree { species }) => {
-                let tree = if tree_is_oak(species) {
-                    art.tree_oak.clone()
-                } else {
-                    art.tree_pine.clone()
-                };
-                // 16×32 sprite, trunk anchored to the tile centre so it stands on
-                // the ground; y-sorted with the rest of the world by its base.
+            Some(DecorationRole::Tree { .. }) => {
+                // Tree species follows the biome (conifer/broadleaf/stump), not a
+                // per-tile species roll. 16×32 sprites are anchored trunk-to-tile
+                // and y-sorted with the rest of the world by their base.
+                let (tree, height) = art.tree(biome_tree(tile.climate_biome));
                 let base_y = p.y - TILE * 0.5;
                 commands.spawn((
                     Sprite {
                         image: tree,
-                        custom_size: Some(Vec2::new(TILE, TILE * 2.0)),
+                        custom_size: Some(Vec2::new(TILE, TILE * height)),
                         ..default()
                     },
                     Anchor::BOTTOM_CENTER,
@@ -1796,9 +1805,24 @@ fn rock_scale(size: RockSize) -> f32 {
     }
 }
 
-/// Oak for even species, pine for odd.
-fn tree_is_oak(species: i32) -> bool {
-    species.rem_euclid(2) == 0
+/// The nature sprite a biome's trees render as.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TreeSprite {
+    Oak,
+    Pine,
+    Stump,
+}
+
+/// Biome-appropriate tree species: conifers in cold/boreal biomes, bare stumps
+/// in wetlands, broadleaf oaks everywhere else. (Cactus/dead-tree art isn't in
+/// the sheet yet; those biomes carry almost no trees anyway.)
+fn biome_tree(biome: Biome) -> TreeSprite {
+    use Biome::*;
+    match biome {
+        PineForest | Taiga | SnowyTaiga | Tundra | SnowyPlains | Mountains => TreeSprite::Pine,
+        Swamp | Marsh => TreeSprite::Stump,
+        _ => TreeSprite::Oak,
+    }
 }
 
 /// The inclusive tile bounds `(x0, y0, x1, y1)` of the render window around the
@@ -4314,11 +4338,26 @@ mod tests {
     }
 
     #[test]
-    fn tree_species_pick_oak_or_pine_and_shore_detection() {
-        assert!(tree_is_oak(0));
-        assert!(tree_is_oak(2));
-        assert!(!tree_is_oak(1));
-        assert!(!tree_is_oak(3));
+    fn biome_trees_pick_conifer_stump_or_broadleaf_and_shore_detection() {
+        // Cold/boreal biomes get conifers, wetlands get stumps, the rest oaks.
+        for b in [
+            Biome::PineForest,
+            Biome::Taiga,
+            Biome::SnowyTaiga,
+            Biome::Tundra,
+        ] {
+            assert_eq!(biome_tree(b), TreeSprite::Pine, "{b:?}");
+        }
+        assert_eq!(biome_tree(Biome::Swamp), TreeSprite::Stump);
+        assert_eq!(biome_tree(Biome::Marsh), TreeSprite::Stump);
+        for b in [
+            Biome::OakForest,
+            Biome::BirchForest,
+            Biome::Jungle,
+            Biome::Plains,
+        ] {
+            assert_eq!(biome_tree(b), TreeSprite::Oak, "{b:?}");
+        }
 
         // A lone water tile is all shore; a fully surrounded one is not.
         let mut water = HashSet::new();
