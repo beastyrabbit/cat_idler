@@ -39,6 +39,7 @@ use crate::{
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::should_deposit,
+    skills::{HAUL_SKILL_GAIN, Labor, SKILL_GAIN_PER_JOB},
     smithy::{SmithyOptions, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
     storage::{
@@ -533,6 +534,7 @@ fn create_starter_cats(colony_id: &str, now_ms: i64, seed: u32) -> Vec<Cat> {
                 sprite_params: starter_sprite_params(&mut rolls),
                 specialization: None,
                 role_xp: RoleXp::default(),
+                skills: Default::default(),
             }
         })
         .collect()
@@ -2110,6 +2112,7 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate) {
             };
         }
 
+        colony.cats[cat_index].gain_skill(Labor::Haul, HAUL_SKILL_GAIN);
         colony.cats[cat_index].carrying = Some(Carrying {
             kind: carrying_kind_for_job(job.kind),
             amount: share,
@@ -3254,14 +3257,20 @@ fn queue_job(
     assigned_cat: Option<CatId>,
     metadata: JobMetadata,
 ) {
-    let specialization = assigned_cat
+    let (specialization, skill) = assigned_cat
         .as_ref()
         .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == *cat_id))
-        .and_then(|cat| cat.specialization);
+        .map_or((None, 0.0), |cat| {
+            (
+                cat.specialization,
+                Labor::for_job_kind(kind).map_or(0.0, |labor| cat.skill(labor)),
+            )
+        });
     let duration_seconds = idle_engine::get_scaled_duration_seconds(
         kind,
         specialization,
         idle_engine_upgrade_levels(&colony.upgrade_levels),
+        skill,
         Some(colony.test_time_scale),
     );
     let duration_ms = (duration_seconds * 1000.0) as i64;
@@ -4055,6 +4064,7 @@ fn complete_hunt(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
 
     let cat = &mut colony.cats[cat_index];
     cat.role_xp.hunter += 1.0;
+    cat.gain_skill(Labor::Hunt, SKILL_GAIN_PER_JOB);
     cat.specialization = idle_engine::next_specialization(
         CatSpecialization::Hunter,
         cat.role_xp.hunter,
@@ -4079,12 +4089,16 @@ fn complete_fixed_yield_job(
         return;
     };
     let (_, total_yield, trips_done) = hauling_metadata(job);
-    let reward = remaining_yield(
-        total_yield.unwrap_or(total),
-        HUNT_TRIP_COUNT,
-        trips_done as i32,
-    );
-    colony.cats[cat_index].carrying = (reward > 0.0).then_some(Carrying {
+    // Reuse the total cached by an earlier haul trip so skill scaling is applied once;
+    // otherwise scale the base constant by this cat's labor skill here.
+    let scaled_total =
+        total_yield.unwrap_or_else(|| skill_scaled_yield(&colony.cats[cat_index], job.kind, total));
+    let reward = remaining_yield(scaled_total, HUNT_TRIP_COUNT, trips_done as i32);
+    let cat = &mut colony.cats[cat_index];
+    if let Some(labor) = Labor::for_job_kind(job.kind) {
+        cat.gain_skill(labor, SKILL_GAIN_PER_JOB);
+    }
+    cat.carrying = (reward > 0.0).then_some(Carrying {
         kind,
         amount: reward,
         job_ended_at: gate.processed_through,
@@ -4146,6 +4160,7 @@ fn complete_build(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) 
 
     let cat = &mut colony.cats[cat_index];
     cat.role_xp.architect += 1.0;
+    cat.gain_skill(Labor::Build, SKILL_GAIN_PER_JOB);
     cat.specialization = idle_engine::next_specialization(
         CatSpecialization::Architect,
         cat.role_xp.architect,
@@ -4161,6 +4176,7 @@ fn complete_ritual(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate)
     let blessings = 1.0 + f64::from(colony.upgrade_levels.ritual_mastery / 3);
     let cat = &mut colony.cats[cat_index];
     cat.role_xp.ritualist += 1.0;
+    cat.gain_skill(Labor::Ritual, SKILL_GAIN_PER_JOB);
     cat.specialization = idle_engine::next_specialization(
         CatSpecialization::Ritualist,
         cat.role_xp.ritualist,
@@ -4180,6 +4196,7 @@ fn complete_warrior_training(colony: &mut ColonyRuntime, job: &JobRuntime, _: Ti
     let cat = &mut colony.cats[cat_index];
     cat.specialization = Some(CatSpecialization::Warrior);
     cat.role_xp.warrior += 1.0;
+    cat.gain_skill(Labor::Fight, SKILL_GAIN_PER_JOB);
     cat.stats.attack = (cat.stats.attack + 3.0).min(100.0);
     cat.stats.defense = (cat.stats.defense + 3.0).min(100.0);
     cat.activity = CatActivity::Idle;
@@ -4241,17 +4258,32 @@ fn hunt_yield_for(cat: &Cat, colony: &ColonyRuntime) -> f64 {
         idle_engine_upgrade_levels(&colony.upgrade_levels),
     );
     let stage_mult = crate::life_sim::stage_work_effectiveness(get_life_stage(cat.age_hours));
-    let yield_mult = crate::life_sim::trade_yield_multiplier(cat.role_xp.hunter);
+    // Hunt yield rides the continuous Hunt skill (P12.1). `role_xp.hunter` still gates
+    // the specialist bonus inside `get_hunt_reward`; both increment +1 per hunt so this
+    // is identical to the pre-P12.1 `trade_yield_multiplier(role_xp.hunter)` at parity.
+    let yield_mult = crate::life_sim::trade_yield_multiplier(cat.skill(Labor::Hunt));
     (base * stage_mult * yield_mult * effects.hunt_yield_mult.max(0.0))
         .floor()
         .max(1.0)
 }
 
+/// Scale a job's base yield by the cat's continuous skill in that labor. Hunt yield is
+/// handled by [`hunt_yield_for`] (which folds in life-stage + upgrade effects), so this
+/// is only for the fixed-yield gathering jobs (quarry / fetch-water). At skill 0 the
+/// multiplier is 1.0, so whole-number base yields are returned unchanged.
+fn skill_scaled_yield(cat: &Cat, kind: JobKind, base: f64) -> f64 {
+    match Labor::for_job_kind(kind) {
+        Some(labor) => (base * crate::life_sim::trade_yield_multiplier(cat.skill(labor))).floor(),
+        None => base,
+    }
+}
+
 fn total_yield_for_job(colony: &ColonyRuntime, job: &JobRuntime, cat_index: usize) -> f64 {
+    let cat = &colony.cats[cat_index];
     match job.kind {
-        JobKind::FetchWater => WATER_TOTAL_YIELD,
-        JobKind::Quarry => QUARRY_TOTAL_YIELD,
-        JobKind::HuntExpedition => hunt_yield_for(&colony.cats[cat_index], colony),
+        JobKind::FetchWater => skill_scaled_yield(cat, job.kind, WATER_TOTAL_YIELD),
+        JobKind::Quarry => skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD),
+        JobKind::HuntExpedition => hunt_yield_for(cat, colony),
         _ => 0.0,
     }
 }
@@ -4802,6 +4834,160 @@ mod tests {
         assert_eq!(colony.world_tiles[&pos(12, 6)].resources.food, 26);
     }
 
+    // ---- P12.1 skills ----
+
+    #[test]
+    fn skill_scaled_yield_is_monotonic_and_zero_matches_base() {
+        let mut cat = adult_idle_cat("q", "colony-1");
+        // At skill 0 the whole-number quarry base is returned unchanged.
+        assert_eq!(
+            skill_scaled_yield(&cat, JobKind::Quarry, QUARRY_TOTAL_YIELD),
+            QUARRY_TOTAL_YIELD
+        );
+
+        cat.gain_skill(Labor::Quarry, 30.0);
+        let mid = skill_scaled_yield(&cat, JobKind::Quarry, QUARRY_TOTAL_YIELD);
+        assert!(mid > QUARRY_TOTAL_YIELD);
+
+        cat.gain_skill(Labor::Quarry, 100_000.0);
+        let high = skill_scaled_yield(&cat, JobKind::Quarry, QUARRY_TOTAL_YIELD);
+        assert!(high >= mid);
+        // Bounded by the 1.4x yield asymptote.
+        assert!(high <= (QUARRY_TOTAL_YIELD * 1.4).ceil());
+
+        // A labor-less job kind is never scaled.
+        assert_eq!(
+            skill_scaled_yield(&cat, JobKind::Explore, QUARRY_TOTAL_YIELD),
+            QUARRY_TOTAL_YIELD
+        );
+    }
+
+    #[test]
+    fn hunt_yield_rides_hunt_skill_monotonically() {
+        let colony = ColonyRuntime {
+            cats: vec![adult_idle_cat("h", "colony-1")],
+            ..ColonyRuntime::default()
+        };
+        let base = hunt_yield_for(&colony.cats[0], &colony);
+
+        let mut skilled = colony.cats[0].clone();
+        skilled.gain_skill(Labor::Hunt, 60.0);
+        let boosted = hunt_yield_for(&skilled, &colony);
+        assert!(boosted > base);
+
+        let mut more = skilled.clone();
+        more.gain_skill(Labor::Hunt, 100_000.0);
+        assert!(hunt_yield_for(&more, &colony) >= boosted);
+    }
+
+    fn hauling_hunt_world(trips_done: u32, ends_at: i64) -> WorldState {
+        let mut cat = adult_idle_cat("hunter", "colony-1");
+        cat.activity = CatActivity::Working;
+        cat.current_task = Some(TaskType::Hunt);
+        cat.position = Position {
+            map: MapType::World,
+            x: 12.0,
+            y: 6.0,
+        };
+        WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                name: "MossClan".to_owned(),
+                resources: plentiful_resources(),
+                cats: vec![cat],
+                jobs: vec![JobRuntime {
+                    id: "hunt-1".to_owned(),
+                    kind: JobKind::HuntExpedition,
+                    status: JobStatus::Active,
+                    assigned_cat: Some("hunter".to_owned()),
+                    duration_ms: 9_000,
+                    created_at: 0,
+                    started_at: Some(0),
+                    ends_at: Some(ends_at),
+                    metadata: JobMetadata::Hauling {
+                        site: Some(pos(12, 6)),
+                        total_yield: Some(10.0),
+                        trips_done,
+                        next_trip_at: Some(3_000),
+                        accepted: true,
+                    },
+                    ..JobRuntime::default()
+                }],
+                world_tiles: BTreeMap::from([(
+                    pos(12, 6),
+                    WorldTileRuntime {
+                        resources: TileResources {
+                            food: 30,
+                            herbs: 0,
+                            water: 0,
+                        },
+                        path_wear: 63,
+                        ..tile(12, 6, 63, None)
+                    },
+                )]),
+                last_tick: 2_000,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn a_mid_job_haul_trip_grants_only_haul_skill() {
+        // A trip runs (trips_done 0 < HUNT_TRIP_COUNT-1) but the job stays active.
+        let mut world = hauling_hunt_world(0, 9_000);
+        let _ = world_tick(&mut world, 3_000);
+
+        let cat = &world.colonies[0].cats[0];
+        assert_eq!(cat.skill(Labor::Haul), HAUL_SKILL_GAIN);
+        assert_eq!(cat.skills.len(), 1);
+        assert!(!cat.skills.contains_key(&Labor::Hunt));
+    }
+
+    #[test]
+    fn completing_a_hunt_grants_hunt_skill_deterministically() {
+        // trips_done at the last trip so only completion runs (grants Hunt, not Haul).
+        let mut a = hauling_hunt_world(HUNT_TRIP_COUNT as u32 - 1, 1_000);
+        let mut b = hauling_hunt_world(HUNT_TRIP_COUNT as u32 - 1, 1_000);
+        let _ = world_tick(&mut a, 3_000);
+        let _ = world_tick(&mut b, 3_000);
+
+        let cat = &a.colonies[0].cats[0];
+        assert_eq!(cat.skill(Labor::Hunt), SKILL_GAIN_PER_JOB);
+        assert!(!cat.skills.contains_key(&Labor::Haul));
+        // Same seed + inputs → identical cat state (skills included).
+        assert_eq!(a.colonies[0].cats, b.colonies[0].cats);
+    }
+
+    #[test]
+    fn skill_shortens_queued_job_duration() {
+        // Queue a quarry through the tick path for a novice vs a skilled cat and
+        // confirm the skilled cat's job ends sooner.
+        fn quarry_duration(skill: f64) -> i64 {
+            let mut cat = adult_idle_cat("miner", "colony-1");
+            cat.gain_skill(Labor::Quarry, skill);
+            let mut colony = ColonyRuntime {
+                id: "colony-1".to_owned(),
+                cats: vec![cat],
+                last_tick: 0,
+                ..ColonyRuntime::default()
+            };
+            queue_job(
+                &mut colony,
+                0,
+                JobKind::Quarry,
+                Some("miner".to_owned()),
+                JobMetadata::None,
+            );
+            colony.jobs[0].duration_ms
+        }
+
+        let novice = quarry_duration(0.0);
+        let expert = quarry_duration(200.0);
+        assert!(expert < novice, "expert={expert} novice={novice}");
+    }
+
     #[test]
     fn movement_advances_toward_destination_and_wears_traversed_tiles() {
         let mut cat = adult_idle_cat("walker", "colony-1");
@@ -5197,6 +5383,7 @@ mod tests {
             sprite_params: None,
             specialization: None,
             role_xp: Default::default(),
+            skills: Default::default(),
         }
     }
 

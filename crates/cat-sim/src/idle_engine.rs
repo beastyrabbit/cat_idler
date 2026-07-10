@@ -66,9 +66,12 @@ pub fn get_duration_seconds(
     kind: JobKind,
     specialization: Option<CatSpecialization>,
     upgrades: UpgradeLevels,
+    skill: f64,
 ) -> f64 {
     let base = base_job_seconds(kind);
-    let mut multiplier = 1.0;
+    // Continuous per-labor skill stacks on top of the discrete specialization cut.
+    // At skill == 0 this is exactly 1.0, so behavior matches pre-P12.1 callers.
+    let mut multiplier = crate::life_sim::trade_speed_multiplier(skill);
 
     if matches!(kind, JobKind::SupplyFood | JobKind::SupplyWater) {
         multiplier *= js_max(0.55, 1.0 - upgrades.supply_speed * 0.1);
@@ -103,9 +106,10 @@ pub fn get_scaled_duration_seconds(
     kind: JobKind,
     specialization: Option<CatSpecialization>,
     upgrades: UpgradeLevels,
+    skill: f64,
     time_scale: Option<f64>,
 ) -> f64 {
-    let base = get_duration_seconds(kind, specialization, upgrades);
+    let base = get_duration_seconds(kind, specialization, upgrades, skill);
     let scale = normalize_time_scale(time_scale);
 
     js_max(1.0, (base / scale).floor())
@@ -244,8 +248,9 @@ mod tests {
 
     #[test]
     fn durations_apply_upgrade_caps_and_specialization_multipliers_in_order() {
+        // skill == 0.0 keeps every pre-P12.1 expectation intact.
         assert_f64_exact(
-            get_duration_seconds(JobKind::SupplyWater, None, upgrades()),
+            get_duration_seconds(JobKind::SupplyWater, None, upgrades(), 0.0),
             15.0,
         );
         assert_f64_exact(
@@ -256,6 +261,7 @@ mod tests {
                     supply_speed: 4.0,
                     ..upgrades()
                 },
+                0.0,
             ),
             9.0,
         );
@@ -267,6 +273,7 @@ mod tests {
                     supply_speed: 10.0,
                     ..upgrades()
                 },
+                0.0,
             ),
             11.0,
         );
@@ -278,6 +285,7 @@ mod tests {
                     hunt_mastery: 2.0,
                     ..upgrades()
                 },
+                0.0,
             ),
             11_520.0,
         );
@@ -289,6 +297,7 @@ mod tests {
                     hunt_mastery: 10.0,
                     ..upgrades()
                 },
+                0.0,
             ),
             6_480.0,
         );
@@ -300,6 +309,7 @@ mod tests {
                     build_mastery: 3.0,
                     ..upgrades()
                 },
+                0.0,
             ),
             10_080.0,
         );
@@ -311,6 +321,7 @@ mod tests {
                     build_mastery: 3.0,
                     ..upgrades()
                 },
+                0.0,
             ),
             50_400.0,
         );
@@ -322,6 +333,7 @@ mod tests {
                     ritual_mastery: 2.0,
                     ..upgrades()
                 },
+                0.0,
             ),
             9_849.0,
         );
@@ -333,23 +345,37 @@ mod tests {
                     ritual_mastery: 6.0,
                     ..upgrades()
                 },
+                0.0,
             ),
             5_184.0,
         );
     }
 
     #[test]
+    fn skill_monotonically_shortens_bounded_duration() {
+        let at = |skill: f64| get_duration_seconds(JobKind::Quarry, None, upgrades(), skill);
+        let base = at(0.0);
+        // skill 0 == today; more skill strictly shortens until the curve saturates.
+        assert!(at(5.0) < base);
+        assert!(at(30.0) < at(5.0));
+        assert!(at(120.0) < at(30.0));
+        // Bounded: the speed curve asymptotes to 0.75x, never below the 5s floor.
+        assert!(at(1_000_000.0) >= 5.0);
+        assert!(at(1_000_000.0) >= (base * 0.75).floor());
+    }
+
+    #[test]
     fn scaled_duration_divides_normalized_duration_and_floors_to_one_second() {
         assert_f64_exact(
-            get_scaled_duration_seconds(JobKind::HuntExpedition, None, upgrades(), Some(20.0)),
+            get_scaled_duration_seconds(JobKind::HuntExpedition, None, upgrades(), 0.0, Some(20.0)),
             1_440.0,
         );
         assert_f64_exact(
-            get_scaled_duration_seconds(JobKind::SupplyWater, None, upgrades(), Some(20.0)),
+            get_scaled_duration_seconds(JobKind::SupplyWater, None, upgrades(), 0.0, Some(20.0)),
             1.0,
         );
         assert_f64_exact(
-            get_scaled_duration_seconds(JobKind::SupplyWater, None, upgrades(), Some(0.0)),
+            get_scaled_duration_seconds(JobKind::SupplyWater, None, upgrades(), 0.0, Some(0.0)),
             15.0,
         );
     }

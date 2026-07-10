@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::skills::Labor;
 use crate::types::{CatSpecialization, TaskType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -180,6 +181,36 @@ pub struct Cat {
         skip_serializing_if = "RoleXp::is_zero"
     )]
     pub role_xp: RoleXp,
+    /// Continuous per-labor proficiency (P12.1). Absent/`null` in legacy rows →
+    /// empty map (mirrors the `role_xp` null-default back-compat).
+    #[serde(
+        default,
+        deserialize_with = "deserialize_skills_null_default",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub skills: BTreeMap<Labor, f64>,
+}
+
+impl Cat {
+    /// This cat's proficiency in `labor` (0.0 if never performed).
+    #[must_use]
+    pub fn skill(&self, labor: Labor) -> f64 {
+        self.skills.get(&labor).copied().unwrap_or(0.0)
+    }
+
+    /// Accrue `amount` proficiency in `labor`.
+    pub fn gain_skill(&mut self, labor: Labor, amount: f64) {
+        *self.skills.entry(labor).or_insert(0.0) += amount;
+    }
+}
+
+fn deserialize_skills_null_default<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<Labor, f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<BTreeMap<Labor, f64>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 fn deserialize_role_xp_null_default<'de, D>(deserializer: D) -> Result<RoleXp, D::Error>
@@ -202,6 +233,7 @@ mod tests {
             Carrying, CarryingKind, Cat, CatActivity, CatNeeds, CatStats, Colony, ColonyStatus,
             MapType, Position, Resources, RoleXp,
         },
+        skills::Labor,
         types::{CatSpecialization, TaskType},
     };
 
@@ -286,12 +318,15 @@ mod tests {
                 ritualist: 3.0,
                 warrior: 4.0,
             },
+            skills: BTreeMap::from([(Labor::Hunt, 5.0), (Labor::Haul, 2.0)]),
         };
 
         assert_eq!(colony.world_seed, Some(42));
         assert_eq!(colony.threat_pressure, 8.5);
         assert_eq!(cat.activity, CatActivity::Returning);
         assert_eq!(cat.role_xp.warrior, 4.0);
+        assert_eq!(cat.skill(Labor::Hunt), 5.0);
+        assert_eq!(cat.skill(Labor::Fight), 0.0);
     }
 
     #[test]
@@ -364,6 +399,34 @@ mod tests {
         assert_eq!(cat.pregnancy_mate_id, None);
         assert_eq!(cat.specialization, None);
         assert_eq!(cat.role_xp.warrior, 0.0);
+        assert!(cat.skills.is_empty());
+        assert_eq!(cat.skill(Labor::Hunt), 0.0);
+    }
+
+    #[test]
+    fn skills_survive_serde_round_trip_and_null_defaults_to_empty() {
+        // Explicit `null` skills (legacy-shaped) load as an empty map.
+        let mut json = minimal_cat_json();
+        json["skills"] = serde_json::Value::Null;
+        let cat: Cat = serde_json::from_value(json).expect("null skills deserializes");
+        assert!(cat.skills.is_empty());
+
+        // A populated map round-trips exactly through the wire format.
+        let mut cat = cat;
+        cat.gain_skill(Labor::Hunt, 3.0);
+        cat.gain_skill(Labor::FetchWater, 1.5);
+        let wire = serde_json::to_value(&cat).expect("serialize");
+        assert_eq!(wire["skills"]["hunt"], serde_json::json!(3.0));
+        assert_eq!(wire["skills"]["fetch_water"], serde_json::json!(1.5));
+        let back: Cat = serde_json::from_value(wire).expect("round-trip");
+        assert_eq!(back.skills, cat.skills);
+    }
+
+    #[test]
+    fn empty_skills_are_omitted_from_the_wire() {
+        let cat: Cat = serde_json::from_value(minimal_cat_json()).expect("deserialize");
+        let wire = serde_json::to_value(&cat).expect("serialize");
+        assert!(wire.get("skills").is_none());
     }
 
     fn minimal_colony_json() -> serde_json::Value {

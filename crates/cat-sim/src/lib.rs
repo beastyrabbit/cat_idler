@@ -46,6 +46,7 @@ pub mod idle_rules;
 pub mod production;
 pub mod roads;
 pub mod shrine;
+pub mod skills;
 pub mod smithy;
 pub mod spoilage;
 pub mod storage;

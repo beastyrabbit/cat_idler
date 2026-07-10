@@ -14,6 +14,7 @@ use crate::{
     idle_engine, idle_rules,
     life_sim::{can_work, get_life_stage},
     production,
+    skills::Labor,
     storage::{self, StorageBuilding},
     threat,
     types::{self, BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, UpgradeKey},
@@ -1054,14 +1055,20 @@ fn queue_job(
     assigned_cat: Option<String>,
     metadata: JobMetadata,
 ) {
-    let specialization = assigned_cat
+    let (specialization, skill) = assigned_cat
         .as_ref()
         .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == *cat_id))
-        .and_then(|cat| cat.specialization);
+        .map_or((None, 0.0), |cat| {
+            (
+                cat.specialization,
+                Labor::for_job_kind(kind).map_or(0.0, |labor| cat.skill(labor)),
+            )
+        });
     let duration_seconds = idle_engine::get_scaled_duration_seconds(
         kind,
         specialization,
         idle_upgrade_levels(&colony.upgrade_levels),
+        skill,
         Some(colony.test_time_scale),
     );
     let duration_ms = (duration_seconds * 1000.0) as i64;

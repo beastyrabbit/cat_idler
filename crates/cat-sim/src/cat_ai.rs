@@ -100,6 +100,7 @@ mod tests {
             sprite_params: Some(BTreeMap::new()),
             specialization: None,
             role_xp: RoleXp::default(),
+            skills: Default::default(),
         }
     }
 

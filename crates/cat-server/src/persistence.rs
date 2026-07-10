@@ -6,6 +6,7 @@ use std::{collections::BTreeMap, path::Path};
 use cat_sim::{
     biomes::MaxResources,
     entities::{Carrying, Cat, CatActivity, ColonyStatus, Position, Resources, RoleXp},
+    skills::Labor,
     types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType},
     upgrade_tree::{UpgradeTreeState, create_upgrade_tree_state},
     world_gen::TileResources,
@@ -100,7 +101,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             pregnancyMateId TEXT,
             spriteParams TEXT,
             specialization TEXT,
-            roleXp TEXT
+            roleXp TEXT,
+            skills TEXT
         );
 
         CREATE TABLE IF NOT EXISTS jobs (
@@ -412,10 +414,10 @@ fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<(
             id, colonyId, name, parentIds, birthTime, deathTime, stats, needs,
             currentTask, position, destination, carrying, activity, isPregnant,
             pregnancyDueTime, ageHours, pregnancyDueAgeHours, pregnancyMateId,
-            spriteParams, specialization, roleXp
+            spriteParams, specialization, roleXp, skills
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
         )",
         params![
             cat.id,
@@ -451,6 +453,7 @@ fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<(
                 .map_err(to_sql_json)?,
             specialization,
             serde_json::to_string(&cat.role_xp).map_err(to_sql_json)?,
+            serde_json::to_string(&cat.skills).map_err(to_sql_json)?,
         ],
     )?;
     Ok(())
@@ -461,7 +464,7 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
         "SELECT id, name, parentIds, birthTime, deathTime, stats, needs,
                 currentTask, position, destination, carrying, activity, isPregnant,
                 pregnancyDueTime, ageHours, pregnancyDueAgeHours, pregnancyMateId,
-                spriteParams, specialization, roleXp
+                spriteParams, specialization, roleXp, skills
          FROM cats WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
@@ -470,6 +473,7 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
         let needs_json: String = row.get("needs")?;
         let position_json: String = row.get("position")?;
         let role_xp_json: Option<String> = row.get("roleXp")?;
+        let skills_json: Option<String> = row.get("skills")?;
         Ok(Cat {
             id: row.get("id")?,
             colony_id: colony_id.to_owned(),
@@ -513,6 +517,12 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
                 .transpose()?,
             role_xp: role_xp_json
                 .map(|raw| serde_json::from_str::<RoleXp>(&raw).map_err(from_sql_json))
+                .transpose()?
+                .unwrap_or_default(),
+            skills: skills_json
+                .map(|raw| {
+                    serde_json::from_str::<BTreeMap<Labor, f64>>(&raw).map_err(from_sql_json)
+                })
                 .transpose()?
                 .unwrap_or_default(),
         })

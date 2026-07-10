@@ -229,6 +229,7 @@ mod tests {
             sprite_params: None,
             specialization: None,
             role_xp: RoleXp::default(),
+            skills: Default::default(),
         }
     }
 
