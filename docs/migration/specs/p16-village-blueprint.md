@@ -13,6 +13,11 @@ Detailed founding/economy/spatial design from playtest. Numbers are the spec.
 - Cats pathfind on the 1×1 grid (already per-tile; grid is finer now).
 
 ## Default founding village (replaces organic start)
+**Anchor placement rule:** a village always spawns on a **grass** biome and must have **water
+nearby** (a **river** or a lake/sea within a short radius) as a water source. World/founding gen
+picks (or guarantees) a grass site adjacent to water; "river" is one of the P17 biomes. (Replaces
+the current fixed flat-plateau anchor with a grass+water search.)
+
 A fixed starting blueprint:
 - **Shrine** 3×3 dead center, reserving 5×5 (road ring).
 - **Roads from the shrine out to the wall in N/S/E/W** (stone roads by default). The wall has a

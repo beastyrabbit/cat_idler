@@ -30,6 +30,9 @@ climate→biome map with per-biome decoration density.
   - passability hints (mountain blocks until unlocked; water blocks).
 
 ## ~25-biome palette (starting set — tune)
+**Water tiers** (all impassable): **river** (thin, winding — one biome), **lake/sea** (medium),
+**ocean** (big seas — large open water). Villages found near river/lake (P16).
+
 ocean, river, beach/coast, plains/grassland, meadow, flower-field, oak forest, birch forest,
 dark/dense forest, taiga, pine forest, jungle, savanna, desert, badlands/mesa, swamp, marsh,
 tundra, snowy plains, snowy taiga, ice, highland/hills, rocky peaks/mountains, stony shore,
