@@ -18,12 +18,17 @@ climate→biome map with per-biome decoration density.
 - A **biome lookup**: map (temperature band × humidity band), modified by elevation (mountains
   high, beach at coast, ocean/river low) → a biome from the ~25-palette. Hard borders are fine
   to start; add edge blending later.
+- **Biome SCALE ~10× the village** (user): climate noise is very low-frequency so each biome
+  region is large — you start in one biome (grass near water) and **other biomes are a journey
+  away → reached mid/late game**, not early. Tune the noise wavelength for ~10×-village regions.
 - Each **biome** carries properties (a table, like `biomes.rs`):
   - **ground tile / tint**, **decoration set + DENSITY** (this is the fix: plains = few trees,
     forest = dense, desert = cacti/none, tundra = none), **tree species**,
   - **movement-speed factor** (feeds P14.2/movement — e.g. desert/sand slow, plains medium),
-  - **resources** available (forest→wood, rocky/mountain→stone, coast/river→fish, plains→farmable
-    grass for fields) — drives the scout/gather loop,
+  - **resources** available (forest→wood, coast/river→fish, plains→farmable grass) — drives the
+    scout/gather loop. **Mining rules**: **mines only on MOUNTAIN biomes** (stone + ore); on
+    **stone/gravel** biomes you can collect stone too but **only tiny amounts** (a trickle);
+    other biomes = no mining.
   - **crop-growth multiplier** (per-biome fertility): e.g. **grass ~80%**, **marsh/fertile ~150%**,
     desert/tundra ~0 (not farmable). Relaxes P16's "fields only on grass" → fields go on any
     **farmable** biome, and the biome's fertility scales how fast the crop grows (P12.5 farm plots),
@@ -45,6 +50,10 @@ mushroom/odd. (≈25; trim/merge as needed.)
   to know which biomes have wood/stone/fish/farmland.
 - **Render + assets**: ~25 biomes need distinct ground tiles/tints. Curate from the Roguelike
   sheet (multi-shade grass/sand/snow/stone) or tint a base per biome; a real asset task.
+- **Distant-biome logistics (late-game upgrades)**: because biomes are ~10× the village and far
+  apart, reaching a distant biome (e.g. a far **marsh** to farm, or a mountain to mine) needs
+  **transport upgrades** — **trains** (land) and **ships** (water/ocean) unlocked via the upgrade
+  tree — to haul over long distances. Late-game; gated behind the tech tree + escalating cost.
 
 ## Sequencing
 Foundational terrain change → do it as a focused `cat-sim` card (grow terrain_gen + biomes
