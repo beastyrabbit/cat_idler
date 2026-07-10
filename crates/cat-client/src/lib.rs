@@ -20,7 +20,7 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use cat_protocol::{
     BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction, ColonySnapshot, JobKind,
-    Specialization, WorldSnapshot, ZoneKind,
+    Specialization, TilePoint, WorldSnapshot, ZoneKind,
 };
 use cat_sim::terrain_gen::{
     BiomeRole, DecorationRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
@@ -76,6 +76,41 @@ struct OutgoingActions(Vec<ClientAction>);
 #[derive(Resource, Default)]
 struct Selection {
     selected: Option<String>,
+}
+
+/// Active map tool and any in-progress zone drag.
+#[derive(Resource, Default)]
+struct Tools {
+    mode: ToolMode,
+    /// `(start_tile, current_tile)` while dragging a zone rectangle.
+    drag: Option<((i32, i32), (i32, i32))>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum ToolMode {
+    #[default]
+    Inspect,
+    AvoidZone,
+    GatherZone,
+}
+
+impl ToolMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Inspect => "Inspect",
+            Self::AvoidZone => "Avoid zone",
+            Self::GatherZone => "Gather zone",
+        }
+    }
+
+    /// The zone kind this mode paints, if any.
+    fn zone_kind(self) -> Option<ZoneKind> {
+        match self {
+            Self::Inspect => None,
+            Self::AvoidZone => Some(ZoneKind::Avoid),
+            Self::GatherZone => Some(ZoneKind::Gather),
+        }
+    }
 }
 
 /// Tracks one-time terrain spawn (terrain is static per `world_seed`).
@@ -178,6 +213,19 @@ struct EventLogText;
 #[derive(Component, Clone, Copy)]
 struct ActionButton(ButtonAction);
 
+/// A tool-mode toggle button.
+#[derive(Component, Clone, Copy)]
+struct ToolButton(ToolMode);
+
+/// Marker for the translucent zone-drag preview rectangle.
+#[derive(Component)]
+struct ZonePreview;
+
+/// Duration a painted zone lasts (30 min; within the sim's 10min–2h window).
+const ZONE_DURATION_MS: u64 = 30 * 60 * 1000;
+/// Max zone side length in tiles (matches the sim's 8x8 cap).
+const ZONE_MAX_TILES: i32 = 8;
+
 /// Query filter for the per-tick redraw of building marker + label entities.
 type BuildingEntities = Or<(With<BuildingSprite>, With<BuildingLabel>)>;
 /// Query filter for the per-tick redraw of cat body + carried-item + highlight.
@@ -239,6 +287,7 @@ pub fn run() {
         .insert_resource(OutgoingActions::default())
         .insert_resource(WorldRender::default())
         .insert_resource(Selection::default())
+        .insert_resource(Tools::default())
         .insert_resource(ClearColor(Color::srgb(0.06, 0.09, 0.08)))
         .add_systems(Startup, (setup, connect_ws))
         .add_systems(
@@ -254,6 +303,9 @@ pub fn run() {
                 camera_controls,
                 select_cat,
                 update_inspector,
+                handle_tool_buttons,
+                zone_paint,
+                render_zone_preview,
                 update_hud,
                 update_event_log,
                 update_stock_indicator,
@@ -334,8 +386,45 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         )],
     ));
 
+    // Tool-mode toolbar (just above the action toolbar).
+    spawn_tool_toolbar(&mut commands);
     // Action toolbar (bottom, centred).
     spawn_toolbar(&mut commands);
+}
+
+fn spawn_tool_toolbar(commands: &mut Commands) {
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(48.0),
+            left: Val::Px(0.0),
+            width: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            column_gap: Val::Px(10.0),
+            ..default()
+        })
+        .with_children(|row| {
+            for mode in [ToolMode::Inspect, ToolMode::AvoidZone, ToolMode::GatherZone] {
+                row.spawn((
+                    Button,
+                    Node {
+                        padding: UiRect::axes(Val::Px(14.0), Val::Px(6.0)),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgb(0.16, 0.20, 0.26)),
+                    BorderColor::all(Color::srgba(0.55, 0.70, 0.90, 0.5)),
+                    ToolButton(mode),
+                    children![(
+                        Text::new(mode.label()),
+                        TextFont {
+                            font_size: FontSize::Px(13.0),
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.92, 0.95, 1.0)),
+                    )],
+                ));
+            }
+        });
 }
 
 fn hud_panel_node(left: f32, top: f32, width: f32) -> Node {
@@ -717,9 +806,14 @@ fn select_cat(
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
     ui: Query<&Interaction, With<Button>>,
+    tools: Res<Tools>,
     latest: Res<LatestSnapshot>,
     mut selection: ResMut<Selection>,
 ) {
+    // Selection is the Inspect-mode action only.
+    if tools.mode != ToolMode::Inspect {
+        return;
+    }
     if !buttons.just_pressed(MouseButton::Left) {
         return;
     }
@@ -787,6 +881,104 @@ fn cursor_world(
     let cursor = window.cursor_position()?;
     let (camera, cam_tf) = camera.single().ok()?;
     camera.viewport_to_world_2d(cam_tf, cursor).ok()
+}
+
+/// Toolbar tool-mode toggles: set the active mode, tint buttons by state, and
+/// cancel any in-progress drag when leaving a zone mode.
+fn handle_tool_buttons(
+    mut tools: ResMut<Tools>,
+    mut buttons: Query<(&Interaction, &ToolButton, &mut BackgroundColor)>,
+) {
+    for (interaction, button, mut color) in &mut buttons {
+        if *interaction == Interaction::Pressed && tools.mode != button.0 {
+            tools.mode = button.0;
+            tools.drag = None;
+        }
+        let active = tools.mode == button.0;
+        *color = BackgroundColor(match (active, interaction) {
+            (true, _) => Color::srgb(0.30, 0.44, 0.62),
+            (false, Interaction::Hovered) => Color::srgb(0.22, 0.28, 0.36),
+            (false, _) => Color::srgb(0.16, 0.20, 0.26),
+        });
+    }
+}
+
+/// Click-drag a rectangle in a zone mode to paint an avoid/gather zone; release
+/// sends the createZone action. Esc cancels an in-progress drag.
+#[allow(clippy::too_many_arguments)]
+fn zone_paint(
+    buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    windows: Query<&Window>,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    ui: Query<&Interaction, With<Button>>,
+    session: Res<Session>,
+    mut tools: ResMut<Tools>,
+    mut outgoing: ResMut<OutgoingActions>,
+) {
+    let Some(kind) = tools.mode.zone_kind() else {
+        tools.drag = None;
+        return;
+    };
+    if keys.just_pressed(KeyCode::Escape) {
+        tools.drag = None;
+        return;
+    }
+    let over_ui = ui.iter().any(|i| !matches!(i, Interaction::None));
+    let tile = cursor_world(&windows, &camera).map(world_to_tile);
+
+    if buttons.just_pressed(MouseButton::Left)
+        && !over_ui
+        && let Some(tile) = tile
+    {
+        tools.drag = Some((tile, tile));
+    } else if buttons.pressed(MouseButton::Left)
+        && let (Some((start, _)), Some(tile)) = (tools.drag, tile)
+    {
+        tools.drag = Some((start, tile));
+    } else if buttons.just_released(MouseButton::Left)
+        && let Some((start, end)) = tools.drag.take()
+    {
+        let (min, max) = drag_tile_rect(start, end, ZONE_MAX_TILES);
+        if session.ready {
+            outgoing.0.push(ClientAction::CreateZone {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                kind,
+                a: TilePoint { x: min.0, y: min.1 },
+                b: TilePoint { x: max.0, y: max.1 },
+                duration_ms: ZONE_DURATION_MS,
+            });
+        } else {
+            warn!("session not ready; dropping createZone");
+        }
+    }
+}
+
+/// Redraw the translucent drag preview rectangle each frame while dragging.
+fn render_zone_preview(
+    mut commands: Commands,
+    tools: Res<Tools>,
+    existing: Query<Entity, With<ZonePreview>>,
+) {
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    let (Some(kind), Some((start, end))) = (tools.mode.zone_kind(), tools.drag) else {
+        return;
+    };
+    let (min, max) = drag_tile_rect(start, end, ZONE_MAX_TILES);
+    let w = (max.0 - min.0 + 1) as f32 * TILE;
+    let h = (max.1 - min.1 + 1) as f32 * TILE;
+    let cx = (min.0 as f32 + max.0 as f32) / 2.0 * TILE;
+    let cy = -(min.1 as f32 + max.1 as f32) / 2.0 * TILE;
+    commands.spawn((
+        Sprite::from_color(zone_preview_color(kind), Vec2::new(w, h)),
+        // Just above committed zones so the preview reads on top.
+        Transform::from_xyz(cx, cy, Z_ZONE + 0.5),
+        ZonePreview,
+    ));
 }
 
 fn camera_controls(
@@ -1036,7 +1228,34 @@ fn flush_outgoing(conn: Option<NonSendMut<WsConn>>, mut outgoing: ResMut<Outgoin
     }
 }
 
-// ---- pure selection / inspector helpers (unit-tested) ----
+// ---- pure selection / inspector / zone helpers (unit-tested) ----
+
+/// Flat top-down inverse of [`grid_to_world`]: world space → tile coordinate.
+fn world_to_tile(world: Vec2) -> (i32, i32) {
+    (
+        (world.x / TILE).round() as i32,
+        (-world.y / TILE).round() as i32,
+    )
+}
+
+/// Inclusive tile rectangle `(min, max)` for a drag from `start` to `end`,
+/// clamped so neither side exceeds `max` tiles (the sim's zone cap).
+fn drag_tile_rect(start: (i32, i32), end: (i32, i32), max: i32) -> ((i32, i32), (i32, i32)) {
+    let span = (max - 1).max(0);
+    let cx = end.0.clamp(start.0 - span, start.0 + span);
+    let cy = end.1.clamp(start.1 - span, start.1 + span);
+    (
+        (start.0.min(cx), start.1.min(cy)),
+        (start.0.max(cx), start.1.max(cy)),
+    )
+}
+
+fn zone_preview_color(kind: ZoneKind) -> Color {
+    match kind {
+        ZoneKind::Avoid => Color::srgba(0.95, 0.30, 0.30, 0.45),
+        ZoneKind::Gather => Color::srgba(0.35, 0.90, 0.40, 0.45),
+    }
+}
 
 /// Nearest cat id to `click` within `radius`, or `None`.
 fn nearest_cat_id(click: Vec2, cats: &[(String, Vec2)], radius: f32) -> Option<String> {
@@ -1341,6 +1560,36 @@ mod tests {
         );
         // Clicking empty ground deselects.
         assert_eq!(toggle_selection(Some("a"), None), None);
+    }
+
+    #[test]
+    fn world_to_tile_inverts_grid_projection() {
+        for (x, y) in [(0, 0), (3, 5), (-4, 2), (6, 6), (-7, -1)] {
+            assert_eq!(world_to_tile(grid_to_world(x, y)), (x, y));
+        }
+        // Rounds to the nearest tile centre.
+        assert_eq!(world_to_tile(Vec2::new(TILE * 2.1, -TILE * 2.9)), (2, 3));
+    }
+
+    #[test]
+    fn drag_tile_rect_normalizes_and_clamps() {
+        // Backwards drag normalises to (min, max).
+        assert_eq!(drag_tile_rect((5, 5), (2, 3), 8), ((2, 3), (5, 5)));
+        // Oversized drag clamps each side to `max` tiles from the start corner.
+        let (min, max) = drag_tile_rect((0, 0), (20, 20), 8);
+        assert_eq!(min, (0, 0));
+        assert_eq!(max, (7, 7));
+        assert_eq!(max.0 - min.0 + 1, 8);
+        assert_eq!(max.1 - min.1 + 1, 8);
+        // A single-tile click is a 1x1 rect.
+        assert_eq!(drag_tile_rect((4, 4), (4, 4), 8), ((4, 4), (4, 4)));
+    }
+
+    #[test]
+    fn tool_mode_zone_kind_mapping() {
+        assert_eq!(ToolMode::Inspect.zone_kind(), None);
+        assert_eq!(ToolMode::AvoidZone.zone_kind(), Some(ZoneKind::Avoid));
+        assert_eq!(ToolMode::GatherZone.zone_kind(), Some(ZoneKind::Gather));
     }
 
     #[test]
