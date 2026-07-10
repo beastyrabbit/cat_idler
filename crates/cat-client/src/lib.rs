@@ -3734,6 +3734,9 @@ mod tests {
             refined,
             weapons: 0.0,
             armor: 0.0,
+            planks: 0.0,
+            blocks: 0.0,
+            tools: 0.0,
             blessings: 0.0,
         }
     }
@@ -4164,6 +4167,9 @@ mod tests {
             refined: 0.0,
             weapons: 3.0,
             armor: 2.0,
+            planks: 0.0,
+            blocks: 0.0,
+            tools: 0.0,
             blessings: 4.5,
         };
         let cap = ResourceCapacities {
@@ -4174,6 +4180,9 @@ mod tests {
             refined: 100.0,
             weapons: 0.0,
             armor: 0.0,
+            planks: 0.0,
+            blocks: 0.0,
+            tools: 0.0,
         };
         assert_eq!(
             hud_resource_value(ResourceKind::Food, &r, &cap),
@@ -4200,6 +4209,9 @@ mod tests {
                 refined: 0.0,
                 weapons: 0.0,
                 armor: 0.0,
+                planks: 0.0,
+                blocks: 0.0,
+                tools: 0.0,
                 blessings: 0.0,
             },
         };
@@ -4298,6 +4310,9 @@ mod tests {
             refined: 0.0,
             weapons: 0.0,
             armor: 0.0,
+            planks: 0.0,
+            blocks: 0.0,
+            tools: 0.0,
             blessings: 0.0,
         };
         let exact = ledger_hud_text(&StockLedgerSnapshot {

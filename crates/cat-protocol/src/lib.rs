@@ -121,6 +121,14 @@ pub struct ResourceAmounts {
     pub refined: f64,
     pub weapons: f64,
     pub armor: f64,
+    /// P12.4b refinement tier: planks (wood-cutter), blocks (stone-prep), tools
+    /// (woodworking). Defaulted so legacy wire payloads still deserialize.
+    #[serde(default)]
+    pub planks: f64,
+    #[serde(default)]
+    pub blocks: f64,
+    #[serde(default)]
+    pub tools: f64,
     pub blessings: f64,
 }
 
@@ -145,6 +153,13 @@ pub struct ResourceCapacities {
     pub weapons: f64,
     #[serde(default)]
     pub armor: f64,
+    /// P12.4b refinement-tier caps (planks/blocks/tools). Defaulted for legacy payloads.
+    #[serde(default)]
+    pub planks: f64,
+    #[serde(default)]
+    pub blocks: f64,
+    #[serde(default)]
+    pub tools: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -869,6 +884,9 @@ mod tests {
                     refined: 3.0,
                     weapons: 2.0,
                     armor: 1.0,
+                    planks: 0.0,
+                    blocks: 0.0,
+                    tools: 0.0,
                     blessings: 8.0,
                 },
                 storage: StorageSnapshot {
@@ -880,6 +898,9 @@ mod tests {
                         refined: 100.0,
                         weapons: 0.0,
                         armor: 0.0,
+                        planks: 0.0,
+                        blocks: 0.0,
+                        tools: 0.0,
                     },
                     food_capacity: Some(200.0),
                     tithe_rates: TitheRates {

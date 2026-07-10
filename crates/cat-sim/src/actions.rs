@@ -858,6 +858,9 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 refined: caps.refined,
                 weapons: caps.weapons,
                 armor: caps.armor,
+                planks: caps.planks,
+                blocks: caps.blocks,
+                tools: caps.tools,
             },
             food_capacity: Some(caps.food),
             tithe_rates: proto::TitheRates {
@@ -1506,6 +1509,9 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
         refined: resources.refined,
         weapons: resources.weapons,
         armor: resources.armor,
+        planks: resources.planks,
+        blocks: resources.blocks,
+        tools: resources.tools,
         blessings: resources.blessings,
     }
 }
@@ -1865,6 +1871,25 @@ mod tests {
             world_seed: 20_240_703,
             colonies: vec![found_colony(20_240_703, "c1", 1_000_000, 1234)],
         }
+    }
+
+    #[test]
+    fn snapshot_exposes_the_refinement_tier_resources_and_caps() {
+        // P19 slice 1b: planks/blocks/tools and their caps must ride the wire so the
+        // client HUD can show the refinement stockpile.
+        let mut world = world_with_one_colony();
+        world.colonies[0].resources.planks = 7.0;
+        world.colonies[0].resources.blocks = 3.5;
+        world.colonies[0].resources.tools = 2.0;
+
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let colony = &snapshot.colonies[0];
+        assert_eq!(colony.resources.planks, 7.0);
+        assert_eq!(colony.resources.blocks, 3.5);
+        assert_eq!(colony.resources.tools, 2.0);
+        assert!(colony.storage.capacities.planks > 0.0);
+        assert!(colony.storage.capacities.blocks > 0.0);
+        assert!(colony.storage.capacities.tools > 0.0);
     }
 
     #[test]

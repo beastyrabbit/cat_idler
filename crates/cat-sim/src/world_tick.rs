@@ -1417,6 +1417,14 @@ fn phase_13_tick_local_target_caches(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 14: promote queued jobs, create scaffolds for construction jobs, and
 /// stamp started timers.
+/// Planks a construction scaffold consumes at break-ground (P19 slice 1b). Kept
+/// deliberately small: the 5-cat start banks only a trickle of refined materials, so a
+/// den must stay affordable within a handful of wood-cutter cycles or the colony can
+/// never grow. Gates growth without freezing it.
+const SCAFFOLD_PLANK_COST: f64 = 2.0;
+/// Dressed-stone blocks a construction scaffold consumes at break-ground.
+const SCAFFOLD_BLOCK_COST: f64 = 2.0;
+
 fn phase_14_promote_queued_jobs_and_break_ground(
     colony: &mut ColonyRuntime,
     gate: TickGate,
@@ -1442,6 +1450,17 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 }
             )
         {
+            // P19 slice 1b build cost: breaking ground draws refined build materials
+            // (planks + blocks) from the stores. If the wood-cutter/stone-prep benches
+            // have not banked enough yet, the job stays Queued and retries on a later
+            // tick — construction is gated on refined-material supply, not free. The cost
+            // keys only off pile-invariant resource totals, so this stays deterministic.
+            if colony.resources.planks < SCAFFOLD_PLANK_COST
+                || colony.resources.blocks < SCAFFOLD_BLOCK_COST
+            {
+                continue;
+            }
+
             let roll = roll_seeded(f64::from(movement_seed));
             movement_seed = roll.next_seed;
 
@@ -1457,6 +1476,9 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             if let Some(site_local) =
                 next_claimed_building_site(colony, roll.value, world_seed, scaffold_type)
             {
+                // Spend the build materials only once a real site is committed.
+                colony.resources.planks = (colony.resources.planks - SCAFFOLD_PLANK_COST).max(0.0);
+                colony.resources.blocks = (colony.resources.blocks - SCAFFOLD_BLOCK_COST).max(0.0);
                 let building_id = format!(
                     "building-{}-{}",
                     gate.processed_through,
@@ -1915,6 +1937,11 @@ fn phase_20_leader_labor_assignments_and_staffing(
     policy: TickPolicy,
     plan: &DirectorPlan,
 ) {
+    // Free the raw-material benches before drafting labour so critical hunt/water work
+    // always outbids a refinement task for the scarce founding cats. Phase 23 re-fills
+    // whichever benches still have a genuinely idle cat left over.
+    release_raw_material_workshop_workers(colony);
+
     let busy_ids = active_or_queued_jobs(colony)
         .iter()
         .filter_map(|job| job.assigned_cat.as_deref())
@@ -2003,6 +2030,7 @@ fn phase_20_leader_labor_assignments_and_staffing(
                         &building_id,
                         &assignment.cat_id,
                         gate.processed_through,
+                        true,
                     );
                 }
             }
@@ -2014,6 +2042,7 @@ fn phase_20_leader_labor_assignments_and_staffing(
                         &building_id,
                         &assignment.cat_id,
                         gate.processed_through,
+                        true,
                     );
                 }
             }
@@ -2094,16 +2123,40 @@ fn phase_22_ritual_approval(_: &mut ColonyRuntime, _: TickGate) {}
 /// Phase 23: run fields, workshops, and smithies against patched resources and
 /// building progress.
 fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
-    // Idle mop-up for the generic workshop (P12.4a). The P16 raw-material chains
-    // (wood-cutter / stone-prep / woodworking) also refine here whenever a worker is
-    // assigned (see the match arms below), but the sim does not auto-staff them yet:
-    // parking a founding cat in a workshop moves it, and cat movement draws the shared
-    // forked movement RNG in a way a designated stockpile can perturb — breaking the
-    // "stockpiles never change the economy" determinism invariant and, if the binding
-    // sticks, starving the 5-cat start. Deliberate live-sim staffing of these chains is
-    // deferred to a slice that resolves that movement/road/pile coupling.
-    auto_staff_idle_buildings(colony, BuildingType::Workshop, gate.processed_through);
-    auto_staff_idle_buildings(colony, BuildingType::AccountingTent, gate.processed_through);
+    // Idle mop-up (P12.4a/b). The generic workshop, the accounting tent, and the P16
+    // raw-material chains (wood-cutter / stone-prep / woodworking) are all filled here
+    // from cats that phase 20 left genuinely idle. The raw chains were released back to
+    // the labour pool at the top of phase 20 (`release_raw_material_workshop_workers`),
+    // so critical hunt/water work always wins the cats first — the mop-up only claims a
+    // true surplus and never sticky-binds a cat while food or water go unworked. Their
+    // staffing is announced quietly (no per-tick event spam) because the release/re-staff
+    // cadence re-touches the same benches every tick.
+    auto_staff_idle_buildings(colony, BuildingType::Workshop, gate.processed_through, true);
+    auto_staff_idle_buildings(
+        colony,
+        BuildingType::AccountingTent,
+        gate.processed_through,
+        true,
+    );
+    // Fund construction first: staff the scarcer of the two build-material benches
+    // (wood-cutter → planks, stone-prep → blocks) so a single spare cat keeps planks and
+    // blocks balanced enough to break ground. The woodworking (tools) bench is a luxury
+    // tier that only draws a cat once both build materials are already stocked — leaving
+    // it earlier would let it drain the planks/blocks the colony needs to grow. The order
+    // keys only off pile-invariant resource totals, so it stays deterministic.
+    let (first_bench, second_bench) = if colony.resources.planks <= colony.resources.blocks {
+        (BuildingType::WoodCutter, BuildingType::StonePrep)
+    } else {
+        (BuildingType::StonePrep, BuildingType::WoodCutter)
+    };
+    auto_staff_idle_buildings(colony, first_bench, gate.processed_through, false);
+    auto_staff_idle_buildings(colony, second_bench, gate.processed_through, false);
+    auto_staff_idle_buildings(
+        colony,
+        BuildingType::Woodworking,
+        gate.processed_through,
+        false,
+    );
 
     let production_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
     let building_ids = colony
@@ -3921,7 +3974,13 @@ fn buildings_needing_workers(
         .collect()
 }
 
-fn staff_building(colony: &mut ColonyRuntime, building_id: &str, cat_id: &str, now_ms: i64) {
+fn staff_building(
+    colony: &mut ColonyRuntime,
+    building_id: &str,
+    cat_id: &str,
+    now_ms: i64,
+    announce: bool,
+) {
     if let Some(building) = colony
         .buildings
         .iter_mut()
@@ -3929,12 +3988,16 @@ fn staff_building(colony: &mut ColonyRuntime, building_id: &str, cat_id: &str, n
     {
         building.assigned_cat = Some(cat_id.to_owned());
     }
-    append_event(
-        colony,
-        now_ms,
-        EventKind::Other("worker_assigned".to_owned()),
-        "The leader assigned a worker.",
-    );
+    // The raw-material benches are released and re-staffed every tick, so they pass
+    // `announce = false` to avoid flooding the log with a per-tick "worker assigned".
+    if announce {
+        append_event(
+            colony,
+            now_ms,
+            EventKind::Other("worker_assigned".to_owned()),
+            "The leader assigned a worker.",
+        );
+    }
 }
 
 fn cancel_jobs(
@@ -4586,7 +4649,33 @@ fn cheb_from_anchor(pos: TilePos) -> i32 {
         .max((pos.y - VILLAGE_ANCHOR.y).abs())
 }
 
-fn auto_staff_idle_buildings(colony: &mut ColonyRuntime, building_type: BuildingType, now_ms: i64) {
+/// The P12.4b raw-material refinement benches. The leader staffs these as a mop-up
+/// (non-sticky) set: every tick they are released back to the labour pool at the top
+/// of phase 20 and re-filled from the leftover idle surplus in phase 23, so food and
+/// water work always draws the cats first and the 5-cat start never starves at a bench.
+const RAW_MATERIAL_WORKSHOPS: [BuildingType; 3] = [
+    BuildingType::WoodCutter,
+    BuildingType::StonePrep,
+    BuildingType::Woodworking,
+];
+
+/// Release every cat bound to a raw-material refinement bench so the leader's labour
+/// pass can re-draft them for hunting/water first. Whatever remains genuinely idle is
+/// re-staffed by phase 23's mop-up. Keeps the benches non-sticky (survival guardrail).
+fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
+    for building in &mut colony.buildings {
+        if RAW_MATERIAL_WORKSHOPS.contains(&building.building_type) {
+            building.assigned_cat = None;
+        }
+    }
+}
+
+fn auto_staff_idle_buildings(
+    colony: &mut ColonyRuntime,
+    building_type: BuildingType,
+    now_ms: i64,
+    announce: bool,
+) {
     let mut open_buildings = buildings_needing_workers(colony, building_type);
     if open_buildings.is_empty() {
         return;
@@ -4614,7 +4703,7 @@ fn auto_staff_idle_buildings(colony: &mut ColonyRuntime, building_type: Building
         let Some(building_id) = open_buildings.pop() else {
             break;
         };
-        staff_building(colony, &building_id, &cat_id, now_ms);
+        staff_building(colony, &building_id, &cat_id, now_ms, announce);
     }
 }
 
@@ -6488,7 +6577,7 @@ mod tests {
     }
 
     #[test]
-    fn wood_cutter_refines_materials_into_planks_only_when_staffed() {
+    fn wood_cutter_refines_materials_into_planks_when_it_has_a_worker() {
         // Staffed: 590 + 30 ≥ 600 completes one cycle → 5 materials become 1 plank.
         let mut staffed = chain_colony(
             BuildingType::WoodCutter,
@@ -6502,9 +6591,11 @@ mod tests {
         assert_eq!(staffed.resources.planks, 1.0);
         assert_eq!(staffed.resources.materials, 45.0);
 
-        // Unstaffed: the sim does not auto-staff the raw-material chains, so the idle cat
-        // is left alone and the shop makes no conversion — materials and planks untouched.
-        let mut idle = chain_colony(
+        // FIXTURE UPDATE (P19 slice 1b): phase 23 now AUTO-STAFFS the raw-material benches
+        // from any genuinely idle cat, so an "unstaffed" bench that has a free cat on hand
+        // is mopped up and refines this very tick — the leader no longer leaves the shop
+        // cold. (Pre-1b this branch expected planks == 0 because auto-staffing was deferred.)
+        let mut auto_staffed = chain_colony(
             BuildingType::WoodCutter,
             Resources {
                 materials: 50.0,
@@ -6512,9 +6603,23 @@ mod tests {
             },
             false,
         );
-        phase_23_production(&mut idle, production_gate(30, 30_000));
-        assert_eq!(idle.resources.planks, 0.0);
-        assert_eq!(idle.resources.materials, 50.0);
+        phase_23_production(&mut auto_staffed, production_gate(30, 30_000));
+        assert_eq!(auto_staffed.resources.planks, 1.0);
+        assert_eq!(auto_staffed.resources.materials, 45.0);
+
+        // With NO worker available at all (no cats to mop up), the bench still makes nothing.
+        let mut no_worker = chain_colony(
+            BuildingType::WoodCutter,
+            Resources {
+                materials: 50.0,
+                ..Resources::default()
+            },
+            false,
+        );
+        no_worker.cats.clear();
+        phase_23_production(&mut no_worker, production_gate(30, 30_000));
+        assert_eq!(no_worker.resources.planks, 0.0);
+        assert_eq!(no_worker.resources.materials, 50.0);
     }
 
     #[test]
@@ -6581,6 +6686,92 @@ mod tests {
         }
         assert_eq!(colony.resources.planks, 10.0);
         assert_eq!(colony.resources.materials, 50.0);
+    }
+
+    #[test]
+    fn breaking_ground_on_a_scaffold_consumes_planks_and_blocks() {
+        // P19 slice 1b build cost: committing a scaffold site draws SCAFFOLD_PLANK_COST
+        // planks + SCAFFOLD_BLOCK_COST blocks from the stores and places one new scaffold.
+        let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
+        colony.resources.planks = 10.0;
+        colony.resources.blocks = 10.0;
+        let cat_id = colony.cats[0].id.clone();
+        let scaffolds_before = colony
+            .buildings
+            .iter()
+            .filter(|building| !building.is_complete)
+            .count();
+        queue_job(
+            &mut colony,
+            10_000,
+            JobKind::BuildHouse,
+            Some(cat_id),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Den,
+                building_id: None,
+                site: None,
+            },
+        );
+
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(60, 70_000),
+            4242,
+        );
+
+        assert_eq!(colony.resources.planks, 8.0);
+        assert_eq!(colony.resources.blocks, 8.0);
+        let scaffolds_after = colony
+            .buildings
+            .iter()
+            .filter(|building| !building.is_complete)
+            .count();
+        assert_eq!(
+            scaffolds_after,
+            scaffolds_before + 1,
+            "exactly one scaffold should have broken ground"
+        );
+    }
+
+    #[test]
+    fn breaking_ground_defers_when_build_materials_are_short() {
+        // With planks below the scaffold cost, the build job stays Queued to retry once
+        // the benches have banked enough — nothing is spent and no scaffold appears.
+        let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
+        colony.resources.planks = 1.0;
+        colony.resources.blocks = 10.0;
+        let cat_id = colony.cats[0].id.clone();
+        let buildings_before = colony.buildings.len();
+        queue_job(
+            &mut colony,
+            10_000,
+            JobKind::BuildHouse,
+            Some(cat_id),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Den,
+                building_id: None,
+                site: None,
+            },
+        );
+        let job_id = colony.jobs.last().expect("queued build job").id.clone();
+
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(60, 70_000),
+            4242,
+        );
+
+        assert_eq!(colony.resources.planks, 1.0);
+        assert_eq!(colony.resources.blocks, 10.0);
+        assert_eq!(colony.buildings.len(), buildings_before);
+        let job = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == job_id)
+            .expect("build job retained");
+        assert_eq!(job.status, JobStatus::Queued);
     }
 
     #[test]
@@ -6939,6 +7130,34 @@ mod tests {
                 colony.resources.water,
             );
         }
+    }
+
+    #[test]
+    fn founded_colony_leader_staffs_the_wood_cutter_and_banks_build_materials() {
+        // P19 slice 1b: with the leader auto-staffing the P16 raw-material benches from
+        // its idle surplus, a real founded colony (not a hand-staffed unit) refines its
+        // raw materials into planks AND blocks over a long horizon — the balanced mop-up
+        // keeps both build materials flowing so construction can be funded.
+        let mut world = new_world(1234);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
+        for step in 1..=400 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None, "tick {step} reset the run");
+        }
+        let colony = &world.colonies[0];
+        assert!(
+            colony.resources.planks > 0.0,
+            "leader never banked planks (got {})",
+            colony.resources.planks
+        );
+        assert!(
+            colony.resources.blocks > 0.0,
+            "leader never banked blocks (got {})",
+            colony.resources.blocks
+        );
     }
 
     #[test]
