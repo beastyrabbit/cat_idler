@@ -1675,6 +1675,13 @@ fn render_fog(
         return;
     };
     let revealed = revealed_lookup(&colony.revealed_tiles);
+    // Self-disabling fallback: with no revealed tiles (a pre-fog snapshot, or a
+    // colony whose reveal state isn't populated yet) fogging the whole window
+    // would black out the map — so show the full map until the set is non-empty.
+    // Once the sim emits a non-empty revealed set, fog kicks in normally.
+    if revealed.is_empty() {
+        return;
+    }
     let (x0, y0, x1, y1) = window_bounds();
     for y in y0..=y1 {
         for x in x0..=x1 {
@@ -3513,8 +3520,11 @@ mod tests {
         assert!(!is_fogged(&revealed, 7, 6));
         assert!(is_fogged(&revealed, 6, 5));
         assert!(is_fogged(&revealed, 100, 100));
-        // An empty reveal set fogs everything (pre-fog / undiscovered world).
+        // An empty reveal set is treated as "no fog data" by render_fog (it
+        // shows the full map rather than blacking it out); the predicate itself
+        // still reports every tile as fogged against an empty set.
         let none = revealed_lookup(&[]);
+        assert!(none.is_empty());
         assert!(is_fogged(&none, 6, 6));
     }
 
