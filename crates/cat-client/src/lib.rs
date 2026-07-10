@@ -19,8 +19,8 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use cat_protocol::{
-    BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction, ColonySnapshot, JobKind,
-    OfficerRole, ResourceAmounts, ResourceKind, Specialization, StockLedgerSnapshot,
+    BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction, ColonySnapshot, GateSide,
+    JobKind, OfficerRole, ResourceAmounts, ResourceKind, Specialization, StockLedgerSnapshot,
     StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
 };
 use cat_sim::terrain_gen::{
@@ -41,6 +41,7 @@ const Z_TERRAIN: f32 = 0.0;
 const Z_DECORATION: f32 = 1.0;
 const Z_ZONE: f32 = 2.0;
 const Z_STOCKPILE_PILE: f32 = 9.0;
+const Z_WALL: f32 = 9.5;
 const Z_BUILDING: f32 = 10.0;
 const Z_BUILDING_LABEL: f32 = 11.0;
 const Z_RAIDER: f32 = 15.0;
@@ -356,6 +357,22 @@ impl PropArt {
     }
 }
 
+/// Infra sprites (village palisade + gate), loaded once at startup.
+#[derive(Resource, Clone)]
+struct InfraArt {
+    palisade: Handle<Image>,
+    gate: Handle<Image>,
+}
+
+impl InfraArt {
+    fn load(assets: &AssetServer) -> Self {
+        Self {
+            palisade: assets.load("public/images/game/infra/palisade.png"),
+            gate: assets.load("public/images/game/infra/gate_open.png"),
+        }
+    }
+}
+
 /// The prop sprite a stockpile's dominant resource renders as.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PropTexture {
@@ -401,6 +418,19 @@ struct ZoneSprite;
 /// Marker for a raider sprite.
 #[derive(Component)]
 struct RaiderSprite;
+/// Marker for a village wall/gate segment sprite (redrawn when the claimed set
+/// changes).
+#[derive(Component)]
+struct WallVis;
+
+/// A perimeter edge side of a claimed tile.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WallSide {
+    N,
+    E,
+    S,
+    W,
+}
 /// Marker for stockpile visuals (overlay rect + pile prop + label), redrawn each
 /// snapshot.
 #[derive(Component)]
@@ -560,6 +590,7 @@ pub fn run() {
                     ensure_presence,
                     spawn_terrain,
                     render_buildings,
+                    render_walls,
                     render_zones,
                     render_stockpiles,
                     render_cats,
@@ -594,6 +625,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(TerrainArt::load(&asset_server));
     commands.insert_resource(BuildingArt::load(&asset_server));
     commands.insert_resource(PropArt::load(&asset_server));
+    commands.insert_resource(InfraArt::load(&asset_server));
 
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
@@ -1170,6 +1202,58 @@ fn render_buildings(
             TextColor(Color::srgba(1.0, 0.97, 0.86, 0.90)),
             Transform::from_xyz(p.x, p.y - TILE * 0.9, Z_BUILDING_LABEL),
             BuildingLabel,
+        ));
+    }
+}
+
+/// Draw the village palisade ring (perimeter edges of the claimed-tile set) with
+/// the gate sprite at the gate opening.
+fn render_walls(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    art: Option<Res<InfraArt>>,
+    existing: Query<Entity, With<WallVis>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
+    else {
+        return;
+    };
+    let claimed: HashSet<(i32, i32)> = colony.claimed_tiles.iter().map(|t| (t.x, t.y)).collect();
+    let gate_edge = colony
+        .village_gate
+        .map(|g| ((g.x, g.y), gate_side_to_wall(g.side)));
+
+    for (tile, side) in wall_edges(&claimed, gate_edge) {
+        let (pos, rot) = wall_edge_transform(tile, side);
+        commands.spawn((
+            Sprite {
+                image: art.palisade.clone(),
+                custom_size: Some(Vec2::splat(TILE)),
+                ..default()
+            },
+            Transform::from_xyz(pos.x, pos.y, Z_WALL).with_rotation(Quat::from_rotation_z(rot)),
+            WallVis,
+        ));
+    }
+
+    // Gate sprite at the opening (if the gate edge is on the perimeter).
+    if let Some((tile, side)) = gate_edge {
+        let (pos, rot) = wall_edge_transform(tile, side);
+        commands.spawn((
+            Sprite {
+                image: art.gate.clone(),
+                custom_size: Some(Vec2::splat(TILE)),
+                ..default()
+            },
+            Transform::from_xyz(pos.x, pos.y, Z_WALL + 0.1)
+                .with_rotation(Quat::from_rotation_z(rot)),
+            WallVis,
         ));
     }
 }
@@ -2142,6 +2226,51 @@ fn accept_overlay_color(accepts: &[ResourceKind]) -> Color {
     }
 }
 
+/// Perimeter wall edges of a claimed-tile set: for each claimed tile, every
+/// orthogonal side whose neighbour is unclaimed. `exclude` drops the gate edge.
+fn wall_edges(
+    claimed: &HashSet<(i32, i32)>,
+    exclude: Option<((i32, i32), WallSide)>,
+) -> Vec<((i32, i32), WallSide)> {
+    let mut edges = Vec::new();
+    for &(x, y) in claimed {
+        for (side, neighbour) in [
+            (WallSide::N, (x, y - 1)),
+            (WallSide::S, (x, y + 1)),
+            (WallSide::E, (x + 1, y)),
+            (WallSide::W, (x - 1, y)),
+        ] {
+            if !claimed.contains(&neighbour) && exclude != Some(((x, y), side)) {
+                edges.push(((x, y), side));
+            }
+        }
+    }
+    edges
+}
+
+/// World position of a tile's edge midpoint, and the sprite rotation (radians) —
+/// horizontal walls (N/S) unrotated, vertical walls (E/W) turned 90°.
+fn wall_edge_transform(tile: (i32, i32), side: WallSide) -> (Vec2, f32) {
+    let c = grid_to_world(tile.0, tile.1);
+    let half = TILE / 2.0;
+    match side {
+        // North is smaller y, which is *larger* world y under the flat projection.
+        WallSide::N => (c + Vec2::new(0.0, half), 0.0),
+        WallSide::S => (c + Vec2::new(0.0, -half), 0.0),
+        WallSide::E => (c + Vec2::new(half, 0.0), std::f32::consts::FRAC_PI_2),
+        WallSide::W => (c + Vec2::new(-half, 0.0), std::f32::consts::FRAC_PI_2),
+    }
+}
+
+fn gate_side_to_wall(side: GateSide) -> WallSide {
+    match side {
+        GateSide::N => WallSide::N,
+        GateSide::E => WallSide::E,
+        GateSide::S => WallSide::S,
+        GateSide::W => WallSide::W,
+    }
+}
+
 /// Whether a tile falls inside a stockpile's (unordered) rectangle.
 fn point_in_stockpile(tile: (i32, i32), pile: &StockpileSnapshot) -> bool {
     let (x0, x1) = (pile.x1.min(pile.x2), pile.x1.max(pile.x2));
@@ -2261,7 +2390,9 @@ fn building_texture(building: BuildingType) -> Option<BuildingTexture> {
 /// On-map sprite size: uniform ~1.8-tile height, preserving each sprite's native
 /// aspect (48x48 square; market 48x32 wide; well 16x32 tall).
 fn building_sprite_size(texture: BuildingTexture) -> Vec2 {
-    const HEIGHT: f32 = TILE * 1.8;
+    // Interim: sized so a building roughly fits its tile (was 1.8) to de-clutter
+    // the dense village until multi-tile footprints land (P14.1/P14.5).
+    const HEIGHT: f32 = TILE * 1.15;
     let aspect = match texture {
         BuildingTexture::Market => 48.0 / 32.0,
         BuildingTexture::Well => 16.0 / 32.0,
@@ -2406,6 +2537,29 @@ mod tests {
         let mut a = amounts(10.0, 5.0, 2.0);
         a.blessings = 99.0; // excluded
         assert_eq!(resource_total(&a), 17.0);
+    }
+
+    #[test]
+    fn wall_edges_finds_perimeter_and_excludes_gate() {
+        // A lone tile is all perimeter: 4 edges.
+        let single: HashSet<(i32, i32)> = [(0, 0)].into_iter().collect();
+        assert_eq!(wall_edges(&single, None).len(), 4);
+
+        // A 3x3 block: the centre has no edges; a corner has exactly 2.
+        let block: HashSet<(i32, i32)> = (0..3).flat_map(|x| (0..3).map(move |y| (x, y))).collect();
+        let edges = wall_edges(&block, None);
+        assert!(!edges.iter().any(|(tile, _)| *tile == (1, 1))); // interior
+        let corner: Vec<_> = edges.iter().filter(|(tile, _)| *tile == (0, 0)).collect();
+        assert_eq!(corner.len(), 2); // N + W for the top-left corner
+        assert!(corner.iter().any(|(_, s)| *s == WallSide::N));
+        assert!(corner.iter().any(|(_, s)| *s == WallSide::W));
+        // A 3x3 block has 12 perimeter edges (4 sides x 3).
+        assert_eq!(edges.len(), 12);
+
+        // Excluding the gate edge drops exactly that one.
+        let gated = wall_edges(&block, Some(((0, 0), WallSide::N)));
+        assert_eq!(gated.len(), 11);
+        assert!(!gated.contains(&((0, 0), WallSide::N)));
     }
 
     #[test]
