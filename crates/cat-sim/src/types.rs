@@ -113,6 +113,7 @@ define_wire_enum! {
         Field => "field",
         Smithy => "smithy",
         Barracks => "barracks",
+        AccountingTent => "accounting_tent",
     }
 }
 
@@ -276,6 +277,7 @@ mod tests {
             (BuildingType::Field, "field"),
             (BuildingType::Smithy, "smithy"),
             (BuildingType::Barracks, "barracks"),
+            (BuildingType::AccountingTent, "accounting_tent"),
         ];
 
         assert_wire_round_trip(&cases, BuildingType::as_str);

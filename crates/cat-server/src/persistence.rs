@@ -6,6 +6,7 @@ use std::{collections::BTreeMap, path::Path};
 use cat_sim::{
     biomes::MaxResources,
     entities::{Carrying, Cat, CatActivity, ColonyStatus, Position, Resources, RoleXp},
+    ledger::StockLedger,
     officers::OfficerRole,
     skills::Labor,
     stockpiles::Stockpile,
@@ -80,7 +81,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             testCriticalMsOverride INTEGER,
             testRngSeed INTEGER,
             officers TEXT,
-            stockpiles TEXT
+            stockpiles TEXT,
+            stockLedger TEXT
         );
 
         CREATE TABLE IF NOT EXISTS cats (
@@ -267,7 +269,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 ritualRequestedAt, criticalSince, claimedTiles, threatPressure,
                 lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
-                testCriticalMsOverride, testRngSeed, officers, stockpiles
+                testCriticalMsOverride, testRngSeed, officers, stockpiles, stockLedger
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -292,10 +294,10 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             criticalSince, claimedTiles, threatPressure, lastRaidAt, activeRaidId,
             raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
-            stockpiles
+            stockpiles, stockLedger
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
         )",
         params![
             colony.id,
@@ -327,6 +329,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.test_rng_seed.map(i64::from),
             serde_json::to_string(&colony.officers).map_err(to_sql_json)?,
             serde_json::to_string(&colony.stockpiles).map_err(to_sql_json)?,
+            serde_json::to_string(&colony.stock_ledger).map_err(to_sql_json)?,
         ],
     )?;
 
@@ -369,6 +372,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let claimed_tiles_json: Option<String> = row.get("claimedTiles")?;
     let officers_json: Option<String> = row.get("officers")?;
     let stockpiles_json: Option<String> = row.get("stockpiles")?;
+    let stock_ledger_json: Option<String> = row.get("stockLedger")?;
 
     Ok(ColonyRuntime {
         id: id.clone(),
@@ -402,6 +406,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .unwrap_or_default(),
         stockpiles: stockpiles_json
             .map(|raw| serde_json::from_str::<Vec<Stockpile>>(&raw).map_err(from_sql_json))
+            .transpose()?
+            .unwrap_or_default(),
+        stock_ledger: stock_ledger_json
+            .map(|raw| serde_json::from_str::<StockLedger>(&raw).map_err(from_sql_json))
             .transpose()?
             .unwrap_or_default(),
         threat_pressure: row.get::<_, Option<f64>>("threatPressure")?.unwrap_or(0.0),
@@ -1375,6 +1383,10 @@ mod tests {
         assert_eq!(loaded.colonies[0].jobs, world.colonies[0].jobs);
         assert_eq!(loaded.colonies[0].officers, world.colonies[0].officers);
         assert_eq!(loaded.colonies[0].stockpiles, world.colonies[0].stockpiles);
+        assert_eq!(
+            loaded.colonies[0].stock_ledger,
+            world.colonies[0].stock_ledger
+        );
     }
 
     #[test]
@@ -1388,13 +1400,21 @@ mod tests {
             .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
         save_world(&conn, &world).expect("save world");
 
-        // Simulate a pre-P12.2/P12.3 row: officers + stockpiles columns NULL.
-        conn.execute("UPDATE colonies SET officers = NULL, stockpiles = NULL", [])
-            .expect("null columns");
+        // Simulate a pre-P12.2/P12.3/P12.4a row: officers + stockpiles + stockLedger NULL.
+        conn.execute(
+            "UPDATE colonies SET officers = NULL, stockpiles = NULL, stockLedger = NULL",
+            [],
+        )
+        .expect("null columns");
         let loaded = load_world(&conn)
             .expect("load world")
             .expect("world should exist");
         assert!(loaded.colonies[0].officers.is_empty());
         assert!(loaded.colonies[0].stockpiles.is_empty());
+        // A NULL ledger loads as the default (empty reported totals, never counted).
+        assert_eq!(
+            loaded.colonies[0].stock_ledger,
+            cat_sim::ledger::StockLedger::default()
+        );
     }
 }

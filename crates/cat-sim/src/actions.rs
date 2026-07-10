@@ -906,6 +906,15 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .map(|(role, cat_id)| (sim_to_proto_officer_role(*role), cat_id.clone()))
             .collect(),
         stockpiles: colony.stockpiles.iter().map(stockpile_snapshot).collect(),
+        stock_ledger: Some(stock_ledger_snapshot(colony)),
+    }
+}
+
+fn stock_ledger_snapshot(colony: &ColonyRuntime) -> proto::StockLedgerSnapshot {
+    proto::StockLedgerSnapshot {
+        reported: resources_snapshot(&colony.stock_ledger.reported),
+        last_counted: colony.stock_ledger.last_counted,
+        accurate: colony.stock_ledger.is_accurate(&colony.resources),
     }
 }
 
@@ -1760,6 +1769,9 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         BuildingType::Field => Some(proto::BuildingType::Field),
         BuildingType::Smithy => Some(proto::BuildingType::Smithy),
         BuildingType::Barracks => Some(proto::BuildingType::Barracks),
+        // No protocol/client sprite yet — the Accounting Tent's effect surfaces via the
+        // stock ledger, not a rendered building. Omitted from the buildings snapshot.
+        BuildingType::AccountingTent => None,
     }
 }
 

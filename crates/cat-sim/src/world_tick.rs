@@ -24,6 +24,7 @@ use crate::{
         CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, direct_colony,
         match_cats_to_slots_with_officers,
     },
+    ledger::{StockLedger, refresh_ledger},
     life_sim::{can_work, get_life_stage, leadership_after_tenure, old_age_death_probability},
     movement::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC, WorldPos,
@@ -118,6 +119,10 @@ pub struct ColonyRuntime {
     /// On-map stockpiles (P12.3). Always includes the shrine reservoir after a tick;
     /// their contents sum to `resources` per the balancing-reservoir invariant.
     pub stockpiles: Vec<Stockpile>,
+    /// Reported stock ledger (P12.4a). A lagging *view* of `resources`; a staffed Accounting
+    /// Tent keeps it exact each tick, otherwise it recounts on an interval. Never affects the
+    /// true `resources`.
+    pub stock_ledger: StockLedger,
     pub threat_pressure: f64,
     pub last_raid_at: Option<i64>,
     pub active_raid: Option<RaidId>,
@@ -380,6 +385,7 @@ impl Default for ColonyRuntime {
             claimed_tiles: Vec::new(),
             officers: BTreeMap::new(),
             stockpiles: Vec::new(),
+            stock_ledger: StockLedger::default(),
             threat_pressure: 0.0,
             last_raid_at: None,
             active_raid: None,
@@ -483,6 +489,8 @@ pub fn found_colony(
     };
     // Seed the shrine reservoir so the stockpile invariant holds before the first tick.
     reconcile_colony_stockpiles(&mut colony);
+    // The books are counted at founding, so the reported ledger starts exact.
+    colony.stock_ledger = StockLedger::counted(&colony.resources, now_ms);
     colony
 }
 
@@ -1769,6 +1777,7 @@ fn phase_22_ritual_approval(_: &mut ColonyRuntime, _: TickGate) {}
 /// building progress.
 fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
     auto_staff_idle_buildings(colony, BuildingType::Workshop, gate.processed_through);
+    auto_staff_idle_buildings(colony, BuildingType::AccountingTent, gate.processed_through);
 
     let production_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
     let building_ids = colony
@@ -1802,6 +1811,16 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
                     colony.resources.materials =
                         (colony.resources.materials - step.materials_used).max(0.0);
                     colony.resources.refined += step.refined_produced;
+                    // Pile the fresh refined goods at the nearest accepting stockpile to this
+                    // workshop (P12.4a). Only touches pile contents, never `resources`; with
+                    // no designated piles this lands in the shrine reservoir exactly as before.
+                    let site = colony.buildings[building_index].position;
+                    route_output_to_nearest_pile(
+                        colony,
+                        ResourceKind::Refined,
+                        step.refined_produced,
+                        site,
+                    );
                     append_event(
                         colony,
                         gate.processed_through,
@@ -1841,6 +1860,21 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
                         (colony.resources.materials - step.materials_used).max(0.0);
                     colony.resources.weapons += step.weapons_produced;
                     colony.resources.armor += step.armor_produced;
+                    // Route the forged gear to the nearest accepting stockpile to the smithy
+                    // (P12.4a) — pile-only, `resources` unchanged, shrine fallback with no piles.
+                    let site = colony.buildings[building_index].position;
+                    route_output_to_nearest_pile(
+                        colony,
+                        ResourceKind::Weapons,
+                        step.weapons_produced,
+                        site,
+                    );
+                    route_output_to_nearest_pile(
+                        colony,
+                        ResourceKind::Armor,
+                        step.armor_produced,
+                        site,
+                    );
                     append_event(
                         colony,
                         gate.processed_through,
@@ -1862,6 +1896,47 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
             _ => {}
         }
     }
+
+    // Refresh the reported stock ledger (P12.4a). A staffed Accounting Tent recounts it to the
+    // exact current stock every tick; otherwise it lags and recounts on an interval. This only
+    // touches `stock_ledger`, never the true `resources`.
+    let staffed = has_staffed_accounting_tent(colony);
+    refresh_ledger(
+        &mut colony.stock_ledger,
+        &colony.resources,
+        staffed,
+        gate.processed_through,
+    );
+}
+
+/// Deposit a produced `amount` of `kind` into the nearest accepting stockpile to `at`
+/// (P12.4a inter-workshop routing). Pile-contents only — the caller has already credited the
+/// authoritative `resources`, so `resources` is never touched here and stays byte-identical.
+/// With no designated player piles this resolves to the shrine reservoir, matching pre-P12.4a.
+fn route_output_to_nearest_pile(
+    colony: &mut ColonyRuntime,
+    kind: ResourceKind,
+    amount: f64,
+    at: TilePos,
+) {
+    if amount <= 0.0 {
+        return;
+    }
+    if let Some(idx) =
+        stockpiles::deposit_index(&colony.stockpiles, kind, f64::from(at.x), f64::from(at.y))
+    {
+        stockpiles::add_resource(&mut colony.stockpiles[idx].contents, kind, amount);
+    }
+}
+
+/// Whether a completed Accounting Tent is staffed by a living cat (its bookkeeper keeps the
+/// stock ledger exact each tick).
+fn has_staffed_accounting_tent(colony: &ColonyRuntime) -> bool {
+    colony.buildings.iter().any(|building| {
+        building.building_type == BuildingType::AccountingTent
+            && building.construction_progress >= 100
+            && assigned_worker(colony, &building.id).is_some()
+    })
 }
 
 /// Phase 24: accrue research from staffed research huts/schools and auto-unlock
@@ -3879,7 +3954,8 @@ fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
         | BuildingType::Field
         | BuildingType::FoodStorage
         | BuildingType::Smithy
-        | BuildingType::Barracks => building_type,
+        | BuildingType::Barracks
+        | BuildingType::AccountingTent => building_type,
         _ => BuildingType::Den,
     }
 }
@@ -5409,6 +5485,267 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- P12.4a accountant + inter-workshop routing ----
+
+    fn workshop_colony(with_refined_pile: bool) -> ColonyRuntime {
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                materials: 50.0,
+                ..Resources::default()
+            },
+            cats: vec![adult_idle_cat("smith", "colony-1")],
+            buildings: vec![BuildingRuntime {
+                id: "workshop-1".to_owned(),
+                building_type: BuildingType::Workshop,
+                level: 1,
+                position: TilePos { x: 12, y: 12 },
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 590.0,
+                assigned_cat: Some("smith".to_owned()),
+            }],
+            last_tick: 0,
+            test_rng_seed: Some(1),
+            ..ColonyRuntime::default()
+        };
+        // Seed the shrine reservoir at the anchor (6, 6), far from the workshop at (12, 12).
+        reconcile_colony_stockpiles(&mut colony);
+        if with_refined_pile {
+            colony.stockpiles.push(designated_pile(
+                "stockpile-refined",
+                ZoneRect {
+                    x1: 12,
+                    y1: 12,
+                    x2: 12,
+                    y2: 12,
+                },
+                &[ResourceKind::Refined],
+            ));
+        }
+        colony
+    }
+
+    fn production_gate(elapsed_sec: i64, processed_through: i64) -> TickGate {
+        TickGate {
+            elapsed_sec,
+            processed_through,
+            minute_rolled: false,
+            previous_water: 0,
+        }
+    }
+
+    #[test]
+    fn workshop_output_routes_to_the_nearest_accepting_stockpile() {
+        let mut colony = workshop_colony(true);
+
+        // 30s completes one workshop cycle (590 + 30 ≥ 600): 5 materials → 1 refined.
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+
+        assert_eq!(colony.resources.refined, 1.0);
+        assert_eq!(colony.resources.materials, 45.0);
+        let pile = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == "stockpile-refined")
+            .expect("designated pile present");
+        assert_eq!(
+            pile.contents.refined, 1.0,
+            "refined piled at the nearest stockpile to the workshop"
+        );
+        let shrine = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_shrine())
+            .expect("shrine present");
+        assert_eq!(
+            shrine.contents.refined, 0.0,
+            "output did not default to the shrine when a nearer pile accepts it"
+        );
+    }
+
+    #[test]
+    fn production_routing_leaves_the_resource_aggregate_identical() {
+        // A designated pile reroutes where the output *piles*, but the authoritative
+        // `resources` aggregate is byte-identical to the shrine-only case.
+        let mut with_pile = workshop_colony(true);
+        let mut no_pile = workshop_colony(false);
+
+        phase_23_production(&mut with_pile, production_gate(30, 30_000));
+        phase_23_production(&mut no_pile, production_gate(30, 30_000));
+
+        for &kind in ResourceKind::ALL {
+            assert_eq!(
+                stockpiles::resource_amount(&with_pile.resources, kind).to_bits(),
+                stockpiles::resource_amount(&no_pile.resources, kind).to_bits(),
+                "{kind:?} resources diverged between piled and shrine-only"
+            );
+        }
+        // With no designated pile the output funnels to the shrine, exactly as pre-P12.4a.
+        let shrine = no_pile
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_shrine())
+            .expect("shrine present");
+        assert_eq!(shrine.contents.refined, 1.0);
+    }
+
+    #[test]
+    fn no_designated_piles_keeps_all_production_stock_in_the_shrine() {
+        // #1 regression: with production active and no player piles, every resource sits in
+        // the shrine reservoir bit-for-bit — the routing change is a no-op on the economy.
+        let mut colony = workshop_colony(false);
+        let start_refined = colony.resources.refined;
+
+        for step in 1..=10 {
+            // 600s per iteration completes exactly one cycle while materials last.
+            phase_23_production(&mut colony, production_gate(600, i64::from(step) * 600_000));
+            // Mirror the end-of-tick reconcile that folds net change into the reservoir.
+            reconcile_colony_stockpiles(&mut colony);
+
+            for &kind in ResourceKind::ALL {
+                let player_sum: f64 = colony
+                    .stockpiles
+                    .iter()
+                    .filter(|pile| !pile.is_shrine())
+                    .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
+                    .sum();
+                assert_eq!(
+                    player_sum, 0.0,
+                    "no player piles hold {kind:?} at step {step}"
+                );
+                let shrine = colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.is_shrine())
+                    .expect("shrine present");
+                assert_eq!(
+                    stockpiles::resource_amount(&shrine.contents, kind).to_bits(),
+                    stockpiles::resource_amount(&colony.resources, kind).to_bits(),
+                    "{kind:?} shrine != resources at step {step}"
+                );
+            }
+        }
+        assert!(
+            colony.resources.refined > start_refined,
+            "production was active over the run"
+        );
+    }
+
+    fn accounting_colony(reported_food: f64, staffed: bool, last_counted: i64) -> ColonyRuntime {
+        // Staffed: a completed tent worked by a living cat. Unstaffed: no bookkeeping tent at
+        // all (a built-but-idle tent would just be auto-staffed by an idle cat each tick).
+        let (buildings, cats) = if staffed {
+            (
+                vec![BuildingRuntime {
+                    id: "tent-1".to_owned(),
+                    building_type: BuildingType::AccountingTent,
+                    level: 1,
+                    position: TilePos { x: 6, y: 6 },
+                    is_complete: true,
+                    construction_progress: 100,
+                    production_progress: 0.0,
+                    assigned_cat: Some("book".to_owned()),
+                }],
+                vec![adult_idle_cat("book", "colony-1")],
+            )
+        } else {
+            (Vec::new(), vec![adult_idle_cat("idle", "colony-1")])
+        };
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                food: 200.0,
+                water: 42.0,
+                ..Resources::default()
+            },
+            cats,
+            buildings,
+            stock_ledger: StockLedger {
+                reported: Resources {
+                    food: reported_food,
+                    ..Resources::default()
+                },
+                last_counted,
+            },
+            last_tick: 0,
+            test_rng_seed: Some(1),
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        colony
+    }
+
+    #[test]
+    fn staffed_accounting_tent_recounts_the_ledger_to_exact_stock_each_tick() {
+        let mut colony = accounting_colony(5.0, true, 1_000);
+        let truth = colony.resources.clone();
+
+        phase_23_production(&mut colony, production_gate(1, 5_000));
+
+        assert_eq!(
+            colony.stock_ledger.reported, truth,
+            "staffed tent recounts to exact stock"
+        );
+        assert_eq!(colony.stock_ledger.last_counted, 5_000);
+        assert!(colony.stock_ledger.is_accurate(&colony.resources));
+        assert_eq!(
+            colony.resources, truth,
+            "ledger refresh never mutates resources"
+        );
+    }
+
+    #[test]
+    fn unstaffed_ledger_lags_within_interval_then_recounts() {
+        let mut colony = accounting_colony(50.0, false, 1_000);
+
+        // Within the recount interval: reported stays stale, resources untouched.
+        phase_23_production(&mut colony, production_gate(1, 1_000 + 5_000));
+        assert_eq!(colony.stock_ledger.reported.food, 50.0, "still lagging");
+        assert_eq!(colony.stock_ledger.last_counted, 1_000);
+        assert_eq!(colony.resources.food, 200.0, "resources untouched");
+
+        // Past the interval: recount to the exact current stock.
+        phase_23_production(
+            &mut colony,
+            production_gate(1, 1_000 + crate::ledger::UNSTAFFED_RECOUNT_INTERVAL_MS),
+        );
+        assert_eq!(colony.stock_ledger.reported.food, 200.0, "recounted");
+        assert_eq!(
+            colony.stock_ledger.last_counted,
+            1_000 + crate::ledger::UNSTAFFED_RECOUNT_INTERVAL_MS
+        );
+    }
+
+    #[test]
+    fn found_colony_starts_with_an_exact_ledger() {
+        let colony = found_colony(42, "colony-1", 7_000, 99);
+        assert!(colony.stock_ledger.is_accurate(&colony.resources));
+        assert_eq!(colony.stock_ledger.last_counted, 7_000);
+    }
+
+    #[test]
+    fn stock_ledger_is_deterministic_across_identical_runs() {
+        let mut left = new_world(555);
+        left.colonies
+            .push(found_colony(left.world_seed, "colony-1", 1_000, 42));
+        let mut right = new_world(555);
+        right
+            .colonies
+            .push(found_colony(right.world_seed, "colony-1", 1_000, 42));
+
+        for step in 1..=20 {
+            let now = 1_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut left, now);
+            let _ = world_tick(&mut right, now);
+        }
+
+        assert_eq!(
+            left.colonies[0].stock_ledger,
+            right.colonies[0].stock_ledger
+        );
     }
 
     #[test]

@@ -44,6 +44,7 @@ pub mod depletion;
 pub mod housing;
 pub mod idle_engine;
 pub mod idle_rules;
+pub mod ledger;
 pub mod production;
 pub mod roads;
 pub mod shrine;

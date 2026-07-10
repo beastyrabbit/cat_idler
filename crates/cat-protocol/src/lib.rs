@@ -49,6 +49,23 @@ pub struct ColonySnapshot {
     /// piles sized to contents. Empty/absent for pre-P12.3 snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stockpiles: Vec<StockpileSnapshot>,
+    /// The colony's reported stock ledger (P12.4a): the last-counted totals plus how fresh
+    /// they are. Lags the true `resources` unless a staffed Accounting Tent keeps it exact.
+    /// Absent for pre-P12.4a snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stock_ledger: Option<StockLedgerSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockLedgerSnapshot {
+    /// Stock totals as last *reported* by the bookkeeper (may lag the true resources).
+    pub reported: ResourceAmounts,
+    /// Game-tick timestamp (ms) of the last recount.
+    pub last_counted: i64,
+    /// Whether the reported totals currently match the true resources exactly (a staffed
+    /// Accounting Tent keeps this `true` every tick).
+    pub accurate: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -979,6 +996,7 @@ mod tests {
                 anchor: TilePoint { x: 6, y: 6 },
                 officers: BTreeMap::new(),
                 stockpiles: Vec::new(),
+                stock_ledger: None,
             }],
         }
     }
@@ -1070,6 +1088,38 @@ mod tests {
         );
         let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
         assert_eq!(round.colonies[0].stockpiles, snap.colonies[0].stockpiles);
+    }
+
+    #[test]
+    fn colony_snapshot_stock_ledger_round_trips_and_defaults_absent() {
+        // Absent `stockLedger` deserializes to None (back-compat).
+        let value = serde_json::to_value(sample_world_snapshot()).expect("serialize");
+        assert!(value["colonies"][0].get("stockLedger").is_none());
+        let back: WorldSnapshot = serde_json::from_value(value).expect("deserialize");
+        assert!(back.colonies[0].stock_ledger.is_none());
+
+        // A populated ledger round-trips with camelCase fields.
+        let mut snap = sample_world_snapshot();
+        let reported = snap.colonies[0].resources;
+        snap.colonies[0].stock_ledger = Some(StockLedgerSnapshot {
+            reported,
+            last_counted: 1_700_000_030_000,
+            accurate: true,
+        });
+        let encoded = serde_json::to_value(&snap).expect("serialize");
+        assert_eq!(
+            encoded["colonies"][0]["stockLedger"]["lastCounted"],
+            json!(1_700_000_030_000_i64)
+        );
+        assert_eq!(
+            encoded["colonies"][0]["stockLedger"]["accurate"],
+            json!(true)
+        );
+        let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
+        assert_eq!(
+            round.colonies[0].stock_ledger,
+            snap.colonies[0].stock_ledger
+        );
     }
 
     #[test]
