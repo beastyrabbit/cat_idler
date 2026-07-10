@@ -427,6 +427,7 @@ impl InfraArt {
 struct UiArt {
     panel: Handle<Image>,
     banner: Handle<Image>,
+    button: Handle<Image>,
 }
 
 impl UiArt {
@@ -434,14 +435,23 @@ impl UiArt {
         Self {
             panel: assets.load("public/images/game/ui/panel.png"),
             banner: assets.load("public/images/game/ui/banner.png"),
+            button: assets.load("public/images/game/ui/button.png"),
         }
     }
 }
 
 /// Dark ink for text over the cream parchment panels.
 const PARCHMENT_INK: Color = Color::srgb(0.24, 0.15, 0.07);
-/// Wood-border inset (source px) for the 128px panel 9-patch.
+/// Wood-border inset (source px) for the 128px panel / 96x48 button 9-patches.
 const PANEL_BORDER: f32 = 22.0;
+const BUTTON_BORDER: f32 = 12.0;
+
+// Wood-button tint states (multiply the sprite): idle / hover / pressed /
+// active-toggle. Kenney ships one button sprite; states are tints.
+const BTN_IDLE: Color = Color::srgb(1.0, 1.0, 1.0);
+const BTN_HOVER: Color = Color::srgb(0.86, 0.86, 0.82);
+const BTN_PRESS: Color = Color::srgb(0.70, 0.66, 0.58);
+const BTN_ACTIVE: Color = Color::srgb(1.0, 0.82, 0.45);
 
 /// A 9-patch panel/button background from a wood-frame sprite: the border stays
 /// crisp while the parchment centre stretches to fill the node.
@@ -669,7 +679,7 @@ type StockpileEntities = Or<(With<StockpileVis>, With<StockpileHighlight>)>;
 type AcceptButtonQuery<'w, 's> = Query<
     'w,
     's,
-    (&'static Interaction, &'static mut BackgroundColor),
+    (&'static Interaction, &'static mut ImageNode),
     (Changed<Interaction>, With<AcceptButton>),
 >;
 /// Change filter for toolbar button interactions.
@@ -679,7 +689,7 @@ type ButtonQuery<'w, 's> = Query<
     (
         &'static Interaction,
         &'static ActionButton,
-        &'static mut BackgroundColor,
+        &'static mut ImageNode,
     ),
     (Changed<Interaction>, With<Button>),
 >;
@@ -876,15 +886,14 @@ fn setup(
                 position_type: PositionType::Absolute,
                 right: Val::Px(8.0),
                 top: Val::Px(8.0),
-                width: Val::Px(250.0),
-                padding: UiRect::all(Val::Px(12.0)),
+                width: Val::Px(256.0),
+                padding: UiRect::all(Val::Px(24.0)),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(6.0),
                 display: Display::None,
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.03, 0.04, 0.035, 0.86)),
-            BorderColor::all(Color::srgba(0.80, 0.67, 0.42, 0.5)),
+            sliced_image(ui.panel.clone(), PANEL_BORDER),
             InspectorPanel,
         ))
         .with_children(|panel| {
@@ -894,7 +903,7 @@ fn setup(
                     font_size: FontSize::Px(13.0),
                     ..default()
                 },
-                TextColor(Color::srgb(1.0, 0.95, 0.84)),
+                TextColor(PARCHMENT_INK),
                 InspectorText,
             ));
             panel.spawn((
@@ -903,7 +912,7 @@ fn setup(
                     font_size: FontSize::Px(11.0),
                     ..default()
                 },
-                TextColor(Color::srgb(0.80, 0.85, 0.95)),
+                TextColor(PARCHMENT_INK),
             ));
             panel
                 .spawn(Node {
@@ -918,10 +927,13 @@ fn setup(
                         row.spawn((
                             Button,
                             Node {
-                                padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+                                min_width: Val::Px(64.0),
+                                height: Val::Px(24.0),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
                                 ..default()
                             },
-                            BackgroundColor(Color::srgb(0.20, 0.30, 0.24)),
+                            sliced_image(ui.button.clone(), BUTTON_BORDER),
                             AppointButton(role),
                             children![(
                                 Text::new(officer_role_name(role)),
@@ -929,7 +941,7 @@ fn setup(
                                     font_size: FontSize::Px(10.0),
                                     ..default()
                                 },
-                                TextColor(Color::srgb(0.92, 0.98, 0.90)),
+                                TextColor(PARCHMENT_INK),
                             )],
                         ));
                     }
@@ -942,15 +954,14 @@ fn setup(
             position_type: PositionType::Absolute,
             right: Val::Px(8.0),
             top: Val::Px(170.0),
-            width: Val::Px(200.0),
-            padding: UiRect::all(Val::Px(10.0)),
+            width: Val::Px(210.0),
+            padding: UiRect::all(Val::Px(22.0)),
             flex_direction: FlexDirection::Column,
             row_gap: Val::Px(6.0),
             display: Display::None,
             ..default()
         },
-        BackgroundColor(Color::srgba(0.10, 0.06, 0.03, 0.88)),
-        BorderColor::all(Color::srgba(0.85, 0.60, 0.25, 0.6)),
+        sliced_image(ui.panel.clone(), PANEL_BORDER),
         RemovePanel,
         children![
             (
@@ -959,16 +970,13 @@ fn setup(
                     font_size: FontSize::Px(12.0),
                     ..default()
                 },
-                TextColor(Color::srgb(1.0, 0.9, 0.7)),
+                TextColor(PARCHMENT_INK),
                 RemovePanelText,
             ),
             (
                 Button,
-                Node {
-                    padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.55, 0.20, 0.18)),
+                wood_button_node(),
+                sliced_image(ui.button.clone(), BUTTON_BORDER),
                 RemoveStockpileButton,
                 children![(
                     Text::new("Remove stockpile"),
@@ -976,7 +984,7 @@ fn setup(
                         font_size: FontSize::Px(12.0),
                         ..default()
                     },
-                    TextColor(Color::srgb(1.0, 0.92, 0.88)),
+                    TextColor(PARCHMENT_INK),
                 )],
             ),
         ],
@@ -988,14 +996,13 @@ fn setup(
         Node {
             position_type: PositionType::Absolute,
             right: Val::Px(8.0),
-            top: Val::Px(320.0),
-            width: Val::Px(250.0),
-            padding: UiRect::all(Val::Px(12.0)),
+            top: Val::Px(330.0),
+            width: Val::Px(256.0),
+            padding: UiRect::all(Val::Px(24.0)),
             display: Display::None,
             ..default()
         },
-        BackgroundColor(Color::srgba(0.03, 0.05, 0.06, 0.88)),
-        BorderColor::all(Color::srgba(0.55, 0.75, 0.70, 0.5)),
+        sliced_image(ui.panel.clone(), PANEL_BORDER),
         BuildingInspectorPanel,
         children![(
             Text::new(""),
@@ -1003,7 +1010,7 @@ fn setup(
                 font_size: FontSize::Px(13.0),
                 ..default()
             },
-            TextColor(Color::srgb(0.90, 1.0, 0.95)),
+            TextColor(PARCHMENT_INK),
             BuildingInspectorText,
         )],
     ));
@@ -1012,9 +1019,9 @@ fn setup(
     spawn_officers_panel(&mut commands, &ui);
 
     // Tool-mode toolbar (just above the action toolbar).
-    spawn_tool_toolbar(&mut commands);
+    spawn_tool_toolbar(&mut commands, &ui);
     // Action toolbar (bottom, centred).
-    spawn_toolbar(&mut commands);
+    spawn_toolbar(&mut commands, &ui);
 }
 
 fn spawn_officers_panel(commands: &mut Commands, ui: &UiArt) {
@@ -1063,10 +1070,13 @@ fn spawn_officers_panel(commands: &mut Commands, ui: &UiArt) {
                         row.spawn((
                             Button,
                             Node {
-                                padding: UiRect::axes(Val::Px(5.0), Val::Px(1.0)),
+                                width: Val::Px(22.0),
+                                height: Val::Px(20.0),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
                                 ..default()
                             },
-                            BackgroundColor(Color::srgb(0.40, 0.20, 0.20)),
+                            sliced_image(ui.button.clone(), BUTTON_BORDER),
                             VacateButton(role),
                             children![(
                                 Text::new("x"),
@@ -1074,7 +1084,7 @@ fn spawn_officers_panel(commands: &mut Commands, ui: &UiArt) {
                                     font_size: FontSize::Px(11.0),
                                     ..default()
                                 },
-                                TextColor(Color::srgb(1.0, 0.85, 0.85)),
+                                TextColor(PARCHMENT_INK),
                             )],
                         ));
                     });
@@ -1082,7 +1092,7 @@ fn spawn_officers_panel(commands: &mut Commands, ui: &UiArt) {
         });
 }
 
-fn spawn_tool_toolbar(commands: &mut Commands) {
+fn spawn_tool_toolbar(commands: &mut Commands, ui: &UiArt) {
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
@@ -1102,12 +1112,8 @@ fn spawn_tool_toolbar(commands: &mut Commands) {
             ] {
                 row.spawn((
                     Button,
-                    Node {
-                        padding: UiRect::axes(Val::Px(14.0), Val::Px(6.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.16, 0.20, 0.26)),
-                    BorderColor::all(Color::srgba(0.55, 0.70, 0.90, 0.5)),
+                    wood_button_node(),
+                    sliced_image(ui.button.clone(), BUTTON_BORDER),
                     ToolButton(mode),
                     children![(
                         Text::new(mode.label()),
@@ -1115,7 +1121,7 @@ fn spawn_tool_toolbar(commands: &mut Commands) {
                             font_size: FontSize::Px(13.0),
                             ..default()
                         },
-                        TextColor(Color::srgb(0.92, 0.95, 1.0)),
+                        TextColor(PARCHMENT_INK),
                     )],
                 ));
             }
@@ -1123,12 +1129,8 @@ fn spawn_tool_toolbar(commands: &mut Commands) {
             // designated pile will accept.
             row.spawn((
                 Button,
-                Node {
-                    padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgb(0.32, 0.24, 0.12)),
-                BorderColor::all(Color::srgba(0.85, 0.60, 0.25, 0.6)),
+                wood_button_node(),
+                sliced_image(ui.button.clone(), BUTTON_BORDER),
                 AcceptButton,
                 children![(
                     Text::new("Accepts: General"),
@@ -1136,14 +1138,26 @@ fn spawn_tool_toolbar(commands: &mut Commands) {
                         font_size: FontSize::Px(13.0),
                         ..default()
                     },
-                    TextColor(Color::srgb(1.0, 0.90, 0.70)),
+                    TextColor(PARCHMENT_INK),
                     AcceptButtonText,
                 )],
             ));
         });
 }
 
-fn spawn_toolbar(commands: &mut Commands) {
+/// A wood-button node (parchment sprite carries the look; text is dark ink).
+fn wood_button_node() -> Node {
+    Node {
+        min_width: Val::Px(96.0),
+        height: Val::Px(34.0),
+        padding: UiRect::axes(Val::Px(12.0), Val::Px(4.0)),
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        ..default()
+    }
+}
+
+fn spawn_toolbar(commands: &mut Commands, ui: &UiArt) {
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
@@ -1163,20 +1177,16 @@ fn spawn_toolbar(commands: &mut Commands) {
             ] {
                 row.spawn((
                     Button,
-                    Node {
-                        padding: UiRect::axes(Val::Px(14.0), Val::Px(8.0)),
-                        ..default()
-                    },
-                    BackgroundColor(Color::srgb(0.18, 0.26, 0.20)),
-                    BorderColor::all(Color::srgba(0.80, 0.67, 0.42, 0.5)),
+                    wood_button_node(),
+                    sliced_image(ui.button.clone(), BUTTON_BORDER),
                     ActionButton(action),
                     children![(
                         Text::new(action.label()),
                         TextFont {
-                            font_size: FontSize::Px(14.0),
+                            font_size: FontSize::Px(13.0),
                             ..default()
                         },
-                        TextColor(Color::srgb(1.0, 0.95, 0.84)),
+                        TextColor(PARCHMENT_INK),
                     )],
                 ));
             }
@@ -1662,12 +1672,12 @@ fn handle_remove_button(
     session: Res<Session>,
     mut selection: ResMut<StockpileSelection>,
     mut outgoing: ResMut<OutgoingActions>,
-    mut button: Query<(&Interaction, &mut BackgroundColor), With<RemoveStockpileButton>>,
+    mut button: Query<(&Interaction, &mut ImageNode), With<RemoveStockpileButton>>,
 ) {
-    for (interaction, mut color) in &mut button {
+    for (interaction, mut image) in &mut button {
         match interaction {
             Interaction::Pressed => {
-                *color = BackgroundColor(Color::srgb(0.75, 0.28, 0.24));
+                image.color = BTN_PRESS;
                 if let (Some(id), true) = (selection.selected.clone(), session.ready) {
                     outgoing.0.push(ClientAction::RemoveStockpile {
                         session_id: session.session_id.clone(),
@@ -1678,8 +1688,8 @@ fn handle_remove_button(
                     selection.selected = None;
                 }
             }
-            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.65, 0.24, 0.21)),
-            Interaction::None => *color = BackgroundColor(Color::srgb(0.55, 0.20, 0.18)),
+            Interaction::Hovered => image.color = BTN_HOVER,
+            Interaction::None => image.color = BTN_IDLE,
         }
     }
 }
@@ -1724,12 +1734,12 @@ fn handle_appoint_buttons(
     session: Res<Session>,
     selection: Res<Selection>,
     mut outgoing: ResMut<OutgoingActions>,
-    mut buttons: Query<(&Interaction, &AppointButton, &mut BackgroundColor), Changed<Interaction>>,
+    mut buttons: Query<(&Interaction, &AppointButton, &mut ImageNode), Changed<Interaction>>,
 ) {
-    for (interaction, appoint, mut color) in &mut buttons {
+    for (interaction, appoint, mut image) in &mut buttons {
         match interaction {
             Interaction::Pressed => {
-                *color = BackgroundColor(Color::srgb(0.32, 0.48, 0.36));
+                image.color = BTN_PRESS;
                 if let (Some(cat), true) = (selection.selected.clone(), session.ready) {
                     outgoing.0.push(ClientAction::AssignOfficer {
                         session_id: session.session_id.clone(),
@@ -1740,8 +1750,8 @@ fn handle_appoint_buttons(
                     });
                 }
             }
-            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.26, 0.38, 0.30)),
-            Interaction::None => *color = BackgroundColor(Color::srgb(0.20, 0.30, 0.24)),
+            Interaction::Hovered => image.color = BTN_HOVER,
+            Interaction::None => image.color = BTN_IDLE,
         }
     }
 }
@@ -1750,12 +1760,12 @@ fn handle_appoint_buttons(
 fn handle_vacate_buttons(
     session: Res<Session>,
     mut outgoing: ResMut<OutgoingActions>,
-    mut buttons: Query<(&Interaction, &VacateButton, &mut BackgroundColor), Changed<Interaction>>,
+    mut buttons: Query<(&Interaction, &VacateButton, &mut ImageNode), Changed<Interaction>>,
 ) {
-    for (interaction, vacate, mut color) in &mut buttons {
+    for (interaction, vacate, mut image) in &mut buttons {
         match interaction {
             Interaction::Pressed => {
-                *color = BackgroundColor(Color::srgb(0.60, 0.26, 0.26));
+                image.color = BTN_PRESS;
                 if session.ready {
                     outgoing.0.push(ClientAction::UnassignOfficer {
                         session_id: session.session_id.clone(),
@@ -1765,8 +1775,8 @@ fn handle_vacate_buttons(
                     });
                 }
             }
-            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.50, 0.22, 0.22)),
-            Interaction::None => *color = BackgroundColor(Color::srgb(0.40, 0.20, 0.20)),
+            Interaction::Hovered => image.color = BTN_HOVER,
+            Interaction::None => image.color = BTN_IDLE,
         }
     }
 }
@@ -2203,19 +2213,19 @@ fn cursor_world(
 /// cancel any in-progress drag when leaving a zone mode.
 fn handle_tool_buttons(
     mut tools: ResMut<Tools>,
-    mut buttons: Query<(&Interaction, &ToolButton, &mut BackgroundColor)>,
+    mut buttons: Query<(&Interaction, &ToolButton, &mut ImageNode)>,
 ) {
-    for (interaction, button, mut color) in &mut buttons {
+    for (interaction, button, mut image) in &mut buttons {
         if *interaction == Interaction::Pressed && tools.mode != button.0 {
             tools.mode = button.0;
             tools.drag = None;
         }
         let active = tools.mode == button.0;
-        *color = BackgroundColor(match (active, interaction) {
-            (true, _) => Color::srgb(0.30, 0.44, 0.62),
-            (false, Interaction::Hovered) => Color::srgb(0.22, 0.28, 0.36),
-            (false, _) => Color::srgb(0.16, 0.20, 0.26),
-        });
+        image.color = match (active, interaction) {
+            (true, _) => BTN_ACTIVE,
+            (false, Interaction::Hovered) => BTN_HOVER,
+            (false, _) => BTN_IDLE,
+        };
     }
 }
 
@@ -2226,14 +2236,14 @@ fn handle_accept_button(
     mut button: AcceptButtonQuery,
     mut text: Query<&mut Text, With<AcceptButtonText>>,
 ) {
-    for (interaction, mut color) in &mut button {
+    for (interaction, mut image) in &mut button {
         match interaction {
             Interaction::Pressed => {
-                *color = BackgroundColor(Color::srgb(0.48, 0.36, 0.18));
+                image.color = BTN_PRESS;
                 tools.accept = tools.accept.next();
             }
-            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.40, 0.30, 0.15)),
-            Interaction::None => *color = BackgroundColor(Color::srgb(0.32, 0.24, 0.12)),
+            Interaction::Hovered => image.color = BTN_HOVER,
+            Interaction::None => image.color = BTN_IDLE,
         }
     }
     if tools.is_changed()
@@ -2520,16 +2530,16 @@ fn handle_buttons(
     mut outgoing: ResMut<OutgoingActions>,
     mut buttons: ButtonQuery,
 ) {
-    for (interaction, button, mut color) in &mut buttons {
+    for (interaction, button, mut image) in &mut buttons {
         match interaction {
             Interaction::Pressed => {
-                *color = BackgroundColor(Color::srgb(0.34, 0.48, 0.36));
+                image.color = BTN_PRESS;
                 if let Some(action) = build_action(button.0, &session) {
                     outgoing.0.push(action);
                 }
             }
-            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.24, 0.34, 0.26)),
-            Interaction::None => *color = BackgroundColor(Color::srgb(0.18, 0.26, 0.20)),
+            Interaction::Hovered => image.color = BTN_HOVER,
+            Interaction::None => image.color = BTN_IDLE,
         }
     }
 }
@@ -3332,6 +3342,7 @@ mod tests {
             moisture: 0.0,
             height: 1,
             biome,
+            climate_biome: cat_sim::climate::Biome::Plains,
             terrain: cat_sim::terrain_gen::TerrainRole::Flat,
             river: None,
             stairs: None,
