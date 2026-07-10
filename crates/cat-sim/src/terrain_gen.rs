@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use ryu_js::Buffer;
 
+use crate::climate::{Biome, classify_climate_biome};
+
 pub const TERRAIN_CHUNK_SIZE: i32 = 12;
 pub const DEFAULT_MAX_HEIGHT: i32 = 3;
 pub const DIRECTIONS: [Direction; 4] = [Direction::N, Direction::E, Direction::S, Direction::W];
@@ -11,6 +13,24 @@ pub const DIRECTIONS: [Direction; 4] = [Direction::N, Direction::E, Direction::S
 const LATTICE_DIVISOR: f64 = 4_294_967_296.0;
 const MOISTURE_SEED_MASK: i32 = 0x9e37_79b9_u32 as i32;
 const MAX_RUN_SCAN: i32 = 64;
+
+// --- P17 climate fields ------------------------------------------------------
+//
+// Temperature / humidity / weirdness are sampled from the same value-noise
+// machinery as elevation/moisture, each on its own seed derived by xor-ing a
+// distinct mask into `world_seed` (mirroring how moisture derives its seed).
+// The scales are deliberately **very low frequency** so biome regions are large
+// — roughly `1 / scale` tiles across. The founding plateau spans ~16 tiles
+// (`plateau_radius` 8); at scale `0.006` a climate wavelength is ~166 tiles, so
+// biome regions are ~10× the village and distant biomes are a mid/late journey.
+const TEMPERATURE_SEED_MASK: i32 = 0x85eb_ca6b_u32 as i32;
+const HUMIDITY_SEED_MASK: i32 = 0xc2b2_ae35_u32 as i32;
+const WEIRDNESS_SEED_MASK: i32 = 0x27d4_eb2f_u32 as i32;
+const CLIMATE_TEMPERATURE_SCALE: f64 = 0.006;
+const CLIMATE_HUMIDITY_SCALE: f64 = 0.006;
+const CLIMATE_WEIRDNESS_SCALE: f64 = 0.004;
+const CLIMATE_OCTAVES: i32 = 2;
+const CLIMATE_PERSISTENCE: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
@@ -95,6 +115,10 @@ pub struct TerrainTile {
     pub moisture: f64,
     pub height: i32,
     pub biome: BiomeRole,
+    /// P17 climate-driven biome (additive; the coarse `biome` role above is
+    /// unchanged so movement/placement keep working). Drives per-biome tints and
+    /// decoration density on the client.
+    pub climate_biome: Biome,
     pub terrain: TerrainRole,
     pub river: Option<RiverRole>,
     pub stairs: Option<StairsRole>,
@@ -242,6 +266,38 @@ pub fn terrain_moisture_at(x: i32, y: i32, seed: i64, opts: TerrainOptions) -> f
 
 pub fn terrain_height_at(x: i32, y: i32, seed: i64, opts: TerrainOptions) -> i32 {
     height_with(x, y, seed, &resolve_options(opts))
+}
+
+/// Deterministic climate **temperature** in `[0, 1)` at world `(x, y)` — a very
+/// low-frequency value-noise field so climate (and thus biomes) vary over large
+/// regions. Same machinery as elevation/moisture, distinct seed.
+#[must_use]
+pub fn terrain_temperature_at(x: i32, y: i32, seed: i64) -> f64 {
+    climate_field(x, y, seed, TEMPERATURE_SEED_MASK, CLIMATE_TEMPERATURE_SCALE)
+}
+
+/// Deterministic climate **humidity** in `[0, 1)` at world `(x, y)`.
+#[must_use]
+pub fn terrain_humidity_at(x: i32, y: i32, seed: i64) -> f64 {
+    climate_field(x, y, seed, HUMIDITY_SEED_MASK, CLIMATE_HUMIDITY_SCALE)
+}
+
+/// Deterministic climate **weirdness** in `[0, 1)` — the extra field that carves
+/// rare, large flower/mushroom regions.
+#[must_use]
+pub fn terrain_weirdness_at(x: i32, y: i32, seed: i64) -> f64 {
+    climate_field(x, y, seed, WEIRDNESS_SEED_MASK, CLIMATE_WEIRDNESS_SCALE)
+}
+
+fn climate_field(x: i32, y: i32, seed: i64, mask: i32, scale: f64) -> f64 {
+    fractal_noise(
+        f64::from(x),
+        f64::from(y),
+        i64::from(js_i32_xor(seed, mask)),
+        CLIMATE_OCTAVES,
+        CLIMATE_PERSISTENCE,
+        scale,
+    )
 }
 
 pub fn terrain_stair_at(x: i32, y: i32, seed: i64, opts: TerrainOptions) -> bool {
@@ -486,6 +542,14 @@ pub fn generate_terrain_chunk(
             }
             let stairs = derive_stairs(x, y, seed, &opts);
             let biome = classify_biome(height, opts.max_height, moisture);
+            let climate_biome = classify_climate_biome(
+                terrain_temperature_at(x, y, seed),
+                terrain_humidity_at(x, y, seed),
+                terrain_weirdness_at(x, y, seed),
+                elevation,
+                is_in_plateau(x, y, &opts),
+                river.is_some(),
+            );
             let decoration = if opts.decorate
                 && terrain == TerrainRole::Flat
                 && river.is_none()
@@ -503,6 +567,7 @@ pub fn generate_terrain_chunk(
                 moisture,
                 height,
                 biome,
+                climate_biome,
                 terrain,
                 river,
                 stairs,
@@ -554,6 +619,26 @@ pub fn tile_biome(world_seed: u32, x: i32, y: i32) -> BiomeRole {
     .into_iter()
     .find(|tile| tile.x == x && tile.y == y)
     .map_or(BiomeRole::Grassland, |tile| tile.biome)
+}
+
+/// The deterministic P17 climate [`Biome`] the terrain generator assigns to
+/// world tile `(x, y)` for `world_seed`. Same source of truth as [`tile_biome`]:
+/// it regenerates the owning chunk from `WORLD_TERRAIN_OPTIONS` and reads the
+/// stamped field (so it includes the river overlay). Falls back to
+/// [`Biome::Plains`] for the (never-reached) absent-tile case.
+#[must_use]
+pub fn tile_climate_biome(world_seed: u32, x: i32, y: i32) -> Biome {
+    let chunk_x = floor_div(x, TERRAIN_CHUNK_SIZE);
+    let chunk_y = floor_div(y, TERRAIN_CHUNK_SIZE);
+    generate_terrain_chunk(
+        chunk_x,
+        chunk_y,
+        i64::from(world_seed),
+        WORLD_TERRAIN_OPTIONS,
+    )
+    .into_iter()
+    .find(|tile| tile.x == x && tile.y == y)
+    .map_or(Biome::Plains, |tile| tile.climate_biome)
 }
 
 fn resolve_options(opts: TerrainOptions) -> ResolvedOptions {
@@ -805,6 +890,29 @@ fn options_from_resolved(opts: &ResolvedOptions) -> TerrainOptions {
 
 pub fn derive_decoration(x: i32, y: i32, seed: i64, biome: BiomeRole) -> Option<DecorationRole> {
     let (tree_density, rock_density) = decor_density(biome);
+    decoration_from_density(x, y, seed, tree_density, rock_density)
+}
+
+/// P17 density-driven decoration sampler keyed on the climate [`Biome`] instead
+/// of the coarse [`BiomeRole`]. Uses the *identical* deterministic roll code as
+/// [`derive_decoration`] — only the density thresholds come from the biome's
+/// property table — so forests emit far more trees than plains for the same
+/// area. Non-breaking: `generate_terrain_chunk`'s `decoration` field still uses
+/// the [`BiomeRole`] path; this is what the client will consume to fix the
+/// uniform-tree look.
+#[must_use]
+pub fn derive_biome_decoration(x: i32, y: i32, seed: i64, biome: Biome) -> Option<DecorationRole> {
+    let (tree_density, rock_density) = biome.decoration_density();
+    decoration_from_density(x, y, seed, tree_density, rock_density)
+}
+
+fn decoration_from_density(
+    x: i32,
+    y: i32,
+    seed: i64,
+    tree_density: f64,
+    rock_density: f64,
+) -> Option<DecorationRole> {
     let roll = lattice_value(
         i64::from(hash_seed(&[
             HashValue::Int(seed),
@@ -2303,6 +2411,162 @@ mod tests {
                 }
             );
             assert!(case.river.is_none());
+        }
+    }
+
+    // --- P17 climate biome layer --------------------------------------------
+
+    #[test]
+    fn climate_biome_is_stamped_and_deterministic() {
+        let seed = 20260702;
+        let first = generate_terrain_chunk(0, 0, seed, WORLD_TERRAIN_OPTIONS);
+        let second = generate_terrain_chunk(0, 0, seed, WORLD_TERRAIN_OPTIONS);
+        for (a, b) in first.iter().zip(&second) {
+            assert_eq!(a.climate_biome, b.climate_biome, "tile {},{}", a.x, a.y);
+        }
+    }
+
+    #[test]
+    fn tile_climate_biome_matches_the_generated_chunk() {
+        // Mirror of `tile_biome_matches_the_generated_chunk_biome`, for the
+        // climate layer — the standalone accessor must agree tile-for-tile.
+        let seed = 123u32;
+        for chunk_x in -1..=1 {
+            for chunk_y in -1..=1 {
+                let chunk = generate_terrain_chunk(
+                    chunk_x,
+                    chunk_y,
+                    i64::from(seed),
+                    WORLD_TERRAIN_OPTIONS,
+                );
+                for tile in chunk {
+                    assert_eq!(
+                        tile_climate_biome(seed, tile.x, tile.y),
+                        tile.climate_biome,
+                        "climate biome mismatch at {},{}",
+                        tile.x,
+                        tile.y
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn founding_plateau_tiles_resolve_to_a_grass_biome() {
+        let seed = 20260702;
+        let anchor = WORLD_TERRAIN_OPTIONS.village_anchor.expect("world anchor");
+        let biome = tile_climate_biome(seed as u32, anchor.x, anchor.y);
+        assert_eq!(biome, crate::climate::Biome::Plains);
+        assert!(matches!(
+            biome.surface_role(),
+            BiomeRole::Grassland | BiomeRole::Lowland
+        ));
+    }
+
+    #[test]
+    fn climate_regions_are_large_not_noisy() {
+        // Walk a long horizontal transect and count biome changes. With the
+        // very low-frequency climate noise, adjacent tiles almost always share a
+        // biome, so runs are long (regions ~10× the village). Random assignment
+        // would flip on nearly every step.
+        let seed = 20260702;
+        let length = 300;
+        let mut changes = 0;
+        let mut prev = tile_climate_biome(seed as u32, -150, 40);
+        for x in -149..(-150 + length) {
+            let biome = tile_climate_biome(seed as u32, x, 40);
+            if biome != prev {
+                changes += 1;
+            }
+            prev = biome;
+        }
+        // Average run length comfortably exceeds a handful of tiles.
+        assert!(
+            changes < length / 8,
+            "expected large regions, saw {changes} changes over {length} tiles"
+        );
+    }
+
+    #[test]
+    fn biome_decoration_density_favours_forests_over_plains() {
+        // Over the same area, a forest biome must emit many more trees than a
+        // grass biome — the density fix the client will render from.
+        let seed = 4242;
+        let mut forest_trees = 0;
+        let mut plains_trees = 0;
+        for x in 0..50 {
+            for y in 0..50 {
+                if matches!(
+                    derive_biome_decoration(x, y, seed, crate::climate::Biome::OakForest),
+                    Some(DecorationRole::Tree { .. })
+                ) {
+                    forest_trees += 1;
+                }
+                if matches!(
+                    derive_biome_decoration(x, y, seed, crate::climate::Biome::Plains),
+                    Some(DecorationRole::Tree { .. })
+                ) {
+                    plains_trees += 1;
+                }
+            }
+        }
+        assert!(
+            forest_trees > plains_trees * 5,
+            "forest {forest_trees} vs plains {plains_trees}"
+        );
+        // Desert emits (almost) no trees.
+        let desert_trees = (0..50)
+            .flat_map(|x| (0..50).map(move |y| (x, y)))
+            .filter(|&(x, y)| {
+                matches!(
+                    derive_biome_decoration(x, y, seed, crate::climate::Biome::Desert),
+                    Some(DecorationRole::Tree { .. })
+                )
+            })
+            .count();
+        assert!(desert_trees < plains_trees, "desert {desert_trees}");
+    }
+
+    #[test]
+    fn derive_decoration_role_path_is_unchanged_by_refactor() {
+        // The BiomeRole decoration path (pinned by the golden chunk fixture)
+        // must be byte-identical after extracting the shared density inner.
+        let seed = 20260702;
+        for biome in [
+            BiomeRole::Lowland,
+            BiomeRole::Grassland,
+            BiomeRole::Forest,
+            BiomeRole::Rocky,
+            BiomeRole::Highland,
+        ] {
+            for x in -3..3 {
+                for y in -3..3 {
+                    let (tree, rock) = decor_density(biome);
+                    assert_eq!(
+                        derive_decoration(x, y, seed, biome),
+                        decoration_from_density(x, y, seed, tree, rock),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn climate_fields_are_deterministic_and_in_range() {
+        let seed = 1_781_313_000_000;
+        for &(x, y) in &[(-13, 17), (0, 0), (240, -80)] {
+            for sample in [
+                terrain_temperature_at(x, y, seed),
+                terrain_humidity_at(x, y, seed),
+                terrain_weirdness_at(x, y, seed),
+            ] {
+                assert!((0.0..1.0).contains(&sample), "field {sample} out of range");
+            }
+            assert_eq!(
+                terrain_temperature_at(x, y, seed),
+                terrain_temperature_at(x, y, seed)
+            );
         }
     }
 }
