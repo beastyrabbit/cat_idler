@@ -24,8 +24,10 @@ use cat_protocol::{
     ResourceKind, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, WorldSnapshot,
     ZoneKind,
 };
+use cat_sim::climate::Biome;
 use cat_sim::terrain_gen::{
-    BiomeRole, DecorationRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
+    DecorationRole, RockSize, TerrainTile, WORLD_TERRAIN_OPTIONS, derive_biome_decoration,
+    generate_terrain_chunk,
 };
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
@@ -266,12 +268,14 @@ struct WorldRender {
 struct TerrainArt {
     grass: Handle<Image>,
     grass_var: Handle<Image>,
+    dirt: Handle<Image>,
     rocky: Handle<Image>,
     highland: Handle<Image>,
     water: Handle<Image>,
     water_edge: Handle<Image>,
     tree_oak: Handle<Image>,
     tree_pine: Handle<Image>,
+    rock: Handle<Image>,
 }
 
 impl TerrainArt {
@@ -279,12 +283,14 @@ impl TerrainArt {
         Self {
             grass: assets.load("public/images/game/terrain/grass.png"),
             grass_var: assets.load("public/images/game/terrain/grass_var.png"),
+            dirt: assets.load("public/images/game/terrain/dirt.png"),
             rocky: assets.load("public/images/game/terrain/rocky.png"),
             highland: assets.load("public/images/game/terrain/highland.png"),
             water: assets.load("public/images/game/terrain/water.png"),
             water_edge: assets.load("public/images/game/terrain/water_edge.png"),
             tree_oak: assets.load("public/images/game/nature/tree_oak.png"),
             tree_pine: assets.load("public/images/game/nature/tree_pine.png"),
+            rock: assets.load("public/images/game/props/stone_pile.png"),
         }
     }
 
@@ -292,6 +298,7 @@ impl TerrainArt {
         match texture {
             GroundTexture::Grass => self.grass.clone(),
             GroundTexture::GrassVar => self.grass_var.clone(),
+            GroundTexture::Dirt => self.dirt.clone(),
             GroundTexture::Rocky => self.rocky.clone(),
             GroundTexture::Highland => self.highland.clone(),
         }
@@ -303,6 +310,7 @@ impl TerrainArt {
 enum GroundTexture {
     Grass,
     GrassVar,
+    Dirt,
     Rocky,
     Highland,
 }
@@ -1277,17 +1285,18 @@ fn spawn_terrain(
     };
     let seed = world.world_seed;
     let tiles = window_terrain(seed);
-    // River/water coordinates, so shore tiles (a non-water orthogonal
-    // neighbour) can use the water_edge variant.
+    // Water coordinates (river overlay OR a water climate biome), so shore tiles
+    // (a non-water orthogonal neighbour) can use the water_edge variant.
     let water: HashSet<(i32, i32)> = tiles
         .iter()
-        .filter(|t| t.river.is_some())
+        .filter(|t| t.river.is_some() || is_water_biome(t.climate_biome))
         .map(|t| (t.x, t.y))
         .collect();
 
     for tile in &tiles {
         let p = grid_to_world(tile.x, tile.y);
-        let ground = if tile.river.is_some() {
+        let is_water = tile.river.is_some() || is_water_biome(tile.climate_biome);
+        let ground = if is_water {
             if is_shore(tile.x, tile.y, &water) {
                 art.water_edge.clone()
             } else {
@@ -1296,33 +1305,61 @@ fn spawn_terrain(
         } else {
             art.ground(ground_texture(tile))
         };
+        // Multiply the base tile by the biome tint so ~26 climate biomes read as
+        // distinct ground (forest darker green, desert sandy, snow pale, ocean
+        // deep blue) without needing a unique sprite per biome.
         commands.spawn((
             Sprite {
                 image: ground,
                 custom_size: Some(Vec2::splat(TILE)),
+                color: biome_tint(tile.climate_biome),
                 ..default()
             },
             Transform::from_xyz(p.x, p.y, Z_TERRAIN),
         ));
 
-        if let Some(DecorationRole::Tree { species }) = tile.decoration {
-            let tree = if tree_is_oak(species) {
-                art.tree_oak.clone()
-            } else {
-                art.tree_pine.clone()
-            };
-            // 16×32 sprite, trunk anchored to the tile centre so it stands on
-            // the ground; y-sorted with the rest of the world by its base.
-            let base_y = p.y - TILE * 0.5;
-            commands.spawn((
-                Sprite {
-                    image: tree,
-                    custom_size: Some(Vec2::new(TILE, TILE * 2.0)),
-                    ..default()
-                },
-                Anchor::BOTTOM_CENTER,
-                Transform::from_xyz(p.x, base_y, ysort_z(base_y)),
-            ));
+        // Per-biome decoration density: forests dense with trees, plains open,
+        // desert/tundra bare — driven by the biome's density table rather than
+        // the coarse BiomeRole `decoration` field.
+        let decoration = if is_water {
+            None
+        } else {
+            derive_biome_decoration(tile.x, tile.y, seed, tile.climate_biome)
+        };
+        match decoration {
+            Some(DecorationRole::Tree { species }) => {
+                let tree = if tree_is_oak(species) {
+                    art.tree_oak.clone()
+                } else {
+                    art.tree_pine.clone()
+                };
+                // 16×32 sprite, trunk anchored to the tile centre so it stands on
+                // the ground; y-sorted with the rest of the world by its base.
+                let base_y = p.y - TILE * 0.5;
+                commands.spawn((
+                    Sprite {
+                        image: tree,
+                        custom_size: Some(Vec2::new(TILE, TILE * 2.0)),
+                        ..default()
+                    },
+                    Anchor::BOTTOM_CENTER,
+                    Transform::from_xyz(p.x, base_y, ysort_z(base_y)),
+                ));
+            }
+            Some(DecorationRole::Rock { size, .. }) => {
+                let scale = rock_scale(size);
+                let base_y = p.y - TILE * 0.5;
+                commands.spawn((
+                    Sprite {
+                        image: art.rock.clone(),
+                        custom_size: Some(Vec2::splat(TILE * scale)),
+                        ..default()
+                    },
+                    Anchor::BOTTOM_CENTER,
+                    Transform::from_xyz(p.x, base_y, ysort_z(base_y)),
+                ));
+            }
+            None => {}
         }
     }
     render.terrain_spawned = true;
@@ -1336,14 +1373,40 @@ fn is_shore(x: i32, y: i32, water: &HashSet<(i32, i32)>) -> bool {
         .any(|(dx, dy)| !water.contains(&(x + dx, y + dy)))
 }
 
-/// Ground texture for a non-water tile: rocky/highland by biome, otherwise
-/// grass — with a deterministic `grass_var` sprinkle on grassland.
+/// Base ground texture family for a non-water tile, keyed on the climate biome
+/// so sandy biomes get the dirt tile, stony/mountain biomes the rock tile, and
+/// everything vegetated a grass tile — the biome tint then colours it. A
+/// deterministic `grass_var` sprinkle keeps grassland from tiling flat.
 fn ground_texture(tile: &TerrainTile) -> GroundTexture {
-    match tile.biome {
-        BiomeRole::Rocky => GroundTexture::Rocky,
-        BiomeRole::Highland => GroundTexture::Highland,
-        BiomeRole::Grassland if (tile.x + tile.y).rem_euclid(5) == 0 => GroundTexture::GrassVar,
-        BiomeRole::Lowland | BiomeRole::Grassland | BiomeRole::Forest => GroundTexture::Grass,
+    match tile.climate_biome {
+        Biome::Beach | Biome::Desert => GroundTexture::Dirt,
+        Biome::StonyShore | Biome::Badlands | Biome::Mountains => GroundTexture::Rocky,
+        Biome::Hills => GroundTexture::Highland,
+        _ if (tile.x + tile.y).rem_euclid(5) == 0 => GroundTexture::GrassVar,
+        _ => GroundTexture::Grass,
+    }
+}
+
+/// Water biomes render with the water sprite even without a river overlay.
+fn is_water_biome(biome: Biome) -> bool {
+    matches!(
+        biome,
+        Biome::Ocean | Biome::Lake | Biome::River | Biome::Ice
+    )
+}
+
+/// The biome's ground tint, multiplied onto its base tile.
+fn biome_tint(biome: Biome) -> Color {
+    let [r, g, b] = biome.properties().tint;
+    Color::srgb_u8(r, g, b)
+}
+
+/// Rendered rock size (fraction of a tile) for a decoration rock.
+fn rock_scale(size: RockSize) -> f32 {
+    match size {
+        RockSize::Small => 0.4,
+        RockSize::Medium => 0.55,
+        RockSize::Large => 0.75,
     }
 }
 
@@ -3029,6 +3092,7 @@ fn zone_color(kind: ZoneKind) -> Color {
 mod tests {
     use super::*;
     use cat_protocol::WorldSnapshot;
+    use cat_sim::terrain_gen::BiomeRole;
 
     #[test]
     fn grid_projection_is_flat_and_top_down() {
@@ -3334,7 +3398,7 @@ mod tests {
         assert!(ysort_z(-200.0) > ysort_z(-100.0));
     }
 
-    fn tile_with(biome: BiomeRole, x: i32, y: i32) -> TerrainTile {
+    fn climate_tile(biome: BiomeRole, climate_biome: Biome, x: i32, y: i32) -> TerrainTile {
         TerrainTile {
             x,
             y,
@@ -3342,7 +3406,7 @@ mod tests {
             moisture: 0.0,
             height: 1,
             biome,
-            climate_biome: cat_sim::climate::Biome::Plains,
+            climate_biome,
             terrain: cat_sim::terrain_gen::TerrainRole::Flat,
             river: None,
             stairs: None,
@@ -3351,32 +3415,55 @@ mod tests {
     }
 
     #[test]
-    fn ground_texture_maps_biomes_to_sprites() {
+    fn ground_texture_maps_climate_biomes_to_sprites() {
+        // Sandy biomes -> dirt, stony/mountain -> rocky, hills -> highland.
         assert_eq!(
-            ground_texture(&tile_with(BiomeRole::Rocky, 0, 0)),
+            ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Desert, 0, 0)),
+            GroundTexture::Dirt
+        );
+        assert_eq!(
+            ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Mountains, 0, 0)),
             GroundTexture::Rocky
         );
         assert_eq!(
-            ground_texture(&tile_with(BiomeRole::Highland, 0, 0)),
+            ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Hills, 0, 0)),
             GroundTexture::Highland
         );
+        // Forests and plains land on grass; grassland gets the variant sprite on
+        // the deterministic subset only.
         assert_eq!(
-            ground_texture(&tile_with(BiomeRole::Lowland, 1, 1)),
+            ground_texture(&climate_tile(BiomeRole::Forest, Biome::OakForest, 3, 3)),
             GroundTexture::Grass
         );
         assert_eq!(
-            ground_texture(&tile_with(BiomeRole::Forest, 3, 2)),
-            GroundTexture::Grass
-        );
-        // Grassland gets the variant sprite on the deterministic subset only.
-        assert_eq!(
-            ground_texture(&tile_with(BiomeRole::Grassland, 2, 3)),
+            ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Plains, 2, 3)),
             GroundTexture::GrassVar
         );
         assert_eq!(
-            ground_texture(&tile_with(BiomeRole::Grassland, 2, 4)),
+            ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Plains, 2, 4)),
             GroundTexture::Grass
         );
+    }
+
+    #[test]
+    fn water_biomes_are_detected_and_tinted_distinctly() {
+        for biome in [Biome::Ocean, Biome::Lake, Biome::River, Biome::Ice] {
+            assert!(is_water_biome(biome), "{biome:?} should render as water");
+        }
+        for biome in [Biome::Plains, Biome::Desert, Biome::OakForest, Biome::Hills] {
+            assert!(!is_water_biome(biome), "{biome:?} is land");
+        }
+        // The tint accessor reflects each biome's palette colour, so distinct
+        // biomes produce distinct ground colours.
+        assert_ne!(biome_tint(Biome::Plains), biome_tint(Biome::Desert));
+        assert_ne!(biome_tint(Biome::OakForest), biome_tint(Biome::SnowyPlains));
+        assert_eq!(biome_tint(Biome::Plains), Color::srgb_u8(124, 176, 84));
+    }
+
+    #[test]
+    fn rock_scale_grows_with_size() {
+        assert!(rock_scale(RockSize::Small) < rock_scale(RockSize::Medium));
+        assert!(rock_scale(RockSize::Medium) < rock_scale(RockSize::Large));
     }
 
     #[test]
