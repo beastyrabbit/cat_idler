@@ -55,6 +55,12 @@ const Z_ZONE: f32 = 2.0;
 const Z_YSORT_BASE: f32 = 300.0;
 const Z_YSORT_SCALE: f32 = 0.01;
 
+// Fog of war sits above every y-sorted world sprite (opaque, so it hides the
+// terrain, trees, buildings and cats on undiscovered tiles) but below the
+// camera + UI.
+const Z_FOG: f32 = 500.0;
+const FOG_COLOR: Color = Color::srgb(0.02, 0.03, 0.05);
+
 const CAMERA_Z: f32 = 1000.0;
 
 /// Flat top-down projection: tile `(x, y)` → world space. Y is negated so the
@@ -639,6 +645,9 @@ struct HudHeaderText;
 /// Marker for the HUD jobs + ledger footer text.
 #[derive(Component)]
 struct HudFooterText;
+/// Marker for a fog-of-war tile sprite.
+#[derive(Component)]
+struct FogTile;
 /// Marker for the cursor-following hover tooltip panel.
 #[derive(Component)]
 struct TooltipPanel;
@@ -780,6 +789,7 @@ pub fn run() {
                     poll_ws,
                     ensure_presence,
                     spawn_terrain,
+                    render_fog,
                     render_buildings,
                     render_walls,
                     render_zones,
@@ -1601,6 +1611,17 @@ fn tree_is_oak(species: i32) -> bool {
     species.rem_euclid(2) == 0
 }
 
+/// The inclusive tile bounds `(x0, y0, x1, y1)` of the render window around the
+/// village anchor. Terrain and fog cover exactly this rectangle.
+fn window_bounds() -> (i32, i32, i32, i32) {
+    (
+        VILLAGE_ANCHOR.x - WINDOW_RADIUS,
+        VILLAGE_ANCHOR.y - WINDOW_RADIUS,
+        VILLAGE_ANCHOR.x + WINDOW_RADIUS,
+        VILLAGE_ANCHOR.y + WINDOW_RADIUS,
+    )
+}
+
 /// Regenerate the terrain tiles inside the window around the village anchor.
 fn window_terrain(seed: i64) -> Vec<TerrainTile> {
     let min = tile_to_chunk(
@@ -1611,12 +1632,7 @@ fn window_terrain(seed: i64) -> Vec<TerrainTile> {
         VILLAGE_ANCHOR.x + WINDOW_RADIUS,
         VILLAGE_ANCHOR.y + WINDOW_RADIUS,
     );
-    let (x0, y0, x1, y1) = (
-        VILLAGE_ANCHOR.x - WINDOW_RADIUS,
-        VILLAGE_ANCHOR.y - WINDOW_RADIUS,
-        VILLAGE_ANCHOR.x + WINDOW_RADIUS,
-        VILLAGE_ANCHOR.y + WINDOW_RADIUS,
-    );
+    let (x0, y0, x1, y1) = window_bounds();
     let mut tiles = Vec::new();
     for cy in min.chunk_y..=max.chunk_y {
         for cx in min.chunk_x..=max.chunk_x {
@@ -1628,6 +1644,50 @@ fn window_terrain(seed: i64) -> Vec<TerrainTile> {
         }
     }
     tiles
+}
+
+/// The set of revealed tile coordinates, for O(1) fog lookups.
+fn revealed_lookup(tiles: &[TilePoint]) -> HashSet<(i32, i32)> {
+    tiles.iter().map(|t| (t.x, t.y)).collect()
+}
+
+/// A tile is fogged (undiscovered) when it isn't in the revealed set.
+fn is_fogged(revealed: &HashSet<(i32, i32)>, x: i32, y: i32) -> bool {
+    !revealed.contains(&(x, y))
+}
+
+/// Fog of war: opaque dark tiles over every window tile the colony hasn't
+/// revealed yet. Re-read each snapshot (the revealed set grows as cats walk), so
+/// the fog visibly recedes. Drawn above the world sprites, so it also hides the
+/// terrain, trees, buildings and cats sitting on undiscovered tiles.
+fn render_fog(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    fog: Query<Entity, With<FogTile>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    for entity in &fog {
+        commands.entity(entity).despawn();
+    }
+    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+        return;
+    };
+    let revealed = revealed_lookup(&colony.revealed_tiles);
+    let (x0, y0, x1, y1) = window_bounds();
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if is_fogged(&revealed, x, y) {
+                let p = grid_to_world(x, y);
+                commands.spawn((
+                    Sprite::from_color(FOG_COLOR, Vec2::splat(TILE)),
+                    Transform::from_xyz(p.x, p.y, Z_FOG),
+                    FogTile,
+                ));
+            }
+        }
+    }
 }
 
 fn render_buildings(
@@ -3438,6 +3498,33 @@ mod tests {
                     .contains(&t.y)
             );
         }
+    }
+
+    #[test]
+    fn fog_lookup_and_predicate() {
+        let revealed = revealed_lookup(&[
+            TilePoint { x: 6, y: 6 },
+            TilePoint { x: 7, y: 6 },
+            TilePoint { x: 6, y: 7 },
+        ]);
+        assert_eq!(revealed.len(), 3);
+        // Revealed tiles are clear; everything else is fogged.
+        assert!(!is_fogged(&revealed, 6, 6));
+        assert!(!is_fogged(&revealed, 7, 6));
+        assert!(is_fogged(&revealed, 6, 5));
+        assert!(is_fogged(&revealed, 100, 100));
+        // An empty reveal set fogs everything (pre-fog / undiscovered world).
+        let none = revealed_lookup(&[]);
+        assert!(is_fogged(&none, 6, 6));
+    }
+
+    #[test]
+    fn window_bounds_is_square_around_the_anchor() {
+        let (x0, y0, x1, y1) = window_bounds();
+        assert_eq!(x0, VILLAGE_ANCHOR.x - WINDOW_RADIUS);
+        assert_eq!(y0, VILLAGE_ANCHOR.y - WINDOW_RADIUS);
+        assert_eq!(x1, VILLAGE_ANCHOR.x + WINDOW_RADIUS);
+        assert_eq!(y1, VILLAGE_ANCHOR.y + WINDOW_RADIUS);
     }
 
     #[test]
