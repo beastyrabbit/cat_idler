@@ -38,6 +38,16 @@ so experts emerge. Generalizes `role_xp` from 4 roles to all labors.
 ## P12.2 — Officer roles (split the monolith director)
 **Goal:** the single leader director becomes assignable **officer roles**, each automating one
 labor category; unfilled roles stay manual (player-triggered).
+
+**Grounded design decision (2026-07-10):** to avoid destabilizing the self-sustaining survival
+loop, officers are an **additive layer**, not manual-by-default. The base Leader keeps automating
+the core loop exactly as today; assigning an officer to a role **offloads + boosts** that
+category (its specialist is matched first + a bounded per-category budget bonus). **Empty
+`officers` (the default) ⇒ byte-identical to pre-P12.2**, so no existing director/survival test
+regresses. The 8 `LaborGoalKind`s partition into 5 roles:
+`Farmer{Hunt,FetchWater}`, `Forester{Quarry}`, `Captain{TrainWarrior,AssignSmithy}`,
+`Loremaster{AssignResearch,Scout}`, `Steward{AssignWorkshop}` (+stockpiles in P12.3). The deeper
+"unfilled ⇒ fully manual" comes once P12.3/P12.4 make manual control meaningful.
 - **Data:** `Colony.officers: BTreeMap<OfficerRole, Option<CatId>>` where
   `OfficerRole = {Steward(haul/stockpiles), Forester(wood), Farmer(fields/forage),
   Captain(defense), Loremaster(research/ritual)}` (+ the existing Leader as role #0).
