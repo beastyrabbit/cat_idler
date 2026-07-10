@@ -165,6 +165,69 @@ enum GroundTexture {
     Highland,
 }
 
+/// Pixel-art building sprite handles, loaded once at startup.
+#[derive(Resource, Clone)]
+struct BuildingArt {
+    shrine: Handle<Image>,
+    den: Handle<Image>,
+    workshop: Handle<Image>,
+    smithy: Handle<Image>,
+    research_hut: Handle<Image>,
+    school: Handle<Image>,
+    barracks: Handle<Image>,
+    storehouse: Handle<Image>,
+    market: Handle<Image>,
+    well: Handle<Image>,
+}
+
+impl BuildingArt {
+    fn load(assets: &AssetServer) -> Self {
+        Self {
+            shrine: assets.load("public/images/game/buildings/shrine.png"),
+            den: assets.load("public/images/game/buildings/den.png"),
+            workshop: assets.load("public/images/game/buildings/workshop.png"),
+            smithy: assets.load("public/images/game/buildings/smithy.png"),
+            research_hut: assets.load("public/images/game/buildings/research_hut.png"),
+            school: assets.load("public/images/game/buildings/school.png"),
+            barracks: assets.load("public/images/game/buildings/barracks.png"),
+            storehouse: assets.load("public/images/game/buildings/storehouse.png"),
+            market: assets.load("public/images/game/buildings/market.png"),
+            well: assets.load("public/images/game/props/well.png"),
+        }
+    }
+
+    fn handle(&self, texture: BuildingTexture) -> Handle<Image> {
+        match texture {
+            BuildingTexture::Shrine => self.shrine.clone(),
+            BuildingTexture::Den => self.den.clone(),
+            BuildingTexture::Workshop => self.workshop.clone(),
+            BuildingTexture::Smithy => self.smithy.clone(),
+            BuildingTexture::ResearchHut => self.research_hut.clone(),
+            BuildingTexture::School => self.school.clone(),
+            BuildingTexture::Barracks => self.barracks.clone(),
+            BuildingTexture::Storehouse => self.storehouse.clone(),
+            BuildingTexture::Market => self.market.clone(),
+            BuildingTexture::Well => self.well.clone(),
+        }
+    }
+}
+
+/// The building sprite a [`BuildingType`] renders as. Sprites `mill`, `clothier`,
+/// `monument`, `tent`, `town_hall` are reserved for future P12.4 building types.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BuildingTexture {
+    Shrine,
+    Den,
+    Workshop,
+    Smithy,
+    ResearchHut,
+    School,
+    Barracks,
+    Storehouse,
+    Market,
+    Well,
+}
+
 /// The live WebSocket connection (kept off the render threads — the receiver is
 /// `!Sync`).
 struct WsConn {
@@ -318,6 +381,7 @@ pub fn run() {
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(TerrainArt::load(&asset_server));
+    commands.insert_resource(BuildingArt::load(&asset_server));
 
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
@@ -668,6 +732,7 @@ fn window_terrain(seed: i64) -> Vec<TerrainTile> {
 fn render_buildings(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
+    art: Option<Res<BuildingArt>>,
     sprites: Query<Entity, BuildingEntities>,
 ) {
     if !latest.is_changed() {
@@ -676,27 +741,38 @@ fn render_buildings(
     for entity in &sprites {
         commands.entity(entity).despawn();
     }
-    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
+    else {
         return;
     };
     for building in &colony.buildings {
+        // Walls render as infra/palisade, not a point marker — skip.
+        let Some(texture) = building_texture(building.building_type) else {
+            continue;
+        };
         let p = grid_to_world(building.world_position.x, building.world_position.y);
+        let size = building_sprite_size(texture);
+        // Bottom-anchored so the structure stands on its tile; above ground +
+        // trees (Z_BUILDING > Z_DECORATION), below cats (< Z_CAT).
         commands.spawn((
-            Sprite::from_color(
-                building_color(building.building_type),
-                Vec2::splat(TILE * 0.8),
-            ),
-            Transform::from_xyz(p.x, p.y, Z_BUILDING),
+            Sprite {
+                image: art.handle(texture),
+                custom_size: Some(size),
+                ..default()
+            },
+            Anchor::BOTTOM_CENTER,
+            Transform::from_xyz(p.x, p.y - TILE * 0.5, Z_BUILDING),
             BuildingSprite,
         ));
+        // Small label just under the sprite base.
         commands.spawn((
             Text2d::new(building_label(building.building_type)),
             TextFont {
-                font_size: FontSize::Px(9.0),
+                font_size: FontSize::Px(8.0),
                 ..default()
             },
-            TextColor(Color::srgba(1.0, 0.97, 0.86, 0.92)),
-            Transform::from_xyz(p.x, p.y + TILE * 0.72, Z_BUILDING_LABEL),
+            TextColor(Color::srgba(1.0, 0.97, 0.86, 0.90)),
+            Transform::from_xyz(p.x, p.y - TILE * 0.9, Z_BUILDING_LABEL),
             BuildingLabel,
         ));
     }
@@ -1342,27 +1418,40 @@ fn inspector_text(cat: &CatSnapshot) -> String {
     )
 }
 
-// ---- pure colour / label helpers (unit-tested) ----
+// ---- pure building sprite / label helpers (unit-tested) ----
 
-fn building_color(building: BuildingType) -> Color {
-    match building {
-        BuildingType::Shrine => Color::srgb(0.95, 0.82, 0.35),
-        BuildingType::Den => Color::srgb(0.72, 0.52, 0.34),
-        BuildingType::FoodStorage => Color::srgb(0.86, 0.66, 0.30),
-        BuildingType::WaterBowl => Color::srgb(0.40, 0.68, 0.90),
-        BuildingType::Beds => Color::srgb(0.70, 0.62, 0.80),
-        BuildingType::HerbGarden => Color::srgb(0.50, 0.78, 0.42),
-        BuildingType::Nursery => Color::srgb(0.94, 0.72, 0.80),
-        BuildingType::ElderCorner => Color::srgb(0.66, 0.66, 0.72),
-        BuildingType::Walls => Color::srgb(0.55, 0.52, 0.48),
-        BuildingType::MouseFarm => Color::srgb(0.78, 0.70, 0.44),
-        BuildingType::Workshop => Color::srgb(0.80, 0.50, 0.28),
-        BuildingType::Field => Color::srgb(0.74, 0.78, 0.34),
-        BuildingType::ResearchHut => Color::srgb(0.52, 0.60, 0.90),
-        BuildingType::School => Color::srgb(0.58, 0.72, 0.92),
-        BuildingType::Smithy => Color::srgb(0.62, 0.36, 0.30),
-        BuildingType::Barracks => Color::srgb(0.80, 0.34, 0.34),
-    }
+/// The sprite a building renders as, or `None` for `Walls` (drawn as infra, not
+/// a point marker). Unmapped/utility variants fall back to the generic den.
+fn building_texture(building: BuildingType) -> Option<BuildingTexture> {
+    Some(match building {
+        BuildingType::Shrine => BuildingTexture::Shrine,
+        BuildingType::Workshop => BuildingTexture::Workshop,
+        BuildingType::Smithy => BuildingTexture::Smithy,
+        BuildingType::ResearchHut => BuildingTexture::ResearchHut,
+        BuildingType::School => BuildingTexture::School,
+        BuildingType::Barracks => BuildingTexture::Barracks,
+        BuildingType::FoodStorage | BuildingType::MouseFarm => BuildingTexture::Storehouse,
+        BuildingType::Field => BuildingTexture::Market,
+        BuildingType::WaterBowl => BuildingTexture::Well,
+        BuildingType::Den
+        | BuildingType::Beds
+        | BuildingType::Nursery
+        | BuildingType::HerbGarden
+        | BuildingType::ElderCorner => BuildingTexture::Den,
+        BuildingType::Walls => return None,
+    })
+}
+
+/// On-map sprite size: uniform ~1.8-tile height, preserving each sprite's native
+/// aspect (48x48 square; market 48x32 wide; well 16x32 tall).
+fn building_sprite_size(texture: BuildingTexture) -> Vec2 {
+    const HEIGHT: f32 = TILE * 1.8;
+    let aspect = match texture {
+        BuildingTexture::Market => 48.0 / 32.0,
+        BuildingTexture::Well => 16.0 / 32.0,
+        _ => 1.0,
+    };
+    Vec2::new(HEIGHT * aspect, HEIGHT)
 }
 
 fn building_label(building: BuildingType) -> &'static str {
@@ -1449,15 +1538,53 @@ mod tests {
     }
 
     #[test]
-    fn building_and_cat_colors_are_distinct() {
-        assert_ne!(
-            building_color(BuildingType::Shrine),
-            building_color(BuildingType::Smithy)
-        );
+    fn cat_colors_are_distinct() {
         assert_ne!(
             cat_color(Some(Specialization::Hunter)),
             cat_color(Some(Specialization::Warrior))
         );
+    }
+
+    #[test]
+    fn building_texture_mapping_and_sizes() {
+        // Direct 1:1 mappings.
+        assert_eq!(
+            building_texture(BuildingType::Shrine),
+            Some(BuildingTexture::Shrine)
+        );
+        assert_eq!(
+            building_texture(BuildingType::Smithy),
+            Some(BuildingTexture::Smithy)
+        );
+        // Aliased mappings.
+        assert_eq!(
+            building_texture(BuildingType::FoodStorage),
+            Some(BuildingTexture::Storehouse)
+        );
+        assert_eq!(
+            building_texture(BuildingType::MouseFarm),
+            Some(BuildingTexture::Storehouse)
+        );
+        assert_eq!(
+            building_texture(BuildingType::Field),
+            Some(BuildingTexture::Market)
+        );
+        assert_eq!(
+            building_texture(BuildingType::WaterBowl),
+            Some(BuildingTexture::Well)
+        );
+        assert_eq!(
+            building_texture(BuildingType::Nursery),
+            Some(BuildingTexture::Den)
+        );
+        // Walls render as infra, not a point marker.
+        assert_eq!(building_texture(BuildingType::Walls), None);
+
+        // Square sprites are square; the two non-square ones keep their aspect.
+        let square = building_sprite_size(BuildingTexture::Shrine);
+        assert_eq!(square.x, square.y);
+        assert!(building_sprite_size(BuildingTexture::Market).x > square.x); // wider
+        assert!(building_sprite_size(BuildingTexture::Well).x < square.x); // narrower
     }
 
     fn tile_with(biome: BiomeRole, x: i32, y: i32) -> TerrainTile {
