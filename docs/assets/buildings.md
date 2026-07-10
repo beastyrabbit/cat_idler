@@ -65,7 +65,7 @@ All from the **Roguelike Base** sheet `(col,row)`.
 
 ---
 
-## Farm — `public/images/game/farm/` (5 files)
+## Farm — `public/images/game/farm/` (6 files)
 
 From **Pixel Platformer Farm Expansion** `Tiles/`, downscaled 18→16.
 
@@ -76,11 +76,14 @@ From **Pixel Platformer Farm Expansion** `Tiles/`, downscaled 18→16.
 | `crop_growing.png` | `0073` | Stage 2 growing. |
 | `crop_mature.png` | `0075` | Stage 3 mature. |
 | `crop_flowering.png` | `0074` | Stage 4 flowering/fruiting. |
+| `scarecrow.png` | composite `109` (post) + `95` (arms) + `04` (pumpkin head) | 16×32 pumpkin-head harvest totem. |
 
-**scarecrow — NOT shipped:** the pack has no scarecrow sprite (verified via its Sample.png; the tiles
-earlier guessed as scarecrow are sticks/logs). Source a separate one later or drop the requirement. Also
-note the crop sprites are side-view platformer plants on a dark soil mound — they read as planted crops
-top-down but aren't strictly top-down.
+**scarecrow caveat:** the pack has **no scarecrow sprite** (verified via its Sample.png; tiles 94/95 are
+branches/logs, 92/93/108-110 are posts). `scarecrow.png` is therefore a **composite stand-in** built from
+cohesive Farm Expansion parts (pumpkin head on a crossbar post) — reads as a harvest totem/scarecrow;
+swap for a purpose-made sprite later if a truer scarecrow is wanted. Also note the crop sprites are
+side-view platformer plants on a dark soil mound — they read as planted crops top-down but aren't strictly
+top-down.
 
 ---
 
@@ -108,4 +111,4 @@ forest animals — these are the closest cohesive fantasy-creature stand-ins, no
 
 ## Files written / current in each dir
 
-- **buildings: 14** · **props: 11** · **farm: 5** · **enemies: 4**  (infra: 10 from an earlier pass)
+- **buildings: 14** · **props: 11** · **farm: 6** · **enemies: 4**  (infra: 10 from an earlier pass)
