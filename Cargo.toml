@@ -6,7 +6,7 @@ members = [
     "crates/cat-server",
     "crates/cat-client",
     "crates/cat-desktop",
-    "crates/cat-web",
+    "crates/cat-web", "crates/cat-dev",
 ]
 
 [workspace.package]

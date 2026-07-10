@@ -1,0 +1,4 @@
+# Workspace cargo config.
+[alias]
+# Launch the server + desktop client together (see crates/cat-dev).
+dev = "run -p cat-dev"

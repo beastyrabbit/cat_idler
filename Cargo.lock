@@ -1598,6 +1598,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "cat-dev"
+version = "0.1.0"
+
+[[package]]
 name = "cat-protocol"
 version = "0.1.0"
 dependencies = [
