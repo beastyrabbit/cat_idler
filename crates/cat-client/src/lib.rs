@@ -20,8 +20,8 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use cat_protocol::{
     BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction, ColonySnapshot, JobKind,
-    ResourceAmounts, ResourceKind, Specialization, StockpileSnapshot, TilePoint, WorldSnapshot,
-    ZoneKind,
+    OfficerRole, ResourceAmounts, ResourceKind, Specialization, StockpileSnapshot, TilePoint,
+    WorldSnapshot, ZoneKind,
 };
 use cat_sim::terrain_gen::{
     BiomeRole, DecorationRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
@@ -87,6 +87,37 @@ struct StockpileSelection {
 
 /// The shrine reservoir's stockpile id — always present, de-emphasized in render.
 const SHRINE_STOCKPILE_ID: &str = "stockpile-shrine";
+
+/// Whether the officers panel is currently shown (toggled with the `O` key).
+#[derive(Resource)]
+struct OfficersUi {
+    visible: bool,
+}
+
+impl Default for OfficersUi {
+    fn default() -> Self {
+        Self { visible: true }
+    }
+}
+
+/// The five appointable officer roles, in display order.
+const ALL_OFFICER_ROLES: [OfficerRole; 5] = [
+    OfficerRole::Steward,
+    OfficerRole::Forester,
+    OfficerRole::Farmer,
+    OfficerRole::Captain,
+    OfficerRole::Loremaster,
+];
+
+fn officer_role_name(role: OfficerRole) -> &'static str {
+    match role {
+        OfficerRole::Steward => "Steward",
+        OfficerRole::Forester => "Forester",
+        OfficerRole::Farmer => "Farmer",
+        OfficerRole::Captain => "Captain",
+        OfficerRole::Loremaster => "Loremaster",
+    }
+}
 
 /// Active map tool and any in-progress zone drag.
 #[derive(Resource, Default)]
@@ -345,6 +376,18 @@ struct RemovePanelText;
 /// Marker for the "Remove stockpile" button.
 #[derive(Component)]
 struct RemoveStockpileButton;
+/// Marker for the officers panel node (toggled with `O`).
+#[derive(Component)]
+struct OfficersPanel;
+/// One officer role row in the officers panel (its text holder).
+#[derive(Component, Clone, Copy)]
+struct OfficerRow(OfficerRole);
+/// "Vacate" button for a role in the officers panel.
+#[derive(Component, Clone, Copy)]
+struct VacateButton(OfficerRole);
+/// "Appoint <role>" button in the cat inspector.
+#[derive(Component, Clone, Copy)]
+struct AppointButton(OfficerRole);
 /// Marker for the HUD dashboard text.
 #[derive(Component)]
 struct HudText;
@@ -448,6 +491,7 @@ pub fn run() {
         .insert_resource(WorldRender::default())
         .insert_resource(Selection::default())
         .insert_resource(StockpileSelection::default())
+        .insert_resource(OfficersUi::default())
         .insert_resource(Tools::default())
         .insert_resource(ClearColor(Color::srgb(0.06, 0.09, 0.08)))
         .add_systems(Startup, (setup, connect_ws))
@@ -479,6 +523,10 @@ pub fn run() {
                     update_hud,
                     update_event_log,
                     handle_buttons,
+                    toggle_officers,
+                    update_officers_panel,
+                    handle_appoint_buttons,
+                    handle_vacate_buttons,
                     flush_outgoing,
                 ),
             ),
@@ -533,30 +581,73 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         )],
     ));
 
-    // Cat inspector (top-right), hidden until a cat is selected.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(8.0),
-            top: Val::Px(8.0),
-            width: Val::Px(250.0),
-            padding: UiRect::all(Val::Px(12.0)),
-            display: Display::None,
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.03, 0.04, 0.035, 0.86)),
-        BorderColor::all(Color::srgba(0.80, 0.67, 0.42, 0.5)),
-        InspectorPanel,
-        children![(
-            Text::new(""),
-            TextFont {
-                font_size: FontSize::Px(13.0),
+    // Cat inspector (top-right), hidden until a cat is selected. Includes a row
+    // of "Appoint <role>" buttons that make the selected cat that officer.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(8.0),
+                top: Val::Px(8.0),
+                width: Val::Px(250.0),
+                padding: UiRect::all(Val::Px(12.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
+                display: Display::None,
                 ..default()
             },
-            TextColor(Color::srgb(1.0, 0.95, 0.84)),
-            InspectorText,
-        )],
-    ));
+            BackgroundColor(Color::srgba(0.03, 0.04, 0.035, 0.86)),
+            BorderColor::all(Color::srgba(0.80, 0.67, 0.42, 0.5)),
+            InspectorPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.95, 0.84)),
+                InspectorText,
+            ));
+            panel.spawn((
+                Text::new("Appoint officer:"),
+                TextFont {
+                    font_size: FontSize::Px(11.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.80, 0.85, 0.95)),
+            ));
+            panel
+                .spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
+                    column_gap: Val::Px(4.0),
+                    row_gap: Val::Px(4.0),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for role in ALL_OFFICER_ROLES {
+                        row.spawn((
+                            Button,
+                            Node {
+                                padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(0.20, 0.30, 0.24)),
+                            AppointButton(role),
+                            children![(
+                                Text::new(officer_role_name(role)),
+                                TextFont {
+                                    font_size: FontSize::Px(10.0),
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(0.92, 0.98, 0.90)),
+                            )],
+                        ));
+                    }
+                });
+        });
 
     // Remove-stockpile affordance (right side), hidden until one is selected.
     commands.spawn((
@@ -604,10 +695,79 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         ],
     ));
 
+    // Officers panel (left, below the dashboard), toggled with `O`.
+    spawn_officers_panel(&mut commands);
+
     // Tool-mode toolbar (just above the action toolbar).
     spawn_tool_toolbar(&mut commands);
     // Action toolbar (bottom, centred).
     spawn_toolbar(&mut commands);
+}
+
+fn spawn_officers_panel(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(8.0),
+                top: Val::Px(300.0),
+                width: Val::Px(260.0),
+                padding: UiRect::all(Val::Px(10.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(4.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.03, 0.04, 0.06, 0.82)),
+            BorderColor::all(Color::srgba(0.55, 0.70, 0.90, 0.45)),
+            OfficersPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("Officers  [O]"),
+                TextFont {
+                    font_size: FontSize::Px(12.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.85, 0.90, 1.0)),
+            ));
+            for role in ALL_OFFICER_ROLES {
+                panel
+                    .spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(6.0),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn((
+                            Text::new(""),
+                            TextFont {
+                                font_size: FontSize::Px(12.0),
+                                ..default()
+                            },
+                            TextColor(Color::srgb(0.92, 0.95, 1.0)),
+                            OfficerRow(role),
+                        ));
+                        row.spawn((
+                            Button,
+                            Node {
+                                padding: UiRect::axes(Val::Px(5.0), Val::Px(1.0)),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgb(0.40, 0.20, 0.20)),
+                            VacateButton(role),
+                            children![(
+                                Text::new("x"),
+                                TextFont {
+                                    font_size: FontSize::Px(11.0),
+                                    ..default()
+                                },
+                                TextColor(Color::srgb(1.0, 0.85, 0.85)),
+                            )],
+                        ));
+                    });
+            }
+        });
 }
 
 fn spawn_tool_toolbar(commands: &mut Commands) {
@@ -1114,6 +1274,93 @@ fn handle_remove_button(
             }
             Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.65, 0.24, 0.21)),
             Interaction::None => *color = BackgroundColor(Color::srgb(0.55, 0.20, 0.18)),
+        }
+    }
+}
+
+/// Toggle the officers panel with the `O` key.
+fn toggle_officers(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<OfficersUi>) {
+    if keys.just_pressed(KeyCode::KeyO) {
+        ui.visible = !ui.visible;
+    }
+}
+
+/// Show/hide the officers panel and refresh each role row's holder name.
+fn update_officers_panel(
+    latest: Res<LatestSnapshot>,
+    ui: Res<OfficersUi>,
+    mut panel: Query<&mut Node, With<OfficersPanel>>,
+    mut rows: Query<(&OfficerRow, &mut Text)>,
+) {
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if ui.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if !latest.is_changed() && !ui.is_changed() {
+        return;
+    }
+    let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
+    for (row, mut text) in &mut rows {
+        let holder = colony.and_then(|c| officer_holder_name(c, row.0));
+        text.0 = format!(
+            "{}: {}",
+            officer_role_name(row.0),
+            holder.unwrap_or("vacant")
+        );
+    }
+}
+
+/// Appoint the selected cat to a role when an "Appoint <role>" button is clicked.
+fn handle_appoint_buttons(
+    session: Res<Session>,
+    selection: Res<Selection>,
+    mut outgoing: ResMut<OutgoingActions>,
+    mut buttons: Query<(&Interaction, &AppointButton, &mut BackgroundColor), Changed<Interaction>>,
+) {
+    for (interaction, appoint, mut color) in &mut buttons {
+        match interaction {
+            Interaction::Pressed => {
+                *color = BackgroundColor(Color::srgb(0.32, 0.48, 0.36));
+                if let (Some(cat), true) = (selection.selected.clone(), session.ready) {
+                    outgoing.0.push(ClientAction::AssignOfficer {
+                        session_id: session.session_id.clone(),
+                        nickname: "Desktop Cat".to_string(),
+                        sig: session.sig.clone(),
+                        role: appoint.0,
+                        cat_id: cat,
+                    });
+                }
+            }
+            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.26, 0.38, 0.30)),
+            Interaction::None => *color = BackgroundColor(Color::srgb(0.20, 0.30, 0.24)),
+        }
+    }
+}
+
+/// Vacate a role when its "x" button is clicked.
+fn handle_vacate_buttons(
+    session: Res<Session>,
+    mut outgoing: ResMut<OutgoingActions>,
+    mut buttons: Query<(&Interaction, &VacateButton, &mut BackgroundColor), Changed<Interaction>>,
+) {
+    for (interaction, vacate, mut color) in &mut buttons {
+        match interaction {
+            Interaction::Pressed => {
+                *color = BackgroundColor(Color::srgb(0.60, 0.26, 0.26));
+                if session.ready {
+                    outgoing.0.push(ClientAction::UnassignOfficer {
+                        session_id: session.session_id.clone(),
+                        nickname: "Desktop Cat".to_string(),
+                        sig: session.sig.clone(),
+                        role: vacate.0,
+                    });
+                }
+            }
+            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.50, 0.22, 0.22)),
+            Interaction::None => *color = BackgroundColor(Color::srgb(0.40, 0.20, 0.20)),
         }
     }
 }
@@ -1638,6 +1885,17 @@ fn paint_preview_color(kind: PaintKind) -> Color {
         PaintKind::Gather => Color::srgba(0.35, 0.90, 0.40, 0.45),
         PaintKind::Stockpile => Color::srgba(0.85, 0.60, 0.25, 0.45),
     }
+}
+
+/// The name of the cat holding an officer role, or `None` when vacant / the
+/// appointed cat is no longer in the snapshot.
+fn officer_holder_name(colony: &ColonySnapshot, role: OfficerRole) -> Option<&str> {
+    let id = colony.officers.get(&role)?;
+    colony
+        .cats
+        .iter()
+        .find(|c| &c.id == id)
+        .map(|c| c.name.as_str())
 }
 
 /// Sum of the storable goods held in a stockpile (blessings excluded).
@@ -2204,5 +2462,37 @@ mod tests {
         assert_eq!(snap.colonies[0].cats.len(), 2);
         assert_eq!(snap.online_count, 2);
         assert!(dashboard_text(&snap.colonies[0], 2).contains("Colony: A"));
+    }
+
+    #[test]
+    fn officer_holder_name_resolves_vacancy_and_dangling() {
+        // farmer -> k1 (present, name "A"); captain -> "ghost" (not in cats).
+        let json = r#"{
+            "now": 0, "worldSeed": 1, "onlineCount": 1,
+            "colonies": [{
+                "id":"c1","name":"A","status":"thriving",
+                "resources":{"food":1,"water":1,"herbs":0,"materials":0,"refined":0,"weapons":0,"armor":0,"blessings":0},
+                "storage":{"capacities":{"food":200,"water":200,"herbs":100,"materials":100,"refined":100,"weapons":50,"armor":50},"foodCapacity":200,"titheRates":{"food":20,"refined":5}},
+                "leader":null,
+                "cats":[
+                    {"id":"k1","name":"Moss","position":{"map":"colony","x":1,"y":2},"activity":"idle","destination":null,"carrying":null,"specialization":null,"ageHours":30.0,"needs":{"hunger":100,"thirst":100,"rest":100,"health":100},"currentTask":null,"assignedBuildingId":null,"roleXp":{"hunter":0,"architect":0,"ritualist":0,"warrior":0},"stats":{"leadership":10},"deathTime":null}
+                ],
+                "jobs":[],"upgrades":[],"events":[],
+                "housing":{"population":1,"capacity":4,"pressure":0.5,"villageLevel":1},
+                "research":{"ownedNodeIds":[],"researchPoints":0,"researcherCount":0,"blessings":0,"nextTarget":null},
+                "election":null,"voteKick":null,"zones":[],
+                "threat":{"pressure":0,"band":"calm","raidActive":false,"warriors":0,"weapons":0,"armor":0},
+                "raiders":[],"buildings":[],"claimedTiles":[],"villageGate":null,"villageRadius":4,"anchor":{"x":6,"y":6},
+                "officers":{"farmer":"k1","captain":"ghost"}
+            }]
+        }"#;
+        let snap: WorldSnapshot = serde_json::from_str(json).expect("parse snapshot");
+        let colony = &snap.colonies[0];
+        assert_eq!(
+            officer_holder_name(colony, OfficerRole::Farmer),
+            Some("Moss")
+        );
+        assert_eq!(officer_holder_name(colony, OfficerRole::Steward), None); // vacant
+        assert_eq!(officer_holder_name(colony, OfficerRole::Captain), None); // dangling id
     }
 }
