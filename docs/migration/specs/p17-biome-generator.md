@@ -24,6 +24,9 @@ climate→biome map with per-biome decoration density.
   - **movement-speed factor** (feeds P14.2/movement — e.g. desert/sand slow, plains medium),
   - **resources** available (forest→wood, rocky/mountain→stone, coast/river→fish, plains→farmable
     grass for fields) — drives the scout/gather loop,
+  - **crop-growth multiplier** (per-biome fertility): e.g. **grass ~80%**, **marsh/fertile ~150%**,
+    desert/tundra ~0 (not farmable). Relaxes P16's "fields only on grass" → fields go on any
+    **farmable** biome, and the biome's fertility scales how fast the crop grows (P12.5 farm plots),
   - passability hints (mountain blocks until unlocked; water blocks).
 
 ## ~25-biome palette (starting set — tune)
