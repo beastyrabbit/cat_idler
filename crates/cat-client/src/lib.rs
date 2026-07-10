@@ -19,10 +19,10 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::sprite::{Anchor, BorderRect, SliceScaleMode, TextureSlicer};
 use cat_protocol::{
-    BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction,
+    BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot, ClientAction,
     ColonySnapshot, FootprintSize, GateSide, JobKind, OfficerRole, RaiderStatus, ResourceAmounts,
-    ResourceCapacities, ResourceKind, Specialization, StockLedgerSnapshot, StockpileSnapshot,
-    TilePoint, WorldSnapshot, ZoneKind,
+    ResourceCapacities, ResourceKind, RoleXp, Specialization, StockLedgerSnapshot,
+    StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -634,6 +634,24 @@ struct InspectorPanel;
 /// Marker for the cat-inspector text.
 #[derive(Component)]
 struct InspectorText;
+/// A need shown as a bar in the cat inspector.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NeedKind {
+    Hunger,
+    Thirst,
+    Rest,
+    Health,
+}
+/// The four cat needs and their bar labels, in display order.
+const CAT_NEEDS: [(NeedKind, &str); 4] = [
+    (NeedKind::Hunger, "hunger"),
+    (NeedKind::Thirst, "thirst"),
+    (NeedKind::Rest, "rest"),
+    (NeedKind::Health, "health"),
+];
+/// Tags a need-bar fill node so the inspector can resize/recolor it each tick.
+#[derive(Component, Clone, Copy)]
+struct NeedBar(NeedKind);
 /// Marker for the building-inspector panel node (middle-click a building).
 #[derive(Component)]
 struct BuildingInspectorPanel;
@@ -861,6 +879,7 @@ pub fn run() {
                     camera_controls,
                     select_cat,
                     select_building,
+                    close_inspectors_on_esc,
                     update_building_inspector,
                     update_remove_panel,
                     handle_remove_button,
@@ -1200,6 +1219,50 @@ fn setup(
                 TextColor(PARCHMENT_INK),
                 InspectorText,
             ));
+            // Needs, one labelled bar each (green/amber/red by level).
+            for (kind, label) in CAT_NEEDS {
+                panel
+                    .spawn(Node {
+                        width: Val::Percent(100.0),
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(6.0),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn((
+                            Node {
+                                width: Val::Px(52.0),
+                                ..default()
+                            },
+                            children![(
+                                Text::new(label),
+                                TextFont {
+                                    font_size: FontSize::Px(11.0),
+                                    ..default()
+                                },
+                                TextColor(PARCHMENT_INK),
+                            )],
+                        ));
+                        // Bar track + fill.
+                        row.spawn((
+                            Node {
+                                flex_grow: 1.0,
+                                height: Val::Px(11.0),
+                                ..default()
+                            },
+                            BackgroundColor(Color::srgba(0.20, 0.14, 0.08, 0.55)),
+                            children![(
+                                Node {
+                                    width: Val::Percent(0.0),
+                                    height: Val::Percent(100.0),
+                                    ..default()
+                                },
+                                BackgroundColor(need_bar_color(0.0)),
+                                NeedBar(kind),
+                            )],
+                        ));
+                    });
+            }
             panel.spawn((
                 Text::new("Appoint officer:"),
                 TextFont {
@@ -2616,8 +2679,9 @@ fn update_building_inspector(
 fn update_inspector(
     latest: Res<LatestSnapshot>,
     mut selection: ResMut<Selection>,
-    mut panel: Query<&mut Node, With<InspectorPanel>>,
+    mut panel: Query<&mut Node, (With<InspectorPanel>, Without<NeedBar>)>,
     mut text: Query<&mut Text, With<InspectorText>>,
+    mut bars: Query<(&mut Node, &mut BackgroundColor, &NeedBar), Without<InspectorPanel>>,
 ) {
     if !latest.is_changed() && !selection.is_changed() {
         return;
@@ -2636,6 +2700,11 @@ fn update_inspector(
         Some(cat) => {
             node.display = Display::Flex;
             text.0 = inspector_text(cat);
+            for (mut bar, mut color, need) in &mut bars {
+                let value = cat_need_value(&cat.needs, need.0);
+                bar.width = Val::Percent(value.clamp(0.0, 100.0) as f32);
+                color.0 = need_bar_color(value);
+            }
         }
         None => {
             node.display = Display::None;
@@ -2643,6 +2712,22 @@ fn update_inspector(
                 selection.selected = None;
             }
         }
+    }
+}
+
+/// Esc closes any open inspector (cat card / building panel / stockpile remove).
+/// Click-away already clears selection via the pick systems; this is the keyboard
+/// escape hatch.
+fn close_inspectors_on_esc(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut cat: ResMut<Selection>,
+    mut building: ResMut<BuildingSelection>,
+    mut stockpile: ResMut<StockpileSelection>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        cat.selected = None;
+        building.selected = None;
+        stockpile.selected = None;
     }
 }
 
@@ -3253,6 +3338,20 @@ fn paint_preview_color(kind: PaintKind) -> Color {
 
 /// Read-only inspector body for a building: type, level, complete/under-
 /// construction, and the cats assigned to it.
+/// The recipe a building runs (inputs -> outputs), or `None` for non-producers.
+/// Static per building type — the snapshot doesn't (yet) carry live recipe state.
+fn building_recipe(building: BuildingType) -> Option<&'static str> {
+    match building {
+        BuildingType::WoodCutter => Some("5 materials -> 1 plank"),
+        BuildingType::StonePrep => Some("5 materials -> 1 block"),
+        BuildingType::Woodworking => Some("planks + blocks -> 1 tool"),
+        BuildingType::Workshop => Some("5 materials -> 1 refined"),
+        BuildingType::Smithy => Some("refined + materials -> weapon + armor"),
+        BuildingType::Field | BuildingType::MouseFarm => Some("grows food"),
+        _ => None,
+    }
+}
+
 fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot) -> String {
     let status = if building.construction_progress >= 100.0 {
         "operational".to_string()
@@ -3270,16 +3369,20 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
     } else {
         workers.join(", ")
     };
+    let recipe_line = building_recipe(building.building_type)
+        .map_or_else(String::new, |r| format!("\nmakes: {r}"));
     format!(
         "{name}  Lv {lvl}\n\
          {status}\n\
          at {x},{y}\n\
-         workers: {workers}",
+         staffed: {count} - {workers}{recipe}",
         name = building_label(building.building_type),
         lvl = building.level,
         x = building.world_position.x,
         y = building.world_position.y,
+        count = workers.len(),
         workers = workers_line,
+        recipe = recipe_line,
     )
 }
 
@@ -3492,6 +3595,30 @@ fn specialization_name(spec: Option<Specialization>) -> &'static str {
 }
 
 /// Multi-line read-only inspector body for a cat.
+/// The value of one of a cat's four needs (0..100).
+fn cat_need_value(needs: &CatNeeds, kind: NeedKind) -> f64 {
+    match kind {
+        NeedKind::Hunger => needs.hunger,
+        NeedKind::Thirst => needs.thirst,
+        NeedKind::Rest => needs.rest,
+        NeedKind::Health => needs.health,
+    }
+}
+
+/// Bar colour for a need level: green when comfortable, amber when low, red when
+/// critical.
+fn need_bar_color(value: f64) -> Color {
+    if value >= 60.0 {
+        Color::srgb(0.42, 0.72, 0.36)
+    } else if value >= 30.0 {
+        Color::srgb(0.88, 0.72, 0.30)
+    } else {
+        Color::srgb(0.84, 0.34, 0.28)
+    }
+}
+
+/// The textual part of the cat inspector (identity, activity, skills) — the four
+/// needs render as bars alongside it.
 fn inspector_text(cat: &CatSnapshot) -> String {
     let dest = cat
         .destination
@@ -3500,7 +3627,6 @@ fn inspector_text(cat: &CatSnapshot) -> String {
         || "none".to_string(),
         |c| format!("{:?} x{:.0}", c.kind, c.amount),
     );
-    let n = &cat.needs;
     format!(
         "{name}\n\
          {spec} - {stage} ({age:.0}h)\n\
@@ -3508,8 +3634,8 @@ fn inspector_text(cat: &CatSnapshot) -> String {
          dest {dest}\n\
          carrying {carrying}\n\
          \n\
-         hunger {hunger:>3.0}   thirst {thirst:>3.0}\n\
-         rest   {rest:>3.0}   health {health:>3.0}",
+         skills: {skills}\n\
+         leadership {lead:.0}",
         name = cat.name,
         spec = specialization_name(cat.specialization),
         stage = life_stage(cat.age_hours),
@@ -3517,10 +3643,19 @@ fn inspector_text(cat: &CatSnapshot) -> String {
         x = cat.position.x,
         y = cat.position.y,
         activity = activity_name(cat.activity),
-        hunger = n.hunger,
-        thirst = n.thirst,
-        rest = n.rest,
-        health = n.health,
+        skills = cat_skills_line(&cat.role_xp),
+        lead = cat.stats.leadership,
+    )
+}
+
+/// One-line summary of a cat's role experience (skills).
+fn cat_skills_line(xp: &RoleXp) -> String {
+    format!(
+        "hunt {h:.0} build {b:.0} ritual {r:.0} war {w:.0}",
+        h = xp.hunter,
+        b = xp.architect,
+        r = xp.ritualist,
+        w = xp.warrior,
     )
 }
 
@@ -4531,8 +4666,51 @@ mod tests {
         assert!(ws.contains("Lv 2"));
         assert!(ws.contains("operational"));
         assert!(ws.contains("Moss")); // assigned worker
+        assert!(ws.contains("staffed: 1")); // occupant count
+        assert!(ws.contains("makes: 5 materials -> 1 refined")); // recipe
         let den_text = building_inspector_text(den, colony);
         assert!(den_text.contains("under construction 40%"));
-        assert!(den_text.contains("workers: none"));
+        assert!(den_text.contains("staffed: 0 - none"));
+        // Dens don't craft, so no recipe line.
+        assert!(!den_text.contains("makes:"));
+    }
+
+    #[test]
+    fn need_bars_and_skills_summarise_a_cat() {
+        let needs = CatNeeds {
+            hunger: 80.0,
+            thirst: 25.0,
+            rest: 50.0,
+            health: 95.0,
+        };
+        assert_eq!(cat_need_value(&needs, NeedKind::Thirst), 25.0);
+        // Colour bands: comfortable -> green, low -> amber, critical -> red.
+        assert_eq!(need_bar_color(80.0), Color::srgb(0.42, 0.72, 0.36));
+        assert_eq!(need_bar_color(45.0), Color::srgb(0.88, 0.72, 0.30));
+        assert_eq!(need_bar_color(10.0), Color::srgb(0.84, 0.34, 0.28));
+
+        let xp = RoleXp {
+            hunter: 12.0,
+            architect: 3.0,
+            ritualist: 0.0,
+            warrior: 1.0,
+        };
+        let line = cat_skills_line(&xp);
+        assert!(line.contains("hunt 12"));
+        assert!(line.contains("build 3"));
+    }
+
+    #[test]
+    fn building_recipe_covers_producers_only() {
+        assert_eq!(
+            building_recipe(BuildingType::WoodCutter),
+            Some("5 materials -> 1 plank")
+        );
+        assert_eq!(
+            building_recipe(BuildingType::Woodworking),
+            Some("planks + blocks -> 1 tool")
+        );
+        assert_eq!(building_recipe(BuildingType::Den), None);
+        assert_eq!(building_recipe(BuildingType::FoodStorage), None);
     }
 }
