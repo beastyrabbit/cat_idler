@@ -30,11 +30,20 @@ labors over time; visible workshops, stockpiles, and farm plots; production chai
 ## Status
 - **P0–P8 DONE**: full simulation + authoritative server + persistence + multi-village
   founding, all committed and live-verified. `docs/migration/specs/world_tick.md` maps the tick.
-- **P9 IN PROGRESS**: the top-down Bevy client. Design just pivoted from isometric → **top-down**
-  (single level) per GAME_VISION.md.
-- **P10** WASM, **P11** cutover (merge migration/bevy-rust → main), **P12** sim expansion
-  (skills, role/officer system, spatial stockpiles, more workshops + chains, farm plots),
-  **P13** client designation/role UI — all pending. See GAME_VISION.md "Build order".
+- **P9 DONE**: top-down Bevy client renders the world (terrain grid, cats-by-spec, labelled
+  buildings, stockpile readout, zones/raiders, camera, dashboard + working action buttons) —
+  framebuffer-verified. Terrain + tree SPRITES wired (crisp nearest-neighbour). A cat-selection
+  inspector + zone-paint tool card is the last in-flight P9 client work.
+- **ART / ASSETS DONE**: curated Kenney **Roguelike 16px pixel** family adopted (see
+  `docs/assets/SELECTION.md` + catalogs; and memory `art-direction-roguelike`). 58 verified
+  sprites imported under `public/images/game/{terrain,nature,buildings,infra,props,farm,enemies}/`.
+  Terrain wired; **building/prop sprites NOT yet wired into the renderer** (next client card).
+  P&W cat-sheet is non-commercial → a pre-1.0 blocker (need a CC0 32×64 8-dir cat replacement).
+- **P12 STARTED**: `docs/migration/specs/p12-idle-cat-forest.md` decomposes it; **P12.1 skills
+  DONE** (per-labor proficiency, cat-sim + cat-server, 341 tests). P12.2 officer roles, P12.3
+  spatial stockpiles, P12.4 workshops+chains, P12.5 farm plots — pending (only depend on P12.1).
+- **P10** WASM, **P11** cutover (merge migration/bevy-rust → main), **P13** client designation/
+  role UI — pending. See GAME_VISION.md "Build order".
 
 ## HOW TO WORK — hard-won lessons (do not relearn these)
 - **codex stalls.** The `codex exec` workspace-write sandbox intermittently hangs (empty
@@ -76,10 +85,20 @@ The verified 1653-line render spike `crates/cat-client/reference/spike-bevy-0.19
 source to lift camera/sprite/HUD/atlas patterns from (it renders correctly).
 
 ## NEXT STEPS
-1. Finish **P9 top-down client** (BOARD P9): terrain grid from `world_seed` (via `cat_sim`
-   world/terrain gen), cats + carried-item glyphs, labelled workshops/buildings, visible
-   storage/stockpiles, avoid/gather zones, camera pan/zoom, dashboard + manual action buttons
-   that send `ClientAction` over the WS (Supply food/water, Plan hunt, Found village). VERIFY each on the framebuffer.
-2. Then **P12 sim expansion** (cat-sim): skills → role/officer system → spatial stockpiles →
-   more workshops + production chains → visible farm plots (per GAME_VISION.md).
+1. **Wire building/prop sprites into the renderer** (`crates/cat-client/src/lib.rs`): the
+   colored building markers → textured `Sprite` from `public/images/game/buildings/<type>.png`
+   (type-keyed, bottom-anchored, uniform on-map size; sprites are 16–48px, mixed dims → set a
+   uniform custom_size). Optionally show `props/` piles for stockpiles. Then a consolidated
+   framebuffer check of the FULL sprite world (terrain+trees+cats+buildings). The terrain wiring
+   at the `ground_texture(BiomeRole)` seam is the pattern; the building swap is the same seam.
+2. **P12 sim expansion** (cat-sim, spec `docs/migration/specs/p12-idle-cat-forest.md`): P12.1
+   skills is DONE. Next P12.2 officer roles ∥ P12.3 spatial stockpiles (make `props/` piles real
+   places), then P12.4 workshops+chains, P12.5 farm plots (use `farm/` crop-stage sprites).
 3. Then **P13 client** designation/role UI, **P10** WASM, **P11** cutover.
+
+## Asset wiring quick-ref
+- Art root: `AssetPlugin { file_path: "." }`, so load paths are `public/images/game/...`.
+- Crisp pixels already on via `ImagePlugin::default_nearest()`. Buildings type→file names match
+  `buildings.type` keys (den, storehouse, workshop, smithy, shrine, mill, clothier, market,
+  research_hut, school, barracks, town_hall, tent, monument). Enemies are fantasy stand-ins;
+  farm crops are side-view (usable). Full manifest: `docs/assets/buildings.md`.
