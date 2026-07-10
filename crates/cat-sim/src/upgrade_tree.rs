@@ -120,6 +120,10 @@ pub struct UpgradeNode {
     pub unlocks: UpgradeUnlocks,
 }
 
+/// Tech node that makes mountain-biome tiles passable (slow) to pathfinding.
+/// Owned via god blessing or cat auto-research like any other node.
+pub const MOUNTAINEERING_NODE_ID: &str = "mountaineering";
+
 pub const UPGRADE_NODES: &[UpgradeNode] = &[
     UpgradeNode {
         id: "research_hut",
@@ -228,6 +232,19 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
                 key: EffectKey::StoragePerLevelMult,
                 value: 0.25,
             }]),
+        },
+    },
+    UpgradeNode {
+        id: MOUNTAINEERING_NODE_ID,
+        name: "Mountaineering",
+        description: "Pitons, ropes, and cut switchback trails. Cats can finally cross the peaks — slow going, but the high ore is within reach.",
+        era: 2,
+        cost: 15.0,
+        prerequisites: &["masonry"],
+        unlocks: UpgradeUnlocks {
+            buildings: None,
+            jobs: None,
+            effects: None,
         },
     },
     UpgradeNode {
@@ -795,12 +812,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        EffectKey, EffectKind, PurchaseFailureReason, RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK,
-        RESEARCH_POINTS_PER_SECOND, UPGRADE_NODE_BY_ID, UPGRADE_NODES, WEEK_SECONDS,
-        accrue_research, can_unlock, cat_auto_unlock, create_upgrade_tree_state,
-        deserialize_upgrade_tree_state, effect_kind, get_node, god_purchase, neutral_effects,
-        next_research_target, points_per_tick_for, points_per_tick_for_default, prerequisites_met,
-        resolve_effects, serialize_upgrade_tree_state, unlockable_nodes,
+        EffectKey, EffectKind, MOUNTAINEERING_NODE_ID, PurchaseFailureReason,
+        RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK, RESEARCH_POINTS_PER_SECOND, UPGRADE_NODE_BY_ID,
+        UPGRADE_NODES, WEEK_SECONDS, accrue_research, can_unlock, cat_auto_unlock,
+        create_upgrade_tree_state, deserialize_upgrade_tree_state, effect_kind, get_node,
+        god_purchase, is_owned, neutral_effects, next_research_target, points_per_tick_for,
+        points_per_tick_for_default, prerequisites_met, resolve_effects,
+        serialize_upgrade_tree_state, unlockable_nodes,
     };
     use crate::types::BuildingType;
 
@@ -815,8 +833,24 @@ mod tests {
     }
 
     #[test]
+    fn mountaineering_node_gates_on_masonry_and_is_ownership_detectable() {
+        let node = get_node(MOUNTAINEERING_NODE_ID).expect("mountaineering node exists");
+        assert_eq!(node.prerequisites, ["masonry"]);
+        assert!(node.unlocks.buildings.is_none());
+        assert!(node.unlocks.jobs.is_none());
+        assert!(node.unlocks.effects.is_none());
+
+        let without = state_with(&["research_hut"], 0.0);
+        assert!(!is_owned(&without, MOUNTAINEERING_NODE_ID));
+        let with = state_with(&["research_hut", MOUNTAINEERING_NODE_ID], 0.0);
+        assert!(is_owned(&with, MOUNTAINEERING_NODE_ID));
+    }
+
+    #[test]
     fn node_table_matches_the_typescript_tree_shape() {
-        assert_eq!(UPGRADE_NODES.len(), 18);
+        // 18 TS-parity nodes + the Rust-side `mountaineering` node (unlocks
+        // mountain-tile traversal in pathfinding).
+        assert_eq!(UPGRADE_NODES.len(), 19);
         assert_eq!(EffectKey::ALL.len(), 11);
         assert_eq!(effect_kind(EffectKey::HuntYieldMult), EffectKind::Mult);
         assert_eq!(effect_kind(EffectKey::WaterCarryCapacity), EffectKind::Add);

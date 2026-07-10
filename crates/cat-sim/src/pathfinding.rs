@@ -7,6 +7,9 @@ pub const WORN_PATH_COST: f64 = 0.6;
 pub const OPEN_COST: f64 = 1.0;
 pub const FOREST_COST: f64 = 4.0;
 pub const DENSE_WOODS_COST: f64 = 8.0;
+/// Traversal cost of a mountain tile once mining/mountaineering unlocks it. Steep,
+/// slow going — dearer than dense woods so cats still skirt peaks when they can.
+pub const MOUNTAIN_COST: f64 = 10.0;
 pub const MIN_STEP_COST: f64 = ROAD_COST;
 
 pub const DEFAULT_MAX_EXPANSIONS: usize = 6000;
@@ -67,6 +70,9 @@ pub enum WalkTileType {
     River,
     Forest,
     DenseWoods,
+    /// A mountain-biome peak. Impassable until the colony unlocks mountaineering,
+    /// then walkable but slow ([`MOUNTAIN_COST`]).
+    Mountain,
     Other,
 }
 
@@ -125,6 +131,9 @@ pub struct ColonyGridParams<'a> {
     pub area: Option<&'a VillageArea>,
     pub area_gate: Option<GatePlacement>,
     pub terrain: Option<&'a dyn TerrainWalkField>,
+    /// Whether the colony has unlocked mountaineering/mining. While `false`,
+    /// mountain-biome tiles are impassable; once `true` they are walkable but slow.
+    pub mountains_unlocked: bool,
 }
 
 pub struct ColonyWalkGrid<'a> {
@@ -135,6 +144,7 @@ pub struct ColonyWalkGrid<'a> {
     area: Option<&'a VillageArea>,
     area_gate: Option<GatePlacement>,
     terrain: Option<&'a dyn TerrainWalkField>,
+    mountains_unlocked: bool,
 }
 
 #[must_use]
@@ -163,6 +173,7 @@ pub fn build_colony_walk_grid(params: ColonyGridParams<'_>) -> ColonyWalkGrid<'_
         area: params.area,
         area_gate: params.area_gate,
         terrain: params.terrain,
+        mountains_unlocked: params.mountains_unlocked,
     }
 }
 
@@ -301,9 +312,11 @@ impl WalkGrid for ColonyWalkGrid<'_> {
             return true;
         }
 
-        self.by_key
-            .get(&pack_tile_key(x, y))
-            .is_some_and(tile_is_water)
+        self.by_key.get(&pack_tile_key(x, y)).is_some_and(|tile| {
+            // Water is always impassable; mountains only until mining is unlocked.
+            tile_is_water(tile)
+                || (!self.mountains_unlocked && tile.tile_type == WalkTileType::Mountain)
+        })
     }
 
     fn cost(&self, x: i32, y: i32) -> f64 {
@@ -359,6 +372,9 @@ fn tile_cost(tile: Option<&WalkTile>) -> f64 {
         )
     {
         return WORN_PATH_COST;
+    }
+    if tile.tile_type == WalkTileType::Mountain {
+        return MOUNTAIN_COST;
     }
     if tile.tile_type == WalkTileType::DenseWoods {
         return DENSE_WOODS_COST;
@@ -527,11 +543,11 @@ mod tests {
     use serde::Deserialize;
 
     use super::{
-        ColonyGridParams, DEFAULT_MARGIN, DEFAULT_MAX_EXPANSIONS, DENSE_WOODS_COST, FOREST_COST,
-        FenceSide, FindPathOptions, GatePlacement, MIN_STEP_COST, OPEN_COST, ROAD_COST,
-        ROAD_WEAR_THRESHOLD, TilePos, VillageArea, WORN_PATH_COST, WalkGrid, WalkOverlayFeature,
-        WalkTile, WalkTileResources, WalkTileType, WorldPos, build_colony_walk_grid,
-        cliff_blocks_step, find_path,
+        ColonyGridParams, ColonyWalkGrid, DEFAULT_MARGIN, DEFAULT_MAX_EXPANSIONS, DENSE_WOODS_COST,
+        FOREST_COST, FenceSide, FindPathOptions, GatePlacement, MIN_STEP_COST, MOUNTAIN_COST,
+        OPEN_COST, ROAD_COST, ROAD_WEAR_THRESHOLD, TilePos, VillageArea, WORN_PATH_COST, WalkGrid,
+        WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType, WorldPos,
+        build_colony_walk_grid, cliff_blocks_step, find_path,
     };
 
     #[derive(Debug, Deserialize)]
@@ -780,6 +796,66 @@ mod tests {
         }
     }
 
+    /// Build a grid with a mountain tile at (3,0) and a water tile at (5,0), then
+    /// hand it to `check`. Anchor + ring are placed far away so the legacy fence
+    /// never triggers on these coords. `tiles` is kept alive for the closure.
+    fn with_mountain_and_water_grid(mountains_unlocked: bool, check: impl FnOnce(&ColonyWalkGrid)) {
+        let tiles = vec![
+            WalkTile {
+                x: 3,
+                y: 0,
+                tile_type: WalkTileType::Mountain,
+                overlay_feature: None,
+                resources: None,
+                path_wear: 0,
+            },
+            WalkTile {
+                x: 5,
+                y: 0,
+                tile_type: WalkTileType::River,
+                overlay_feature: Some(WalkOverlayFeature::River),
+                resources: Some(WalkTileResources { water: 1 }),
+                path_wear: 0,
+            },
+        ];
+        let grid = build_colony_walk_grid(ColonyGridParams {
+            tiles: &tiles,
+            anchor: TilePos { x: 0, y: 0 },
+            ring_radius: 10_000,
+            gate: TilePos { x: 0, y: 1 },
+            area: None,
+            area_gate: None,
+            terrain: None,
+            mountains_unlocked,
+        });
+        check(&grid);
+    }
+
+    #[test]
+    fn mountain_tiles_are_blocked_until_mountaineering_is_unlocked() {
+        with_mountain_and_water_grid(false, |grid| {
+            assert!(
+                grid.is_blocked(3, 0),
+                "mountain blocked without the upgrade"
+            );
+        });
+        with_mountain_and_water_grid(true, |grid| {
+            assert!(
+                !grid.is_blocked(3, 0),
+                "mountain passable once mountaineering is unlocked"
+            );
+            // Passable but slow — dearer than open ground.
+            assert_eq!(grid.cost(3, 0), MOUNTAIN_COST);
+            assert!(grid.cost(3, 0) > OPEN_COST);
+        });
+    }
+
+    #[test]
+    fn water_tiles_are_always_blocked_regardless_of_mountaineering() {
+        with_mountain_and_water_grid(false, |grid| assert!(grid.is_blocked(5, 0)));
+        with_mountain_and_water_grid(true, |grid| assert!(grid.is_blocked(5, 0)));
+    }
+
     #[test]
     fn build_colony_walk_grid_matches_ts_fixture() {
         let checks = fixture().colony_checks;
@@ -798,6 +874,7 @@ mod tests {
             area: None,
             area_gate: None,
             terrain: None,
+            mountains_unlocked: false,
         });
 
         for (key, expected) in checks.blocked {
@@ -838,6 +915,7 @@ mod tests {
                 area: area_ref,
                 area_gate,
                 terrain: None,
+                mountains_unlocked: false,
             });
 
             let path = find_path(

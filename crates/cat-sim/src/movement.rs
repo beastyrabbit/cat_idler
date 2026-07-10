@@ -82,6 +82,32 @@ pub fn cat_gait(cat_id: &str) -> f64 {
     GAIT_MIN + fraction * (GAIT_MAX - GAIT_MIN)
 }
 
+/// Paved stone-road speed multiplier. A built road is firm, cleared footing, so a
+/// cat on the road network covers noticeably more ground than on open grass.
+pub const ROAD_BUILT_SPEED_MULT: f64 = 1.75;
+/// Worn dirt-road speed multiplier. A trodden path (heavy cumulative wear that has
+/// not yet been paved) gives a small boost over untrodden ground.
+pub const DIRT_ROAD_SPEED_MULT: f64 = 1.05;
+/// Path wear at which a trodden trail counts as a worn dirt road. Anchored to the
+/// pathfinding worn-path / wear-paving threshold so movement and routing agree on
+/// what a "road" is.
+pub const WORN_ROAD_WEAR: u32 = 70;
+
+/// Per-tile road speed multiplier folded into the movement phase's effective
+/// speed. Paved stone roads (`overlay_feature == "road_built"`) are fastest; a
+/// heavily worn dirt path is a touch faster than open ground; everything else is
+/// neutral (`1.0`). Deterministic — a pure function of the tile's road state.
+#[must_use]
+pub fn road_surface_multiplier(is_road_built: bool, path_wear: u32) -> f64 {
+    if is_road_built {
+        ROAD_BUILT_SPEED_MULT
+    } else if path_wear >= WORN_ROAD_WEAR {
+        DIRT_ROAD_SPEED_MULT
+    } else {
+        1.0
+    }
+}
+
 /// Life-stage gait modifier: kittens and elders pad along a bit slower than
 /// young/adult cats. Adults (the colony's haulers) stay at `1.0`, so the
 /// survival-critical work loop keeps its full speed.
@@ -380,13 +406,14 @@ mod tests {
     use crate::types::LifeStage;
 
     use super::{
-        BASE_MOVE_SPEED_TILES_PER_SEC, EXPLORE_SPEED_FACTOR, GAIT_MAX, GAIT_MIN, HUNT_RANGE_MAX,
-        HUNT_RANGE_MIN, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC, MovementStep, PathWalk,
-        SCOUT_LEG_MAX, SCOUT_LEG_MIN, SURFACE_FACTOR_FOREST, SURFACE_FACTOR_GRASSLAND,
-        SURFACE_FACTOR_HIGHLAND, SURFACE_FACTOR_LOWLAND, SURFACE_FACTOR_ROCKY, SURFACE_FACTOR_SAND,
-        WANDER_RADIUS, WorldPos, advance_movement, advance_movement_default, cat_gait,
+        BASE_MOVE_SPEED_TILES_PER_SEC, DIRT_ROAD_SPEED_MULT, EXPLORE_SPEED_FACTOR, GAIT_MAX,
+        GAIT_MIN, HUNT_RANGE_MAX, HUNT_RANGE_MIN, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC,
+        MovementStep, PathWalk, ROAD_BUILT_SPEED_MULT, SCOUT_LEG_MAX, SCOUT_LEG_MIN,
+        SURFACE_FACTOR_FOREST, SURFACE_FACTOR_GRASSLAND, SURFACE_FACTOR_HIGHLAND,
+        SURFACE_FACTOR_LOWLAND, SURFACE_FACTOR_ROCKY, SURFACE_FACTOR_SAND, WANDER_RADIUS,
+        WORN_ROAD_WEAR, WorldPos, advance_movement, advance_movement_default, cat_gait,
         destination_for_job, effective_move_speed, life_stage_gait, path_tiles, pick_wander_target,
-        scout_wander_target, terrain_surface_factor, walk_path,
+        road_surface_multiplier, scout_wander_target, terrain_surface_factor, walk_path,
     };
 
     fn dist(a: WorldPos, b: WorldPos) -> f64 {
@@ -913,6 +940,41 @@ mod tests {
         let first = effective_move_speed(BiomeRole::Forest, "cat-42", LifeStage::Young);
         let second = effective_move_speed(BiomeRole::Forest, "cat-42", LifeStage::Young);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn road_surface_multiplier_orders_stone_road_over_dirt_over_grass() {
+        let stone = road_surface_multiplier(true, 0);
+        let dirt = road_surface_multiplier(false, WORN_ROAD_WEAR);
+        let grass = road_surface_multiplier(false, 0);
+        assert_eq!(stone, ROAD_BUILT_SPEED_MULT);
+        assert_eq!(dirt, DIRT_ROAD_SPEED_MULT);
+        assert_eq!(grass, 1.0);
+        assert!(stone > dirt && dirt > grass);
+        // Just-below-threshold wear is still plain ground.
+        assert_eq!(road_surface_multiplier(false, WORN_ROAD_WEAR - 1), 1.0);
+    }
+
+    #[test]
+    fn cat_on_stone_road_out_walks_the_same_cat_on_grass_over_one_budget() {
+        // Same cat (id + stage), same biome, same elapsed budget: the only
+        // difference is the ground it stands on. The road tile covers more ground.
+        let elapsed = 6.0;
+        let start = WorldPos { x: 0.0, y: 0.0 };
+        let dest = WorldPos { x: 40.0, y: 0.0 };
+        let base = effective_move_speed(BiomeRole::Grassland, "cat-7", LifeStage::Adult);
+
+        let road_speed = base * road_surface_multiplier(true, 100);
+        let grass_speed = base * road_surface_multiplier(false, 0);
+
+        let on_road = walk_path(start, dest, elapsed * road_speed, &[]);
+        let on_grass = walk_path(start, dest, elapsed * grass_speed, &[]);
+        assert!(
+            on_road.position.x > on_grass.position.x,
+            "road cat ({}) should out-walk grass cat ({})",
+            on_road.position.x,
+            on_grass.position.x
+        );
     }
 
     impl PosFixture {

@@ -28,7 +28,8 @@ use crate::{
     life_sim::{can_work, get_life_stage, leadership_after_tenure, old_age_death_probability},
     movement::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
-        effective_move_speed, pick_wander_target, scout_wander_target, walk_path,
+        effective_move_speed, pick_wander_target, road_surface_multiplier, scout_wander_target,
+        walk_path,
     },
     officers::OfficerRole,
     pathfinding::{
@@ -57,8 +58,8 @@ use crate::{
     trips::{HUNT_TRIP_COUNT, remaining_yield, split_yield, trip_due_at},
     types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType, UpgradeKey},
     upgrade_tree::{
-        UpgradeTreeState, accrue_research, cat_auto_unlock, create_upgrade_tree_state, get_node,
-        points_per_tick_for, resolve_effects,
+        MOUNTAINEERING_NODE_ID, UpgradeTreeState, accrue_research, cat_auto_unlock,
+        create_upgrade_tree_state, get_node, is_owned, points_per_tick_for, resolve_effects,
     },
     village_area::{
         ExpandOptions, GatePlacement as AreaGatePlacement, Side, expand_village, from_tiles,
@@ -2913,6 +2914,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         area: (!area.is_empty()).then_some(&area),
         area_gate,
         terrain: None,
+        mountains_unlocked: is_owned(&colony.upgrade_tree, MOUNTAINEERING_NODE_ID),
     });
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let cat_ids = colony
@@ -2954,8 +2956,16 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             standing_tile_pos.y,
         );
         let stage = get_life_stage(colony.cats[cat_index].age_hours);
+        // Paved stone roads (×1.75) and worn dirt roads (×1.05) carry cats faster
+        // than open ground; the road network is the fast lane for the haul loop.
+        let road_mult = standing_tile.map_or(1.0, |tile| {
+            road_surface_multiplier(
+                tile.overlay_feature.as_deref() == Some("road_built"),
+                tile.path_wear,
+            )
+        });
         let speed = effective_move_speed(standing_biome, &cat_id, stage)
-            * (1.0 + movement_speed_bonus(standing_tile))
+            * road_mult
             * explore_slowdown
             * effects.move_speed_mult;
 
@@ -4346,6 +4356,7 @@ fn walk_tile_type(tile_type: TileType) -> WalkTileType {
     match tile_type {
         TileType::River => WalkTileType::River,
         TileType::DenseWoods => WalkTileType::DenseWoods,
+        TileType::Mountains => WalkTileType::Mountain,
         tile_type if is_forest_type(tile_type) => WalkTileType::Forest,
         _ => WalkTileType::Other,
     }
@@ -4359,29 +4370,6 @@ fn walk_overlay_feature(overlay: &str) -> WalkOverlayFeature {
         "ancient_road" => WalkOverlayFeature::AncientRoad,
         "trade_route" => WalkOverlayFeature::TradeRoute,
         _ => WalkOverlayFeature::Other,
-    }
-}
-
-fn movement_speed_bonus(tile: Option<&WorldTileRuntime>) -> f64 {
-    let Some(tile) = tile else {
-        return 0.0;
-    };
-    if tile.overlay_feature.as_deref() == Some("road_built") {
-        0.6
-    } else {
-        get_path_speed_bonus(tile.path_wear)
-    }
-}
-
-fn get_path_speed_bonus(path_wear: u32) -> f64 {
-    if path_wear < 30 {
-        0.0
-    } else if path_wear < 60 {
-        0.1
-    } else if path_wear < 90 {
-        0.25
-    } else {
-        0.4
     }
 }
 
@@ -4539,6 +4527,9 @@ fn next_claimed_building_site(
     let (w, h) = footprint_for(building_type);
     let claimed: HashSet<TilePos> = colony.claimed_tiles.iter().copied().collect();
     let occupied = occupied_building_tiles(colony);
+    // Fields/farms only take on fertile ground (grass/meadow/marsh). Rock, sand,
+    // tundra, forest, and water are barren, so a field site must be farmable.
+    let require_farmable = building_type == BuildingType::Field;
 
     let footprint_free_at = |anchor: TilePos, require_claimed: bool| -> bool {
         footprint_tiles(anchor, w, h).into_iter().all(|tile| {
@@ -4546,6 +4537,7 @@ fn next_claimed_building_site(
                 && !occupied.contains(&tile)
                 && !tile_has_water(colony.world_tiles.get(&tile))
                 && !crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y)
+                && (!require_farmable || tile_is_farmable(colony.world_tiles.get(&tile)))
         })
     };
 
@@ -4586,6 +4578,19 @@ fn tile_has_water(tile: Option<&WorldTileRuntime>) -> bool {
         tile.tile_type == TileType::River
             || tile.overlay_feature.as_deref() == Some("river")
             || tile.resources.water > 0
+    })
+}
+
+/// Whether a field/farm may be sown on this ground. Mirrors the climate biome
+/// fertility table (`climate::BiomeClimate::farmable`): grass, meadow, and marsh
+/// (swamp) are fertile; rock (mountains), sand (desert), tundra, forest, cave,
+/// enemy, and water tiles are barren. An unrevealed/absent tile is not farmable.
+fn tile_is_farmable(tile: Option<&WorldTileRuntime>) -> bool {
+    tile.is_some_and(|tile| {
+        matches!(
+            tile.tile_type,
+            TileType::Field | TileType::Meadow | TileType::Swamp
+        ) && tile.overlay_feature.as_deref() != Some("river")
     })
 }
 
@@ -6033,6 +6038,43 @@ mod tests {
         assert!(colony.world_tiles.contains_key(&pos(20, 6)));
         assert_eq!(colony.elections[0].resolved_at, Some(60_000));
         assert_eq!(colony.elections[0].winner_cat_id, None);
+    }
+
+    #[test]
+    fn founded_colony_elects_a_leader_over_time_without_player_input() {
+        let mut world = new_world(2024);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000, 2024));
+
+        // Tick across more than one full election window (~30 game-min) with no
+        // ballots cast and no player actions of any kind.
+        let mut now = 1_000;
+        for _ in 0..40 {
+            now += 60_000;
+            let _ = world_tick(&mut world, now);
+        }
+
+        let colony = &world.colonies[0];
+        // A scheduled leadership election opened and resolved entirely on its own.
+        assert!(
+            colony.elections.iter().any(|election| {
+                matches!(election.kind, ElectionKind::Scheduled)
+                    && election.resolved_at.is_some()
+                    && election.winner_cat_id.is_some()
+            }),
+            "a term election auto-resolved with a winner: {:?}",
+            colony.elections
+        );
+        // The colony holds a seated leader, and it is a live cat.
+        let leader = colony
+            .leader_id
+            .clone()
+            .expect("colony has a seated leader");
+        assert!(
+            alive_cats(&colony.cats).any(|cat| cat.id == leader),
+            "the elected leader is a living cat"
+        );
     }
 
     #[test]
@@ -7551,6 +7593,99 @@ mod tests {
         assert_eq!(
             next_claimed_building_site(&full, 0.7, seed, BuildingType::Den),
             next_claimed_building_site(&full, 0.7, seed, BuildingType::Den)
+        );
+    }
+
+    fn typed_tile(x: i32, y: i32, tile_type: TileType) -> WorldTileRuntime {
+        WorldTileRuntime {
+            tile_type,
+            ..tile(x, y, 0, None)
+        }
+    }
+
+    /// Fill `claimed_tiles` + `world_tiles` for a `w x h` block of one tile type.
+    fn typed_block(
+        colony: &mut ColonyRuntime,
+        origin: TilePos,
+        w: i32,
+        h: i32,
+        tile_type: TileType,
+    ) {
+        for dy in 0..h {
+            for dx in 0..w {
+                let p = pos(origin.x + dx, origin.y + dy);
+                colony.claimed_tiles.push(p);
+                colony
+                    .world_tiles
+                    .insert(p, typed_tile(p.x, p.y, tile_type));
+            }
+        }
+    }
+
+    #[test]
+    fn tile_is_farmable_follows_the_climate_fertility_table() {
+        // Grass/meadow/marsh are fertile.
+        assert!(tile_is_farmable(Some(&typed_tile(0, 0, TileType::Field))));
+        assert!(tile_is_farmable(Some(&typed_tile(0, 0, TileType::Meadow))));
+        assert!(tile_is_farmable(Some(&typed_tile(0, 0, TileType::Swamp))));
+        // Rock, sand, tundra, forest, and water are barren.
+        for tile_type in [
+            TileType::Mountains,
+            TileType::Desert,
+            TileType::Tundra,
+            TileType::Forest,
+            TileType::River,
+            TileType::CaveEntrance,
+        ] {
+            assert!(
+                !tile_is_farmable(Some(&typed_tile(0, 0, tile_type))),
+                "{tile_type:?} is not farmable"
+            );
+        }
+        // A meadow flooded by a river overlay is not farmable, and an unrevealed
+        // (absent) tile is never farmable.
+        let flooded = WorldTileRuntime {
+            overlay_feature: Some("river".to_owned()),
+            ..typed_tile(0, 0, TileType::Meadow)
+        };
+        assert!(!tile_is_farmable(Some(&flooded)));
+        assert!(!tile_is_farmable(None));
+    }
+
+    #[test]
+    fn field_places_on_grass_and_is_rejected_on_barren_ground() {
+        let seed = 42;
+
+        // Grass colony: a field finds fertile, tree-free ground inside the claim.
+        let mut grass = ColonyRuntime {
+            id: "grass".to_owned(),
+            ..ColonyRuntime::default()
+        };
+        typed_block(&mut grass, pos(40, 40), 6, 7, TileType::Meadow);
+        let field = next_claimed_building_site(&grass, 0.0, seed, BuildingType::Field)
+            .expect("a field fits on the grass claim");
+        for tile in footprint_tiles(field, 2, 3) {
+            assert!(
+                tile_is_farmable(grass.world_tiles.get(&tile)),
+                "field footprint {tile:?} is fertile"
+            );
+        }
+
+        // Rock colony: no fertile ground anywhere, so a field is rejected — but a
+        // den (no farmable requirement) still places on the rock.
+        let mut rock = ColonyRuntime {
+            id: "rock".to_owned(),
+            ..ColonyRuntime::default()
+        };
+        typed_block(&mut rock, pos(80, 80), 6, 7, TileType::Mountains);
+        assert_eq!(
+            next_claimed_building_site(&rock, 0.0, seed, BuildingType::Field),
+            None,
+            "a field cannot be sown on barren rock"
+        );
+        assert!(
+            next_claimed_building_site(&rock, 0.0, seed, BuildingType::Den).is_some(),
+            "a den still fits on the rock claim (farmability is field-only)"
         );
     }
 
