@@ -42,6 +42,9 @@ pub struct ColonySnapshot {
     pub village_gate: Option<GatePlacement>,
     pub village_radius: u32,
     pub anchor: TilePoint,
+    /// Appointed officers (role → cat id). P12.2; empty/absent when none appointed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub officers: BTreeMap<OfficerRole, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +214,16 @@ pub struct JobSnapshot {
     pub started_at: i64,
     pub click_time_reduced_sec: f64,
     pub assigned_cat_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfficerRole {
+    Steward,
+    Forester,
+    Farmer,
+    Captain,
+    Loremaster,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -556,6 +569,19 @@ pub enum ClientAction {
     JoinVillage {
         colony_id: String,
         session_id: String,
+    },
+    AssignOfficer {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        role: OfficerRole,
+        cat_id: String,
+    },
+    UnassignOfficer {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        role: OfficerRole,
     },
 }
 
@@ -908,7 +934,58 @@ mod tests {
                 }),
                 village_radius: 4,
                 anchor: TilePoint { x: 6, y: 6 },
+                officers: BTreeMap::new(),
             }],
         }
+    }
+
+    #[test]
+    fn assign_officer_action_round_trips_with_camel_case_fields() {
+        let action = ClientAction::AssignOfficer {
+            session_id: "session_1".to_string(),
+            nickname: "Guest Cat".to_string(),
+            sig: "signed".to_string(),
+            role: OfficerRole::Captain,
+            cat_id: "cat_1".to_string(),
+        };
+        let encoded = serde_json::to_value(&action).expect("serialize assignOfficer");
+        assert_eq!(
+            encoded,
+            json!({
+                "action": "assignOfficer",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "role": "captain",
+                "catId": "cat_1"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(encoded).expect("deserialize"),
+            action
+        );
+    }
+
+    #[test]
+    fn colony_snapshot_officers_map_serializes_by_role_and_defaults_empty() {
+        // Absent `officers` deserializes to an empty map (back-compat).
+        let mut value = serde_json::to_value(sample_world_snapshot()).expect("serialize");
+        assert!(value["colonies"][0].get("officers").is_none());
+        value["colonies"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("officers");
+        let back: WorldSnapshot = serde_json::from_value(value).expect("deserialize");
+        assert!(back.colonies[0].officers.is_empty());
+
+        // A populated map round-trips keyed by the role wire string.
+        let mut snap = sample_world_snapshot();
+        snap.colonies[0]
+            .officers
+            .insert(OfficerRole::Farmer, "cat_1".to_string());
+        let encoded = serde_json::to_value(&snap).expect("serialize");
+        assert_eq!(encoded["colonies"][0]["officers"]["farmer"], json!("cat_1"));
+        let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
+        assert_eq!(round.colonies[0].officers, snap.colonies[0].officers);
     }
 }

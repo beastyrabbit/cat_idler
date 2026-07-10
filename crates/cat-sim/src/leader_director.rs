@@ -2,11 +2,13 @@
 //! `lib/game/leaderAI.ts`.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     leader_ai::{LeaderDecision, LeaderSnapshot, ThreatBand},
+    officers::OfficerRole,
     types::CatSpecialization,
 };
 
@@ -183,6 +185,20 @@ pub fn goal_skill(kind: LaborGoalKind) -> GoalSkill {
     }
 }
 
+/// The officer role that governs a labor goal (P12.2). Total over every
+/// [`LaborGoalKind`] so a filled role covers a well-defined slice of the director's
+/// goals; an unfilled role simply has no officer to act.
+#[must_use]
+pub fn officer_role_for(kind: LaborGoalKind) -> OfficerRole {
+    match kind {
+        LaborGoalKind::Hunt | LaborGoalKind::FetchWater => OfficerRole::Farmer,
+        LaborGoalKind::Quarry => OfficerRole::Forester,
+        LaborGoalKind::TrainWarrior | LaborGoalKind::AssignSmithy => OfficerRole::Captain,
+        LaborGoalKind::AssignResearch | LaborGoalKind::Scout => OfficerRole::Loremaster,
+        LaborGoalKind::AssignWorkshop => OfficerRole::Steward,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaborGoalMode {
     Scaled,
@@ -287,24 +303,77 @@ pub fn match_cats_to_slots(
     let mut pool = cats.to_vec();
     let mut assignments = Vec::new();
     for goal in flat {
-        let mut best_idx = None;
-        let mut best_fit = f64::NEG_INFINITY;
-        for (idx, cat) in pool.iter().enumerate() {
-            if goal == LaborGoalKind::TrainWarrior
-                && options.exclude_warriors_from_training
-                && cat.specialization == Some(CatSpecialization::Warrior)
-            {
-                continue;
-            }
+        if let Some(idx) = best_fit_index(&pool, goal, options) {
+            assignments.push(Assignment {
+                cat_id: pool[idx].id.clone(),
+                goal,
+            });
+            pool.remove(idx);
+        }
+    }
 
-            let fit = assignment_fit(cat, goal);
-            if fit > best_fit {
-                best_fit = fit;
-                best_idx = Some(idx);
-            }
+    assignments
+}
+
+/// Index of the best-fit cat in `pool` for `goal` (the greedy pick used by
+/// [`match_cats_to_slots`]), or `None` if no eligible cat remains.
+fn best_fit_index(pool: &[CatBrief], goal: LaborGoalKind, options: MatchOptions) -> Option<usize> {
+    let mut best_idx = None;
+    let mut best_fit = f64::NEG_INFINITY;
+    for (idx, cat) in pool.iter().enumerate() {
+        if goal == LaborGoalKind::TrainWarrior
+            && options.exclude_warriors_from_training
+            && cat.specialization == Some(CatSpecialization::Warrior)
+        {
+            continue;
         }
 
-        if let Some(idx) = best_idx {
+        let fit = assignment_fit(cat, goal);
+        if fit > best_fit {
+            best_fit = fit;
+            best_idx = Some(idx);
+        }
+    }
+
+    best_idx
+}
+
+/// Officer-aware matching (P12.2). Identical to [`match_cats_to_slots`] when
+/// `officers` is empty (it delegates), so it is a strict superset with zero effect
+/// on the empty case. When a slot's governing role ([`officer_role_for`]) is filled
+/// and that officer cat is still in the pool and eligible, the officer takes the slot
+/// FIRST — reliably working its domain — before the greedy best-fit fallback.
+#[must_use]
+pub fn match_cats_to_slots_with_officers(
+    slots: &[OpenSlots],
+    cats: &[CatBrief],
+    officers: &BTreeMap<OfficerRole, String>,
+    options: MatchOptions,
+) -> Vec<Assignment> {
+    if officers.is_empty() {
+        return match_cats_to_slots(slots, cats, options);
+    }
+
+    let mut flat = Vec::new();
+    for slot in slots {
+        for _ in 0..slot.count {
+            flat.push(slot.goal);
+        }
+    }
+
+    let mut pool = cats.to_vec();
+    let mut assignments = Vec::new();
+    for goal in flat {
+        let officer_idx = officers.get(&officer_role_for(goal)).and_then(|cat_id| {
+            pool.iter().position(|cat| {
+                &cat.id == cat_id
+                    && !(goal == LaborGoalKind::TrainWarrior
+                        && options.exclude_warriors_from_training
+                        && cat.specialization == Some(CatSpecialization::Warrior))
+            })
+        });
+
+        if let Some(idx) = officer_idx.or_else(|| best_fit_index(&pool, goal, options)) {
             assignments.push(Assignment {
                 cat_id: pool[idx].id.clone(),
                 goal,
@@ -398,6 +467,12 @@ pub fn direct_colony(snapshot: &LeaderSnapshot) -> DirectorPlan {
         }
     }
 
+    // ADDITIVE officer effect: filled roles each get a small, capped slot bonus in
+    // their category. No-op (byte-identical) when officers is empty.
+    if !snapshot.officers.is_empty() {
+        apply_officer_slot_bonus(snapshot, &goals, &mut slots);
+    }
+
     let storehouses_in_play = snapshot.storehouse_count + snapshot.storage_plans_in_flight;
     if food_r > STORAGE_RATIO
         && snapshot.storage_plans_in_flight == 0
@@ -475,6 +550,46 @@ pub fn plan_leader_actions(snapshot: &LeaderSnapshot) -> Vec<LeaderDecision> {
     }
 
     decisions
+}
+
+/// Grant each filled officer role +1 slot in its category's highest-ranked already-open
+/// slot, bounded by (a) idle cats not yet spent and (b) the goal's own hard-cap
+/// headroom. Only boosts categories that already have an open slot — a filled role
+/// never conjures work from nothing — keeping the effect small and no-op when empty.
+fn apply_officer_slot_bonus(
+    snapshot: &LeaderSnapshot,
+    goals: &[LaborGoal],
+    slots: &mut [OpenSlots],
+) {
+    let granted_total: u32 = slots.iter().map(|slot| slot.count).sum();
+    let mut budget = snapshot.idle_cats.saturating_sub(granted_total);
+
+    for role in OfficerRole::ALL {
+        if budget == 0 {
+            break;
+        }
+        if !snapshot.officers.contains_key(role) {
+            continue;
+        }
+        // `slots` is in ranked order, so the first match is the role's top open goal.
+        let Some(slot) = slots
+            .iter_mut()
+            .find(|slot| officer_role_for(slot.goal) == *role)
+        else {
+            continue;
+        };
+        let Some(goal) = goals.iter().find(|goal| goal.kind == slot.goal) else {
+            continue;
+        };
+        let headroom = goal
+            .hard_cap
+            .saturating_sub(goal.in_flight.saturating_add(slot.count));
+        if headroom == 0 {
+            continue;
+        }
+        slot.count += 1;
+        budget -= 1;
+    }
 }
 
 fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
@@ -912,5 +1027,163 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    // ---- P12.2 officers (additive layer) ----
+
+    fn cat_brief(id: &str, attack: f64, hunting: f64) -> CatBrief {
+        CatBrief {
+            id: id.to_owned(),
+            specialization: None,
+            stats: CatBriefStats {
+                hunting,
+                building: 10.0,
+                vision: 10.0,
+                medicine: 10.0,
+                attack,
+                defense: 10.0,
+                leadership: 10.0,
+            },
+        }
+    }
+
+    #[test]
+    fn empty_officers_leave_direct_colony_byte_identical() {
+        // Every TS-derived fixture carries no officers; clearing the (empty) map must
+        // not shift the plan — the officer layer is inert until a role is filled.
+        for case in fixture().direct_colony {
+            let mut cleared = case.snapshot.clone();
+            cleared.officers.clear();
+            assert_plan_eq(&direct_colony(&cleared), &case.expected, &case.name);
+        }
+    }
+
+    #[test]
+    fn officer_matcher_with_empty_officers_equals_base_matcher() {
+        for case in fixture().match_cats_to_slots {
+            let officers = BTreeMap::new();
+            let options: MatchOptions = case.options.into();
+            assert_eq!(
+                match_cats_to_slots_with_officers(&case.slots, &case.cats, &officers, options),
+                match_cats_to_slots(&case.slots, &case.cats, options),
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn officer_role_covers_every_labor_goal() {
+        use LaborGoalKind::*;
+        assert_eq!(officer_role_for(Hunt), OfficerRole::Farmer);
+        assert_eq!(officer_role_for(FetchWater), OfficerRole::Farmer);
+        assert_eq!(officer_role_for(Quarry), OfficerRole::Forester);
+        assert_eq!(officer_role_for(Scout), OfficerRole::Loremaster);
+        assert_eq!(officer_role_for(TrainWarrior), OfficerRole::Captain);
+        assert_eq!(officer_role_for(AssignWorkshop), OfficerRole::Steward);
+        assert_eq!(officer_role_for(AssignResearch), OfficerRole::Loremaster);
+        assert_eq!(officer_role_for(AssignSmithy), OfficerRole::Captain);
+    }
+
+    #[test]
+    fn filled_captain_takes_its_military_slot_before_a_better_fit() {
+        let slots = vec![OpenSlots {
+            goal: LaborGoalKind::TrainWarrior,
+            count: 1,
+            score: 0.5,
+        }];
+        let cats = vec![
+            cat_brief("strong", 90.0, 10.0),
+            cat_brief("cap", 10.0, 10.0),
+        ];
+
+        // Without officers the greedy best-fit (strong) wins.
+        let base = match_cats_to_slots_with_officers(
+            &slots,
+            &cats,
+            &BTreeMap::new(),
+            MatchOptions::default(),
+        );
+        assert_eq!(base[0].cat_id, "strong");
+
+        // Captain officer "cap" works its domain first despite the worse fit.
+        let mut officers = BTreeMap::new();
+        officers.insert(OfficerRole::Captain, "cap".to_owned());
+        let out =
+            match_cats_to_slots_with_officers(&slots, &cats, &officers, MatchOptions::default());
+        assert_eq!(
+            out,
+            vec![Assignment {
+                cat_id: "cap".to_owned(),
+                goal: LaborGoalKind::TrainWarrior,
+            }]
+        );
+    }
+
+    #[test]
+    fn filled_officer_adds_one_capped_slot_to_its_open_category() {
+        let mut snapshot = fixture().direct_colony[0].snapshot.clone();
+        snapshot.idle_cats = 5;
+        snapshot.officers.clear();
+        snapshot
+            .officers
+            .insert(OfficerRole::Captain, "cap".to_owned());
+
+        let goals = vec![LaborGoal {
+            kind: LaborGoalKind::TrainWarrior,
+            score: 0.5,
+            max_slots: 4,
+            in_flight: 0,
+            hard_cap: 4,
+            vetoed: false,
+            mode: LaborGoalMode::Fixed,
+        }];
+        let mut slots = vec![OpenSlots {
+            goal: LaborGoalKind::TrainWarrior,
+            count: 1,
+            score: 0.5,
+        }];
+        apply_officer_slot_bonus(&snapshot, &goals, &mut slots);
+        assert_eq!(slots[0].count, 2, "Captain grants +1 military slot");
+
+        // Idle budget caps the bonus: with no spare idle cats, no boost.
+        snapshot.idle_cats = 1;
+        let mut tight = vec![OpenSlots {
+            goal: LaborGoalKind::TrainWarrior,
+            count: 1,
+            score: 0.5,
+        }];
+        apply_officer_slot_bonus(&snapshot, &goals, &mut tight);
+        assert_eq!(tight[0].count, 1, "no idle budget → no bonus");
+
+        // Hard-cap headroom caps the bonus too.
+        snapshot.idle_cats = 5;
+        let capped_goals = vec![LaborGoal {
+            hard_cap: 1,
+            ..goals[0]
+        }];
+        let mut capped = vec![OpenSlots {
+            goal: LaborGoalKind::TrainWarrior,
+            count: 1,
+            score: 0.5,
+        }];
+        apply_officer_slot_bonus(&snapshot, &capped_goals, &mut capped);
+        assert_eq!(capped[0].count, 1, "no hard-cap headroom → no bonus");
+    }
+
+    #[test]
+    fn direct_colony_is_deterministic_with_officers_filled() {
+        let mut snapshot = fixture().direct_colony[0].snapshot.clone();
+        snapshot
+            .officers
+            .insert(OfficerRole::Farmer, "f".to_owned());
+        snapshot
+            .officers
+            .insert(OfficerRole::Captain, "c".to_owned());
+        assert_plan_eq(
+            &direct_colony(&snapshot),
+            &direct_colony(&snapshot),
+            "officers filled",
+        );
     }
 }

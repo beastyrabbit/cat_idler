@@ -26,6 +26,7 @@ pub mod cat_ai;
 pub mod leader_ai;
 pub mod leader_director;
 pub mod movement;
+pub mod officers;
 pub mod pathfinding;
 pub mod policy;
 pub mod tasks;

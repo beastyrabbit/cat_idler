@@ -1,6 +1,10 @@
 //! Leader snapshot and decision contract ported from `lib/game/leaderAI.ts`.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+
+use crate::officers::OfficerRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LeaderResources {
@@ -96,6 +100,10 @@ pub struct LeaderSnapshot {
     /// The larder is nearly empty; the leader stops staffing/training.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub starving: Option<bool>,
+    /// Appointed officers (role → cat id). ADDITIVE (P12.2): empty means no officer
+    /// effect and byte-identical director output. Legacy rows without it load empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub officers: BTreeMap<OfficerRole, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -182,6 +190,7 @@ mod tests {
             training_in_flight: Some(1),
             threat_band: Some(ThreatBand::Rising),
             starving: Some(false),
+            officers: std::collections::BTreeMap::new(),
         }
     }
 

@@ -13,6 +13,7 @@ use crate::{
     housing::{self, HousingBuilding},
     idle_engine, idle_rules,
     life_sim::{can_work, get_life_stage},
+    officers::OfficerRole,
     production,
     skills::Labor,
     storage::{self, StorageBuilding},
@@ -150,6 +151,14 @@ pub fn apply_action(
                 fail("Village not found.")
             }
         }
+        proto::ClientAction::AssignOfficer { role, cat_id, .. } => {
+            with_colony(world, ctx, |colony| {
+                assign_officer(colony, proto_to_sim_officer_role(*role), cat_id, ctx)
+            })
+        }
+        proto::ClientAction::UnassignOfficer { role, .. } => with_colony(world, ctx, |colony| {
+            unassign_officer(colony, proto_to_sim_officer_role(*role), ctx)
+        }),
     }
 }
 
@@ -533,6 +542,42 @@ fn assign_worker(
     ok()
 }
 
+/// Appoint `cat_id` to `role`. The cat must be alive and belong to this colony. A cat
+/// holds at most one office, so this first vacates any office it already held; the role's
+/// previous holder (if any) is replaced.
+fn assign_officer(
+    colony: &mut ColonyRuntime,
+    role: OfficerRole,
+    cat_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if !colony
+        .cats
+        .iter()
+        .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+    {
+        return fail("That cat is not available.");
+    }
+
+    colony
+        .officers
+        .retain(|_, holder| holder.as_str() != cat_id);
+    colony.officers.insert(role, cat_id.to_owned());
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+/// Vacate `role`. A no-op (still `ok`) when the role is already empty.
+fn unassign_officer(
+    colony: &mut ColonyRuntime,
+    role: OfficerRole,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    colony.officers.remove(&role);
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
 fn train_warrior(
     colony: &mut ColonyRuntime,
     cat_id: Option<&str>,
@@ -772,6 +817,11 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             x: VILLAGE_ANCHOR.x,
             y: VILLAGE_ANCHOR.y,
         },
+        officers: colony
+            .officers
+            .iter()
+            .map(|(role, cat_id)| (sim_to_proto_officer_role(*role), cat_id.clone()))
+            .collect(),
     }
 }
 
@@ -1460,6 +1510,26 @@ fn fail(message: impl Into<String>) -> proto::ActionResult {
     }
 }
 
+fn proto_to_sim_officer_role(role: proto::OfficerRole) -> OfficerRole {
+    match role {
+        proto::OfficerRole::Steward => OfficerRole::Steward,
+        proto::OfficerRole::Forester => OfficerRole::Forester,
+        proto::OfficerRole::Farmer => OfficerRole::Farmer,
+        proto::OfficerRole::Captain => OfficerRole::Captain,
+        proto::OfficerRole::Loremaster => OfficerRole::Loremaster,
+    }
+}
+
+fn sim_to_proto_officer_role(role: OfficerRole) -> proto::OfficerRole {
+    match role {
+        OfficerRole::Steward => proto::OfficerRole::Steward,
+        OfficerRole::Forester => proto::OfficerRole::Forester,
+        OfficerRole::Farmer => proto::OfficerRole::Farmer,
+        OfficerRole::Captain => proto::OfficerRole::Captain,
+        OfficerRole::Loremaster => proto::OfficerRole::Loremaster,
+    }
+}
+
 fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
     match kind {
         proto::JobKind::SupplyFood => JobKind::SupplyFood,
@@ -1695,5 +1765,129 @@ mod tests {
         let colony = &snap.colonies[0];
         assert_eq!(colony.cats.len(), world.colonies[0].cats.len());
         assert_eq!(colony.resources.food, world.colonies[0].resources.food);
+    }
+
+    // ---- P12.2 officer actions ----
+
+    fn assign_officer_action(role: proto::OfficerRole, cat_id: &str) -> proto::ClientAction {
+        proto::ClientAction::AssignOfficer {
+            session_id: "sess_1".to_string(),
+            nickname: "Guest".to_string(),
+            sig: "sig".to_string(),
+            role,
+            cat_id: cat_id.to_string(),
+        }
+    }
+
+    fn unassign_officer_action(role: proto::OfficerRole) -> proto::ClientAction {
+        proto::ClientAction::UnassignOfficer {
+            session_id: "sess_1".to_string(),
+            nickname: "Guest".to_string(),
+            sig: "sig".to_string(),
+            role,
+        }
+    }
+
+    #[test]
+    fn assign_officer_appoints_and_enforces_one_office_per_cat() {
+        let mut world = world_with_one_colony();
+        let cat_id = world.colonies[0].cats[0].id.clone();
+
+        let res = apply_action(
+            &mut world,
+            &assign_officer_action(proto::OfficerRole::Farmer, &cat_id),
+            &ctx(),
+        );
+        assert!(res.ok, "{res:?}");
+        assert_eq!(
+            world.colonies[0].officers.get(&OfficerRole::Farmer),
+            Some(&cat_id)
+        );
+
+        // Re-appointing the same cat to a different role vacates the first.
+        let res = apply_action(
+            &mut world,
+            &assign_officer_action(proto::OfficerRole::Captain, &cat_id),
+            &ctx(),
+        );
+        assert!(res.ok, "{res:?}");
+        assert!(
+            !world.colonies[0]
+                .officers
+                .contains_key(&OfficerRole::Farmer)
+        );
+        assert_eq!(
+            world.colonies[0].officers.get(&OfficerRole::Captain),
+            Some(&cat_id)
+        );
+        assert_eq!(world.colonies[0].officers.len(), 1);
+    }
+
+    #[test]
+    fn assign_officer_rejects_foreign_or_dead_cat() {
+        let mut world = world_with_one_colony();
+
+        let res = apply_action(
+            &mut world,
+            &assign_officer_action(proto::OfficerRole::Steward, "ghost"),
+            &ctx(),
+        );
+        assert!(!res.ok, "foreign cat should be rejected");
+        assert!(world.colonies[0].officers.is_empty());
+
+        world.colonies[0].cats[0].death_time = Some(1_000);
+        let dead_id = world.colonies[0].cats[0].id.clone();
+        let res = apply_action(
+            &mut world,
+            &assign_officer_action(proto::OfficerRole::Steward, &dead_id),
+            &ctx(),
+        );
+        assert!(!res.ok, "dead cat should be rejected");
+        assert!(world.colonies[0].officers.is_empty());
+    }
+
+    #[test]
+    fn unassign_officer_clears_role_and_empty_is_noop() {
+        let mut world = world_with_one_colony();
+
+        // Unassigning an empty role is a no-op that still succeeds.
+        let res = apply_action(
+            &mut world,
+            &unassign_officer_action(proto::OfficerRole::Loremaster),
+            &ctx(),
+        );
+        assert!(res.ok, "{res:?}");
+        assert!(world.colonies[0].officers.is_empty());
+
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        let _ = apply_action(
+            &mut world,
+            &assign_officer_action(proto::OfficerRole::Captain, &cat_id),
+            &ctx(),
+        );
+        let res = apply_action(
+            &mut world,
+            &unassign_officer_action(proto::OfficerRole::Captain),
+            &ctx(),
+        );
+        assert!(res.ok, "{res:?}");
+        assert!(world.colonies[0].officers.is_empty());
+    }
+
+    #[test]
+    fn build_snapshot_exposes_officers_by_role() {
+        let mut world = world_with_one_colony();
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        world.colonies[0]
+            .officers
+            .insert(OfficerRole::Loremaster, cat_id.clone());
+
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        assert_eq!(
+            snap.colonies[0]
+                .officers
+                .get(&proto::OfficerRole::Loremaster),
+            Some(&cat_id)
+        );
     }
 }

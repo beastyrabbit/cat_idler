@@ -22,13 +22,14 @@ use crate::{
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, direct_colony,
-        match_cats_to_slots,
+        match_cats_to_slots_with_officers,
     },
     life_sim::{can_work, get_life_stage, leadership_after_tenure, old_age_death_probability},
     movement::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC, WorldPos,
         destination_for_job, pick_wander_target, walk_path,
     },
+    officers::OfficerRole,
     pathfinding::{
         self, ColonyGridParams, FindPathOptions, GatePlacement as PathGatePlacement,
         TilePos as PathTilePos, WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType,
@@ -111,6 +112,8 @@ pub struct ColonyRuntime {
     pub ritual_requested_at: Option<i64>,
     pub critical_since: Option<i64>,
     pub claimed_tiles: Vec<TilePos>,
+    /// Appointed officers (role → cat id). P12.2 additive layer; empty = no effect.
+    pub officers: BTreeMap<OfficerRole, String>,
     pub threat_pressure: f64,
     pub last_raid_at: Option<i64>,
     pub active_raid: Option<RaidId>,
@@ -371,6 +374,7 @@ impl Default for ColonyRuntime {
             ritual_requested_at: None,
             critical_since: None,
             claimed_tiles: Vec::new(),
+            officers: BTreeMap::new(),
             threat_pressure: 0.0,
             last_raid_at: None,
             active_raid: None,
@@ -1504,6 +1508,7 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         training_in_flight: Some(count_jobs(&active_jobs, JobKind::TrainWarrior)),
         threat_band: Some(current_threat_band),
         starving: Some(starving),
+        officers: colony.officers.clone(),
     }
 }
 
@@ -1592,9 +1597,10 @@ fn phase_20_leader_labor_assignments_and_staffing(
         .map(cat_brief)
         .collect::<Vec<_>>();
 
-    let assignments = match_cats_to_slots(
+    let assignments = match_cats_to_slots_with_officers(
         &plan.slots,
         &available_idle,
+        &colony.officers,
         MatchOptions {
             exclude_warriors_from_training: true,
         },
