@@ -894,6 +894,12 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         raiders: raiders_snapshot(colony),
         buildings: buildings_snapshot(colony),
         claimed_tiles: colony.claimed_tiles.iter().map(tile_point).collect(),
+        revealed_tiles: colony
+            .world_tiles
+            .iter()
+            .filter(|(_, tile)| tile.revealed)
+            .map(|(pos, _)| tile_point(pos))
+            .collect(),
         village_gate: village_gate_snapshot(colony),
         village_radius: village_ring_radius(colony.buildings.len() as i32) as u32,
         anchor: proto::TilePoint {
@@ -2185,6 +2191,26 @@ mod tests {
         assert!(
             snap.colonies[0].stockpiles.len() >= 2,
             "designated pile exposed"
+        );
+    }
+
+    #[test]
+    fn build_snapshot_exposes_the_revealed_fog_set() {
+        let world = world_with_one_colony();
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        let revealed = &snap.colonies[0].revealed_tiles;
+        // The founding village reveal is present but tiny.
+        assert!(!revealed.is_empty(), "founding reveal should be exposed");
+        assert!(
+            revealed.contains(&proto::TilePoint {
+                x: VILLAGE_ANCHOR.x,
+                y: VILLAGE_ANCHOR.y,
+            }),
+            "the village anchor tile is revealed"
+        );
+        assert!(
+            revealed.len() < world.colonies[0].world_tiles.len(),
+            "most of the map starts fogged"
         );
     }
 }

@@ -157,6 +157,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             pathWear REAL NOT NULL,
             lastDepleted INTEGER NOT NULL,
             overlayFeature TEXT,
+            revealed INTEGER NOT NULL DEFAULT 0,
             UNIQUE(colonyId, x, y)
         );
 
@@ -236,6 +237,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "stockpiles", "TEXT"),
         ("colonies", "stockLedger", "TEXT"),
         ("cats", "skills", "TEXT"),
+        ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
     ];
     for (table, column, decl) in ADDITIONS {
         if !column_exists(conn, table, column)? {
@@ -706,8 +708,8 @@ fn save_world_tile(
     conn.execute(
         "INSERT INTO world_tiles (
             id, colonyId, x, y, type, resources, maxResources, dangerLevel,
-            pathWear, lastDepleted, overlayFeature
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            pathWear, lastDepleted, overlayFeature, revealed
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             format!("{}:{}:{}", colony_id, tile.pos.x, tile.pos.y),
             colony_id,
@@ -720,6 +722,7 @@ fn save_world_tile(
             i64::from(tile.path_wear),
             tile.last_depleted,
             tile.overlay_feature,
+            i64::from(tile.revealed),
         ],
     )?;
     Ok(())
@@ -731,7 +734,7 @@ fn load_world_tiles(
 ) -> rusqlite::Result<BTreeMap<TilePos, WorldTileRuntime>> {
     let mut stmt = conn.prepare(
         "SELECT x, y, type, resources, maxResources, dangerLevel, pathWear,
-                lastDepleted, overlayFeature
+                lastDepleted, overlayFeature, revealed
          FROM world_tiles WHERE colonyId = ?1 ORDER BY x, y",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
@@ -753,6 +756,7 @@ fn load_world_tiles(
                 path_wear: path_wear.max(0.0) as u32,
                 last_depleted: row.get("lastDepleted")?,
                 overlay_feature: row.get("overlayFeature")?,
+                revealed: row.get::<_, i64>("revealed")? != 0,
             },
         ))
     })?;

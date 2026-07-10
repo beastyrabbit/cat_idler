@@ -39,6 +39,11 @@ pub struct ColonySnapshot {
     pub raiders: Vec<RaiderSnapshot>,
     pub buildings: Vec<BuildingSnapshot>,
     pub claimed_tiles: Vec<TilePoint>,
+    /// Fog-of-war: world tiles the colony has revealed (the founding village area plus
+    /// wherever cats have walked). The client draws fog over any tile NOT in this set.
+    /// Additive since P15; empty/absent for pre-fog snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revealed_tiles: Vec<TilePoint>,
     pub village_gate: Option<GatePlacement>,
     pub village_radius: u32,
     pub anchor: TilePoint,
@@ -1011,6 +1016,7 @@ mod tests {
                     },
                 }],
                 claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
+                revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 village_gate: Some(GatePlacement {
                     x: 5,
                     y: 7,

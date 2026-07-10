@@ -336,6 +336,12 @@ pub struct WorldTileRuntime {
     pub path_wear: u32,
     pub last_depleted: i64,
     pub overlay_feature: Option<String>,
+    /// Fog-of-war visibility. Runtime-only (not terrain-gen output): starts `false`
+    /// for every tile except the founding village reveal, then flips to `true` as cats
+    /// walk near the tile (`reveal_and_wear_walked_tiles`). Does not affect the sim —
+    /// resources/jobs/movement all work on the full map; this is purely what the client
+    /// is allowed to render un-fogged.
+    pub revealed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -436,6 +442,10 @@ const STARTER_CAT_COUNT: usize = 20;
 const STARTER_AGE_MIN_HOURS: f64 = 6.0;
 const STARTER_AGE_MAX_HOURS: f64 = 30.0;
 const VILLAGE_START_RADIUS: i32 = 3;
+/// Fog-of-war founding reveal: at `found_colony` only tiles within this Chebyshev
+/// radius of the village anchor start revealed (the shrine/village area). Everything
+/// beyond starts fogged and is uncovered by `reveal_and_wear_walked_tiles` as cats walk.
+const FOUNDING_REVEAL_RADIUS: i32 = 2;
 
 #[derive(Debug, Clone)]
 struct MovementPassContext {
@@ -580,11 +590,31 @@ pub fn found_colony(
         test_rng_seed: Some(seed),
         ..ColonyRuntime::default()
     };
+    // The world starts tiny: fog covers everything except a small founding reveal
+    // around the village anchor. Cats uncover the rest as they walk.
+    reveal_founding_area(&mut colony);
     // Seed the shrine reservoir so the stockpile invariant holds before the first tick.
     reconcile_colony_stockpiles(&mut colony);
     // The books are counted at founding, so the reported ledger starts exact.
     colony.stock_ledger = StockLedger::counted(&colony.resources, now_ms);
     colony
+}
+
+/// Lift the fog for the founding village reveal: every world tile within
+/// `FOUNDING_REVEAL_RADIUS` (Chebyshev) of the village anchor starts revealed. Nothing
+/// beyond is revealed at founding — that is the job of the reveal-on-walk pass.
+fn reveal_founding_area(colony: &mut ColonyRuntime) {
+    for dy in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
+        for dx in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
+            let pos = TilePos {
+                x: VILLAGE_ANCHOR.x + dx,
+                y: VILLAGE_ANCHOR.y + dy,
+            };
+            if let Some(tile) = colony.world_tiles.get_mut(&pos) {
+                tile.revealed = true;
+            }
+        }
+    }
 }
 
 fn starting_resources() -> Resources {
@@ -840,6 +870,9 @@ fn starter_world_tiles(world_seed: u32) -> BTreeMap<TilePos, WorldTileRuntime> {
                         overlay_feature: tile
                             .overlay_feature
                             .map(|feature| feature.as_str().to_owned()),
+                        // Fog starts drawn over the whole map; `found_colony` lifts it
+                        // for the founding village reveal only.
+                        revealed: false,
                     },
                 );
             }
@@ -4109,10 +4142,12 @@ fn reveal_and_wear_walked_tiles(
             };
             if walked_keys.contains(&pos) {
                 tile.path_wear = add_path_wear(tile.path_wear, WALK_WEAR).max(64);
+                tile.revealed = true;
             } else if walked_tiles.iter().any(|walked| {
                 (walked.x - pos.x).abs().max((walked.y - pos.y).abs()) <= reveal_radius
             }) {
                 tile.path_wear = tile.path_wear.max(63);
+                tile.revealed = true;
             }
         }
     }
@@ -4934,6 +4969,7 @@ mod tests {
                         path_wear: 63,
                         last_depleted: 0,
                         overlay_feature: None,
+                        revealed: false,
                     },
                 )]),
                 last_tick: 1_000,
@@ -6293,6 +6329,99 @@ mod tests {
     }
 
     #[test]
+    fn found_colony_reveals_only_a_tiny_founding_area() {
+        let colony = found_colony(42, "colony-1", 7_000, 99);
+
+        // The village anchor and its immediate surroundings start revealed.
+        let anchor = TilePos {
+            x: VILLAGE_ANCHOR.x,
+            y: VILLAGE_ANCHOR.y,
+        };
+        assert!(colony.world_tiles.get(&anchor).is_some_and(|t| t.revealed));
+
+        // A tile just past the founding reveal radius starts fogged.
+        let just_outside = TilePos {
+            x: VILLAGE_ANCHOR.x + FOUNDING_REVEAL_RADIUS + 1,
+            y: VILLAGE_ANCHOR.y,
+        };
+        assert!(
+            colony
+                .world_tiles
+                .get(&just_outside)
+                .is_some_and(|t| !t.revealed),
+            "the tile just outside the founding reveal must start fogged"
+        );
+
+        // A far tile (well outside the village) is fogged too.
+        let far = TilePos {
+            x: VILLAGE_ANCHOR.x + 14,
+            y: VILLAGE_ANCHOR.y + 14,
+        };
+        assert!(colony.world_tiles.get(&far).is_some_and(|t| !t.revealed));
+
+        // The revealed area is tiny at founding — bounded by the reveal square.
+        let revealed = colony.world_tiles.values().filter(|t| t.revealed).count();
+        let side = (2 * FOUNDING_REVEAL_RADIUS + 1) as usize;
+        assert!(revealed > 0 && revealed <= side * side);
+    }
+
+    #[test]
+    fn cats_walking_reveals_more_tiles_over_time() {
+        let mut world = new_world(1234);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
+
+        let founding_revealed = world.colonies[0]
+            .world_tiles
+            .values()
+            .filter(|t| t.revealed)
+            .count();
+
+        for step in 1..=60 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut world, now);
+        }
+
+        let after_revealed = world.colonies[0]
+            .world_tiles
+            .values()
+            .filter(|t| t.revealed)
+            .count();
+        assert!(
+            after_revealed > founding_revealed,
+            "cats walking should uncover more tiles ({after_revealed} vs {founding_revealed})"
+        );
+    }
+
+    #[test]
+    fn revealed_tiles_are_deterministic_across_identical_runs() {
+        let mut left = new_world(555);
+        left.colonies
+            .push(found_colony(left.world_seed, "colony-1", 1_000, 42));
+        let mut right = new_world(555);
+        right
+            .colonies
+            .push(found_colony(right.world_seed, "colony-1", 1_000, 42));
+
+        for step in 1..=30 {
+            let now = 1_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut left, now);
+            let _ = world_tick(&mut right, now);
+        }
+
+        let revealed = |world: &WorldState| -> Vec<TilePos> {
+            world.colonies[0]
+                .world_tiles
+                .iter()
+                .filter(|(_, tile)| tile.revealed)
+                .map(|(pos, _)| *pos)
+                .collect()
+        };
+        assert_eq!(revealed(&left), revealed(&right));
+    }
+
+    #[test]
     fn stock_ledger_is_deterministic_across_identical_runs() {
         let mut left = new_world(555);
         left.colonies
@@ -6604,6 +6733,7 @@ mod tests {
             path_wear,
             last_depleted: 0,
             overlay_feature: overlay_feature.map(str::to_owned),
+            revealed: false,
         }
     }
 
