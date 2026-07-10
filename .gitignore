@@ -67,3 +67,6 @@ map-screen-verify*.png
 # agent-skills tooling scratch
 /.agents/
 /skills-lock.json
+
+# Bevy client framebuffer verification screenshots (never commit)
+crates/cat-client/reference/*.png
