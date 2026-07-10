@@ -31,9 +31,17 @@ roads paving, stockpile footprints) vs what's missing.
 - **P14.1 Tile occupancy + footprints.** A tile→occupant index; `Footprint{x,y,w,h}` on
   buildings; `can_place(footprint)` rejecting overlap with buildings/trees/water/walls.
   Building site-selection uses free non-overlapping footprints.
-- **P14.2 Blocking pathfinding.** `is_blocked` returns true for building-footprint tiles,
-  wall tiles, tree decoration, and water; the shrine footprint stays passable; roads cheap.
-  Cats route around structures (A* already exists).
+- **P14.2 Cost-based pathfinding with SOFT obstacles** (revised 2026-07-10 per user). Not
+  hard-blocking for structures/trees — instead A* cost = **inverse effective move speed**, so
+  cats get A→B fast, **prefer roads**, and **avoid slow tiles**:
+  - **Slow-passable (~25% speed, high cost, NOT blocked)**: **trees** and **buildings/workshops**
+    — a cat CAN cut through but it's a bad idea, so A* routes around unless forced.
+  - **Hard-blocked (`is_blocked`)**: **walls** (except the single gate), **water**, **mountains**
+    (until unlocked). The shrine footprint stays fully passable (the hub).
+  - Cost tiers mirror the movement-speed model (stone 1.0 / grass 0.75 / sand 0.5 / dirt-road
+    1.05 / stone-road 1.75 / tree+building 0.25) → cost ∝ 1/speed. Keep A* + the deterministic
+    heap; feed the building-footprint + tree tiles (via terrain_gen, like P14.1) into the cost,
+    not the blocked set.
 - **P14.3 Closed perimeter wall + single gate, grown outward.** village_area expansion
   builds the outer ring before deleting the interior wall; guarantee exactly one gate; the
   wall blocks (P14.2) except at the gate.
