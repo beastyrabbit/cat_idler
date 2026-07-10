@@ -3,7 +3,7 @@
 //! This P7.1 module owns the in-memory runtime shapes and phase ordering. Later
 //! P7 cards fill in the no-op phase bodies with the pure module calls.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::{
     biomes::MaxResources,
@@ -63,7 +63,7 @@ use crate::{
         gate_placement_default, is_inside_village, should_expand, side_delta,
     },
     village_layout::{
-        DEFAULT_MAX_RING, GridPos, SHRINE_LOCAL, VILLAGE_ANCHOR, colony_to_world,
+        DEFAULT_MAX_RING, GridPos, VILLAGE_ANCHOR, colony_to_world,
         next_building_site_with_blocked, ring_cells, village_ring_radius,
     },
     warriors::{
@@ -114,6 +114,12 @@ pub struct ColonyRuntime {
     pub ritual_requested_at: Option<i64>,
     pub critical_since: Option<i64>,
     pub claimed_tiles: Vec<TilePos>,
+    /// Fog-of-war: the set of world tiles the client is allowed to render un-fogged.
+    /// Runtime-only and independent of `world_tiles` (which is lazily/​sparsely
+    /// populated for the live colony) — the founding village reveal seeds it and cats
+    /// walking near a tile add to it (`reveal_and_wear_walked_tiles`). Does not affect
+    /// the sim; a `BTreeSet` keeps the snapshot order deterministic.
+    pub revealed_tiles: BTreeSet<TilePos>,
     /// Appointed officers (role → cat id). P12.2 additive layer; empty = no effect.
     pub officers: BTreeMap<OfficerRole, String>,
     /// On-map stockpiles (P12.3). Always includes the shrine reservoir after a tick;
@@ -217,11 +223,16 @@ pub struct BuildingRuntime {
 #[must_use]
 pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
     match building_type {
-        // The shrine is the village hub — the largest footprint.
-        BuildingType::Shrine => (3, 3),
-        // Workhouses and the storehouse are long sheds.
-        BuildingType::Workshop | BuildingType::Smithy | BuildingType::FoodStorage => (2, 3),
-        // Dwellings, gardens and the mid buildings take a tidy 2x2.
+        // The shrine is the village hub, and the workshops/storehouse are broad
+        // work-yards — all 3x3 (P16).
+        BuildingType::Shrine
+        | BuildingType::Workshop
+        | BuildingType::Smithy
+        | BuildingType::FoodStorage
+        | BuildingType::WoodCutter
+        | BuildingType::StonePrep
+        | BuildingType::Woodworking => (3, 3),
+        // Dwellings, gardens and the mid buildings take a 2x3 plot (P16).
         BuildingType::Den
         | BuildingType::Beds
         | BuildingType::Nursery
@@ -230,7 +241,7 @@ pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
         | BuildingType::MouseFarm
         | BuildingType::Field
         | BuildingType::Barracks
-        | BuildingType::AccountingTent => (2, 2),
+        | BuildingType::AccountingTent => (2, 3),
         // Bowls and wall segments are single tiles.
         BuildingType::WaterBowl | BuildingType::Walls => (1, 1),
     }
@@ -336,12 +347,6 @@ pub struct WorldTileRuntime {
     pub path_wear: u32,
     pub last_depleted: i64,
     pub overlay_feature: Option<String>,
-    /// Fog-of-war visibility. Runtime-only (not terrain-gen output): starts `false`
-    /// for every tile except the founding village reveal, then flips to `true` as cats
-    /// walk near the tile (`reveal_and_wear_walked_tiles`). Does not affect the sim —
-    /// resources/jobs/movement all work on the full map; this is purely what the client
-    /// is allowed to render un-fogged.
-    pub revealed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,14 +443,23 @@ const RAIDER_SPEED_TILES_PER_SEC: f64 = 0.4;
 const RAID_SPAWN_DISTANCE: f64 = 14.0;
 const ENGAGE_RANGE: f64 = 1.5;
 const DEFEND_CLICK_DAMAGE: f64 = 6.0;
-const STARTER_CAT_COUNT: usize = 20;
-const STARTER_AGE_MIN_HOURS: f64 = 6.0;
-const STARTER_AGE_MAX_HOURS: f64 = 30.0;
-const VILLAGE_START_RADIUS: i32 = 3;
-/// Fog-of-war founding reveal: at `found_colony` only tiles within this Chebyshev
-/// radius of the village anchor start revealed (the shrine/village area). Everything
-/// beyond starts fogged and is uncovered by `reveal_and_wear_walked_tiles` as cats walk.
+/// Small fixed start (P16): a founded colony begins with exactly this many adult cats.
+const STARTER_CAT_COUNT: usize = 5;
+/// Starter cats are spread across the adult band (kitten 0–6 / young 6–24 / adult
+/// 24–48 / elder 48+ game-hours) so all five can work at full weight from day one and
+/// none is near the elder mortality curve.
+const STARTER_AGE_MIN_HOURS: f64 = 26.0;
+const STARTER_AGE_MAX_HOURS: f64 = 42.0;
+/// Half-width (from the shrine's centre tile) of the fixed founding village's claimed
+/// square. Sized so the fixed blueprint — shrine + 3 dens + 3 workshops — fits with a
+/// one-tile margin to the wall for the ring road out to each gate/edge.
+const VILLAGE_START_RADIUS: i32 = 6;
+/// Fog-of-war founding reveal: the whole claimed village starts revealed, plus a halo
+/// of this Chebyshev radius around the anchor (covers the adjacent water source).
+/// Everything beyond starts fogged and is uncovered by `reveal_and_wear_walked_tiles`.
 const FOUNDING_REVEAL_RADIUS: i32 = 2;
+/// Water level stamped on a founding pond tile (a practically-infinite source).
+const FOUNDING_WATER: u32 = 999;
 
 #[derive(Debug, Clone)]
 struct MovementPassContext {
@@ -486,6 +500,7 @@ impl Default for ColonyRuntime {
             ritual_requested_at: None,
             critical_since: None,
             claimed_tiles: Vec::new(),
+            revealed_tiles: BTreeSet::new(),
             officers: BTreeMap::new(),
             stockpiles: Vec::new(),
             stock_ledger: StockLedger::default(),
@@ -590,8 +605,11 @@ pub fn found_colony(
         test_rng_seed: Some(seed),
         ..ColonyRuntime::default()
     };
-    // The world starts tiny: fog covers everything except a small founding reveal
-    // around the village anchor. Cats uncover the rest as they walk.
+    // Pave the shrine-to-wall stone road cross and clear/guarantee the village's water
+    // source so the fixed blueprint sits on solid, drinkable ground.
+    stamp_founding_roads_and_water(&mut colony);
+    // The world starts tiny: fog covers everything except the founding village reveal.
+    // Cats uncover the rest as they walk.
     reveal_founding_area(&mut colony);
     // Seed the shrine reservoir so the stockpile invariant holds before the first tick.
     reconcile_colony_stockpiles(&mut colony);
@@ -600,29 +618,34 @@ pub fn found_colony(
     colony
 }
 
-/// Lift the fog for the founding village reveal: every world tile within
-/// `FOUNDING_REVEAL_RADIUS` (Chebyshev) of the village anchor starts revealed. Nothing
-/// beyond is revealed at founding — that is the job of the reveal-on-walk pass.
+/// Lift the fog for the founding village reveal: the whole claimed village ground
+/// starts revealed (players can see their own settlement), plus a `FOUNDING_REVEAL_RADIUS`
+/// halo around the anchor so the immediately-adjacent water source is visible. Nothing
+/// further is revealed at founding — that is the job of the reveal-on-walk pass. The
+/// reveal set is independent of `world_tiles`, so it is correct even when the live
+/// colony's tile map is sparse.
 fn reveal_founding_area(colony: &mut ColonyRuntime) {
+    let claimed = colony.claimed_tiles.clone();
+    colony.revealed_tiles.extend(claimed);
     for dy in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
         for dx in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
-            let pos = TilePos {
+            colony.revealed_tiles.insert(TilePos {
                 x: VILLAGE_ANCHOR.x + dx,
                 y: VILLAGE_ANCHOR.y + dy,
-            };
-            if let Some(tile) = colony.world_tiles.get_mut(&pos) {
-                tile.revealed = true;
-            }
+            });
         }
     }
 }
 
 fn starting_resources() -> Resources {
+    // P16 pre-filled general stockpile. `materials` stands in for the "50 wood + 10
+    // stone" of the blueprint until the P12.4b wood/stone chains land; food seeds the
+    // colony while the first hunts and the nearby water source come online.
     Resources {
-        food: 150.0,
+        food: 50.0,
         water: 100.0,
         herbs: 16.0,
-        materials: 24.0,
+        materials: 60.0,
         refined: 0.0,
         weapons: 0.0,
         armor: 0.0,
@@ -750,90 +773,180 @@ fn starter_sprite_params(
     }
 }
 
-fn starter_buildings(world_seed: u32) -> Vec<BuildingRuntime> {
-    // The founding village ground; every starter footprint must fit inside it.
-    let claimed: HashSet<TilePos> = founding_claimed_tiles().into_iter().collect();
+/// The shrine's centre tile. The shrine's footprint anchor (its NW corner) is the
+/// village anchor; a 3×3 footprint puts the centre one tile SE of it. Roads radiate
+/// from this tile and the claimed square is centred on it.
+const fn shrine_center_tile() -> TilePos {
+    TilePos {
+        x: VILLAGE_ANCHOR.x + 1,
+        y: VILLAGE_ANCHOR.y + 1,
+    }
+}
 
-    // The shrine is always placed first at the anchor — its footprint clears whatever
-    // terrain sat there, so it never fails.
-    let shrine_pos = grid_to_tile(colony_to_world(SHRINE_LOCAL));
-    let (shrine_w, shrine_h) = footprint_for(BuildingType::Shrine);
-    let mut occupied: HashSet<TilePos> = footprint_tiles(shrine_pos, shrine_w, shrine_h)
+/// The fixed founding blueprint (P16): the shrine dead-centre, three den houses and
+/// the three raw-material workshops arranged in the four quadrants around it, leaving
+/// the shrine's centre row/column clear for the road cross. Anchors are absolute NW
+/// corners; every footprint stays inside `founding_claimed_tiles` and none overlap.
+///
+/// Layout (shrine centre at 7,7; claimed square 1..=13):
+/// ```text
+///   Woodworking(2,2)  Den(5,2)   ·road·   WoodCutter(9,2)
+///                              [ Shrine 6..8 ]
+///   Den(2,9)          Den(5,9)   ·road·   StonePrep(9,9)
+/// ```
+const STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 7] = [
+    (BuildingType::Shrine, 6, 6, 1),
+    (BuildingType::Woodworking, 2, 2, 1),
+    (BuildingType::Den, 5, 2, 2),
+    (BuildingType::WoodCutter, 9, 2, 1),
+    (BuildingType::Den, 2, 9, 2),
+    (BuildingType::Den, 5, 9, 2),
+    (BuildingType::StonePrep, 9, 9, 1),
+];
+
+fn starter_buildings(_world_seed: u32) -> Vec<BuildingRuntime> {
+    STARTER_BLUEPRINT
         .into_iter()
-        .collect();
-    let mut buildings = vec![BuildingRuntime {
-        id: "building-shrine".to_owned(),
-        building_type: BuildingType::Shrine,
-        level: 1,
-        position: shrine_pos,
-        is_complete: true,
-        construction_progress: 100,
-        production_progress: 0.0,
-        assigned_cat: None,
-    }];
-    let starter_specs = [
-        (BuildingType::Den, 0.05, 2),
-        (BuildingType::Den, 0.3, 2),
-        (BuildingType::Den, 0.55, 2),
-        (BuildingType::Den, 0.8, 2),
-        (BuildingType::Den, 0.95, 1),
-        (BuildingType::FoodStorage, 0.4, 1),
-    ];
+        .enumerate()
+        .map(|(index, (building_type, x, y, level))| {
+            let id = if building_type == BuildingType::Shrine {
+                "building-shrine".to_owned()
+            } else {
+                format!("building-starter-{}", index)
+            };
+            BuildingRuntime {
+                id,
+                building_type,
+                level,
+                position: TilePos { x, y },
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 0.0,
+                assigned_cat: None,
+            }
+        })
+        .collect()
+}
 
-    for (index, (building_type, roll, level)) in starter_specs.into_iter().enumerate() {
-        let (w, h) = footprint_for(building_type);
-        // A ring-spiral candidate fits when its whole footprint is claimed ground that
-        // is free of other starter footprints and (terrain-generated) trees.
-        let fits = |local: GridPos| -> bool {
-            let anchor = colony_to_world(local);
-            footprint_tiles(
-                TilePos {
-                    x: anchor.x,
-                    y: anchor.y,
-                },
-                w,
-                h,
-            )
-            .into_iter()
-            .all(|tile| {
-                claimed.contains(&tile)
-                    && !occupied.contains(&tile)
-                    && !crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y)
-            })
-        };
-        let Some(local_site) =
-            next_building_site_with_blocked(&[], roll, DEFAULT_MAX_RING, |cell| !fits(cell))
-        else {
-            // No footprint fits inside the fence yet — the tick will build the rest as
-            // room opens up. Fewer starter dens is safe; the colony still survives.
-            break;
-        };
-        let position = grid_to_tile(colony_to_world(local_site));
-        for tile in footprint_tiles(position, w, h) {
-            occupied.insert(tile);
+/// The stone-road tiles of the founding cross: the shrine's centre row/column extended
+/// out to each wall (N/S/E/W), skipping the shrine's own footprint.
+fn founding_road_tiles() -> Vec<TilePos> {
+    let center = shrine_center_tile();
+    let (shrine_w, shrine_h) = footprint_for(BuildingType::Shrine);
+    let shrine_min_x = VILLAGE_ANCHOR.x;
+    let shrine_max_x = VILLAGE_ANCHOR.x + shrine_w - 1;
+    let shrine_min_y = VILLAGE_ANCHOR.y;
+    let shrine_max_y = VILLAGE_ANCHOR.y + shrine_h - 1;
+    let lo = -VILLAGE_START_RADIUS;
+    let hi = VILLAGE_START_RADIUS;
+
+    let mut tiles = Vec::new();
+    for d in lo..=hi {
+        // Vertical arm along the shrine's centre column, skipping the shrine rows.
+        let y = center.y + d;
+        if y < shrine_min_y || y > shrine_max_y {
+            tiles.push(TilePos { x: center.x, y });
         }
-        buildings.push(BuildingRuntime {
-            id: format!("building-starter-{}", index + 1),
-            building_type,
-            level,
-            position,
-            is_complete: true,
-            construction_progress: 100,
-            production_progress: 0.0,
-            assigned_cat: None,
-        });
+        // Horizontal arm along the shrine's centre row, skipping the shrine columns.
+        let x = center.x + d;
+        if x < shrine_min_x || x > shrine_max_x {
+            tiles.push(TilePos { x, y: center.y });
+        }
+    }
+    tiles
+}
+
+/// Pave the founding road cross and guarantee the village sits on solid, drinkable
+/// ground: clear any water that collides with a building or road footprint, then make
+/// sure a reachable water source remains (carving a deterministic pond if not).
+fn stamp_founding_roads_and_water(colony: &mut ColonyRuntime) {
+    let roads = founding_road_tiles();
+    let mut blocked: HashSet<TilePos> = colony
+        .buildings
+        .iter()
+        .flat_map(building_footprint_tiles)
+        .collect();
+    blocked.extend(roads.iter().copied());
+
+    // Buildings and roads take priority over terrain water — clear anything underneath.
+    let colliding: Vec<TilePos> = colony
+        .world_tiles
+        .iter()
+        .filter(|(pos, tile)| blocked.contains(pos) && tile_has_water(Some(tile)))
+        .map(|(pos, _)| *pos)
+        .collect();
+    for pos in colliding {
+        clear_water_tile(colony, pos);
     }
 
-    buildings
+    // Lay the stone road overlay.
+    for pos in &roads {
+        if let Some(tile) = colony.world_tiles.get_mut(pos) {
+            tile.overlay_feature = Some("road_built".to_owned());
+        }
+    }
+
+    // Ensure the village still has a water source it can reach; otherwise carve one on
+    // the nearest free in-band tile (deterministic — no RNG).
+    let has_reachable_water = colony.world_tiles.values().any(|tile| {
+        tile_has_water(Some(tile))
+            && cheb_from_anchor(tile.pos) <= 6
+            && !blocked.contains(&tile.pos)
+    });
+    if !has_reachable_water && let Some(pos) = founding_pond_site(colony, &blocked) {
+        set_water_tile(colony, pos);
+    }
+}
+
+/// Convert a world tile to plain walkable meadow ground (used to clear water from under
+/// a building/road footprint).
+fn clear_water_tile(colony: &mut ColonyRuntime, pos: TilePos) {
+    if let Some(tile) = colony.world_tiles.get_mut(&pos) {
+        tile.tile_type = TileType::Meadow;
+        tile.overlay_feature = None;
+        tile.resources.water = 0;
+        tile.danger_level = 0.0;
+    }
+}
+
+/// Stamp a world tile as an (essentially infinite) water source.
+fn set_water_tile(colony: &mut ColonyRuntime, pos: TilePos) {
+    if let Some(tile) = colony.world_tiles.get_mut(&pos) {
+        tile.tile_type = TileType::River;
+        tile.overlay_feature = Some("river".to_owned());
+        tile.resources.water = FOUNDING_WATER;
+        tile.danger_level = 5.0;
+    }
+}
+
+/// Pick a deterministic free claimed tile (not a building/road, a few tiles out from the
+/// shrine) to carve the founding pond on, scanning in `(y, x)` order.
+fn founding_pond_site(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Option<TilePos> {
+    let mut candidates: Vec<TilePos> = colony
+        .claimed_tiles
+        .iter()
+        .copied()
+        .filter(|pos| {
+            !blocked.contains(pos)
+                && (2..=6).contains(&cheb_from_anchor(*pos))
+                && colony
+                    .world_tiles
+                    .get(pos)
+                    .is_some_and(|tile| !tile_has_water(Some(tile)))
+        })
+        .collect();
+    candidates.sort_by_key(|pos| (pos.y, pos.x));
+    candidates.into_iter().next()
 }
 
 fn founding_claimed_tiles() -> Vec<TilePos> {
+    let center = shrine_center_tile();
     let mut tiles = Vec::new();
     for dy in -VILLAGE_START_RADIUS..=VILLAGE_START_RADIUS {
         for dx in -VILLAGE_START_RADIUS..=VILLAGE_START_RADIUS {
             tiles.push(TilePos {
-                x: VILLAGE_ANCHOR.x + dx,
-                y: VILLAGE_ANCHOR.y + dy,
+                x: center.x + dx,
+                y: center.y + dy,
             });
         }
     }
@@ -870,9 +983,6 @@ fn starter_world_tiles(world_seed: u32) -> BTreeMap<TilePos, WorldTileRuntime> {
                         overlay_feature: tile
                             .overlay_feature
                             .map(|feature| feature.as_str().to_owned()),
-                        // Fog starts drawn over the whole map; `found_colony` lifts it
-                        // for the founding village reveal only.
-                        revealed: false,
                     },
                 );
             }
@@ -880,10 +990,6 @@ fn starter_world_tiles(world_seed: u32) -> BTreeMap<TilePos, WorldTileRuntime> {
     }
 
     tiles
-}
-
-fn grid_to_tile(pos: GridPos) -> TilePos {
-    TilePos { x: pos.x, y: pos.y }
 }
 
 #[must_use]
@@ -4137,17 +4243,23 @@ fn reveal_and_wear_walked_tiles(
             if is_inside_movement_village(pos, movement) {
                 continue;
             }
-            let Some(tile) = colony.world_tiles.get_mut(&pos) else {
+            let walked_on = walked_keys.contains(&pos);
+            let in_halo = !walked_on
+                && walked_tiles.iter().any(|walked| {
+                    (walked.x - pos.x).abs().max((walked.y - pos.y).abs()) <= reveal_radius
+                });
+            if !walked_on && !in_halo {
                 continue;
-            };
-            if walked_keys.contains(&pos) {
-                tile.path_wear = add_path_wear(tile.path_wear, WALK_WEAR).max(64);
-                tile.revealed = true;
-            } else if walked_tiles.iter().any(|walked| {
-                (walked.x - pos.x).abs().max((walked.y - pos.y).abs()) <= reveal_radius
-            }) {
-                tile.path_wear = tile.path_wear.max(63);
-                tile.revealed = true;
+            }
+            // Reveal regardless of whether the tile is materialised in `world_tiles`
+            // (the live colony's map is sparse); only bump wear on tiles that exist.
+            colony.revealed_tiles.insert(pos);
+            if let Some(tile) = colony.world_tiles.get_mut(&pos) {
+                if walked_on {
+                    tile.path_wear = add_path_wear(tile.path_wear, WALK_WEAR).max(64);
+                } else {
+                    tile.path_wear = tile.path_wear.max(63);
+                }
             }
         }
     }
@@ -4969,7 +5081,6 @@ mod tests {
                         path_wear: 63,
                         last_depleted: 0,
                         overlay_feature: None,
-                        revealed: false,
                     },
                 )]),
                 last_tick: 1_000,
@@ -6329,40 +6440,34 @@ mod tests {
     }
 
     #[test]
-    fn found_colony_reveals_only_a_tiny_founding_area() {
+    fn found_colony_reveals_the_village_but_not_the_wilds() {
         let colony = found_colony(42, "colony-1", 7_000, 99);
 
-        // The village anchor and its immediate surroundings start revealed.
+        // The reveal set is populated at founding, independent of world_tiles.
+        assert!(
+            !colony.revealed_tiles.is_empty(),
+            "a freshly founded colony must have a non-empty revealed set"
+        );
+
+        // The village anchor and every claimed village tile start revealed.
         let anchor = TilePos {
             x: VILLAGE_ANCHOR.x,
             y: VILLAGE_ANCHOR.y,
         };
-        assert!(colony.world_tiles.get(&anchor).is_some_and(|t| t.revealed));
+        assert!(colony.revealed_tiles.contains(&anchor));
+        for tile in &colony.claimed_tiles {
+            assert!(
+                colony.revealed_tiles.contains(tile),
+                "claimed village tile {tile:?} must start revealed"
+            );
+        }
 
-        // A tile just past the founding reveal radius starts fogged.
-        let just_outside = TilePos {
-            x: VILLAGE_ANCHOR.x + FOUNDING_REVEAL_RADIUS + 1,
-            y: VILLAGE_ANCHOR.y,
-        };
-        assert!(
-            colony
-                .world_tiles
-                .get(&just_outside)
-                .is_some_and(|t| !t.revealed),
-            "the tile just outside the founding reveal must start fogged"
-        );
-
-        // A far tile (well outside the village) is fogged too.
+        // A far tile (well outside the village) is fogged.
         let far = TilePos {
-            x: VILLAGE_ANCHOR.x + 14,
-            y: VILLAGE_ANCHOR.y + 14,
+            x: VILLAGE_ANCHOR.x + 40,
+            y: VILLAGE_ANCHOR.y + 40,
         };
-        assert!(colony.world_tiles.get(&far).is_some_and(|t| !t.revealed));
-
-        // The revealed area is tiny at founding — bounded by the reveal square.
-        let revealed = colony.world_tiles.values().filter(|t| t.revealed).count();
-        let side = (2 * FOUNDING_REVEAL_RADIUS + 1) as usize;
-        assert!(revealed > 0 && revealed <= side * side);
+        assert!(!colony.revealed_tiles.contains(&far));
     }
 
     #[test]
@@ -6372,22 +6477,14 @@ mod tests {
             .colonies
             .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
 
-        let founding_revealed = world.colonies[0]
-            .world_tiles
-            .values()
-            .filter(|t| t.revealed)
-            .count();
+        let founding_revealed = world.colonies[0].revealed_tiles.len();
 
         for step in 1..=60 {
             let now = 10_000 + i64::from(step) * 60_000;
             let _ = world_tick(&mut world, now);
         }
 
-        let after_revealed = world.colonies[0]
-            .world_tiles
-            .values()
-            .filter(|t| t.revealed)
-            .count();
+        let after_revealed = world.colonies[0].revealed_tiles.len();
         assert!(
             after_revealed > founding_revealed,
             "cats walking should uncover more tiles ({after_revealed} vs {founding_revealed})"
@@ -6411,12 +6508,7 @@ mod tests {
         }
 
         let revealed = |world: &WorldState| -> Vec<TilePos> {
-            world.colonies[0]
-                .world_tiles
-                .iter()
-                .filter(|(_, tile)| tile.revealed)
-                .map(|(pos, _)| *pos)
-                .collect()
+            world.colonies[0].revealed_tiles.iter().copied().collect()
         };
         assert_eq!(revealed(&left), revealed(&right));
     }
@@ -6462,41 +6554,48 @@ mod tests {
     }
 
     #[test]
-    fn founded_colony_thrives_over_a_long_horizon_with_staggered_movement() {
-        // Guard against the per-terrain/per-gait move-speed model starving the
-        // colony: over a long horizon the founding cohort must stay healthy, not
-        // collapse because cats crawl to the shrine. Cats still reach job sites in
-        // reasonable time, so the economy holds.
-        let mut world = new_world(1234);
-        world
-            .colonies
-            .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
+    fn founded_colony_thrives_over_a_long_horizon_with_the_small_start() {
+        // Survival guardrail (P16): the fixed 5-cat small start, seeded with the
+        // pre-filled stockpile (food 50 / materials 60 / water 100) and its nearby
+        // water source, must self-sustain over a long horizon — cats work, food and
+        // water hold, and the run never collapses. Runs long enough (800 ticks) that
+        // the founding food would deplete without a working hunt/fetch economy.
+        for seed in [1234u32, 42, 7, 99, 555] {
+            let mut world = new_world(seed);
+            world
+                .colonies
+                .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
 
-        let mut min_population = usize::MAX;
-        for step in 1..=180 {
-            let now = 10_000 + i64::from(step) * 60_000;
-            let reports = world_tick(&mut world, now);
-            assert_eq!(reports[0].reset_reason, None, "tick {step} reset the run");
-            min_population = min_population.min(alive_cats(&world.colonies[0].cats).count());
+            let mut min_population = usize::MAX;
+            for step in 1..=800 {
+                let now = 10_000 + i64::from(step) * 60_000;
+                let reports = world_tick(&mut world, now);
+                assert_eq!(
+                    reports[0].reset_reason, None,
+                    "seed {seed} tick {step} reset the run"
+                );
+                min_population = min_population.min(alive_cats(&world.colonies[0].cats).count());
+            }
+
+            let colony = &world.colonies[0];
+            assert_ne!(colony.status, ColonyStatus::Dead, "seed {seed} colony died");
+            assert!(
+                min_population >= STARTER_CAT_COUNT,
+                "seed {seed} dipped to {min_population} cats — the small start starved"
+            );
+            assert!(
+                colony.resources.food > 0.0 && colony.resources.water > 0.0,
+                "seed {seed} ran a resource dry (food {:.1}, water {:.1})",
+                colony.resources.food,
+                colony.resources.water,
+            );
         }
-
-        let colony = &world.colonies[0];
-        let population = alive_cats(&colony.cats).count();
-        assert_ne!(colony.status, ColonyStatus::Dead);
-        assert!(
-            min_population >= 15,
-            "colony dipped to {min_population} cats — staggered movement likely starved it"
-        );
-        assert!(
-            population >= 18,
-            "colony ended with {population} cats (expected a healthy, self-sustaining population)"
-        );
     }
 
     #[test]
     fn founded_colony_keeps_nearly_every_cat_employed() {
-        // Job-saturation tuning: a healthy founded 20-cat colony should leave at most a
-        // couple of work-capable cats idle once the leader has spent its labour.
+        // Job-saturation tuning: a healthy founded colony should leave at most a couple
+        // of work-capable cats idle once the leader has spent its labour.
         let mut world = new_world(1234);
         world
             .colonies
@@ -6733,7 +6832,6 @@ mod tests {
             path_wear,
             last_depleted: 0,
             overlay_feature: overlay_feature.map(str::to_owned),
-            revealed: false,
         }
     }
 
@@ -6741,14 +6839,19 @@ mod tests {
 
     #[test]
     fn footprint_for_matches_expected_sizes() {
-        assert_eq!(footprint_for(BuildingType::Shrine), (3, 3));
+        // P16: shrine + all workshops/storehouse are 3x3.
         for building_type in [
+            BuildingType::Shrine,
             BuildingType::Workshop,
             BuildingType::Smithy,
             BuildingType::FoodStorage,
+            BuildingType::WoodCutter,
+            BuildingType::StonePrep,
+            BuildingType::Woodworking,
         ] {
-            assert_eq!(footprint_for(building_type), (2, 3));
+            assert_eq!(footprint_for(building_type), (3, 3));
         }
+        // Dwellings and mid buildings take a 2x3 plot.
         for building_type in [
             BuildingType::Den,
             BuildingType::Beds,
@@ -6760,7 +6863,7 @@ mod tests {
             BuildingType::Barracks,
             BuildingType::AccountingTent,
         ] {
-            assert_eq!(footprint_for(building_type), (2, 2));
+            assert_eq!(footprint_for(building_type), (2, 3));
         }
         for building_type in [BuildingType::WaterBowl, BuildingType::Walls] {
             assert_eq!(footprint_for(building_type), (1, 1));
@@ -6796,7 +6899,7 @@ mod tests {
         assert!(tile_is_occupied(&colony, TilePos { x: 7, y: 7 }, seed));
 
         // Perimeter: a tile just outside the claimed area but bordering it (the wall).
-        assert!(tile_is_occupied(&colony, TilePos { x: 2, y: 6 }, seed));
+        assert!(tile_is_occupied(&colony, TilePos { x: 0, y: 7 }, seed));
 
         // A terrain-generated tree tile inside the founding area is occupied.
         let tree = (3..=9)
@@ -6981,5 +7084,195 @@ mod tests {
         assert_ne!(colony.status, ColonyStatus::Dead);
         // The village keeps at least the shrine plus a home.
         assert!(colony.buildings.len() >= 2);
+    }
+
+    // --- P16: fixed founding village blueprint --------------------------------
+
+    #[test]
+    fn founding_starts_with_five_adult_cats() {
+        let colony = found_colony(4242, "colony-1", 1_000, 4242);
+        assert_eq!(alive_cats(&colony.cats).count(), 5);
+        assert_eq!(STARTER_CAT_COUNT, 5);
+        for cat in &colony.cats {
+            assert_eq!(
+                get_life_stage(cat.age_hours),
+                crate::types::LifeStage::Adult,
+                "starter cat {} should found as an adult (age {})",
+                cat.id,
+                cat.age_hours,
+            );
+        }
+    }
+
+    #[test]
+    fn founding_pre_fills_the_stockpile_with_food_and_materials() {
+        let colony = found_colony(4242, "colony-1", 1_000, 4242);
+        assert_eq!(colony.resources.food, 50.0);
+        assert_eq!(colony.resources.materials, 60.0);
+        // The shrine reservoir invariant (P12.3): stockpile contents sum to resources.
+        assert!(colony.stockpiles.iter().any(Stockpile::is_shrine));
+        for &kind in ResourceKind::ALL {
+            let sum: f64 = colony
+                .stockpiles
+                .iter()
+                .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
+                .sum();
+            let total = stockpiles::resource_amount(&colony.resources, kind);
+            assert!((sum - total).abs() <= 1e-6, "{kind:?} reservoir invariant");
+        }
+    }
+
+    #[test]
+    fn founding_places_the_fixed_blueprint_shrine_dens_and_workshops() {
+        let colony = found_colony(4242, "colony-1", 1_000, 4242);
+
+        // Shrine dead-centre at the anchor.
+        let shrine = colony
+            .buildings
+            .iter()
+            .find(|b| b.building_type == BuildingType::Shrine)
+            .expect("blueprint has a shrine");
+        assert_eq!(
+            shrine.position,
+            TilePos {
+                x: VILLAGE_ANCHOR.x,
+                y: VILLAGE_ANCHOR.y,
+            }
+        );
+
+        // Exactly three dens and the three raw-material workshops.
+        let count = |bt: BuildingType| {
+            colony
+                .buildings
+                .iter()
+                .filter(|b| b.building_type == bt)
+                .count()
+        };
+        assert_eq!(count(BuildingType::Den), 3, "three den houses");
+        assert_eq!(count(BuildingType::WoodCutter), 1);
+        assert_eq!(count(BuildingType::StonePrep), 1);
+        assert_eq!(count(BuildingType::Woodworking), 1);
+        assert_eq!(colony.buildings.len(), 7);
+
+        // Every footprint is non-overlapping and sits on claimed ground.
+        let claimed: HashSet<TilePos> = colony.claimed_tiles.iter().copied().collect();
+        let mut seen: HashSet<TilePos> = HashSet::new();
+        for building in &colony.buildings {
+            for tile in building_footprint_tiles(building) {
+                assert!(
+                    claimed.contains(&tile),
+                    "{} tile {tile:?} is off claimed ground",
+                    building.id
+                );
+                assert!(
+                    seen.insert(tile),
+                    "{} overlaps another building at {tile:?}",
+                    building.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn founding_gate_is_on_the_south_wall() {
+        let colony = found_colony(4242, "colony-1", 1_000, 4242);
+        let area = claimed_area(&colony);
+        let gate = gate_placement_default(&area).expect("the village has a gate");
+        assert_eq!(gate.side, Side::S, "the single gate opens to the south");
+    }
+
+    #[test]
+    fn founding_paves_stone_roads_from_the_shrine_to_all_four_walls() {
+        let colony = found_colony(4242, "colony-1", 1_000, 4242);
+        let center = shrine_center_tile();
+        let r = VILLAGE_START_RADIUS;
+
+        // Each cardinal wall tile on the shrine's centre row/column is a built road.
+        let is_road = |x: i32, y: i32| {
+            colony
+                .world_tiles
+                .get(&TilePos { x, y })
+                .and_then(|tile| tile.overlay_feature.as_deref())
+                == Some("road_built")
+        };
+        assert!(
+            is_road(center.x, center.y - r),
+            "north road reaches the wall"
+        );
+        assert!(
+            is_road(center.x, center.y + r),
+            "south road reaches the wall"
+        );
+        assert!(
+            is_road(center.x - r, center.y),
+            "west road reaches the wall"
+        );
+        assert!(
+            is_road(center.x + r, center.y),
+            "east road reaches the wall"
+        );
+
+        // The road cross is continuous from just outside the shrine to each wall.
+        for d in 2..=r {
+            assert!(is_road(center.x, center.y - d), "north road tile at -{d}");
+            assert!(is_road(center.x, center.y + d), "south road tile at +{d}");
+            assert!(is_road(center.x - d, center.y), "west road tile at -{d}");
+            assert!(is_road(center.x + d, center.y), "east road tile at +{d}");
+        }
+    }
+
+    #[test]
+    fn founding_layout_is_identical_for_the_same_seed() {
+        let snapshot = |seed: u32| {
+            let colony = found_colony(seed, "colony-1", 1_000, seed);
+            let buildings: Vec<_> = colony
+                .buildings
+                .iter()
+                .map(|b| (b.id.clone(), b.building_type, b.position))
+                .collect();
+            let roads: Vec<TilePos> = colony
+                .world_tiles
+                .iter()
+                .filter(|(_, t)| t.overlay_feature.as_deref() == Some("road_built"))
+                .map(|(pos, _)| *pos)
+                .collect();
+            (
+                buildings,
+                roads,
+                colony.claimed_tiles,
+                colony.revealed_tiles,
+            )
+        };
+        assert_eq!(snapshot(4242), snapshot(4242));
+    }
+
+    #[test]
+    fn founding_never_places_a_building_or_road_on_water() {
+        // Across seeds, the water-clearing pass keeps every building and road tile dry,
+        // while a reachable water source still exists for the fetch-water economy.
+        for seed in [1234u32, 42, 7, 99, 555, 4242] {
+            let colony = found_colony(seed, "colony-1", 1_000, seed);
+
+            let mut blocked: HashSet<TilePos> = colony
+                .buildings
+                .iter()
+                .flat_map(building_footprint_tiles)
+                .collect();
+            blocked.extend(founding_road_tiles());
+            for pos in &blocked {
+                assert!(
+                    !tile_has_water(colony.world_tiles.get(pos)),
+                    "seed {seed}: water under a building/road at {pos:?}"
+                );
+            }
+
+            assert!(
+                colony
+                    .world_tiles
+                    .values()
+                    .any(|t| tile_has_water(Some(t)) && cheb_from_anchor(t.pos) <= 6),
+                "seed {seed}: the village has no reachable water source"
+            );
+        }
     }
 }

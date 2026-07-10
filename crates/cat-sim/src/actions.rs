@@ -894,12 +894,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         raiders: raiders_snapshot(colony),
         buildings: buildings_snapshot(colony),
         claimed_tiles: colony.claimed_tiles.iter().map(tile_point).collect(),
-        revealed_tiles: colony
-            .world_tiles
-            .iter()
-            .filter(|(_, tile)| tile.revealed)
-            .map(|(pos, _)| tile_point(pos))
-            .collect(),
+        revealed_tiles: colony.revealed_tiles.iter().map(tile_point).collect(),
         village_gate: village_gate_snapshot(colony),
         village_radius: village_ring_radius(colony.buildings.len() as i32) as u32,
         anchor: proto::TilePoint {
@@ -1758,6 +1753,9 @@ fn proto_to_sim_building_type(building_type: proto::BuildingType) -> Option<Buil
         proto::BuildingType::ResearchHut | proto::BuildingType::School => None,
         proto::BuildingType::Smithy => Some(BuildingType::Smithy),
         proto::BuildingType::Barracks => Some(BuildingType::Barracks),
+        proto::BuildingType::WoodCutter => Some(BuildingType::WoodCutter),
+        proto::BuildingType::StonePrep => Some(BuildingType::StonePrep),
+        proto::BuildingType::Woodworking => Some(BuildingType::Woodworking),
     }
 }
 
@@ -1777,6 +1775,9 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         BuildingType::Field => Some(proto::BuildingType::Field),
         BuildingType::Smithy => Some(proto::BuildingType::Smithy),
         BuildingType::Barracks => Some(proto::BuildingType::Barracks),
+        BuildingType::WoodCutter => Some(proto::BuildingType::WoodCutter),
+        BuildingType::StonePrep => Some(proto::BuildingType::StonePrep),
+        BuildingType::Woodworking => Some(proto::BuildingType::Woodworking),
         // No protocol/client sprite yet — the Accounting Tent's effect surfaces via the
         // stock ledger, not a rendered building. Omitted from the buildings snapshot.
         BuildingType::AccountingTent => None,
@@ -2199,7 +2200,7 @@ mod tests {
         let world = world_with_one_colony();
         let snap = build_snapshot(&world, 1_000_000, 1);
         let revealed = &snap.colonies[0].revealed_tiles;
-        // The founding village reveal is present but tiny.
+        // The founding village reveal is present.
         assert!(!revealed.is_empty(), "founding reveal should be exposed");
         assert!(
             revealed.contains(&proto::TilePoint {
@@ -2210,7 +2211,22 @@ mod tests {
         );
         assert!(
             revealed.len() < world.colonies[0].world_tiles.len(),
-            "most of the map starts fogged"
+            "the wilds beyond the village start fogged"
+        );
+    }
+
+    #[test]
+    fn revealed_fog_set_is_independent_of_the_world_tiles_map() {
+        // Fog is tracked on a standalone tile set, so the snapshot still exposes the
+        // founding reveal even when the live colony's `world_tiles` map is empty/sparse
+        // (tiles are materialised lazily on the server) — this is what the client needs
+        // to render an un-fogged village.
+        let mut world = world_with_one_colony();
+        world.colonies[0].world_tiles.clear();
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        assert!(
+            !snap.colonies[0].revealed_tiles.is_empty(),
+            "revealed set must survive an empty world_tiles map"
         );
     }
 }

@@ -114,6 +114,9 @@ define_wire_enum! {
         Smithy => "smithy",
         Barracks => "barracks",
         AccountingTent => "accounting_tent",
+        WoodCutter => "wood_cutter",
+        StonePrep => "stone_prep",
+        Woodworking => "woodworking",
     }
 }
 
@@ -278,6 +281,9 @@ mod tests {
             (BuildingType::Smithy, "smithy"),
             (BuildingType::Barracks, "barracks"),
             (BuildingType::AccountingTent, "accounting_tent"),
+            (BuildingType::WoodCutter, "wood_cutter"),
+            (BuildingType::StonePrep, "stone_prep"),
+            (BuildingType::Woodworking, "woodworking"),
         ];
 
         assert_wire_round_trip(&cases, BuildingType::as_str);

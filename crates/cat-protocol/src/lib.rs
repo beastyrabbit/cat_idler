@@ -502,6 +502,9 @@ pub enum BuildingType {
     School,
     Smithy,
     Barracks,
+    WoodCutter,
+    StonePrep,
+    Woodworking,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

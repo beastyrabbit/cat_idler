@@ -3355,6 +3355,11 @@ fn building_texture(building: BuildingType) -> Option<BuildingTexture> {
         | BuildingType::Nursery
         | BuildingType::HerbGarden
         | BuildingType::ElderCorner => BuildingTexture::Den,
+        // New P16 workshop types — dedicated sprites (wood_cutter/stone_prep/
+        // woodworking.png) exist; wired to the generic Workshop texture for now.
+        BuildingType::WoodCutter | BuildingType::StonePrep | BuildingType::Woodworking => {
+            BuildingTexture::Workshop
+        }
         BuildingType::Walls => return None,
     })
 }
@@ -3388,6 +3393,9 @@ fn building_label(building: BuildingType) -> &'static str {
         BuildingType::School => "school",
         BuildingType::Smithy => "smithy",
         BuildingType::Barracks => "barracks",
+        BuildingType::WoodCutter => "woodcutter",
+        BuildingType::StonePrep => "stoneprep",
+        BuildingType::Woodworking => "woodworking",
     }
 }
 

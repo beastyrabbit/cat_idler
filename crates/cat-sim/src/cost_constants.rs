@@ -46,7 +46,7 @@ pub const ENEMY_STATS: [(EnemyType, EnemyStats); 5] = [
     ),
 ];
 
-pub const BUILDING_COSTS: [(BuildingType, u32); 15] = [
+pub const BUILDING_COSTS: [(BuildingType, u32); 18] = [
     (BuildingType::Den, 0),
     (BuildingType::FoodStorage, 5),
     (BuildingType::WaterBowl, 3),
@@ -62,6 +62,9 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 15] = [
     (BuildingType::Smithy, 30),
     (BuildingType::Barracks, 30),
     (BuildingType::AccountingTent, 15),
+    (BuildingType::WoodCutter, 20),
+    (BuildingType::StonePrep, 20),
+    (BuildingType::Woodworking, 25),
 ];
 
 pub const TASK_TO_SKILL: [(TaskType, &str); 12] = [
@@ -164,6 +167,9 @@ mod tests {
             (BuildingType::Smithy, 30),
             (BuildingType::Barracks, 30),
             (BuildingType::AccountingTent, 15),
+            (BuildingType::WoodCutter, 20),
+            (BuildingType::StonePrep, 20),
+            (BuildingType::Woodworking, 25),
         ];
 
         assert_eq!(BUILDING_COSTS.len(), BuildingType::ALL.len());

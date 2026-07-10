@@ -71,6 +71,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             ritualRequestedAt INTEGER,
             criticalSince INTEGER,
             claimedTiles TEXT,
+            revealedTiles TEXT,
             threatPressure REAL,
             lastRaidAt INTEGER,
             activeRaidId TEXT,
@@ -236,6 +237,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "officers", "TEXT"),
         ("colonies", "stockpiles", "TEXT"),
         ("colonies", "stockLedger", "TEXT"),
+        ("colonies", "revealedTiles", "TEXT"),
         ("cats", "skills", "TEXT"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
     ];
@@ -301,8 +303,8 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
         "SELECT id, name, leaderId, status, resources, createdAt, lastTick,
                 worldSeed, runNumber, runStartedAt, lastPlayerActivityAt,
                 automationTier, globalUpgradePoints, upgradeTree, upgradeLevels,
-                ritualRequestedAt, criticalSince, claimedTiles, threatPressure,
-                lastRaidAt, activeRaidId, raidClicks, testTimeScale,
+                ritualRequestedAt, criticalSince, claimedTiles, revealedTiles,
+                threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, stockLedger
          FROM colonies
@@ -326,13 +328,13 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             id, name, leaderId, status, resources, createdAt, lastTick, worldSeed,
             runNumber, runStartedAt, lastPlayerActivityAt, automationTier,
             globalUpgradePoints, upgradeTree, upgradeLevels, ritualRequestedAt,
-            criticalSince, claimedTiles, threatPressure, lastRaidAt, activeRaidId,
-            raidClicks, testTimeScale, testResourceDecayMultiplier,
+            criticalSince, claimedTiles, revealedTiles, threatPressure, lastRaidAt,
+            activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
             stockpiles, stockLedger
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
         )",
         params![
             colony.id,
@@ -353,6 +355,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.ritual_requested_at,
             colony.critical_since,
             tile_list_json(&colony.claimed_tiles),
+            tile_list_json(&colony.revealed_tiles.iter().copied().collect::<Vec<_>>()),
             colony.threat_pressure,
             colony.last_raid_at,
             colony.active_raid,
@@ -405,6 +408,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let upgrade_tree_json: Option<String> = row.get("upgradeTree")?;
     let upgrade_levels_json: Option<String> = row.get("upgradeLevels")?;
     let claimed_tiles_json: Option<String> = row.get("claimedTiles")?;
+    let revealed_tiles_json: Option<String> = row.get("revealedTiles")?;
     let officers_json: Option<String> = row.get("officers")?;
     let stockpiles_json: Option<String> = row.get("stockpiles")?;
     let stock_ledger_json: Option<String> = row.get("stockLedger")?;
@@ -433,6 +437,9 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         ritual_requested_at: row.get("ritualRequestedAt")?,
         critical_since: row.get("criticalSince")?,
         claimed_tiles: parse_tile_list(claimed_tiles_json.as_deref())?,
+        revealed_tiles: parse_tile_list(revealed_tiles_json.as_deref())?
+            .into_iter()
+            .collect(),
         officers: officers_json
             .map(|raw| {
                 serde_json::from_str::<BTreeMap<OfficerRole, String>>(&raw).map_err(from_sql_json)
@@ -708,8 +715,8 @@ fn save_world_tile(
     conn.execute(
         "INSERT INTO world_tiles (
             id, colonyId, x, y, type, resources, maxResources, dangerLevel,
-            pathWear, lastDepleted, overlayFeature, revealed
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            pathWear, lastDepleted, overlayFeature
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             format!("{}:{}:{}", colony_id, tile.pos.x, tile.pos.y),
             colony_id,
@@ -722,7 +729,6 @@ fn save_world_tile(
             i64::from(tile.path_wear),
             tile.last_depleted,
             tile.overlay_feature,
-            i64::from(tile.revealed),
         ],
     )?;
     Ok(())
@@ -734,7 +740,7 @@ fn load_world_tiles(
 ) -> rusqlite::Result<BTreeMap<TilePos, WorldTileRuntime>> {
     let mut stmt = conn.prepare(
         "SELECT x, y, type, resources, maxResources, dangerLevel, pathWear,
-                lastDepleted, overlayFeature, revealed
+                lastDepleted, overlayFeature
          FROM world_tiles WHERE colonyId = ?1 ORDER BY x, y",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
@@ -756,7 +762,6 @@ fn load_world_tiles(
                 path_wear: path_wear.max(0.0) as u32,
                 last_depleted: row.get("lastDepleted")?,
                 overlay_feature: row.get("overlayFeature")?,
-                revealed: row.get::<_, i64>("revealed")? != 0,
             },
         ))
     })?;
