@@ -20,8 +20,8 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use cat_protocol::{
     BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction, ColonySnapshot, JobKind,
-    OfficerRole, ResourceAmounts, ResourceKind, Specialization, StockpileSnapshot, TilePoint,
-    WorldSnapshot, ZoneKind,
+    OfficerRole, ResourceAmounts, ResourceKind, Specialization, StockLedgerSnapshot,
+    StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
 };
 use cat_sim::terrain_gen::{
     BiomeRole, DecorationRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
@@ -710,7 +710,7 @@ fn spawn_officers_panel(commands: &mut Commands) {
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(8.0),
-                top: Val::Px(300.0),
+                top: Val::Px(360.0),
                 width: Val::Px(260.0),
                 padding: UiRect::all(Val::Px(10.0)),
                 flex_direction: FlexDirection::Column,
@@ -1743,7 +1743,7 @@ fn dashboard_text(colony: &ColonySnapshot, online: u32) -> String {
          Weapons   {weap:>5.0}   Armor {armor:.0}\n\
          Blessings {bless:>5.1}\n\
          \n\
-         Active jobs: {active_jobs}   Total jobs: {jobs}",
+         Active jobs: {active_jobs}   Total jobs: {jobs}{ledger}",
         name = colony.name,
         status = colony.status,
         pop = colony.housing.population,
@@ -1766,7 +1766,30 @@ fn dashboard_text(colony: &ColonySnapshot, online: u32) -> String {
         armor = r.armor,
         bless = r.blessings,
         jobs = colony.jobs.len(),
+        ledger = colony
+            .stock_ledger
+            .as_ref()
+            .map_or_else(String::new, |l| format!("\n\n{}", ledger_hud_text(l))),
     )
+}
+
+/// Compact HUD summary of the Accountant's reported stock ledger. When a staffed
+/// Accounting Tent keeps it exact the totals show plainly; otherwise they lag
+/// reality and are marked stale (with a `~` prefix + a hint to build the tent).
+fn ledger_hud_text(ledger: &StockLedgerSnapshot) -> String {
+    let r = &ledger.reported;
+    if ledger.accurate {
+        format!(
+            "Ledger (exact): F{:.0} W{:.0} M{:.0} R{:.0}",
+            r.food, r.water, r.materials, r.refined
+        )
+    } else {
+        format!(
+            "Ledger (stale - build Accounting Tent)\n\
+             known ~F{:.0} ~W{:.0} ~M{:.0} ~R{:.0}",
+            r.food, r.water, r.materials, r.refined
+        )
+    }
 }
 
 fn update_event_log(latest: Res<LatestSnapshot>, mut log: Query<&mut Text, With<EventLogText>>) {
@@ -2462,6 +2485,37 @@ mod tests {
         assert_eq!(snap.colonies[0].cats.len(), 2);
         assert_eq!(snap.online_count, 2);
         assert!(dashboard_text(&snap.colonies[0], 2).contains("Colony: A"));
+    }
+
+    #[test]
+    fn ledger_hud_text_marks_freshness() {
+        let reported = ResourceAmounts {
+            food: 148.0,
+            water: 100.0,
+            herbs: 16.0,
+            materials: 24.0,
+            refined: 0.0,
+            weapons: 0.0,
+            armor: 0.0,
+            blessings: 0.0,
+        };
+        let exact = ledger_hud_text(&StockLedgerSnapshot {
+            reported,
+            last_counted: 0,
+            accurate: true,
+        });
+        assert!(exact.contains("exact"));
+        assert!(exact.contains("F148"));
+        assert!(!exact.contains('~'));
+
+        let stale = ledger_hud_text(&StockLedgerSnapshot {
+            reported,
+            last_counted: 0,
+            accurate: false,
+        });
+        assert!(stale.contains("stale"));
+        assert!(stale.contains("Accounting Tent"));
+        assert!(stale.contains("~F148"));
     }
 
     #[test]
