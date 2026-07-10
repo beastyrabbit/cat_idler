@@ -13,7 +13,15 @@ use crate::{
 };
 
 pub const EMPLOYMENT_TARGET_RATIO: f64 = 0.7;
-pub const IDLE_EMPLOYMENT_FLOOR: f64 = 0.8;
+/// Fraction of work-capable cats the director tops labour up to in `direct_colony`'s
+/// fill pass (Hunt/Scout/Quarry). Job saturation tuning: raised 0.8 → 0.95 so a healthy
+/// ~20-cat colony leaves at most ~1 idle cat instead of ~4. Standing hunt/scout/quarry
+/// fill bypasses per-goal caps, so this floor is the binding employment lever for a
+/// resource-comfortable colony; survival stays intact because water/food goals are still
+/// ranked and granted first in the score pass, and the fill pass only adds food-producing
+/// Hunt while food_r < 1. This deliberately diverges from the legacy TS floor (0.8); the
+/// p3 director fixture was updated to the new deterministic counts to match.
+pub const IDLE_EMPLOYMENT_FLOOR: f64 = 0.95;
 pub const PROJECTION_HORIZON_TICKS: f64 = 6.0;
 pub const HUNT_CANCEL_RATIO: f64 = 1.1;
 pub const STORAGE_RATIO: f64 = 0.9;
@@ -1169,6 +1177,111 @@ mod tests {
         }];
         apply_officer_slot_bonus(&snapshot, &capped_goals, &mut capped);
         assert_eq!(capped[0].count, 1, "no hard-cap headroom → no bonus");
+    }
+
+    // ---- Job saturation (IDLE_EMPLOYMENT_FLOOR raised 0.8 -> 0.95) ----
+
+    /// A resource-comfortable snapshot with a frontier + quarry to absorb fill labour.
+    fn healthy_snapshot(idle: u32, employed: u32) -> LeaderSnapshot {
+        let mut snapshot = fixture()
+            .direct_colony
+            .into_iter()
+            .find(|case| case.name == "round_robin_idle_floor")
+            .expect("round_robin fixture present")
+            .snapshot;
+        snapshot.idle_cats = idle;
+        snapshot.employed_cats = employed;
+        snapshot.workforce = Some(f64::from(idle + employed));
+        snapshot.population = idle + employed;
+        snapshot
+    }
+
+    fn total_slots(plan: &DirectorPlan) -> u32 {
+        plan.slots.iter().map(|slot| slot.count).sum()
+    }
+
+    #[test]
+    fn idle_employment_floor_is_ninety_five_percent() {
+        assert!((IDLE_EMPLOYMENT_FLOOR - 0.95).abs() < 1e-12);
+    }
+
+    #[test]
+    fn healthy_twenty_cat_colony_leaves_at_most_one_idle() {
+        // 20 work-capable cats, all idle, resources comfortable: the fill pass should
+        // saturate labour so at most one cat stands idle (ceil(20 * 0.95) = 19 employed).
+        let snapshot = healthy_snapshot(20, 0);
+        let plan = direct_colony(&snapshot);
+        let employed = total_slots(&plan);
+        assert_eq!(employed, 19, "expected 19 of 20 employed, got {employed}");
+        assert!(20 - employed <= 1, "idle count must be <= 1");
+    }
+
+    #[test]
+    fn healthy_colony_saturation_is_deterministic() {
+        let snapshot = healthy_snapshot(20, 0);
+        assert_plan_eq(
+            &direct_colony(&snapshot),
+            &direct_colony(&snapshot),
+            "healthy saturation",
+        );
+    }
+
+    #[test]
+    fn saturation_respects_already_employed_cats() {
+        // With most cats already busy, the fill pass tops up only the remaining idle
+        // cats toward the floor rather than over-committing beyond the workforce.
+        let snapshot = healthy_snapshot(4, 16);
+        let plan = direct_colony(&snapshot);
+        let newly_employed = total_slots(&plan);
+        assert!(
+            newly_employed <= 4,
+            "must not open more slots than idle cats ({newly_employed} > 4)"
+        );
+        // Floor target is ceil(20 * 0.95) = 19; 16 already busy -> up to 3 more opened.
+        assert!(newly_employed >= 3, "should top up toward the floor");
+    }
+
+    #[test]
+    fn starving_colony_pours_fill_labour_into_food_not_scouting() {
+        // A starving colony must still prioritise food: the fill floor sends the extra
+        // idle cats to Hunt (food) and never staffs workshop/research/smithy/training.
+        let mut snapshot = healthy_snapshot(20, 0);
+        snapshot.starving = Some(true);
+        snapshot.resources.food = 0.0;
+        snapshot.food_drain_per_tick = Some(10.0);
+        snapshot.has_frontier = true;
+        snapshot.has_quarry_site = true;
+        snapshot.workshops_needing_workers = 3;
+        snapshot.research_huts_needing_workers = Some(2);
+        snapshot.smithies_needing_workers = Some(2);
+        snapshot.has_barracks = Some(true);
+
+        let plan = direct_colony(&snapshot);
+        let hunt = plan
+            .slots
+            .iter()
+            .find(|slot| slot.goal == LaborGoalKind::Hunt)
+            .map_or(0, |slot| slot.count);
+        let scout = plan
+            .slots
+            .iter()
+            .find(|slot| slot.goal == LaborGoalKind::Scout)
+            .map_or(0, |slot| slot.count);
+        assert!(
+            hunt >= scout,
+            "food work must dominate: hunt {hunt} < scout {scout}"
+        );
+        for banned in [
+            LaborGoalKind::AssignWorkshop,
+            LaborGoalKind::AssignResearch,
+            LaborGoalKind::AssignSmithy,
+            LaborGoalKind::TrainWarrior,
+        ] {
+            assert!(
+                plan.slots.iter().all(|slot| slot.goal != banned),
+                "starving colony must not open {banned:?} slots"
+            );
+        }
     }
 
     #[test]

@@ -6317,6 +6317,53 @@ mod tests {
     }
 
     #[test]
+    fn founded_colony_keeps_nearly_every_cat_employed() {
+        // Job-saturation tuning: a healthy founded 20-cat colony should leave at most a
+        // couple of work-capable cats idle once the leader has spent its labour.
+        let mut world = new_world(1234);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
+
+        // Steady-state idleness: measure every tick and require idle to be small on the
+        // overwhelming majority. A rare 1-tick blip is allowed — when a synchronized
+        // founding cohort of jobs finishes together the freed cats are re-employed on the
+        // very next tick — but "cats standing idle" must be the exception, not the norm.
+        let mut idle_over_two = 0usize;
+        for step in 1..=60 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None);
+
+            let colony = &world.colonies[0];
+            let busy_ids = active_or_queued_jobs(colony)
+                .iter()
+                .filter_map(|job| job.assigned_cat.as_deref())
+                .collect::<Vec<_>>();
+            let assigned_building_ids = colony
+                .buildings
+                .iter()
+                .filter_map(|building| building.assigned_cat.as_deref())
+                .collect::<Vec<_>>();
+            let idle = alive_cats(&colony.cats)
+                .filter(|cat| {
+                    can_work(get_life_stage(cat.age_hours))
+                        && can_take_new_job_with_busy(cat, &busy_ids)
+                        && !assigned_building_ids.contains(&cat.id.as_str())
+                })
+                .count();
+            if idle > 2 {
+                idle_over_two += 1;
+            }
+        }
+
+        assert!(
+            idle_over_two <= 2,
+            "healthy founded colony had {idle_over_two} ticks with >2 idle cats (expected <= 2)"
+        );
+    }
+
+    #[test]
     fn world_tick_processes_founded_colonies_in_stable_order_without_cross_mutation() {
         let start = 20_000;
         let mut world = new_world(777);

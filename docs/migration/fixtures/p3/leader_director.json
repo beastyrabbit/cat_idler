@@ -488,7 +488,7 @@
 					},
 					{
 						"goal": "hunt",
-						"count": 2,
+						"count": 3,
 						"score": 0.0025000000000000577
 					}
 				]
@@ -746,7 +746,7 @@
 				"slots": [
 					{
 						"goal": "scout",
-						"count": 10,
+						"count": 12,
 						"score": 0.3
 					}
 				]
@@ -1000,7 +1000,7 @@
 				"slots": [
 					{
 						"goal": "hunt",
-						"count": 8,
+						"count": 10,
 						"score": 0.0025000000000000577
 					}
 				]
@@ -1170,12 +1170,12 @@
 				"slots": [
 					{
 						"goal": "scout",
-						"count": 4,
+						"count": 5,
 						"score": 0.3
 					},
 					{
 						"goal": "hunt",
-						"count": 2,
+						"count": 3,
 						"score": 0.0025000000000000577
 					},
 					{
@@ -1233,7 +1233,7 @@
 					},
 					{
 						"goal": "hunt",
-						"count": 3,
+						"count": 4,
 						"score": 0.16000000000000003
 					}
 				]
