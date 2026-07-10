@@ -47,6 +47,9 @@ const DEFAULT_ZOOM: f32 = 0.4;
 // Flat ground layers (terrain + ground markings) sit below the y-sorted world
 // sprites; all strictly below the camera at Z=1000 so nothing is clipped.
 const Z_TERRAIN: f32 = 0.0;
+// Paved roads sit just above the base terrain tile (they replace its look) but
+// below zone overlays and the y-sorted buildings/cats.
+const Z_ROAD: f32 = 0.5;
 const Z_ZONE: f32 = 2.0;
 
 // Standing world sprites (buildings, walls, trees, stockpile piles, cats,
@@ -436,6 +439,9 @@ impl PropArt {
 struct InfraArt {
     palisade: Handle<Image>,
     gate: Handle<Image>,
+    road_cross: Handle<Image>,
+    road_h: Handle<Image>,
+    road_v: Handle<Image>,
 }
 
 impl InfraArt {
@@ -443,7 +449,40 @@ impl InfraArt {
         Self {
             palisade: assets.load("public/images/game/infra/palisade.png"),
             gate: assets.load("public/images/game/infra/gate_open.png"),
+            road_cross: assets.load("public/images/game/infra/road_cross.png"),
+            road_h: assets.load("public/images/game/infra/road_straight_h.png"),
+            road_v: assets.load("public/images/game/infra/road_straight_v.png"),
         }
+    }
+
+    fn road(&self, sprite: RoadSprite) -> Handle<Image> {
+        match sprite {
+            RoadSprite::Cross => self.road_cross.clone(),
+            RoadSprite::StraightH => self.road_h.clone(),
+            RoadSprite::StraightV => self.road_v.clone(),
+        }
+    }
+}
+
+/// The oriented road tile to draw, chosen from a tile's road neighbours.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RoadSprite {
+    Cross,
+    StraightH,
+    StraightV,
+}
+
+/// Pick a road sprite from which orthogonal neighbours are also road: tiles that
+/// connect on both axes (or stand alone) read as a cross; a single-axis run uses
+/// the matching straight. Covers the blueprint's shrine-to-walls cross cleanly.
+fn road_sprite_kind(n: bool, s: bool, e: bool, w: bool) -> RoadSprite {
+    let vertical = n || s;
+    let horizontal = e || w;
+    match (vertical, horizontal) {
+        (true, false) => RoadSprite::StraightV,
+        (false, true) => RoadSprite::StraightH,
+        // Both axes (the cross centre) or a lone tile default to the cross.
+        _ => RoadSprite::Cross,
     }
 }
 
@@ -660,6 +699,9 @@ struct HudFooterText;
 /// Marker for a fog-of-war tile sprite.
 #[derive(Component)]
 struct FogTile;
+/// Marker for a paved-road tile sprite.
+#[derive(Component)]
+struct RoadTile;
 /// Marker for the cursor-following hover tooltip panel.
 #[derive(Component)]
 struct TooltipPanel;
@@ -801,6 +843,7 @@ pub fn run() {
                     poll_ws,
                     ensure_presence,
                     spawn_terrain,
+                    render_roads,
                     render_fog,
                     render_buildings,
                     render_walls,
@@ -1706,6 +1749,46 @@ fn render_fog(
                 ));
             }
         }
+    }
+}
+
+/// Paved stone roads: an oriented road sprite at each `road_tiles` position (the
+/// blueprint lays a cross from the shrine to the four walls; roads.rs paves more
+/// as corridors wear). Re-read each snapshot; ground-level, below buildings/cats.
+fn render_roads(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    art: Option<Res<InfraArt>>,
+    roads: Query<Entity, With<RoadTile>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    for entity in &roads {
+        commands.entity(entity).despawn();
+    }
+    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
+    else {
+        return;
+    };
+    let road_set: HashSet<(i32, i32)> = colony.road_tiles.iter().map(|t| (t.x, t.y)).collect();
+    for &(x, y) in &road_set {
+        let sprite = road_sprite_kind(
+            road_set.contains(&(x, y - 1)),
+            road_set.contains(&(x, y + 1)),
+            road_set.contains(&(x + 1, y)),
+            road_set.contains(&(x - 1, y)),
+        );
+        let p = grid_to_world(x, y);
+        commands.spawn((
+            Sprite {
+                image: art.road(sprite),
+                custom_size: Some(Vec2::splat(TILE)),
+                ..default()
+            },
+            Transform::from_xyz(p.x, p.y, Z_ROAD),
+            RoadTile,
+        ));
     }
 }
 
@@ -3546,6 +3629,36 @@ mod tests {
         let none = revealed_lookup(&[]);
         assert!(none.is_empty());
         assert!(is_fogged(&none, 6, 6));
+    }
+
+    #[test]
+    fn road_sprite_kind_picks_orientation_from_neighbours() {
+        // Cross centre: connected on both axes.
+        assert_eq!(road_sprite_kind(true, true, true, true), RoadSprite::Cross);
+        // Vertical arm: only north/south neighbours.
+        assert_eq!(
+            road_sprite_kind(true, true, false, false),
+            RoadSprite::StraightV
+        );
+        assert_eq!(
+            road_sprite_kind(true, false, false, false),
+            RoadSprite::StraightV
+        );
+        // Horizontal arm: only east/west neighbours.
+        assert_eq!(
+            road_sprite_kind(false, false, true, true),
+            RoadSprite::StraightH
+        );
+        // A lone road tile falls back to the cross.
+        assert_eq!(
+            road_sprite_kind(false, false, false, false),
+            RoadSprite::Cross
+        );
+        // A corner (one vertical + one horizontal) reads as a cross for now.
+        assert_eq!(
+            road_sprite_kind(true, false, true, false),
+            RoadSprite::Cross
+        );
     }
 
     #[test]
