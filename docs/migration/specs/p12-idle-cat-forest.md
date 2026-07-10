@@ -98,6 +98,37 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
 - **Actions:** `designateFarm{rect, crop}` / `clearFarm`. **Tests:** stage progression on the
   accelerated clock; harvest yield; only farmable (flat, claimed, non-water) tiles; determinism.
 
+## P12.6 — Logistics, general/limited stockpiles & shrine offerings (user direction 2026-07-10)
+The refined storage/shrine model. Three linked pieces:
+
+### (a) Cats carry to the closest accepting stockpile
+Delivered by the **haul-fill** card (carrying cats walk to the nearest stockpile whose `accepts`
+contains the carried resource, else the reservoir). Prereq for everything below.
+
+### (b) General vs limited stockpiles + the Logistics Master
+- `Stockpile.accepts` already models it: **general** = all `ResourceKind`s, **limited** = a subset.
+  Needs (client) a designation affordance to pick general vs a specific resource, and (sim) the
+  routing to respect `accepts` (haul-fill does).
+- **Logistics Master = the Steward officer** (P12.2; vision: Steward = hauling + stockpiles). When
+  appointed, Steward **auto-creates + manages** stockpiles: e.g. one general reservoir near the
+  storehouse + per-resource limited piles near the workshops that consume/produce them, and keeps
+  hauling prioritised. Officer-automation of the stockpile category (additive: no Steward ⇒ only
+  player-designated piles, as today).
+
+### (c) Shrine becomes an offering site (not the default reservoir)
+Today (P12.3) the **shrine is the default balancing reservoir**. Change it:
+- Seed the starter village with a **general "storehouse" stockpile** that becomes the balancing
+  reservoir (keeps the `sum(piles)==resources` invariant intact); the **shrine stops being general
+  storage**.
+- Two new jobs: **`carry_offering`** — haul a chosen resource (food/herbs/materials — an "offering")
+  from a stockpile to the shrine; **`perform_offering`** — a cat performs the offering ritual at the
+  shrine, consuming the offered goods and producing **blessings** (`global_upgrade_points`, the god
+  currency). This reuses/extends the existing ritual→blessing path but makes it a visible two-step
+  haul-then-ritual loop at the shrine.
+- Sequencing note: (c) touches the same shrine/deposit/hauling code as **haul-fill**, so do it
+  **after** haul-fill lands (not in parallel). Keep the reservoir invariant; regression-guard so an
+  un-modified colony (no offerings queued) is byte-identical.
+
 ## Cross-cutting
 - **Protocol:** every new action + snapshot field goes in `cat-protocol` (camelCase) and
   `apply_action`/`build_snapshot`; the client (P13) adds designation/assignment UI.
