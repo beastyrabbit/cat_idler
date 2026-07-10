@@ -82,8 +82,13 @@ fn main() {
     eprintln!("[cat-dev] server ready — launching cat-desktop …");
 
     // 4. Run the client in the foreground; it talks to the server over the WS.
+    //    Bevy resolves the AssetPlugin `file_path` (".") against BEVY_ASSET_ROOT, else
+    //    the inherited CARGO_MANIFEST_DIR (which cargo set to crates/cat-dev) — NOT the
+    //    CWD. So point the asset root at the workspace so public/images/* resolves.
     let client_status = Command::new(&client_bin)
         .current_dir(&workspace_root)
+        .env("BEVY_ASSET_ROOT", &workspace_root)
+        .env_remove("CARGO_MANIFEST_DIR")
         .env("CAT_SERVER_URL", format!("ws://127.0.0.1:{port}/ws"))
         .status();
 
