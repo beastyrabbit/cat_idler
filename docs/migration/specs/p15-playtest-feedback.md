@@ -16,8 +16,8 @@ Captured from live `cargo dev` playtesting. Triaged; "already there" notes from 
   behind buildings/trees) + footprint render → a convincing layered top-down. (P14.5 + depth.)
 
 ## Controls (client)
-- **Right-drag = pan map** (currently middle-drag). **Middle-click = select building.**
-  **Left-click = select cat** (already). 
+- **Middle-drag = pan map** (keep as-is). **Right-click = select building.**
+  **Left-click = select cat** (already). (Revised 2026-07-10: middle stays pan, building→right.)
 - **Click on ALL items** — buildings + stockpiles + cats all inspectable (building inspector:
   type/level/complete/production/assigned cat). Today only cats + stockpile-remove.
 
