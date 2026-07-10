@@ -29,7 +29,7 @@ use cat_sim::terrain_gen::{
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Side length (world units) of one flat tile.
 const TILE: f32 = 28.0;
@@ -434,18 +434,26 @@ struct WsConn {
     receiver: WsReceiver,
 }
 
-/// Marker for a spawned cat body sprite (cleared + redrawn each update).
+/// A persistent cat body sprite, keyed by cat id so it survives snapshots and
+/// glides toward its target tile.
 #[derive(Component)]
-struct CatSprite;
-/// Marker for a carried-item glyph.
+struct CatBody(String);
+/// A persistent raider body sprite (its id lives in [`RaiderBodies`]).
 #[derive(Component)]
-struct CatItem;
-/// Marker for the highlight ring under the selected cat.
+struct RaiderBody;
+/// The world-space (x, y) a body is gliding toward (its current target tile).
 #[derive(Component)]
-struct CatHighlight;
-/// Marker for a specialization hat sprite riding on a cat.
+struct MoveTarget(Vec2);
+/// A per-cat overlay (hat / carried item / selection ring) rebuilt each sync;
+/// it tracks its cat's live sprite position each frame via [`FollowCat`].
 #[derive(Component)]
-struct CatHat;
+struct CatOverlay;
+/// Makes an overlay follow a cat body's interpolated position (+ a local offset).
+#[derive(Component)]
+struct FollowCat {
+    id: String,
+    offset: Vec3,
+}
 /// A sheet-animated character (cat or raider): its 8-way facing group and
 /// whether it's moving (walk-cycled) or idle (frame 0).
 #[derive(Component)]
@@ -453,6 +461,13 @@ struct AnimSprite {
     group: usize,
     moving: bool,
 }
+
+/// Live cat body entities keyed by cat id (persist across snapshots).
+#[derive(Resource, Default)]
+struct CatBodies(HashMap<String, Entity>);
+/// Live raider body entities keyed by raider id.
+#[derive(Resource, Default)]
+struct RaiderBodies(HashMap<String, Entity>);
 /// Marker for the cat-inspector panel node (shown only when a cat is selected).
 #[derive(Component)]
 struct InspectorPanel;
@@ -468,9 +483,6 @@ struct BuildingLabel;
 /// Marker for a zone overlay tile.
 #[derive(Component)]
 struct ZoneSprite;
-/// Marker for a raider sprite.
-#[derive(Component)]
-struct RaiderSprite;
 /// Marker for a village wall/gate segment sprite (redrawn when the claimed set
 /// changes).
 #[derive(Component)]
@@ -560,13 +572,6 @@ const STORABLE_KINDS: [ResourceKind; 7] = [
 
 /// Query filter for the per-tick redraw of building marker + label entities.
 type BuildingEntities = Or<(With<BuildingSprite>, With<BuildingLabel>)>;
-/// Query filter for the per-tick redraw of cat body + carried-item + highlight.
-type CatEntities = Or<(
-    With<CatSprite>,
-    With<CatItem>,
-    With<CatHighlight>,
-    With<CatHat>,
-)>;
 /// Query filter for the per-tick redraw of stockpile visuals + highlight.
 type StockpileEntities = Or<(With<StockpileVis>, With<StockpileHighlight>)>;
 /// Change filter for the accept-type picker button.
@@ -635,6 +640,8 @@ pub fn run() {
         .insert_resource(Selection::default())
         .insert_resource(StockpileSelection::default())
         .insert_resource(OfficersUi::default())
+        .insert_resource(CatBodies::default())
+        .insert_resource(RaiderBodies::default())
         .insert_resource(Tools::default())
         .insert_resource(ClearColor(Color::srgb(0.06, 0.09, 0.08)))
         .add_systems(Startup, (setup, connect_ws))
@@ -651,8 +658,10 @@ pub fn run() {
                     render_walls,
                     render_zones,
                     render_stockpiles,
-                    render_cats,
-                    render_raiders,
+                    sync_cats,
+                    sync_raiders,
+                    move_bodies,
+                    follow_overlays,
                     animate_sprites,
                 ),
                 // input, tools + HUD
@@ -1618,121 +1627,232 @@ fn handle_vacate_buttons(
 
 /// Cat sprite footprint (32x64 cell → ~1 tile wide, 2 tiles tall, standing).
 const CAT_SIZE: Vec2 = Vec2::new(TILE * 0.9, TILE * 1.8);
+/// Exponential glide rate for body interpolation (tuned so a 1-tile hop glides
+/// across most of the ~1s snapshot interval rather than snapping and waiting).
+const BODY_GLIDE_RATE: f32 = 4.0;
+/// A body is "moving" (walk-animated) while more than this far from its target.
+const BODY_MOVE_EPS: f32 = 1.5;
+/// Minimum world-space delta to derive a new facing from.
+const FACING_EPS: f32 = TILE * 0.15;
+/// World base position (bottom-anchor point) for a cat/raider on tile `(x, y)`.
+fn body_base(x: i32, y: i32) -> Vec2 {
+    let p = grid_to_world(x, y);
+    Vec2::new(p.x, p.y - TILE * 0.5)
+}
 
-fn render_cats(
+/// Reconcile persistent cat bodies with the snapshot: update each living cat's
+/// glide target + facing (spawning new cats, despawning gone/dead ones), then
+/// rebuild the follow-along overlays (hat / carried item / selection ring).
+fn sync_cats(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
     selection: Res<Selection>,
     sheets: Option<Res<SpriteSheets>>,
-    existing: Query<Entity, CatEntities>,
+    mut bodies: ResMut<CatBodies>,
+    mut cats: Query<(&Transform, &mut MoveTarget, &mut AnimSprite), With<CatBody>>,
+    overlays: Query<Entity, With<CatOverlay>>,
 ) {
-    // Redraw when either the world or the selection changes.
     if !latest.is_changed() && !selection.is_changed() {
         return;
-    }
-    for entity in &existing {
-        commands.entity(entity).despawn();
     }
     let (Some(colony), Some(sheets)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), sheets)
     else {
         return;
     };
+    // Overlays are cheap and their state (hat/carry/selection) changes; rebuild.
+    for entity in &overlays {
+        commands.entity(entity).despawn();
+    }
+
+    let mut live = HashSet::new();
     for cat in &colony.cats {
         if cat.death_time.is_some() {
             continue;
         }
-        let p = grid_to_world(cat.position.x, cat.position.y);
-        // Heading from destination; idle cats default to facing south.
-        let (dx, dy) = cat
-            .destination
-            .map_or((0, 0), |d| (d.x - cat.position.x, d.y - cat.position.y));
-        let moving = (dx, dy) != (0, 0);
-        let group = direction_group(dx, dy);
+        live.insert(cat.id.clone());
+        let target = body_base(cat.position.x, cat.position.y);
 
-        if selection.selected.as_deref() == Some(cat.id.as_str()) {
-            commands.spawn((
-                Sprite::from_color(Color::srgb(1.0, 0.93, 0.30), Vec2::splat(TILE * 0.7)),
-                Transform::from_xyz(p.x, p.y - TILE * 0.4, Z_CAT - 0.5),
-                CatHighlight,
-            ));
+        if let Some(&entity) = bodies.0.get(&cat.id) {
+            if let Ok((transform, mut move_target, mut anim)) = cats.get_mut(entity) {
+                // Face the direction of travel; keep the last facing when idle.
+                if let Some(group) = facing_from_delta(target - transform.translation.truncate()) {
+                    anim.group = group;
+                }
+                move_target.0 = target;
+            }
+        } else {
+            let group = cat
+                .destination
+                .and_then(|d| facing_from_delta(body_base(d.x, d.y) - target))
+                .unwrap_or(0);
+            let entity = commands
+                .spawn((
+                    Sprite {
+                        image: sheets.cat.clone(),
+                        texture_atlas: Some(TextureAtlas {
+                            layout: sheets.layout.clone(),
+                            index: atlas_index(group, 0),
+                        }),
+                        custom_size: Some(CAT_SIZE),
+                        ..default()
+                    },
+                    Anchor::BOTTOM_CENTER,
+                    Transform::from_xyz(target.x, target.y, Z_CAT),
+                    CatBody(cat.id.clone()),
+                    MoveTarget(target),
+                    AnimSprite {
+                        group,
+                        moving: false,
+                    },
+                ))
+                .id();
+            bodies.0.insert(cat.id.clone(), entity);
         }
-        // Bottom-anchored so the cat stands on its tile.
-        let base = p.y - TILE * 0.5;
-        commands.spawn((
-            Sprite {
-                image: sheets.cat.clone(),
-                texture_atlas: Some(TextureAtlas {
-                    layout: sheets.layout.clone(),
-                    index: atlas_index(group, 0),
-                }),
-                custom_size: Some(CAT_SIZE),
-                ..default()
-            },
-            Anchor::BOTTOM_CENTER,
-            Transform::from_xyz(p.x, base, Z_CAT),
-            CatSprite,
-            AnimSprite { group, moving },
-        ));
+
+        // Overlays follow the (interpolated) body each frame via FollowCat.
+        if selection.selected.as_deref() == Some(cat.id.as_str()) {
+            spawn_cat_overlay(
+                &mut commands,
+                &cat.id,
+                Vec3::new(0.0, CAT_SIZE.y * 0.35, Z_CAT - 0.5),
+                Sprite::from_color(Color::srgb(1.0, 0.93, 0.30), Vec2::splat(TILE * 0.7)),
+            );
+        }
         if let Some(spec) = cat.specialization {
-            commands.spawn((
+            spawn_cat_overlay(
+                &mut commands,
+                &cat.id,
+                Vec3::new(0.0, CAT_SIZE.y * 0.78, Z_CAT + 0.1),
                 Sprite {
                     image: sheets.hat(spec),
                     custom_size: Some(Vec2::splat(TILE * 0.55)),
                     ..default()
                 },
-                Transform::from_xyz(p.x, base + CAT_SIZE.y * 0.78, Z_CAT + 0.1),
-                CatHat,
-            ));
+            );
         }
         if let Some(carrying) = &cat.carrying {
-            commands.spawn((
+            spawn_cat_overlay(
+                &mut commands,
+                &cat.id,
+                Vec3::new(TILE * 0.3, CAT_SIZE.y * 0.55, Z_CAT_ITEM),
                 Sprite::from_color(carrying_color(carrying.kind), Vec2::splat(TILE * 0.28)),
-                Transform::from_xyz(p.x + TILE * 0.3, base + CAT_SIZE.y * 0.55, Z_CAT_ITEM),
-                CatItem,
-            ));
+            );
         }
     }
+
+    // Despawn bodies for cats that died or vanished.
+    bodies.0.retain(|id, entity| {
+        if live.contains(id) {
+            true
+        } else {
+            commands.entity(*entity).despawn();
+            false
+        }
+    });
 }
 
-fn render_raiders(
+fn spawn_cat_overlay(commands: &mut Commands, id: &str, offset: Vec3, sprite: Sprite) {
+    commands.spawn((
+        sprite,
+        Transform::from_translation(offset),
+        CatOverlay,
+        FollowCat {
+            id: id.to_string(),
+            offset,
+        },
+    ));
+}
+
+/// Reconcile persistent raider bodies (same glide treatment as cats).
+fn sync_raiders(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
     sheets: Option<Res<SpriteSheets>>,
-    existing: Query<Entity, With<RaiderSprite>>,
+    mut bodies: ResMut<RaiderBodies>,
+    mut raiders: Query<(&Transform, &mut MoveTarget, &mut AnimSprite), With<RaiderBody>>,
 ) {
     if !latest.is_changed() {
         return;
-    }
-    for entity in &existing {
-        commands.entity(entity).despawn();
     }
     let (Some(colony), Some(sheets)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), sheets)
     else {
         return;
     };
+    let mut live = HashSet::new();
     for raider in &colony.raiders {
-        let p = grid_to_world(raider.position.x, raider.position.y);
+        live.insert(raider.id.clone());
+        let target = body_base(raider.position.x, raider.position.y);
         // Raiders march on the village — face the anchor.
-        let group = direction_group(
-            colony.anchor.x - raider.position.x,
-            colony.anchor.y - raider.position.y,
-        );
+        let group =
+            facing_from_delta(body_base(colony.anchor.x, colony.anchor.y) - target).unwrap_or(0);
         let moving = matches!(raider.status, RaiderStatus::Advancing);
-        commands.spawn((
-            Sprite {
-                image: sheets.raider.clone(),
-                texture_atlas: Some(TextureAtlas {
-                    layout: sheets.layout.clone(),
-                    index: atlas_index(group, 0),
-                }),
-                custom_size: Some(CAT_SIZE),
-                ..default()
-            },
-            Anchor::BOTTOM_CENTER,
-            Transform::from_xyz(p.x, p.y - TILE * 0.5, Z_RAIDER),
-            RaiderSprite,
-            AnimSprite { group, moving },
-        ));
+
+        if let Some(&entity) = bodies.0.get(&raider.id) {
+            if let Ok((_, mut move_target, mut anim)) = raiders.get_mut(entity) {
+                anim.group = group;
+                anim.moving = moving;
+                move_target.0 = target;
+            }
+        } else {
+            let entity = commands
+                .spawn((
+                    Sprite {
+                        image: sheets.raider.clone(),
+                        texture_atlas: Some(TextureAtlas {
+                            layout: sheets.layout.clone(),
+                            index: atlas_index(group, 0),
+                        }),
+                        custom_size: Some(CAT_SIZE),
+                        ..default()
+                    },
+                    Anchor::BOTTOM_CENTER,
+                    Transform::from_xyz(target.x, target.y, Z_RAIDER),
+                    RaiderBody,
+                    MoveTarget(target),
+                    AnimSprite { group, moving },
+                ))
+                .id();
+            bodies.0.insert(raider.id.clone(), entity);
+        }
+    }
+    bodies.0.retain(|id, entity| {
+        if live.contains(id) {
+            true
+        } else {
+            commands.entity(*entity).despawn();
+            false
+        }
+    });
+}
+
+/// Glide every persistent body toward its target each frame (exponential
+/// smoothing), and flag it moving while it's still translating.
+fn move_bodies(time: Res<Time>, mut bodies: Query<(&mut Transform, &MoveTarget, &mut AnimSprite)>) {
+    let dt = time.delta_secs();
+    for (mut transform, target, mut anim) in &mut bodies {
+        let current = transform.translation.truncate();
+        let next = approach(current, target.0, BODY_GLIDE_RATE, dt);
+        transform.translation.x = next.x;
+        transform.translation.y = next.y;
+        anim.moving = is_moving(current, target.0, BODY_MOVE_EPS);
+    }
+}
+
+/// Move each cat overlay onto its cat's current (interpolated) position.
+fn follow_overlays(
+    bodies: Query<(&CatBody, &Transform), Without<FollowCat>>,
+    mut overlays: Query<(&FollowCat, &mut Transform)>,
+) {
+    let positions: HashMap<&str, Vec2> = bodies
+        .iter()
+        .map(|(body, transform)| (body.0.as_str(), transform.translation.truncate()))
+        .collect();
+    for (follow, mut transform) in &mut overlays {
+        if let Some(pos) = positions.get(follow.id.as_str()) {
+            transform.translation.x = pos.x + follow.offset.x;
+            transform.translation.y = pos.y + follow.offset.y;
+            transform.translation.z = follow.offset.z;
+        }
     }
 }
 
@@ -2549,37 +2669,55 @@ fn building_label(building: BuildingType) -> &'static str {
     }
 }
 
-/// Direction group index (0..8) for a tile-space heading, ordered to match the
-/// sheet: S, SW, W, NW, N, NE, E, SE (with +y = south under the flat
-/// projection). Picks the nearest of the 8 compass directions; a zero heading
-/// defaults to S. `frame` within a group gives the atlas index.
-fn direction_group(dx: i32, dy: i32) -> usize {
-    const DIRS: [(i32, i32); 8] = [
-        (0, 1),   // 0 S
-        (-1, 1),  // 1 SW
-        (-1, 0),  // 2 W
-        (-1, -1), // 3 NW
-        (0, -1),  // 4 N
-        (1, -1),  // 5 NE
-        (1, 0),   // 6 E
-        (1, 1),   // 7 SE
+/// Direction group index (0..8) for a heading in tile space (+y = south),
+/// ordered to match the sheet: S, SW, W, NW, N, NE, E, SE. Picks the nearest of
+/// the 8 compass directions; a zero heading defaults to S.
+fn direction_group_f(dx: f32, dy: f32) -> usize {
+    const DIRS: [(f32, f32); 8] = [
+        (0.0, 1.0),   // 0 S
+        (-1.0, 1.0),  // 1 SW
+        (-1.0, 0.0),  // 2 W
+        (-1.0, -1.0), // 3 NW
+        (0.0, -1.0),  // 4 N
+        (1.0, -1.0),  // 5 NE
+        (1.0, 0.0),   // 6 E
+        (1.0, 1.0),   // 7 SE
     ];
-    if dx == 0 && dy == 0 {
+    if dx == 0.0 && dy == 0.0 {
         return 0;
     }
-    let (fx, fy) = (dx as f32, dy as f32);
     let mut best = 0;
     let mut best_dot = f32::MIN;
     for (i, (ux, uy)) in DIRS.iter().enumerate() {
         // Normalise so diagonals compete fairly with the axis directions.
-        let len = ((ux * ux + uy * uy) as f32).sqrt();
-        let dot = (fx * *ux as f32 + fy * *uy as f32) / len;
+        let len = (ux * ux + uy * uy).sqrt();
+        let dot = (dx * ux + dy * uy) / len;
         if dot > best_dot {
             best_dot = dot;
             best = i;
         }
     }
     best
+}
+
+/// Facing group from a *world-space* travel delta (north is up = +world y, so
+/// tile-south = -world y). `None` when the delta is too small to have a facing.
+fn facing_from_delta(delta: Vec2) -> Option<usize> {
+    if delta.length_squared() < FACING_EPS * FACING_EPS {
+        return None;
+    }
+    Some(direction_group_f(delta.x, -delta.y))
+}
+
+/// Exponential-smoothing step of `current` toward `target` over `dt` at `rate`.
+fn approach(current: Vec2, target: Vec2, rate: f32, dt: f32) -> Vec2 {
+    let t = (1.0 - (-rate * dt).exp()).clamp(0.0, 1.0);
+    current.lerp(target, t)
+}
+
+/// Whether a body is still translating (beyond `eps` world units from target).
+fn is_moving(current: Vec2, target: Vec2, eps: f32) -> bool {
+    current.distance_squared(target) > eps * eps
 }
 
 /// Atlas cell index for a direction group + walk frame (4 frames per group).
@@ -2642,18 +2780,44 @@ mod tests {
     #[test]
     fn direction_group_maps_all_eight_sectors() {
         // Sheet order: S, SW, W, NW, N, NE, E, SE (with +y = south).
-        assert_eq!(direction_group(0, 1), 0); // S
-        assert_eq!(direction_group(-1, 1), 1); // SW
-        assert_eq!(direction_group(-1, 0), 2); // W
-        assert_eq!(direction_group(-1, -1), 3); // NW
-        assert_eq!(direction_group(0, -1), 4); // N
-        assert_eq!(direction_group(1, -1), 5); // NE
-        assert_eq!(direction_group(1, 0), 6); // E
-        assert_eq!(direction_group(1, 1), 7); // SE
+        assert_eq!(direction_group_f(0.0, 1.0), 0); // S
+        assert_eq!(direction_group_f(-1.0, 1.0), 1); // SW
+        assert_eq!(direction_group_f(-1.0, 0.0), 2); // W
+        assert_eq!(direction_group_f(-1.0, -1.0), 3); // NW
+        assert_eq!(direction_group_f(0.0, -1.0), 4); // N
+        assert_eq!(direction_group_f(1.0, -1.0), 5); // NE
+        assert_eq!(direction_group_f(1.0, 0.0), 6); // E
+        assert_eq!(direction_group_f(1.0, 1.0), 7); // SE
         // Zero heading defaults to S; non-unit headings snap to the nearest.
-        assert_eq!(direction_group(0, 0), 0);
-        assert_eq!(direction_group(5, 1), 6); // mostly east -> E
-        assert_eq!(direction_group(3, 4), 7); // down-right -> SE
+        assert_eq!(direction_group_f(0.0, 0.0), 0);
+        assert_eq!(direction_group_f(5.0, 1.0), 6); // mostly east -> E
+        assert_eq!(direction_group_f(3.0, 4.0), 7); // down-right -> SE
+    }
+
+    #[test]
+    fn facing_from_world_delta_flips_north_south() {
+        // World +y is north (up), so a downward-on-screen move (-y) faces south.
+        assert_eq!(facing_from_delta(Vec2::new(0.0, -TILE)), Some(0)); // S
+        assert_eq!(facing_from_delta(Vec2::new(0.0, TILE)), Some(4)); // N
+        assert_eq!(facing_from_delta(Vec2::new(TILE, 0.0)), Some(6)); // E
+        assert_eq!(facing_from_delta(Vec2::new(-TILE, 0.0)), Some(2)); // W
+        // A tiny jitter has no facing (keep the last).
+        assert_eq!(facing_from_delta(Vec2::splat(0.01)), None);
+    }
+
+    #[test]
+    fn approach_and_is_moving() {
+        let a = Vec2::ZERO;
+        let b = Vec2::new(100.0, 0.0);
+        // A step moves partway (never overshoots) and is still moving.
+        let mid = approach(a, b, 8.0, 1.0 / 60.0);
+        assert!(mid.x > 0.0 && mid.x < 100.0);
+        assert!(is_moving(a, b, BODY_MOVE_EPS));
+        // At the target it's done and no longer moving.
+        assert!(!is_moving(b, b, BODY_MOVE_EPS));
+        // A very long step converges essentially onto the target.
+        let far = approach(a, b, 8.0, 10.0);
+        assert!((far - b).length() < 0.5);
     }
 
     #[test]
