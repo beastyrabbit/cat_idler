@@ -20,8 +20,8 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use cat_protocol::{
     BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction, ColonySnapshot, GateSide,
-    JobKind, OfficerRole, ResourceAmounts, ResourceKind, Specialization, StockLedgerSnapshot,
-    StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
+    JobKind, OfficerRole, RaiderStatus, ResourceAmounts, ResourceKind, Specialization,
+    StockLedgerSnapshot, StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
 };
 use cat_sim::terrain_gen::{
     BiomeRole, DecorationRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
@@ -373,6 +373,49 @@ impl InfraArt {
     }
 }
 
+/// Animated character sheets (cats + raiders) and specialization hats. The
+/// sheets are 8 direction groups x 4 walk frames in 32x64 cells, one row of 32.
+#[derive(Resource, Clone)]
+struct SpriteSheets {
+    cat: Handle<Image>,
+    raider: Handle<Image>,
+    layout: Handle<TextureAtlasLayout>,
+    hat_hunter: Handle<Image>,
+    hat_architect: Handle<Image>,
+    hat_ritualist: Handle<Image>,
+    hat_warrior: Handle<Image>,
+}
+
+impl SpriteSheets {
+    fn load(assets: &AssetServer, layouts: &mut Assets<TextureAtlasLayout>) -> Self {
+        let layout = layouts.add(TextureAtlasLayout::from_grid(
+            UVec2::new(32, 64),
+            32,
+            1,
+            None,
+            None,
+        ));
+        Self {
+            cat: assets.load("public/images/cats/cat-sheet.png"),
+            raider: assets.load("public/images/cats/raider-sheet.png"),
+            layout,
+            hat_hunter: assets.load("public/images/cats/hat-hunter.png"),
+            hat_architect: assets.load("public/images/cats/hat-architect.png"),
+            hat_ritualist: assets.load("public/images/cats/hat-ritualist.png"),
+            hat_warrior: assets.load("public/images/cats/hat-warrior.png"),
+        }
+    }
+
+    fn hat(&self, spec: Specialization) -> Handle<Image> {
+        match spec {
+            Specialization::Hunter => self.hat_hunter.clone(),
+            Specialization::Architect => self.hat_architect.clone(),
+            Specialization::Ritualist => self.hat_ritualist.clone(),
+            Specialization::Warrior => self.hat_warrior.clone(),
+        }
+    }
+}
+
 /// The prop sprite a stockpile's dominant resource renders as.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PropTexture {
@@ -400,6 +443,16 @@ struct CatItem;
 /// Marker for the highlight ring under the selected cat.
 #[derive(Component)]
 struct CatHighlight;
+/// Marker for a specialization hat sprite riding on a cat.
+#[derive(Component)]
+struct CatHat;
+/// A sheet-animated character (cat or raider): its 8-way facing group and
+/// whether it's moving (walk-cycled) or idle (frame 0).
+#[derive(Component)]
+struct AnimSprite {
+    group: usize,
+    moving: bool,
+}
 /// Marker for the cat-inspector panel node (shown only when a cat is selected).
 #[derive(Component)]
 struct InspectorPanel;
@@ -508,7 +561,12 @@ const STORABLE_KINDS: [ResourceKind; 7] = [
 /// Query filter for the per-tick redraw of building marker + label entities.
 type BuildingEntities = Or<(With<BuildingSprite>, With<BuildingLabel>)>;
 /// Query filter for the per-tick redraw of cat body + carried-item + highlight.
-type CatEntities = Or<(With<CatSprite>, With<CatItem>, With<CatHighlight>)>;
+type CatEntities = Or<(
+    With<CatSprite>,
+    With<CatItem>,
+    With<CatHighlight>,
+    With<CatHat>,
+)>;
 /// Query filter for the per-tick redraw of stockpile visuals + highlight.
 type StockpileEntities = Or<(With<StockpileVis>, With<StockpileHighlight>)>;
 /// Change filter for the accept-type picker button.
@@ -595,6 +653,7 @@ pub fn run() {
                     render_stockpiles,
                     render_cats,
                     render_raiders,
+                    animate_sprites,
                 ),
                 // input, tools + HUD
                 (
@@ -621,11 +680,16 @@ pub fn run() {
         .run();
 }
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+) {
     commands.insert_resource(TerrainArt::load(&asset_server));
     commands.insert_resource(BuildingArt::load(&asset_server));
     commands.insert_resource(PropArt::load(&asset_server));
     commands.insert_resource(InfraArt::load(&asset_server));
+    commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
 
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
@@ -1552,10 +1616,14 @@ fn handle_vacate_buttons(
     }
 }
 
+/// Cat sprite footprint (32x64 cell → ~1 tile wide, 2 tiles tall, standing).
+const CAT_SIZE: Vec2 = Vec2::new(TILE * 0.9, TILE * 1.8);
+
 fn render_cats(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
     selection: Res<Selection>,
+    sheets: Option<Res<SpriteSheets>>,
     existing: Query<Entity, CatEntities>,
 ) {
     // Redraw when either the world or the selection changes.
@@ -1565,7 +1633,8 @@ fn render_cats(
     for entity in &existing {
         commands.entity(entity).despawn();
     }
-    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+    let (Some(colony), Some(sheets)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), sheets)
+    else {
         return;
     };
     for cat in &colony.cats {
@@ -1573,23 +1642,52 @@ fn render_cats(
             continue;
         }
         let p = grid_to_world(cat.position.x, cat.position.y);
+        // Heading from destination; idle cats default to facing south.
+        let (dx, dy) = cat
+            .destination
+            .map_or((0, 0), |d| (d.x - cat.position.x, d.y - cat.position.y));
+        let moving = (dx, dy) != (0, 0);
+        let group = direction_group(dx, dy);
+
         if selection.selected.as_deref() == Some(cat.id.as_str()) {
-            // Highlight ring behind the selected cat.
             commands.spawn((
-                Sprite::from_color(Color::srgb(1.0, 0.93, 0.30), Vec2::splat(TILE * 0.78)),
-                Transform::from_xyz(p.x, p.y, Z_CAT - 0.5),
+                Sprite::from_color(Color::srgb(1.0, 0.93, 0.30), Vec2::splat(TILE * 0.7)),
+                Transform::from_xyz(p.x, p.y - TILE * 0.4, Z_CAT - 0.5),
                 CatHighlight,
             ));
         }
+        // Bottom-anchored so the cat stands on its tile.
+        let base = p.y - TILE * 0.5;
         commands.spawn((
-            Sprite::from_color(cat_color(cat.specialization), Vec2::splat(TILE * 0.5)),
-            Transform::from_xyz(p.x, p.y, Z_CAT),
+            Sprite {
+                image: sheets.cat.clone(),
+                texture_atlas: Some(TextureAtlas {
+                    layout: sheets.layout.clone(),
+                    index: atlas_index(group, 0),
+                }),
+                custom_size: Some(CAT_SIZE),
+                ..default()
+            },
+            Anchor::BOTTOM_CENTER,
+            Transform::from_xyz(p.x, base, Z_CAT),
             CatSprite,
+            AnimSprite { group, moving },
         ));
+        if let Some(spec) = cat.specialization {
+            commands.spawn((
+                Sprite {
+                    image: sheets.hat(spec),
+                    custom_size: Some(Vec2::splat(TILE * 0.55)),
+                    ..default()
+                },
+                Transform::from_xyz(p.x, base + CAT_SIZE.y * 0.78, Z_CAT + 0.1),
+                CatHat,
+            ));
+        }
         if let Some(carrying) = &cat.carrying {
             commands.spawn((
-                Sprite::from_color(carrying_color(carrying.kind), Vec2::splat(TILE * 0.22)),
-                Transform::from_xyz(p.x + TILE * 0.22, p.y + TILE * 0.22, Z_CAT_ITEM),
+                Sprite::from_color(carrying_color(carrying.kind), Vec2::splat(TILE * 0.28)),
+                Transform::from_xyz(p.x + TILE * 0.3, base + CAT_SIZE.y * 0.55, Z_CAT_ITEM),
                 CatItem,
             ));
         }
@@ -1599,6 +1697,7 @@ fn render_cats(
 fn render_raiders(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
+    sheets: Option<Res<SpriteSheets>>,
     existing: Query<Entity, With<RaiderSprite>>,
 ) {
     if !latest.is_changed() {
@@ -1607,16 +1706,44 @@ fn render_raiders(
     for entity in &existing {
         commands.entity(entity).despawn();
     }
-    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+    let (Some(colony), Some(sheets)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), sheets)
+    else {
         return;
     };
     for raider in &colony.raiders {
         let p = grid_to_world(raider.position.x, raider.position.y);
+        // Raiders march on the village — face the anchor.
+        let group = direction_group(
+            colony.anchor.x - raider.position.x,
+            colony.anchor.y - raider.position.y,
+        );
+        let moving = matches!(raider.status, RaiderStatus::Advancing);
         commands.spawn((
-            Sprite::from_color(Color::srgb(0.85, 0.15, 0.15), Vec2::splat(TILE * 0.55)),
-            Transform::from_xyz(p.x, p.y, Z_RAIDER),
+            Sprite {
+                image: sheets.raider.clone(),
+                texture_atlas: Some(TextureAtlas {
+                    layout: sheets.layout.clone(),
+                    index: atlas_index(group, 0),
+                }),
+                custom_size: Some(CAT_SIZE),
+                ..default()
+            },
+            Anchor::BOTTOM_CENTER,
+            Transform::from_xyz(p.x, p.y - TILE * 0.5, Z_RAIDER),
             RaiderSprite,
+            AnimSprite { group, moving },
         ));
+    }
+}
+
+/// Cycle the walk frames of moving sheet-animated sprites (~8fps); idle sprites
+/// hold frame 0. Client-only eye-candy — not synced to the sim.
+fn animate_sprites(time: Res<Time>, mut sprites: Query<(&AnimSprite, &mut Sprite)>) {
+    let frame = (time.elapsed_secs() * 8.0) as usize % 4;
+    for (anim, mut sprite) in &mut sprites {
+        if let Some(atlas) = sprite.texture_atlas.as_mut() {
+            atlas.index = atlas_index(anim.group, if anim.moving { frame } else { 0 });
+        }
     }
 }
 
@@ -2422,14 +2549,42 @@ fn building_label(building: BuildingType) -> &'static str {
     }
 }
 
-fn cat_color(spec: Option<Specialization>) -> Color {
-    match spec {
-        Some(Specialization::Hunter) => Color::srgb(1.0, 0.80, 0.55),
-        Some(Specialization::Architect) => Color::srgb(1.0, 0.90, 0.55),
-        Some(Specialization::Ritualist) => Color::srgb(0.88, 0.70, 1.0),
-        Some(Specialization::Warrior) => Color::srgb(1.0, 0.55, 0.55),
-        None => Color::srgb(0.92, 0.92, 0.86),
+/// Direction group index (0..8) for a tile-space heading, ordered to match the
+/// sheet: S, SW, W, NW, N, NE, E, SE (with +y = south under the flat
+/// projection). Picks the nearest of the 8 compass directions; a zero heading
+/// defaults to S. `frame` within a group gives the atlas index.
+fn direction_group(dx: i32, dy: i32) -> usize {
+    const DIRS: [(i32, i32); 8] = [
+        (0, 1),   // 0 S
+        (-1, 1),  // 1 SW
+        (-1, 0),  // 2 W
+        (-1, -1), // 3 NW
+        (0, -1),  // 4 N
+        (1, -1),  // 5 NE
+        (1, 0),   // 6 E
+        (1, 1),   // 7 SE
+    ];
+    if dx == 0 && dy == 0 {
+        return 0;
     }
+    let (fx, fy) = (dx as f32, dy as f32);
+    let mut best = 0;
+    let mut best_dot = f32::MIN;
+    for (i, (ux, uy)) in DIRS.iter().enumerate() {
+        // Normalise so diagonals compete fairly with the axis directions.
+        let len = ((ux * ux + uy * uy) as f32).sqrt();
+        let dot = (fx * *ux as f32 + fy * *uy as f32) / len;
+        if dot > best_dot {
+            best_dot = dot;
+            best = i;
+        }
+    }
+    best
+}
+
+/// Atlas cell index for a direction group + walk frame (4 frames per group).
+fn atlas_index(group: usize, frame: usize) -> usize {
+    group * 4 + frame
 }
 
 fn carrying_color(kind: CarryingKind) -> Color {
@@ -2485,11 +2640,28 @@ mod tests {
     }
 
     #[test]
-    fn cat_colors_are_distinct() {
-        assert_ne!(
-            cat_color(Some(Specialization::Hunter)),
-            cat_color(Some(Specialization::Warrior))
-        );
+    fn direction_group_maps_all_eight_sectors() {
+        // Sheet order: S, SW, W, NW, N, NE, E, SE (with +y = south).
+        assert_eq!(direction_group(0, 1), 0); // S
+        assert_eq!(direction_group(-1, 1), 1); // SW
+        assert_eq!(direction_group(-1, 0), 2); // W
+        assert_eq!(direction_group(-1, -1), 3); // NW
+        assert_eq!(direction_group(0, -1), 4); // N
+        assert_eq!(direction_group(1, -1), 5); // NE
+        assert_eq!(direction_group(1, 0), 6); // E
+        assert_eq!(direction_group(1, 1), 7); // SE
+        // Zero heading defaults to S; non-unit headings snap to the nearest.
+        assert_eq!(direction_group(0, 0), 0);
+        assert_eq!(direction_group(5, 1), 6); // mostly east -> E
+        assert_eq!(direction_group(3, 4), 7); // down-right -> SE
+    }
+
+    #[test]
+    fn atlas_index_is_group_times_four_plus_frame() {
+        assert_eq!(atlas_index(0, 0), 0);
+        assert_eq!(atlas_index(0, 3), 3);
+        assert_eq!(atlas_index(1, 0), 4);
+        assert_eq!(atlas_index(7, 3), 31); // last cell of a 32-cell sheet
     }
 
     fn amounts(food: f64, materials: f64, refined: f64) -> ResourceAmounts {
