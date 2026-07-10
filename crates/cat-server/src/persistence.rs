@@ -123,7 +123,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
 
         CREATE TABLE IF NOT EXISTS buildings (
-            id TEXT PRIMARY KEY,
+            id TEXT NOT NULL,
             colonyId TEXT NOT NULL,
             type TEXT NOT NULL,
             level INTEGER NOT NULL,
@@ -131,7 +131,10 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             constructionProgress REAL NOT NULL,
             productionProgress REAL NOT NULL DEFAULT 0,
             isComplete INTEGER NOT NULL DEFAULT 0,
-            assignedCatId TEXT
+            assignedCatId TEXT,
+            -- Buildings are colony-scoped: type-derived ids (e.g. "shrine") are
+            -- only unique within a colony, so the key is (colonyId, id).
+            PRIMARY KEY (colonyId, id)
         );
 
         CREATE TABLE IF NOT EXISTS world_tiles (

@@ -43,7 +43,7 @@ const STARTER_COLONY_SEED: u32 = 1;
 const SNAPSHOT_CHANNEL_CAPACITY: usize = 32;
 const ACTION_LIMIT_MAX: usize = 30;
 const ACTION_LIMIT_WINDOW_MS: i64 = 10_000;
-const SAVE_EVERY_TICKS: u64 = 30;
+const SAVE_EVERY_TICKS: u64 = 5;
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -173,10 +173,34 @@ fn spawn_tick_task(state: AppState) {
 }
 
 async fn shutdown_signal(state: AppState) {
-    if let Err(err) = tokio::signal::ctrl_c().await {
-        warn!(%err, "failed to install shutdown signal handler");
-        return;
+    // Save on Ctrl-C (SIGINT) *and* SIGTERM (kill / systemd / docker stop) so a
+    // just-founded village is never lost on a normal shutdown.
+    let ctrl_c = async {
+        if let Err(err) = tokio::signal::ctrl_c().await {
+            warn!(%err, "failed to install ctrl_c handler");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(err) => {
+                warn!(%err, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
     }
+
     if let Err(err) = save_current_world(&state).await {
         error!(%err, "shutdown world save failed");
     }

@@ -505,7 +505,7 @@ persona: developer   depends_on:[P8.3]   scope: SQLite (rusqlite) save/load Worl
 ### P8.gate P8 integration   [status: done (LIVE: boot+/health, WS snapshot push, foundVillage grows colonies to 2, load_world reloads; save-timing gap filed as followup)]
 persona: qa/orchestrator   scope: server boots, ticks, a client connects, founds a village, submits actions, receives snapshots; persistence round-trips.
 
-### P8.followup persistence save timing   [status: todo]
+### P8.followup persistence save timing   [status: done]
 note: P8 gate proved live WS transport + actions + load_world work, BUT a colony founded
 just before an abrupt kill did NOT survive reboot (loaded the starter colony-1 only). The
 save/load mechanism is correct (unit test passes) + periodic save works; the gap is
