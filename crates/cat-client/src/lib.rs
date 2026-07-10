@@ -278,8 +278,12 @@ struct TerrainArt {
     grass: Handle<Image>,
     grass_var: Handle<Image>,
     dirt: Handle<Image>,
+    farmland: Handle<Image>,
     rocky: Handle<Image>,
-    highland: Handle<Image>,
+    sand: Handle<Image>,
+    flowers_red: Handle<Image>,
+    flowers_white: Handle<Image>,
+    flowers_blue: Handle<Image>,
     water: Handle<Image>,
     water_edge: Handle<Image>,
     tree_oak: Handle<Image>,
@@ -293,8 +297,13 @@ impl TerrainArt {
             grass: assets.load("public/images/game/terrain/grass.png"),
             grass_var: assets.load("public/images/game/terrain/grass_var.png"),
             dirt: assets.load("public/images/game/terrain/dirt.png"),
+            farmland: assets.load("public/images/game/terrain/farmland.png"),
             rocky: assets.load("public/images/game/terrain/rocky.png"),
-            highland: assets.load("public/images/game/terrain/highland.png"),
+            // The `highland` sheet tile is tan/sand — used for sandy biomes.
+            sand: assets.load("public/images/game/terrain/highland.png"),
+            flowers_red: assets.load("public/images/game/terrain/flowers_red.png"),
+            flowers_white: assets.load("public/images/game/terrain/flowers_white.png"),
+            flowers_blue: assets.load("public/images/game/terrain/flowers_blue.png"),
             water: assets.load("public/images/game/terrain/water.png"),
             water_edge: assets.load("public/images/game/terrain/water_edge.png"),
             tree_oak: assets.load("public/images/game/nature/tree_oak.png"),
@@ -308,8 +317,12 @@ impl TerrainArt {
             GroundTexture::Grass => self.grass.clone(),
             GroundTexture::GrassVar => self.grass_var.clone(),
             GroundTexture::Dirt => self.dirt.clone(),
+            GroundTexture::Farmland => self.farmland.clone(),
             GroundTexture::Rocky => self.rocky.clone(),
-            GroundTexture::Highland => self.highland.clone(),
+            GroundTexture::Sand => self.sand.clone(),
+            GroundTexture::FlowersRed => self.flowers_red.clone(),
+            GroundTexture::FlowersWhite => self.flowers_white.clone(),
+            GroundTexture::FlowersBlue => self.flowers_blue.clone(),
         }
     }
 }
@@ -320,8 +333,12 @@ enum GroundTexture {
     Grass,
     GrassVar,
     Dirt,
+    Farmland,
     Rocky,
-    Highland,
+    Sand,
+    FlowersRed,
+    FlowersWhite,
+    FlowersBlue,
 }
 
 /// Pixel-art building sprite handles, loaded once at startup.
@@ -1729,10 +1746,28 @@ fn is_shore(x: i32, y: i32, water: &HashSet<(i32, i32)>) -> bool {
 /// everything vegetated a grass tile — the biome tint then colours it. A
 /// deterministic `grass_var` sprinkle keeps grassland from tiling flat.
 fn ground_texture(tile: &TerrainTile) -> GroundTexture {
+    use Biome::*;
     match tile.climate_biome {
-        Biome::Beach | Biome::Desert => GroundTexture::Dirt,
-        Biome::StonyShore | Biome::Badlands | Biome::Mountains => GroundTexture::Rocky,
-        Biome::Hills => GroundTexture::Highland,
+        // Sandy / dry biomes → the tan sand tile.
+        Beach | Desert | Savanna => GroundTexture::Sand,
+        // Stone / rock biomes → the grey rock tile.
+        StonyShore | Mountains => GroundTexture::Rocky,
+        // Red-clay badlands → bare earth.
+        Badlands => GroundTexture::Dirt,
+        // Wet lowlands → dark tilled/mud earth.
+        Swamp | Marsh => GroundTexture::Farmland,
+        // Flower fields get an actual flowered tile, cycled by position so the
+        // field reads mixed rather than a single colour.
+        FlowerField => match (tile.x * 2 + tile.y).rem_euclid(3) {
+            0 => GroundTexture::FlowersRed,
+            1 => GroundTexture::FlowersWhite,
+            _ => GroundTexture::FlowersBlue,
+        },
+        // Lusher / broken-up grass variants.
+        Meadow | Hills | MushroomFields => GroundTexture::GrassVar,
+        // Everything else (plains, all forests, jungle, tundra, snowy — snow has
+        // no dedicated tile yet, so it rides grass + a pale tint) → grass, with a
+        // deterministic variant sprinkle to break up expanses.
         _ if (tile.x + tile.y).rem_euclid(5) == 0 => GroundTexture::GrassVar,
         _ => GroundTexture::Grass,
     }
@@ -4206,18 +4241,40 @@ mod tests {
 
     #[test]
     fn ground_texture_maps_climate_biomes_to_sprites() {
-        // Sandy biomes -> dirt, stony/mountain -> rocky, hills -> highland.
-        assert_eq!(
-            ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Desert, 0, 0)),
-            GroundTexture::Dirt
-        );
+        // Sandy biomes -> sand, stony -> rocky, badlands -> dirt, wetlands ->
+        // farmland (mud), flower fields -> a flowered tile.
+        for b in [Biome::Desert, Biome::Beach, Biome::Savanna] {
+            assert_eq!(
+                ground_texture(&climate_tile(BiomeRole::Grassland, b, 0, 0)),
+                GroundTexture::Sand
+            );
+        }
         assert_eq!(
             ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Mountains, 0, 0)),
             GroundTexture::Rocky
         );
         assert_eq!(
-            ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Hills, 0, 0)),
-            GroundTexture::Highland
+            ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Badlands, 0, 0)),
+            GroundTexture::Dirt
+        );
+        for b in [Biome::Swamp, Biome::Marsh] {
+            assert_eq!(
+                ground_texture(&climate_tile(BiomeRole::Lowland, b, 0, 0)),
+                GroundTexture::Farmland
+            );
+        }
+        assert!(matches!(
+            ground_texture(&climate_tile(
+                BiomeRole::Grassland,
+                Biome::FlowerField,
+                1,
+                1
+            )),
+            GroundTexture::FlowersRed | GroundTexture::FlowersWhite | GroundTexture::FlowersBlue
+        ));
+        assert_eq!(
+            ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Meadow, 0, 0)),
+            GroundTexture::GrassVar
         );
         // Forests and plains land on grass; grassland gets the variant sprite on
         // the deterministic subset only.
