@@ -119,12 +119,53 @@ fn officer_role_name(role: OfficerRole) -> &'static str {
     }
 }
 
-/// Active map tool and any in-progress zone drag.
+/// Active map tool, any in-progress drag, and the accept-type the next stockpile
+/// will be designated with.
 #[derive(Resource, Default)]
 struct Tools {
     mode: ToolMode,
     /// `(start_tile, current_tile)` while dragging a zone rectangle.
     drag: Option<((i32, i32), (i32, i32))>,
+    accept: AcceptChoice,
+}
+
+/// What a newly designated stockpile accepts: everything, or one resource.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum AcceptChoice {
+    #[default]
+    General,
+    Only(ResourceKind),
+}
+
+impl AcceptChoice {
+    /// Cycle: General -> each storable kind in order -> back to General.
+    fn next(self) -> Self {
+        match self {
+            Self::General => Self::Only(STORABLE_KINDS[0]),
+            Self::Only(kind) => {
+                let idx = STORABLE_KINDS.iter().position(|&k| k == kind).unwrap_or(0);
+                STORABLE_KINDS
+                    .get(idx + 1)
+                    .map_or(Self::General, |&next| Self::Only(next))
+            }
+        }
+    }
+
+    /// The accept-set to send in DesignateStockpile.
+    fn kinds(self) -> Vec<ResourceKind> {
+        match self {
+            Self::General => STORABLE_KINDS.to_vec(),
+            Self::Only(kind) => vec![kind],
+        }
+    }
+
+    /// Short label for the picker button.
+    fn label(self) -> String {
+        match self {
+            Self::General => "General".to_string(),
+            Self::Only(kind) => format!("{} only", resource_kind_name(kind)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -403,6 +444,13 @@ struct ActionButton(ButtonAction);
 #[derive(Component, Clone, Copy)]
 struct ToolButton(ToolMode);
 
+/// The stockpile accept-type picker button.
+#[derive(Component)]
+struct AcceptButton;
+/// The accept-type picker's text.
+#[derive(Component)]
+struct AcceptButtonText;
+
 /// Marker for the translucent zone-drag preview rectangle.
 #[derive(Component)]
 struct ZonePreview;
@@ -433,6 +481,13 @@ type BuildingEntities = Or<(With<BuildingSprite>, With<BuildingLabel>)>;
 type CatEntities = Or<(With<CatSprite>, With<CatItem>, With<CatHighlight>)>;
 /// Query filter for the per-tick redraw of stockpile visuals + highlight.
 type StockpileEntities = Or<(With<StockpileVis>, With<StockpileHighlight>)>;
+/// Change filter for the accept-type picker button.
+type AcceptButtonQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static Interaction, &'static mut BackgroundColor),
+    (Changed<Interaction>, With<AcceptButton>),
+>;
 /// Change filter for toolbar button interactions.
 type ButtonQuery<'w, 's> = Query<
     'w,
@@ -518,6 +573,7 @@ pub fn run() {
                     handle_remove_button,
                     update_inspector,
                     handle_tool_buttons,
+                    handle_accept_button,
                     zone_paint,
                     render_zone_preview,
                     update_hud,
@@ -807,6 +863,27 @@ fn spawn_tool_toolbar(commands: &mut Commands) {
                     )],
                 ));
             }
+            // Accept-type picker for the Stockpile mode — cycles what the next
+            // designated pile will accept.
+            row.spawn((
+                Button,
+                Node {
+                    padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.32, 0.24, 0.12)),
+                BorderColor::all(Color::srgba(0.85, 0.60, 0.25, 0.6)),
+                AcceptButton,
+                children![(
+                    Text::new("Accepts: General"),
+                    TextFont {
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.90, 0.70)),
+                    AcceptButtonText,
+                )],
+            ));
         });
 }
 
@@ -1155,60 +1232,86 @@ fn render_stockpiles(
         let cx = (x0 as f32 + x1 as f32) / 2.0 * TILE;
         let cy = -(y0 as f32 + y1 as f32) / 2.0 * TILE;
 
+        let total = resource_total(&pile.contents);
+        let dominant = dominant_resource(&pile.contents);
+
         // The shrine reservoir is de-emphasized: its pile prop floats above the
         // village buildings so the colony's stock reads as a visible pile, but
-        // it gets no overlay rect / selection (it can't be removed).
-        if !is_shrine {
-            if selection.selected.as_deref() == Some(pile.id.as_str()) {
+        // it gets no overlay rect / accept label / selection (always General,
+        // can't be removed).
+        if is_shrine {
+            if let Some(dominant) = dominant {
                 commands.spawn((
-                    Sprite::from_color(
-                        Color::srgba(1.0, 0.85, 0.30, 0.50),
-                        Vec2::new(w + 6.0, h + 6.0),
-                    ),
-                    Transform::from_xyz(cx, cy, Z_ZONE - 0.1),
-                    StockpileHighlight,
+                    Sprite {
+                        image: art.pile(pile_prop(dominant)),
+                        custom_size: Some(Vec2::splat(pile_scale(total))),
+                        ..default()
+                    },
+                    Transform::from_xyz(cx, cy, Z_CAT - 1.0),
+                    StockpileVis,
+                ));
+                commands.spawn((
+                    Text2d::new(format!(
+                        "{} {}",
+                        resource_kind_name(dominant),
+                        total.round() as i64
+                    )),
+                    TextFont {
+                        font_size: FontSize::Px(9.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
+                    Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, Z_CAT - 0.5),
+                    StockpileVis,
                 ));
             }
+            continue;
+        }
+
+        // Player pile: selection outline, an accept-tinted overlay, an
+        // accept-type label (always — so limited piles read even while empty),
+        // and a pile prop when non-empty.
+        if selection.selected.as_deref() == Some(pile.id.as_str()) {
             commands.spawn((
-                Sprite::from_color(STOCKPILE_OVERLAY, Vec2::new(w, h)),
-                Transform::from_xyz(cx, cy, Z_ZONE),
+                Sprite::from_color(
+                    Color::srgba(1.0, 0.85, 0.30, 0.50),
+                    Vec2::new(w + 6.0, h + 6.0),
+                ),
+                Transform::from_xyz(cx, cy, Z_ZONE - 0.1),
+                StockpileHighlight,
+            ));
+        }
+        commands.spawn((
+            Sprite::from_color(accept_overlay_color(&pile.accepts), Vec2::new(w, h)),
+            Transform::from_xyz(cx, cy, Z_ZONE),
+            StockpileVis,
+        ));
+
+        let mut label = accepts_label(&pile.accepts);
+        if let Some(dominant) = dominant {
+            label.push_str(&format!(
+                "  {} {}",
+                resource_kind_name(dominant),
+                total.round() as i64
+            ));
+            commands.spawn((
+                Sprite {
+                    image: art.pile(pile_prop(dominant)),
+                    custom_size: Some(Vec2::splat(pile_scale(total))),
+                    ..default()
+                },
+                Transform::from_xyz(cx, cy, Z_STOCKPILE_PILE),
                 StockpileVis,
             ));
         }
-
-        // Pile prop + label only when the pile actually holds something.
-        let total = resource_total(&pile.contents);
-        let Some(dominant) = dominant_resource(&pile.contents) else {
-            continue;
-        };
-        // Above buildings for the shrine (so it isn't hidden), on the ground for
-        // player piles out in the open.
-        let pile_z = if is_shrine {
-            Z_CAT - 1.0
-        } else {
-            Z_STOCKPILE_PILE
-        };
         commands.spawn((
-            Sprite {
-                image: art.pile(pile_prop(dominant)),
-                custom_size: Some(Vec2::splat(pile_scale(total))),
-                ..default()
-            },
-            Transform::from_xyz(cx, cy, pile_z),
-            StockpileVis,
-        ));
-        commands.spawn((
-            Text2d::new(format!(
-                "{} {}",
-                resource_kind_name(dominant),
-                total.round() as i64
-            )),
+            Text2d::new(label),
             TextFont {
                 font_size: FontSize::Px(9.0),
                 ..default()
             },
             TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
-            Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, pile_z + 0.5),
+            Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, Z_STOCKPILE_PILE + 0.5),
             StockpileVis,
         ));
     }
@@ -1555,6 +1658,30 @@ fn handle_tool_buttons(
     }
 }
 
+/// Cycle the stockpile accept-type when its picker is clicked, and keep the
+/// button label in sync with the current choice.
+fn handle_accept_button(
+    mut tools: ResMut<Tools>,
+    mut button: AcceptButtonQuery,
+    mut text: Query<&mut Text, With<AcceptButtonText>>,
+) {
+    for (interaction, mut color) in &mut button {
+        match interaction {
+            Interaction::Pressed => {
+                *color = BackgroundColor(Color::srgb(0.48, 0.36, 0.18));
+                tools.accept = tools.accept.next();
+            }
+            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.40, 0.30, 0.15)),
+            Interaction::None => *color = BackgroundColor(Color::srgb(0.32, 0.24, 0.12)),
+        }
+    }
+    if tools.is_changed()
+        && let Ok(mut text) = text.single_mut()
+    {
+        text.0 = format!("Accepts: {}", tools.accept.label());
+    }
+}
+
 /// Click-drag a rectangle in a paint mode to designate an avoid/gather zone or a
 /// stockpile; release sends the matching action. Esc cancels an in-progress drag.
 #[allow(clippy::too_many_arguments)]
@@ -1572,6 +1699,7 @@ fn zone_paint(
         tools.drag = None;
         return;
     };
+    let accept = tools.accept;
     if keys.just_pressed(KeyCode::Escape) {
         tools.drag = None;
         return;
@@ -1618,7 +1746,7 @@ fn zone_paint(
                 sig: session.sig.clone(),
                 a,
                 b,
-                accepts: STORABLE_KINDS.to_vec(),
+                accepts: accept.kinds(),
             },
         });
     }
@@ -1975,6 +2103,45 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
     }
 }
 
+/// A stockpile's accept-type label: "General" for all storable kinds, "X only"
+/// for a single kind, otherwise the kinds joined.
+fn accepts_label(accepts: &[ResourceKind]) -> String {
+    if is_general_accepts(accepts) {
+        return "General".to_string();
+    }
+    match accepts {
+        [] => "Accepts nothing".to_string(),
+        [one] => format!("{} only", resource_kind_name(*one)),
+        many => many
+            .iter()
+            .map(|k| resource_kind_name(*k))
+            .collect::<Vec<_>>()
+            .join("/"),
+    }
+}
+
+/// True when an accept-set covers every storable kind (order-independent).
+fn is_general_accepts(accepts: &[ResourceKind]) -> bool {
+    STORABLE_KINDS.iter().all(|k| accepts.contains(k))
+}
+
+/// Translucent overlay colour: amber for General, else tinted by the single
+/// accepted resource (falls back to amber for multi-kind subsets).
+fn accept_overlay_color(accepts: &[ResourceKind]) -> Color {
+    if is_general_accepts(accepts) {
+        return STOCKPILE_OVERLAY;
+    }
+    match accepts {
+        [ResourceKind::Food] => Color::srgba(0.95, 0.55, 0.25, 0.32),
+        [ResourceKind::Water] => Color::srgba(0.35, 0.65, 0.95, 0.32),
+        [ResourceKind::Herbs] => Color::srgba(0.45, 0.80, 0.40, 0.32),
+        [ResourceKind::Materials] => Color::srgba(0.70, 0.55, 0.35, 0.32),
+        [ResourceKind::Refined] => Color::srgba(0.95, 0.82, 0.35, 0.32),
+        [ResourceKind::Weapons | ResourceKind::Armor] => Color::srgba(0.70, 0.72, 0.78, 0.32),
+        _ => STOCKPILE_OVERLAY,
+    }
+}
+
 /// Whether a tile falls inside a stockpile's (unordered) rectangle.
 fn point_in_stockpile(tile: (i32, i32), pile: &StockpileSnapshot) -> bool {
     let (x0, x1) = (pile.x1.min(pile.x2), pile.x1.max(pile.x2));
@@ -2239,6 +2406,45 @@ mod tests {
         let mut a = amounts(10.0, 5.0, 2.0);
         a.blessings = 99.0; // excluded
         assert_eq!(resource_total(&a), 17.0);
+    }
+
+    #[test]
+    fn accept_choice_cycles_general_through_kinds() {
+        // General -> first kind -> ... -> last kind -> General.
+        let mut choice = AcceptChoice::General;
+        assert_eq!(choice.kinds(), STORABLE_KINDS.to_vec());
+        choice = choice.next();
+        assert_eq!(choice, AcceptChoice::Only(ResourceKind::Food));
+        assert_eq!(choice.kinds(), vec![ResourceKind::Food]);
+
+        // Walk the whole cycle and confirm it returns to General after all 7.
+        let mut seen = vec![choice];
+        for _ in 0..STORABLE_KINDS.len() {
+            choice = choice.next();
+            seen.push(choice);
+        }
+        assert_eq!(*seen.last().unwrap(), AcceptChoice::General);
+        // Every storable kind appears exactly once in the cycle.
+        for kind in STORABLE_KINDS {
+            assert!(seen.contains(&AcceptChoice::Only(kind)));
+        }
+    }
+
+    #[test]
+    fn accepts_label_maps_general_single_and_subset() {
+        assert_eq!(accepts_label(&STORABLE_KINDS), "General");
+        // Order-independent General detection.
+        let mut shuffled = STORABLE_KINDS.to_vec();
+        shuffled.reverse();
+        assert_eq!(accepts_label(&shuffled), "General");
+        assert_eq!(accepts_label(&[ResourceKind::Food]), "food only");
+        assert_eq!(accepts_label(&[ResourceKind::Refined]), "refined only");
+        assert_eq!(
+            accepts_label(&[ResourceKind::Food, ResourceKind::Water]),
+            "food/water"
+        );
+        assert!(!is_general_accepts(&[ResourceKind::Food]));
+        assert!(is_general_accepts(&STORABLE_KINDS));
     }
 
     #[test]
