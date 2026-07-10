@@ -32,10 +32,15 @@ use cat_sim::world_gen::tile_to_chunk;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use std::collections::{HashMap, HashSet};
 
-/// Side length (world units) of one flat tile.
-const TILE: f32 = 28.0;
+/// Side length (world units) of one flat tile. Shrunk to ~1/3 of the original 28
+/// so buildings read at a sensible size and more of the world fits on screen;
+/// everything (terrain, footprint buildings, cats, trees, walls) scales off it.
+const TILE: f32 = 10.0;
 /// Half-width (in tiles) of the terrain window regenerated around the anchor.
 const WINDOW_RADIUS: i32 = 30;
+/// Starting (and R-reset) camera zoom, tuned to frame the village at the small
+/// tile — a little zoomed in since there's now more world per screen.
+const DEFAULT_ZOOM: f32 = 0.4;
 
 // Flat ground layers (terrain + ground markings) sit below the y-sorted world
 // sprites; all strictly below the camera at Z=1000 so nothing is clipped.
@@ -1709,8 +1714,9 @@ fn handle_vacate_buttons(
     }
 }
 
-/// Cat sprite footprint (32x64 cell → ~1 tile wide, 2 tiles tall, standing).
-const CAT_SIZE: Vec2 = Vec2::new(TILE * 0.9, TILE * 1.8);
+/// Cat sprite size (32x64 cell → 1:2 aspect). Rendered larger than one tile so
+/// cats stay readable + charming at the small tile.
+const CAT_SIZE: Vec2 = Vec2::new(TILE * 1.4, TILE * 2.8);
 /// Constant walk speed for body movement (world units/sec ≈ 3 tiles/sec) so
 /// cats visibly stride tile-to-tile and never teleport.
 const BODY_WALK_SPEED: f32 = TILE * 3.0;
@@ -2281,6 +2287,7 @@ fn camera_controls(
     mut motion: MessageReader<MouseMotion>,
     mut wheel: MessageReader<MouseWheel>,
     time: Res<Time>,
+    mut inited: Local<bool>,
     mut camera: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
 ) {
     let Ok((mut transform, mut projection)) = camera.single_mut() else {
@@ -2289,6 +2296,11 @@ fn camera_controls(
     let Projection::Orthographic(projection) = projection.as_mut() else {
         return;
     };
+    // Frame the village at the small tile on the first frame.
+    if !*inited {
+        *inited = true;
+        projection.scale = DEFAULT_ZOOM;
+    }
     let speed = 620.0 * time.delta_secs() * projection.scale;
     if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
         transform.translation.x -= speed;
@@ -2306,7 +2318,7 @@ fn camera_controls(
         let center = grid_to_world(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y);
         transform.translation.x = center.x;
         transform.translation.y = center.y;
-        projection.scale = 1.0;
+        projection.scale = DEFAULT_ZOOM;
     }
     // Middle-button drag pans the map (left = select cat, right = select
     // building).
