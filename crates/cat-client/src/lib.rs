@@ -17,7 +17,7 @@
 
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
-use bevy::sprite::Anchor;
+use bevy::sprite::{Anchor, BorderRect, SliceScaleMode, TextureSlicer};
 use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction,
     ColonySnapshot, FootprintSize, GateSide, JobKind, OfficerRole, RaiderStatus, ResourceAmounts,
@@ -421,6 +421,43 @@ impl InfraArt {
     }
 }
 
+/// DF-Steam UI kit (Kenney Adventure): wood/parchment 9-patch panel, hanging
+/// banner header, wood button. Loaded once at startup.
+#[derive(Resource, Clone)]
+struct UiArt {
+    panel: Handle<Image>,
+    banner: Handle<Image>,
+}
+
+impl UiArt {
+    fn load(assets: &AssetServer) -> Self {
+        Self {
+            panel: assets.load("public/images/game/ui/panel.png"),
+            banner: assets.load("public/images/game/ui/banner.png"),
+        }
+    }
+}
+
+/// Dark ink for text over the cream parchment panels.
+const PARCHMENT_INK: Color = Color::srgb(0.24, 0.15, 0.07);
+/// Wood-border inset (source px) for the 128px panel 9-patch.
+const PANEL_BORDER: f32 = 22.0;
+
+/// A 9-patch panel/button background from a wood-frame sprite: the border stays
+/// crisp while the parchment centre stretches to fill the node.
+fn sliced_image(image: Handle<Image>, border: f32) -> ImageNode {
+    ImageNode {
+        image,
+        image_mode: NodeImageMode::Sliced(TextureSlicer {
+            border: BorderRect::all(border),
+            center_scale_mode: SliceScaleMode::Stretch,
+            sides_scale_mode: SliceScaleMode::Stretch,
+            max_corner_scale: 1.0,
+        }),
+        ..default()
+    }
+}
+
 /// Animated character sheets (cats + raiders) and specialization hats. The
 /// sheets are 8 direction groups x 4 walk frames in 32x64 cells, one row of 32.
 #[derive(Resource, Clone)]
@@ -756,45 +793,77 @@ fn setup(
     commands.insert_resource(PropArt::load(&asset_server));
     commands.insert_resource(InfraArt::load(&asset_server));
     commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
+    let ui = UiArt::load(&asset_server);
+    commands.insert_resource(ui.clone());
 
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
     let center = grid_to_world(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y);
     commands.spawn((Camera2d, Transform::from_xyz(center.x, center.y, CAMERA_Z)));
 
-    // HUD dashboard (top-left).
-    commands.spawn((
-        hud_panel_node(8.0, 8.0, 320.0),
-        BackgroundColor(Color::srgba(0.03, 0.04, 0.035, 0.82)),
-        children![(
-            Text::new("connecting…"),
-            TextFont {
-                font_size: FontSize::Px(14.0),
+    // HUD dashboard (top-left) on a wood/parchment panel with a hanging banner.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(8.0),
+                top: Val::Px(8.0),
+                width: Val::Px(330.0),
+                padding: UiRect::all(Val::Px(26.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
                 ..default()
             },
-            TextColor(Color::srgb(1.0, 0.95, 0.84)),
-            HudText,
-        )],
-    ));
+            sliced_image(ui.panel.clone(), PANEL_BORDER),
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(52.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                ImageNode::new(ui.banner.clone()),
+                children![(
+                    Text::new("Idle Cat Forest"),
+                    TextFont {
+                        font_size: FontSize::Px(16.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
+                )],
+            ));
+            panel.spawn((
+                Text::new("connecting…"),
+                TextFont {
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(PARCHMENT_INK),
+                HudText,
+            ));
+        });
 
-    // Event log (bottom-left).
+    // Event log (bottom-left) on a parchment panel.
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(8.0),
             bottom: Val::Px(70.0),
-            width: Val::Px(420.0),
-            padding: UiRect::all(Val::Px(10.0)),
+            width: Val::Px(430.0),
+            padding: UiRect::all(Val::Px(26.0)),
             ..default()
         },
-        BackgroundColor(Color::srgba(0.03, 0.04, 0.035, 0.72)),
+        sliced_image(ui.panel.clone(), PANEL_BORDER),
         children![(
             Text::new("events…"),
             TextFont {
                 font_size: FontSize::Px(12.0),
                 ..default()
             },
-            TextColor(Color::srgb(0.86, 0.90, 0.80)),
+            TextColor(PARCHMENT_INK),
             EventLogText,
         )],
     ));
@@ -940,7 +1009,7 @@ fn setup(
     ));
 
     // Officers panel (left, below the dashboard), toggled with `O`.
-    spawn_officers_panel(&mut commands);
+    spawn_officers_panel(&mut commands, &ui);
 
     // Tool-mode toolbar (just above the action toolbar).
     spawn_tool_toolbar(&mut commands);
@@ -948,31 +1017,30 @@ fn setup(
     spawn_toolbar(&mut commands);
 }
 
-fn spawn_officers_panel(commands: &mut Commands) {
+fn spawn_officers_panel(commands: &mut Commands, ui: &UiArt) {
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(8.0),
-                top: Val::Px(360.0),
-                width: Val::Px(260.0),
-                padding: UiRect::all(Val::Px(10.0)),
+                top: Val::Px(430.0),
+                width: Val::Px(268.0),
+                padding: UiRect::all(Val::Px(26.0)),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(4.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.03, 0.04, 0.06, 0.82)),
-            BorderColor::all(Color::srgba(0.55, 0.70, 0.90, 0.45)),
+            sliced_image(ui.panel.clone(), PANEL_BORDER),
             OfficersPanel,
         ))
         .with_children(|panel| {
             panel.spawn((
                 Text::new("Officers  [O]"),
                 TextFont {
-                    font_size: FontSize::Px(12.0),
+                    font_size: FontSize::Px(13.0),
                     ..default()
                 },
-                TextColor(Color::srgb(0.85, 0.90, 1.0)),
+                TextColor(PARCHMENT_INK),
             ));
             for role in ALL_OFFICER_ROLES {
                 panel
@@ -989,7 +1057,7 @@ fn spawn_officers_panel(commands: &mut Commands) {
                                 font_size: FontSize::Px(12.0),
                                 ..default()
                             },
-                            TextColor(Color::srgb(0.92, 0.95, 1.0)),
+                            TextColor(PARCHMENT_INK),
                             OfficerRow(role),
                         ));
                         row.spawn((
@@ -1073,17 +1141,6 @@ fn spawn_tool_toolbar(commands: &mut Commands) {
                 )],
             ));
         });
-}
-
-fn hud_panel_node(left: f32, top: f32, width: f32) -> Node {
-    Node {
-        position_type: PositionType::Absolute,
-        left: Val::Px(left),
-        top: Val::Px(top),
-        width: Val::Px(width),
-        padding: UiRect::all(Val::Px(12.0)),
-        ..default()
-    }
 }
 
 fn spawn_toolbar(commands: &mut Commands) {
@@ -2369,7 +2426,7 @@ fn dashboard_text(colony: &ColonySnapshot, online: u32) -> String {
         .filter(|j| matches!(j.status, cat_protocol::JobStatus::Active))
         .count();
     format!(
-        "Idle Cat Forest   online {online}\n\
+        "online {online}\n\
          Colony: {name}  [{status:?}]\n\
          Leader: {leader}\n\
          Pop {pop}/{cap_house}  Village Lv {lvl}\n\
