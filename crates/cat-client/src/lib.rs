@@ -24,10 +24,10 @@ use cat_protocol::{
     ResourceCapacities, ResourceKind, Specialization, StockLedgerSnapshot, StockpileSnapshot,
     TilePoint, WorldSnapshot, ZoneKind,
 };
-use cat_sim::climate::Biome;
+use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
     DecorationRole, RockSize, TerrainTile, WORLD_TERRAIN_OPTIONS, derive_biome_decoration,
-    generate_terrain_chunk,
+    generate_terrain_chunk, tile_climate_biome,
 };
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
@@ -2678,8 +2678,9 @@ fn hover_tooltip(
         .flatten()
         .zip(cursor_world(&windows, &camera))
         .and_then(|(cursor, world)| {
-            let colony = latest.0.as_ref()?.colonies.first()?;
-            Some((cursor, hover_text(colony, world)?))
+            let snapshot = latest.0.as_ref()?;
+            let colony = snapshot.colonies.first()?;
+            Some((cursor, hover_text(colony, snapshot.world_seed, world)?))
         });
     match hovered {
         Some((cursor, tip)) => {
@@ -2692,9 +2693,10 @@ fn hover_tooltip(
     }
 }
 
-/// The tooltip text for whatever world entity sits under `world` (cats first,
-/// then buildings, then stockpiles), or `None` when nothing is close enough.
-fn hover_text(colony: &ColonySnapshot, world: Vec2) -> Option<String> {
+/// The tooltip text for whatever sits under `world` — cats first, then buildings,
+/// then stockpiles, and finally the terrain tile itself (biome + resource), so a
+/// hover always reads something.
+fn hover_text(colony: &ColonySnapshot, world_seed: i64, world: Vec2) -> Option<String> {
     let cats: Vec<(String, Vec2)> = colony
         .cats
         .iter()
@@ -2725,11 +2727,62 @@ fn hover_text(colony: &ColonySnapshot, world: Vec2) -> Option<String> {
     }
 
     let tile = world_to_tile(world);
-    colony
+    if let Some(pile) = colony
         .stockpiles
         .iter()
         .find(|s| point_in_stockpile(tile, s))
-        .map(stockpile_tooltip)
+    {
+        return Some(stockpile_tooltip(pile));
+    }
+
+    Some(tile_tooltip(world_seed, tile.0, tile.1))
+}
+
+/// Hover text for a bare terrain tile: its climate biome and what it offers.
+fn tile_tooltip(world_seed: i64, x: i32, y: i32) -> String {
+    let biome = tile_climate_biome(world_seed as u32, x, y);
+    let props = biome.properties();
+    let feature = match derive_biome_decoration(x, y, world_seed, biome) {
+        Some(DecorationRole::Tree { .. }) => "trees".to_string(),
+        Some(DecorationRole::Rock { .. }) => "rocks".to_string(),
+        None => resource_hint_label(props.resource).to_string(),
+    };
+    format!("{name}\n{feature}", name = props.name)
+}
+
+/// A short label for what a biome primarily offers the gather loop.
+fn resource_hint_label(hint: ResourceHint) -> &'static str {
+    match hint {
+        ResourceHint::Wood => "wood",
+        ResourceHint::Stone => "stone",
+        ResourceHint::Ore => "ore",
+        ResourceHint::Fish => "water (fish)",
+        ResourceHint::Farmland => "farmland",
+        ResourceHint::None => "open ground",
+    }
+}
+
+/// The finished good a building produces, for the hover/detail readouts, or
+/// `None` for non-producers (storage, dens, shrine, …).
+fn building_output(building: BuildingType) -> Option<&'static str> {
+    match building {
+        BuildingType::WoodCutter => Some("planks"),
+        BuildingType::StonePrep => Some("blocks"),
+        BuildingType::Woodworking => Some("tools"),
+        BuildingType::Workshop => Some("refined"),
+        BuildingType::Smithy => Some("weapons + armor"),
+        BuildingType::Field | BuildingType::MouseFarm => Some("food"),
+        _ => None,
+    }
+}
+
+/// Number of cats currently assigned to a building.
+fn staffing_count(building_id: &str, colony: &ColonySnapshot) -> usize {
+    colony
+        .cats
+        .iter()
+        .filter(|c| c.assigned_building_id.as_deref() == Some(building_id))
+        .count()
 }
 
 /// Compact hover text for a cat: name, specialization + activity, needs summary.
@@ -2749,23 +2802,27 @@ fn cat_tooltip(cat: &CatSnapshot) -> String {
     )
 }
 
-/// Compact hover text for a building: name/level, operational state, worker.
+/// Compact hover text for a building: name/level, operational state, and — once
+/// operational — how many cats work it and what it's making.
 fn building_tooltip(building: &BuildingSnapshot, colony: &ColonySnapshot) -> String {
-    let status = if building.construction_progress >= 100.0 {
-        "operational".to_string()
-    } else {
-        format!("under construction {:.0}%", building.construction_progress)
-    };
-    let worker = colony
-        .cats
-        .iter()
-        .find(|c| c.assigned_building_id.as_deref() == Some(building.id.as_str()))
-        .map_or_else(String::new, |c| format!("\nworker: {}", c.name));
-    format!(
-        "{name}  Lv {lvl}\n{status}{worker}",
+    let mut out = format!(
+        "{name}  Lv {lvl}",
         name = building_label(building.building_type),
         lvl = building.level,
-    )
+    );
+    if building.construction_progress < 100.0 {
+        out.push_str(&format!(
+            "\nunder construction {:.0}%",
+            building.construction_progress
+        ));
+        return out;
+    }
+    let workers = staffing_count(&building.id, colony);
+    out.push_str(&format!("\n{workers} working"));
+    if let Some(making) = building_output(building.building_type) {
+        out.push_str(&format!(" - making {making}"));
+    }
+    out
 }
 
 /// Compact hover text for a stockpile: what it accepts + rough contents.
@@ -4275,6 +4332,30 @@ mod tests {
     }
 
     #[test]
+    fn building_output_and_resource_labels() {
+        assert_eq!(building_output(BuildingType::WoodCutter), Some("planks"));
+        assert_eq!(building_output(BuildingType::StonePrep), Some("blocks"));
+        assert_eq!(building_output(BuildingType::Woodworking), Some("tools"));
+        assert_eq!(building_output(BuildingType::Field), Some("food"));
+        // Storage / dens / shrine produce nothing.
+        assert_eq!(building_output(BuildingType::FoodStorage), None);
+        assert_eq!(building_output(BuildingType::Den), None);
+        assert_eq!(building_output(BuildingType::Shrine), None);
+
+        assert_eq!(resource_hint_label(ResourceHint::Wood), "wood");
+        assert_eq!(resource_hint_label(ResourceHint::None), "open ground");
+    }
+
+    #[test]
+    fn tile_tooltip_names_the_biome() {
+        // Deterministic: the same seed/tile always names the same biome, and the
+        // text has a biome line plus a feature line.
+        let tip = tile_tooltip(20_240_703, 6, 6);
+        assert!(tip.lines().count() >= 2, "biome + feature lines: {tip:?}");
+        assert!(!tip.is_empty());
+    }
+
+    #[test]
     fn hover_text_picks_the_cat_under_the_cursor() {
         let json = r#"{
             "now": 0, "worldSeed": 1, "onlineCount": 1,
@@ -4298,11 +4379,13 @@ mod tests {
         let colony = &snap.colonies[0];
         // The cat sits on tile (1,2); its world position is where the cursor picks it.
         let at_cat = grid_to_world(1, 2);
-        let tip = hover_text(colony, at_cat).expect("cat tooltip");
+        let tip = hover_text(colony, snap.world_seed, at_cat).expect("cat tooltip");
         assert!(tip.contains("Milo"));
         assert!(tip.contains("hunger 80"));
-        // Far-away empty ground yields no tooltip.
-        assert!(hover_text(colony, Vec2::new(9000.0, 9000.0)).is_none());
+        // Empty ground still yields a tile tooltip (biome + resource), never None.
+        let tile_tip =
+            hover_text(colony, snap.world_seed, Vec2::new(9000.0, 9000.0)).expect("tile tooltip");
+        assert!(!tile_tip.is_empty());
     }
 
     #[test]
