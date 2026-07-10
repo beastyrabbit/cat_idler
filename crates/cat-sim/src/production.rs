@@ -13,6 +13,33 @@ pub const FIELD_FOOD_PER_HOUR: f64 = 2.0;
 pub const WORKSHOP_UNLOCK_LEVEL: u32 = 2;
 pub const FIELD_UNLOCK_LEVEL: u32 = 4;
 
+// --- P12.4b raw-material refinement chains (P16 blueprint workshops) ---
+//
+// The wood-cutter and stone-prep shops share the refinement-workshop cadence
+// (5 raw materials → 1 refined unit / 600s), so both reuse [`advance_workshop`]
+// at the tick site — crediting planks and blocks respectively instead of the
+// generic `refined` good. The woodworking shop is a two-input crafter
+// (planks + blocks → tools) and has its own [`advance_woodworking`] cycle,
+// mirroring the smithy's twin-input shape.
+
+/// Raw materials one wood-cutter cycle consumes (aliased to the workshop rate).
+pub const WOODCUTTER_MATERIALS_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
+/// Planks one wood-cutter cycle produces.
+pub const WOODCUTTER_PLANKS_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
+/// Raw materials one stone-prep cycle consumes.
+pub const STONEPREP_MATERIALS_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
+/// Blocks one stone-prep cycle produces.
+pub const STONEPREP_BLOCKS_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
+
+/// Planks one woodworking cycle consumes.
+pub const WOODWORKING_PLANKS_PER_CYCLE: f64 = 2.0;
+/// Blocks one woodworking cycle consumes.
+pub const WOODWORKING_BLOCKS_PER_CYCLE: f64 = 2.0;
+/// Tools one woodworking cycle forges.
+pub const WOODWORKING_TOOLS_PER_CYCLE: f64 = 1.0;
+/// Seconds of work one full woodworking cycle takes.
+pub const WOODWORKING_CYCLE_SEC: f64 = 600.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorkshopOptions {
     pub has_worker: bool,
@@ -119,6 +146,103 @@ pub fn advance_workshop(
 #[must_use]
 pub fn field_yield(elapsed_sec: f64) -> f64 {
     js_max(0.0, elapsed_sec / 3600.0 * FIELD_FOOD_PER_HOUR)
+}
+
+/// Inputs for one woodworking tick: whether a worker is present/fast and how many
+/// planks and blocks are on hand.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WoodworkingOptions {
+    pub has_worker: bool,
+    pub worker_is_architect: bool,
+    pub planks_available: f64,
+    pub blocks_available: f64,
+}
+
+impl WoodworkingOptions {
+    #[must_use]
+    pub const fn new(
+        has_worker: bool,
+        worker_is_architect: bool,
+        planks_available: f64,
+        blocks_available: f64,
+    ) -> Self {
+        Self {
+            has_worker,
+            worker_is_architect,
+            planks_available,
+            blocks_available,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_worker(
+        worker_specialization: Option<CatSpecialization>,
+        planks_available: f64,
+        blocks_available: f64,
+    ) -> Self {
+        Self {
+            has_worker: worker_specialization.is_some(),
+            worker_is_architect: worker_is_architect(worker_specialization),
+            planks_available,
+            blocks_available,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WoodworkingStep {
+    /// Carry-over cycle time in seconds after this tick.
+    pub next_progress: f64,
+    /// Planks consumed this tick.
+    pub planks_used: f64,
+    /// Blocks consumed this tick.
+    pub blocks_used: f64,
+    /// Tools produced this tick.
+    pub tools_produced: f64,
+}
+
+/// Advance a staffed woodworking shop: planks + blocks → tools, floored by
+/// elapsed time and the scarcer of the two inputs. Mirrors the smithy's
+/// twin-input cadence; architects work the bench at double speed.
+#[must_use]
+pub fn advance_woodworking(
+    progress_sec: f64,
+    elapsed_sec: f64,
+    options: WoodworkingOptions,
+) -> WoodworkingStep {
+    if !options.has_worker || elapsed_sec <= 0.0 {
+        return WoodworkingStep {
+            next_progress: progress_sec,
+            planks_used: 0.0,
+            blocks_used: 0.0,
+            tools_produced: 0.0,
+        };
+    }
+
+    let speed = if options.worker_is_architect {
+        ARCHITECT_SPEED
+    } else {
+        1.0
+    };
+    let mut progress = progress_sec + elapsed_sec * speed;
+
+    let cycles_by_time = (progress / WOODWORKING_CYCLE_SEC).floor();
+    let cycles_by_planks = (options.planks_available / WOODWORKING_PLANKS_PER_CYCLE).floor();
+    let cycles_by_blocks = (options.blocks_available / WOODWORKING_BLOCKS_PER_CYCLE).floor();
+    let cycles = js_max(
+        0.0,
+        js_min(cycles_by_time, js_min(cycles_by_planks, cycles_by_blocks)),
+    );
+
+    progress -= cycles * WOODWORKING_CYCLE_SEC;
+    progress = js_min(progress, WOODWORKING_CYCLE_SEC);
+
+    WoodworkingStep {
+        next_progress: progress,
+        planks_used: cycles * WOODWORKING_PLANKS_PER_CYCLE,
+        blocks_used: cycles * WOODWORKING_BLOCKS_PER_CYCLE,
+        tools_produced: cycles * WOODWORKING_TOOLS_PER_CYCLE,
+    }
 }
 
 fn js_max(left: f64, right: f64) -> f64 {
@@ -384,5 +508,143 @@ mod tests {
         assert!(workshop_step.refined_produced.is_nan());
 
         assert!(field_yield(f64::NAN).is_nan());
+    }
+
+    fn wood_options(
+        has_worker: bool,
+        worker_is_architect: bool,
+        planks_available: f64,
+        blocks_available: f64,
+    ) -> super::WoodworkingOptions {
+        super::WoodworkingOptions {
+            has_worker,
+            worker_is_architect,
+            planks_available,
+            blocks_available,
+        }
+    }
+
+    fn assert_wood_step_bits(
+        actual: super::WoodworkingStep,
+        expected: super::WoodworkingStep,
+        label: &str,
+    ) {
+        assert_f64_bits(
+            actual.next_progress,
+            expected.next_progress,
+            &format!("{label} next_progress"),
+        );
+        assert_f64_bits(
+            actual.planks_used,
+            expected.planks_used,
+            &format!("{label} planks_used"),
+        );
+        assert_f64_bits(
+            actual.blocks_used,
+            expected.blocks_used,
+            &format!("{label} blocks_used"),
+        );
+        assert_f64_bits(
+            actual.tools_produced,
+            expected.tools_produced,
+            &format!("{label} tools_produced"),
+        );
+    }
+
+    #[test]
+    fn woodworking_chain_constants_match_the_two_plus_two_recipe() {
+        assert_f64_bits(super::WOODWORKING_PLANKS_PER_CYCLE, 2.0, "planks per cycle");
+        assert_f64_bits(super::WOODWORKING_BLOCKS_PER_CYCLE, 2.0, "blocks per cycle");
+        assert_f64_bits(super::WOODWORKING_TOOLS_PER_CYCLE, 1.0, "tools per cycle");
+        assert_f64_bits(super::WOODWORKING_CYCLE_SEC, 600.0, "cycle seconds");
+        // The wood-cutter / stone-prep aliases inherit the refinement-workshop rate.
+        assert_f64_bits(super::WOODCUTTER_MATERIALS_PER_CYCLE, 5.0, "woodcutter in");
+        assert_f64_bits(super::WOODCUTTER_PLANKS_PER_CYCLE, 1.0, "woodcutter out");
+        assert_f64_bits(super::STONEPREP_MATERIALS_PER_CYCLE, 5.0, "stoneprep in");
+        assert_f64_bits(super::STONEPREP_BLOCKS_PER_CYCLE, 1.0, "stoneprep out");
+    }
+
+    #[test]
+    fn woodworking_only_crafts_with_a_worker_and_positive_time() {
+        assert_wood_step_bits(
+            super::advance_woodworking(123.0, 600.0, wood_options(false, false, 50.0, 50.0)),
+            super::WoodworkingStep {
+                next_progress: 123.0,
+                planks_used: 0.0,
+                blocks_used: 0.0,
+                tools_produced: 0.0,
+            },
+            "without worker",
+        );
+        assert_wood_step_bits(
+            super::advance_woodworking(123.0, 0.0, wood_options(true, false, 50.0, 50.0)),
+            super::WoodworkingStep {
+                next_progress: 123.0,
+                planks_used: 0.0,
+                blocks_used: 0.0,
+                tools_produced: 0.0,
+            },
+            "zero elapsed",
+        );
+    }
+
+    #[test]
+    fn woodworking_converts_complete_cycles_and_floors_by_scarcer_input() {
+        assert_wood_step_bits(
+            super::advance_woodworking(590.0, 30.0, wood_options(true, false, 4.0, 4.0)),
+            super::WoodworkingStep {
+                next_progress: 20.0,
+                planks_used: 2.0,
+                blocks_used: 2.0,
+                tools_produced: 1.0,
+            },
+            "one completed cycle",
+        );
+        // Blocks are the bottleneck: only one cycle's worth on hand.
+        assert_wood_step_bits(
+            super::advance_woodworking(0.0, 1_800.0, wood_options(true, false, 20.0, 2.0)),
+            super::WoodworkingStep {
+                next_progress: 600.0,
+                planks_used: 2.0,
+                blocks_used: 2.0,
+                tools_produced: 1.0,
+            },
+            "blocks cap banked progress",
+        );
+        // Architects run the bench at double speed.
+        assert_wood_step_bits(
+            super::advance_woodworking(0.0, 300.0, wood_options(true, true, 2.0, 2.0)),
+            super::WoodworkingStep {
+                next_progress: 0.0,
+                planks_used: 2.0,
+                blocks_used: 2.0,
+                tools_produced: 1.0,
+            },
+            "architect cycle",
+        );
+    }
+
+    #[test]
+    fn woodworking_stalls_without_inputs() {
+        assert_wood_step_bits(
+            super::advance_woodworking(590.0, 30.0, wood_options(true, false, 0.0, 5.0)),
+            super::WoodworkingStep {
+                next_progress: 600.0,
+                planks_used: 0.0,
+                blocks_used: 0.0,
+                tools_produced: 0.0,
+            },
+            "no planks",
+        );
+        assert_wood_step_bits(
+            super::advance_woodworking(590.0, 30.0, wood_options(true, false, 5.0, 0.0)),
+            super::WoodworkingStep {
+                next_progress: 600.0,
+                planks_used: 0.0,
+                blocks_used: 0.0,
+                tools_produced: 0.0,
+            },
+            "no blocks",
+        );
     }
 }

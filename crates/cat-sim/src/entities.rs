@@ -68,6 +68,15 @@ pub struct Resources {
     pub weapons: f64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub armor: f64,
+    /// Refined lumber from the wood-cutter (P12.4b: materials → planks).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub planks: f64,
+    /// Dressed stone from the stone-prep workshop (P12.4b: materials → blocks).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub blocks: f64,
+    /// Finished tools from the woodworking shop (P12.4b: planks + blocks → tools).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tools: f64,
     pub blessings: f64,
 }
 
@@ -252,6 +261,9 @@ mod tests {
                 refined: 14.0,
                 weapons: 15.0,
                 armor: 16.0,
+                planks: 18.0,
+                blocks: 19.0,
+                tools: 20.0,
                 blessings: 17.0,
             },
             grid_size: 9,
@@ -390,6 +402,9 @@ mod tests {
         assert_eq!(colony.resources.refined, 0.0);
         assert_eq!(colony.resources.weapons, 0.0);
         assert_eq!(colony.resources.armor, 0.0);
+        assert_eq!(colony.resources.planks, 0.0);
+        assert_eq!(colony.resources.blocks, 0.0);
+        assert_eq!(colony.resources.tools, 0.0);
 
         assert_eq!(cat.destination, None);
         assert_eq!(cat.carrying, None);
@@ -420,6 +435,30 @@ mod tests {
         assert_eq!(wire["skills"]["fetch_water"], serde_json::json!(1.5));
         let back: Cat = serde_json::from_value(wire).expect("round-trip");
         assert_eq!(back.skills, cat.skills);
+    }
+
+    #[test]
+    fn refinement_tier_resources_round_trip_and_omit_when_zero() {
+        // Zero planks/blocks/tools are omitted from the wire (skip_serializing_if).
+        let zero = Resources::default();
+        let wire = serde_json::to_value(&zero).expect("serialize");
+        assert!(wire.get("planks").is_none());
+        assert!(wire.get("blocks").is_none());
+        assert!(wire.get("tools").is_none());
+
+        // Non-zero values survive a serialize → deserialize round trip.
+        let stocked = Resources {
+            planks: 7.0,
+            blocks: 3.5,
+            tools: 2.0,
+            ..Resources::default()
+        };
+        let wire = serde_json::to_value(&stocked).expect("serialize");
+        assert_eq!(wire["planks"], serde_json::json!(7.0));
+        assert_eq!(wire["blocks"], serde_json::json!(3.5));
+        assert_eq!(wire["tools"], serde_json::json!(2.0));
+        let back: Resources = serde_json::from_value(wire).expect("round-trip");
+        assert_eq!(back, stocked);
     }
 
     #[test]

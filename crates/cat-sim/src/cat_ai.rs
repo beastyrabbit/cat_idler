@@ -113,6 +113,9 @@ mod tests {
             refined: 0.0,
             weapons: 0.0,
             armor: 0.0,
+            planks: 0.0,
+            blocks: 0.0,
+            tools: 0.0,
             blessings: 0.0,
         }
     }

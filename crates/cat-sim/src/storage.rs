@@ -13,6 +13,11 @@ pub struct StorageCapacities {
     pub refined: f64,
     pub weapons: f64,
     pub armor: f64,
+    /// Refinement tier (P12.4b): planks/blocks/tools from the wood-cutter,
+    /// stone-prep, and woodworking chains.
+    pub planks: f64,
+    pub blocks: f64,
+    pub tools: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -55,6 +60,9 @@ pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     refined: 100.0,
     weapons: 50.0,
     armor: 50.0,
+    planks: 100.0,
+    blocks: 100.0,
+    tools: 100.0,
 };
 
 /// Dry goods a single finished granary adds per level.
@@ -196,6 +204,9 @@ mod tests {
             &format!("{label} weapons"),
         );
         assert_f64_bits(actual.armor, expected.armor, &format!("{label} armor"));
+        assert_f64_bits(actual.planks, expected.planks, &format!("{label} planks"));
+        assert_f64_bits(actual.blocks, expected.blocks, &format!("{label} blocks"));
+        assert_f64_bits(actual.tools, expected.tools, &format!("{label} tools"));
     }
 
     #[test]
@@ -210,6 +221,9 @@ mod tests {
                 refined: 100.0,
                 weapons: 50.0,
                 armor: 50.0,
+                planks: 100.0,
+                blocks: 100.0,
+                tools: 100.0,
             },
             "base capacity",
         );
@@ -244,6 +258,9 @@ mod tests {
                 refined: 250.0,
                 weapons: 200.0,
                 armor: 200.0,
+                planks: 100.0,
+                blocks: 100.0,
+                tools: 100.0,
             },
             "mixed finished buildings",
         );
@@ -278,6 +295,9 @@ mod tests {
                 refined: 162.5,
                 weapons: 175.0,
                 armor: 175.0,
+                planks: 100.0,
+                blocks: 100.0,
+                tools: 100.0,
             },
             "scaled building bonuses",
         );
@@ -308,6 +328,9 @@ mod tests {
                 refined: 150.0,
                 weapons: 100.0,
                 armor: 100.0,
+                planks: 100.0,
+                blocks: 100.0,
+                tools: 100.0,
             },
             "default and minimum level",
         );

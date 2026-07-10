@@ -37,7 +37,9 @@ use crate::{
         build_colony_walk_grid, find_path,
     },
     policy::PolicyConfig,
-    production::{WorkshopOptions, advance_workshop, field_yield},
+    production::{
+        WoodworkingOptions, WorkshopOptions, advance_woodworking, advance_workshop, field_yield,
+    },
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::should_deposit,
@@ -649,6 +651,11 @@ fn starting_resources() -> Resources {
         refined: 0.0,
         weapons: 0.0,
         armor: 0.0,
+        // P12.4b refinement tier — empty at founding; the wood-cutter, stone-prep
+        // and woodworking chains build planks/blocks/tools from raw materials.
+        planks: 0.0,
+        blocks: 0.0,
+        tools: 0.0,
         blessings: 0.0,
     }
 }
@@ -1231,6 +1238,9 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     colony.resources.refined = clamp_resource(colony.resources.refined, caps.refined);
     colony.resources.weapons = clamp_resource(colony.resources.weapons, caps.weapons);
     colony.resources.armor = clamp_resource(colony.resources.armor, caps.armor);
+    colony.resources.planks = clamp_resource(colony.resources.planks, caps.planks);
+    colony.resources.blocks = clamp_resource(colony.resources.blocks, caps.blocks);
+    colony.resources.tools = clamp_resource(colony.resources.tools, caps.tools);
 }
 
 /// Phase 8: append the water crisis edge event when water crosses the low
@@ -2084,6 +2094,14 @@ fn phase_22_ritual_approval(_: &mut ColonyRuntime, _: TickGate) {}
 /// Phase 23: run fields, workshops, and smithies against patched resources and
 /// building progress.
 fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
+    // Idle mop-up for the generic workshop (P12.4a). The P16 raw-material chains
+    // (wood-cutter / stone-prep / woodworking) also refine here whenever a worker is
+    // assigned (see the match arms below), but the sim does not auto-staff them yet:
+    // parking a founding cat in a workshop moves it, and cat movement draws the shared
+    // forked movement RNG in a way a designated stockpile can perturb — breaking the
+    // "stockpiles never change the economy" determinism invariant and, if the binding
+    // sticks, starving the 5-cat start. Deliberate live-sim staffing of these chains is
+    // deferred to a slice that resolves that movement/road/pile coupling.
     auto_staff_idle_buildings(colony, BuildingType::Workshop, gate.processed_through);
     auto_staff_idle_buildings(colony, BuildingType::AccountingTent, gate.processed_through);
 
@@ -2196,6 +2214,110 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
                                 "s"
                             },
                             step.armor_produced,
+                        ),
+                    );
+                }
+                colony.buildings[building_index].production_progress = step.next_progress;
+            }
+            BuildingType::WoodCutter => {
+                // P12.4b: raw materials → planks, on the refinement-workshop cadence.
+                let worker = assigned_worker(colony, &building_id);
+                let step = advance_workshop(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    WorkshopOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_architect: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        materials_available: colony.resources.materials,
+                    },
+                );
+                if step.refined_produced > 0.0 {
+                    colony.resources.materials =
+                        (colony.resources.materials - step.materials_used).max(0.0);
+                    colony.resources.planks += step.refined_produced;
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("production".to_owned()),
+                        format!(
+                            "The wood-cutter split {} materials into {} plank{}.",
+                            step.materials_used,
+                            step.refined_produced,
+                            if step.refined_produced == 1.0 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ),
+                    );
+                }
+                colony.buildings[building_index].production_progress = step.next_progress;
+            }
+            BuildingType::StonePrep => {
+                // P12.4b: raw materials → dressed stone blocks.
+                let worker = assigned_worker(colony, &building_id);
+                let step = advance_workshop(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    WorkshopOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_architect: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        materials_available: colony.resources.materials,
+                    },
+                );
+                if step.refined_produced > 0.0 {
+                    colony.resources.materials =
+                        (colony.resources.materials - step.materials_used).max(0.0);
+                    colony.resources.blocks += step.refined_produced;
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("production".to_owned()),
+                        format!(
+                            "The stone-prep shop dressed {} materials into {} block{}.",
+                            step.materials_used,
+                            step.refined_produced,
+                            if step.refined_produced == 1.0 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ),
+                    );
+                }
+                colony.buildings[building_index].production_progress = step.next_progress;
+            }
+            BuildingType::Woodworking => {
+                // P12.4b: planks + blocks → tools (twin-input crafter).
+                let worker = assigned_worker(colony, &building_id);
+                let step = advance_woodworking(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    WoodworkingOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_architect: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        planks_available: colony.resources.planks,
+                        blocks_available: colony.resources.blocks,
+                    },
+                );
+                if step.tools_produced > 0.0 {
+                    colony.resources.planks = (colony.resources.planks - step.planks_used).max(0.0);
+                    colony.resources.blocks = (colony.resources.blocks - step.blocks_used).max(0.0);
+                    colony.resources.tools += step.tools_produced;
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("production".to_owned()),
+                        format!(
+                            "The woodworkers crafted {} tool{} from planks and blocks.",
+                            step.tools_produced,
+                            if step.tools_produced == 1.0 { "" } else { "s" }
                         ),
                     );
                 }
@@ -3116,6 +3238,9 @@ fn starting_resources_with_blessings(blessings: f64) -> Resources {
         refined: 0.0,
         weapons: 0.0,
         armor: 0.0,
+        planks: 0.0,
+        blocks: 0.0,
+        tools: 0.0,
         blessings,
     }
 }
@@ -3545,6 +3670,9 @@ fn clamp_resources_to_caps(resources: &mut Resources, caps: StorageCapacities) {
     resources.refined = clamp_resource(resources.refined, caps.refined);
     resources.weapons = clamp_resource(resources.weapons, caps.weapons);
     resources.armor = clamp_resource(resources.armor, caps.armor);
+    resources.planks = clamp_resource(resources.planks, caps.planks);
+    resources.blocks = clamp_resource(resources.blocks, caps.blocks);
+    resources.tools = clamp_resource(resources.tools, caps.tools);
 }
 
 fn clamp_resource(value: f64, cap: f64) -> f64 {
@@ -3708,7 +3836,11 @@ fn queue_job(
             if building.assigned_cat.as_deref() == Some(cat_id)
                 && matches!(
                     building.building_type,
-                    BuildingType::Workshop | BuildingType::Smithy
+                    BuildingType::Workshop
+                        | BuildingType::Smithy
+                        | BuildingType::WoodCutter
+                        | BuildingType::StonePrep
+                        | BuildingType::Woodworking
                 )
             {
                 building.assigned_cat = None;
@@ -5027,6 +5159,9 @@ mod tests {
                     refined: 0.0,
                     weapons: 0.0,
                     armor: 0.0,
+                    planks: 0.0,
+                    blocks: 0.0,
+                    tools: 0.0,
                     blessings: 0.0,
                 },
                 cats: vec![adult_idle_cat("cat-1", "colony-1")],
@@ -5093,6 +5228,9 @@ mod tests {
                     refined: 0.0,
                     weapons: 0.0,
                     armor: 0.0,
+                    planks: 0.0,
+                    blocks: 0.0,
+                    tools: 0.0,
                     blessings: 0.0,
                 },
                 cats,
@@ -5726,6 +5864,9 @@ mod tests {
                     refined: 4.0,
                     weapons: 5.0,
                     armor: 6.0,
+                    planks: 0.0,
+                    blocks: 0.0,
+                    tools: 0.0,
                     blessings: 7.0,
                 },
                 cats: vec![dead],
@@ -6319,6 +6460,129 @@ mod tests {
         );
     }
 
+    fn chain_colony(
+        building_type: BuildingType,
+        resources: Resources,
+        staffed: bool,
+    ) -> ColonyRuntime {
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources,
+            cats: vec![adult_idle_cat("crafter", "colony-1")],
+            buildings: vec![BuildingRuntime {
+                id: "chain-1".to_owned(),
+                building_type,
+                level: 1,
+                position: TilePos { x: 12, y: 12 },
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 590.0,
+                assigned_cat: staffed.then(|| "crafter".to_owned()),
+            }],
+            last_tick: 0,
+            test_rng_seed: Some(1),
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        colony
+    }
+
+    #[test]
+    fn wood_cutter_refines_materials_into_planks_only_when_staffed() {
+        // Staffed: 590 + 30 ≥ 600 completes one cycle → 5 materials become 1 plank.
+        let mut staffed = chain_colony(
+            BuildingType::WoodCutter,
+            Resources {
+                materials: 50.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut staffed, production_gate(30, 30_000));
+        assert_eq!(staffed.resources.planks, 1.0);
+        assert_eq!(staffed.resources.materials, 45.0);
+
+        // Unstaffed: the sim does not auto-staff the raw-material chains, so the idle cat
+        // is left alone and the shop makes no conversion — materials and planks untouched.
+        let mut idle = chain_colony(
+            BuildingType::WoodCutter,
+            Resources {
+                materials: 50.0,
+                ..Resources::default()
+            },
+            false,
+        );
+        phase_23_production(&mut idle, production_gate(30, 30_000));
+        assert_eq!(idle.resources.planks, 0.0);
+        assert_eq!(idle.resources.materials, 50.0);
+    }
+
+    #[test]
+    fn stone_prep_dresses_materials_into_blocks_when_staffed() {
+        let mut colony = chain_colony(
+            BuildingType::StonePrep,
+            Resources {
+                materials: 50.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+        assert_eq!(colony.resources.blocks, 1.0);
+        assert_eq!(colony.resources.materials, 45.0);
+    }
+
+    #[test]
+    fn woodworking_crafts_tools_from_planks_and_blocks_only_when_both_present() {
+        // Both inputs present → one cycle consumes 2 planks + 2 blocks → 1 tool.
+        let mut colony = chain_colony(
+            BuildingType::Woodworking,
+            Resources {
+                planks: 10.0,
+                blocks: 10.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+        assert_eq!(colony.resources.tools, 1.0);
+        assert_eq!(colony.resources.planks, 8.0);
+        assert_eq!(colony.resources.blocks, 8.0);
+
+        // Missing blocks → the bench stalls, tools stay at zero.
+        let mut starved = chain_colony(
+            BuildingType::Woodworking,
+            Resources {
+                planks: 10.0,
+                blocks: 0.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut starved, production_gate(30, 30_000));
+        assert_eq!(starved.resources.tools, 0.0);
+        assert_eq!(starved.resources.planks, 10.0);
+    }
+
+    #[test]
+    fn staffed_wood_cutter_accumulates_planks_over_many_ticks() {
+        let mut colony = chain_colony(
+            BuildingType::WoodCutter,
+            Resources {
+                materials: 100.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.buildings[0].production_progress = 0.0;
+        // Ten 600s ticks = ten cycles = 50 materials → 10 planks.
+        for step in 1..=10 {
+            phase_23_production(&mut colony, production_gate(600, i64::from(step) * 600_000));
+        }
+        assert_eq!(colony.resources.planks, 10.0);
+        assert_eq!(colony.resources.materials, 50.0);
+    }
+
     #[test]
     fn production_routing_leaves_the_resource_aggregate_identical() {
         // A designated pile reroutes where the output *piles*, but the authoritative
@@ -6880,6 +7144,9 @@ mod tests {
             refined: 20.0,
             weapons: 0.0,
             armor: 0.0,
+            planks: 0.0,
+            blocks: 0.0,
+            tools: 0.0,
             blessings: 0.0,
         }
     }

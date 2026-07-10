@@ -368,6 +368,9 @@ mod tests {
                 refined: 5.0,
                 weapons: 2.0,
                 armor: 3.0,
+                planks: 0.0,
+                blocks: 0.0,
+                tools: 0.0,
                 blessings: 999.0,
             }),
             140.0
