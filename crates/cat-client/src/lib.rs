@@ -21,8 +21,8 @@ use bevy::sprite::{Anchor, BorderRect, SliceScaleMode, TextureSlicer};
 use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction,
     ColonySnapshot, FootprintSize, GateSide, JobKind, OfficerRole, RaiderStatus, ResourceAmounts,
-    ResourceKind, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, WorldSnapshot,
-    ZoneKind,
+    ResourceCapacities, ResourceKind, Specialization, StockLedgerSnapshot, StockpileSnapshot,
+    TilePoint, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::Biome;
 use cat_sim::terrain_gen::{
@@ -633,9 +633,18 @@ struct VacateButton(OfficerRole);
 /// "Appoint <role>" button in the cat inspector.
 #[derive(Component, Clone, Copy)]
 struct AppointButton(OfficerRole);
-/// Marker for the HUD dashboard text.
+/// Marker for the HUD colony header text (name / leader / pop / threat).
 #[derive(Component)]
-struct HudText;
+struct HudHeaderText;
+/// Marker for the HUD jobs + ledger footer text.
+#[derive(Component)]
+struct HudFooterText;
+/// Marker for the cursor-following hover tooltip panel.
+#[derive(Component)]
+struct TooltipPanel;
+/// Marker for the hover tooltip's text.
+#[derive(Component)]
+struct TooltipText;
 /// Marker for the event-log text.
 #[derive(Component)]
 struct EventLogText;
@@ -683,6 +692,13 @@ const STORABLE_KINDS: [ResourceKind; 7] = [
 type BuildingEntities = Or<(With<BuildingSprite>, With<BuildingLabel>)>;
 /// Query filter for the per-tick redraw of stockpile visuals + highlight.
 type StockpileEntities = Or<(With<StockpileVis>, With<StockpileHighlight>)>;
+/// Query for the HUD resource value texts, disjoint from the header/footer texts.
+type HudResourceQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Text, &'static HudResource),
+    (Without<HudHeaderText>, Without<HudFooterText>),
+>;
 /// Change filter for the accept-type picker button.
 type AcceptButtonQuery<'w, 's> = Query<
     'w,
@@ -773,6 +789,7 @@ pub fn run() {
                     move_bodies,
                     follow_overlays,
                     animate_sprites,
+                    hover_tooltip,
                 ),
                 // input, tools + HUD
                 (
@@ -801,6 +818,93 @@ pub fn run() {
         .run();
 }
 
+/// Board-game glyph icons (white, recolorable) for the HUD resource readout.
+#[derive(Resource, Clone)]
+struct IconArt {
+    food: Handle<Image>,
+    water: Handle<Image>,
+    materials: Handle<Image>,
+    refined: Handle<Image>,
+    herbs: Handle<Image>,
+    weapons: Handle<Image>,
+    armor: Handle<Image>,
+    blessings: Handle<Image>,
+}
+
+impl IconArt {
+    fn load(assets: &AssetServer) -> Self {
+        Self {
+            food: assets.load("public/images/game/icons/food.png"),
+            water: assets.load("public/images/game/icons/water.png"),
+            materials: assets.load("public/images/game/icons/materials.png"),
+            refined: assets.load("public/images/game/icons/refined.png"),
+            herbs: assets.load("public/images/game/icons/herbs.png"),
+            weapons: assets.load("public/images/game/icons/weapons.png"),
+            armor: assets.load("public/images/game/icons/armor.png"),
+            blessings: assets.load("public/images/game/icons/blessings.png"),
+        }
+    }
+
+    fn get(&self, kind: ResourceKind) -> Handle<Image> {
+        match kind {
+            ResourceKind::Food => self.food.clone(),
+            ResourceKind::Water => self.water.clone(),
+            ResourceKind::Materials => self.materials.clone(),
+            ResourceKind::Refined => self.refined.clone(),
+            ResourceKind::Herbs => self.herbs.clone(),
+            ResourceKind::Weapons => self.weapons.clone(),
+            ResourceKind::Armor => self.armor.clone(),
+            ResourceKind::Blessings => self.blessings.clone(),
+        }
+    }
+}
+
+/// The eight HUD resources, in display order.
+const HUD_RESOURCES: [ResourceKind; 8] = [
+    ResourceKind::Food,
+    ResourceKind::Water,
+    ResourceKind::Materials,
+    ResourceKind::Refined,
+    ResourceKind::Herbs,
+    ResourceKind::Weapons,
+    ResourceKind::Armor,
+    ResourceKind::Blessings,
+];
+
+/// Tags a HUD value `Text` with the resource it reports, so one system can
+/// refresh every readout.
+#[derive(Component, Clone, Copy)]
+struct HudResource(ResourceKind);
+
+/// The tint applied to a resource's white glyph so the readout reads at a glance.
+fn resource_icon_tint(kind: ResourceKind) -> Color {
+    match kind {
+        ResourceKind::Food => Color::srgb(0.87, 0.35, 0.26),
+        ResourceKind::Water => Color::srgb(0.36, 0.62, 0.93),
+        ResourceKind::Materials => Color::srgb(0.62, 0.46, 0.29),
+        ResourceKind::Refined => Color::srgb(0.86, 0.71, 0.40),
+        ResourceKind::Herbs => Color::srgb(0.51, 0.79, 0.42),
+        ResourceKind::Weapons => Color::srgb(0.74, 0.76, 0.82),
+        ResourceKind::Armor => Color::srgb(0.56, 0.64, 0.76),
+        ResourceKind::Blessings => Color::srgb(0.96, 0.80, 0.32),
+    }
+}
+
+/// The HUD value text for a resource: `value / cap` for capped storables, a bare
+/// value for weapons/armor, and one decimal for blessings.
+fn hud_resource_value(kind: ResourceKind, r: &ResourceAmounts, cap: &ResourceCapacities) -> String {
+    match kind {
+        ResourceKind::Food => format!("{:.0} / {:.0}", r.food, cap.food),
+        ResourceKind::Water => format!("{:.0} / {:.0}", r.water, cap.water),
+        ResourceKind::Materials => format!("{:.0} / {:.0}", r.materials, cap.materials),
+        ResourceKind::Refined => format!("{:.0} / {:.0}", r.refined, cap.refined),
+        ResourceKind::Herbs => format!("{:.0} / {:.0}", r.herbs, cap.herbs),
+        ResourceKind::Weapons => format!("{:.0}", r.weapons),
+        ResourceKind::Armor => format!("{:.0}", r.armor),
+        ResourceKind::Blessings => format!("{:.1}", r.blessings),
+    }
+}
+
 fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
@@ -808,6 +912,8 @@ fn setup(
 ) {
     commands.insert_resource(TerrainArt::load(&asset_server));
     commands.insert_resource(BuildingArt::load(&asset_server));
+    let icons = IconArt::load(&asset_server);
+    commands.insert_resource(icons.clone());
     commands.insert_resource(PropArt::load(&asset_server));
     commands.insert_resource(InfraArt::load(&asset_server));
     commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
@@ -853,6 +959,7 @@ fn setup(
                     TextColor(Color::srgb(1.0, 0.97, 0.90)),
                 )],
             ));
+            // Colony header (name / leader / pop / threat).
             panel.spawn((
                 Text::new("connecting…"),
                 TextFont {
@@ -860,7 +967,60 @@ fn setup(
                     ..default()
                 },
                 TextColor(PARCHMENT_INK),
-                HudText,
+                HudHeaderText,
+            ));
+            // Resource readout: a tinted glyph + value per resource.
+            panel
+                .spawn(Node {
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Column,
+                    row_gap: Val::Px(3.0),
+                    ..default()
+                })
+                .with_children(|grid| {
+                    for kind in HUD_RESOURCES {
+                        grid.spawn((
+                            Node {
+                                width: Val::Percent(100.0),
+                                align_items: AlignItems::Center,
+                                column_gap: Val::Px(7.0),
+                                ..default()
+                            },
+                            children![
+                                (
+                                    Node {
+                                        width: Val::Px(16.0),
+                                        height: Val::Px(16.0),
+                                        ..default()
+                                    },
+                                    ImageNode {
+                                        image: icons.get(kind),
+                                        color: resource_icon_tint(kind),
+                                        ..default()
+                                    },
+                                ),
+                                (
+                                    Text::new("-"),
+                                    TextFont {
+                                        font_size: FontSize::Px(13.0),
+                                        ..default()
+                                    },
+                                    TextColor(PARCHMENT_INK),
+                                    HudResource(kind),
+                                ),
+                            ],
+                        ));
+                    }
+                });
+            // Jobs + ledger footer.
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(PARCHMENT_INK),
+                HudFooterText,
             ));
         });
 
@@ -883,6 +1043,32 @@ fn setup(
             },
             TextColor(PARCHMENT_INK),
             EventLogText,
+        )],
+    ));
+
+    // Hover tooltip (small, follows the cursor), hidden until hovering an entity.
+    // High GlobalZIndex keeps it above the other panels.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(0.0),
+            top: Val::Px(0.0),
+            max_width: Val::Px(250.0),
+            padding: UiRect::all(Val::Px(20.0)),
+            display: Display::None,
+            ..default()
+        },
+        sliced_image(ui.panel.clone(), PANEL_BORDER),
+        GlobalZIndex(100),
+        TooltipPanel,
+        children![(
+            Text::new(""),
+            TextFont {
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextColor(PARCHMENT_INK),
+            TooltipText,
         )],
     ));
 
@@ -2272,6 +2458,131 @@ fn cursor_world(
     camera.viewport_to_world_2d(cam_tf, cursor).ok()
 }
 
+/// Small hover tooltip (P15 "small" tier): on mouse-hover over any world entity,
+/// show a compact panel of its key live state near the cursor. Separate from the
+/// right-click big inspector panels, which stay.
+fn hover_tooltip(
+    windows: Query<&Window>,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    ui: Query<&Interaction, With<Button>>,
+    latest: Res<LatestSnapshot>,
+    mut panel: Query<&mut Node, With<TooltipPanel>>,
+    mut text: Query<&mut Text, With<TooltipText>>,
+) {
+    let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
+        return;
+    };
+    // Don't cover the toolbar: suppress while hovering a button.
+    let over_button = ui.iter().any(|i| !matches!(i, Interaction::None));
+    let hovered = (!over_button)
+        .then(|| windows.single().ok().and_then(|w| w.cursor_position()))
+        .flatten()
+        .zip(cursor_world(&windows, &camera))
+        .and_then(|(cursor, world)| {
+            let colony = latest.0.as_ref()?.colonies.first()?;
+            Some((cursor, hover_text(colony, world)?))
+        });
+    match hovered {
+        Some((cursor, tip)) => {
+            text.0 = tip;
+            node.display = Display::Flex;
+            node.left = Val::Px(cursor.x + 16.0);
+            node.top = Val::Px(cursor.y + 16.0);
+        }
+        None => node.display = Display::None,
+    }
+}
+
+/// The tooltip text for whatever world entity sits under `world` (cats first,
+/// then buildings, then stockpiles), or `None` when nothing is close enough.
+fn hover_text(colony: &ColonySnapshot, world: Vec2) -> Option<String> {
+    let cats: Vec<(String, Vec2)> = colony
+        .cats
+        .iter()
+        .filter(|c| c.death_time.is_none())
+        .map(|c| (c.id.clone(), grid_to_world(c.position.x, c.position.y)))
+        .collect();
+    if let Some(id) = nearest_id(world, &cats, TILE * 0.6)
+        && let Some(cat) = colony.cats.iter().find(|c| c.id == id)
+    {
+        return Some(cat_tooltip(cat));
+    }
+
+    let buildings: Vec<(String, Vec2)> = colony
+        .buildings
+        .iter()
+        .filter(|b| building_texture(b.building_type).is_some())
+        .map(|b| {
+            (
+                b.id.clone(),
+                grid_to_world(b.world_position.x, b.world_position.y),
+            )
+        })
+        .collect();
+    if let Some(id) = nearest_id(world, &buildings, TILE * 0.9)
+        && let Some(b) = colony.buildings.iter().find(|b| b.id == id)
+    {
+        return Some(building_tooltip(b, colony));
+    }
+
+    let tile = world_to_tile(world);
+    colony
+        .stockpiles
+        .iter()
+        .find(|s| point_in_stockpile(tile, s))
+        .map(stockpile_tooltip)
+}
+
+/// Compact hover text for a cat: name, specialization + activity, needs summary.
+fn cat_tooltip(cat: &CatSnapshot) -> String {
+    let n = &cat.needs;
+    format!(
+        "{name}\n\
+         {spec} - {activity}\n\
+         hunger {h:.0}  thirst {t:.0}  rest {r:.0}  health {hp:.0}",
+        name = cat.name,
+        spec = specialization_name(cat.specialization),
+        activity = activity_name(cat.activity),
+        h = n.hunger,
+        t = n.thirst,
+        r = n.rest,
+        hp = n.health,
+    )
+}
+
+/// Compact hover text for a building: name/level, operational state, worker.
+fn building_tooltip(building: &BuildingSnapshot, colony: &ColonySnapshot) -> String {
+    let status = if building.construction_progress >= 100.0 {
+        "operational".to_string()
+    } else {
+        format!("under construction {:.0}%", building.construction_progress)
+    };
+    let worker = colony
+        .cats
+        .iter()
+        .find(|c| c.assigned_building_id.as_deref() == Some(building.id.as_str()))
+        .map_or_else(String::new, |c| format!("\nworker: {}", c.name));
+    format!(
+        "{name}  Lv {lvl}\n{status}{worker}",
+        name = building_label(building.building_type),
+        lvl = building.level,
+    )
+}
+
+/// Compact hover text for a stockpile: what it accepts + rough contents.
+fn stockpile_tooltip(pile: &StockpileSnapshot) -> String {
+    let title = if pile.id == SHRINE_STOCKPILE_ID {
+        "Shrine reservoir"
+    } else {
+        "Stockpile"
+    };
+    format!(
+        "{title}\naccepts {accepts}\ncontents ~{total:.0}",
+        accepts = accepts_label(&pile.accepts),
+        total = resource_total(&pile.contents),
+    )
+}
+
 /// Toolbar tool-mode toggles: set the active mode, tint buttons by state, and
 /// cancel any in-progress drag when leaving a zone mode.
 fn handle_tool_buttons(
@@ -2465,55 +2776,60 @@ fn camera_controls(
     }
 }
 
-fn update_hud(latest: Res<LatestSnapshot>, mut hud: Query<&mut Text, With<HudText>>) {
+fn update_hud(
+    latest: Res<LatestSnapshot>,
+    mut header: Query<&mut Text, (With<HudHeaderText>, Without<HudFooterText>)>,
+    mut footer: Query<&mut Text, (With<HudFooterText>, Without<HudHeaderText>)>,
+    mut values: HudResourceQuery,
+) {
     if !latest.is_changed() {
         return;
     }
-    let Ok(mut text) = hud.single_mut() else {
+    let (Ok(mut header), Ok(mut footer)) = (header.single_mut(), footer.single_mut()) else {
         return;
     };
+    let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
     let Some(world) = latest.0.as_ref() else {
-        text.0 = "connecting…".to_string();
+        header.0 = "connecting…".to_string();
+        footer.0 = String::new();
+        for (mut text, _) in &mut values {
+            text.0 = "-".to_string();
+        }
         return;
     };
-    let Some(colony) = world.colonies.first() else {
-        text.0 = format!(
-            "Idle Cat Forest\nonline: {}\nNo colony yet - press Found village.",
+    let Some(colony) = colony else {
+        header.0 = format!(
+            "online {}\nNo colony yet - press Found village.",
             world.online_count
         );
+        footer.0 = String::new();
+        for (mut text, _) in &mut values {
+            text.0 = "-".to_string();
+        }
         return;
     };
-    text.0 = dashboard_text(colony, world.online_count);
-}
-
-fn dashboard_text(colony: &ColonySnapshot, online: u32) -> String {
+    header.0 = dashboard_header_text(colony, world.online_count);
+    footer.0 = dashboard_footer_text(colony);
     let r = &colony.resources;
     let cap = &colony.storage.capacities;
+    for (mut text, res) in &mut values {
+        text.0 = hud_resource_value(res.0, r, cap);
+    }
+}
+
+/// The HUD colony header (name / leader / pop / threat) shown above the resource
+/// icon rows.
+fn dashboard_header_text(colony: &ColonySnapshot, online: u32) -> String {
     let leader = colony
         .leader
         .as_ref()
         .map_or_else(|| "none".to_string(), |l| l.name.clone());
-    let active_jobs = colony
-        .jobs
-        .iter()
-        .filter(|j| matches!(j.status, cat_protocol::JobStatus::Active))
-        .count();
     format!(
         "online {online}\n\
          Colony: {name}  [{status:?}]\n\
          Leader: {leader}\n\
          Pop {pop}/{cap_house}  Village Lv {lvl}\n\
-         Threat: {threat:?} ({pressure:.0})  warriors {warriors}\n\
-         \n\
-         Food      {food:>5.0} / {food_cap:.0}\n\
-         Water     {water:>5.0} / {water_cap:.0}\n\
-         Materials {mat:>5.0} / {mat_cap:.0}\n\
-         Refined   {ref_:>5.0} / {ref_cap:.0}\n\
-         Herbs     {herbs:>5.0} / {herbs_cap:.0}\n\
-         Weapons   {weap:>5.0}   Armor {armor:.0}\n\
-         Blessings {bless:>5.1}\n\
-         \n\
-         Active jobs: {active_jobs}   Total jobs: {jobs}{ledger}",
+         Threat: {threat:?} ({pressure:.0})  warriors {warriors}",
         name = colony.name,
         status = colony.status,
         pop = colony.housing.population,
@@ -2522,19 +2838,18 @@ fn dashboard_text(colony: &ColonySnapshot, online: u32) -> String {
         threat = colony.threat.band,
         pressure = colony.threat.pressure,
         warriors = colony.threat.warriors,
-        food = r.food,
-        food_cap = cap.food,
-        water = r.water,
-        water_cap = cap.water,
-        mat = r.materials,
-        mat_cap = cap.materials,
-        ref_ = r.refined,
-        ref_cap = cap.refined,
-        herbs = r.herbs,
-        herbs_cap = cap.herbs,
-        weap = r.weapons,
-        armor = r.armor,
-        bless = r.blessings,
+    )
+}
+
+/// The HUD footer (job counts + stock ledger) shown below the resource rows.
+fn dashboard_footer_text(colony: &ColonySnapshot) -> String {
+    let active_jobs = colony
+        .jobs
+        .iter()
+        .filter(|j| matches!(j.status, cat_protocol::JobStatus::Active))
+        .count();
+    format!(
+        "Active jobs: {active_jobs}   Total jobs: {jobs}{ledger}",
         jobs = colony.jobs.len(),
         ledger = colony
             .stock_ledger
@@ -3578,6 +3893,117 @@ mod tests {
     }
 
     #[test]
+    fn resource_icons_map_all_kinds_to_distinct_tints() {
+        // Every HUD resource has a tint, and neighbouring resources differ so the
+        // readout reads at a glance.
+        let tints: Vec<Color> = HUD_RESOURCES
+            .iter()
+            .map(|k| resource_icon_tint(*k))
+            .collect();
+        assert_eq!(tints.len(), 8);
+        assert_ne!(
+            resource_icon_tint(ResourceKind::Food),
+            resource_icon_tint(ResourceKind::Water)
+        );
+        assert_ne!(
+            resource_icon_tint(ResourceKind::Materials),
+            resource_icon_tint(ResourceKind::Refined)
+        );
+    }
+
+    #[test]
+    fn hud_resource_value_formats_caps_and_bare_values() {
+        let r = ResourceAmounts {
+            food: 150.0,
+            water: 100.0,
+            herbs: 16.0,
+            materials: 24.0,
+            refined: 0.0,
+            weapons: 3.0,
+            armor: 2.0,
+            blessings: 4.5,
+        };
+        let cap = ResourceCapacities {
+            food: 200.0,
+            water: 200.0,
+            herbs: 100.0,
+            materials: 100.0,
+            refined: 100.0,
+            weapons: 0.0,
+            armor: 0.0,
+        };
+        assert_eq!(
+            hud_resource_value(ResourceKind::Food, &r, &cap),
+            "150 / 200"
+        );
+        assert_eq!(hud_resource_value(ResourceKind::Weapons, &r, &cap), "3");
+        assert_eq!(hud_resource_value(ResourceKind::Blessings, &r, &cap), "4.5");
+    }
+
+    #[test]
+    fn stockpile_tooltip_names_shrine_and_reports_contents() {
+        let pile = StockpileSnapshot {
+            id: "stockpile-1".to_string(),
+            x1: 0,
+            y1: 0,
+            x2: 1,
+            y2: 1,
+            accepts: vec![ResourceKind::Food],
+            contents: ResourceAmounts {
+                food: 12.0,
+                water: 0.0,
+                herbs: 0.0,
+                materials: 0.0,
+                refined: 0.0,
+                weapons: 0.0,
+                armor: 0.0,
+                blessings: 0.0,
+            },
+        };
+        let tip = stockpile_tooltip(&pile);
+        assert!(tip.contains("Stockpile"));
+        assert!(tip.contains("food only"));
+        assert!(tip.contains("~12"));
+
+        let shrine = StockpileSnapshot {
+            id: SHRINE_STOCKPILE_ID.to_string(),
+            ..pile
+        };
+        assert!(stockpile_tooltip(&shrine).contains("Shrine reservoir"));
+    }
+
+    #[test]
+    fn hover_text_picks_the_cat_under_the_cursor() {
+        let json = r#"{
+            "now": 0, "worldSeed": 1, "onlineCount": 1,
+            "colonies": [{
+                "id":"c1","name":"A","status":"thriving",
+                "resources":{"food":1,"water":1,"herbs":0,"materials":0,"refined":0,"weapons":0,"armor":0,"blessings":0},
+                "storage":{"capacities":{"food":200,"water":200,"herbs":100,"materials":100,"refined":100,"weapons":50,"armor":50},"foodCapacity":200,"titheRates":{"food":20,"refined":5}},
+                "leader":null,
+                "cats":[
+                    {"id":"k1","name":"Milo","position":{"map":"colony","x":1,"y":2},"activity":"idle","destination":null,"carrying":null,"specialization":null,"ageHours":30.0,"needs":{"hunger":80,"thirst":70,"rest":60,"health":90},"currentTask":null,"assignedBuildingId":null,"roleXp":{"hunter":0,"architect":0,"ritualist":0,"warrior":0},"stats":{"leadership":10},"deathTime":null}
+                ],
+                "jobs":[],"upgrades":[],"events":[],
+                "housing":{"population":1,"capacity":4,"pressure":0.5,"villageLevel":1},
+                "research":{"ownedNodeIds":[],"researchPoints":0,"researcherCount":0,"blessings":0,"nextTarget":null},
+                "election":null,"voteKick":null,"zones":[],
+                "threat":{"pressure":0,"band":"calm","raidActive":false,"warriors":0,"weapons":0,"armor":0},
+                "raiders":[],"buildings":[],"stockpiles":[],"claimedTiles":[],"villageGate":null,"villageRadius":4,"anchor":{"x":6,"y":6}
+            }]
+        }"#;
+        let snap: WorldSnapshot = serde_json::from_str(json).expect("parse snapshot");
+        let colony = &snap.colonies[0];
+        // The cat sits on tile (1,2); its world position is where the cursor picks it.
+        let at_cat = grid_to_world(1, 2);
+        let tip = hover_text(colony, at_cat).expect("cat tooltip");
+        assert!(tip.contains("Milo"));
+        assert!(tip.contains("hunger 80"));
+        // Far-away empty ground yields no tooltip.
+        assert!(hover_text(colony, Vec2::new(9000.0, 9000.0)).is_none());
+    }
+
+    #[test]
     fn all_building_types_have_labels() {
         for building in [
             BuildingType::Shrine,
@@ -3616,7 +4042,7 @@ mod tests {
         assert_eq!(snap.colonies.len(), 1);
         assert_eq!(snap.colonies[0].cats.len(), 2);
         assert_eq!(snap.online_count, 2);
-        assert!(dashboard_text(&snap.colonies[0], 2).contains("Colony: A"));
+        assert!(dashboard_header_text(&snap.colonies[0], 2).contains("Colony: A"));
     }
 
     #[test]
