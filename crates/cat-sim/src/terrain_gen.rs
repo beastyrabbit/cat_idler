@@ -514,6 +514,27 @@ pub fn generate_terrain_chunk(
     tiles
 }
 
+/// Whether the deterministic terrain generator places a tree decoration on the
+/// world tile `(x, y)` for `world_seed`. Mirrors exactly what the client renders
+/// from `generate_terrain_chunk(.., WORLD_TERRAIN_OPTIONS)`, so the simulation and
+/// the renderer agree on where trees stand. Trees are otherwise client-only, so
+/// this is how the sim "sees" them for placement/occupancy (buildings avoid trees).
+#[must_use]
+pub fn tile_has_tree(world_seed: u32, x: i32, y: i32) -> bool {
+    let chunk_x = floor_div(x, TERRAIN_CHUNK_SIZE);
+    let chunk_y = floor_div(y, TERRAIN_CHUNK_SIZE);
+    generate_terrain_chunk(
+        chunk_x,
+        chunk_y,
+        i64::from(world_seed),
+        WORLD_TERRAIN_OPTIONS,
+    )
+    .into_iter()
+    .any(|tile| {
+        tile.x == x && tile.y == y && matches!(tile.decoration, Some(DecorationRole::Tree { .. }))
+    })
+}
+
 fn resolve_options(opts: TerrainOptions) -> ResolvedOptions {
     ResolvedOptions {
         max_height: opts.max_height.unwrap_or(DEFAULT_MAX_HEIGHT),
@@ -2034,6 +2055,34 @@ mod tests {
                 case.x,
                 case.y
             );
+        }
+    }
+
+    #[test]
+    fn tile_has_tree_matches_the_generated_chunk_decoration() {
+        // `tile_has_tree` must agree, tile-for-tile, with what the terrain generator
+        // (and hence the client renderer) places, across chunk boundaries too.
+        let seed = 123u32;
+        for chunk_x in -1..=1 {
+            for chunk_y in -1..=1 {
+                let chunk = generate_terrain_chunk(
+                    chunk_x,
+                    chunk_y,
+                    i64::from(seed),
+                    WORLD_TERRAIN_OPTIONS,
+                );
+                for terrain_tile in chunk {
+                    let expected =
+                        matches!(terrain_tile.decoration, Some(DecorationRole::Tree { .. }));
+                    assert_eq!(
+                        tile_has_tree(seed, terrain_tile.x, terrain_tile.y),
+                        expected,
+                        "tree mismatch at {},{}",
+                        terrain_tile.x,
+                        terrain_tile.y
+                    );
+                }
+            }
         }
     }
 

@@ -456,6 +456,26 @@ pub struct BuildingSnapshot {
     pub construction_progress: f64,
     pub world_position: TilePoint,
     pub position: TilePoint,
+    /// Tile footprint (`width` x `height`) the building occupies, anchored at
+    /// `position`/`world_position` (its north-west corner). Derived from the building
+    /// type in the sim; defaults to 1x1 for back-compat with older snapshots.
+    #[serde(default = "default_footprint")]
+    pub footprint: FootprintSize,
+}
+
+/// A building's tile footprint size, in tiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FootprintSize {
+    pub width: i32,
+    pub height: i32,
+}
+
+fn default_footprint() -> FootprintSize {
+    FootprintSize {
+        width: 1,
+        height: 1,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -985,6 +1005,10 @@ mod tests {
                     construction_progress: 100.0,
                     world_position: TilePoint { x: 6, y: 6 },
                     position: TilePoint { x: 0, y: 0 },
+                    footprint: FootprintSize {
+                        width: 3,
+                        height: 3,
+                    },
                 }],
                 claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 village_gate: Some(GatePlacement {

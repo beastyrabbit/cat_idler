@@ -63,8 +63,8 @@ use crate::{
         gate_placement_default, is_inside_village, should_expand, side_delta,
     },
     village_layout::{
-        GridPos, SHRINE_LOCAL, VILLAGE_ANCHOR, colony_to_world, next_building_site_default,
-        ring_cells, village_ring_radius, world_to_colony,
+        DEFAULT_MAX_RING, GridPos, SHRINE_LOCAL, VILLAGE_ANCHOR, colony_to_world,
+        next_building_site_with_blocked, ring_cells, village_ring_radius,
     },
     warriors::{
         CombatModifiers, DefenseStock, MusterCombatant, WARRIOR_XP_PER_RAID, can_fight,
@@ -206,6 +206,97 @@ pub struct BuildingRuntime {
     pub construction_progress: u8,
     pub production_progress: f64,
     pub assigned_cat: Option<CatId>,
+}
+
+/// Tile footprint `(width, height)` a building of `building_type` occupies.
+///
+/// The footprint is a pure function of the building type — it is *derived*, never
+/// persisted, so a building still stores only `position + type`. `position` is the
+/// footprint's **anchor = its minimum (north-west) corner**; the building covers the
+/// half-open rectangle `[x, x + w) x [y, y + h)` (see [`footprint_tiles`]).
+#[must_use]
+pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
+    match building_type {
+        // The shrine is the village hub — the largest footprint.
+        BuildingType::Shrine => (3, 3),
+        // Workhouses and the storehouse are long sheds.
+        BuildingType::Workshop | BuildingType::Smithy | BuildingType::FoodStorage => (2, 3),
+        // Dwellings, gardens and the mid buildings take a tidy 2x2.
+        BuildingType::Den
+        | BuildingType::Beds
+        | BuildingType::Nursery
+        | BuildingType::HerbGarden
+        | BuildingType::ElderCorner
+        | BuildingType::MouseFarm
+        | BuildingType::Field
+        | BuildingType::Barracks
+        | BuildingType::AccountingTent => (2, 2),
+        // Bowls and wall segments are single tiles.
+        BuildingType::WaterBowl | BuildingType::Walls => (1, 1),
+    }
+}
+
+/// The tiles covered by a `w x h` footprint anchored at its north-west corner
+/// `position` — i.e. `[x, x + w) x [y, y + h)`, row-major. Empty if `w`/`h` <= 0.
+#[must_use]
+pub fn footprint_tiles(position: TilePos, w: i32, h: i32) -> Vec<TilePos> {
+    let mut tiles = Vec::with_capacity((w.max(0) * h.max(0)) as usize);
+    for dy in 0..h {
+        for dx in 0..w {
+            tiles.push(TilePos {
+                x: position.x + dx,
+                y: position.y + dy,
+            });
+        }
+    }
+    tiles
+}
+
+/// Tiles covered by an existing building's derived footprint.
+fn building_footprint_tiles(building: &BuildingRuntime) -> Vec<TilePos> {
+    let (w, h) = footprint_for(building.building_type);
+    footprint_tiles(building.position, w, h)
+}
+
+/// Every tile currently covered by any building's footprint.
+fn occupied_building_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
+    colony
+        .buildings
+        .iter()
+        .flat_map(building_footprint_tiles)
+        .collect()
+}
+
+/// Whether `tile` sits on the fence perimeter (the palisade wall ring): a tile that
+/// is *not* claimed village ground but orthogonally borders it. Buildings must not
+/// straddle the wall — since placement also requires the whole footprint to lie
+/// inside `claimed_tiles`, perimeter tiles are excluded both ways.
+fn tile_is_on_fence_perimeter(claimed: &HashSet<TilePos>, tile: TilePos) -> bool {
+    if claimed.contains(&tile) {
+        return false;
+    }
+    [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|(dx, dy)| {
+        claimed.contains(&TilePos {
+            x: tile.x + dx,
+            y: tile.y + dy,
+        })
+    })
+}
+
+/// Whether `tile` can host (part of) a building footprint. True when the tile is
+/// already covered by another building, holds water, holds a (client-rendered,
+/// terrain-generated) tree, or lies on the fence perimeter (wall).
+///
+/// `world_seed` is required for the deterministic tree query — trees are otherwise
+/// client-only, so the sim reconstructs them from the same terrain generator the
+/// renderer uses (see [`crate::terrain_gen::tile_has_tree`]).
+#[must_use]
+pub fn tile_is_occupied(colony: &ColonyRuntime, tile: TilePos, world_seed: u32) -> bool {
+    let claimed: HashSet<TilePos> = colony.claimed_tiles.iter().copied().collect();
+    occupied_building_tiles(colony).contains(&tile)
+        || tile_has_water(colony.world_tiles.get(&tile))
+        || crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y)
+        || tile_is_on_fence_perimeter(&claimed, tile)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -476,7 +567,7 @@ pub fn found_colony(
         status: ColonyStatus::Starting,
         resources: starting_resources(),
         cats: create_starter_cats(&colony_id, now_ms, seed),
-        buildings: starter_buildings(),
+        buildings: starter_buildings(world_seed),
         world_tiles: starter_world_tiles(world_seed),
         claimed_tiles: founding_claimed_tiles(),
         run_number: 1,
@@ -627,13 +718,22 @@ fn starter_sprite_params(
     }
 }
 
-fn starter_buildings() -> Vec<BuildingRuntime> {
-    let mut occupied = Vec::new();
+fn starter_buildings(world_seed: u32) -> Vec<BuildingRuntime> {
+    // The founding village ground; every starter footprint must fit inside it.
+    let claimed: HashSet<TilePos> = founding_claimed_tiles().into_iter().collect();
+
+    // The shrine is always placed first at the anchor — its footprint clears whatever
+    // terrain sat there, so it never fails.
+    let shrine_pos = grid_to_tile(colony_to_world(SHRINE_LOCAL));
+    let (shrine_w, shrine_h) = footprint_for(BuildingType::Shrine);
+    let mut occupied: HashSet<TilePos> = footprint_tiles(shrine_pos, shrine_w, shrine_h)
+        .into_iter()
+        .collect();
     let mut buildings = vec![BuildingRuntime {
         id: "building-shrine".to_owned(),
         building_type: BuildingType::Shrine,
         level: 1,
-        position: grid_to_tile(colony_to_world(SHRINE_LOCAL)),
+        position: shrine_pos,
         is_complete: true,
         construction_progress: 100,
         production_progress: 0.0,
@@ -649,15 +749,42 @@ fn starter_buildings() -> Vec<BuildingRuntime> {
     ];
 
     for (index, (building_type, roll, level)) in starter_specs.into_iter().enumerate() {
-        let Some(local_site) = next_building_site_default(&occupied, roll) else {
+        let (w, h) = footprint_for(building_type);
+        // A ring-spiral candidate fits when its whole footprint is claimed ground that
+        // is free of other starter footprints and (terrain-generated) trees.
+        let fits = |local: GridPos| -> bool {
+            let anchor = colony_to_world(local);
+            footprint_tiles(
+                TilePos {
+                    x: anchor.x,
+                    y: anchor.y,
+                },
+                w,
+                h,
+            )
+            .into_iter()
+            .all(|tile| {
+                claimed.contains(&tile)
+                    && !occupied.contains(&tile)
+                    && !crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y)
+            })
+        };
+        let Some(local_site) =
+            next_building_site_with_blocked(&[], roll, DEFAULT_MAX_RING, |cell| !fits(cell))
+        else {
+            // No footprint fits inside the fence yet — the tick will build the rest as
+            // room opens up. Fewer starter dens is safe; the colony still survives.
             break;
         };
-        occupied.push(local_site);
+        let position = grid_to_tile(colony_to_world(local_site));
+        for tile in footprint_tiles(position, w, h) {
+            occupied.insert(tile);
+        }
         buildings.push(BuildingRuntime {
             id: format!("building-starter-{}", index + 1),
             building_type,
             level,
-            position: grid_to_tile(colony_to_world(local_site)),
+            position,
             is_complete: true,
             construction_progress: 100,
             production_progress: 0.0,
@@ -726,6 +853,7 @@ fn grid_to_tile(pos: GridPos) -> TilePos {
 
 #[must_use]
 pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
+    let world_seed = state.world_seed;
     let mut indices: Vec<usize> = (0..state.colonies.len()).collect();
     indices.sort_by(|left, right| state.colonies[*left].id.cmp(&state.colonies[*right].id));
 
@@ -753,7 +881,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_11_path_wear_decay(colony, gate);
         phase_12_resource_regrowth(colony, gate);
         phase_13_tick_local_target_caches(colony, gate);
-        phase_14_promote_queued_jobs_and_break_ground(colony, gate);
+        phase_14_promote_queued_jobs_and_break_ground(colony, gate, world_seed);
         phase_15_assign_promoted_job_destinations(colony, gate);
         phase_16_active_scaffold_progress(colony, gate);
         phase_17_legacy_emergency_hunt(colony, gate, policy);
@@ -1138,7 +1266,11 @@ fn phase_13_tick_local_target_caches(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 14: promote queued jobs, create scaffolds for construction jobs, and
 /// stamp started timers.
-fn phase_14_promote_queued_jobs_and_break_ground(colony: &mut ColonyRuntime, gate: TickGate) {
+fn phase_14_promote_queued_jobs_and_break_ground(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    world_seed: u32,
+) {
     let queued_indices = colony
         .jobs
         .iter()
@@ -1162,18 +1294,23 @@ fn phase_14_promote_queued_jobs_and_break_ground(colony: &mut ColonyRuntime, gat
             let roll = roll_seeded(f64::from(movement_seed));
             movement_seed = roll.next_seed;
 
-            if let Some(site_local) = next_claimed_building_site(colony, roll.value) {
+            // The footprint depends on the scaffold's type, so resolve it before
+            // searching for a free site.
+            let scaffold_type = match next_metadata {
+                JobMetadata::Construction { building_type, .. } => {
+                    scaffold_building_type(building_type)
+                }
+                _ => BuildingType::Den,
+            };
+
+            if let Some(site_local) =
+                next_claimed_building_site(colony, roll.value, world_seed, scaffold_type)
+            {
                 let building_id = format!(
                     "building-{}-{}",
                     gate.processed_through,
                     colony.buildings.len() + 1
                 );
-                let scaffold_type = match next_metadata {
-                    JobMetadata::Construction { building_type, .. } => {
-                        scaffold_building_type(building_type)
-                    }
-                    _ => BuildingType::Den,
-                };
 
                 colony.buildings.push(BuildingRuntime {
                     id: building_id.clone(),
@@ -3979,49 +4116,62 @@ fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
     }
 }
 
-fn next_claimed_building_site(colony: &ColonyRuntime, roll: f64) -> Option<TilePos> {
-    let occupied = colony
-        .buildings
-        .iter()
-        .map(|building| building.position)
-        .collect::<Vec<_>>();
+/// Pick a free anchor for a `building_type` footprint. Deterministic: same colony
+/// state + roll + seed → same site. A site fits when its whole `w x h` footprint lies
+/// inside `claimed_tiles` and every covered tile is free (no building, water, or tree;
+/// footprint-within-claimed also keeps it off the fence perimeter). `roll` indexes
+/// among all fitting anchors, scanned in `(y, x)` order, matching the legacy roll
+/// semantics. When nothing fits inside the village, spiral outward past the fence
+/// (still footprint-aware) so a build can defer gracefully rather than crash.
+fn next_claimed_building_site(
+    colony: &ColonyRuntime,
+    roll: f64,
+    world_seed: u32,
+    building_type: BuildingType,
+) -> Option<TilePos> {
+    let (w, h) = footprint_for(building_type);
+    let claimed: HashSet<TilePos> = colony.claimed_tiles.iter().copied().collect();
+    let occupied = occupied_building_tiles(colony);
+
+    let footprint_free_at = |anchor: TilePos, require_claimed: bool| -> bool {
+        footprint_tiles(anchor, w, h).into_iter().all(|tile| {
+            (!require_claimed || claimed.contains(&tile))
+                && !occupied.contains(&tile)
+                && !tile_has_water(colony.world_tiles.get(&tile))
+                && !crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y)
+        })
+    };
+
     let mut free = colony
         .claimed_tiles
         .iter()
         .copied()
-        .filter(|site| {
-            *site
-                != TilePos {
-                    x: VILLAGE_ANCHOR.x,
-                    y: VILLAGE_ANCHOR.y,
-                }
-                && !occupied.contains(site)
-                && !tile_has_water(colony.world_tiles.get(site))
-        })
+        .filter(|anchor| footprint_free_at(*anchor, true))
         .collect::<Vec<_>>();
     free.sort_by_key(|site| (site.y, site.x));
+    free.dedup();
 
-    if free.is_empty() {
-        let occupied_local = occupied
-            .iter()
-            .map(|site| {
-                world_to_colony(GridPos {
-                    x: site.x,
-                    y: site.y,
-                })
-            })
-            .collect::<Vec<_>>();
-        return crate::village_layout::next_building_site_default(&occupied_local, roll)
-            .map(colony_to_world)
-            .map(|site| TilePos {
-                x: site.x,
-                y: site.y,
-            })
-            .filter(|site| !tile_has_water(colony.world_tiles.get(site)));
+    if !free.is_empty() {
+        let clamped = roll.clamp(0.0, 0.999_999);
+        return Some(free[(clamped * free.len() as f64).floor() as usize]);
     }
 
-    let clamped = roll.clamp(0.0, 0.999_999);
-    Some(free[(clamped * free.len() as f64).floor() as usize])
+    // No room left inside the fence: spiral outward, still refusing occupied ground.
+    next_building_site_with_blocked(&[], roll, DEFAULT_MAX_RING, |local| {
+        let anchor = colony_to_world(local);
+        !footprint_free_at(
+            TilePos {
+                x: anchor.x,
+                y: anchor.y,
+            },
+            false,
+        )
+    })
+    .map(colony_to_world)
+    .map(|site| TilePos {
+        x: site.x,
+        y: site.y,
+    })
 }
 
 fn tile_has_water(tile: Option<&WorldTileRuntime>) -> bool {
@@ -6360,5 +6510,251 @@ mod tests {
             last_depleted: 0,
             overlay_feature: overlay_feature.map(str::to_owned),
         }
+    }
+
+    // --- P14.1: building footprints, tile occupancy & collision ---------------
+
+    #[test]
+    fn footprint_for_matches_expected_sizes() {
+        assert_eq!(footprint_for(BuildingType::Shrine), (3, 3));
+        for building_type in [
+            BuildingType::Workshop,
+            BuildingType::Smithy,
+            BuildingType::FoodStorage,
+        ] {
+            assert_eq!(footprint_for(building_type), (2, 3));
+        }
+        for building_type in [
+            BuildingType::Den,
+            BuildingType::Beds,
+            BuildingType::Nursery,
+            BuildingType::HerbGarden,
+            BuildingType::ElderCorner,
+            BuildingType::MouseFarm,
+            BuildingType::Field,
+            BuildingType::Barracks,
+            BuildingType::AccountingTent,
+        ] {
+            assert_eq!(footprint_for(building_type), (2, 2));
+        }
+        for building_type in [BuildingType::WaterBowl, BuildingType::Walls] {
+            assert_eq!(footprint_for(building_type), (1, 1));
+        }
+    }
+
+    #[test]
+    fn footprint_tiles_covers_the_anchored_rectangle() {
+        // The anchor is the NW corner; the footprint is [x, x+w) x [y, y+h).
+        let tiles = footprint_tiles(TilePos { x: 6, y: 6 }, 3, 3);
+        assert_eq!(tiles.len(), 9);
+        assert!(tiles.contains(&TilePos { x: 6, y: 6 }));
+        assert!(tiles.contains(&TilePos { x: 8, y: 8 }));
+        assert!(!tiles.contains(&TilePos { x: 9, y: 6 }));
+        assert!(!tiles.contains(&TilePos { x: 5, y: 6 }));
+
+        let shed = footprint_tiles(TilePos { x: 0, y: 0 }, 2, 3);
+        assert_eq!(shed.len(), 6);
+        assert!(shed.contains(&TilePos { x: 1, y: 2 }));
+        assert!(!shed.contains(&TilePos { x: 2, y: 0 }));
+
+        // Degenerate footprints cover nothing.
+        assert!(footprint_tiles(TilePos { x: 0, y: 0 }, 0, 5).is_empty());
+    }
+
+    #[test]
+    fn tile_is_occupied_flags_buildings_water_trees_and_perimeter() {
+        let seed = 42;
+        let mut colony = found_colony(seed, "colony-1", 1_000, 42);
+        assert_eq!(colony.buildings[0].building_type, BuildingType::Shrine);
+
+        // Building footprint: the shrine's 3x3 at (6,6) covers (7,7).
+        assert!(tile_is_occupied(&colony, TilePos { x: 7, y: 7 }, seed));
+
+        // Perimeter: a tile just outside the claimed area but bordering it (the wall).
+        assert!(tile_is_occupied(&colony, TilePos { x: 2, y: 6 }, seed));
+
+        // A terrain-generated tree tile inside the founding area is occupied.
+        let tree = (3..=9)
+            .flat_map(|y| (3..=9).map(move |x| TilePos { x, y }))
+            .find(|tile| crate::terrain_gen::tile_has_tree(seed, tile.x, tile.y))
+            .expect("founding area has a tree for seed 42");
+        assert!(tile_is_occupied(&colony, tree, seed));
+
+        // Open claimed ground (no building, tree, water, or perimeter) is free.
+        let open = colony
+            .claimed_tiles
+            .iter()
+            .copied()
+            .find(|tile| !tile_is_occupied(&colony, *tile, seed))
+            .expect("founding village has open ground");
+        assert!(!tile_is_occupied(&colony, open, seed));
+
+        // Putting water on that tile makes it occupied.
+        colony
+            .world_tiles
+            .get_mut(&open)
+            .expect("open claimed tile has a world tile")
+            .resources
+            .water = 5;
+        assert!(tile_is_occupied(&colony, open, seed));
+    }
+
+    #[test]
+    fn next_claimed_building_site_rejects_occupied_footprints_and_is_deterministic() {
+        let seed = 42;
+        let full = found_colony(seed, "colony-1", 1_000, 42);
+        let claimed: HashSet<TilePos> = full.claimed_tiles.iter().copied().collect();
+
+        // Clear everything but the shrine so the founding village has open interior room
+        // to exercise the primary (within-fence) placement path.
+        let mut colony = full.clone();
+        colony
+            .buildings
+            .retain(|building| building.building_type == BuildingType::Shrine);
+        let shrine_tiles: HashSet<TilePos> = building_footprint_tiles(&colony.buildings[0])
+            .into_iter()
+            .collect();
+
+        // A 2x2 den lands on a fully free, claimed footprint that never overlaps the
+        // shrine, a tree, or water.
+        let den = next_claimed_building_site(&colony, 0.0, seed, BuildingType::Den)
+            .expect("a free 2x2 den site exists inside the fence");
+        for tile in footprint_tiles(den, 2, 2) {
+            assert!(claimed.contains(&tile), "den footprint {tile:?} is claimed");
+            assert!(
+                !shrine_tiles.contains(&tile),
+                "den avoids the shrine at {tile:?}"
+            );
+            assert!(!crate::terrain_gen::tile_has_tree(seed, tile.x, tile.y));
+            assert!(
+                !tile_is_occupied(&colony, tile, seed),
+                "den tile {tile:?} is free"
+            );
+        }
+
+        // A wider 2x3 shed also fits inside the fence on free claimed ground.
+        let shed = next_claimed_building_site(&colony, 0.5, seed, BuildingType::Workshop)
+            .expect("a free 2x3 workshop site exists inside the fence");
+        for tile in footprint_tiles(shed, 2, 3) {
+            assert!(
+                claimed.contains(&tile),
+                "shed footprint {tile:?} is claimed"
+            );
+            assert!(!tile_is_occupied(&colony, tile, seed));
+        }
+
+        // Deterministic: same colony + roll + seed → same site, on both the roomy and the
+        // fully-built (fallback) colony.
+        assert_eq!(
+            den,
+            next_claimed_building_site(&colony, 0.0, seed, BuildingType::Den).unwrap()
+        );
+        assert_eq!(
+            next_claimed_building_site(&full, 0.7, seed, BuildingType::Den),
+            next_claimed_building_site(&full, 0.7, seed, BuildingType::Den)
+        );
+    }
+
+    #[test]
+    fn found_colony_places_the_shrine_with_a_three_by_three_footprint() {
+        let colony = found_colony(4242, "colony-1", 1_000, 4242);
+        let shrine = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == BuildingType::Shrine)
+            .expect("found_colony places the shrine");
+        assert_eq!(
+            shrine.position,
+            TilePos {
+                x: VILLAGE_ANCHOR.x,
+                y: VILLAGE_ANCHOR.y
+            }
+        );
+        assert_eq!(footprint_for(shrine.building_type), (3, 3));
+
+        // No starter building overlaps the shrine footprint.
+        let shrine_tiles: HashSet<TilePos> = building_footprint_tiles(shrine).into_iter().collect();
+        for building in colony.buildings.iter().filter(|b| b.id != shrine.id) {
+            for tile in building_footprint_tiles(building) {
+                assert!(
+                    !shrine_tiles.contains(&tile),
+                    "building {} overlaps the shrine at {tile:?}",
+                    building.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn founded_colony_has_no_overlapping_building_footprints() {
+        let mut world = new_world(4242);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
+        for step in 1..=40 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut world, now);
+        }
+
+        let colony = &world.colonies[0];
+        let mut seen: HashSet<TilePos> = HashSet::new();
+        for building in &colony.buildings {
+            for tile in building_footprint_tiles(building) {
+                assert!(
+                    seen.insert(tile),
+                    "building {} shares tile {tile:?} with another",
+                    building.id
+                );
+            }
+        }
+        assert!(
+            colony.buildings.len() >= 2,
+            "colony builds beyond the shrine ({} buildings)",
+            colony.buildings.len()
+        );
+    }
+
+    #[test]
+    fn founded_colony_building_placements_are_identical_for_same_seed() {
+        let run = || {
+            let mut world = new_world(4242);
+            world
+                .colonies
+                .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
+            for step in 1..=40 {
+                let now = 10_000 + i64::from(step) * 60_000;
+                let _ = world_tick(&mut world, now);
+            }
+            world.colonies[0]
+                .buildings
+                .iter()
+                .map(|building| {
+                    (
+                        building.id.clone(),
+                        building.building_type,
+                        building.position,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn founded_colony_keeps_building_and_surviving_with_footprints() {
+        let mut world = new_world(4242);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
+        for step in 1..=60 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None);
+        }
+        let colony = &world.colonies[0];
+        assert!(alive_cats(&colony.cats).count() > 0);
+        assert_ne!(colony.status, ColonyStatus::Dead);
+        // The village keeps at least the shrine plus a home.
+        assert!(colony.buildings.len() >= 2);
     }
 }

@@ -1168,6 +1168,7 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
         .iter()
         .filter_map(|building| {
             let building_type = sim_to_proto_building_type(building.building_type)?;
+            let (width, height) = crate::world_tick::footprint_for(building.building_type);
             Some(proto::BuildingSnapshot {
                 id: building.id.clone(),
                 building_type,
@@ -1175,6 +1176,7 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 construction_progress: f64::from(building.construction_progress),
                 world_position: tile_point(&building.position),
                 position: tile_point(&building.position),
+                footprint: proto::FootprintSize { width, height },
             })
         })
         .collect()
