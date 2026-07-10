@@ -2,11 +2,106 @@
 
 use std::collections::HashSet;
 
+use crate::terrain_gen::BiomeRole;
+use crate::types::LifeStage;
+
+/// Reference tile-per-second rate for a cat crossing the village plateau
+/// (grassland/lowland). Kept at the historical global value so the survival-
+/// critical shrine-hauling loop, which lives on the plateau, moves at exactly the
+/// old speed. This is the number the TS parity fixtures pin.
 pub const MOVE_SPEED_TILES_PER_SEC: f64 = 0.5;
 pub const WANDER_RADIUS: i32 = 3;
 pub const EXPLORE_SPEED_FACTOR: f64 = 0.35;
 pub const HUNT_RANGE_MIN: f64 = 8.0;
 pub const HUNT_RANGE_MAX: f64 = 14.0;
+
+// --- Staggered movement: per-terrain surface factor + per-cat gait ---------
+//
+// Effective speed = BASE_MOVE_SPEED_TILES_PER_SEC × surface_factor(biome)
+//                    × cat_gait(id) × life_stage_gait(stage).
+//
+// Rather than every cat stepping in lockstep at a single global rate, each cat's
+// step rate varies by the tile it is standing on and a small stable per-unit
+// gait, so the herd desyncs naturally (Dwarf-Fortress style).
+
+/// Grassland/lowland surface factor. The base rate is anchored to this so a cat
+/// on the (grassland) village plateau moves at exactly `MOVE_SPEED_TILES_PER_SEC`.
+pub const SURFACE_FACTOR_GRASSLAND: f64 = 0.75;
+/// Lowland is the same easy footing as grassland.
+pub const SURFACE_FACTOR_LOWLAND: f64 = 0.75;
+/// Bare stone/rock is the firmest, fastest footing.
+pub const SURFACE_FACTOR_ROCKY: f64 = 1.0;
+/// Highland is exposed but firmer than grass — a touch slower than rock.
+pub const SURFACE_FACTOR_HIGHLAND: f64 = 0.7;
+/// Forest floor (roots, undergrowth) slows a cat down.
+pub const SURFACE_FACTOR_FOREST: f64 = 0.6;
+/// Loose sand is the slowest natural footing. Reserved: the sim terrain
+/// generator has no sand biome yet, so no tile resolves to this today, but the
+/// factor is kept named for when beaches/deserts land (roads/dirt come later).
+pub const SURFACE_FACTOR_SAND: f64 = 0.5;
+
+/// Base rate the surface/gait factors scale. Anchored so grassland/lowland (the
+/// plateau) reproduces the historical `MOVE_SPEED_TILES_PER_SEC`, keeping the
+/// *average* effective speed ~unchanged while introducing variance.
+pub const BASE_MOVE_SPEED_TILES_PER_SEC: f64 = MOVE_SPEED_TILES_PER_SEC / SURFACE_FACTOR_GRASSLAND;
+
+/// Lower bound of the per-cat gait multiplier.
+pub const GAIT_MIN: f64 = 0.9;
+/// Upper bound of the per-cat gait multiplier.
+pub const GAIT_MAX: f64 = 1.1;
+
+/// Deterministic per-tile surface speed factor for the biome a cat stands on.
+#[must_use]
+pub fn terrain_surface_factor(biome: BiomeRole) -> f64 {
+    match biome {
+        BiomeRole::Rocky => SURFACE_FACTOR_ROCKY,
+        BiomeRole::Highland => SURFACE_FACTOR_HIGHLAND,
+        BiomeRole::Grassland => SURFACE_FACTOR_GRASSLAND,
+        BiomeRole::Lowland => SURFACE_FACTOR_LOWLAND,
+        BiomeRole::Forest => SURFACE_FACTOR_FOREST,
+    }
+}
+
+/// Small stable per-cat gait multiplier in `[GAIT_MIN, GAIT_MAX)`, derived from a
+/// deterministic hash of the cat id (FNV-1a). No RNG, no shared chain: same id →
+/// same gait forever, and two cats on the same tile still differ slightly. The
+/// distribution is centred on `1.0` so the population average speed is unchanged.
+#[must_use]
+pub fn cat_gait(cat_id: &str) -> f64 {
+    // FNV-1a 64-bit: platform-independent, stable across runs (unlike the std
+    // `DefaultHasher`, which is randomized).
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for byte in cat_id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    // Map the low bits to a fraction in [0, 1) then into the gait band.
+    let fraction = (hash % 1_000_000) as f64 / 1_000_000.0;
+    GAIT_MIN + fraction * (GAIT_MAX - GAIT_MIN)
+}
+
+/// Life-stage gait modifier: kittens and elders pad along a bit slower than
+/// young/adult cats. Adults (the colony's haulers) stay at `1.0`, so the
+/// survival-critical work loop keeps its full speed.
+#[must_use]
+pub fn life_stage_gait(stage: LifeStage) -> f64 {
+    match stage {
+        LifeStage::Kitten | LifeStage::Elder => 0.85,
+        LifeStage::Young | LifeStage::Adult => 1.0,
+    }
+}
+
+/// Effective per-cat tile-per-second rate before route/road, explore, and upgrade
+/// modifiers: base × terrain surface × per-cat gait × life-stage gait.
+#[must_use]
+pub fn effective_move_speed(biome: BiomeRole, cat_id: &str, stage: LifeStage) -> f64 {
+    BASE_MOVE_SPEED_TILES_PER_SEC
+        * terrain_surface_factor(biome)
+        * cat_gait(cat_id)
+        * life_stage_gait(stage)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldPos {
@@ -240,11 +335,17 @@ mod tests {
 
     use crate::rng::{movement_seed, roll_seeded};
 
+    use crate::terrain_gen::BiomeRole;
+    use crate::types::LifeStage;
+
     use super::{
-        EXPLORE_SPEED_FACTOR, HUNT_RANGE_MAX, HUNT_RANGE_MIN, JobDestinationContext,
-        MOVE_SPEED_TILES_PER_SEC, MovementStep, PathWalk, WANDER_RADIUS, WorldPos,
-        advance_movement, advance_movement_default, destination_for_job, path_tiles,
-        pick_wander_target, walk_path,
+        BASE_MOVE_SPEED_TILES_PER_SEC, EXPLORE_SPEED_FACTOR, GAIT_MAX, GAIT_MIN, HUNT_RANGE_MAX,
+        HUNT_RANGE_MIN, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC, MovementStep, PathWalk,
+        SURFACE_FACTOR_FOREST, SURFACE_FACTOR_GRASSLAND, SURFACE_FACTOR_HIGHLAND,
+        SURFACE_FACTOR_LOWLAND, SURFACE_FACTOR_ROCKY, SURFACE_FACTOR_SAND, WANDER_RADIUS, WorldPos,
+        advance_movement, advance_movement_default, cat_gait, destination_for_job,
+        effective_move_speed, life_stage_gait, path_tiles, pick_wander_target,
+        terrain_surface_factor, walk_path,
     };
 
     #[derive(Debug, Deserialize)]
@@ -556,6 +657,137 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[test]
+    fn terrain_surface_factor_orders_biomes_rock_fastest_forest_slowest() {
+        assert_eq!(
+            terrain_surface_factor(BiomeRole::Rocky),
+            SURFACE_FACTOR_ROCKY
+        );
+        assert_eq!(
+            terrain_surface_factor(BiomeRole::Highland),
+            SURFACE_FACTOR_HIGHLAND
+        );
+        assert_eq!(
+            terrain_surface_factor(BiomeRole::Grassland),
+            SURFACE_FACTOR_GRASSLAND
+        );
+        assert_eq!(
+            terrain_surface_factor(BiomeRole::Lowland),
+            SURFACE_FACTOR_LOWLAND
+        );
+        assert_eq!(
+            terrain_surface_factor(BiomeRole::Forest),
+            SURFACE_FACTOR_FOREST
+        );
+
+        // Ordering: rock (firmest) > grassland/lowland > highland > forest floor;
+        // sand (reserved) is the slowest natural footing of all.
+        assert!(
+            terrain_surface_factor(BiomeRole::Rocky) > terrain_surface_factor(BiomeRole::Grassland)
+        );
+        assert!(
+            terrain_surface_factor(BiomeRole::Grassland)
+                > terrain_surface_factor(BiomeRole::Highland)
+        );
+        assert!(
+            terrain_surface_factor(BiomeRole::Highland) > terrain_surface_factor(BiomeRole::Forest)
+        );
+        const {
+            assert!(SURFACE_FACTOR_SAND < SURFACE_FACTOR_FOREST);
+            assert!(SURFACE_FACTOR_SAND < SURFACE_FACTOR_ROCKY);
+        }
+    }
+
+    #[test]
+    fn base_speed_reproduces_old_rate_on_the_plateau() {
+        // Grassland/lowland (the village plateau) must reproduce the historical
+        // global rate so the survival-critical shrine-haul loop is unchanged.
+        assert!(
+            (BASE_MOVE_SPEED_TILES_PER_SEC * SURFACE_FACTOR_GRASSLAND - MOVE_SPEED_TILES_PER_SEC)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (BASE_MOVE_SPEED_TILES_PER_SEC * SURFACE_FACTOR_LOWLAND - MOVE_SPEED_TILES_PER_SEC)
+                .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn cat_gait_is_deterministic_and_within_bounds() {
+        for id in ["cat-1", "cat-2", "abc", "a-very-long-cat-id-123456", ""] {
+            let a = cat_gait(id);
+            let b = cat_gait(id);
+            assert_eq!(a, b, "gait must be stable for id {id}");
+            assert!(a >= GAIT_MIN, "gait {a} below floor for id {id}");
+            assert!(a < GAIT_MAX, "gait {a} above ceiling for id {id}");
+        }
+    }
+
+    #[test]
+    fn cat_gait_differs_across_ids() {
+        assert_ne!(cat_gait("cat-1"), cat_gait("cat-2"));
+        assert_ne!(cat_gait("alpha"), cat_gait("beta"));
+    }
+
+    #[test]
+    fn life_stage_gait_slows_kittens_and_elders_only() {
+        assert_eq!(life_stage_gait(LifeStage::Young), 1.0);
+        assert_eq!(life_stage_gait(LifeStage::Adult), 1.0);
+        assert!(life_stage_gait(LifeStage::Kitten) < 1.0);
+        assert!(life_stage_gait(LifeStage::Elder) < 1.0);
+    }
+
+    #[test]
+    fn cat_on_sand_style_slow_tile_falls_behind_a_cat_on_stone() {
+        // Same cat, same elapsed budget: forest (slow) footing covers fewer tiles
+        // than rocky (fast) footing — the mechanic that staggers the herd. (The
+        // sim has no sand biome yet; forest is the slowest ground that exists.)
+        let elapsed = 4.0;
+        let slow_speed = effective_move_speed(BiomeRole::Forest, "cat-1", LifeStage::Adult);
+        let fast_speed = effective_move_speed(BiomeRole::Rocky, "cat-1", LifeStage::Adult);
+        assert!(fast_speed > slow_speed);
+
+        let start = WorldPos { x: 0.0, y: 0.0 };
+        let dest = WorldPos { x: 20.0, y: 0.0 };
+        let slow = walk_path(start, dest, elapsed * slow_speed, &[]);
+        let fast = walk_path(start, dest, elapsed * fast_speed, &[]);
+        assert!(
+            fast.position.x > slow.position.x,
+            "stone cat ({}) should out-walk forest cat ({})",
+            fast.position.x,
+            slow.position.x
+        );
+    }
+
+    #[test]
+    fn two_cats_same_tile_different_gait_desync() {
+        // Identical tile, identical budget, different ids → different gaits →
+        // they end at different positions. The herd staggers instead of lockstepping.
+        let elapsed = 6.0;
+        let start = WorldPos { x: 0.0, y: 0.0 };
+        let dest = WorldPos { x: 30.0, y: 0.0 };
+
+        let speed_a = effective_move_speed(BiomeRole::Grassland, "cat-1", LifeStage::Adult);
+        let speed_b = effective_move_speed(BiomeRole::Grassland, "cat-2", LifeStage::Adult);
+        assert_ne!(speed_a, speed_b, "distinct ids must yield distinct gaits");
+
+        let walk_a = walk_path(start, dest, elapsed * speed_a, &[]);
+        let walk_b = walk_path(start, dest, elapsed * speed_b, &[]);
+        assert_ne!(
+            walk_a.position, walk_b.position,
+            "same-tile cats with different gaits must diverge"
+        );
+    }
+
+    #[test]
+    fn effective_move_speed_is_deterministic() {
+        let first = effective_move_speed(BiomeRole::Forest, "cat-42", LifeStage::Young);
+        let second = effective_move_speed(BiomeRole::Forest, "cat-42", LifeStage::Young);
+        assert_eq!(first, second);
     }
 
     impl PosFixture {

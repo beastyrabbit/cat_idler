@@ -535,6 +535,27 @@ pub fn tile_has_tree(world_seed: u32, x: i32, y: i32) -> bool {
     })
 }
 
+/// The deterministic [`BiomeRole`] the terrain generator assigns to world tile
+/// `(x, y)` for `world_seed`. Same source of truth as [`tile_has_tree`] (P14.1):
+/// it regenerates the owning chunk from `WORLD_TERRAIN_OPTIONS` so the sim and the
+/// renderer agree on ground type. Used by movement to derive a per-tile surface
+/// speed factor. Falls back to [`BiomeRole::Grassland`] if the tile is somehow
+/// absent (never happens for in-range chunk coordinates).
+#[must_use]
+pub fn tile_biome(world_seed: u32, x: i32, y: i32) -> BiomeRole {
+    let chunk_x = floor_div(x, TERRAIN_CHUNK_SIZE);
+    let chunk_y = floor_div(y, TERRAIN_CHUNK_SIZE);
+    generate_terrain_chunk(
+        chunk_x,
+        chunk_y,
+        i64::from(world_seed),
+        WORLD_TERRAIN_OPTIONS,
+    )
+    .into_iter()
+    .find(|tile| tile.x == x && tile.y == y)
+    .map_or(BiomeRole::Grassland, |tile| tile.biome)
+}
+
 fn resolve_options(opts: TerrainOptions) -> ResolvedOptions {
     ResolvedOptions {
         max_height: opts.max_height.unwrap_or(DEFAULT_MAX_HEIGHT),
@@ -2078,6 +2099,32 @@ mod tests {
                         tile_has_tree(seed, terrain_tile.x, terrain_tile.y),
                         expected,
                         "tree mismatch at {},{}",
+                        terrain_tile.x,
+                        terrain_tile.y
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tile_biome_matches_the_generated_chunk_biome() {
+        // `tile_biome` (the movement surface-speed source) must agree tile-for-tile
+        // with the generated chunk, across chunk boundaries.
+        let seed = 123u32;
+        for chunk_x in -1..=1 {
+            for chunk_y in -1..=1 {
+                let chunk = generate_terrain_chunk(
+                    chunk_x,
+                    chunk_y,
+                    i64::from(seed),
+                    WORLD_TERRAIN_OPTIONS,
+                );
+                for terrain_tile in chunk {
+                    assert_eq!(
+                        tile_biome(seed, terrain_tile.x, terrain_tile.y),
+                        terrain_tile.biome,
+                        "biome mismatch at {},{}",
                         terrain_tile.x,
                         terrain_tile.y
                     );

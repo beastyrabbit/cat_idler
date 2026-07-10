@@ -27,8 +27,8 @@ use crate::{
     ledger::{StockLedger, refresh_ledger},
     life_sim::{can_work, get_life_stage, leadership_after_tenure, old_age_death_probability},
     movement::{
-        EXPLORE_SPEED_FACTOR, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC, WorldPos,
-        destination_for_job, pick_wander_target, walk_path,
+        EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
+        effective_move_speed, pick_wander_target, walk_path,
     },
     officers::OfficerRole,
     pathfinding::{
@@ -448,6 +448,8 @@ struct MovementPassContext {
     gate: TilePos,
     walk_tiles: Vec<WalkTile>,
     zones: Vec<Zone>,
+    /// Needed for the deterministic per-tile terrain surface speed factor.
+    world_seed: u32,
 }
 
 impl Default for ColonyRuntime {
@@ -908,7 +910,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_30_due_completion_build_ritual_training_return_mark_done(colony, gate);
         phase_31_mid_job_hauling(colony, gate);
         let mut movement =
-            phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy);
+            phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy, world_seed);
         phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
         phase_35_deliberate_roads(colony, gate);
@@ -2377,6 +2379,7 @@ fn phase_32_movement_setup_and_village_expansion_queue(
     colony: &mut ColonyRuntime,
     gate: TickGate,
     policy: TickPolicy,
+    world_seed: u32,
 ) -> MovementPassContext {
     let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
     let movement_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
@@ -2455,6 +2458,7 @@ fn phase_32_movement_setup_and_village_expansion_queue(
                 kind: zone.kind,
             })
             .collect(),
+        world_seed,
     }
 }
 
@@ -2594,14 +2598,24 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         let destination = position_to_world(destination);
         let activity = colony.cats[cat_index].activity;
         let current_task = colony.cats[cat_index].current_task;
-        let standing_tile = colony.world_tiles.get(&world_pos_to_tile(world_pos));
+        let standing_tile_pos = world_pos_to_tile(world_pos);
+        let standing_tile = colony.world_tiles.get(&standing_tile_pos);
         let explore_slowdown =
             if current_task == Some(TaskType::Explore) && activity == CatActivity::Traveling {
                 EXPLORE_SPEED_FACTOR
             } else {
                 1.0
             };
-        let speed = MOVE_SPEED_TILES_PER_SEC
+        // Per-cat effective rate: base × terrain surface (the tile the cat is on)
+        // × per-cat gait × life-stage gait. This desyncs the herd — cats on slow
+        // ground or with a slow gait fall behind instead of stepping in unison.
+        let standing_biome = crate::terrain_gen::tile_biome(
+            movement.world_seed,
+            standing_tile_pos.x,
+            standing_tile_pos.y,
+        );
+        let stage = get_life_stage(colony.cats[cat_index].age_hours);
+        let speed = effective_move_speed(standing_biome, &cat_id, stage)
             * (1.0 + movement_speed_bonus(standing_tile))
             * explore_slowdown
             * effects.move_speed_mult;
@@ -5386,6 +5400,7 @@ mod tests {
                 .map(walk_tile_from_runtime)
                 .collect(),
             zones: Vec::new(),
+            world_seed: 123,
         };
 
         phase_34_movement_travel_job_acceptance_reveal_path_wear(
@@ -5742,6 +5757,7 @@ mod tests {
             gate: pos(6, 10),
             walk_tiles: Vec::new(),
             zones: Vec::new(),
+            world_seed: 123,
         }
     }
 
@@ -6314,6 +6330,38 @@ mod tests {
         let colony = &world.colonies[0];
         assert!(alive_cats(&colony.cats).count() > 0);
         assert_ne!(colony.status, ColonyStatus::Dead);
+    }
+
+    #[test]
+    fn founded_colony_thrives_over_a_long_horizon_with_staggered_movement() {
+        // Guard against the per-terrain/per-gait move-speed model starving the
+        // colony: over a long horizon the founding cohort must stay healthy, not
+        // collapse because cats crawl to the shrine. Cats still reach job sites in
+        // reasonable time, so the economy holds.
+        let mut world = new_world(1234);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
+
+        let mut min_population = usize::MAX;
+        for step in 1..=180 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None, "tick {step} reset the run");
+            min_population = min_population.min(alive_cats(&world.colonies[0].cats).count());
+        }
+
+        let colony = &world.colonies[0];
+        let population = alive_cats(&colony.cats).count();
+        assert_ne!(colony.status, ColonyStatus::Dead);
+        assert!(
+            min_population >= 15,
+            "colony dipped to {min_population} cats — staggered movement likely starved it"
+        );
+        assert!(
+            population >= 18,
+            "colony ended with {population} cats (expected a healthy, self-sustaining population)"
+        );
     }
 
     #[test]
