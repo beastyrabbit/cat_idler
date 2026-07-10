@@ -1,0 +1,60 @@
+# P15 — Playtest feedback backlog (user, 2026-07-10)
+
+Captured from live `cargo dev` playtesting. Triaged; "already there" notes from a code survey.
+
+## Bugs / feel (do first)
+- **Cats appear static / "moving in place".** Sim DOES move cats (`world_tick` phase_33/34 set
+  `cat.position` via `walk_path`), but snapshot positions are per-tile integers updated ~1×/s.
+  Client fix: interpolate the sprite between old→new tile across the snapshot interval (smooth
+  travel), and only play the walk cycle when the tile actually changed (idle-frame otherwise).
+- **Too many idle cats.** User: nearly every cat should normally have a job; idle should be rare.
+  Sim: raise job saturation (leader director / job generation keeps cats busy — "more jobs than
+  cats"). Today ~16 jobs / 20 cats leaves several idle.
+- **Food storage & shrine overlap.** Sim placement is now non-overlapping (P14.1 footprints), but
+  the client still draws buildings as point sprites — fix with the footprint render (P14.5).
+- **"2.5D but not really."** Add proper **y-sort depth** (sprites layer by base-y so cats pass
+  behind buildings/trees) + footprint render → a convincing layered top-down. (P14.5 + depth.)
+
+## Controls (client)
+- **Right-drag = pan map** (currently middle-drag). **Middle-click = select building.**
+  **Left-click = select cat** (already). 
+- **Click on ALL items** — buildings + stockpiles + cats all inspectable (building inspector:
+  type/level/complete/production/assigned cat). Today only cats + stockpile-remove.
+
+## Features (sequence)
+- **Roads visible.** Sim paves wear-trails (`roads.rs`) but roads aren't in the snapshot or
+  rendered. Expose paved tiles + render (part of P14.4 road/accessibility).
+- **Workshops + production chains + routes.** Discussed but not built — P12.4b (new-resource
+  chains: mill/clothier/sawmill + grain/fibre/cloth/lumber) + the visible haul routes between
+  them. Bigger card.
+- **Fog of war + scout-driven discovery (detailed 2026-07-10).** The keystone exploration loop:
+  - **World starts tiny** — only ~2 tiles outside the village are revealed at founding; everything
+    beyond is fog.
+  - **Deficit-driven scouting** — the leader notices a resource gap ("missing ~5 wood spots") and
+    dispatches a **scout** to find it (extends the existing `scout` leader goal + explore job).
+  - **Random-walk search** — the scout wanders a random direction for a while, changes direction,
+    repeats, until it finds the needed resource tiles (or gives up), then heads back.
+  - **Provisional vs committed reveal** — while the scout is out, fog lifts only *partially/dimly*
+    around it; the discovery is **fully committed to the map only when the scout returns to the
+    shrine** (knowledge delivered on arrival). So the shrine is the map's "known world" ledger.
+  - Reuses: `reveal_and_wear_walked_tiles`, explorer reveal radius, the leader director scout goal,
+    and the shrine-arrival pattern. Adds: tiny initial reveal, deficit→scout trigger, random-walk
+    scout behavior, and the two-tier (provisional-while-out / committed-on-return) reveal state.
+- **Cat booster.** Look at a cat → give it a boost that makes it more likely to be picked for
+  jobs/roles. New per-cat "priority/boost" (sim) + inspector button (client). Pairs with the
+  matchCatsToSlots fit scoring.
+- **Elections auto-run.** Term elections exist (`elections.rs`); verify `runElectionLifecycle`
+  fires each tick and resolves terms without player action; surface the schedule in the HUD.
+- **Unlimited map / multiple settlements.** Terrain already infinite (per-chunk) + multi-colony
+  supported. Verify the client can roam/render arbitrary chunks and found new villages anywhere.
+
+## Assets
+- **Better wall asset** — the palisade could read better; source a nicer fence/wall (Roguelike/
+  Tiny Town).
+- **Cleaner top-down 2D cat?** Current `cat-sheet` is near-top-down P&W (also a non-commercial
+  license blocker). Search Kenney packs (Tiny Dungeon / animal packs) for a CC0 top-down cat;
+  if none, keep P&W for now (prototype).
+
+## Already-there (verify, don't rebuild)
+- Cat movement, chunked-infinite terrain, multi-colony founding, fog reveal, term elections all
+  exist in the sim. Much of this backlog is exposure/rendering + tuning, not new systems.
