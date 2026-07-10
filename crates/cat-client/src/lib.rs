@@ -334,6 +334,9 @@ struct BuildingArt {
     storehouse: Handle<Image>,
     market: Handle<Image>,
     well: Handle<Image>,
+    wood_cutter: Handle<Image>,
+    stone_prep: Handle<Image>,
+    woodworking: Handle<Image>,
 }
 
 impl BuildingArt {
@@ -349,6 +352,9 @@ impl BuildingArt {
             storehouse: assets.load("public/images/game/buildings/storehouse.png"),
             market: assets.load("public/images/game/buildings/market.png"),
             well: assets.load("public/images/game/props/well.png"),
+            wood_cutter: assets.load("public/images/game/buildings/wood_cutter.png"),
+            stone_prep: assets.load("public/images/game/buildings/stone_prep.png"),
+            woodworking: assets.load("public/images/game/buildings/woodworking.png"),
         }
     }
 
@@ -364,6 +370,9 @@ impl BuildingArt {
             BuildingTexture::Storehouse => self.storehouse.clone(),
             BuildingTexture::Market => self.market.clone(),
             BuildingTexture::Well => self.well.clone(),
+            BuildingTexture::WoodCutter => self.wood_cutter.clone(),
+            BuildingTexture::StonePrep => self.stone_prep.clone(),
+            BuildingTexture::Woodworking => self.woodworking.clone(),
         }
     }
 }
@@ -382,6 +391,9 @@ enum BuildingTexture {
     Storehouse,
     Market,
     Well,
+    WoodCutter,
+    StonePrep,
+    Woodworking,
 }
 
 /// Pixel-art prop sprites used for stockpile piles, loaded once at startup.
@@ -3355,11 +3367,11 @@ fn building_texture(building: BuildingType) -> Option<BuildingTexture> {
         | BuildingType::Nursery
         | BuildingType::HerbGarden
         | BuildingType::ElderCorner => BuildingTexture::Den,
-        // New P16 workshop types — dedicated sprites (wood_cutter/stone_prep/
-        // woodworking.png) exist; wired to the generic Workshop texture for now.
-        BuildingType::WoodCutter | BuildingType::StonePrep | BuildingType::Woodworking => {
-            BuildingTexture::Workshop
-        }
+        // P16 craft-station workshops render as their dedicated sprites so the
+        // function reads at a glance.
+        BuildingType::WoodCutter => BuildingTexture::WoodCutter,
+        BuildingType::StonePrep => BuildingTexture::StonePrep,
+        BuildingType::Woodworking => BuildingTexture::Woodworking,
         BuildingType::Walls => return None,
     })
 }
@@ -3758,6 +3770,19 @@ mod tests {
         assert_eq!(
             building_texture(BuildingType::Nursery),
             Some(BuildingTexture::Den)
+        );
+        // P16 craft-station workshops each map to their dedicated sprite.
+        assert_eq!(
+            building_texture(BuildingType::WoodCutter),
+            Some(BuildingTexture::WoodCutter)
+        );
+        assert_eq!(
+            building_texture(BuildingType::StonePrep),
+            Some(BuildingTexture::StonePrep)
+        );
+        assert_eq!(
+            building_texture(BuildingType::Woodworking),
+            Some(BuildingTexture::Woodworking)
         );
         // Walls render as infra, not a point marker.
         assert_eq!(building_texture(BuildingType::Walls), None);
