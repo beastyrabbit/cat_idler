@@ -20,8 +20,9 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction,
-    ColonySnapshot, GateSide, JobKind, OfficerRole, RaiderStatus, ResourceAmounts, ResourceKind,
-    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
+    ColonySnapshot, FootprintSize, GateSide, JobKind, OfficerRole, RaiderStatus, ResourceAmounts,
+    ResourceKind, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, WorldSnapshot,
+    ZoneKind,
 };
 use cat_sim::terrain_gen::{
     BiomeRole, DecorationRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
@@ -36,17 +37,16 @@ const TILE: f32 = 28.0;
 /// Half-width (in tiles) of the terrain window regenerated around the anchor.
 const WINDOW_RADIUS: i32 = 30;
 
-// Z bands — all strictly below the camera at Z=1000 so nothing is clipped.
+// Flat ground layers (terrain + ground markings) sit below the y-sorted world
+// sprites; all strictly below the camera at Z=1000 so nothing is clipped.
 const Z_TERRAIN: f32 = 0.0;
-const Z_DECORATION: f32 = 1.0;
 const Z_ZONE: f32 = 2.0;
-const Z_STOCKPILE_PILE: f32 = 9.0;
-const Z_WALL: f32 = 9.5;
-const Z_BUILDING: f32 = 10.0;
-const Z_BUILDING_LABEL: f32 = 11.0;
-const Z_RAIDER: f32 = 15.0;
-const Z_CAT: f32 = 20.0;
-const Z_CAT_ITEM: f32 = 21.0;
+
+// Standing world sprites (buildings, walls, trees, stockpile piles, cats,
+// raiders) share ONE y-sorted depth band: a sprite lower on the map (more
+// negative world y) draws in front of one higher up — the whole 2.5D trick.
+const Z_YSORT_BASE: f32 = 300.0;
+const Z_YSORT_SCALE: f32 = 0.01;
 
 const CAMERA_Z: f32 = 1000.0;
 
@@ -54,6 +54,27 @@ const CAMERA_Z: f32 = 1000.0;
 /// grid reads top-down with north up.
 fn grid_to_world(x: i32, y: i32) -> Vec2 {
     Vec2::new(x as f32 * TILE, -(y as f32) * TILE)
+}
+
+/// Draw depth for a standing sprite from its base (bottom/front-edge) world y:
+/// lower on the map (more negative y) → larger z → drawn in front.
+fn ysort_z(base_world_y: f32) -> f32 {
+    Z_YSORT_BASE - base_world_y * Z_YSORT_SCALE
+}
+
+/// The bottom-anchored base position (front-edge centre) and pixel size of a
+/// building spanning its footprint (anchored at its NW-corner tile). `aspect` is
+/// the sprite's native width/height; height follows it so the art isn't stretched.
+fn footprint_sprite(nw: TilePoint, footprint: FootprintSize, aspect: f32) -> (Vec2, Vec2) {
+    let w = footprint.width.max(1);
+    let h = footprint.height.max(1);
+    // Centre x across the footprint width; base y at the bottom of the front row.
+    let center_x = (nw.x as f32 + (w as f32 - 1.0) / 2.0) * TILE;
+    let front_row_y = nw.y + h - 1;
+    let base_y = -(front_row_y as f32) * TILE - TILE / 2.0;
+    let width_px = w as f32 * TILE;
+    let size = Vec2::new(width_px, width_px / aspect);
+    (Vec2::new(center_x, base_y), size)
 }
 
 /// The most recent snapshot pushed by the server.
@@ -1219,7 +1240,8 @@ fn spawn_terrain(
                 art.tree_pine.clone()
             };
             // 16×32 sprite, trunk anchored to the tile centre so it stands on
-            // the ground; drawn above terrain but below cats.
+            // the ground; y-sorted with the rest of the world by its base.
+            let base_y = p.y - TILE * 0.5;
             commands.spawn((
                 Sprite {
                     image: tree,
@@ -1227,7 +1249,7 @@ fn spawn_terrain(
                     ..default()
                 },
                 Anchor::BOTTOM_CENTER,
-                Transform::from_xyz(p.x, p.y - TILE * 0.5, Z_DECORATION),
+                Transform::from_xyz(p.x, base_y, ysort_z(base_y)),
             ));
         }
     }
@@ -1308,10 +1330,14 @@ fn render_buildings(
         let Some(texture) = building_texture(building.building_type) else {
             continue;
         };
-        let p = grid_to_world(building.world_position.x, building.world_position.y);
-        let size = building_sprite_size(texture);
-        // Bottom-anchored so the structure stands on its tile; above ground +
-        // trees (Z_BUILDING > Z_DECORATION), below cats (< Z_CAT).
+        // Span the building's footprint (anchored NW), keeping the sprite aspect;
+        // bottom-anchored on the footprint's front edge, y-sorted with the world.
+        let (base, size) = footprint_sprite(
+            building.world_position,
+            building.footprint,
+            building_aspect(texture),
+        );
+        let z = ysort_z(base.y);
         commands.spawn((
             Sprite {
                 image: art.handle(texture),
@@ -1319,10 +1345,10 @@ fn render_buildings(
                 ..default()
             },
             Anchor::BOTTOM_CENTER,
-            Transform::from_xyz(p.x, p.y - TILE * 0.5, Z_BUILDING),
+            Transform::from_xyz(base.x, base.y, z),
             BuildingSprite,
         ));
-        // Small label just under the sprite base.
+        // Small label centred just under the footprint's front edge.
         commands.spawn((
             Text2d::new(building_label(building.building_type)),
             TextFont {
@@ -1330,7 +1356,7 @@ fn render_buildings(
                 ..default()
             },
             TextColor(Color::srgba(1.0, 0.97, 0.86, 0.90)),
-            Transform::from_xyz(p.x, p.y - TILE * 0.9, Z_BUILDING_LABEL),
+            Transform::from_xyz(base.x, base.y - TILE * 0.4, z + 0.2),
             BuildingLabel,
         ));
     }
@@ -1367,7 +1393,8 @@ fn render_walls(
                 custom_size: Some(Vec2::splat(TILE)),
                 ..default()
             },
-            Transform::from_xyz(pos.x, pos.y, Z_WALL).with_rotation(Quat::from_rotation_z(rot)),
+            Transform::from_xyz(pos.x, pos.y, ysort_z(pos.y))
+                .with_rotation(Quat::from_rotation_z(rot)),
             WallVis,
         ));
     }
@@ -1381,7 +1408,7 @@ fn render_walls(
                 custom_size: Some(Vec2::splat(TILE)),
                 ..default()
             },
-            Transform::from_xyz(pos.x, pos.y, Z_WALL + 0.1)
+            Transform::from_xyz(pos.x, pos.y, ysort_z(pos.y) + 0.1)
                 .with_rotation(Quat::from_rotation_z(rot)),
             WallVis,
         ));
@@ -1461,7 +1488,7 @@ fn render_stockpiles(
                         custom_size: Some(Vec2::splat(pile_scale(total))),
                         ..default()
                     },
-                    Transform::from_xyz(cx, cy, Z_CAT - 1.0),
+                    Transform::from_xyz(cx, cy, ysort_z(cy) + 2.0),
                     StockpileVis,
                 ));
                 commands.spawn((
@@ -1475,7 +1502,7 @@ fn render_stockpiles(
                         ..default()
                     },
                     TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
-                    Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, Z_CAT - 0.5),
+                    Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, ysort_z(cy) + 2.5),
                     StockpileVis,
                 ));
             }
@@ -1514,7 +1541,7 @@ fn render_stockpiles(
                     custom_size: Some(Vec2::splat(pile_scale(total))),
                     ..default()
                 },
-                Transform::from_xyz(cx, cy, Z_STOCKPILE_PILE),
+                Transform::from_xyz(cx, cy, ysort_z(cy)),
                 StockpileVis,
             ));
         }
@@ -1525,7 +1552,7 @@ fn render_stockpiles(
                 ..default()
             },
             TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
-            Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, Z_STOCKPILE_PILE + 0.5),
+            Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, ysort_z(cy) + 0.5),
             StockpileVis,
         ));
     }
@@ -1757,7 +1784,7 @@ fn sync_cats(
                         ..default()
                     },
                     Anchor::BOTTOM_CENTER,
-                    Transform::from_xyz(target.x, target.y, Z_CAT),
+                    Transform::from_xyz(target.x, target.y, ysort_z(target.y)),
                     CatBody(cat.id.clone()),
                     MoveTarget(target),
                     AnimSprite {
@@ -1769,12 +1796,13 @@ fn sync_cats(
             bodies.0.insert(cat.id.clone(), entity);
         }
 
-        // Overlays follow the (interpolated) body each frame via FollowCat.
+        // Overlays follow the (interpolated) body each frame via FollowCat; the
+        // offset.z is a small bias relative to the cat's y-sorted depth.
         if selection.selected.as_deref() == Some(cat.id.as_str()) {
             spawn_cat_overlay(
                 &mut commands,
                 &cat.id,
-                Vec3::new(0.0, CAT_SIZE.y * 0.35, Z_CAT - 0.5),
+                Vec3::new(0.0, CAT_SIZE.y * 0.35, -0.1),
                 Sprite::from_color(Color::srgb(1.0, 0.93, 0.30), Vec2::splat(TILE * 0.7)),
             );
         }
@@ -1782,7 +1810,7 @@ fn sync_cats(
             spawn_cat_overlay(
                 &mut commands,
                 &cat.id,
-                Vec3::new(0.0, CAT_SIZE.y * 0.78, Z_CAT + 0.1),
+                Vec3::new(0.0, CAT_SIZE.y * 0.78, 0.5),
                 Sprite {
                     image: sheets.hat(spec),
                     custom_size: Some(Vec2::splat(TILE * 0.55)),
@@ -1794,7 +1822,7 @@ fn sync_cats(
             spawn_cat_overlay(
                 &mut commands,
                 &cat.id,
-                Vec3::new(TILE * 0.3, CAT_SIZE.y * 0.55, Z_CAT_ITEM),
+                Vec3::new(TILE * 0.3, CAT_SIZE.y * 0.55, 0.6),
                 Sprite::from_color(carrying_color(carrying.kind), Vec2::splat(TILE * 0.28)),
             );
         }
@@ -1866,7 +1894,7 @@ fn sync_raiders(
                         ..default()
                     },
                     Anchor::BOTTOM_CENTER,
-                    Transform::from_xyz(target.x, target.y, Z_RAIDER),
+                    Transform::from_xyz(target.x, target.y, ysort_z(target.y)),
                     RaiderBody,
                     MoveTarget(target),
                     AnimSprite { group, moving },
@@ -1895,11 +1923,14 @@ fn move_bodies(time: Res<Time>, mut bodies: Query<(&mut Transform, &MoveTarget, 
         let next = walk_step(current, target.0, step, BODY_MAX_LAG);
         transform.translation.x = next.x;
         transform.translation.y = next.y;
+        // Re-sort by the body's live base y so it layers as it walks.
+        transform.translation.z = ysort_z(next.y);
         anim.moving = is_moving(current, target.0, BODY_MOVE_EPS);
     }
 }
 
-/// Move each cat overlay onto its cat's current (interpolated) position.
+/// Move each cat overlay onto its cat's current (interpolated) position, sharing
+/// the cat's y-sorted depth (plus a small per-overlay bias).
 fn follow_overlays(
     bodies: Query<(&CatBody, &Transform), Without<FollowCat>>,
     mut overlays: Query<(&FollowCat, &mut Transform)>,
@@ -1912,7 +1943,7 @@ fn follow_overlays(
         if let Some(pos) = positions.get(follow.id.as_str()) {
             transform.translation.x = pos.x + follow.offset.x;
             transform.translation.y = pos.y + follow.offset.y;
-            transform.translation.z = follow.offset.z;
+            transform.translation.z = ysort_z(pos.y) + follow.offset.z;
         }
     }
 }
@@ -2804,18 +2835,15 @@ fn building_texture(building: BuildingType) -> Option<BuildingTexture> {
     })
 }
 
-/// On-map sprite size: uniform ~1.8-tile height, preserving each sprite's native
-/// aspect (48x48 square; market 48x32 wide; well 16x32 tall).
-fn building_sprite_size(texture: BuildingTexture) -> Vec2 {
-    // Interim: sized so a building roughly fits its tile (was 1.8) to de-clutter
-    // the dense village until multi-tile footprints land (P14.1/P14.5).
-    const HEIGHT: f32 = TILE * 1.15;
-    let aspect = match texture {
+/// Native width/height aspect of a building sprite (48x48 square = 1.0; market
+/// 48x32 wide = 1.5; well 16x32 tall = 0.5). Used to size a footprint-spanning
+/// sprite without stretching the art.
+fn building_aspect(texture: BuildingTexture) -> f32 {
+    match texture {
         BuildingTexture::Market => 48.0 / 32.0,
         BuildingTexture::Well => 16.0 / 32.0,
         _ => 1.0,
-    };
-    Vec2::new(HEIGHT * aspect, HEIGHT)
+    }
 }
 
 fn building_label(building: BuildingType) -> &'static str {
@@ -3171,11 +3199,60 @@ mod tests {
         // Walls render as infra, not a point marker.
         assert_eq!(building_texture(BuildingType::Walls), None);
 
-        // Square sprites are square; the two non-square ones keep their aspect.
-        let square = building_sprite_size(BuildingTexture::Shrine);
-        assert_eq!(square.x, square.y);
-        assert!(building_sprite_size(BuildingTexture::Market).x > square.x); // wider
-        assert!(building_sprite_size(BuildingTexture::Well).x < square.x); // narrower
+        // Square sprites keep aspect 1; the two non-square ones don't.
+        assert_eq!(building_aspect(BuildingTexture::Shrine), 1.0);
+        assert!(building_aspect(BuildingTexture::Market) > 1.0); // wide
+        assert!(building_aspect(BuildingTexture::Well) < 1.0); // tall
+    }
+
+    #[test]
+    fn footprint_sprite_spans_tiles_and_sits_on_front_edge() {
+        let nw = TilePoint { x: 6, y: 6 };
+        // A 3x3 square building: 3 tiles wide, 3 tall (aspect 1).
+        let (base, size) = footprint_sprite(
+            nw,
+            FootprintSize {
+                width: 3,
+                height: 3,
+            },
+            1.0,
+        );
+        assert_eq!(size.x, 3.0 * TILE);
+        assert_eq!(size.y, 3.0 * TILE);
+        // Centre x is across the 3-tile span; base y is the bottom of the front row.
+        assert_eq!(base.x, (6.0 + 1.0) * TILE); // centre of cols 6,7,8
+        assert_eq!(base.y, -8.0 * TILE - TILE / 2.0); // front row y=8, bottom edge
+        // A 1x1 default reduces to the old point placement.
+        let (b1, s1) = footprint_sprite(
+            nw,
+            FootprintSize {
+                width: 1,
+                height: 1,
+            },
+            1.0,
+        );
+        assert_eq!(s1, Vec2::splat(TILE));
+        assert_eq!(b1, Vec2::new(6.0 * TILE, -6.0 * TILE - TILE / 2.0));
+        // A wide sprite (aspect 2) is half as tall as it is wide.
+        let (_, sw) = footprint_sprite(
+            nw,
+            FootprintSize {
+                width: 2,
+                height: 1,
+            },
+            2.0,
+        );
+        assert_eq!(sw, Vec2::new(2.0 * TILE, TILE));
+    }
+
+    #[test]
+    fn ysort_puts_lower_sprites_in_front() {
+        // Lower on the map = more negative world y = larger z (drawn in front).
+        let higher = ysort_z(0.0);
+        let lower = ysort_z(-100.0);
+        assert!(lower > higher);
+        // Monotonic in screen depth.
+        assert!(ysort_z(-200.0) > ysort_z(-100.0));
     }
 
     fn tile_with(biome: BiomeRole, x: i32, y: i32) -> TerrainTile {
