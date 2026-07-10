@@ -15,17 +15,17 @@ individual PNGs (`tile_NNNN.png`, 16px / 18px).
 
 ---
 
-## Buildings — `public/images/game/buildings/` (14 files)
+## Buildings — `public/images/game/buildings/` (17 files)
 
 Composited from **Tiny Town** `Tiles/tile_NNNN.png` unless marked RTS. House template = 3-wide × 3-tall
 (48×48): `[roof]/[wall,window|badge,wall]/[wall,door,wall]`. Roof shingles: red `52,53,54` / grey
-`48,49,50`; walls grey `76,77`; wood door `86`; window `84`. Verified by montage.
+`48,49,50` (vent `51`); walls wood `72,73` / grey stone `76,77`; wood door `86`; stone arch `78`;
+window `84`. Verified by montage.
 
 | File | Source | Verdict |
 |---|---|---|
 | `den.png` | TT red roof + grey wall + window `84` + door `86` | Clean red-roof cottage — the default home. 48×48. |
 | `storehouse.png` | TT grey roof + chest `130` + barrel `106` | Grey house showing stored goods. |
-| `workshop.png` | TT grey roof + wood wall `72/75` + hammer `128` + wood door `74` | Wood craft shed with a tool sign. |
 | `research_hut.png` | TT grey roof + key `117` | Grey house with a key emblem (archive). |
 | `school.png` | TT red roof + signboard `83` | Red-roof civic block with a notice board. |
 | `barracks.png` | TT grey roof + axe `127` | Grey house with a weapon emblem. |
@@ -33,15 +33,32 @@ Composited from **Tiny Town** `Tiles/tile_NNNN.png` unless marked RTS. House tem
 | `market.png` | TT covered cart `57` + barrel `106` | Trade cart with wares. 48×32. |
 | `tent.png` | TT awning booth `104` + sign `83` | Stall/tent (also the accounting tent). 48×32. |
 | `monument.png` | TT grey peak `63` + wall `109`×2 | Grey stone obelisk. 16×48. |
-| `mill.png` | **RTS** `Structure_14` → 48px | Windmill (Tiny Town has no windmill). |
 | `shrine.png` | **RTS** `Structure_04` → 48px | Cross chapel — reads sacred. |
-| `smithy.png` | **RTS** `Structure_20` → 48px | Chimney forge — unmistakable smithy. |
-| `clothier.png` | **RTS** `Structure_22` → 48px | Striped cloth stall / loom. |
 
-**Notes:** the 4 RTS sprites are flat-vector, a mild style seam against the 10 pixel Tiny Town ones, but
-each reads unambiguously as its type (better than a Tiny Town composite that reads as a generic house).
-`mill` downscales to mostly the sail-cross — reads as a mill but is spare; can composite a body under it
-if desired.
+### Workshops — DF-Steam craft-stations (see `docs/migration/specs/p18-visual-polish.md`)
+
+Each workshop is a **TT hut base + a distinct craft indicator** so its craft reads at a glance
+(DF-Steam style). Indicators are TT/Roguelike props where the library has one, else a small
+hand-drawn pixel primitive built to match the family (anvil, windmill sails, cut-stone blocks,
+cloth bolts, workbench, plank stack, hand-saw, log-end bundle). Roguelike Base cell `(col,row)` =
+`crop 16x16 at x=col*17, y=row*17` from `Spritesheet/roguelikeSheet_transparent.png`.
+
+| File | Source | Craft indicator / verdict |
+|---|---|---|
+| `wood_cutter.png` | TT wood hut + drawn log-end bundle + TT axe `127` | Log pile + axe → **lumber/felling**. Reads clearly. |
+| `stone_prep.png` | TT stone hut (arch `78`) + drawn cut-stone blocks + TT pickaxe `115` | Stone blocks + pick → **stone-cutting**. Reads clearly. |
+| `woodworking.png` | TT wood hut + drawn workbench + drawn plank-stack + drawn saw | Bench + planks + saw → **carpentry**. Distinct from the raw wood-cutter. |
+| `smithy.png` | TT stone hut (roof vent `51`) + Roguelike forge-fire `(54,8)` **in the doorway** + drawn anvil + TT hammer `128` | Glowing forge in the door + anvil + hammer → **unmistakable smithy**. Strongest reader. |
+| `mill.png` | TT stone hut + drawn windmill sails (X-lattice vanes on the face) | Bold windmill sails → **mill**. Replaces the spare RTS sail-cross. |
+| `clothier.png` | TT wood hut + TT striped awning `104` storefront + drawn cloth bolts (red/teal/gold) | Striped awning + folded cloth → **weaver/textiles**. |
+| `workshop.png` | TT wood hut + TT hammer `128` wall emblem + Roguelike barrel/crate props | Generic craft/tool shed — the fallback. |
+
+**Notes:** the seven workshops are all pixel Tiny Town composites (no RTS flat-vector), so they sit in the
+same visual family and 48×48 footprint as the homes. The forge-fire `(54,8)` is Roguelike Base (same 16px
+pixel style) placed as the smithy's door so the forge glows from inside. The hand-drawn primitives are
+plain ImageMagick pixel shapes tuned to the pack palette — good enough to read at glance and at in-game
+scale; swap for bespoke sprites if a truer loom/anvil is ever wanted (a real top-down **loom** is the one
+prop the library genuinely lacks — clothier leans on the striped awning + cloth bolts instead).
 
 ---
 
@@ -111,4 +128,4 @@ forest animals — these are the closest cohesive fantasy-creature stand-ins, no
 
 ## Files written / current in each dir
 
-- **buildings: 14** · **props: 11** · **farm: 6** · **enemies: 4**  (infra: 10 from an earlier pass)
+- **buildings: 17** · **props: 11** · **farm: 6** · **enemies: 4**  (infra: 10 from an earlier pass)
