@@ -19,9 +19,9 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use cat_protocol::{
-    BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction, ColonySnapshot, GateSide,
-    JobKind, OfficerRole, RaiderStatus, ResourceAmounts, ResourceKind, Specialization,
-    StockLedgerSnapshot, StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
+    BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction,
+    ColonySnapshot, GateSide, JobKind, OfficerRole, RaiderStatus, ResourceAmounts, ResourceKind,
+    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
 };
 use cat_sim::terrain_gen::{
     BiomeRole, DecorationRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
@@ -84,6 +84,28 @@ struct Selection {
 #[derive(Resource, Default)]
 struct StockpileSelection {
     selected: Option<String>,
+}
+
+/// The currently inspected building id (middle-click).
+#[derive(Resource, Default)]
+struct BuildingSelection {
+    selected: Option<String>,
+}
+
+/// What a mouse button selects on the map. Left = cat, middle = building; right
+/// is reserved for drag-panning.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ClickTarget {
+    Cat,
+    Building,
+}
+
+fn click_action(button: MouseButton) -> Option<ClickTarget> {
+    match button {
+        MouseButton::Left => Some(ClickTarget::Cat),
+        MouseButton::Middle => Some(ClickTarget::Building),
+        _ => None,
+    }
 }
 
 /// The shrine reservoir's stockpile id — always present, de-emphasized in render.
@@ -474,6 +496,12 @@ struct InspectorPanel;
 /// Marker for the cat-inspector text.
 #[derive(Component)]
 struct InspectorText;
+/// Marker for the building-inspector panel node (middle-click a building).
+#[derive(Component)]
+struct BuildingInspectorPanel;
+/// Marker for the building-inspector text.
+#[derive(Component)]
+struct BuildingInspectorText;
 /// Marker for a building marker sprite.
 #[derive(Component)]
 struct BuildingSprite;
@@ -639,6 +667,7 @@ pub fn run() {
         .insert_resource(WorldRender::default())
         .insert_resource(Selection::default())
         .insert_resource(StockpileSelection::default())
+        .insert_resource(BuildingSelection::default())
         .insert_resource(OfficersUi::default())
         .insert_resource(CatBodies::default())
         .insert_resource(RaiderBodies::default())
@@ -668,6 +697,8 @@ pub fn run() {
                 (
                     camera_controls,
                     select_cat,
+                    select_building,
+                    update_building_inspector,
                     update_remove_panel,
                     handle_remove_button,
                     update_inspector,
@@ -854,6 +885,32 @@ fn setup(
                 )],
             ),
         ],
+    ));
+
+    // Building inspector (right, below the remove panel), middle-click a
+    // building; hidden until one is selected.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(8.0),
+            top: Val::Px(320.0),
+            width: Val::Px(250.0),
+            padding: UiRect::all(Val::Px(12.0)),
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.03, 0.05, 0.06, 0.88)),
+        BorderColor::all(Color::srgba(0.55, 0.75, 0.70, 0.5)),
+        BuildingInspectorPanel,
+        children![(
+            Text::new(""),
+            TextFont {
+                font_size: FontSize::Px(13.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.90, 1.0, 0.95)),
+            BuildingInspectorText,
+        )],
     ));
 
     // Officers panel (left, below the dashboard), toggled with `O`.
@@ -1903,7 +1960,7 @@ fn select_cat(
         .filter(|c| c.death_time.is_none())
         .map(|c| (c.id.clone(), grid_to_world(c.position.x, c.position.y)))
         .collect();
-    let picked = nearest_cat_id(world, &cats, TILE * 0.5);
+    let picked = nearest_id(world, &cats, TILE * 0.5);
     if picked.is_some() {
         // A cat wins the click; drop any stockpile selection.
         stockpile_selection.selected = None;
@@ -1921,6 +1978,81 @@ fn select_cat(
         stockpile_selection.selected.as_deref(),
         pile.map(|s| s.id.clone()),
     );
+}
+
+/// Middle-click a building to inspect it; middle-click empty ground or the same
+/// building again to deselect.
+fn select_building(
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    ui: Query<&Interaction, With<Button>>,
+    latest: Res<LatestSnapshot>,
+    mut selection: ResMut<BuildingSelection>,
+) {
+    if !buttons.just_pressed(MouseButton::Middle)
+        || click_action(MouseButton::Middle) != Some(ClickTarget::Building)
+    {
+        return;
+    }
+    if ui.iter().any(|i| !matches!(i, Interaction::None)) {
+        return;
+    }
+    let Some(world) = cursor_world(&windows, &camera) else {
+        return;
+    };
+    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+        return;
+    };
+    // Skip Walls (rendered as the palisade, not a point marker).
+    let buildings: Vec<(String, Vec2)> = colony
+        .buildings
+        .iter()
+        .filter(|b| building_texture(b.building_type).is_some())
+        .map(|b| {
+            (
+                b.id.clone(),
+                grid_to_world(b.world_position.x, b.world_position.y),
+            )
+        })
+        .collect();
+    let picked = nearest_id(world, &buildings, TILE * 0.9);
+    selection.selected = toggle_selection(selection.selected.as_deref(), picked);
+}
+
+/// Re-resolve the selected building each tick and repaint its inspector panel;
+/// hide it (and clear the selection) when the building is gone.
+fn update_building_inspector(
+    latest: Res<LatestSnapshot>,
+    mut selection: ResMut<BuildingSelection>,
+    mut panel: Query<&mut Node, With<BuildingInspectorPanel>>,
+    mut text: Query<&mut Text, With<BuildingInspectorText>>,
+) {
+    if !latest.is_changed() && !selection.is_changed() {
+        return;
+    }
+    let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
+        return;
+    };
+    let found = selection.selected.as_deref().and_then(|id| {
+        latest
+            .0
+            .as_ref()
+            .and_then(|w| w.colonies.first())
+            .and_then(|c| c.buildings.iter().find(|b| b.id == id).map(|b| (b, c)))
+    });
+    match found {
+        Some((building, colony)) => {
+            node.display = Display::Flex;
+            text.0 = building_inspector_text(building, colony);
+        }
+        None => {
+            node.display = Display::None;
+            if selection.selected.is_some() {
+                selection.selected = None;
+            }
+        }
+    }
 }
 
 /// Re-resolve the selected cat by id each tick and repaint the inspector panel;
@@ -2141,7 +2273,9 @@ fn camera_controls(
         transform.translation.y = center.y;
         projection.scale = 1.0;
     }
-    if buttons.pressed(MouseButton::Middle) {
+    // Right-button drag pans the map (left = select cat, middle = select
+    // building).
+    if buttons.pressed(MouseButton::Right) {
         for ev in motion.read() {
             transform.translation.x -= ev.delta.x * projection.scale;
             transform.translation.y += ev.delta.y * projection.scale;
@@ -2369,6 +2503,38 @@ fn paint_preview_color(kind: PaintKind) -> Color {
     }
 }
 
+/// Read-only inspector body for a building: type, level, complete/under-
+/// construction, and the cats assigned to it.
+fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot) -> String {
+    let status = if building.construction_progress >= 100.0 {
+        "operational".to_string()
+    } else {
+        format!("under construction {:.0}%", building.construction_progress)
+    };
+    let workers: Vec<&str> = colony
+        .cats
+        .iter()
+        .filter(|c| c.assigned_building_id.as_deref() == Some(building.id.as_str()))
+        .map(|c| c.name.as_str())
+        .collect();
+    let workers_line = if workers.is_empty() {
+        "none".to_string()
+    } else {
+        workers.join(", ")
+    };
+    format!(
+        "{name}  Lv {lvl}\n\
+         {status}\n\
+         at {x},{y}\n\
+         workers: {workers}",
+        name = building_label(building.building_type),
+        lvl = building.level,
+        x = building.world_position.x,
+        y = building.world_position.y,
+        workers = workers_line,
+    )
+}
+
 /// The name of the cat holding an officer role, or `None` when vacant / the
 /// appointed cat is no longer in the snapshot.
 fn officer_holder_name(colony: &ColonySnapshot, role: OfficerRole) -> Option<&str> {
@@ -2525,11 +2691,11 @@ fn point_in_stockpile(tile: (i32, i32), pile: &StockpileSnapshot) -> bool {
     (x0..=x1).contains(&tile.0) && (y0..=y1).contains(&tile.1)
 }
 
-/// Nearest cat id to `click` within `radius`, or `None`.
-fn nearest_cat_id(click: Vec2, cats: &[(String, Vec2)], radius: f32) -> Option<String> {
+/// Nearest id to `click` within `radius`, or `None` (used for cats + buildings).
+fn nearest_id(click: Vec2, items: &[(String, Vec2)], radius: f32) -> Option<String> {
     let r2 = radius * radius;
     let mut best: Option<(&str, f32)> = None;
-    for (id, pos) in cats {
+    for (id, pos) in items {
         let d2 = pos.distance_squared(click);
         if d2 <= r2 && best.is_none_or(|(_, bd)| d2 < bd) {
             best = Some((id, d2));
@@ -3059,26 +3225,37 @@ mod tests {
     }
 
     #[test]
-    fn nearest_cat_pick_respects_radius_and_picks_closest() {
-        let cats = vec![
+    fn nearest_pick_respects_radius_and_picks_closest() {
+        let items = vec![
             ("a".to_string(), Vec2::new(0.0, 0.0)),
             ("b".to_string(), Vec2::new(10.0, 0.0)),
         ];
         // Click near b, within radius → b.
         assert_eq!(
-            nearest_cat_id(Vec2::new(9.0, 0.0), &cats, TILE * 0.5),
+            nearest_id(Vec2::new(9.0, 0.0), &items, TILE * 0.5),
             Some("b".to_string())
         );
         // Click near a → a.
         assert_eq!(
-            nearest_cat_id(Vec2::new(1.0, 0.0), &cats, TILE * 0.5),
+            nearest_id(Vec2::new(1.0, 0.0), &items, TILE * 0.5),
             Some("a".to_string())
         );
         // Click far from both → none.
         assert_eq!(
-            nearest_cat_id(Vec2::new(100.0, 100.0), &cats, TILE * 0.5),
+            nearest_id(Vec2::new(100.0, 100.0), &items, TILE * 0.5),
             None
         );
+    }
+
+    #[test]
+    fn click_action_maps_buttons() {
+        assert_eq!(click_action(MouseButton::Left), Some(ClickTarget::Cat));
+        assert_eq!(
+            click_action(MouseButton::Middle),
+            Some(ClickTarget::Building)
+        );
+        // Right is drag-pan, not a selection.
+        assert_eq!(click_action(MouseButton::Right), None);
     }
 
     #[test]
@@ -3244,5 +3421,45 @@ mod tests {
         );
         assert_eq!(officer_holder_name(colony, OfficerRole::Steward), None); // vacant
         assert_eq!(officer_holder_name(colony, OfficerRole::Captain), None); // dangling id
+    }
+
+    #[test]
+    fn building_inspector_text_reports_status_and_workers() {
+        // A complete workshop with Moss assigned, plus an unfinished den.
+        let json = r#"{
+            "now": 0, "worldSeed": 1, "onlineCount": 1,
+            "colonies": [{
+                "id":"c1","name":"A","status":"thriving",
+                "resources":{"food":1,"water":1,"herbs":0,"materials":0,"refined":0,"weapons":0,"armor":0,"blessings":0},
+                "storage":{"capacities":{"food":200,"water":200,"herbs":100,"materials":100,"refined":100,"weapons":50,"armor":50},"foodCapacity":200,"titheRates":{"food":20,"refined":5}},
+                "leader":null,
+                "cats":[
+                    {"id":"k1","name":"Moss","position":{"map":"colony","x":1,"y":2},"activity":"working","destination":null,"carrying":null,"specialization":null,"ageHours":30.0,"needs":{"hunger":100,"thirst":100,"rest":100,"health":100},"currentTask":null,"assignedBuildingId":"b1","roleXp":{"hunter":0,"architect":0,"ritualist":0,"warrior":0},"stats":{"leadership":10},"deathTime":null}
+                ],
+                "jobs":[],"upgrades":[],"events":[],
+                "housing":{"population":1,"capacity":4,"pressure":0.5,"villageLevel":1},
+                "research":{"ownedNodeIds":[],"researchPoints":0,"researcherCount":0,"blessings":0,"nextTarget":null},
+                "election":null,"voteKick":null,"zones":[],
+                "threat":{"pressure":0,"band":"calm","raidActive":false,"warriors":0,"weapons":0,"armor":0},
+                "raiders":[],
+                "buildings":[
+                    {"id":"b1","type":"workshop","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0}},
+                    {"id":"b2","type":"den","level":1,"constructionProgress":40.0,"worldPosition":{"x":5,"y":6},"position":{"x":-1,"y":0}}
+                ],
+                "claimedTiles":[],"villageGate":null,"villageRadius":4,"anchor":{"x":6,"y":6}
+            }]
+        }"#;
+        let snap: WorldSnapshot = serde_json::from_str(json).expect("parse snapshot");
+        let colony = &snap.colonies[0];
+        let workshop = &colony.buildings[0];
+        let den = &colony.buildings[1];
+        let ws = building_inspector_text(workshop, colony);
+        assert!(ws.contains("workshop"));
+        assert!(ws.contains("Lv 2"));
+        assert!(ws.contains("operational"));
+        assert!(ws.contains("Moss")); // assigned worker
+        let den_text = building_inspector_text(den, colony);
+        assert!(den_text.contains("under construction 40%"));
+        assert!(den_text.contains("workers: none"));
     }
 }
