@@ -883,6 +883,38 @@ pub fn run() {
         .run();
 }
 
+/// The resources shown in the HUD readout. Its own enum (not `proto::ResourceKind`,
+/// which lacks the refinement tier) so it can carry planks/blocks/tools too.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HudRes {
+    Food,
+    Water,
+    Materials,
+    Refined,
+    Planks,
+    Blocks,
+    Tools,
+    Herbs,
+    Weapons,
+    Armor,
+    Blessings,
+}
+
+/// The HUD resources, in display order (refinement tier grouped after refined).
+const HUD_RESOURCES: [HudRes; 11] = [
+    HudRes::Food,
+    HudRes::Water,
+    HudRes::Materials,
+    HudRes::Refined,
+    HudRes::Planks,
+    HudRes::Blocks,
+    HudRes::Tools,
+    HudRes::Herbs,
+    HudRes::Weapons,
+    HudRes::Armor,
+    HudRes::Blessings,
+];
+
 /// Board-game glyph icons (white, recolorable) for the HUD resource readout.
 #[derive(Resource, Clone)]
 struct IconArt {
@@ -890,6 +922,9 @@ struct IconArt {
     water: Handle<Image>,
     materials: Handle<Image>,
     refined: Handle<Image>,
+    planks: Handle<Image>,
+    blocks: Handle<Image>,
+    tools: Handle<Image>,
     herbs: Handle<Image>,
     weapons: Handle<Image>,
     armor: Handle<Image>,
@@ -903,6 +938,9 @@ impl IconArt {
             water: assets.load("public/images/game/icons/water.png"),
             materials: assets.load("public/images/game/icons/materials.png"),
             refined: assets.load("public/images/game/icons/refined.png"),
+            planks: assets.load("public/images/game/icons/planks.png"),
+            blocks: assets.load("public/images/game/icons/blocks.png"),
+            tools: assets.load("public/images/game/icons/tools.png"),
             herbs: assets.load("public/images/game/icons/herbs.png"),
             weapons: assets.load("public/images/game/icons/weapons.png"),
             armor: assets.load("public/images/game/icons/armor.png"),
@@ -910,63 +948,60 @@ impl IconArt {
         }
     }
 
-    fn get(&self, kind: ResourceKind) -> Handle<Image> {
+    fn get(&self, kind: HudRes) -> Handle<Image> {
         match kind {
-            ResourceKind::Food => self.food.clone(),
-            ResourceKind::Water => self.water.clone(),
-            ResourceKind::Materials => self.materials.clone(),
-            ResourceKind::Refined => self.refined.clone(),
-            ResourceKind::Herbs => self.herbs.clone(),
-            ResourceKind::Weapons => self.weapons.clone(),
-            ResourceKind::Armor => self.armor.clone(),
-            ResourceKind::Blessings => self.blessings.clone(),
+            HudRes::Food => self.food.clone(),
+            HudRes::Water => self.water.clone(),
+            HudRes::Materials => self.materials.clone(),
+            HudRes::Refined => self.refined.clone(),
+            HudRes::Planks => self.planks.clone(),
+            HudRes::Blocks => self.blocks.clone(),
+            HudRes::Tools => self.tools.clone(),
+            HudRes::Herbs => self.herbs.clone(),
+            HudRes::Weapons => self.weapons.clone(),
+            HudRes::Armor => self.armor.clone(),
+            HudRes::Blessings => self.blessings.clone(),
         }
     }
 }
 
-/// The eight HUD resources, in display order.
-const HUD_RESOURCES: [ResourceKind; 8] = [
-    ResourceKind::Food,
-    ResourceKind::Water,
-    ResourceKind::Materials,
-    ResourceKind::Refined,
-    ResourceKind::Herbs,
-    ResourceKind::Weapons,
-    ResourceKind::Armor,
-    ResourceKind::Blessings,
-];
-
 /// Tags a HUD value `Text` with the resource it reports, so one system can
 /// refresh every readout.
 #[derive(Component, Clone, Copy)]
-struct HudResource(ResourceKind);
+struct HudResource(HudRes);
 
 /// The tint applied to a resource's white glyph so the readout reads at a glance.
-fn resource_icon_tint(kind: ResourceKind) -> Color {
+fn resource_icon_tint(kind: HudRes) -> Color {
     match kind {
-        ResourceKind::Food => Color::srgb(0.87, 0.35, 0.26),
-        ResourceKind::Water => Color::srgb(0.36, 0.62, 0.93),
-        ResourceKind::Materials => Color::srgb(0.62, 0.46, 0.29),
-        ResourceKind::Refined => Color::srgb(0.86, 0.71, 0.40),
-        ResourceKind::Herbs => Color::srgb(0.51, 0.79, 0.42),
-        ResourceKind::Weapons => Color::srgb(0.74, 0.76, 0.82),
-        ResourceKind::Armor => Color::srgb(0.56, 0.64, 0.76),
-        ResourceKind::Blessings => Color::srgb(0.96, 0.80, 0.32),
+        HudRes::Food => Color::srgb(0.87, 0.35, 0.26),
+        HudRes::Water => Color::srgb(0.36, 0.62, 0.93),
+        HudRes::Materials => Color::srgb(0.62, 0.46, 0.29),
+        HudRes::Refined => Color::srgb(0.86, 0.71, 0.40),
+        HudRes::Planks => Color::srgb(0.82, 0.66, 0.42),
+        HudRes::Blocks => Color::srgb(0.62, 0.64, 0.66),
+        HudRes::Tools => Color::srgb(0.70, 0.74, 0.80),
+        HudRes::Herbs => Color::srgb(0.51, 0.79, 0.42),
+        HudRes::Weapons => Color::srgb(0.74, 0.76, 0.82),
+        HudRes::Armor => Color::srgb(0.56, 0.64, 0.76),
+        HudRes::Blessings => Color::srgb(0.96, 0.80, 0.32),
     }
 }
 
 /// The HUD value text for a resource: `value / cap` for capped storables, a bare
 /// value for weapons/armor, and one decimal for blessings.
-fn hud_resource_value(kind: ResourceKind, r: &ResourceAmounts, cap: &ResourceCapacities) -> String {
+fn hud_resource_value(kind: HudRes, r: &ResourceAmounts, cap: &ResourceCapacities) -> String {
     match kind {
-        ResourceKind::Food => format!("{:.0} / {:.0}", r.food, cap.food),
-        ResourceKind::Water => format!("{:.0} / {:.0}", r.water, cap.water),
-        ResourceKind::Materials => format!("{:.0} / {:.0}", r.materials, cap.materials),
-        ResourceKind::Refined => format!("{:.0} / {:.0}", r.refined, cap.refined),
-        ResourceKind::Herbs => format!("{:.0} / {:.0}", r.herbs, cap.herbs),
-        ResourceKind::Weapons => format!("{:.0}", r.weapons),
-        ResourceKind::Armor => format!("{:.0}", r.armor),
-        ResourceKind::Blessings => format!("{:.1}", r.blessings),
+        HudRes::Food => format!("{:.0} / {:.0}", r.food, cap.food),
+        HudRes::Water => format!("{:.0} / {:.0}", r.water, cap.water),
+        HudRes::Materials => format!("{:.0} / {:.0}", r.materials, cap.materials),
+        HudRes::Refined => format!("{:.0} / {:.0}", r.refined, cap.refined),
+        HudRes::Planks => format!("{:.0} / {:.0}", r.planks, cap.planks),
+        HudRes::Blocks => format!("{:.0} / {:.0}", r.blocks, cap.blocks),
+        HudRes::Tools => format!("{:.0} / {:.0}", r.tools, cap.tools),
+        HudRes::Herbs => format!("{:.0} / {:.0}", r.herbs, cap.herbs),
+        HudRes::Weapons => format!("{:.0}", r.weapons),
+        HudRes::Armor => format!("{:.0}", r.armor),
+        HudRes::Blessings => format!("{:.1}", r.blessings),
     }
 }
 
@@ -1289,7 +1324,9 @@ fn spawn_officers_panel(commands: &mut Commands, ui: &UiArt) {
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(8.0),
-                top: Val::Px(430.0),
+                // Below the HUD dashboard, which grew taller with the refinement
+                // tier (planks/blocks/tools) rows.
+                top: Val::Px(500.0),
                 width: Val::Px(268.0),
                 padding: UiRect::all(Val::Px(26.0)),
                 flex_direction: FlexDirection::Column,
@@ -4146,14 +4183,23 @@ mod tests {
             .iter()
             .map(|k| resource_icon_tint(*k))
             .collect();
-        assert_eq!(tints.len(), 8);
+        assert_eq!(tints.len(), 11);
         assert_ne!(
-            resource_icon_tint(ResourceKind::Food),
-            resource_icon_tint(ResourceKind::Water)
+            resource_icon_tint(HudRes::Food),
+            resource_icon_tint(HudRes::Water)
         );
         assert_ne!(
-            resource_icon_tint(ResourceKind::Materials),
-            resource_icon_tint(ResourceKind::Refined)
+            resource_icon_tint(HudRes::Materials),
+            resource_icon_tint(HudRes::Refined)
+        );
+        // The refinement tier is distinct from each other and from refined.
+        assert_ne!(
+            resource_icon_tint(HudRes::Planks),
+            resource_icon_tint(HudRes::Blocks)
+        );
+        assert_ne!(
+            resource_icon_tint(HudRes::Blocks),
+            resource_icon_tint(HudRes::Tools)
         );
     }
 
@@ -4167,9 +4213,9 @@ mod tests {
             refined: 0.0,
             weapons: 3.0,
             armor: 2.0,
-            planks: 0.0,
-            blocks: 0.0,
-            tools: 0.0,
+            planks: 12.0,
+            blocks: 7.0,
+            tools: 1.0,
             blessings: 4.5,
         };
         let cap = ResourceCapacities {
@@ -4180,16 +4226,17 @@ mod tests {
             refined: 100.0,
             weapons: 0.0,
             armor: 0.0,
-            planks: 0.0,
-            blocks: 0.0,
-            tools: 0.0,
+            planks: 100.0,
+            blocks: 100.0,
+            tools: 100.0,
         };
-        assert_eq!(
-            hud_resource_value(ResourceKind::Food, &r, &cap),
-            "150 / 200"
-        );
-        assert_eq!(hud_resource_value(ResourceKind::Weapons, &r, &cap), "3");
-        assert_eq!(hud_resource_value(ResourceKind::Blessings, &r, &cap), "4.5");
+        assert_eq!(hud_resource_value(HudRes::Food, &r, &cap), "150 / 200");
+        // The refinement tier shows amount / cap like the other storables.
+        assert_eq!(hud_resource_value(HudRes::Planks, &r, &cap), "12 / 100");
+        assert_eq!(hud_resource_value(HudRes::Blocks, &r, &cap), "7 / 100");
+        assert_eq!(hud_resource_value(HudRes::Tools, &r, &cap), "1 / 100");
+        assert_eq!(hud_resource_value(HudRes::Weapons, &r, &cap), "3");
+        assert_eq!(hud_resource_value(HudRes::Blessings, &r, &cap), "4.5");
     }
 
     #[test]
