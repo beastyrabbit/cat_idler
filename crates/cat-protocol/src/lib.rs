@@ -44,6 +44,10 @@ pub struct ColonySnapshot {
     /// Additive since P15; empty/absent for pre-fog snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub revealed_tiles: Vec<TilePoint>,
+    /// Paved road tiles (`overlay_feature == "road_built"`). The client draws roads
+    /// over these. Additive; empty/absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub road_tiles: Vec<TilePoint>,
     pub village_gate: Option<GatePlacement>,
     pub village_radius: u32,
     pub anchor: TilePoint,
@@ -1020,6 +1024,7 @@ mod tests {
                 }],
                 claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
+                road_tiles: vec![],
                 village_gate: Some(GatePlacement {
                     x: 5,
                     y: 7,

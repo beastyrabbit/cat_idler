@@ -895,6 +895,12 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         buildings: buildings_snapshot(colony),
         claimed_tiles: colony.claimed_tiles.iter().map(tile_point).collect(),
         revealed_tiles: colony.revealed_tiles.iter().map(tile_point).collect(),
+        road_tiles: colony
+            .world_tiles
+            .iter()
+            .filter(|(_, tile)| tile.overlay_feature.as_deref() == Some("road_built"))
+            .map(|(pos, _)| tile_point(pos))
+            .collect(),
         village_gate: village_gate_snapshot(colony),
         village_radius: village_ring_radius(colony.buildings.len() as i32) as u32,
         anchor: proto::TilePoint {
