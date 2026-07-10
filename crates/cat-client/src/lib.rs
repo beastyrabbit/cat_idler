@@ -92,7 +92,7 @@ struct BuildingSelection {
     selected: Option<String>,
 }
 
-/// What a mouse button selects on the map. Left = cat, middle = building; right
+/// What a mouse button selects on the map. Left = cat, right = building; middle
 /// is reserved for drag-panning.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ClickTarget {
@@ -103,7 +103,7 @@ enum ClickTarget {
 fn click_action(button: MouseButton) -> Option<ClickTarget> {
     match button {
         MouseButton::Left => Some(ClickTarget::Cat),
-        MouseButton::Middle => Some(ClickTarget::Building),
+        MouseButton::Right => Some(ClickTarget::Building),
         _ => None,
     }
 }
@@ -1684,9 +1684,12 @@ fn handle_vacate_buttons(
 
 /// Cat sprite footprint (32x64 cell → ~1 tile wide, 2 tiles tall, standing).
 const CAT_SIZE: Vec2 = Vec2::new(TILE * 0.9, TILE * 1.8);
-/// Exponential glide rate for body interpolation (tuned so a 1-tile hop glides
-/// across most of the ~1s snapshot interval rather than snapping and waiting).
-const BODY_GLIDE_RATE: f32 = 4.0;
+/// Constant walk speed for body movement (world units/sec ≈ 3 tiles/sec) so
+/// cats visibly stride tile-to-tile and never teleport.
+const BODY_WALK_SPEED: f32 = TILE * 3.0;
+/// Snap a body to its target only if it falls this absurdly far behind (well
+/// off-screen) — otherwise it always walks there at [`BODY_WALK_SPEED`].
+const BODY_MAX_LAG: f32 = TILE * 40.0;
 /// A body is "moving" (walk-animated) while more than this far from its target.
 const BODY_MOVE_EPS: f32 = 1.5;
 /// Minimum world-space delta to derive a new facing from.
@@ -1882,13 +1885,14 @@ fn sync_raiders(
     });
 }
 
-/// Glide every persistent body toward its target each frame (exponential
-/// smoothing), and flag it moving while it's still translating.
+/// Walk every persistent body toward its target each frame at a constant speed
+/// (so it strides tile-to-tile, never teleporting), and flag it moving while
+/// it's still en route.
 fn move_bodies(time: Res<Time>, mut bodies: Query<(&mut Transform, &MoveTarget, &mut AnimSprite)>) {
-    let dt = time.delta_secs();
+    let step = BODY_WALK_SPEED * time.delta_secs();
     for (mut transform, target, mut anim) in &mut bodies {
         let current = transform.translation.truncate();
-        let next = approach(current, target.0, BODY_GLIDE_RATE, dt);
+        let next = walk_step(current, target.0, step, BODY_MAX_LAG);
         transform.translation.x = next.x;
         transform.translation.y = next.y;
         anim.moving = is_moving(current, target.0, BODY_MOVE_EPS);
@@ -1980,7 +1984,7 @@ fn select_cat(
     );
 }
 
-/// Middle-click a building to inspect it; middle-click empty ground or the same
+/// Right-click a building to inspect it; right-click empty ground or the same
 /// building again to deselect.
 fn select_building(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -1990,8 +1994,8 @@ fn select_building(
     latest: Res<LatestSnapshot>,
     mut selection: ResMut<BuildingSelection>,
 ) {
-    if !buttons.just_pressed(MouseButton::Middle)
-        || click_action(MouseButton::Middle) != Some(ClickTarget::Building)
+    if !buttons.just_pressed(MouseButton::Right)
+        || click_action(MouseButton::Right) != Some(ClickTarget::Building)
     {
         return;
     }
@@ -2273,9 +2277,9 @@ fn camera_controls(
         transform.translation.y = center.y;
         projection.scale = 1.0;
     }
-    // Right-button drag pans the map (left = select cat, middle = select
+    // Middle-button drag pans the map (left = select cat, right = select
     // building).
-    if buttons.pressed(MouseButton::Right) {
+    if buttons.pressed(MouseButton::Middle) {
         for ev in motion.read() {
             transform.translation.x -= ev.delta.x * projection.scale;
             transform.translation.y += ev.delta.y * projection.scale;
@@ -2875,10 +2879,17 @@ fn facing_from_delta(delta: Vec2) -> Option<usize> {
     Some(direction_group_f(delta.x, -delta.y))
 }
 
-/// Exponential-smoothing step of `current` toward `target` over `dt` at `rate`.
-fn approach(current: Vec2, target: Vec2, rate: f32, dt: f32) -> Vec2 {
-    let t = (1.0 - (-rate * dt).exp()).clamp(0.0, 1.0);
-    current.lerp(target, t)
+/// One constant-speed walk step of `current` toward `target`: advance by `step`
+/// world units along the straight line, arriving exactly if within a step. Snaps
+/// to the target only when it's `max_lag` away (absurdly far / off-screen) so a
+/// body never teleports for an ordinary multi-tile catch-up.
+fn walk_step(current: Vec2, target: Vec2, step: f32, max_lag: f32) -> Vec2 {
+    let to = target - current;
+    let dist = to.length();
+    if dist > max_lag || dist <= step || dist == 0.0 {
+        return target;
+    }
+    current + to / dist * step
 }
 
 /// Whether a body is still translating (beyond `eps` world units from target).
@@ -2972,18 +2983,22 @@ mod tests {
     }
 
     #[test]
-    fn approach_and_is_moving() {
+    fn walk_step_moves_at_constant_speed_and_never_overshoots() {
         let a = Vec2::ZERO;
         let b = Vec2::new(100.0, 0.0);
-        // A step moves partway (never overshoots) and is still moving.
-        let mid = approach(a, b, 8.0, 1.0 / 60.0);
-        assert!(mid.x > 0.0 && mid.x < 100.0);
+        // A step advances by exactly `step` along the line toward the target.
+        let mid = walk_step(a, b, 10.0, 1000.0);
+        assert!((mid.x - 10.0).abs() < 1e-4);
+        assert_eq!(mid.y, 0.0);
         assert!(is_moving(a, b, BODY_MOVE_EPS));
-        // At the target it's done and no longer moving.
+        // Within one step of the target → arrive exactly (no overshoot).
+        assert_eq!(walk_step(Vec2::new(95.0, 0.0), b, 10.0, 1000.0), b);
         assert!(!is_moving(b, b, BODY_MOVE_EPS));
-        // A very long step converges essentially onto the target.
-        let far = approach(a, b, 8.0, 10.0);
-        assert!((far - b).length() < 0.5);
+        // Absurdly far behind (beyond max_lag) → snap to target.
+        assert_eq!(
+            walk_step(a, Vec2::new(5000.0, 0.0), 10.0, 1000.0),
+            Vec2::new(5000.0, 0.0)
+        );
     }
 
     #[test]
@@ -3251,11 +3266,11 @@ mod tests {
     fn click_action_maps_buttons() {
         assert_eq!(click_action(MouseButton::Left), Some(ClickTarget::Cat));
         assert_eq!(
-            click_action(MouseButton::Middle),
+            click_action(MouseButton::Right),
             Some(ClickTarget::Building)
         );
-        // Right is drag-pan, not a selection.
-        assert_eq!(click_action(MouseButton::Right), None);
+        // Middle is drag-pan, not a selection.
+        assert_eq!(click_action(MouseButton::Middle), None);
     }
 
     #[test]
