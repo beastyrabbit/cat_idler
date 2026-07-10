@@ -20,7 +20,8 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use cat_protocol::{
     BuildingType, CarryingKind, CatActivity, CatSnapshot, ClientAction, ColonySnapshot, JobKind,
-    Specialization, TilePoint, WorldSnapshot, ZoneKind,
+    ResourceAmounts, ResourceKind, Specialization, StockpileSnapshot, TilePoint, WorldSnapshot,
+    ZoneKind,
 };
 use cat_sim::terrain_gen::{
     BiomeRole, DecorationRole, TerrainTile, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk,
@@ -39,9 +40,9 @@ const WINDOW_RADIUS: i32 = 30;
 const Z_TERRAIN: f32 = 0.0;
 const Z_DECORATION: f32 = 1.0;
 const Z_ZONE: f32 = 2.0;
+const Z_STOCKPILE_PILE: f32 = 9.0;
 const Z_BUILDING: f32 = 10.0;
 const Z_BUILDING_LABEL: f32 = 11.0;
-const Z_STOCK: f32 = 12.0;
 const Z_RAIDER: f32 = 15.0;
 const Z_CAT: f32 = 20.0;
 const Z_CAT_ITEM: f32 = 21.0;
@@ -78,6 +79,15 @@ struct Selection {
     selected: Option<String>,
 }
 
+/// The currently selected (non-shrine) stockpile id, for the remove affordance.
+#[derive(Resource, Default)]
+struct StockpileSelection {
+    selected: Option<String>,
+}
+
+/// The shrine reservoir's stockpile id — always present, de-emphasized in render.
+const SHRINE_STOCKPILE_ID: &str = "stockpile-shrine";
+
 /// Active map tool and any in-progress zone drag.
 #[derive(Resource, Default)]
 struct Tools {
@@ -92,6 +102,15 @@ enum ToolMode {
     Inspect,
     AvoidZone,
     GatherZone,
+    Stockpile,
+}
+
+/// What a click-drag paints — a steering zone or a stockpile designation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PaintKind {
+    Avoid,
+    Gather,
+    Stockpile,
 }
 
 impl ToolMode {
@@ -100,15 +119,17 @@ impl ToolMode {
             Self::Inspect => "Inspect",
             Self::AvoidZone => "Avoid zone",
             Self::GatherZone => "Gather zone",
+            Self::Stockpile => "Stockpile",
         }
     }
 
-    /// The zone kind this mode paints, if any.
-    fn zone_kind(self) -> Option<ZoneKind> {
+    /// What this mode paints on drag, if anything.
+    fn paint_kind(self) -> Option<PaintKind> {
         match self {
             Self::Inspect => None,
-            Self::AvoidZone => Some(ZoneKind::Avoid),
-            Self::GatherZone => Some(ZoneKind::Gather),
+            Self::AvoidZone => Some(PaintKind::Avoid),
+            Self::GatherZone => Some(PaintKind::Gather),
+            Self::Stockpile => Some(PaintKind::Stockpile),
         }
     }
 }
@@ -228,6 +249,52 @@ enum BuildingTexture {
     Well,
 }
 
+/// Pixel-art prop sprites used for stockpile piles, loaded once at startup.
+#[derive(Resource, Clone)]
+struct PropArt {
+    sack: Handle<Image>,
+    barrel: Handle<Image>,
+    haystack: Handle<Image>,
+    stone_pile: Handle<Image>,
+    gold_pile: Handle<Image>,
+    crate_box: Handle<Image>,
+}
+
+impl PropArt {
+    fn load(assets: &AssetServer) -> Self {
+        Self {
+            sack: assets.load("public/images/game/props/sack.png"),
+            barrel: assets.load("public/images/game/props/barrel.png"),
+            haystack: assets.load("public/images/game/props/haystack.png"),
+            stone_pile: assets.load("public/images/game/props/stone_pile.png"),
+            gold_pile: assets.load("public/images/game/props/gold_pile.png"),
+            crate_box: assets.load("public/images/game/props/crate.png"),
+        }
+    }
+
+    fn pile(&self, texture: PropTexture) -> Handle<Image> {
+        match texture {
+            PropTexture::Sack => self.sack.clone(),
+            PropTexture::Barrel => self.barrel.clone(),
+            PropTexture::Haystack => self.haystack.clone(),
+            PropTexture::StonePile => self.stone_pile.clone(),
+            PropTexture::GoldPile => self.gold_pile.clone(),
+            PropTexture::Crate => self.crate_box.clone(),
+        }
+    }
+}
+
+/// The prop sprite a stockpile's dominant resource renders as.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PropTexture {
+    Sack,
+    Barrel,
+    Haystack,
+    StonePile,
+    GoldPile,
+    Crate,
+}
+
 /// The live WebSocket connection (kept off the render threads — the receiver is
 /// `!Sync`).
 struct WsConn {
@@ -262,9 +329,22 @@ struct ZoneSprite;
 /// Marker for a raider sprite.
 #[derive(Component)]
 struct RaiderSprite;
-/// Marker for the on-map stockpile indicator text.
+/// Marker for stockpile visuals (overlay rect + pile prop + label), redrawn each
+/// snapshot.
 #[derive(Component)]
-struct StockText;
+struct StockpileVis;
+/// Marker for the outline behind a selected stockpile.
+#[derive(Component)]
+struct StockpileHighlight;
+/// Marker for the "Remove stockpile" panel node (shown when one is selected).
+#[derive(Component)]
+struct RemovePanel;
+/// Marker for the "Remove stockpile" panel's description text.
+#[derive(Component)]
+struct RemovePanelText;
+/// Marker for the "Remove stockpile" button.
+#[derive(Component)]
+struct RemoveStockpileButton;
 /// Marker for the HUD dashboard text.
 #[derive(Component)]
 struct HudText;
@@ -289,10 +369,27 @@ const ZONE_DURATION_MS: u64 = 30 * 60 * 1000;
 /// Max zone side length in tiles (matches the sim's 8x8 cap).
 const ZONE_MAX_TILES: i32 = 8;
 
+/// Amber tint for stockpile overlays (distinct from avoid-red / gather-green).
+const STOCKPILE_OVERLAY: Color = Color::srgba(0.85, 0.60, 0.25, 0.30);
+
+/// Resource kinds a designated stockpile accepts by default (all storable
+/// goods; blessings are not a physical pile).
+const STORABLE_KINDS: [ResourceKind; 7] = [
+    ResourceKind::Food,
+    ResourceKind::Water,
+    ResourceKind::Herbs,
+    ResourceKind::Materials,
+    ResourceKind::Refined,
+    ResourceKind::Weapons,
+    ResourceKind::Armor,
+];
+
 /// Query filter for the per-tick redraw of building marker + label entities.
 type BuildingEntities = Or<(With<BuildingSprite>, With<BuildingLabel>)>;
 /// Query filter for the per-tick redraw of cat body + carried-item + highlight.
 type CatEntities = Or<(With<CatSprite>, With<CatItem>, With<CatHighlight>)>;
+/// Query filter for the per-tick redraw of stockpile visuals + highlight.
+type StockpileEntities = Or<(With<StockpileVis>, With<StockpileHighlight>)>;
 /// Change filter for toolbar button interactions.
 type ButtonQuery<'w, 's> = Query<
     'w,
@@ -350,30 +447,40 @@ pub fn run() {
         .insert_resource(OutgoingActions::default())
         .insert_resource(WorldRender::default())
         .insert_resource(Selection::default())
+        .insert_resource(StockpileSelection::default())
         .insert_resource(Tools::default())
         .insert_resource(ClearColor(Color::srgb(0.06, 0.09, 0.08)))
         .add_systems(Startup, (setup, connect_ws))
+        // Grouped into sub-tuples to stay within Bevy's 20-per-tuple system arity.
         .add_systems(
             Update,
             (
-                poll_ws,
-                ensure_presence,
-                spawn_terrain,
-                render_buildings,
-                render_zones,
-                render_cats,
-                render_raiders,
-                camera_controls,
-                select_cat,
-                update_inspector,
-                handle_tool_buttons,
-                zone_paint,
-                render_zone_preview,
-                update_hud,
-                update_event_log,
-                update_stock_indicator,
-                handle_buttons,
-                flush_outgoing,
+                // networking + world render
+                (
+                    poll_ws,
+                    ensure_presence,
+                    spawn_terrain,
+                    render_buildings,
+                    render_zones,
+                    render_stockpiles,
+                    render_cats,
+                    render_raiders,
+                ),
+                // input, tools + HUD
+                (
+                    camera_controls,
+                    select_cat,
+                    update_remove_panel,
+                    handle_remove_button,
+                    update_inspector,
+                    handle_tool_buttons,
+                    zone_paint,
+                    render_zone_preview,
+                    update_hud,
+                    update_event_log,
+                    handle_buttons,
+                    flush_outgoing,
+                ),
             ),
         )
         .run();
@@ -382,6 +489,7 @@ pub fn run() {
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.insert_resource(TerrainArt::load(&asset_server));
     commands.insert_resource(BuildingArt::load(&asset_server));
+    commands.insert_resource(PropArt::load(&asset_server));
 
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
@@ -450,6 +558,52 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
         )],
     ));
 
+    // Remove-stockpile affordance (right side), hidden until one is selected.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(8.0),
+            top: Val::Px(170.0),
+            width: Val::Px(200.0),
+            padding: UiRect::all(Val::Px(10.0)),
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(6.0),
+            display: Display::None,
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.10, 0.06, 0.03, 0.88)),
+        BorderColor::all(Color::srgba(0.85, 0.60, 0.25, 0.6)),
+        RemovePanel,
+        children![
+            (
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(12.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(1.0, 0.9, 0.7)),
+                RemovePanelText,
+            ),
+            (
+                Button,
+                Node {
+                    padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgb(0.55, 0.20, 0.18)),
+                RemoveStockpileButton,
+                children![(
+                    Text::new("Remove stockpile"),
+                    TextFont {
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.92, 0.88)),
+                )],
+            ),
+        ],
+    ));
+
     // Tool-mode toolbar (just above the action toolbar).
     spawn_tool_toolbar(&mut commands);
     // Action toolbar (bottom, centred).
@@ -468,7 +622,12 @@ fn spawn_tool_toolbar(commands: &mut Commands) {
             ..default()
         })
         .with_children(|row| {
-            for mode in [ToolMode::Inspect, ToolMode::AvoidZone, ToolMode::GatherZone] {
+            for mode in [
+                ToolMode::Inspect,
+                ToolMode::AvoidZone,
+                ToolMode::GatherZone,
+                ToolMode::Stockpile,
+            ] {
                 row.spawn((
                     Button,
                     Node {
@@ -807,6 +966,158 @@ fn render_zones(
     }
 }
 
+/// Draw each player stockpile as an amber overlay + a pile prop sized to its
+/// contents + a dominant-resource label. The shrine reservoir is skipped (it's
+/// always present and sits on the village).
+fn render_stockpiles(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    selection: Res<StockpileSelection>,
+    art: Option<Res<PropArt>>,
+    existing: Query<Entity, StockpileEntities>,
+) {
+    if !latest.is_changed() && !selection.is_changed() {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
+    else {
+        return;
+    };
+    for pile in &colony.stockpiles {
+        let is_shrine = pile.id == SHRINE_STOCKPILE_ID;
+        let (x0, x1) = (pile.x1.min(pile.x2), pile.x1.max(pile.x2));
+        let (y0, y1) = (pile.y1.min(pile.y2), pile.y1.max(pile.y2));
+        let w = (x1 - x0 + 1) as f32 * TILE;
+        let h = (y1 - y0 + 1) as f32 * TILE;
+        let cx = (x0 as f32 + x1 as f32) / 2.0 * TILE;
+        let cy = -(y0 as f32 + y1 as f32) / 2.0 * TILE;
+
+        // The shrine reservoir is de-emphasized: its pile prop floats above the
+        // village buildings so the colony's stock reads as a visible pile, but
+        // it gets no overlay rect / selection (it can't be removed).
+        if !is_shrine {
+            if selection.selected.as_deref() == Some(pile.id.as_str()) {
+                commands.spawn((
+                    Sprite::from_color(
+                        Color::srgba(1.0, 0.85, 0.30, 0.50),
+                        Vec2::new(w + 6.0, h + 6.0),
+                    ),
+                    Transform::from_xyz(cx, cy, Z_ZONE - 0.1),
+                    StockpileHighlight,
+                ));
+            }
+            commands.spawn((
+                Sprite::from_color(STOCKPILE_OVERLAY, Vec2::new(w, h)),
+                Transform::from_xyz(cx, cy, Z_ZONE),
+                StockpileVis,
+            ));
+        }
+
+        // Pile prop + label only when the pile actually holds something.
+        let total = resource_total(&pile.contents);
+        let Some(dominant) = dominant_resource(&pile.contents) else {
+            continue;
+        };
+        // Above buildings for the shrine (so it isn't hidden), on the ground for
+        // player piles out in the open.
+        let pile_z = if is_shrine {
+            Z_CAT - 1.0
+        } else {
+            Z_STOCKPILE_PILE
+        };
+        commands.spawn((
+            Sprite {
+                image: art.pile(pile_prop(dominant)),
+                custom_size: Some(Vec2::splat(pile_scale(total))),
+                ..default()
+            },
+            Transform::from_xyz(cx, cy, pile_z),
+            StockpileVis,
+        ));
+        commands.spawn((
+            Text2d::new(format!(
+                "{} {}",
+                resource_kind_name(dominant),
+                total.round() as i64
+            )),
+            TextFont {
+                font_size: FontSize::Px(9.0),
+                ..default()
+            },
+            TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
+            Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, pile_z + 0.5),
+            StockpileVis,
+        ));
+    }
+}
+
+/// Show/hide the remove-stockpile panel for the selected (non-shrine) pile, and
+/// clear the selection if the pile is gone.
+fn update_remove_panel(
+    latest: Res<LatestSnapshot>,
+    mut selection: ResMut<StockpileSelection>,
+    mut panel: Query<&mut Node, With<RemovePanel>>,
+    mut text: Query<&mut Text, With<RemovePanelText>>,
+) {
+    if !latest.is_changed() && !selection.is_changed() {
+        return;
+    }
+    let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
+        return;
+    };
+    let pile = selection.selected.as_deref().and_then(|id| {
+        latest
+            .0
+            .as_ref()
+            .and_then(|w| w.colonies.first())
+            .and_then(|c| c.stockpiles.iter().find(|s| s.id == id))
+    });
+    match pile {
+        Some(pile) => {
+            node.display = Display::Flex;
+            let total = resource_total(&pile.contents);
+            let dominant = dominant_resource(&pile.contents).map_or("empty", resource_kind_name);
+            text.0 = format!("Stockpile\n{dominant} {}", total.round() as i64);
+        }
+        None => {
+            node.display = Display::None;
+            if selection.selected.is_some() {
+                selection.selected = None;
+            }
+        }
+    }
+}
+
+/// Send RemoveStockpile when the remove button is clicked.
+fn handle_remove_button(
+    session: Res<Session>,
+    mut selection: ResMut<StockpileSelection>,
+    mut outgoing: ResMut<OutgoingActions>,
+    mut button: Query<(&Interaction, &mut BackgroundColor), With<RemoveStockpileButton>>,
+) {
+    for (interaction, mut color) in &mut button {
+        match interaction {
+            Interaction::Pressed => {
+                *color = BackgroundColor(Color::srgb(0.75, 0.28, 0.24));
+                if let (Some(id), true) = (selection.selected.clone(), session.ready) {
+                    outgoing.0.push(ClientAction::RemoveStockpile {
+                        session_id: session.session_id.clone(),
+                        nickname: "Desktop Cat".to_string(),
+                        sig: session.sig.clone(),
+                        stockpile_id: id,
+                    });
+                    selection.selected = None;
+                }
+            }
+            Interaction::Hovered => *color = BackgroundColor(Color::srgb(0.65, 0.24, 0.21)),
+            Interaction::None => *color = BackgroundColor(Color::srgb(0.55, 0.20, 0.18)),
+        }
+    }
+}
+
 fn render_cats(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
@@ -877,6 +1188,7 @@ fn render_raiders(
 
 /// Left-click a cat marker to inspect it; click empty ground or the same cat to
 /// deselect. Read-only — resolves the nearest cat within half a tile.
+#[allow(clippy::too_many_arguments)]
 fn select_cat(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
@@ -885,6 +1197,7 @@ fn select_cat(
     tools: Res<Tools>,
     latest: Res<LatestSnapshot>,
     mut selection: ResMut<Selection>,
+    mut stockpile_selection: ResMut<StockpileSelection>,
 ) {
     // Selection is the Inspect-mode action only.
     if tools.mode != ToolMode::Inspect {
@@ -910,7 +1223,23 @@ fn select_cat(
         .map(|c| (c.id.clone(), grid_to_world(c.position.x, c.position.y)))
         .collect();
     let picked = nearest_cat_id(world, &cats, TILE * 0.5);
-    selection.selected = toggle_selection(selection.selected.as_deref(), picked);
+    if picked.is_some() {
+        // A cat wins the click; drop any stockpile selection.
+        stockpile_selection.selected = None;
+        selection.selected = toggle_selection(selection.selected.as_deref(), picked);
+        return;
+    }
+    // Otherwise, clicking a non-shrine stockpile selects it (for removal).
+    let tile = world_to_tile(world);
+    let pile = colony
+        .stockpiles
+        .iter()
+        .find(|s| s.id != SHRINE_STOCKPILE_ID && point_in_stockpile(tile, s));
+    selection.selected = None;
+    stockpile_selection.selected = toggle_selection(
+        stockpile_selection.selected.as_deref(),
+        pile.map(|s| s.id.clone()),
+    );
 }
 
 /// Re-resolve the selected cat by id each tick and repaint the inspector panel;
@@ -979,8 +1308,8 @@ fn handle_tool_buttons(
     }
 }
 
-/// Click-drag a rectangle in a zone mode to paint an avoid/gather zone; release
-/// sends the createZone action. Esc cancels an in-progress drag.
+/// Click-drag a rectangle in a paint mode to designate an avoid/gather zone or a
+/// stockpile; release sends the matching action. Esc cancels an in-progress drag.
 #[allow(clippy::too_many_arguments)]
 fn zone_paint(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -992,7 +1321,7 @@ fn zone_paint(
     mut tools: ResMut<Tools>,
     mut outgoing: ResMut<OutgoingActions>,
 ) {
-    let Some(kind) = tools.mode.zone_kind() else {
+    let Some(kind) = tools.mode.paint_kind() else {
         tools.drag = None;
         return;
     };
@@ -1016,19 +1345,35 @@ fn zone_paint(
         && let Some((start, end)) = tools.drag.take()
     {
         let (min, max) = drag_tile_rect(start, end, ZONE_MAX_TILES);
-        if session.ready {
-            outgoing.0.push(ClientAction::CreateZone {
+        if !session.ready {
+            warn!("session not ready; dropping paint action");
+            return;
+        }
+        let a = TilePoint { x: min.0, y: min.1 };
+        let b = TilePoint { x: max.0, y: max.1 };
+        outgoing.0.push(match kind {
+            PaintKind::Avoid | PaintKind::Gather => ClientAction::CreateZone {
                 session_id: session.session_id.clone(),
                 nickname: "Desktop Cat".to_string(),
                 sig: session.sig.clone(),
-                kind,
-                a: TilePoint { x: min.0, y: min.1 },
-                b: TilePoint { x: max.0, y: max.1 },
+                kind: if kind == PaintKind::Avoid {
+                    ZoneKind::Avoid
+                } else {
+                    ZoneKind::Gather
+                },
+                a,
+                b,
                 duration_ms: ZONE_DURATION_MS,
-            });
-        } else {
-            warn!("session not ready; dropping createZone");
-        }
+            },
+            PaintKind::Stockpile => ClientAction::DesignateStockpile {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                a,
+                b,
+                accepts: STORABLE_KINDS.to_vec(),
+            },
+        });
     }
 }
 
@@ -1041,7 +1386,7 @@ fn render_zone_preview(
     for entity in &existing {
         commands.entity(entity).despawn();
     }
-    let (Some(kind), Some((start, end))) = (tools.mode.zone_kind(), tools.drag) else {
+    let (Some(kind), Some((start, end))) = (tools.mode.paint_kind(), tools.drag) else {
         return;
     };
     let (min, max) = drag_tile_rect(start, end, ZONE_MAX_TILES);
@@ -1050,7 +1395,7 @@ fn render_zone_preview(
     let cx = (min.0 as f32 + max.0 as f32) / 2.0 * TILE;
     let cy = -(min.1 as f32 + max.1 as f32) / 2.0 * TILE;
     commands.spawn((
-        Sprite::from_color(zone_preview_color(kind), Vec2::new(w, h)),
+        Sprite::from_color(paint_preview_color(kind), Vec2::new(w, h)),
         // Just above committed zones so the preview reads on top.
         Transform::from_xyz(cx, cy, Z_ZONE + 0.5),
         ZonePreview,
@@ -1202,45 +1547,6 @@ fn update_event_log(latest: Res<LatestSnapshot>, mut log: Query<&mut Text, With<
     };
 }
 
-/// On-map stockpile indicator: a compact resource readout anchored at the
-/// shrine (falls back to the colony anchor).
-fn update_stock_indicator(
-    mut commands: Commands,
-    latest: Res<LatestSnapshot>,
-    existing: Query<Entity, With<StockText>>,
-) {
-    if !latest.is_changed() {
-        return;
-    }
-    for entity in &existing {
-        commands.entity(entity).despawn();
-    }
-    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
-        return;
-    };
-    let shrine = colony
-        .buildings
-        .iter()
-        .find(|b| b.building_type == BuildingType::Shrine)
-        .map_or(colony.anchor, |b| b.world_position);
-    let p = grid_to_world(shrine.x, shrine.y);
-    let r = &colony.resources;
-    commands.spawn((
-        Text2d::new(format!(
-            "F {:.0}  W {:.0}  M {:.0}  R {:.0}",
-            r.food, r.water, r.materials, r.refined
-        )),
-        TextFont {
-            font_size: FontSize::Px(10.0),
-            ..default()
-        },
-        TextColor(Color::srgb(1.0, 0.9, 0.6)),
-        Anchor::CENTER,
-        Transform::from_xyz(p.x, p.y - TILE * 0.9, Z_STOCK),
-        StockText,
-    ));
-}
-
 /// React to toolbar clicks: tint the button and enqueue its action.
 fn handle_buttons(
     session: Res<Session>,
@@ -1326,11 +1632,73 @@ fn drag_tile_rect(start: (i32, i32), end: (i32, i32), max: i32) -> ((i32, i32), 
     )
 }
 
-fn zone_preview_color(kind: ZoneKind) -> Color {
+fn paint_preview_color(kind: PaintKind) -> Color {
     match kind {
-        ZoneKind::Avoid => Color::srgba(0.95, 0.30, 0.30, 0.45),
-        ZoneKind::Gather => Color::srgba(0.35, 0.90, 0.40, 0.45),
+        PaintKind::Avoid => Color::srgba(0.95, 0.30, 0.30, 0.45),
+        PaintKind::Gather => Color::srgba(0.35, 0.90, 0.40, 0.45),
+        PaintKind::Stockpile => Color::srgba(0.85, 0.60, 0.25, 0.45),
     }
+}
+
+/// Sum of the storable goods held in a stockpile (blessings excluded).
+fn resource_total(c: &ResourceAmounts) -> f64 {
+    c.food + c.water + c.herbs + c.materials + c.refined + c.weapons + c.armor
+}
+
+/// The single largest storable resource in a pile, or `None` when it's empty.
+fn dominant_resource(c: &ResourceAmounts) -> Option<ResourceKind> {
+    [
+        (ResourceKind::Food, c.food),
+        (ResourceKind::Water, c.water),
+        (ResourceKind::Herbs, c.herbs),
+        (ResourceKind::Materials, c.materials),
+        (ResourceKind::Refined, c.refined),
+        (ResourceKind::Weapons, c.weapons),
+        (ResourceKind::Armor, c.armor),
+    ]
+    .into_iter()
+    .filter(|(_, v)| *v > 0.0)
+    .max_by(|a, b| a.1.total_cmp(&b.1))
+    .map(|(kind, _)| kind)
+}
+
+/// The pile prop sprite for a dominant resource.
+fn pile_prop(kind: ResourceKind) -> PropTexture {
+    match kind {
+        ResourceKind::Food => PropTexture::Sack,
+        ResourceKind::Water => PropTexture::Barrel,
+        ResourceKind::Herbs => PropTexture::Haystack,
+        ResourceKind::Materials => PropTexture::StonePile,
+        ResourceKind::Refined => PropTexture::GoldPile,
+        ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => PropTexture::Crate,
+    }
+}
+
+/// Pile sprite size scaled by total contents: ~0.5 tile when nearly empty up to
+/// ~1.4 tiles when full.
+fn pile_scale(total: f64) -> f32 {
+    let t = (total / 200.0).clamp(0.0, 1.0) as f32;
+    TILE * (0.5 + t * 0.9)
+}
+
+fn resource_kind_name(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Food => "food",
+        ResourceKind::Water => "water",
+        ResourceKind::Herbs => "herbs",
+        ResourceKind::Materials => "materials",
+        ResourceKind::Refined => "refined",
+        ResourceKind::Weapons => "weapons",
+        ResourceKind::Armor => "armor",
+        ResourceKind::Blessings => "blessings",
+    }
+}
+
+/// Whether a tile falls inside a stockpile's (unordered) rectangle.
+fn point_in_stockpile(tile: (i32, i32), pile: &StockpileSnapshot) -> bool {
+    let (x0, x1) = (pile.x1.min(pile.x2), pile.x1.max(pile.x2));
+    let (y0, y1) = (pile.y1.min(pile.y2), pile.y1.max(pile.y2));
+    (x0..=x1).contains(&tile.0) && (y0..=y1).contains(&tile.1)
 }
 
 /// Nearest cat id to `click` within `radius`, or `None`.
@@ -1545,6 +1913,71 @@ mod tests {
         );
     }
 
+    fn amounts(food: f64, materials: f64, refined: f64) -> ResourceAmounts {
+        ResourceAmounts {
+            food,
+            water: 0.0,
+            herbs: 0.0,
+            materials,
+            refined,
+            weapons: 0.0,
+            armor: 0.0,
+            blessings: 0.0,
+        }
+    }
+
+    #[test]
+    fn dominant_resource_and_pile_prop() {
+        assert_eq!(dominant_resource(&amounts(0.0, 0.0, 0.0)), None);
+        assert_eq!(
+            dominant_resource(&amounts(10.0, 4.0, 0.0)),
+            Some(ResourceKind::Food)
+        );
+        assert_eq!(
+            dominant_resource(&amounts(3.0, 20.0, 0.0)),
+            Some(ResourceKind::Materials)
+        );
+        assert_eq!(pile_prop(ResourceKind::Food), PropTexture::Sack);
+        assert_eq!(pile_prop(ResourceKind::Materials), PropTexture::StonePile);
+        assert_eq!(pile_prop(ResourceKind::Refined), PropTexture::GoldPile);
+    }
+
+    #[test]
+    fn pile_scale_grows_with_contents_and_clamps() {
+        let empty = pile_scale(0.0);
+        let some = pile_scale(100.0);
+        let full = pile_scale(200.0);
+        let over = pile_scale(9999.0);
+        assert!(empty < some && some < full);
+        assert_eq!(full, over); // clamps at the cap
+        assert!(empty > 0.0);
+    }
+
+    #[test]
+    fn resource_total_sums_storables_only() {
+        let mut a = amounts(10.0, 5.0, 2.0);
+        a.blessings = 99.0; // excluded
+        assert_eq!(resource_total(&a), 17.0);
+    }
+
+    #[test]
+    fn point_in_stockpile_rect_membership() {
+        let pile = StockpileSnapshot {
+            id: "sp".to_string(),
+            x1: 2,
+            y1: 5,
+            x2: 4,
+            y2: 3, // deliberately unordered
+            accepts: vec![],
+            contents: amounts(0.0, 0.0, 0.0),
+        };
+        assert!(point_in_stockpile((3, 4), &pile));
+        assert!(point_in_stockpile((2, 3), &pile));
+        assert!(point_in_stockpile((4, 5), &pile));
+        assert!(!point_in_stockpile((1, 4), &pile));
+        assert!(!point_in_stockpile((3, 6), &pile));
+    }
+
     #[test]
     fn building_texture_mapping_and_sizes() {
         // Direct 1:1 mappings.
@@ -1713,10 +2146,11 @@ mod tests {
     }
 
     #[test]
-    fn tool_mode_zone_kind_mapping() {
-        assert_eq!(ToolMode::Inspect.zone_kind(), None);
-        assert_eq!(ToolMode::AvoidZone.zone_kind(), Some(ZoneKind::Avoid));
-        assert_eq!(ToolMode::GatherZone.zone_kind(), Some(ZoneKind::Gather));
+    fn tool_mode_paint_kind_mapping() {
+        assert_eq!(ToolMode::Inspect.paint_kind(), None);
+        assert_eq!(ToolMode::AvoidZone.paint_kind(), Some(PaintKind::Avoid));
+        assert_eq!(ToolMode::GatherZone.paint_kind(), Some(PaintKind::Gather));
+        assert_eq!(ToolMode::Stockpile.paint_kind(), Some(PaintKind::Stockpile));
     }
 
     #[test]
