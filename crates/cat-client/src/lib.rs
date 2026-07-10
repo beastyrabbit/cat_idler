@@ -28,6 +28,7 @@ use cat_sim::terrain_gen::{
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
+use std::collections::HashSet;
 
 /// Side length (world units) of one flat tile.
 const TILE: f32 = 28.0;
@@ -75,6 +76,52 @@ struct OutgoingActions(Vec<ClientAction>);
 #[derive(Resource, Default)]
 struct WorldRender {
     terrain_spawned: bool,
+}
+
+/// Pixel-art terrain + nature texture handles, loaded once at startup.
+#[derive(Resource, Clone)]
+struct TerrainArt {
+    grass: Handle<Image>,
+    grass_var: Handle<Image>,
+    rocky: Handle<Image>,
+    highland: Handle<Image>,
+    water: Handle<Image>,
+    water_edge: Handle<Image>,
+    tree_oak: Handle<Image>,
+    tree_pine: Handle<Image>,
+}
+
+impl TerrainArt {
+    fn load(assets: &AssetServer) -> Self {
+        Self {
+            grass: assets.load("public/images/game/terrain/grass.png"),
+            grass_var: assets.load("public/images/game/terrain/grass_var.png"),
+            rocky: assets.load("public/images/game/terrain/rocky.png"),
+            highland: assets.load("public/images/game/terrain/highland.png"),
+            water: assets.load("public/images/game/terrain/water.png"),
+            water_edge: assets.load("public/images/game/terrain/water_edge.png"),
+            tree_oak: assets.load("public/images/game/nature/tree_oak.png"),
+            tree_pine: assets.load("public/images/game/nature/tree_pine.png"),
+        }
+    }
+
+    fn ground(&self, texture: GroundTexture) -> Handle<Image> {
+        match texture {
+            GroundTexture::Grass => self.grass.clone(),
+            GroundTexture::GrassVar => self.grass_var.clone(),
+            GroundTexture::Rocky => self.rocky.clone(),
+            GroundTexture::Highland => self.highland.clone(),
+        }
+    }
+}
+
+/// Ground texture chosen for a (non-water) tile from its biome.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GroundTexture {
+    Grass,
+    GrassVar,
+    Rocky,
+    Highland,
 }
 
 /// The live WebSocket connection (kept off the render threads — the receiver is
@@ -160,6 +207,9 @@ pub fn run() {
                     file_path: ".".to_string(),
                     ..default()
                 })
+                // Nearest-neighbour sampling keeps the 16px pixel-art crisp when
+                // upscaled to TILE; the default linear filter blurs it.
+                .set(bevy::image::ImagePlugin::default_nearest())
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Idle Cat Forest".to_string(),
@@ -196,7 +246,9 @@ pub fn run() {
         .run();
 }
 
-fn setup(mut commands: Commands) {
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    commands.insert_resource(TerrainArt::load(&asset_server));
+
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
     let center = grid_to_world(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y);
@@ -367,31 +419,89 @@ fn ensure_presence(conn: Option<NonSendMut<WsConn>>, mut session: ResMut<Session
 fn spawn_terrain(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
+    art: Option<Res<TerrainArt>>,
     mut render: ResMut<WorldRender>,
 ) {
     if render.terrain_spawned {
         return;
     }
-    let Some(world) = latest.0.as_ref() else {
+    let (Some(world), Some(art)) = (latest.0.as_ref(), art) else {
         return;
     };
     let seed = world.world_seed;
+    let tiles = window_terrain(seed);
+    // River/water coordinates, so shore tiles (a non-water orthogonal
+    // neighbour) can use the water_edge variant.
+    let water: HashSet<(i32, i32)> = tiles
+        .iter()
+        .filter(|t| t.river.is_some())
+        .map(|t| (t.x, t.y))
+        .collect();
 
-    for tile in window_terrain(seed) {
+    for tile in &tiles {
         let p = grid_to_world(tile.x, tile.y);
+        let ground = if tile.river.is_some() {
+            if is_shore(tile.x, tile.y, &water) {
+                art.water_edge.clone()
+            } else {
+                art.water.clone()
+            }
+        } else {
+            art.ground(ground_texture(tile))
+        };
         commands.spawn((
-            Sprite::from_color(terrain_color(&tile), Vec2::splat(TILE)),
+            Sprite {
+                image: ground,
+                custom_size: Some(Vec2::splat(TILE)),
+                ..default()
+            },
             Transform::from_xyz(p.x, p.y, Z_TERRAIN),
         ));
-        if let Some(color) = decoration_color(tile.decoration) {
+
+        if let Some(DecorationRole::Tree { species }) = tile.decoration {
+            let tree = if tree_is_oak(species) {
+                art.tree_oak.clone()
+            } else {
+                art.tree_pine.clone()
+            };
+            // 16×32 sprite, trunk anchored to the tile centre so it stands on
+            // the ground; drawn above terrain but below cats.
             commands.spawn((
-                Sprite::from_color(color, Vec2::splat(TILE * 0.42)),
-                Transform::from_xyz(p.x, p.y, Z_DECORATION),
+                Sprite {
+                    image: tree,
+                    custom_size: Some(Vec2::new(TILE, TILE * 2.0)),
+                    ..default()
+                },
+                Anchor::BOTTOM_CENTER,
+                Transform::from_xyz(p.x, p.y - TILE * 0.5, Z_DECORATION),
             ));
         }
     }
     render.terrain_spawned = true;
-    info!("terrain spawned (seed {seed})");
+    info!("terrain spawned (seed {seed}, {} tiles)", tiles.len());
+}
+
+/// A river tile with at least one non-water orthogonal neighbour is a shore.
+fn is_shore(x: i32, y: i32, water: &HashSet<(i32, i32)>) -> bool {
+    [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        .iter()
+        .any(|(dx, dy)| !water.contains(&(x + dx, y + dy)))
+}
+
+/// Ground texture for a non-water tile: rocky/highland by biome, otherwise
+/// grass — with a deterministic `grass_var` sprinkle on grassland.
+fn ground_texture(tile: &TerrainTile) -> GroundTexture {
+    match tile.biome {
+        BiomeRole::Rocky => GroundTexture::Rocky,
+        BiomeRole::Highland => GroundTexture::Highland,
+        BiomeRole::Grassland if (tile.x + tile.y).rem_euclid(5) == 0 => GroundTexture::GrassVar,
+        BiomeRole::Lowland | BiomeRole::Grassland | BiomeRole::Forest => GroundTexture::Grass,
+    }
+}
+
+/// Oak for even species, pine for odd.
+fn tree_is_oak(species: i32) -> bool {
+    species.rem_euclid(2) == 0
 }
 
 /// Regenerate the terrain tiles inside the window around the village anchor.
@@ -796,31 +906,6 @@ fn flush_outgoing(conn: Option<NonSendMut<WsConn>>, mut outgoing: ResMut<Outgoin
 
 // ---- pure colour / label helpers (unit-tested) ----
 
-fn terrain_color(tile: &TerrainTile) -> Color {
-    if tile.river.is_some() {
-        return Color::srgb(0.20, 0.42, 0.72); // water
-    }
-    biome_color(tile.biome)
-}
-
-fn biome_color(biome: BiomeRole) -> Color {
-    match biome {
-        BiomeRole::Lowland => Color::srgb(0.28, 0.44, 0.24),
-        BiomeRole::Grassland => Color::srgb(0.36, 0.54, 0.28),
-        BiomeRole::Forest => Color::srgb(0.16, 0.32, 0.18),
-        BiomeRole::Rocky => Color::srgb(0.45, 0.44, 0.40),
-        BiomeRole::Highland => Color::srgb(0.62, 0.62, 0.60),
-    }
-}
-
-fn decoration_color(decoration: Option<DecorationRole>) -> Option<Color> {
-    match decoration {
-        Some(DecorationRole::Tree { .. }) => Some(Color::srgb(0.10, 0.24, 0.12)),
-        Some(DecorationRole::Rock { .. }) => Some(Color::srgb(0.55, 0.53, 0.50)),
-        None => None,
-    }
-}
-
 fn building_color(building: BuildingType) -> Color {
     match building {
         BuildingType::Shrine => Color::srgb(0.95, 0.82, 0.35),
@@ -926,15 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn biome_and_building_colors_are_distinct() {
-        // Water beats biome when a river is present.
-        let mut tile = window_terrain(20_240_703)
-            .into_iter()
-            .next()
-            .expect("at least one terrain tile");
-        tile.river = None;
-        assert_eq!(terrain_color(&tile), biome_color(tile.biome));
-
+    fn building_and_cat_colors_are_distinct() {
         assert_ne!(
             building_color(BuildingType::Shrine),
             building_color(BuildingType::Smithy)
@@ -943,6 +1020,67 @@ mod tests {
             cat_color(Some(Specialization::Hunter)),
             cat_color(Some(Specialization::Warrior))
         );
+    }
+
+    fn tile_with(biome: BiomeRole, x: i32, y: i32) -> TerrainTile {
+        TerrainTile {
+            x,
+            y,
+            elevation: 0.0,
+            moisture: 0.0,
+            height: 1,
+            biome,
+            terrain: cat_sim::terrain_gen::TerrainRole::Flat,
+            river: None,
+            stairs: None,
+            decoration: None,
+        }
+    }
+
+    #[test]
+    fn ground_texture_maps_biomes_to_sprites() {
+        assert_eq!(
+            ground_texture(&tile_with(BiomeRole::Rocky, 0, 0)),
+            GroundTexture::Rocky
+        );
+        assert_eq!(
+            ground_texture(&tile_with(BiomeRole::Highland, 0, 0)),
+            GroundTexture::Highland
+        );
+        assert_eq!(
+            ground_texture(&tile_with(BiomeRole::Lowland, 1, 1)),
+            GroundTexture::Grass
+        );
+        assert_eq!(
+            ground_texture(&tile_with(BiomeRole::Forest, 3, 2)),
+            GroundTexture::Grass
+        );
+        // Grassland gets the variant sprite on the deterministic subset only.
+        assert_eq!(
+            ground_texture(&tile_with(BiomeRole::Grassland, 2, 3)),
+            GroundTexture::GrassVar
+        );
+        assert_eq!(
+            ground_texture(&tile_with(BiomeRole::Grassland, 2, 4)),
+            GroundTexture::Grass
+        );
+    }
+
+    #[test]
+    fn tree_species_pick_oak_or_pine_and_shore_detection() {
+        assert!(tree_is_oak(0));
+        assert!(tree_is_oak(2));
+        assert!(!tree_is_oak(1));
+        assert!(!tree_is_oak(3));
+
+        // A lone water tile is all shore; a fully surrounded one is not.
+        let mut water = HashSet::new();
+        water.insert((5, 5));
+        assert!(is_shore(5, 5, &water));
+        for d in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            water.insert((5 + d.0, 5 + d.1));
+        }
+        assert!(!is_shore(5, 5, &water));
     }
 
     #[test]
