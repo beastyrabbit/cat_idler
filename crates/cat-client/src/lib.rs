@@ -64,7 +64,9 @@ pub fn run() {
 }
 
 fn setup(mut commands: Commands) {
-    commands.spawn(Camera2d);
+    // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at Z>0
+    // (they render *behind* it). The offset roughly centres the starter village.
+    commands.spawn((Camera2d, Transform::from_xyz(200.0, -150.0, 1000.0)));
     commands.spawn((
         Text::new("connecting…"),
         TextFont {
@@ -129,7 +131,7 @@ fn render_cats(
     for cat in &colony.cats {
         let p = iso_point(cat.position.x as f32, cat.position.y as f32);
         commands.spawn((
-            Sprite::from_color(Color::srgb(0.9, 0.8, 0.4), Vec2::splat(10.0)),
+            Sprite::from_color(Color::srgb(1.0, 0.85, 0.3), Vec2::splat(16.0)),
             Transform::from_xyz(p.x, p.y, 1.0),
             CatSprite,
         ));
@@ -165,6 +167,15 @@ mod tests {
     fn iso_point_is_deterministic() {
         assert_eq!(iso_point(0.0, 0.0), Vec2::ZERO);
         assert_eq!(iso_point(1.0, 0.0), Vec2::new(TILE_W / 2.0, -TILE_H / 2.0));
+    }
+
+    #[test]
+    fn visual_render_backends_are_compiled_in() {
+        // Bevy 0.19 separates sprite/UI data from their render backends. Keep
+        // both backend features enabled or the app runs normally but draws only
+        // its clear color.
+        let _ = std::any::TypeId::of::<bevy::sprite_render::SpriteRenderPlugin>();
+        let _ = std::any::TypeId::of::<bevy::ui_render::UiRenderPlugin>();
     }
 
     #[test]
