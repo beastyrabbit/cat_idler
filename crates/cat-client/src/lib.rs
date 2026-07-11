@@ -2703,36 +2703,23 @@ fn setup(
     commands
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
-                right: Val::Px(8.0),
-                top: Val::Px(8.0),
-                width: Val::Px(300.0),
-                padding: UiRect::all(Val::Px(24.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
-                display: Display::None,
-                ..default()
+                right: Val::Px(10.0),
+                top: Val::Px(60.0),
+                ..ui_panel_node(Val::Px(300.0))
             },
-            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            ui_panel_frame(),
             InspectorPanel,
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Text::new(""),
-                TextFont {
-                    font_size: FontSize::Px(13.0),
-                    ..default()
-                },
-                TextColor(PARCHMENT_INK),
-                InspectorText,
-            ));
-            // Needs, one labelled bar each (green/amber/red by level).
-            for (kind, label) in CAT_NEEDS {
-                panel
-                    .spawn(Node {
+            panel.spawn(ui_title_bar("Cat"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                body.spawn((ui_text("", FS_BODY, UI_INK), InspectorText));
+                // Needs, one labelled bar each (green/amber/red by level).
+                for (kind, label) in CAT_NEEDS {
+                    body.spawn(Node {
                         width: Val::Percent(100.0),
                         align_items: AlignItems::Center,
-                        column_gap: Val::Px(6.0),
+                        column_gap: Val::Px(UI_GAP),
                         ..default()
                     })
                     .with_children(|row| {
@@ -2741,23 +2728,18 @@ fn setup(
                                 width: Val::Px(52.0),
                                 ..default()
                             },
-                            children![(
-                                Text::new(label),
-                                TextFont {
-                                    font_size: FontSize::Px(11.0),
-                                    ..default()
-                                },
-                                TextColor(PARCHMENT_INK),
-                            )],
+                            children![ui_text(label, FS_SMALL, UI_MUTED)],
                         ));
                         // Bar track + fill.
                         row.spawn((
                             Node {
                                 flex_grow: 1.0,
                                 height: Val::Px(11.0),
+                                border_radius: BorderRadius::all(Val::Px(2.0)),
+                                overflow: Overflow::clip(),
                                 ..default()
                             },
-                            BackgroundColor(Color::srgba(0.20, 0.14, 0.08, 0.55)),
+                            BackgroundColor(Color::srgba(0.05, 0.04, 0.03, 0.7)),
                             children![(
                                 Node {
                                     width: Val::Percent(0.0),
@@ -2769,69 +2751,34 @@ fn setup(
                             )],
                         ));
                     });
-            }
-            // God-power: mark this cat a priority pick for the leader's matcher.
-            panel.spawn((
-                Button,
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(26.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-                sliced_image(ui.button.clone(), BUTTON_BORDER),
-                BoostButton,
-                children![(
-                    Text::new(boost_button_label(false)),
-                    TextFont {
-                        font_size: FontSize::Px(11.0),
-                        ..default()
-                    },
-                    TextColor(PARCHMENT_INK),
-                    BoostButtonText,
-                )],
-            ));
-            panel.spawn((
-                Text::new("Appoint officer:"),
-                TextFont {
-                    font_size: FontSize::Px(11.0),
-                    ..default()
-                },
-                TextColor(PARCHMENT_INK),
-            ));
-            panel
-                .spawn(Node {
+                }
+                // God-power: mark this cat a priority pick for the leader's matcher.
+                body.spawn((
+                    ui_button(),
+                    BoostButton,
+                    children![(
+                        ui_text(boost_button_label(false), FS_SMALL, UI_INK),
+                        BoostButtonText,
+                    )],
+                ));
+                body.spawn(ui_text("Appoint officer:", FS_SMALL, UI_MUTED));
+                body.spawn(Node {
                     flex_direction: FlexDirection::Row,
                     flex_wrap: FlexWrap::Wrap,
-                    column_gap: Val::Px(4.0),
-                    row_gap: Val::Px(4.0),
+                    column_gap: Val::Px(UI_GAP_TIGHT),
+                    row_gap: Val::Px(UI_GAP_TIGHT),
                     ..default()
                 })
                 .with_children(|row| {
                     for role in ALL_OFFICER_ROLES {
                         row.spawn((
-                            Button,
-                            Node {
-                                min_width: Val::Px(64.0),
-                                height: Val::Px(24.0),
-                                justify_content: JustifyContent::Center,
-                                align_items: AlignItems::Center,
-                                ..default()
-                            },
-                            sliced_image(ui.button.clone(), BUTTON_BORDER),
+                            ui_button_small(),
                             AppointButton(role),
-                            children![(
-                                Text::new(officer_role_name(role)),
-                                TextFont {
-                                    font_size: FontSize::Px(10.0),
-                                    ..default()
-                                },
-                                TextColor(PARCHMENT_INK),
-                            )],
+                            children![ui_text(officer_role_name(role), FS_SMALL, UI_INK)],
                         ));
                     }
                 });
+            });
         });
 
     // Remove-stockpile affordance (right side), hidden until one is selected.
@@ -2857,32 +2804,24 @@ fn setup(
             });
         });
 
-    // Building inspector (right, below the remove panel), middle-click a
+    // Building inspector (right, below the cat inspector), middle-click a
     // building; hidden until one is selected.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(8.0),
-            // Below the cat inspector (which fits ~300px tall at this width) but
-            // high enough that a tall producer panel still clears the minimap.
-            top: Val::Px(336.0),
-            width: Val::Px(300.0),
-            padding: UiRect::all(Val::Px(24.0)),
-            display: Display::None,
-            ..default()
-        },
-        sliced_image(ui.panel.clone(), PANEL_BORDER),
-        BuildingInspectorPanel,
-        children![(
-            Text::new(""),
-            TextFont {
-                font_size: FontSize::Px(13.0),
-                ..default()
+    commands
+        .spawn((
+            Node {
+                right: Val::Px(10.0),
+                top: Val::Px(388.0),
+                ..ui_panel_node(Val::Px(300.0))
             },
-            TextColor(PARCHMENT_INK),
-            BuildingInspectorText,
-        )],
-    ));
+            ui_panel_frame(),
+            BuildingInspectorPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn(ui_title_bar("Building"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                body.spawn((ui_text("", FS_BODY, UI_INK), BuildingInspectorText));
+            });
+        });
 
     // Officers panel (left, below the dashboard), toggled with `O`.
     spawn_officers_panel(&mut commands);
@@ -3832,24 +3771,19 @@ fn handle_appoint_buttons(
     session: Res<Session>,
     selection: Res<Selection>,
     mut outgoing: ResMut<OutgoingActions>,
-    mut buttons: Query<(&Interaction, &AppointButton, &mut ImageNode), Changed<Interaction>>,
+    buttons: Query<(&Interaction, &AppointButton), Changed<Interaction>>,
 ) {
-    for (interaction, appoint, mut image) in &mut buttons {
-        match interaction {
-            Interaction::Pressed => {
-                image.color = BTN_PRESS;
-                if let (Some(cat), true) = (selection.selected.clone(), session.ready) {
-                    outgoing.0.push(ClientAction::AssignOfficer {
-                        session_id: session.session_id.clone(),
-                        nickname: "Desktop Cat".to_string(),
-                        sig: session.sig.clone(),
-                        role: appoint.0,
-                        cat_id: cat,
-                    });
-                }
-            }
-            Interaction::Hovered => image.color = BTN_HOVER,
-            Interaction::None => image.color = BTN_IDLE,
+    for (interaction, appoint) in &buttons {
+        if *interaction == Interaction::Pressed
+            && let (Some(cat), true) = (selection.selected.clone(), session.ready)
+        {
+            outgoing.0.push(ClientAction::AssignOfficer {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                role: appoint.0,
+                cat_id: cat,
+            });
         }
     }
 }
@@ -3873,31 +3807,25 @@ fn update_boost_button(
 
 /// Toggle the selected cat's priority flag when the Boost button is clicked,
 /// flipping off the cat's current `boosted` state read from the live snapshot.
-#[allow(clippy::type_complexity)]
 fn handle_boost_button(
     session: Res<Session>,
     selection: Res<Selection>,
     latest: Res<LatestSnapshot>,
     mut outgoing: ResMut<OutgoingActions>,
-    mut buttons: Query<(&Interaction, &mut ImageNode), (Changed<Interaction>, With<BoostButton>)>,
+    buttons: Query<&Interaction, (Changed<Interaction>, With<BoostButton>)>,
 ) {
-    for (interaction, mut image) in &mut buttons {
-        match interaction {
-            Interaction::Pressed => {
-                image.color = BTN_PRESS;
-                if let (Some(cat_id), true) = (selection.selected.clone(), session.ready) {
-                    let current = selected_cat(&latest, &selection).is_some_and(|c| c.boosted);
-                    outgoing.0.push(ClientAction::BoostCat {
-                        session_id: session.session_id.clone(),
-                        nickname: "Desktop Cat".to_string(),
-                        sig: session.sig.clone(),
-                        cat_id,
-                        boosted: !current,
-                    });
-                }
-            }
-            Interaction::Hovered => image.color = BTN_HOVER,
-            Interaction::None => image.color = BTN_IDLE,
+    for interaction in &buttons {
+        if *interaction == Interaction::Pressed
+            && let (Some(cat_id), true) = (selection.selected.clone(), session.ready)
+        {
+            let current = selected_cat(&latest, &selection).is_some_and(|c| c.boosted);
+            outgoing.0.push(ClientAction::BoostCat {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                cat_id,
+                boosted: !current,
+            });
         }
     }
 }
