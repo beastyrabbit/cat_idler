@@ -3091,7 +3091,7 @@ fn hover_text(colony: &ColonySnapshot, world_seed: i64, world: Vec2) -> Option<S
     if let Some(id) = nearest_id(world, &buildings, TILE * 0.9)
         && let Some(b) = colony.buildings.iter().find(|b| b.id == id)
     {
-        return Some(building_tooltip(b, colony));
+        return Some(building_tooltip(b));
     }
 
     let tile = world_to_tile(world);
@@ -3130,27 +3130,25 @@ fn resource_hint_label(hint: ResourceHint) -> &'static str {
     }
 }
 
-/// The finished good a building produces, for the hover/detail readouts, or
-/// `None` for non-producers (storage, dens, shrine, …).
-fn building_output(building: BuildingType) -> Option<&'static str> {
-    match building {
-        BuildingType::WoodCutter => Some("planks"),
-        BuildingType::StonePrep => Some("blocks"),
-        BuildingType::Woodworking => Some("tools"),
-        BuildingType::Workshop => Some("refined"),
-        BuildingType::Smithy => Some("weapons + armor"),
-        BuildingType::Field | BuildingType::MouseFarm => Some("food"),
-        _ => None,
-    }
+/// Whole-percent through a production cycle (0..=100).
+fn progress_pct(progress: f64) -> u32 {
+    (progress.clamp(0.0, 1.0) * 100.0).round() as u32
 }
 
-/// Number of cats currently assigned to a building.
-fn staffing_count(building_id: &str, colony: &ColonySnapshot) -> usize {
-    colony
-        .cats
-        .iter()
-        .filter(|c| c.assigned_building_id.as_deref() == Some(building_id))
-        .count()
+/// A DF-style ASCII progress bar of `cells` characters, filled to `progress`.
+fn progress_bar(progress: f64, cells: usize) -> String {
+    let filled = (progress.clamp(0.0, 1.0) * cells as f64).round() as usize;
+    let filled = filled.min(cells);
+    format!("[{}{}]", "#".repeat(filled), "-".repeat(cells - filled))
+}
+
+/// The production line for a staffed producer: `making {output} [bar] {pct}%`.
+fn production_line(output: &str, progress: f64) -> String {
+    format!(
+        "making {output} {} {}%",
+        progress_bar(progress, 10),
+        progress_pct(progress)
+    )
 }
 
 /// Compact hover text for a cat: name, specialization + activity, needs summary.
@@ -3171,8 +3169,8 @@ fn cat_tooltip(cat: &CatSnapshot) -> String {
 }
 
 /// Compact hover text for a building: name/level, operational state, and — once
-/// operational — how many cats work it and what it's making.
-fn building_tooltip(building: &BuildingSnapshot, colony: &ColonySnapshot) -> String {
+/// operational — its staffing and what it's making (from the live snapshot).
+fn building_tooltip(building: &BuildingSnapshot) -> String {
     let mut out = format!(
         "{name}  Lv {lvl}",
         name = building_label(building.building_type),
@@ -3185,10 +3183,14 @@ fn building_tooltip(building: &BuildingSnapshot, colony: &ColonySnapshot) -> Str
         ));
         return out;
     }
-    let workers = staffing_count(&building.id, colony);
-    out.push_str(&format!("\n{workers} working"));
-    if let Some(making) = building_output(building.building_type) {
-        out.push_str(&format!(" - making {making}"));
+    if building.staff_cap > 0 {
+        out.push_str(&format!(
+            "\n{}/{} working",
+            building.staff_count, building.staff_cap
+        ));
+        if let Some(making) = &building.production_output {
+            out.push_str(&format!(" - making {making}"));
+        }
     }
     out
 }
@@ -3685,53 +3687,48 @@ fn paint_preview_color(kind: PaintKind) -> Color {
 }
 
 /// Read-only inspector body for a building: type, level, complete/under-
-/// construction, and the cats assigned to it.
-/// The recipe a building runs (inputs -> outputs), or `None` for non-producers.
-/// Static per building type — the snapshot doesn't (yet) carry live recipe state.
-fn building_recipe(building: BuildingType) -> Option<&'static str> {
-    match building {
-        BuildingType::WoodCutter => Some("5 materials -> 1 plank"),
-        BuildingType::StonePrep => Some("5 materials -> 1 block"),
-        BuildingType::Woodworking => Some("planks + blocks -> 1 tool"),
-        BuildingType::Workshop => Some("5 materials -> 1 refined"),
-        BuildingType::Smithy => Some("refined + materials -> weapon + armor"),
-        BuildingType::Field | BuildingType::MouseFarm => Some("grows food"),
-        _ => None,
-    }
-}
-
+/// construction, its assigned cats, and — for producers — live staffing +
+/// production progress from the snapshot.
 fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot) -> String {
-    let status = if building.construction_progress >= 100.0 {
-        "operational".to_string()
-    } else {
-        format!("under construction {:.0}%", building.construction_progress)
-    };
-    let workers: Vec<&str> = colony
-        .cats
-        .iter()
-        .filter(|c| c.assigned_building_id.as_deref() == Some(building.id.as_str()))
-        .map(|c| c.name.as_str())
-        .collect();
-    let workers_line = if workers.is_empty() {
-        "none".to_string()
-    } else {
-        workers.join(", ")
-    };
-    let recipe_line = building_recipe(building.building_type)
-        .map_or_else(String::new, |r| format!("\nmakes: {r}"));
-    format!(
-        "{name}  Lv {lvl}\n\
-         {status}\n\
-         at {x},{y}\n\
-         staffed: {count} - {workers}{recipe}",
+    let mut out = format!(
+        "{name}  Lv {lvl}",
         name = building_label(building.building_type),
         lvl = building.level,
-        x = building.world_position.x,
-        y = building.world_position.y,
-        count = workers.len(),
-        workers = workers_line,
-        recipe = recipe_line,
-    )
+    );
+    if building.construction_progress < 100.0 {
+        out.push_str(&format!(
+            "\nunder construction {:.0}%\nat {},{}",
+            building.construction_progress, building.world_position.x, building.world_position.y,
+        ));
+        return out;
+    }
+    out.push_str(&format!(
+        "\noperational\nat {},{}",
+        building.world_position.x, building.world_position.y
+    ));
+    // Producer buildings (staff_cap > 0) show live staffing + a progress bar.
+    if building.staff_cap > 0 {
+        out.push_str(&format!(
+            "\nstaffed: {}/{}",
+            building.staff_count, building.staff_cap
+        ));
+        let workers: Vec<&str> = colony
+            .cats
+            .iter()
+            .filter(|c| c.assigned_building_id.as_deref() == Some(building.id.as_str()))
+            .map(|c| c.name.as_str())
+            .collect();
+        if !workers.is_empty() {
+            out.push_str(&format!(" - {}", workers.join(", ")));
+        }
+        if let Some(output) = &building.production_output {
+            out.push_str(&format!(
+                "\n{}",
+                production_line(output, building.production_progress)
+            ));
+        }
+    }
+    out
 }
 
 /// The name of the cat holding an officer role, or `None` when vacant / the
@@ -3975,12 +3972,18 @@ fn inspector_text(cat: &CatSnapshot) -> String {
         || "none".to_string(),
         |c| format!("{:?} x{:.0}", c.kind, c.amount),
     );
+    // Lineage is only shown once breeding populates it (empty for founders/today).
+    let parents = if cat.parents.is_empty() {
+        String::new()
+    } else {
+        format!("\nparents: {}", cat.parents.join(", "))
+    };
     format!(
         "{name}\n\
          {spec} - {stage} ({age:.0}h)\n\
          at {x},{y} - {activity}\n\
          dest {dest}\n\
-         carrying {carrying}\n\
+         carrying {carrying}{parents}\n\
          \n\
          skills: {skills}\n\
          leadership {lead:.0}",
@@ -4915,18 +4918,27 @@ mod tests {
     }
 
     #[test]
-    fn building_output_and_resource_labels() {
-        assert_eq!(building_output(BuildingType::WoodCutter), Some("planks"));
-        assert_eq!(building_output(BuildingType::StonePrep), Some("blocks"));
-        assert_eq!(building_output(BuildingType::Woodworking), Some("tools"));
-        assert_eq!(building_output(BuildingType::Field), Some("food"));
-        // Storage / dens / shrine produce nothing.
-        assert_eq!(building_output(BuildingType::FoodStorage), None);
-        assert_eq!(building_output(BuildingType::Den), None);
-        assert_eq!(building_output(BuildingType::Shrine), None);
-
+    fn resource_hint_labels() {
         assert_eq!(resource_hint_label(ResourceHint::Wood), "wood");
         assert_eq!(resource_hint_label(ResourceHint::None), "open ground");
+    }
+
+    #[test]
+    fn production_bar_and_pct_and_line() {
+        assert_eq!(progress_pct(0.0), 0);
+        assert_eq!(progress_pct(0.5), 50);
+        assert_eq!(progress_pct(1.0), 100);
+        // Clamped to the valid range.
+        assert_eq!(progress_pct(1.5), 100);
+        assert_eq!(progress_pct(-0.2), 0);
+        // Bar has `cells` characters between the brackets, filled proportionally.
+        assert_eq!(progress_bar(0.0, 10), "[----------]");
+        assert_eq!(progress_bar(1.0, 10), "[##########]");
+        assert_eq!(progress_bar(0.4, 10), "[####------]");
+        let line = production_line("plank", 0.4);
+        assert!(line.contains("making plank"));
+        assert!(line.contains("[####------]"));
+        assert!(line.contains("40%"));
     }
 
     #[test]
@@ -5099,7 +5111,7 @@ mod tests {
                 "threat":{"pressure":0,"band":"calm","raidActive":false,"warriors":0,"weapons":0,"armor":0},
                 "raiders":[],
                 "buildings":[
-                    {"id":"b1","type":"workshop","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0}},
+                    {"id":"b1","type":"workshop","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0},"staffCount":1,"staffCap":1,"productionProgress":0.4,"productionOutput":"refined"},
                     {"id":"b2","type":"den","level":1,"constructionProgress":40.0,"worldPosition":{"x":5,"y":6},"position":{"x":-1,"y":0}}
                 ],
                 "claimedTiles":[],"villageGate":null,"villageRadius":4,"anchor":{"x":6,"y":6}
@@ -5113,14 +5125,16 @@ mod tests {
         assert!(ws.contains("workshop"));
         assert!(ws.contains("Lv 2"));
         assert!(ws.contains("operational"));
-        assert!(ws.contains("Moss")); // assigned worker
-        assert!(ws.contains("staffed: 1")); // occupant count
-        assert!(ws.contains("makes: 5 materials -> 1 refined")); // recipe
+        assert!(ws.contains("Moss")); // assigned worker name
+        assert!(ws.contains("staffed: 1/1")); // live staff count / cap
+        assert!(ws.contains("making refined")); // live production output
+        assert!(ws.contains("[####------]")); // progress bar at 0.4
+        assert!(ws.contains("40%"));
+        // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);
         assert!(den_text.contains("under construction 40%"));
-        assert!(den_text.contains("staffed: 0 - none"));
-        // Dens don't craft, so no recipe line.
-        assert!(!den_text.contains("makes:"));
+        assert!(!den_text.contains("staffed"));
+        assert!(!den_text.contains("making"));
     }
 
     #[test]
@@ -5146,19 +5160,5 @@ mod tests {
         let line = cat_skills_line(&xp);
         assert!(line.contains("hunt 12"));
         assert!(line.contains("build 3"));
-    }
-
-    #[test]
-    fn building_recipe_covers_producers_only() {
-        assert_eq!(
-            building_recipe(BuildingType::WoodCutter),
-            Some("5 materials -> 1 plank")
-        );
-        assert_eq!(
-            building_recipe(BuildingType::Woodworking),
-            Some("planks + blocks -> 1 tool")
-        );
-        assert_eq!(building_recipe(BuildingType::Den), None);
-        assert_eq!(building_recipe(BuildingType::FoodStorage), None);
     }
 }
