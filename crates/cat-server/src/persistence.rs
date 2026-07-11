@@ -1381,32 +1381,17 @@ fn parse_construction_phase(raw: &str) -> ConstructionPhase {
     }
 }
 
-fn event_kind_str(kind: &EventKind) -> &str {
-    match kind {
-        EventKind::LeaderChange => "leader_change",
-        EventKind::JobQueued => "job_queued",
-        EventKind::JobCompleted => "job_completed",
-        EventKind::ResourceCrisis => "resource_crisis",
-        EventKind::ResourceRecovered => "resource_recovered",
-        EventKind::Election => "election",
-        EventKind::Raid => "raid",
-        EventKind::Reset => "reset",
-        EventKind::Other(kind) => kind.as_str(),
-    }
+// `EventKind`'s wire taxonomy (`wire_kind` / `from_wire_kind`) is the single
+// source of truth for the stable string form — reused here so the SQLite
+// column and the `EventSnapshot.kind` sent to clients never drift apart.
+// Pre-taxonomy rows (`"resource_crisis"`, `"election"`, `"raid"`, ...) load
+// back as `EventKind::Other(raw)`, which still round-trips losslessly.
+fn event_kind_str(kind: &EventKind) -> String {
+    kind.wire_kind()
 }
 
 fn parse_event_kind(raw: &str) -> EventKind {
-    match raw {
-        "leader_change" => EventKind::LeaderChange,
-        "job_queued" => EventKind::JobQueued,
-        "job_completed" => EventKind::JobCompleted,
-        "resource_crisis" => EventKind::ResourceCrisis,
-        "resource_recovered" => EventKind::ResourceRecovered,
-        "election" => EventKind::Election,
-        "raid" => EventKind::Raid,
-        "reset" => EventKind::Reset,
-        other => EventKind::Other(other.to_owned()),
-    }
+    EventKind::from_wire_kind(raw)
 }
 
 fn zone_kind_str(kind: ZoneKind) -> &'static str {
@@ -1474,7 +1459,7 @@ mod tests {
     use cat_protocol::{ClientAction, JobKind as ProtoJobKind};
     use cat_sim::{
         actions::apply_action,
-        world_tick::{found_colony, found_colony_at, new_world},
+        world_tick::{RaidPhase, found_colony, found_colony_at, new_world},
     };
 
     use super::*;
@@ -1903,7 +1888,7 @@ mod tests {
         colony.events.push(EventLog {
             id: "event-audit".to_owned(),
             at_ms: 5_450_000,
-            kind: EventKind::Raid,
+            kind: EventKind::Raid(RaidPhase::Repelled),
             message: "A raid was repelled".to_owned(),
         });
         colony.zones.push(ZoneRuntime {

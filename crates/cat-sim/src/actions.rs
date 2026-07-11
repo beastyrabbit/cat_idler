@@ -26,8 +26,8 @@ use crate::{
     village_layout::{GridPos, village_ring_radius},
     world_tick::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
-        JobMetadata, JobRequester, JobRuntime, RaiderRuntime, TilePos, VoteRuntime, WorldState,
-        ZoneRuntime, found_colony, found_colony_at, reconcile_colony_stockpiles,
+        JobMetadata, JobRequester, JobRuntime, RaiderRuntime, TilePos, TradeDirection, VoteRuntime,
+        WorldState, ZoneRuntime, found_colony, found_colony_at, reconcile_colony_stockpiles,
         select_founding_site, world_tick,
     },
     zones,
@@ -268,7 +268,7 @@ fn request_job(colony: &mut ColonyRuntime, kind: JobKind, ctx: &ActionCtx) -> pr
         append_event(
             colony,
             ctx.now_ms,
-            EventKind::Other("ritual_ready".to_owned()),
+            EventKind::RitualReady,
             "A ritual was requested.",
         );
         return ok();
@@ -540,6 +540,13 @@ fn unlock_node(colony: &mut ColonyRuntime, node_id: &str, ctx: &ActionCtx) -> pr
     colony.upgrade_tree = result.state;
     colony.global_upgrade_points -= result.blessings_cost;
     colony.last_player_activity_at = Some(ctx.now_ms);
+    let node_name = upgrade_tree::get_node(node_id).map_or(node_id, |node| node.name);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::NodeOwned,
+        format!("The players blessed the village with {node_name}!"),
+    );
     ok()
 }
 
@@ -847,6 +854,12 @@ fn sell_goods(
     debug_assert!(removed, "checked availability above");
     colony.coin += payout;
     colony.last_player_activity_at = Some(ctx.now_ms);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::Trade(TradeDirection::Sell),
+        format!("The leader sold {count} {material} {kind} to the trader for {payout} coin."),
+    );
     ok()
 }
 
@@ -881,6 +894,15 @@ fn buy_resource(
     colony.coin -= cost;
     stockpiles::add_resource(&mut colony.resources, resource_kind, amount);
     colony.last_player_activity_at = Some(ctx.now_ms);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::Trade(TradeDirection::Buy),
+        format!(
+            "The leader bought {amount} {} from the trader for {cost} coin.",
+            format!("{kind:?}").to_ascii_lowercase()
+        ),
+    );
     ok()
 }
 
@@ -1009,7 +1031,7 @@ fn build_road(
     append_event(
         colony,
         ctx.now_ms,
-        EventKind::Other("road_built".to_owned()),
+        EventKind::RoadBuilt,
         format!("A paved road was laid ({paved} tiles)."),
     );
     ok()
@@ -1034,6 +1056,12 @@ fn found_village(
     let anchor = select_founding_site(world.world_seed, &existing_anchors);
     let mut colony = found_colony_at(world.world_seed, id, ctx.now_ms, seed, anchor);
     colony.name = name.to_owned();
+    append_event(
+        &mut colony,
+        ctx.now_ms,
+        EventKind::VillageFounded,
+        format!("{name} was founded."),
+    );
     world.colonies.push(colony);
     ok()
 }
@@ -1372,6 +1400,7 @@ fn events_snapshot(colony: &ColonyRuntime) -> Vec<proto::EventSnapshot> {
         .map(|event| proto::EventSnapshot {
             message: event.message.clone(),
             timestamp: event.at_ms,
+            kind: event.kind.wire_kind(),
         })
         .collect()
 }

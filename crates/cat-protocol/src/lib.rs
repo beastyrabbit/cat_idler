@@ -474,6 +474,13 @@ pub enum UpgradeKey {
 pub struct EventSnapshot {
     pub message: String,
     pub timestamp: i64,
+    /// Stable lowercase `snake_case` event category (e.g. `"birth"`,
+    /// `"death_raid"`, `"tithe"`) — see `cat_sim::world_tick::EventKind::wire_kind`.
+    /// Classify on this instead of pattern-matching `message` text. Defaults to
+    /// an empty string when deserializing an older payload that predates this
+    /// field.
+    #[serde(default)]
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1193,6 +1200,30 @@ mod tests {
     }
 
     #[test]
+    fn event_snapshot_kind_round_trips_and_defaults_for_older_payloads() {
+        let event = EventSnapshot {
+            message: "Pebble was born to Ash and Bramble.".to_string(),
+            timestamp: 1_700_000_000_500,
+            kind: "birth".to_string(),
+        };
+        let encoded = serde_json::to_value(&event).expect("serialize event");
+        assert_eq!(encoded["kind"], json!("birth"));
+        let decoded: EventSnapshot = serde_json::from_value(encoded).expect("deserialize event");
+        assert_eq!(decoded, event);
+
+        // A payload from before this field existed (no `kind` key) must still
+        // deserialize, defaulting `kind` to an empty string rather than failing.
+        let legacy = json!({
+            "message": "A quiet day in the forest",
+            "timestamp": 1_700_000_000_500i64,
+        });
+        let decoded: EventSnapshot =
+            serde_json::from_value(legacy).expect("deserialize legacy event payload");
+        assert_eq!(decoded.kind, "");
+        assert_eq!(decoded.message, "A quiet day in the forest");
+    }
+
+    #[test]
     fn action_result_omits_absent_message() {
         let ok = ActionResult {
             ok: true,
@@ -1321,6 +1352,7 @@ mod tests {
                 }],
                 events: vec![EventSnapshot {
                     message: "Moss brought back food.".to_string(),
+                    kind: "job_completed".to_string(),
                     timestamp: 1_700_000_000_500,
                 }],
                 housing: HousingSnapshot {

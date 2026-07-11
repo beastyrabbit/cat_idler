@@ -438,17 +438,253 @@ pub struct EventLog {
     pub message: String,
 }
 
+/// The cause of a cat's death, carried on [`EventKind::Death`] so the taxonomy
+/// distinguishes "old age" from a raid loss or a survival-crisis death instead of
+/// collapsing them into one generic "death" bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeathCause {
+    OldAge,
+    Starvation,
+    Dehydration,
+    StarvationAndDehydration,
+    Raid,
+}
+
+impl DeathCause {
+    fn wire_suffix(self) -> &'static str {
+        match self {
+            DeathCause::OldAge => "old_age",
+            DeathCause::Starvation => "starvation",
+            DeathCause::Dehydration => "dehydration",
+            DeathCause::StarvationAndDehydration => "starvation_and_dehydration",
+            DeathCause::Raid => "raid",
+        }
+    }
+}
+
+/// The phase of a raid an [`EventKind::Raid`] event narrates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RaidPhase {
+    /// A warband was spotted advancing on the village.
+    Launched,
+    /// Player defense clicks cut every raider down before it reached the gate.
+    Repelled,
+    /// Combat resolved at the gate in the defenders' favour.
+    Won,
+    /// Combat resolved at the gate in the raiders' favour (loot, no wipeout).
+    Lost,
+}
+
+impl RaidPhase {
+    fn wire_suffix(self) -> &'static str {
+        match self {
+            RaidPhase::Launched => "launched",
+            RaidPhase::Repelled => "repelled",
+            RaidPhase::Won => "won",
+            RaidPhase::Lost => "lost",
+        }
+    }
+}
+
+/// The phase of a leadership election an [`EventKind::Election`] event narrates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElectionPhase {
+    Opened,
+    Resolved,
+    VoteKick,
+}
+
+impl ElectionPhase {
+    fn wire_suffix(self) -> &'static str {
+        match self {
+            ElectionPhase::Opened => "opened",
+            ElectionPhase::Resolved => "resolved",
+            ElectionPhase::VoteKick => "vote_kick",
+        }
+    }
+}
+
+/// The direction of a player trade with the visiting trader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeDirection {
+    Sell,
+    Buy,
+}
+
+impl TradeDirection {
+    fn wire_suffix(self) -> &'static str {
+        match self {
+            TradeDirection::Sell => "sell",
+            TradeDirection::Buy => "buy",
+        }
+    }
+}
+
+/// The exact category of a colony event, mirrored to the wire as a stable
+/// lowercase `snake_case` string via [`EventKind::wire_kind`] (see
+/// `EventSnapshot::kind` in `cat-protocol`). This taxonomy replaced a pile of
+/// `Other("free-text-string")` call sites — see the module doc on
+/// `append_event` for the collision that motivated it (Tithe vs. haul-deposit
+/// both stringly-typed as `"shrine_deposit"`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventKind {
+    Birth,
+    /// A mating pair conceived a litter ("... are expecting a litter.").
+    Conception,
+    Death(DeathCause),
+    Raid(RaidPhase),
+    Trade(TradeDirection),
+    /// A `carry_offering` job completed and a cat set out for the shrine with
+    /// materials converted to blessings (distinct from [`EventKind::Tithe`],
+    /// the leader's direct stores-to-blessings conversion).
+    Offering,
+    /// The leader director's `Tithe` decision: a direct conversion of banked
+    /// food/refined surplus into blessings, with no cat travel involved.
+    Tithe,
+    /// A ritual's or offering's blessings arrived at the shrine and were
+    /// credited. Distinct from `Offering` (which fires when the job
+    /// completes) and from the ordinary resource haul-deposits, which are not
+    /// narrated at all (see `phase_33_movement_deposits_and_no_destination_wander`).
+    BlessingDelivered,
+    DehydrationCrisis,
+    DehydrationRecovery,
+    /// Colony-wide water reserves crossed the low-water threshold.
+    WaterCrisis,
+    /// Colony-wide water reserves recovered above the safe threshold.
+    WaterRecovered,
+    Election(ElectionPhase),
+    /// An interim leader was appointed because the seat was empty (no election).
     LeaderChange,
+    VillageFounded,
+    /// A staffed research hut/school auto-unlocked the cheapest affordable
+    /// upgrade-tree node from accrued research points.
+    ResearchUnlocked,
+    /// A player spent blessings to directly purchase an upgrade-tree node.
+    NodeOwned,
     JobQueued,
     JobCompleted,
-    ResourceCrisis,
-    ResourceRecovered,
-    Election,
-    Raid,
+    JobCancelled,
+    Production,
+    RoadBuilt,
+    TraderArrived,
+    TraderTrading,
+    TraderDeparted,
+    VillageExpanded,
+    WarriorTrained,
+    ForestChopped,
+    /// A scout completed an `explore` job and revealed fog.
+    Discovery,
+    WorkerAssigned,
+    RitualReady,
     Reset,
+    /// Paired with [`EventKind::Reset`]: the machine-readable reset reason
+    /// (`all-cats-dead` / `raid-wipeout` / `unattended-collapse`).
+    ResetReason,
+    /// Escape hatch retained for forward compatibility / test fixtures. Real
+    /// call sites should use a typed variant above instead.
     Other(String),
+}
+
+impl EventKind {
+    /// The stable lowercase `snake_case` wire category serialized onto
+    /// `EventSnapshot::kind`. Clients should classify on this instead of
+    /// pattern-matching `message` text.
+    pub fn wire_kind(&self) -> String {
+        match self {
+            EventKind::Birth => "birth".to_owned(),
+            EventKind::Conception => "conception".to_owned(),
+            EventKind::Death(cause) => format!("death_{}", cause.wire_suffix()),
+            EventKind::Raid(phase) => format!("raid_{}", phase.wire_suffix()),
+            EventKind::Trade(direction) => format!("trade_{}", direction.wire_suffix()),
+            EventKind::Offering => "offering".to_owned(),
+            EventKind::Tithe => "tithe".to_owned(),
+            EventKind::BlessingDelivered => "blessing_delivered".to_owned(),
+            EventKind::DehydrationCrisis => "dehydration_crisis".to_owned(),
+            EventKind::DehydrationRecovery => "dehydration_recovery".to_owned(),
+            EventKind::WaterCrisis => "water_crisis".to_owned(),
+            EventKind::WaterRecovered => "water_recovered".to_owned(),
+            EventKind::Election(phase) => format!("election_{}", phase.wire_suffix()),
+            EventKind::LeaderChange => "leader_change".to_owned(),
+            EventKind::VillageFounded => "village_founded".to_owned(),
+            EventKind::ResearchUnlocked => "research_unlocked".to_owned(),
+            EventKind::NodeOwned => "node_owned".to_owned(),
+            EventKind::JobQueued => "job_queued".to_owned(),
+            EventKind::JobCompleted => "job_completed".to_owned(),
+            EventKind::JobCancelled => "job_cancelled".to_owned(),
+            EventKind::Production => "production".to_owned(),
+            EventKind::RoadBuilt => "road_built".to_owned(),
+            EventKind::TraderArrived => "trader_arrived".to_owned(),
+            EventKind::TraderTrading => "trader_trading".to_owned(),
+            EventKind::TraderDeparted => "trader_departed".to_owned(),
+            EventKind::VillageExpanded => "village_expanded".to_owned(),
+            EventKind::WarriorTrained => "warrior_trained".to_owned(),
+            EventKind::ForestChopped => "forest_chopped".to_owned(),
+            EventKind::Discovery => "discovery".to_owned(),
+            EventKind::WorkerAssigned => "worker_assigned".to_owned(),
+            EventKind::RitualReady => "ritual_ready".to_owned(),
+            EventKind::Reset => "reset".to_owned(),
+            EventKind::ResetReason => "reset_reason".to_owned(),
+            EventKind::Other(kind) => kind.clone(),
+        }
+    }
+
+    /// The inverse of [`EventKind::wire_kind`] — reconstructs a typed variant
+    /// from its stable wire string. Used by `cat-server`'s SQLite persistence
+    /// to round-trip the exact kind (not just the free-text `message`).
+    /// Unrecognized strings (including pre-taxonomy legacy values persisted by
+    /// an older build) fall back to `Other`, which still round-trips losslessly
+    /// even though it is untyped.
+    #[must_use]
+    pub fn from_wire_kind(raw: &str) -> EventKind {
+        match raw {
+            "birth" => EventKind::Birth,
+            "conception" => EventKind::Conception,
+            "death_old_age" => EventKind::Death(DeathCause::OldAge),
+            "death_starvation" => EventKind::Death(DeathCause::Starvation),
+            "death_dehydration" => EventKind::Death(DeathCause::Dehydration),
+            "death_starvation_and_dehydration" => {
+                EventKind::Death(DeathCause::StarvationAndDehydration)
+            }
+            "death_raid" => EventKind::Death(DeathCause::Raid),
+            "raid_launched" => EventKind::Raid(RaidPhase::Launched),
+            "raid_repelled" => EventKind::Raid(RaidPhase::Repelled),
+            "raid_won" => EventKind::Raid(RaidPhase::Won),
+            "raid_lost" => EventKind::Raid(RaidPhase::Lost),
+            "trade_sell" => EventKind::Trade(TradeDirection::Sell),
+            "trade_buy" => EventKind::Trade(TradeDirection::Buy),
+            "offering" => EventKind::Offering,
+            "tithe" => EventKind::Tithe,
+            "blessing_delivered" => EventKind::BlessingDelivered,
+            "dehydration_crisis" => EventKind::DehydrationCrisis,
+            "dehydration_recovery" => EventKind::DehydrationRecovery,
+            "water_crisis" => EventKind::WaterCrisis,
+            "water_recovered" => EventKind::WaterRecovered,
+            "election_opened" => EventKind::Election(ElectionPhase::Opened),
+            "election_resolved" => EventKind::Election(ElectionPhase::Resolved),
+            "election_vote_kick" => EventKind::Election(ElectionPhase::VoteKick),
+            "leader_change" => EventKind::LeaderChange,
+            "village_founded" => EventKind::VillageFounded,
+            "research_unlocked" => EventKind::ResearchUnlocked,
+            "node_owned" => EventKind::NodeOwned,
+            "job_queued" => EventKind::JobQueued,
+            "job_completed" => EventKind::JobCompleted,
+            "job_cancelled" => EventKind::JobCancelled,
+            "production" => EventKind::Production,
+            "road_built" => EventKind::RoadBuilt,
+            "trader_arrived" => EventKind::TraderArrived,
+            "trader_trading" => EventKind::TraderTrading,
+            "trader_departed" => EventKind::TraderDeparted,
+            "village_expanded" => EventKind::VillageExpanded,
+            "warrior_trained" => EventKind::WarriorTrained,
+            "forest_chopped" => EventKind::ForestChopped,
+            "discovery" => EventKind::Discovery,
+            "worker_assigned" => EventKind::WorkerAssigned,
+            "ritual_ready" => EventKind::RitualReady,
+            "reset" => EventKind::Reset,
+            "reset_reason" => EventKind::ResetReason,
+            other => EventKind::Other(other.to_owned()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1557,7 +1793,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Other("death".to_owned()),
+            EventKind::Death(DeathCause::OldAge),
             format!("{} died peacefully of old age.", death.name),
         );
     }
@@ -1670,12 +1906,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
             }
             None => format!("{kitten_name} was born to {}.", mother.name),
         };
-        append_event(
-            colony,
-            gate.processed_through,
-            EventKind::Other("birth".to_owned()),
-            message,
-        );
+        append_event(colony, gate.processed_through, EventKind::Birth, message);
     }
     colony.cats.append(&mut newborns);
 
@@ -1763,7 +1994,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Other("breeding".to_owned()),
+            EventKind::Conception,
             message,
         );
     }
@@ -1879,7 +2110,7 @@ fn phase_8_water_low_crisis_edge(colony: &mut ColonyRuntime, gate: TickGate) {
         append_event(
             colony,
             gate.processed_through,
-            EventKind::ResourceCrisis,
+            EventKind::WaterCrisis,
             "CRISIS: WATER RESERVES DANGEROUSLY LOW",
         );
     }
@@ -1919,7 +2150,7 @@ fn phase_9_elections_lifecycle(colony: &mut ColonyRuntime, gate: TickGate) {
             append_event(
                 colony,
                 gate.processed_through,
-                EventKind::Election,
+                EventKind::Election(ElectionPhase::Resolved),
                 format!(
                     "{winner_name} won the leadership election with {} ballot{} cast.",
                     ballots.len(),
@@ -1951,7 +2182,7 @@ fn phase_9_elections_lifecycle(colony: &mut ColonyRuntime, gate: TickGate) {
                 append_event(
                     colony,
                     gate.processed_through,
-                    EventKind::Election,
+                    EventKind::Election(ElectionPhase::VoteKick),
                     format!("{target_name} was voted out by the players!"),
                 );
                 colony.leader_id = choose_interim_leader_excluding(colony, Some(&target_id));
@@ -2597,7 +2828,7 @@ fn phase_19_leader_cancellations(
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("job_cancelled".to_owned()),
+                        EventKind::JobCancelled,
                         format!(
                             "The leader called off {cancelled} hunt{} - the stores are overflowing.",
                             if cancelled == 1 { "" } else { "s" }
@@ -2612,7 +2843,7 @@ fn phase_19_leader_cancellations(
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("job_cancelled".to_owned()),
+                        EventKind::JobCancelled,
                         format!(
                             "The leader called {cancelled} recruit{} back from the barracks - the larder is bare.",
                             if cancelled == 1 { "" } else { "s" }
@@ -2858,7 +3089,7 @@ fn phase_21_leader_capital_decisions_and_tithe(
                 append_event(
                     colony,
                     gate.processed_through,
-                    EventKind::Other("shrine_deposit".to_owned()),
+                    EventKind::Tithe,
                     format!(
                         "The leader offered surplus stores to the gods (+{blessings} blessing{}).",
                         if blessings == 1 { "" } else { "s" }
@@ -2992,7 +3223,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("production".to_owned()),
+                        EventKind::Production,
                         format!(
                             "The workshop refined {} materials into {} refined good{}.",
                             step.materials_used,
@@ -3046,7 +3277,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("production".to_owned()),
+                        EventKind::Production,
                         format!(
                             "The smith forged {} weapon{} and {} armor at the smithy.",
                             step.weapons_produced,
@@ -3103,7 +3334,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("production".to_owned()),
+                        EventKind::Production,
                         format!(
                             "The smith worked banked metal into {} extra weapon{} and {} extra armor.",
                             forge_step.weapons_produced,
@@ -3138,7 +3369,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("production".to_owned()),
+                        EventKind::Production,
                         format!(
                             "The wood-cutter split {} materials into {} plank{}.",
                             step.materials_used,
@@ -3174,7 +3405,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("production".to_owned()),
+                        EventKind::Production,
                         format!(
                             "The stone-prep shop dressed {} materials into {} block{}.",
                             step.materials_used,
@@ -3247,7 +3478,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("production".to_owned()),
+                        EventKind::Production,
                         format!(
                             "The woodworkers crafted {} tool{} from planks and blocks.",
                             step.tools_produced,
@@ -3317,7 +3548,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("production".to_owned()),
+                        EventKind::Production,
                         format!(
                             "The smelter refined {} ore into {} metal bar{}.",
                             step.materials_used,
@@ -3355,7 +3586,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("production".to_owned()),
+                        EventKind::Production,
                         format!(
                             "The clothier wove {} fibre into {} cloth.",
                             step.materials_used, step.refined_produced,
@@ -3420,7 +3651,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     append_event(
                         colony,
                         gate.processed_through,
-                        EventKind::Other("production".to_owned()),
+                        EventKind::Production,
                         format!(
                             "The tannery tanned {} hide into {} leather.",
                             step.materials_used, step.refined_produced,
@@ -3510,7 +3741,7 @@ fn credit_trade_craft(
     append_event(
         colony,
         gate.processed_through,
-        EventKind::Other("production".to_owned()),
+        EventKind::Production,
         format!(
             "The {bench_label} crafted {} {} {} for trade.",
             items_produced,
@@ -3595,7 +3826,7 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Other("research_unlocked".to_owned()),
+            EventKind::ResearchUnlocked,
             format!("The cats discovered {node_name}!"),
         );
     }
@@ -3618,13 +3849,11 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
 /// the cat's own active/queued jobs are cancelled so none are left assigned to
 /// a cat that will never return (`server/game.ts:retireCat`), and activity/
 /// destination/carrying are cleared the same way phase 6's old-age death
-/// clears them. Old-age death (phase 6) does not currently emit any event in
-/// this port, so there is no existing event pattern to match for cause; the
-/// death event here uses `EventKind::Other("death")` with TS's exact cause
-/// string, and reuses `EventKind::ResourceCrisis`/`ResourceRecovered` for the
-/// dehydration start/recovery edges — the same two variants phase 8's colony
-/// water-crisis event uses, matching TS's shared `"crisis"`/`"recovery"` event
-/// type strings.
+/// clears them. The death event carries `EventKind::Death(DeathCause)` with
+/// the exact cause; the per-cat dehydration start/recovery edges use their own
+/// `DehydrationCrisis`/`DehydrationRecovery` kinds, distinct from phase 8's
+/// colony-wide `WaterCrisis`/`WaterRecovered` headline events even though both
+/// pairs narrate the same underlying water shortage at different scopes.
 fn phase_25_survival_deaths_and_carried_yield_salvage(
     colony: &mut ColonyRuntime,
     gate: TickGate,
@@ -3660,7 +3889,7 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
             append_event(
                 colony,
                 gate.processed_through,
-                EventKind::ResourceCrisis,
+                EventKind::DehydrationCrisis,
                 format!("{cat_name} started dehydrating."),
             );
         }
@@ -3669,7 +3898,7 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
             append_event(
                 colony,
                 gate.processed_through,
-                EventKind::ResourceRecovered,
+                EventKind::DehydrationRecovery,
                 format!("{cat_name} recovered from dehydration."),
             );
         }
@@ -3691,10 +3920,13 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
 
         let died_of_thirst = result.next_needs.thirst == 0.0;
         let died_of_hunger = result.next_needs.hunger == 0.0;
-        let cause = match (died_of_thirst, died_of_hunger) {
-            (true, true) => "starvation and dehydration",
-            (true, false) => "dehydration",
-            _ => "starvation",
+        let (cause, death_cause) = match (died_of_thirst, died_of_hunger) {
+            (true, true) => (
+                "starvation and dehydration",
+                DeathCause::StarvationAndDehydration,
+            ),
+            (true, false) => ("dehydration", DeathCause::Dehydration),
+            _ => ("starvation", DeathCause::Starvation),
         };
 
         // Mirror phase 6's old-age death cleanup exactly.
@@ -3707,7 +3939,7 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Other("death".to_owned()),
+            EventKind::Death(death_cause),
             format!("{cat_name} died from {cause}."),
         );
     }
@@ -3827,7 +4059,7 @@ fn phase_29_due_completion_gathering_explore_expansion(
                 append_event(
                     colony,
                     gate.processed_through,
-                    EventKind::Other("discovery".to_owned()),
+                    EventKind::Discovery,
                     "The scout mapped the lands around the village.",
                 );
             }
@@ -4106,12 +4338,19 @@ fn phase_33_movement_deposits_and_no_destination_wander(
             }
 
             credit_carrying(colony, &carrying, world_pos);
-            append_event(
-                colony,
-                gate.processed_through,
-                EventKind::Other("shrine_deposit".to_owned()),
-                deposit_message(&cat_id, &carrying),
-            );
+            // Only the rare Blessings deposit (ritual/offering payoff) is narrated —
+            // ordinary Food/Materials/Water hauls fire once per single-cat trip
+            // (hundreds per run) and would drown births/deaths/raids out of the
+            // capped player-facing feed. See the `EventKind::BlessingDelivered` doc
+            // comment for the taxonomy rationale.
+            if carrying.kind == CarryingKind::Blessings {
+                append_event(
+                    colony,
+                    gate.processed_through,
+                    EventKind::BlessingDelivered,
+                    deposit_message(&cat_id, &carrying),
+                );
+            }
 
             let return_site = active_site_for_carrier(colony, &cat_id, gate.processed_through);
             if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
@@ -4872,7 +5111,7 @@ fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate) {
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Other("road_built".to_owned()),
+            EventKind::RoadBuilt,
             format!(
                 "The leader had a well-worn trail paved into a road ({paved} tile{}).",
                 if paved == 1 { "" } else { "s" }
@@ -5083,7 +5322,7 @@ fn phase_35b_road_accessibility(colony: &mut ColonyRuntime, gate: TickGate, worl
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Other("road_built".to_owned()),
+            EventKind::RoadBuilt,
             format!(
                 "The leader paved {paved_tiles} tile{} of road to connect {connected_buildings} building{} to the shrine.",
                 if paved_tiles == 1 { "" } else { "s" },
@@ -5203,7 +5442,7 @@ fn phase_36b_trader_lifecycle(colony: &mut ColonyRuntime, gate: TickGate) {
             append_event(
                 colony,
                 gate.processed_through,
-                EventKind::Other("trader_arrived".to_owned()),
+                EventKind::TraderArrived,
                 "A trader's wagon has been spotted approaching the village.",
             );
         }
@@ -5240,7 +5479,7 @@ fn phase_36b_trader_lifecycle(colony: &mut ColonyRuntime, gate: TickGate) {
                 append_event(
                     colony,
                     gate.processed_through,
-                    EventKind::Other("trader_trading".to_owned()),
+                    EventKind::TraderTrading,
                     "The trader has set up shop at the gate and is ready to deal.",
                 );
             }
@@ -5280,7 +5519,7 @@ fn phase_36b_trader_lifecycle(colony: &mut ColonyRuntime, gate: TickGate) {
                 append_event(
                     colony,
                     gate.processed_through,
-                    EventKind::Other("trader_departed".to_owned()),
+                    EventKind::TraderDeparted,
                     "The trader's wagon has departed for distant lands.",
                 );
             }
@@ -5336,7 +5575,7 @@ fn phase_37_final_clamp_critical_collapse_status_persist(
         append_event(
             colony,
             gate.processed_through,
-            EventKind::ResourceRecovered,
+            EventKind::WaterRecovered,
             "Water reserves restored to safe levels.",
         );
     }
@@ -5414,7 +5653,7 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     append_event(
         colony,
         now_ms,
-        EventKind::Other("reset_reason".to_owned()),
+        EventKind::ResetReason,
         reset_reason_wire(reason),
     );
 }
@@ -5519,7 +5758,7 @@ fn spawn_raid(
     append_event(
         colony,
         gate.processed_through,
-        EventKind::Raid,
+        EventKind::Raid(RaidPhase::Launched),
         format!(
             "A warband of {} raider{} was spotted advancing on the village!",
             count,
@@ -5568,7 +5807,7 @@ fn apply_banked_raid_clicks(colony: &mut ColonyRuntime, gate: TickGate) {
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Raid,
+            EventKind::Raid(RaidPhase::Repelled),
             "The defenders cut down the raiders before they reached the gate.",
         );
     }
@@ -5615,7 +5854,7 @@ fn resolve_active_raid(
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Raid,
+            EventKind::Raid(RaidPhase::Won),
             if muster.combatants > 0 {
                 format!(
                     "The village guard drove the raiders off at the gate - {} defender{} held the line and the warband broke.",
@@ -5642,7 +5881,7 @@ fn resolve_active_raid(
                 append_event(
                     colony,
                     gate.processed_through,
-                    EventKind::Raid,
+                    EventKind::Death(DeathCause::Raid),
                     format!("{victim_name} fell defending the gate as the raiders broke through."),
                 );
             }
@@ -5650,7 +5889,7 @@ fn resolve_active_raid(
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Raid,
+            EventKind::Raid(RaidPhase::Lost),
             format!(
                 "Raiders overran the fence and made off with {}. The village licks its wounds.",
                 loot_line(&stolen)
@@ -6170,7 +6409,7 @@ fn staff_building(
         append_event(
             colony,
             now_ms,
-            EventKind::Other("worker_assigned".to_owned()),
+            EventKind::WorkerAssigned,
             "The leader assigned a worker.",
         );
     }
@@ -6365,7 +6604,7 @@ fn open_leadership_election(colony: &mut ColonyRuntime, now_ms: i64, kind: Elect
     append_event(
         colony,
         now_ms,
-        EventKind::Election,
+        EventKind::Election(ElectionPhase::Opened),
         "The colony is holding a leadership election - cast your vote!",
     );
 }
@@ -7164,7 +7403,7 @@ fn complete_village_expansion(colony: &mut ColonyRuntime, job: &JobRuntime, gate
     append_event(
         colony,
         gate.processed_through,
-        EventKind::Other("village_expanded".to_owned()),
+        EventKind::VillageExpanded,
         format!(
             "The village claimed new ground at ({}, {}).",
             target.x, target.y
@@ -7277,7 +7516,7 @@ fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGat
     append_event(
         colony,
         gate.processed_through,
-        EventKind::Other("offering_performed".to_owned()),
+        EventKind::Offering,
         format!(
             "{cat_id} offered {OFFERING_MATERIALS_AMOUNT} materials at the shrine for blessings."
         ),
@@ -7330,7 +7569,7 @@ fn return_assigned_cat(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickG
         append_event(
             colony,
             gate.processed_through,
-            EventKind::Other("warrior_trained".to_owned()),
+            EventKind::WarriorTrained,
             "A recruit completed warrior training and joined the village guard.",
         );
     }
@@ -7497,7 +7736,7 @@ fn chop_nearest_explored_forest(colony: &mut ColonyRuntime, now_ms: i64) {
         append_event(
             colony,
             now_ms,
-            EventKind::Other("forest_chopped".to_owned()),
+            EventKind::ForestChopped,
             format!(
                 "A forest at ({}, {}) was chopped for lumber.",
                 site.x, site.y
@@ -10930,9 +11169,12 @@ mod tests {
             cheb_distance_world(position, gate_pos) > trader::TRADER_ARRIVE_RANGE,
             "a freshly-spawned trader must start off-map, not already at the gate"
         );
-        assert!(colony.events.iter().any(
-            |event| matches!(&event.kind, EventKind::Other(kind) if kind == "trader_arrived")
-        ),);
+        assert!(
+            colony
+                .events
+                .iter()
+                .any(|event| event.kind == EventKind::TraderArrived),
+        );
     }
 
     #[test]
@@ -10964,9 +11206,12 @@ mod tests {
             };
             assert!(cheb_distance_world(position, gate_pos) <= trader::TRADER_ARRIVE_RANGE);
         }
-        assert!(colony.events.iter().any(
-            |event| matches!(&event.kind, EventKind::Other(kind) if kind == "trader_trading")
-        ),);
+        assert!(
+            colony
+                .events
+                .iter()
+                .any(|event| event.kind == EventKind::TraderTrading),
+        );
 
         // 3) Still inside the linger window -> stays Trading.
         let mid_linger_ms = arrive_ms + game_hours_to_ms(trader::TRADER_LINGER_GAME_HOURS - 1.0);
@@ -10990,9 +11235,12 @@ mod tests {
         phase_36b_trader_lifecycle(&mut colony, production_gate(travel_sec, depart_ms));
         assert!(colony.trader.is_none(), "the trader should have despawned");
         assert_eq!(colony.last_trader_departed_at, Some(depart_ms));
-        assert!(colony.events.iter().any(
-            |event| matches!(&event.kind, EventKind::Other(kind) if kind == "trader_departed")
-        ),);
+        assert!(
+            colony
+                .events
+                .iter()
+                .any(|event| event.kind == EventKind::TraderDeparted),
+        );
     }
 
     #[test]
@@ -12167,7 +12415,7 @@ mod tests {
         assert_eq!(colony.cats[0].death_time, None);
         assert!(
             colony.events.iter().any(|event| {
-                event.kind == EventKind::ResourceCrisis
+                event.kind == EventKind::DehydrationCrisis
                     && event.message == "Poppy started dehydrating."
             }),
             "expected a dehydration crisis event, got {:?}",
@@ -12199,10 +12447,9 @@ mod tests {
         assert_eq!(colony.cats[0].destination, None);
         assert_eq!(colony.cats[0].carrying, None);
         assert!(
-            colony.events.iter().any(
-                |event| matches!(&event.kind, EventKind::Other(kind) if kind == "death")
-                    && event.message == "Poppy died from dehydration."
-            ),
+            colony.events.iter().any(|event| event.kind
+                == EventKind::Death(DeathCause::Dehydration)
+                && event.message == "Poppy died from dehydration."),
             "expected a dehydration death event, got {:?}",
             colony.events
         );
@@ -12231,7 +12478,7 @@ mod tests {
         assert_eq!(colony.cats[0].death_time, None);
         assert!(
             colony.events.iter().any(|event| {
-                event.kind == EventKind::ResourceRecovered
+                event.kind == EventKind::DehydrationRecovery
                     && event.message == "Poppy recovered from dehydration."
             }),
             "expected a dehydration recovery event, got {:?}",
@@ -12261,10 +12508,9 @@ mod tests {
         assert_eq!(colony.cats[0].needs.health, 0.0);
         assert_eq!(colony.cats[0].death_time, Some(1_200_000));
         assert!(
-            colony.events.iter().any(
-                |event| matches!(&event.kind, EventKind::Other(kind) if kind == "death")
-                    && event.message == "Poppy died from starvation."
-            ),
+            colony.events.iter().any(|event| event.kind
+                == EventKind::Death(DeathCause::Starvation)
+                && event.message == "Poppy died from starvation."),
             "expected a starvation death event, got {:?}",
             colony.events
         );
@@ -12516,10 +12762,11 @@ mod tests {
 
         assert_eq!(colony.cats[0].death_time, Some(3_600_000));
         assert!(
-            colony.events.iter().any(
-                |event| matches!(&event.kind, EventKind::Other(kind) if kind == "death")
-                    && event.message == "Poppy died peacefully of old age."
-            ),
+            colony
+                .events
+                .iter()
+                .any(|event| event.kind == EventKind::Death(DeathCause::OldAge)
+                    && event.message == "Poppy died peacefully of old age."),
             "expected an old-age death event, got {:?}",
             colony.events
         );
@@ -12741,7 +12988,7 @@ mod tests {
         let birth_event = colony
             .events
             .iter()
-            .find(|event| matches!(&event.kind, EventKind::Other(kind) if kind == "birth"));
+            .find(|event| event.kind == EventKind::Birth);
         assert!(birth_event.is_some(), "a birth event should be logged");
         assert!(birth_event.unwrap().message.contains(&kitten.name));
     }
@@ -12772,7 +13019,7 @@ mod tests {
             colony
                 .events
                 .iter()
-                .any(|event| matches!(&event.kind, EventKind::Other(kind) if kind == "birth")),
+                .any(|event| event.kind == EventKind::Birth),
             "at least one birth event should have been logged"
         );
     }
@@ -12839,7 +13086,7 @@ mod tests {
             colony
                 .events
                 .iter()
-                .filter(|event| matches!(event.kind, EventKind::Election))
+                .filter(|event| matches!(event.kind, EventKind::Election(_)))
                 .count()
                 >= 2,
             "expected both an election-opened and an election-resolved event"
@@ -14441,7 +14688,7 @@ mod tests {
             colony
                 .events
                 .iter()
-                .any(|event| { event.kind == EventKind::Other("offering_performed".to_owned()) }),
+                .any(|event| { event.kind == EventKind::Offering }),
             "expected an offering_performed event, got {:?}",
             colony.events
         );
@@ -14479,7 +14726,7 @@ mod tests {
             !colony
                 .events
                 .iter()
-                .any(|event| { event.kind == EventKind::Other("offering_performed".to_owned()) }),
+                .any(|event| { event.kind == EventKind::Offering }),
             "no offering_performed event should fire without a real surplus"
         );
     }
