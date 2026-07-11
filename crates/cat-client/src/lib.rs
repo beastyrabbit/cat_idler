@@ -15,8 +15,10 @@
 //! - a HUD dashboard + event log, and clickable manual-action buttons that
 //!   round-trip [`cat_protocol::ClientAction`] over the socket.
 
+use bevy::asset::RenderAssetUsages;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::{Anchor, BorderRect, SliceScaleMode, TextureSlicer};
 use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot, ClientAction,
@@ -76,6 +78,128 @@ fn grid_to_world(x: i32, y: i32) -> Vec2 {
 /// lower on the map (more negative y) → larger z → drawn in front.
 fn ysort_z(base_world_y: f32) -> f32 {
     Z_YSORT_BASE - base_world_y * Z_YSORT_SCALE
+}
+
+// ---- Corner minimap (pure coordinate mapping — unit-tested) ----
+
+/// Minimap texture side, in pixels; one pixel per `tiles_per_px` world tiles.
+const MINIMAP_PX: i32 = 128;
+/// Cap on how many terrain chunks the minimap samples for biome colour per
+/// rebuild — a huge revealed area beyond this shows as revealed-but-uncoloured
+/// (grey) rather than stalling the frame. Not a truncation of the world, just of
+/// the per-frame biome-colour sampling.
+const MINIMAP_CHUNK_CAP: usize = 512;
+
+/// How the revealed world maps onto the minimap texture: the tile at
+/// `(origin_x, origin_y)` is the top-left minimap pixel, and each pixel spans
+/// `tiles_per_px` tiles square.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct MinimapView {
+    origin_x: i32,
+    origin_y: i32,
+    tiles_per_px: i32,
+}
+
+/// Inclusive tile bounding box `(min_x, min_y, max_x, max_y)` of the revealed
+/// set — or a small box around the village anchor when nothing is revealed.
+fn minimap_bounds(revealed: &[TilePoint]) -> (i32, i32, i32, i32) {
+    if revealed.is_empty() {
+        return (
+            VILLAGE_ANCHOR.x - 8,
+            VILLAGE_ANCHOR.y - 8,
+            VILLAGE_ANCHOR.x + 8,
+            VILLAGE_ANCHOR.y + 8,
+        );
+    }
+    let mut min_x = i32::MAX;
+    let mut min_y = i32::MAX;
+    let mut max_x = i32::MIN;
+    let mut max_y = i32::MIN;
+    for t in revealed {
+        min_x = min_x.min(t.x);
+        min_y = min_y.min(t.y);
+        max_x = max_x.max(t.x);
+        max_y = max_y.max(t.y);
+    }
+    (min_x, min_y, max_x, max_y)
+}
+
+/// The minimap view that fits the revealed bounding box, centred, at the coarsest
+/// integer tiles-per-pixel needed (1 while the explored area is ≤ 128 tiles).
+fn minimap_view(revealed: &[TilePoint]) -> MinimapView {
+    let (min_x, min_y, max_x, max_y) = minimap_bounds(revealed);
+    let span = (max_x - min_x + 1).max(max_y - min_y + 1).max(1);
+    let tiles_per_px = ((span + MINIMAP_PX - 1) / MINIMAP_PX).max(1);
+    let center_x = (min_x + max_x) / 2;
+    let center_y = (min_y + max_y) / 2;
+    let half = MINIMAP_PX * tiles_per_px / 2;
+    MinimapView {
+        origin_x: center_x - half,
+        origin_y: center_y - half,
+        tiles_per_px,
+    }
+}
+
+/// The minimap pixel a world tile falls on, or `None` if it's outside the view.
+fn world_to_minimap(view: MinimapView, x: i32, y: i32) -> Option<(i32, i32)> {
+    let px = (x - view.origin_x).div_euclid(view.tiles_per_px);
+    let py = (y - view.origin_y).div_euclid(view.tiles_per_px);
+    ((0..MINIMAP_PX).contains(&px) && (0..MINIMAP_PX).contains(&py)).then_some((px, py))
+}
+
+/// The world tile at the centre of a minimap pixel (for click-to-pan, slice 2).
+#[allow(dead_code)]
+fn minimap_to_world(view: MinimapView, px: i32, py: i32) -> (i32, i32) {
+    let half = view.tiles_per_px / 2;
+    (
+        view.origin_x + px * view.tiles_per_px + half,
+        view.origin_y + py * view.tiles_per_px + half,
+    )
+}
+
+/// Fog colour for undiscovered / uncoloured minimap pixels.
+const MINIMAP_FOG: [u8; 4] = [10, 12, 16, 255];
+
+/// A biome's minimap pixel colour (its palette tint), matching the main view.
+fn biome_rgba(biome: Biome) -> [u8; 4] {
+    let [r, g, b] = biome.properties().tint;
+    [r, g, b, 255]
+}
+
+/// Set the minimap pixel at `(px, py)` in an `MINIMAP_PX`-wide RGBA buffer.
+fn put_pixel(buf: &mut [u8], px: i32, py: i32, color: [u8; 4]) {
+    if !(0..MINIMAP_PX).contains(&px) || !(0..MINIMAP_PX).contains(&py) {
+        return;
+    }
+    let i = ((py * MINIMAP_PX + px) * 4) as usize;
+    buf[i..i + 4].copy_from_slice(&color);
+}
+
+/// Set a 2x2 block of minimap pixels so a mark stands out over 1px terrain.
+fn put_block(buf: &mut [u8], px: i32, py: i32, color: [u8; 4]) {
+    for dy in 0..2 {
+        for dx in 0..2 {
+            put_pixel(buf, px + dx, py + dy, color);
+        }
+    }
+}
+
+/// Biome colour for each revealed tile, sampling terrain per chunk (capped at
+/// `MINIMAP_CHUNK_CAP` chunks/rebuild). Tiles in unsampled chunks are omitted
+/// (drawn grey by the caller) rather than blocking the frame.
+fn revealed_biomes(seed: i64, revealed: &[TilePoint]) -> HashMap<(i32, i32), Biome> {
+    let mut chunks: HashSet<(i32, i32)> = HashSet::new();
+    for t in revealed {
+        let c = tile_to_chunk(t.x, t.y);
+        chunks.insert((c.chunk_x, c.chunk_y));
+    }
+    let mut map = HashMap::new();
+    for (cx, cy) in chunks.into_iter().take(MINIMAP_CHUNK_CAP) {
+        for tile in generate_terrain_chunk(cx, cy, seed, WORLD_TERRAIN_OPTIONS) {
+            map.insert((tile.x, tile.y), tile.climate_biome);
+        }
+    }
+    map
 }
 
 /// The bottom-anchored base position (front-edge centre) and pixel size of a
@@ -164,6 +288,26 @@ impl Default for OfficersUi {
 #[derive(Resource, Default)]
 struct AnnouncementsUi {
     visible: bool,
+}
+
+/// Whether the corner minimap is shown (toggled by `M`; on by default).
+#[derive(Resource)]
+struct MinimapUi {
+    visible: bool,
+}
+
+impl Default for MinimapUi {
+    fn default() -> Self {
+        Self { visible: true }
+    }
+}
+
+/// Handle to the dynamic minimap texture (rewritten each snapshot), plus the last
+/// view used to draw it (so click-to-pan / the viewport rect share the mapping).
+#[derive(Resource)]
+struct Minimap {
+    image: Handle<Image>,
+    view: MinimapView,
 }
 
 /// Number of announcement lines the panel shows (newest first).
@@ -786,6 +930,9 @@ struct AnnouncementsButton;
 /// The compact "latest announcement" ticker line on the HUD.
 #[derive(Component)]
 struct AnnouncementTicker;
+/// Marker for the corner minimap panel node (toggled open/closed).
+#[derive(Component)]
+struct MinimapPanel;
 
 /// The kind of a colony event, inferred from its message (the snapshot carries
 /// only message + timestamp), for colour + glyph coding in the announcements log.
@@ -998,6 +1145,7 @@ pub fn run() {
         .insert_resource(BuildingSelection::default())
         .insert_resource(OfficersUi::default())
         .insert_resource(AnnouncementsUi::default())
+        .insert_resource(MinimapUi::default())
         .insert_resource(CatBodies::default())
         .insert_resource(RaiderBodies::default())
         .insert_resource(Tools::default())
@@ -1048,8 +1196,13 @@ pub fn run() {
                     handle_vacate_buttons,
                     flush_outgoing,
                 ),
-                // announcements / event log
-                (toggle_announcements, update_announcements),
+                // announcements / event log + minimap
+                (
+                    toggle_announcements,
+                    update_announcements,
+                    toggle_minimap,
+                    update_minimap,
+                ),
             ),
         )
         .run();
@@ -1181,6 +1334,7 @@ fn setup(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
     mut atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     commands.insert_resource(TerrainArt::load(&asset_server));
     commands.insert_resource(BuildingArt::load(&asset_server));
@@ -1191,6 +1345,24 @@ fn setup(
     commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
     let ui = UiArt::load(&asset_server);
     commands.insert_resource(ui.clone());
+
+    // Dynamic minimap texture (rewritten each snapshot by update_minimap).
+    let minimap_image = Image::new_fill(
+        Extent3d {
+            width: MINIMAP_PX as u32,
+            height: MINIMAP_PX as u32,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        &MINIMAP_FOG,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::all(),
+    );
+    let minimap_handle = images.add(minimap_image);
+    commands.insert_resource(Minimap {
+        image: minimap_handle.clone(),
+        view: minimap_view(&[]),
+    });
 
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
@@ -1315,6 +1487,29 @@ fn setup(
             },
             TextColor(PARCHMENT_INK),
             EventLogText,
+        )],
+    ));
+
+    // Corner minimap (bottom-right, clear of the inspectors + toolbars), 9-patch
+    // framed, showing the dynamic minimap texture. Toggled with 'M'.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(8.0),
+            bottom: Val::Px(70.0),
+            padding: UiRect::all(Val::Px(14.0)),
+            ..default()
+        },
+        GlobalZIndex(70),
+        sliced_image(ui.panel.clone(), PANEL_BORDER),
+        MinimapPanel,
+        children![(
+            Node {
+                width: Val::Px(168.0),
+                height: Val::Px(168.0),
+                ..default()
+            },
+            ImageNode::new(minimap_handle),
         )],
     ));
 
@@ -3568,6 +3763,97 @@ fn update_announcements(
     }
 }
 
+/// Toggle the corner minimap with the `M` key.
+fn toggle_minimap(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<MinimapUi>) {
+    if keys.just_pressed(KeyCode::KeyM) {
+        ui.visible = !ui.visible;
+    }
+}
+
+/// Redraw the minimap texture from the snapshot each tick: revealed terrain
+/// coloured by biome, with village buildings, cats and any raiders marked.
+fn update_minimap(
+    latest: Res<LatestSnapshot>,
+    ui: Res<MinimapUi>,
+    mut minimap: ResMut<Minimap>,
+    mut images: ResMut<Assets<Image>>,
+    mut panel: Query<&mut Node, With<MinimapPanel>>,
+) {
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if ui.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if !ui.visible || (!latest.is_changed() && !ui.is_changed()) {
+        return;
+    }
+    let Some((seed, colony)) = latest
+        .0
+        .as_ref()
+        .and_then(|w| w.colonies.first().map(|c| (w.world_seed, c)))
+    else {
+        return;
+    };
+
+    let view = minimap_view(&colony.revealed_tiles);
+    minimap.view = view;
+    let biomes = revealed_biomes(seed, &colony.revealed_tiles);
+
+    let mut buf = vec![0u8; (MINIMAP_PX * MINIMAP_PX * 4) as usize];
+    for px in buf.chunks_exact_mut(4) {
+        px.copy_from_slice(&MINIMAP_FOG);
+    }
+    // Revealed terrain (biome colour; grey where the chunk cap skipped sampling).
+    for t in &colony.revealed_tiles {
+        if let Some((px, py)) = world_to_minimap(view, t.x, t.y) {
+            let color = biomes
+                .get(&(t.x, t.y))
+                .map_or([72, 72, 78, 255], |b| biome_rgba(*b));
+            put_pixel(&mut buf, px, py, color);
+        }
+    }
+    // Buildings: shrine gold, others pale (2x2 so they read over terrain).
+    for b in &colony.buildings {
+        if building_texture(b.building_type).is_none() {
+            continue;
+        }
+        if let Some((px, py)) = world_to_minimap(view, b.world_position.x, b.world_position.y) {
+            let color = if b.building_type == BuildingType::Shrine {
+                [236, 206, 92, 255]
+            } else {
+                [222, 222, 228, 255]
+            };
+            put_block(&mut buf, px, py, color);
+        }
+    }
+    // Cats: leader gold, warriors orange, the rest light blue.
+    let leader_id = colony.leader.as_ref().map(|l| l.id.as_str());
+    for c in colony.cats.iter().filter(|c| c.death_time.is_none()) {
+        if let Some((px, py)) = world_to_minimap(view, c.position.x, c.position.y) {
+            let color = if Some(c.id.as_str()) == leader_id {
+                [236, 206, 92, 255]
+            } else if c.specialization == Some(Specialization::Warrior) {
+                [224, 128, 64, 255]
+            } else {
+                [110, 190, 236, 255]
+            };
+            put_pixel(&mut buf, px, py, color);
+        }
+    }
+    // Active raid warband, if any.
+    for r in &colony.raiders {
+        if let Some((px, py)) = world_to_minimap(view, r.position.x, r.position.y) {
+            put_block(&mut buf, px, py, [230, 60, 50, 255]);
+        }
+    }
+
+    if let Some(mut image) = images.get_mut(&minimap.image) {
+        image.data = Some(buf);
+    }
+}
+
 fn update_event_log(latest: Res<LatestSnapshot>, mut log: Query<&mut Text, With<EventLogText>>) {
     if !latest.is_changed() {
         return;
@@ -4239,6 +4525,43 @@ mod tests {
             road_sprite_kind(true, false, true, false),
             RoadSprite::Cross
         );
+    }
+
+    #[test]
+    fn minimap_coord_mapping_round_trips_and_scales() {
+        // A small revealed patch fits 1 tile/pixel and centres on its bbox.
+        let revealed = vec![
+            TilePoint { x: 0, y: 0 },
+            TilePoint { x: 9, y: 5 },
+            TilePoint { x: 4, y: 4 },
+        ];
+        let view = minimap_view(&revealed);
+        assert_eq!(view.tiles_per_px, 1);
+        // Every revealed tile lands inside the minimap.
+        for t in &revealed {
+            let px = world_to_minimap(view, t.x, t.y);
+            assert!(px.is_some(), "{t:?} should be on the minimap");
+            // At 1 tile/px the pixel maps straight back to the tile.
+            let (px, py) = px.unwrap();
+            assert_eq!(minimap_to_world(view, px, py), (t.x, t.y));
+        }
+        // A tile far outside the revealed area is off the minimap.
+        assert_eq!(world_to_minimap(view, 9000, 9000), None);
+
+        // A huge revealed span coarsens to >1 tile/pixel (downsample, not truncate).
+        let big = vec![TilePoint { x: -200, y: -200 }, TilePoint { x: 200, y: 200 }];
+        let bview = minimap_view(&big);
+        assert!(bview.tiles_per_px > 1);
+        // The extreme corners still map onto the minimap.
+        assert!(world_to_minimap(bview, -200, -200).is_some());
+        assert!(world_to_minimap(bview, 200, 200).is_some());
+    }
+
+    #[test]
+    fn minimap_bounds_fall_back_to_the_anchor_when_empty() {
+        let (min_x, min_y, max_x, max_y) = minimap_bounds(&[]);
+        assert!(min_x < VILLAGE_ANCHOR.x && max_x > VILLAGE_ANCHOR.x);
+        assert!(min_y < VILLAGE_ANCHOR.y && max_y > VILLAGE_ANCHOR.y);
     }
 
     #[test]
