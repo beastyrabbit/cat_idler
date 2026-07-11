@@ -36,8 +36,9 @@ use crate::{
     },
     movement::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
-        effective_move_speed, pick_wander_target, road_surface_multiplier, scout_wander_target,
-        soft_obstacle_speed_multiplier, walk_path,
+        effective_move_speed, pick_wander_target, rail_speed_multiplier, road_surface_multiplier,
+        scout_wander_target, soft_obstacle_speed_multiplier, straight_line_distance_tiles,
+        walk_path,
     },
     officers::OfficerRole,
     pathfinding::{
@@ -76,8 +77,9 @@ use crate::{
         UpgradeKey,
     },
     upgrade_tree::{
-        MOUNTAINEERING_NODE_ID, UpgradeTreeState, accrue_research, cat_auto_unlock,
-        create_upgrade_tree_state, get_node, is_owned, points_per_tick_for, resolve_effects,
+        MOUNTAINEERING_NODE_ID, RAIL_NODE_ID, SHIPPING_NODE_ID, UpgradeTreeState, accrue_research,
+        cat_auto_unlock, create_upgrade_tree_state, get_node, is_owned, points_per_tick_for,
+        resolve_effects,
     },
     village_area::{
         ExpandOptions, GatePlacement as AreaGatePlacement, Side, expand_village, from_tiles,
@@ -3871,8 +3873,15 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         area_gate,
         terrain: None,
         mountains_unlocked: is_owned(&colony.upgrade_tree, MOUNTAINEERING_NODE_ID),
+        // P17 transport upgrade: water stays blocked (pre-P17 behaviour, byte-
+        // identical for every colony without the node) until `shipping` is owned.
+        shipping_unlocked: is_owned(&colony.upgrade_tree, SHIPPING_NODE_ID),
         soft_obstacles: Some(&path_soft_obstacles),
     });
+    // P17 transport upgrade: `rail` speeds up long-distance hauls once owned —
+    // checked per-cat below against the remaining route distance, inert (no
+    // owned-node lookup cost beyond this single flag) for every colony without it.
+    let rail_unlocked = is_owned(&colony.upgrade_tree, RAIL_NODE_ID);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let cat_ids = colony
         .cats
@@ -3934,9 +3943,19 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                 standing_tile_pos.y,
             );
         let soft_obstacle_mult = soft_obstacle_speed_multiplier(on_soft_obstacle);
+        // P17 `rail`: a long-distance haul (remaining route beyond
+        // RAIL_LONG_HAUL_DISTANCE_TILES) moves much faster once the colony owns the
+        // upgrade; village-scale routes (hunts, quarrying, shrine hauls) never
+        // clear the threshold, so this is inert without it and inert for ordinary
+        // routes even with it owned.
+        let rail_mult = rail_speed_multiplier(
+            rail_unlocked,
+            straight_line_distance_tiles(world_pos, destination),
+        );
         let speed = effective_move_speed(standing_biome, &cat_id, stage)
             * road_mult
             * soft_obstacle_mult
+            * rail_mult
             * explore_slowdown
             * effects.move_speed_mult;
 

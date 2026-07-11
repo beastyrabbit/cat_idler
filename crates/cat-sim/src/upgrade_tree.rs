@@ -124,6 +124,18 @@ pub struct UpgradeNode {
 /// Owned via god blessing or cat auto-research like any other node.
 pub const MOUNTAINEERING_NODE_ID: &str = "mountaineering";
 
+/// Tech node that speeds up long-distance overland hauls (P17 distant-biome
+/// logistics). Checked directly at the movement call site — like
+/// [`MOUNTAINEERING_NODE_ID`], its effect is a structural gate rather than a
+/// generic [`EffectKey`] multiplier, since it only applies beyond a distance
+/// threshold, not to every job uniformly.
+pub const RAIL_NODE_ID: &str = "rail";
+
+/// Tech node that makes water tiles passable (slow) to pathfinding, mirroring
+/// [`MOUNTAINEERING_NODE_ID`]'s gate on mountain tiles. Checked directly at the
+/// `ColonyGridParams::shipping_unlocked` call site.
+pub const SHIPPING_NODE_ID: &str = "shipping";
+
 pub const UPGRADE_NODES: &[UpgradeNode] = &[
     UpgradeNode {
         id: "research_hut",
@@ -431,6 +443,36 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
                 key: EffectKey::HousingPerDen,
                 value: 3.0,
             }]),
+        },
+    },
+    UpgradeNode {
+        id: RAIL_NODE_ID,
+        name: "Rail Line",
+        description: "Rails laid through the passes mountaineering first opened. A distant biome is a day's walk no longer — the wagons run on iron tracks now.",
+        era: 3,
+        cost: 20.0,
+        // Rails follow the graded routes mountaineering's switchbacks already cut,
+        // so the line only makes narrative (and pathing) sense once mountains are
+        // crossable at all.
+        prerequisites: &[MOUNTAINEERING_NODE_ID],
+        unlocks: UpgradeUnlocks {
+            buildings: None,
+            jobs: None,
+            effects: None,
+        },
+    },
+    UpgradeNode {
+        id: SHIPPING_NODE_ID,
+        name: "Shipping",
+        description: "Hulls raised at the sawmill's dock. Cats can finally cross open water — slow, cautious poling, but it reaches biomes no road ever will.",
+        era: 3,
+        cost: 24.0,
+        // Timber for hulls comes from the sawmill's output chain.
+        prerequisites: &["sawmill"],
+        unlocks: UpgradeUnlocks {
+            buildings: None,
+            jobs: None,
+            effects: None,
         },
     },
 ];
@@ -828,12 +870,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        EffectKey, EffectKind, MOUNTAINEERING_NODE_ID, PurchaseFailureReason,
-        RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK, RESEARCH_POINTS_PER_SECOND, UPGRADE_NODE_BY_ID,
-        UPGRADE_NODES, WEEK_SECONDS, accrue_research, can_unlock, cat_auto_unlock,
-        create_upgrade_tree_state, deserialize_upgrade_tree_state, effect_kind, get_node,
-        god_purchase, is_owned, neutral_effects, next_research_target, points_per_tick_for,
-        points_per_tick_for_default, prerequisites_met, resolve_effects,
+        EffectKey, EffectKind, MOUNTAINEERING_NODE_ID, PurchaseFailureReason, RAIL_NODE_ID,
+        RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK, RESEARCH_POINTS_PER_SECOND, SHIPPING_NODE_ID,
+        UPGRADE_NODE_BY_ID, UPGRADE_NODES, WEEK_SECONDS, accrue_research, can_unlock,
+        cat_auto_unlock, create_upgrade_tree_state, deserialize_upgrade_tree_state, effect_kind,
+        get_node, god_purchase, is_owned, neutral_effects, next_research_target,
+        points_per_tick_for, points_per_tick_for_default, prerequisites_met, resolve_effects,
         serialize_upgrade_tree_state, unlockable_nodes,
     };
     use crate::types::BuildingType;
@@ -863,11 +905,50 @@ mod tests {
     }
 
     #[test]
+    fn rail_and_shipping_nodes_are_era_3_escalating_cost_with_the_documented_prerequisites() {
+        let rail = get_node(RAIL_NODE_ID).expect("rail node exists");
+        assert_eq!(rail.era, 3);
+        assert_eq!(rail.cost, 20.0);
+        assert_eq!(rail.prerequisites, [MOUNTAINEERING_NODE_ID]);
+        assert!(rail.unlocks.buildings.is_none());
+        assert!(rail.unlocks.jobs.is_none());
+        assert!(rail.unlocks.effects.is_none());
+
+        let shipping = get_node(SHIPPING_NODE_ID).expect("shipping node exists");
+        assert_eq!(shipping.era, 3);
+        assert_eq!(shipping.cost, 24.0);
+        assert_eq!(shipping.prerequisites, ["sawmill"]);
+        assert!(shipping.unlocks.buildings.is_none());
+        assert!(shipping.unlocks.jobs.is_none());
+        assert!(shipping.unlocks.effects.is_none());
+
+        // Escalating cost vs. the era-2 gate they build on.
+        assert!(
+            rail.cost
+                > get_node(MOUNTAINEERING_NODE_ID)
+                    .expect("mountaineering")
+                    .cost
+        );
+        assert!(shipping.cost > get_node("sawmill").expect("sawmill").cost);
+
+        // Ownership is independently detectable, like mountaineering.
+        let without = state_with(&["research_hut"], 0.0);
+        assert!(!is_owned(&without, RAIL_NODE_ID));
+        assert!(!is_owned(&without, SHIPPING_NODE_ID));
+        let with = state_with(&["research_hut", RAIL_NODE_ID, SHIPPING_NODE_ID], 0.0);
+        assert!(is_owned(&with, RAIL_NODE_ID));
+        assert!(is_owned(&with, SHIPPING_NODE_ID));
+    }
+
+    #[test]
     fn node_table_matches_the_typescript_tree_shape() {
         // 18 TS-parity nodes + the Rust-side `mountaineering` node (unlocks
         // mountain-tile traversal in pathfinding) + the Rust-side `textiles` node
-        // (unlocks the clothier/tannery clothing chain, P16/P19 deferred slice).
-        assert_eq!(UPGRADE_NODES.len(), 20);
+        // (unlocks the clothier/tannery clothing chain, P16/P19 deferred slice) +
+        // the Rust-side `rail`/`shipping` P17 transport-upgrade pair (long-haul
+        // speed + water traversal, both gates checked directly at their pathfinding/
+        // movement call sites like `mountaineering`).
+        assert_eq!(UPGRADE_NODES.len(), 22);
         assert_eq!(EffectKey::ALL.len(), 11);
         assert_eq!(effect_kind(EffectKey::HuntYieldMult), EffectKind::Mult);
         assert_eq!(effect_kind(EffectKey::WaterCarryCapacity), EffectKind::Add);

@@ -10,6 +10,13 @@ pub const DENSE_WOODS_COST: f64 = 8.0;
 /// Traversal cost of a mountain tile once mining/mountaineering unlocks it. Steep,
 /// slow going — dearer than dense woods so cats still skirt peaks when they can.
 pub const MOUNTAIN_COST: f64 = 10.0;
+/// Traversal cost of a water tile once the `shipping` upgrade unlocks it. Cautious
+/// poling/paddling is dearer than crossing a mountain pass — water is a last
+/// resort even once it's crossable, so cats still prefer any land route A* can
+/// find. Only relevant once [`ColonyGridParams::shipping_unlocked`] is set (see
+/// [`tile_is_water`]); irrelevant, like [`MOUNTAIN_COST`], while the tile is
+/// hard-blocked.
+pub const WATER_COST: f64 = 14.0;
 /// Traversal cost of a tile covered by a building footprint (P14.2 soft obstacle).
 /// Cost tiers mirror the movement-speed model, cost ∝ 1/speed: the spec's
 /// "tree+building" tier is ~25% speed, i.e. cost `1.0 / 0.25 = 4.0` — the same
@@ -144,6 +151,13 @@ pub struct ColonyGridParams<'a> {
     /// Whether the colony has unlocked mountaineering/mining. While `false`,
     /// mountain-biome tiles are impassable; once `true` they are walkable but slow.
     pub mountains_unlocked: bool,
+    /// Whether the colony has unlocked shipping. While `false` (the default for
+    /// every colony that hasn't researched/purchased the `shipping` upgrade node),
+    /// water tiles are always impassable — this is the pre-P17 behaviour and must
+    /// stay byte-identical for a colony without the upgrade. Once `true`, water
+    /// tiles become walkable but slow ([`WATER_COST`]), mirroring
+    /// `mountains_unlocked` exactly.
+    pub shipping_unlocked: bool,
     /// Tiles covered by a building footprint (P14.2). Never hard-blocked — A*
     /// costs them at [`BUILDING_FOOTPRINT_COST`] instead, so cats route around a
     /// building when reasonable but can still cross it, and can always reach a
@@ -160,6 +174,7 @@ pub struct ColonyWalkGrid<'a> {
     area_gate: Option<GatePlacement>,
     terrain: Option<&'a dyn TerrainWalkField>,
     mountains_unlocked: bool,
+    shipping_unlocked: bool,
     soft_obstacles: Option<&'a HashSet<TilePos>>,
 }
 
@@ -190,6 +205,7 @@ pub fn build_colony_walk_grid(params: ColonyGridParams<'_>) -> ColonyWalkGrid<'_
         area_gate: params.area_gate,
         terrain: params.terrain,
         mountains_unlocked: params.mountains_unlocked,
+        shipping_unlocked: params.shipping_unlocked,
         soft_obstacles: params.soft_obstacles,
     }
 }
@@ -330,8 +346,10 @@ impl WalkGrid for ColonyWalkGrid<'_> {
         }
 
         self.by_key.get(&pack_tile_key(x, y)).is_some_and(|tile| {
-            // Water is always impassable; mountains only until mining is unlocked.
-            tile_is_water(tile)
+            // Water is impassable until shipping is unlocked; mountains only until
+            // mining/mountaineering is unlocked. Both default to blocked — a colony
+            // that owns neither upgrade sees exactly the pre-P17 behaviour.
+            (tile_is_water(tile) && !self.shipping_unlocked)
                 || (!self.mountains_unlocked && tile.tile_type == WalkTileType::Mountain)
         })
     }
@@ -400,6 +418,13 @@ fn tile_cost(tile: Option<&WalkTile>) -> f64 {
         )
     {
         return WORN_PATH_COST;
+    }
+    // Only reached when the tile is actually walkable, i.e. after `is_blocked`
+    // has already let a water/mountain tile through (shipping/mountaineering
+    // owned respectively) — the cost tier below applies unconditionally, the
+    // same shape as the mountain check just after it.
+    if tile_is_water(tile) {
+        return WATER_COST;
     }
     if tile.tile_type == WalkTileType::Mountain {
         return MOUNTAIN_COST;
@@ -574,7 +599,7 @@ mod tests {
         BUILDING_FOOTPRINT_COST, ColonyGridParams, ColonyWalkGrid, DEFAULT_MARGIN,
         DEFAULT_MAX_EXPANSIONS, DENSE_WOODS_COST, FOREST_COST, FenceSide, FindPathOptions,
         GatePlacement, MIN_STEP_COST, MOUNTAIN_COST, OPEN_COST, ROAD_COST, ROAD_WEAR_THRESHOLD,
-        TilePos, VillageArea, WORN_PATH_COST, WalkGrid, WalkOverlayFeature, WalkTile,
+        TilePos, VillageArea, WATER_COST, WORN_PATH_COST, WalkGrid, WalkOverlayFeature, WalkTile,
         WalkTileResources, WalkTileType, WorldPos, build_colony_walk_grid, cliff_blocks_step,
         find_path,
     };
@@ -828,7 +853,11 @@ mod tests {
     /// Build a grid with a mountain tile at (3,0) and a water tile at (5,0), then
     /// hand it to `check`. Anchor + ring are placed far away so the legacy fence
     /// never triggers on these coords. `tiles` is kept alive for the closure.
-    fn with_mountain_and_water_grid(mountains_unlocked: bool, check: impl FnOnce(&ColonyWalkGrid)) {
+    fn with_mountain_and_water_grid(
+        mountains_unlocked: bool,
+        shipping_unlocked: bool,
+        check: impl FnOnce(&ColonyWalkGrid),
+    ) {
         let tiles = vec![
             WalkTile {
                 x: 3,
@@ -856,6 +885,7 @@ mod tests {
             area_gate: None,
             terrain: None,
             mountains_unlocked,
+            shipping_unlocked,
             soft_obstacles: None,
         });
         check(&grid);
@@ -863,13 +893,13 @@ mod tests {
 
     #[test]
     fn mountain_tiles_are_blocked_until_mountaineering_is_unlocked() {
-        with_mountain_and_water_grid(false, |grid| {
+        with_mountain_and_water_grid(false, false, |grid| {
             assert!(
                 grid.is_blocked(3, 0),
                 "mountain blocked without the upgrade"
             );
         });
-        with_mountain_and_water_grid(true, |grid| {
+        with_mountain_and_water_grid(true, false, |grid| {
             assert!(
                 !grid.is_blocked(3, 0),
                 "mountain passable once mountaineering is unlocked"
@@ -881,9 +911,101 @@ mod tests {
     }
 
     #[test]
-    fn water_tiles_are_always_blocked_regardless_of_mountaineering() {
-        with_mountain_and_water_grid(false, |grid| assert!(grid.is_blocked(5, 0)));
-        with_mountain_and_water_grid(true, |grid| assert!(grid.is_blocked(5, 0)));
+    fn water_tiles_are_always_blocked_without_shipping_regardless_of_mountaineering() {
+        // Critical guardrail (P17): a colony without the `shipping` upgrade must see
+        // water blocked exactly as before, whether or not it separately owns
+        // mountaineering — the two gates are independent.
+        with_mountain_and_water_grid(false, false, |grid| assert!(grid.is_blocked(5, 0)));
+        with_mountain_and_water_grid(true, false, |grid| {
+            assert!(
+                grid.is_blocked(5, 0),
+                "water must stay blocked without shipping even once mountains are open"
+            );
+        });
+    }
+
+    #[test]
+    fn water_tiles_become_passable_slow_once_shipping_is_unlocked() {
+        with_mountain_and_water_grid(false, true, |grid| {
+            assert!(
+                !grid.is_blocked(5, 0),
+                "water passable once shipping is unlocked"
+            );
+            // Passable but slow — dearer even than a mountain crossing, so cats
+            // still prefer any land route A* can find.
+            assert_eq!(grid.cost(5, 0), WATER_COST);
+            assert!(grid.cost(5, 0) > MOUNTAIN_COST);
+        });
+        // Mountaineering ownership is irrelevant to the shipping gate.
+        with_mountain_and_water_grid(true, true, |grid| assert!(!grid.is_blocked(5, 0)));
+    }
+
+    /// A full-width water barrier (a lake/strait) at `y == 5`, spanning the entire
+    /// bounded search window so there is no detour around it — the only way from
+    /// one bank to the other is straight through the water. Anchor + ring are
+    /// placed far away so the legacy fence never triggers on these coords.
+    fn water_barrier_tiles(min_x: i32, max_x: i32) -> Vec<WalkTile> {
+        (min_x..=max_x)
+            .map(|x| WalkTile {
+                x,
+                y: 5,
+                tile_type: WalkTileType::River,
+                overlay_feature: Some(WalkOverlayFeature::River),
+                resources: Some(WalkTileResources { water: 1 }),
+                path_wear: 0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mover_can_path_across_water_once_shipping_is_unlocked_but_not_before() {
+        // Tight margin so the barrier only needs to span a handful of columns to
+        // rule out any detour, and start/goal sit one tile from either bank.
+        let options = FindPathOptions {
+            max_expansions: DEFAULT_MAX_EXPANSIONS,
+            margin: 3,
+        };
+        let tiles = water_barrier_tiles(-3, 3);
+        let start = WorldPos { x: 0.0, y: 4.0 };
+        let goal = WorldPos { x: 0.0, y: 6.0 };
+
+        let without_shipping = build_colony_walk_grid(ColonyGridParams {
+            tiles: &tiles,
+            anchor: TilePos { x: 0, y: 0 },
+            ring_radius: 10_000,
+            gate: TilePos { x: 0, y: 1 },
+            area: None,
+            area_gate: None,
+            terrain: None,
+            mountains_unlocked: false,
+            shipping_unlocked: false,
+            soft_obstacles: None,
+        });
+        assert_eq!(
+            find_path(start, goal, &without_shipping, options),
+            None,
+            "a colony without shipping has no route across the strait"
+        );
+
+        let with_shipping = build_colony_walk_grid(ColonyGridParams {
+            tiles: &tiles,
+            anchor: TilePos { x: 0, y: 0 },
+            ring_radius: 10_000,
+            gate: TilePos { x: 0, y: 1 },
+            area: None,
+            area_gate: None,
+            terrain: None,
+            mountains_unlocked: false,
+            shipping_unlocked: true,
+            soft_obstacles: None,
+        });
+        let path = find_path(start, goal, &with_shipping, options)
+            .expect("a mover can path straight across the strait once shipping is unlocked");
+        assert!(
+            path.contains(&WorldPos { x: 0.0, y: 5.0 }),
+            "the route must actually cross the water tile, not detour around it: {path:?}"
+        );
+        assert_eq!(with_shipping.cost(0, 5), WATER_COST);
     }
 
     // ---- P14.2: soft-obstacle pathfinding (buildings) ----------------------
@@ -1039,6 +1161,7 @@ mod tests {
             area_gate: None,
             terrain: None,
             mountains_unlocked: false,
+            shipping_unlocked: false,
             soft_obstacles: Some(&soft_obstacles),
         });
 
@@ -1073,6 +1196,7 @@ mod tests {
             area_gate: None,
             terrain: None,
             mountains_unlocked: false,
+            shipping_unlocked: false,
             soft_obstacles: None,
         });
 
@@ -1115,6 +1239,7 @@ mod tests {
                 area_gate,
                 terrain: None,
                 mountains_unlocked: false,
+                shipping_unlocked: false,
                 soft_obstacles: None,
             });
 

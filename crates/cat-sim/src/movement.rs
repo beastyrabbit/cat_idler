@@ -130,6 +130,44 @@ pub fn soft_obstacle_speed_multiplier(is_soft_obstacle: bool) -> f64 {
     }
 }
 
+// --- P17 transport upgrades: rail (land) long-haul speed boost --------------
+
+/// Straight-line distance a haul route must clear before the `rail` upgrade's
+/// speed boost applies. Village-scale travel (hunts, quarrying, exploring) tops
+/// out around [`HUNT_RANGE_MAX`]; P17 distant biomes sit roughly an order of
+/// magnitude farther out, so the threshold sits well above any village-scale
+/// route (nothing a founding colony ever walks crosses it) and well below a
+/// realistic distant-biome haul.
+pub const RAIL_LONG_HAUL_DISTANCE_TILES: f64 = 40.0;
+
+/// Speed multiplier a rail-served long haul gets once `rail` is unlocked. Mirrors
+/// [`ROAD_BUILT_SPEED_MULT`]'s shape (a flat multiplier stacked with the tile's
+/// own surface/road factor) but far larger — a train covers in minutes what a
+/// walking cat takes hours to cross.
+pub const RAIL_SPEED_MULT: f64 = 3.0;
+
+/// Straight-line distance between two world positions, in tiles.
+#[must_use]
+pub fn straight_line_distance_tiles(a: WorldPos, b: WorldPos) -> f64 {
+    ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
+}
+
+/// Per-tick rail speed multiplier folded into the movement phase's effective
+/// speed, mirroring [`road_surface_multiplier`]'s shape: `1.0` (neutral) unless
+/// the colony owns `rail` *and* the remaining route is a long haul
+/// (`>= RAIL_LONG_HAUL_DISTANCE_TILES`). Deterministic — a pure function of
+/// ownership and distance, no RNG. Inert for any colony without the upgrade, and
+/// inert for every village-scale route even with it owned, so a founding colony
+/// (which never owns an era-3 node) is unaffected.
+#[must_use]
+pub fn rail_speed_multiplier(rail_unlocked: bool, remaining_distance_tiles: f64) -> f64 {
+    if rail_unlocked && remaining_distance_tiles >= RAIL_LONG_HAUL_DISTANCE_TILES {
+        RAIL_SPEED_MULT
+    } else {
+        1.0
+    }
+}
+
 /// Life-stage gait modifier: kittens and elders pad along a bit slower than
 /// young/adult cats. Adults (the colony's haulers) stay at `1.0`, so the
 /// survival-critical work loop keeps its full speed.
@@ -433,13 +471,15 @@ mod tests {
     use super::{
         BASE_MOVE_SPEED_TILES_PER_SEC, DIRT_ROAD_SPEED_MULT, EXPLORE_SPEED_FACTOR, GAIT_MAX,
         GAIT_MIN, HUNT_RANGE_MAX, HUNT_RANGE_MIN, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC,
-        MovementStep, PathWalk, ROAD_BUILT_SPEED_MULT, SCOUT_LEG_MAX, SCOUT_LEG_MIN,
-        SOFT_OBSTACLE_SPEED_MULT, SURFACE_FACTOR_FOREST, SURFACE_FACTOR_GRASSLAND,
-        SURFACE_FACTOR_HIGHLAND, SURFACE_FACTOR_LOWLAND, SURFACE_FACTOR_ROCKY, SURFACE_FACTOR_SAND,
-        WANDER_RADIUS, WORN_ROAD_WEAR, WorldPos, advance_movement, advance_movement_default,
-        cat_gait, destination_for_job, effective_move_speed, life_stage_gait, path_tiles,
-        pick_wander_target, road_surface_multiplier, scout_wander_target,
-        soft_obstacle_speed_multiplier, terrain_surface_factor, walk_path,
+        MovementStep, PathWalk, RAIL_LONG_HAUL_DISTANCE_TILES, RAIL_SPEED_MULT,
+        ROAD_BUILT_SPEED_MULT, SCOUT_LEG_MAX, SCOUT_LEG_MIN, SOFT_OBSTACLE_SPEED_MULT,
+        SURFACE_FACTOR_FOREST, SURFACE_FACTOR_GRASSLAND, SURFACE_FACTOR_HIGHLAND,
+        SURFACE_FACTOR_LOWLAND, SURFACE_FACTOR_ROCKY, SURFACE_FACTOR_SAND, WANDER_RADIUS,
+        WORN_ROAD_WEAR, WorldPos, advance_movement, advance_movement_default, cat_gait,
+        destination_for_job, effective_move_speed, life_stage_gait, path_tiles, pick_wander_target,
+        rail_speed_multiplier, road_surface_multiplier, scout_wander_target,
+        soft_obstacle_speed_multiplier, straight_line_distance_tiles, terrain_surface_factor,
+        walk_path,
     };
 
     fn dist(a: WorldPos, b: WorldPos) -> f64 {
@@ -1005,6 +1045,54 @@ mod tests {
     }
 
     // ---- P14.2: soft-obstacle (building/tree) movement speed ---------------
+
+    // ---- P17: rail (land) long-haul speed boost -----------------------------
+
+    #[test]
+    fn rail_speed_multiplier_is_neutral_without_the_upgrade_or_below_the_long_haul_threshold() {
+        // No rail: neutral at any distance, including a very long one.
+        assert_eq!(rail_speed_multiplier(false, 0.0), 1.0);
+        assert_eq!(
+            rail_speed_multiplier(false, RAIL_LONG_HAUL_DISTANCE_TILES),
+            1.0
+        );
+        assert_eq!(rail_speed_multiplier(false, 1_000.0), 1.0);
+        // Rail owned but the route is village-scale (below the threshold): still
+        // neutral — a founding colony's hunt/quarry/explore routes never trip it.
+        assert_eq!(
+            rail_speed_multiplier(true, RAIL_LONG_HAUL_DISTANCE_TILES - 0.01),
+            1.0
+        );
+        assert_eq!(rail_speed_multiplier(true, HUNT_RANGE_MAX), 1.0);
+    }
+
+    #[test]
+    fn rail_speed_multiplier_boosts_long_distance_hauls_once_rail_is_unlocked() {
+        assert_eq!(
+            rail_speed_multiplier(true, RAIL_LONG_HAUL_DISTANCE_TILES),
+            RAIL_SPEED_MULT
+        );
+        assert_eq!(rail_speed_multiplier(true, 1_000.0), RAIL_SPEED_MULT);
+    }
+
+    // A train outpaces a road — checked once at compile time rather than as a
+    // runtime assertion on two constants (clippy::assertions_on_constants).
+    const _: () = assert!(RAIL_SPEED_MULT > ROAD_BUILT_SPEED_MULT);
+
+    #[test]
+    fn rail_speed_multiplier_is_deterministic() {
+        let a = rail_speed_multiplier(true, RAIL_LONG_HAUL_DISTANCE_TILES + 5.0);
+        let b = rail_speed_multiplier(true, RAIL_LONG_HAUL_DISTANCE_TILES + 5.0);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn straight_line_distance_tiles_matches_pythagoras() {
+        let a = WorldPos { x: 0.0, y: 0.0 };
+        let b = WorldPos { x: 3.0, y: 4.0 };
+        assert_eq!(straight_line_distance_tiles(a, b), 5.0);
+        assert_eq!(straight_line_distance_tiles(a, a), 0.0);
+    }
 
     #[test]
     fn soft_obstacle_speed_multiplier_is_a_quarter_speed_matching_the_pathfinding_cost_tier() {
