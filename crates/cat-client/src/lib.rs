@@ -632,6 +632,8 @@ struct BuildingArt {
     wood_cutter: Handle<Image>,
     stone_prep: Handle<Image>,
     woodworking: Handle<Image>,
+    clothier: Handle<Image>,
+    tannery: Handle<Image>,
 }
 
 impl BuildingArt {
@@ -650,6 +652,8 @@ impl BuildingArt {
             wood_cutter: assets.load("public/images/game/buildings/wood_cutter.png"),
             stone_prep: assets.load("public/images/game/buildings/stone_prep.png"),
             woodworking: assets.load("public/images/game/buildings/woodworking.png"),
+            clothier: assets.load("public/images/game/buildings/clothier.png"),
+            tannery: assets.load("public/images/game/buildings/tannery.png"),
         }
     }
 
@@ -668,12 +672,14 @@ impl BuildingArt {
             BuildingTexture::WoodCutter => self.wood_cutter.clone(),
             BuildingTexture::StonePrep => self.stone_prep.clone(),
             BuildingTexture::Woodworking => self.woodworking.clone(),
+            BuildingTexture::Clothier => self.clothier.clone(),
+            BuildingTexture::Tannery => self.tannery.clone(),
         }
     }
 }
 
-/// The building sprite a [`BuildingType`] renders as. Sprites `mill`, `clothier`,
-/// `monument`, `tent`, `town_hall` are reserved for future P12.4 building types.
+/// The building sprite a [`BuildingType`] renders as. Sprites `mill`, `monument`,
+/// `tent`, `town_hall` are reserved for future building types.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BuildingTexture {
     Shrine,
@@ -689,6 +695,8 @@ enum BuildingTexture {
     WoodCutter,
     StonePrep,
     Woodworking,
+    Clothier,
+    Tannery,
 }
 
 /// Pixel-art prop sprites used for stockpile piles, loaded once at startup.
@@ -5878,6 +5886,9 @@ fn building_texture(building: BuildingType) -> Option<BuildingTexture> {
         BuildingType::WoodCutter => BuildingTexture::WoodCutter,
         BuildingType::StonePrep => BuildingTexture::StonePrep,
         BuildingType::Woodworking => BuildingTexture::Woodworking,
+        // P18 clothing chain craft stations.
+        BuildingType::Clothier => BuildingTexture::Clothier,
+        BuildingType::Tannery => BuildingTexture::Tannery,
         BuildingType::Walls => return None,
     })
 }
@@ -5914,6 +5925,8 @@ fn building_label(building: BuildingType) -> &'static str {
         BuildingType::WoodCutter => "woodcutter",
         BuildingType::StonePrep => "stoneprep",
         BuildingType::Woodworking => "woodworking",
+        BuildingType::Clothier => "clothier",
+        BuildingType::Tannery => "tannery",
     }
 }
 
@@ -6588,6 +6601,15 @@ mod tests {
             building_texture(BuildingType::Woodworking),
             Some(BuildingTexture::Woodworking)
         );
+        // P18 clothing-chain craft stations get their own sprites.
+        assert_eq!(
+            building_texture(BuildingType::Clothier),
+            Some(BuildingTexture::Clothier)
+        );
+        assert_eq!(
+            building_texture(BuildingType::Tannery),
+            Some(BuildingTexture::Tannery)
+        );
         // Walls render as infra, not a point marker.
         assert_eq!(building_texture(BuildingType::Walls), None);
 
@@ -7186,6 +7208,8 @@ mod tests {
             BuildingType::Field,
             BuildingType::Smithy,
             BuildingType::Barracks,
+            BuildingType::Clothier,
+            BuildingType::Tannery,
         ] {
             assert!(!building_label(building).is_empty());
         }
