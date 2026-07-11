@@ -23,8 +23,8 @@ use bevy::sprite::{Anchor, BorderRect, SliceScaleMode, TextureSlicer};
 use bevy::ui::RelativeCursorPosition;
 use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot, ClientAction,
-    ColonySnapshot, FootprintSize, GateSide, JobKind, OfficerRole, RaiderStatus, ResourceAmounts,
-    ResourceCapacities, ResourceKind, RoleXp, Specialization, StockLedgerSnapshot,
+    ColonySnapshot, FootprintSize, GateSide, ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus,
+    ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp, Specialization, StockLedgerSnapshot,
     StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
@@ -332,6 +332,15 @@ struct Minimap {
 
 /// Number of announcement lines the panel shows (newest first).
 const ANNOUNCEMENT_LINES: usize = 11;
+
+/// Whether the goods / inventory panel is open (toggled by `G`).
+#[derive(Resource, Default)]
+struct GoodsUi {
+    visible: bool,
+}
+
+/// Number of item-stack lines the goods panel shows (most valuable first).
+const GOODS_LINES: usize = 12;
 
 /// The five appointable officer roles, in display order.
 const ALL_OFFICER_ROLES: [OfficerRole; 5] = [
@@ -950,6 +959,18 @@ struct AnnouncementsButton;
 /// The compact "latest announcement" ticker line on the HUD.
 #[derive(Component)]
 struct AnnouncementTicker;
+/// Marker for the goods / inventory panel node (toggled open/closed).
+#[derive(Component)]
+struct GoodsPanel;
+/// One goods line slot (index 0 = most valuable stack at top).
+#[derive(Component, Clone, Copy)]
+struct GoodsLine(usize);
+/// The treasury-total line at the top of the goods panel.
+#[derive(Component)]
+struct GoodsTreasury;
+/// The HUD button that toggles the goods panel.
+#[derive(Component)]
+struct GoodsButton;
 /// Marker for the corner minimap panel node (toggled open/closed).
 #[derive(Component)]
 struct MinimapPanel;
@@ -1052,6 +1073,47 @@ fn announcement_line(now_ms: i64, message: &str, ts_ms: i64) -> String {
         event_glyph(classify_event(message)),
         message
     )
+}
+
+// ---- Goods / inventory panel (pure formatting — unit-tested) ----
+
+/// Item quality band name for a quality level (0..=4, clamped).
+fn quality_band(quality: u8) -> &'static str {
+    match quality {
+        0 => "Crude",
+        1 => "Common",
+        2 => "Fine",
+        3 => "Superior",
+        _ => "Masterwork",
+    }
+}
+
+/// Capitalize the first letter of a lowercase wire word (`wood` -> `Wood`).
+fn capitalize_word(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+/// One goods line: `Fine Wood Mug x3 - 12g ea (36g)`, quality + material + kind,
+/// per-unit value and the stack subtotal.
+fn item_label(stack: &ItemStackSnapshot) -> String {
+    format!(
+        "{band} {material} {kind} x{count} - {value}g ea ({subtotal}g)",
+        band = quality_band(stack.quality),
+        material = capitalize_word(&stack.material),
+        kind = capitalize_word(&stack.kind),
+        count = stack.count,
+        value = stack.value,
+        subtotal = stack.count * stack.value,
+    )
+}
+
+/// Colony treasury: total tradeable worth = sum of `count * value` over stacks.
+fn treasury_total(items: &[ItemStackSnapshot]) -> u32 {
+    items.iter().map(|s| s.count * s.value).sum()
 }
 
 /// A manual-action button and the action it enqueues when clicked.
@@ -1172,6 +1234,7 @@ pub fn run() {
         .insert_resource(BuildingSelection::default())
         .insert_resource(OfficersUi::default())
         .insert_resource(AnnouncementsUi::default())
+        .insert_resource(GoodsUi::default())
         .insert_resource(MinimapUi::default())
         .insert_resource(CatBodies::default())
         .insert_resource(RaiderBodies::default())
@@ -1223,10 +1286,12 @@ pub fn run() {
                     handle_vacate_buttons,
                     flush_outgoing,
                 ),
-                // announcements / event log + minimap
+                // announcements / event log + goods + minimap
                 (
                     toggle_announcements,
                     update_announcements,
+                    toggle_goods,
+                    update_goods,
                     toggle_minimap,
                     update_minimap,
                     update_minimap_viewport,
@@ -1648,6 +1713,94 @@ fn setup(
                     },
                     TextColor(PARCHMENT_INK),
                     AnnouncementLine(i),
+                ));
+            }
+        });
+
+    // Goods toggle button (beside the Log button).
+    commands.spawn((
+        Button,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(8.0),
+            left: Val::Px(200.0),
+            min_width: Val::Px(52.0),
+            height: Val::Px(28.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        GlobalZIndex(60),
+        sliced_image(ui.button.clone(), BUTTON_BORDER),
+        GoodsButton,
+        children![(
+            Text::new("Goods [G]"),
+            TextFont {
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextColor(PARCHMENT_INK),
+        )],
+    ));
+
+    // Goods / inventory panel (centre, shares the slot with announcements — the
+    // two are mutually exclusive), hidden until toggled.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(430.0),
+                top: Val::Px(60.0),
+                width: Val::Px(500.0),
+                padding: UiRect::axes(Val::Px(26.0), Val::Px(40.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(82),
+            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            GoodsPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(46.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    margin: UiRect::bottom(Val::Px(4.0)),
+                    ..default()
+                },
+                ImageNode::new(ui.banner.clone()),
+                children![(
+                    Text::new("Goods"),
+                    TextFont {
+                        font_size: FontSize::Px(15.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
+                )],
+            ));
+            // Treasury total.
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(13.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.86, 0.66, 0.28)),
+                GoodsTreasury,
+            ));
+            for i in 0..GOODS_LINES {
+                panel.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
+                    TextColor(PARCHMENT_INK),
+                    GoodsLine(i),
                 ));
             }
         });
@@ -3247,12 +3400,14 @@ fn close_inspectors_on_esc(
     mut building: ResMut<BuildingSelection>,
     mut stockpile: ResMut<StockpileSelection>,
     mut announcements: ResMut<AnnouncementsUi>,
+    mut goods: ResMut<GoodsUi>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
         cat.selected = None;
         building.selected = None;
         stockpile.selected = None;
         announcements.visible = false;
+        goods.visible = false;
     }
 }
 
@@ -3745,15 +3900,79 @@ fn ledger_hud_text(ledger: &StockLedgerSnapshot) -> String {
     }
 }
 
-/// Toggle the announcements panel via the `L` key or the Log HUD button.
+/// Toggle the announcements panel via the `L` key or the Log HUD button (closes
+/// the goods panel, which shares the centre slot).
 fn toggle_announcements(
     keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<AnnouncementsButton>)>,
     mut ui: ResMut<AnnouncementsUi>,
+    mut goods: ResMut<GoodsUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
     if keys.just_pressed(KeyCode::KeyL) || clicked {
         ui.visible = !ui.visible;
+        if ui.visible {
+            goods.visible = false;
+        }
+    }
+}
+
+/// Toggle the goods panel via the `G` key or the Goods HUD button (closes the
+/// announcements panel, which shares the centre slot).
+fn toggle_goods(
+    keys: Res<ButtonInput<KeyCode>>,
+    button: Query<&Interaction, (Changed<Interaction>, With<GoodsButton>)>,
+    mut ui: ResMut<GoodsUi>,
+    mut announce: ResMut<AnnouncementsUi>,
+) {
+    let clicked = button.iter().any(|i| *i == Interaction::Pressed);
+    if keys.just_pressed(KeyCode::KeyG) || clicked {
+        ui.visible = !ui.visible;
+        if ui.visible {
+            announce.visible = false;
+        }
+    }
+}
+
+/// Show/hide the goods panel and repaint its treasury total + item lines (most
+/// valuable stack first), with a tidy empty state when there are no goods yet.
+#[allow(clippy::type_complexity)]
+fn update_goods(
+    latest: Res<LatestSnapshot>,
+    ui: Res<GoodsUi>,
+    mut panel: Query<&mut Node, With<GoodsPanel>>,
+    mut treasury: Query<&mut Text, (With<GoodsTreasury>, Without<GoodsLine>)>,
+    mut lines: Query<(&GoodsLine, &mut Text), Without<GoodsTreasury>>,
+) {
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if ui.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if !ui.visible || (!latest.is_changed() && !ui.is_changed()) {
+        return;
+    }
+    let mut items = latest
+        .0
+        .as_ref()
+        .and_then(|w| w.colonies.first())
+        .map(|c| c.items.clone())
+        .unwrap_or_default();
+    // Most valuable stack first.
+    items.sort_by_key(|s| std::cmp::Reverse(s.count * s.value));
+
+    if let Ok(mut text) = treasury.single_mut() {
+        text.0 = format!("Treasury: {}g", treasury_total(&items));
+    }
+    for (line, mut text) in &mut lines {
+        text.0 = match (line.0, items.get(line.0)) {
+            (_, Some(stack)) => item_label(stack),
+            // The empty-state line sits in the first slot when there are none.
+            (0, None) if items.is_empty() => "No crafted goods yet".to_string(),
+            _ => String::new(),
+        };
     }
 }
 
@@ -5277,6 +5496,41 @@ mod tests {
         );
         assert_eq!(event_glyph(EventKind::Birth), '+');
         assert_eq!(event_glyph(EventKind::Death), 'x');
+    }
+
+    #[test]
+    fn goods_formatting_bands_labels_and_treasury() {
+        assert_eq!(quality_band(0), "Crude");
+        assert_eq!(quality_band(2), "Fine");
+        assert_eq!(quality_band(4), "Masterwork");
+        // Out-of-range quality clamps to the top band rather than panicking.
+        assert_eq!(quality_band(9), "Masterwork");
+        assert_eq!(capitalize_word("wood"), "Wood");
+        assert_eq!(capitalize_word(""), "");
+
+        let mug = ItemStackSnapshot {
+            kind: "mug".to_string(),
+            material: "wood".to_string(),
+            quality: 2,
+            count: 3,
+            value: 12,
+        };
+        let label = item_label(&mug);
+        assert!(label.contains("Fine Wood Mug"));
+        assert!(label.contains("x3"));
+        assert!(label.contains("12g"));
+        assert!(label.contains("(36g)")); // count * value subtotal
+
+        let bowl = ItemStackSnapshot {
+            kind: "bowl".to_string(),
+            material: "stone".to_string(),
+            quality: 1,
+            count: 2,
+            value: 5,
+        };
+        // Treasury sums count*value across stacks: 3*12 + 2*5 = 46.
+        assert_eq!(treasury_total(&[mug, bowl]), 46);
+        assert_eq!(treasury_total(&[]), 0);
     }
 
     #[test]
