@@ -15,7 +15,7 @@
 //! - a HUD dashboard + event log, and clickable manual-action buttons that
 //!   round-trip [`cat_protocol::ClientAction`] over the socket.
 
-use bevy::asset::RenderAssetUsages;
+use bevy::asset::{AssetMetaCheck, RenderAssetUsages};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -1657,6 +1657,10 @@ pub fn run() {
             DefaultPlugins
                 .set(AssetPlugin {
                     file_path: ".".to_string(),
+                    // The game ships no `.meta` sidecars, so never probe for
+                    // them: on the web that otherwise floods the console with a
+                    // 404 per asset; on native it saves a redundant stat.
+                    meta_check: AssetMetaCheck::Never,
                     ..default()
                 })
                 // Nearest-neighbour sampling keeps the 16px pixel-art crisp when
