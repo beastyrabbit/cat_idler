@@ -684,6 +684,8 @@ pub enum BuildingType {
     WoodCutter,
     StonePrep,
     Woodworking,
+    Clothier,
+    Tannery,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

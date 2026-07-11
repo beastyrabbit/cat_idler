@@ -2126,6 +2126,8 @@ fn proto_to_sim_building_type(building_type: proto::BuildingType) -> Option<Buil
         proto::BuildingType::WoodCutter => Some(BuildingType::WoodCutter),
         proto::BuildingType::StonePrep => Some(BuildingType::StonePrep),
         proto::BuildingType::Woodworking => Some(BuildingType::Woodworking),
+        proto::BuildingType::Clothier => Some(BuildingType::Clothier),
+        proto::BuildingType::Tannery => Some(BuildingType::Tannery),
     }
 }
 
@@ -2151,10 +2153,8 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         // No protocol/client sprite yet — the Accounting Tent's effect surfaces via the
         // stock ledger, not a rendered building. Omitted from the buildings snapshot.
         BuildingType::AccountingTent => None,
-        // No protocol/client sprite yet either (P16/P19 clothing chain slice) — same
-        // precedent as `AccountingTent` above. Omitted from the buildings snapshot
-        // until the client gets a clothier/tannery sprite.
-        BuildingType::Clothier | BuildingType::Tannery => None,
+        BuildingType::Clothier => Some(proto::BuildingType::Clothier),
+        BuildingType::Tannery => Some(proto::BuildingType::Tannery),
     }
 }
 
