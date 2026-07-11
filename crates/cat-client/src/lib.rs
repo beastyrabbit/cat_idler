@@ -867,12 +867,11 @@ const PARCHMENT_INK: Color = Color::srgb(0.24, 0.15, 0.07);
 const PANEL_BORDER: f32 = 22.0;
 const BUTTON_BORDER: f32 = 12.0;
 
-// Wood-button tint states (multiply the sprite): idle / hover / pressed /
-// active-toggle. Kenney ships one button sprite; states are tints.
+// Wood-button tint states (multiply the sprite): idle / hover / pressed. Used by
+// the legacy sprite buttons on panels not yet migrated to the kit.
 const BTN_IDLE: Color = Color::srgb(1.0, 1.0, 1.0);
 const BTN_HOVER: Color = Color::srgb(0.86, 0.86, 0.82);
 const BTN_PRESS: Color = Color::srgb(0.70, 0.66, 0.58);
-const BTN_ACTIVE: Color = Color::srgb(1.0, 0.82, 0.45);
 
 /// A 9-patch panel/button background from a wood-frame sprite: the border stays
 /// crisp while the parchment centre stretches to fill the node.
@@ -886,6 +885,205 @@ fn sliced_image(image: Handle<Image>, border: f32) -> ImageNode {
             max_corner_scale: 1.0,
         }),
         ..default()
+    }
+}
+
+// ============================================================================
+// UI kit — one cohesive visual language for every panel, button and label.
+//
+// The UI grew panel-by-panel with ad-hoc sizes, spacing and frames, so it read
+// like a debug overlay. This kit replaces that with a small, disciplined system
+// (a warm "cozy ledger" palette, a fixed type scale, a 4px spacing grid, and
+// reusable panel/button/text builders) so every surface composes from the SAME
+// primitives. Panels are Bevy-native solid frames (background + wood border +
+// rounded corners + a real title bar) instead of stretched 9-patch sprites, so
+// cohesion never depends on art quality and text never touches the frame.
+// ============================================================================
+
+// -- Palette: small, disciplined, warm + high-contrast ----------------------
+/// Panel body — dark warm brown, near-opaque so text stays legible over the map.
+const UI_BG: Color = Color::srgba(0.13, 0.10, 0.07, 0.95);
+/// Title-bar strip at the top of every panel.
+const UI_HEADER: Color = Color::srgba(0.22, 0.16, 0.10, 1.0);
+/// Wood edge around panels and buttons.
+const UI_BORDER: Color = Color::srgb(0.50, 0.37, 0.23);
+/// Faint divider inside a panel body.
+const UI_DIVIDER: Color = Color::srgba(0.44, 0.32, 0.20, 0.45);
+/// Primary text — warm cream.
+const UI_INK: Color = Color::srgb(0.94, 0.90, 0.82);
+/// Secondary / de-emphasised text.
+const UI_MUTED: Color = Color::srgb(0.70, 0.62, 0.52);
+/// Gold — titles, values worth the eye, the active accent.
+const UI_ACCENT: Color = Color::srgb(0.95, 0.77, 0.41);
+/// Good news (births, gains).
+const UI_POSITIVE: Color = Color::srgb(0.56, 0.81, 0.49);
+/// Trouble (deaths, crises, raids).
+const UI_WARNING: Color = Color::srgb(0.93, 0.51, 0.35);
+
+// Button backgrounds by state (solid fills, not sprite tints).
+const UI_BTN: Color = Color::srgba(0.23, 0.17, 0.11, 1.0);
+const UI_BTN_HOVER: Color = Color::srgba(0.32, 0.24, 0.15, 1.0);
+const UI_BTN_PRESS: Color = Color::srgba(0.15, 0.11, 0.07, 1.0);
+const UI_BTN_ACTIVE: Color = Color::srgba(0.52, 0.38, 0.17, 1.0);
+
+// -- Type scale (integer px keeps the pixel font crisp) ---------------------
+const FS_TITLE: f32 = 16.0;
+const FS_SECTION: f32 = 13.0;
+const FS_BODY: f32 = 12.0;
+const FS_SMALL: f32 = 11.0;
+
+// -- Spacing grid (4px base) ------------------------------------------------
+const UI_PAD: f32 = 12.0;
+const UI_GAP: f32 = 6.0;
+const UI_GAP_TIGHT: f32 = 3.0;
+const UI_RADIUS: f32 = 6.0;
+const UI_BORDER_W: f32 = 2.0;
+const UI_BTN_H: f32 = 30.0;
+
+/// A text bundle at a kit size + colour (one font everywhere, via the default).
+fn ui_text(s: impl Into<String>, size: f32, color: Color) -> impl Bundle {
+    (
+        Text::new(s),
+        TextFont {
+            font_size: FontSize::Px(size),
+            ..default()
+        },
+        TextColor(color),
+    )
+}
+
+/// The base Node of a panel: an absolutely-placed, bordered, clipped column of a
+/// fixed width. Callers set `left`/`top` (etc.) via struct-update syntax, e.g.
+/// `Node { left: Val::Px(10.0), top: Val::Px(52.0), ..ui_panel_node(w) }`, and
+/// pair it with [`ui_panel_frame`]. The title bar spans edge-to-edge as the
+/// first child; the body ([`ui_panel_body`]) carries the padding so text never
+/// rides the frame.
+fn ui_panel_node(width: Val) -> Node {
+    Node {
+        position_type: PositionType::Absolute,
+        width,
+        border: UiRect::all(Val::Px(UI_BORDER_W)),
+        border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
+        flex_direction: FlexDirection::Column,
+        overflow: Overflow::clip(),
+        ..default()
+    }
+}
+
+/// The visual layer of a panel: solid warm body + wood border. Pair with
+/// [`ui_panel_node`] (which carries the rounded corners on its `Node`).
+fn ui_panel_frame() -> impl Bundle {
+    (BackgroundColor(UI_BG), BorderColor::all(UI_BORDER))
+}
+
+/// A panel title bar (first child of [`ui_panel`]): a full-width header strip
+/// with the title in gold. Rounded only on the top corners to sit flush in the
+/// frame.
+fn ui_title_bar(title: &str) -> impl Bundle {
+    (
+        Node {
+            width: Val::Percent(100.0),
+            padding: UiRect::axes(Val::Px(UI_PAD), Val::Px(7.0)),
+            align_items: AlignItems::Center,
+            border_radius: BorderRadius::new(
+                Val::Px(UI_RADIUS - UI_BORDER_W),
+                Val::Px(UI_RADIUS - UI_BORDER_W),
+                Val::Px(0.0),
+                Val::Px(0.0),
+            ),
+            ..default()
+        },
+        BackgroundColor(UI_HEADER),
+        children![ui_text(title, FS_TITLE, UI_ACCENT)],
+    )
+}
+
+/// The padded content column of a panel (second child of [`ui_panel`]): callers
+/// add rows/labels here. Consistent inner padding + row gap.
+fn ui_panel_body() -> Node {
+    Node {
+        width: Val::Percent(100.0),
+        padding: UiRect::all(Val::Px(UI_PAD)),
+        flex_direction: FlexDirection::Column,
+        row_gap: Val::Px(UI_GAP),
+        ..default()
+    }
+}
+
+/// A kit button: solid fill + wood border + rounded corners, consistent height
+/// and horizontal padding. Hover/press/active fills are driven by
+/// [`update_kit_buttons`]; callers add a marker + a text child. Tag with
+/// [`KitToggle`] for buttons that show a persistent active state.
+fn ui_button() -> impl Bundle {
+    (
+        Button,
+        Node {
+            height: Val::Px(UI_BTN_H),
+            padding: UiRect::axes(Val::Px(UI_PAD), Val::Px(0.0)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 2.0)),
+            ..default()
+        },
+        BackgroundColor(UI_BTN),
+        BorderColor::all(UI_BORDER),
+        KitButton,
+    )
+}
+
+/// Marks a button styled by the kit so [`update_kit_buttons`] owns its fill.
+#[derive(Component)]
+struct KitButton;
+
+/// A kit button that stays lit while `active` (tabs, tool modes). The owning
+/// system sets this each frame; [`update_kit_buttons`] paints the active fill.
+#[derive(Component, Default)]
+struct KitToggle {
+    active: bool,
+}
+
+/// Which centre panel a top-bar tab opens — lets one system light the active tab.
+#[derive(Component, Clone, Copy)]
+enum TabKind {
+    Log,
+    Goods,
+    Census,
+    Tree,
+}
+
+/// Light the top-bar tab whose panel is currently open.
+fn sync_tab_toggles(
+    ann: Res<AnnouncementsUi>,
+    goods: Res<GoodsUi>,
+    census: Res<CensusUi>,
+    tree: Res<UpgradeTreeUi>,
+    mut tabs: Query<(&TabKind, &mut KitToggle)>,
+) {
+    for (kind, mut toggle) in &mut tabs {
+        toggle.active = match kind {
+            TabKind::Log => ann.visible,
+            TabKind::Goods => goods.visible,
+            TabKind::Census => census.visible,
+            TabKind::Tree => tree.visible,
+        };
+    }
+}
+
+/// Paint every [`KitButton`] from its interaction + optional toggle state. One
+/// system for all kit buttons so hover/press/active look identical everywhere.
+fn update_kit_buttons(
+    mut buttons: Query<(&Interaction, &mut BackgroundColor, Option<&KitToggle>), With<KitButton>>,
+) {
+    for (interaction, mut bg, toggle) in &mut buttons {
+        let active = toggle.is_some_and(|t| t.active);
+        bg.0 = match (interaction, active) {
+            (Interaction::Pressed, _) => UI_BTN_PRESS,
+            (Interaction::Hovered, false) => UI_BTN_HOVER,
+            (Interaction::Hovered, true) => UI_BTN_ACTIVE,
+            (Interaction::None, true) => UI_BTN_ACTIVE,
+            (Interaction::None, false) => UI_BTN,
+        };
     }
 }
 
@@ -1373,11 +1571,13 @@ fn census_report_lines(c: &Census) -> Vec<String> {
 /// amber, election/progress blue, neutral grey).
 fn event_color(kind: EventKind) -> Color {
     match kind {
-        EventKind::Birth => Color::srgb(0.45, 0.72, 0.36),
-        EventKind::Death | EventKind::Raid => Color::srgb(0.82, 0.34, 0.30),
-        EventKind::Crisis => Color::srgb(0.86, 0.66, 0.28),
-        EventKind::Election | EventKind::Progress => Color::srgb(0.42, 0.60, 0.85),
-        EventKind::Neutral => Color::srgb(0.42, 0.36, 0.28),
+        EventKind::Birth => UI_POSITIVE,
+        EventKind::Death | EventKind::Raid => UI_WARNING,
+        EventKind::Crisis => UI_ACCENT,
+        // Elections + progress read as calm "info"; a soft blue reads clearly on
+        // the dark panel and is the one hue outside the warm kit palette.
+        EventKind::Election | EventKind::Progress => Color::srgb(0.52, 0.70, 0.92),
+        EventKind::Neutral => UI_MUTED,
     }
 }
 
@@ -1613,21 +1813,13 @@ type HudResourceQuery<'w, 's> = Query<
     (Without<HudHeaderText>, Without<HudFooterText>),
 >;
 /// Change filter for the accept-type picker button.
-type AcceptButtonQuery<'w, 's> = Query<
-    'w,
-    's,
-    (&'static Interaction, &'static mut ImageNode),
-    (Changed<Interaction>, With<AcceptButton>),
->;
-/// Change filter for toolbar button interactions.
+type AcceptButtonQuery<'w, 's> =
+    Query<'w, 's, &'static Interaction, (Changed<Interaction>, With<AcceptButton>)>;
+/// Change filter for toolbar button interactions (visuals are the kit's job).
 type ButtonQuery<'w, 's> = Query<
     'w,
     's,
-    (
-        &'static Interaction,
-        &'static ActionButton,
-        &'static mut ImageNode,
-    ),
+    (&'static Interaction, &'static ActionButton),
     (Changed<Interaction>, With<Button>),
 >;
 
@@ -1728,8 +1920,12 @@ pub fn run() {
                     update_remove_panel,
                     handle_remove_button,
                     update_inspector,
-                    handle_tool_buttons,
-                    handle_accept_button,
+                    (
+                        handle_tool_buttons,
+                        handle_accept_button,
+                        update_kit_buttons,
+                        sync_tab_toggles,
+                    ),
                     zone_paint,
                     render_zone_preview,
                     update_hud,
@@ -1985,70 +2181,41 @@ fn setup(
     let center = grid_to_world(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y);
     commands.spawn((Camera2d, Transform::from_xyz(center.x, center.y, CAMERA_Z)));
 
-    // HUD dashboard (top-left) on a wood/parchment panel with a hanging banner.
+    // HUD dashboard (top-left): a kit panel with a "Colony" title bar, a status
+    // header, a two-column resource grid and a jobs/ledger footer.
     commands
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(8.0),
-                top: Val::Px(8.0),
-                width: Val::Px(330.0),
-                padding: UiRect::all(Val::Px(26.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(4.0),
-                ..default()
+                left: Val::Px(10.0),
+                top: Val::Px(52.0),
+                ..ui_panel_node(Val::Px(322.0))
             },
-            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            ui_panel_frame(),
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(46.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-                ImageNode::new(ui.banner.clone()),
-                children![(
-                    Text::new("Idle Cat Forest"),
-                    TextFont {
-                        font_size: FontSize::Px(16.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
-                )],
-            ));
-            // Colony header (name / leader / pop / threat).
-            panel.spawn((
-                Text::new("connecting…"),
-                TextFont {
-                    font_size: FontSize::Px(13.0),
-                    ..default()
-                },
-                TextColor(PARCHMENT_INK),
-                HudHeaderText,
-            ));
-            // Resource readout: a tinted glyph + value per resource, in TWO
-            // columns (a wrapping row of fixed-width cells) so the 11 resources
-            // fit ~6 rows instead of 11 — keeps the dashboard short enough to
-            // clear the event log on short windows.
-            panel
-                .spawn(Node {
+            panel.spawn(ui_title_bar("Colony"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                // Status header (name / leader / pop / threat).
+                body.spawn((ui_text("connecting…", FS_SECTION, UI_INK), HudHeaderText));
+                // Resource readout: a tinted glyph + value per resource in
+                // TWO columns (a wrapping row of fixed-width cells) so the 11
+                // resources fit ~6 rows and the panel stays compact.
+                body.spawn(Node {
                     width: Val::Percent(100.0),
                     flex_direction: FlexDirection::Row,
                     flex_wrap: FlexWrap::Wrap,
-                    row_gap: Val::Px(3.0),
-                    column_gap: Val::Px(6.0),
+                    row_gap: Val::Px(UI_GAP_TIGHT),
+                    column_gap: Val::Px(UI_GAP),
+                    margin: UiRect::vertical(Val::Px(UI_GAP_TIGHT)),
                     ..default()
                 })
                 .with_children(|grid| {
                     for kind in HUD_RESOURCES {
                         grid.spawn((
                             Node {
-                                width: Val::Px(126.0),
+                                width: Val::Px(138.0),
                                 align_items: AlignItems::Center,
-                                column_gap: Val::Px(6.0),
+                                column_gap: Val::Px(UI_GAP),
                                 ..default()
                             },
                             children![
@@ -2064,52 +2231,41 @@ fn setup(
                                         ..default()
                                     },
                                 ),
-                                (
-                                    Text::new("-"),
-                                    TextFont {
-                                        font_size: FontSize::Px(13.0),
-                                        ..default()
-                                    },
-                                    TextColor(PARCHMENT_INK),
-                                    HudResource(kind),
-                                ),
+                                (ui_text("-", FS_BODY, UI_INK), HudResource(kind)),
                             ],
                         ));
                     }
                 });
-            // Jobs + ledger footer.
-            panel.spawn((
-                Text::new(""),
-                TextFont {
-                    font_size: FontSize::Px(13.0),
-                    ..default()
-                },
-                TextColor(PARCHMENT_INK),
-                HudFooterText,
-            ));
+                // Jobs + ledger footer, set off by a faint divider.
+                body.spawn((
+                    Node {
+                        width: Val::Percent(100.0),
+                        height: Val::Px(1.0),
+                        border: UiRect::top(Val::Px(1.0)),
+                        ..default()
+                    },
+                    BorderColor::all(UI_DIVIDER),
+                ));
+                body.spawn((ui_text("", FS_BODY, UI_MUTED), HudFooterText));
+            });
         });
 
-    // Event log (bottom-left) on a parchment panel.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(8.0),
-            bottom: Val::Px(70.0),
-            width: Val::Px(430.0),
-            padding: UiRect::all(Val::Px(26.0)),
-            ..default()
-        },
-        sliced_image(ui.panel.clone(), PANEL_BORDER),
-        children![(
-            Text::new("events…"),
-            TextFont {
-                font_size: FontSize::Px(12.0),
-                ..default()
+    // Event log (bottom-left): a kit panel with a scrolling text body.
+    commands
+        .spawn((
+            Node {
+                left: Val::Px(10.0),
+                bottom: Val::Px(66.0),
+                ..ui_panel_node(Val::Px(430.0))
             },
-            TextColor(PARCHMENT_INK),
-            EventLogText,
-        )],
-    ));
+            ui_panel_frame(),
+        ))
+        .with_children(|panel| {
+            panel.spawn(ui_title_bar("Dispatches"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                body.spawn((ui_text("events…", FS_BODY, UI_MUTED), EventLogText));
+            });
+        });
 
     // Corner minimap (bottom-right, clear of the inspectors + toolbars), 9-patch
     // framed, showing the dynamic minimap texture. Toggled with 'M'.
@@ -2149,233 +2305,124 @@ fn setup(
         )],
     ));
 
-    // "Latest announcement" ticker, to the right of the Goods/Log/Census/Tree
-    // toggle buttons (which end at ~552) so it never overlaps them.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(14.0),
-            left: Val::Px(568.0),
-            max_width: Val::Px(360.0),
-            ..default()
-        },
-        GlobalZIndex(60),
-        Text::new(""),
-        TextFont {
-            font_size: FontSize::Px(13.0),
-            ..default()
-        },
-        TextColor(PARCHMENT_INK),
-        AnnouncementTicker,
-    ));
-    commands.spawn((
-        Button,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(8.0),
-            left: Val::Px(300.0),
-            min_width: Val::Px(52.0),
-            height: Val::Px(28.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        GlobalZIndex(60),
-        sliced_image(ui.button.clone(), BUTTON_BORDER),
-        AnnouncementsButton,
-        children![(
-            Text::new("Log [L]"),
-            TextFont {
-                font_size: FontSize::Px(12.0),
-                ..default()
-            },
-            TextColor(PARCHMENT_INK),
-        )],
-    ));
-
-    // Announcements / event-log panel (centre), hidden until toggled.
+    // Top command bar: game title + panel tabs (Log/Goods/Census/Tree) + the
+    // latest-dispatch ticker, all in ONE framed strip so the controls read as a
+    // designed toolbar instead of buttons scattered at fixed pixel offsets. The
+    // active tab stays lit via `sync_tab_toggles`.
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(430.0),
-                top: Val::Px(60.0),
-                // Capped so the panel clears the right-side cat inspector at the
-                // 1280-wide default (inspector left edge ≈ 972).
-                width: Val::Px(500.0),
-                // Extra bottom padding so the last line clears the wood frame.
-                padding: UiRect::axes(Val::Px(26.0), Val::Px(40.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(3.0),
-                display: Display::None,
+                top: Val::Px(8.0),
+                left: Val::Px(10.0),
+                right: Val::Px(10.0),
+                height: Val::Px(42.0),
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(UI_GAP),
+                padding: UiRect::horizontal(Val::Px(UI_PAD)),
+                border: UiRect::all(Val::Px(UI_BORDER_W)),
+                border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
                 ..default()
             },
+            GlobalZIndex(60),
+            BackgroundColor(UI_BG),
+            BorderColor::all(UI_BORDER),
+        ))
+        .with_children(|bar| {
+            bar.spawn((
+                Node {
+                    margin: UiRect::right(Val::Px(UI_PAD)),
+                    ..default()
+                },
+                ui_text("Idle Cat Forest", FS_TITLE, UI_ACCENT),
+            ));
+            bar.spawn((
+                ui_button(),
+                AnnouncementsButton,
+                TabKind::Log,
+                KitToggle::default(),
+                children![ui_text("Log [L]", FS_BODY, UI_INK)],
+            ));
+            bar.spawn((
+                ui_button(),
+                GoodsButton,
+                TabKind::Goods,
+                KitToggle::default(),
+                children![ui_text("Goods [G]", FS_BODY, UI_INK)],
+            ));
+            bar.spawn((
+                ui_button(),
+                CensusButton,
+                TabKind::Census,
+                KitToggle::default(),
+                children![ui_text("Census [C]", FS_BODY, UI_INK)],
+            ));
+            bar.spawn((
+                ui_button(),
+                TreeButton,
+                TabKind::Tree,
+                KitToggle::default(),
+                children![ui_text("Tree [U]", FS_BODY, UI_INK)],
+            ));
+            // Ticker: pushed to the right edge, clipped so it never overflows.
+            bar.spawn((
+                Node {
+                    margin: UiRect::left(Val::Auto),
+                    max_width: Val::Px(400.0),
+                    overflow: Overflow::clip(),
+                    ..default()
+                },
+                ui_text("", FS_SMALL, UI_MUTED),
+                AnnouncementTicker,
+            ));
+        });
+
+    // Announcements panel (centre), hidden until toggled. Lines are colour-coded
+    // per event kind by `update_announcements`. Its Display is driven each frame
+    // from `AnnouncementsUi.visible`, so it starts hidden without a spawn flag.
+    commands
+        .spawn((
+            Node {
+                left: Val::Px(456.0),
+                top: Val::Px(60.0),
+                ..ui_panel_node(Val::Px(500.0))
+            },
             GlobalZIndex(80),
-            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            ui_panel_frame(),
             AnnouncementsPanel,
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(46.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    margin: UiRect::bottom(Val::Px(4.0)),
-                    ..default()
-                },
-                ImageNode::new(ui.banner.clone()),
-                children![(
-                    Text::new("Announcements"),
-                    TextFont {
-                        font_size: FontSize::Px(15.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
-                )],
-            ));
-            for i in 0..ANNOUNCEMENT_LINES {
-                panel.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: FontSize::Px(12.0),
-                        ..default()
-                    },
-                    TextColor(PARCHMENT_INK),
-                    AnnouncementLine(i),
-                ));
-            }
+            panel.spawn(ui_title_bar("Announcements"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                for i in 0..ANNOUNCEMENT_LINES {
+                    body.spawn((ui_text("", FS_BODY, UI_MUTED), AnnouncementLine(i)));
+                }
+            });
         });
 
-    // Goods toggle button (beside the Log button).
-    commands.spawn((
-        Button,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(8.0),
-            left: Val::Px(200.0),
-            min_width: Val::Px(52.0),
-            height: Val::Px(28.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        GlobalZIndex(60),
-        sliced_image(ui.button.clone(), BUTTON_BORDER),
-        GoodsButton,
-        children![(
-            Text::new("Goods [G]"),
-            TextFont {
-                font_size: FontSize::Px(12.0),
-                ..default()
-            },
-            TextColor(PARCHMENT_INK),
-        )],
-    ));
-
-    // Census toggle button (beside the Goods button).
-    commands.spawn((
-        Button,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(8.0),
-            left: Val::Px(400.0),
-            min_width: Val::Px(52.0),
-            height: Val::Px(28.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        GlobalZIndex(60),
-        sliced_image(ui.button.clone(), BUTTON_BORDER),
-        CensusButton,
-        children![(
-            Text::new("Census [C]"),
-            TextFont {
-                font_size: FontSize::Px(12.0),
-                ..default()
-            },
-            TextColor(PARCHMENT_INK),
-        )],
-    ));
-
-    // Colony census / demographics panel (centre, shares the slot with goods +
-    // announcements — the three are mutually exclusive), hidden until toggled.
+    // Colony census / demographics panel (centre; shares the slot with the other
+    // tab panels — mutually exclusive), hidden until toggled.
     commands
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(430.0),
+                left: Val::Px(456.0),
                 top: Val::Px(60.0),
-                width: Val::Px(360.0),
-                padding: UiRect::axes(Val::Px(26.0), Val::Px(40.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(3.0),
-                display: Display::None,
-                ..default()
+                ..ui_panel_node(Val::Px(360.0))
             },
             GlobalZIndex(82),
-            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            ui_panel_frame(),
             CensusPanel,
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(46.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    margin: UiRect::bottom(Val::Px(6.0)),
-                    ..default()
-                },
-                ImageNode::new(ui.banner.clone()),
-                children![(
-                    Text::new("Census"),
-                    TextFont {
-                        font_size: FontSize::Px(15.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
-                )],
-            ));
-            for i in 0..CENSUS_LINES {
-                panel.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: FontSize::Px(13.0),
-                        ..default()
-                    },
-                    TextColor(PARCHMENT_INK),
-                    CensusLine(i),
-                ));
-            }
+            panel.spawn(ui_title_bar("Census"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                for i in 0..CENSUS_LINES {
+                    body.spawn((ui_text("", FS_BODY, UI_INK), CensusLine(i)));
+                }
+            });
         });
 
-    // Upgrade-tree toggle button (beside the Census button).
-    commands.spawn((
-        Button,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(8.0),
-            left: Val::Px(500.0),
-            min_width: Val::Px(52.0),
-            height: Val::Px(28.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        },
-        GlobalZIndex(60),
-        sliced_image(ui.button.clone(), BUTTON_BORDER),
-        TreeButton,
-        children![(
-            Text::new("Tree [U]"),
-            TextFont {
-                font_size: FontSize::Px(12.0),
-                ..default()
-            },
-            TextColor(PARCHMENT_INK),
-        )],
-    ));
+    // (Log/Goods/Census/Tree toggles now live in the top command bar above.)
 
     // Upgrade-tree panel (centre, shares the slot with goods/announcements/census
     // — all mutually exclusive), hidden until toggled.
@@ -2968,10 +3015,21 @@ fn setup(
     // Officers panel (left, below the dashboard), toggled with `O`.
     spawn_officers_panel(&mut commands, &ui);
 
-    // Tool-mode toolbar (just above the action toolbar).
-    spawn_tool_toolbar(&mut commands, &ui);
-    // Action toolbar (bottom, centred).
-    spawn_toolbar(&mut commands, &ui);
+    // Bottom command bar (tool modes + player actions, one framed strip).
+    spawn_bottom_bar(&mut commands);
+}
+
+/// A legacy wood-sprite button node (parchment sprite carries the look; text is
+/// dark ink). Still used by the panels not yet migrated to the kit.
+fn wood_button_node() -> Node {
+    Node {
+        min_width: Val::Px(96.0),
+        height: Val::Px(34.0),
+        padding: UiRect::axes(Val::Px(12.0), Val::Px(4.0)),
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        ..default()
+    }
 }
 
 fn spawn_officers_panel(commands: &mut Commands, ui: &UiArt) {
@@ -3044,72 +3102,11 @@ fn spawn_officers_panel(commands: &mut Commands, ui: &UiArt) {
         });
 }
 
-fn spawn_tool_toolbar(commands: &mut Commands, ui: &UiArt) {
-    commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(48.0),
-            left: Val::Px(0.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            column_gap: Val::Px(10.0),
-            ..default()
-        })
-        .with_children(|row| {
-            for mode in [
-                ToolMode::Inspect,
-                ToolMode::AvoidZone,
-                ToolMode::GatherZone,
-                ToolMode::Stockpile,
-            ] {
-                row.spawn((
-                    Button,
-                    wood_button_node(),
-                    sliced_image(ui.button.clone(), BUTTON_BORDER),
-                    ToolButton(mode),
-                    children![(
-                        Text::new(mode.label()),
-                        TextFont {
-                            font_size: FontSize::Px(13.0),
-                            ..default()
-                        },
-                        TextColor(PARCHMENT_INK),
-                    )],
-                ));
-            }
-            // Accept-type picker for the Stockpile mode — cycles what the next
-            // designated pile will accept.
-            row.spawn((
-                Button,
-                wood_button_node(),
-                sliced_image(ui.button.clone(), BUTTON_BORDER),
-                AcceptButton,
-                children![(
-                    Text::new("Accepts: General"),
-                    TextFont {
-                        font_size: FontSize::Px(13.0),
-                        ..default()
-                    },
-                    TextColor(PARCHMENT_INK),
-                    AcceptButtonText,
-                )],
-            ));
-        });
-}
-
-/// A wood-button node (parchment sprite carries the look; text is dark ink).
-fn wood_button_node() -> Node {
-    Node {
-        min_width: Val::Px(96.0),
-        height: Val::Px(34.0),
-        padding: UiRect::axes(Val::Px(12.0), Val::Px(4.0)),
-        justify_content: JustifyContent::Center,
-        align_items: AlignItems::Center,
-        ..default()
-    }
-}
-
-fn spawn_toolbar(commands: &mut Commands, ui: &UiArt) {
+/// The bottom command bar: tool modes + the stockpile accept-picker on the top
+/// row, and the player action buttons below — all inside ONE framed strip so the
+/// controls read as a single designed toolbar. Kit buttons; the active tool
+/// stays lit via its [`KitToggle`].
+fn spawn_bottom_bar(commands: &mut Commands) {
     commands
         .spawn(Node {
             position_type: PositionType::Absolute,
@@ -3117,31 +3114,71 @@ fn spawn_toolbar(commands: &mut Commands, ui: &UiArt) {
             left: Val::Px(0.0),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
-            column_gap: Val::Px(10.0),
             ..default()
         })
-        .with_children(|row| {
-            for action in [
-                ButtonAction::SupplyFood,
-                ButtonAction::SupplyWater,
-                ButtonAction::PlanHunt,
-                ButtonAction::FoundVillage,
-            ] {
-                row.spawn((
-                    Button,
-                    wood_button_node(),
-                    sliced_image(ui.button.clone(), BUTTON_BORDER),
-                    ActionButton(action),
-                    children![(
-                        Text::new(action.label()),
-                        TextFont {
-                            font_size: FontSize::Px(13.0),
-                            ..default()
-                        },
-                        TextColor(PARCHMENT_INK),
-                    )],
-                ));
-            }
+        .with_children(|center| {
+            center
+                .spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(UI_GAP),
+                        padding: UiRect::all(Val::Px(UI_GAP)),
+                        border: UiRect::all(Val::Px(UI_BORDER_W)),
+                        border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
+                        align_items: AlignItems::Center,
+                        ..default()
+                    },
+                    ui_panel_frame(),
+                ))
+                .with_children(|bar| {
+                    // Tool-mode row + accept picker.
+                    bar.spawn(Node {
+                        column_gap: Val::Px(UI_GAP),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for mode in [
+                            ToolMode::Inspect,
+                            ToolMode::AvoidZone,
+                            ToolMode::GatherZone,
+                            ToolMode::Stockpile,
+                        ] {
+                            row.spawn((
+                                ui_button(),
+                                ToolButton(mode),
+                                KitToggle::default(),
+                                children![ui_text(mode.label(), FS_BODY, UI_INK)],
+                            ));
+                        }
+                        row.spawn((
+                            ui_button(),
+                            AcceptButton,
+                            children![(
+                                ui_text("Accepts: General", FS_BODY, UI_INK),
+                                AcceptButtonText,
+                            )],
+                        ));
+                    });
+                    // Player action row.
+                    bar.spawn(Node {
+                        column_gap: Val::Px(UI_GAP),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for action in [
+                            ButtonAction::SupplyFood,
+                            ButtonAction::SupplyWater,
+                            ButtonAction::PlanHunt,
+                            ButtonAction::FoundVillage,
+                        ] {
+                            row.spawn((
+                                ui_button(),
+                                ActionButton(action),
+                                children![ui_text(action.label(), FS_BODY, UI_INK)],
+                            ));
+                        }
+                    });
+                });
         });
 }
 
@@ -4897,19 +4934,15 @@ fn stockpile_tooltip(pile: &StockpileSnapshot) -> String {
 /// cancel any in-progress drag when leaving a zone mode.
 fn handle_tool_buttons(
     mut tools: ResMut<Tools>,
-    mut buttons: Query<(&Interaction, &ToolButton, &mut ImageNode)>,
+    mut buttons: Query<(&Interaction, &ToolButton, &mut KitToggle)>,
 ) {
-    for (interaction, button, mut image) in &mut buttons {
+    for (interaction, button, mut toggle) in &mut buttons {
         if *interaction == Interaction::Pressed && tools.mode != button.0 {
             tools.mode = button.0;
             tools.drag = None;
         }
-        let active = tools.mode == button.0;
-        image.color = match (active, interaction) {
-            (true, _) => BTN_ACTIVE,
-            (false, Interaction::Hovered) => BTN_HOVER,
-            (false, _) => BTN_IDLE,
-        };
+        // The kit paints hover/press/active; we just flag which tool is active.
+        toggle.active = tools.mode == button.0;
     }
 }
 
@@ -4920,14 +4953,9 @@ fn handle_accept_button(
     mut button: AcceptButtonQuery,
     mut text: Query<&mut Text, With<AcceptButtonText>>,
 ) {
-    for (interaction, mut image) in &mut button {
-        match interaction {
-            Interaction::Pressed => {
-                image.color = BTN_PRESS;
-                tools.accept = tools.accept.next();
-            }
-            Interaction::Hovered => image.color = BTN_HOVER,
-            Interaction::None => image.color = BTN_IDLE,
+    for interaction in &mut button {
+        if *interaction == Interaction::Pressed {
+            tools.accept = tools.accept.next();
         }
     }
     if tools.is_changed()
@@ -5848,16 +5876,11 @@ fn handle_buttons(
     mut outgoing: ResMut<OutgoingActions>,
     mut buttons: ButtonQuery,
 ) {
-    for (interaction, button, mut image) in &mut buttons {
-        match interaction {
-            Interaction::Pressed => {
-                image.color = BTN_PRESS;
-                if let Some(action) = build_action(button.0, &session) {
-                    outgoing.0.push(action);
-                }
-            }
-            Interaction::Hovered => image.color = BTN_HOVER,
-            Interaction::None => image.color = BTN_IDLE,
+    for (interaction, button) in &mut buttons {
+        if *interaction == Interaction::Pressed
+            && let Some(action) = build_action(button.0, &session)
+        {
+            outgoing.0.push(action);
         }
     }
 }
