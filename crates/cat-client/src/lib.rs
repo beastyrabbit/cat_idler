@@ -20,6 +20,7 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::{Anchor, BorderRect, SliceScaleMode, TextureSlicer};
+use bevy::ui::RelativeCursorPosition;
 use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot, ClientAction,
     ColonySnapshot, FootprintSize, GateSide, JobKind, OfficerRole, RaiderStatus, ResourceAmounts,
@@ -147,13 +148,32 @@ fn world_to_minimap(view: MinimapView, x: i32, y: i32) -> Option<(i32, i32)> {
     ((0..MINIMAP_PX).contains(&px) && (0..MINIMAP_PX).contains(&py)).then_some((px, py))
 }
 
-/// The world tile at the centre of a minimap pixel (for click-to-pan, slice 2).
-#[allow(dead_code)]
+/// The world tile at the centre of a minimap pixel (for click-to-pan).
 fn minimap_to_world(view: MinimapView, px: i32, py: i32) -> (i32, i32) {
     let half = view.tiles_per_px / 2;
     (
         view.origin_x + px * view.tiles_per_px + half,
         view.origin_y + py * view.tiles_per_px + half,
+    )
+}
+
+/// The camera-viewport rectangle in minimap pixels `(x0, y0, x1, y1)` — the
+/// half-open pixel box `[x0,x1) × [y0,y1)` covering the visible tile range,
+/// clamped to the minimap so a partly-off view still shows an edge.
+fn viewport_rect(
+    view: MinimapView,
+    min_tx: i32,
+    min_ty: i32,
+    max_tx: i32,
+    max_ty: i32,
+) -> (i32, i32, i32, i32) {
+    let clamp = |v: i32| v.clamp(0, MINIMAP_PX);
+    let to_px = |t: i32, origin: i32| (t - origin).div_euclid(view.tiles_per_px);
+    (
+        clamp(to_px(min_tx, view.origin_x)),
+        clamp(to_px(min_ty, view.origin_y)),
+        clamp(to_px(max_tx, view.origin_x) + 1),
+        clamp(to_px(max_ty, view.origin_y) + 1),
     )
 }
 
@@ -933,6 +953,12 @@ struct AnnouncementTicker;
 /// Marker for the corner minimap panel node (toggled open/closed).
 #[derive(Component)]
 struct MinimapPanel;
+/// Marker for the minimap image node (for click-to-pan hit-testing).
+#[derive(Component)]
+struct MinimapImageNode;
+/// Marker for the camera-viewport outline drawn over the minimap.
+#[derive(Component)]
+struct MinimapViewportRect;
 
 /// The kind of a colony event, inferred from its message (the snapshot carries
 /// only message + timestamp), for colour + glyph coding in the announcements log.
@@ -1202,6 +1228,8 @@ pub fn run() {
                     update_announcements,
                     toggle_minimap,
                     update_minimap,
+                    update_minimap_viewport,
+                    minimap_click_to_pan,
                 ),
             ),
         )
@@ -1510,6 +1538,21 @@ fn setup(
                 ..default()
             },
             ImageNode::new(minimap_handle),
+            // Button so the world-pick systems (which skip Button interactions)
+            // ignore clicks that land on the minimap.
+            Button,
+            RelativeCursorPosition::default(),
+            MinimapImageNode,
+            // Camera-viewport outline, positioned each frame over the minimap.
+            children![(
+                Node {
+                    position_type: PositionType::Absolute,
+                    border: UiRect::all(Val::Px(1.0)),
+                    ..default()
+                },
+                BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
+                MinimapViewportRect,
+            )],
         )],
     ));
 
@@ -3854,6 +3897,79 @@ fn update_minimap(
     }
 }
 
+/// Position the camera-viewport outline over the minimap from the camera's
+/// current world view, so it stays in sync while panning/zooming.
+fn update_minimap_viewport(
+    windows: Query<&Window>,
+    camera: Query<(&Projection, &Transform), With<Camera2d>>,
+    ui: Res<MinimapUi>,
+    minimap: Res<Minimap>,
+    mut rect: Query<&mut Node, With<MinimapViewportRect>>,
+) {
+    let Ok(mut node) = rect.single_mut() else {
+        return;
+    };
+    if !ui.visible {
+        node.display = Display::None;
+        return;
+    }
+    let (Ok(window), Ok((proj, cam))) = (windows.single(), camera.single()) else {
+        return;
+    };
+    let Projection::Orthographic(p) = proj else {
+        return;
+    };
+    // Visible world half-extents = half the window size scaled by the zoom.
+    let half = Vec2::new(window.width(), window.height()) * p.scale * 0.5;
+    let c = cam.translation.truncate();
+    // World corners -> tiles (y flips: world -y = +tile y).
+    let (tx0, ty0) = world_to_tile(Vec2::new(c.x - half.x, c.y + half.y));
+    let (tx1, ty1) = world_to_tile(Vec2::new(c.x + half.x, c.y - half.y));
+    let (x0, y0, x1, y1) = viewport_rect(
+        minimap.view,
+        tx0.min(tx1),
+        ty0.min(ty1),
+        tx0.max(tx1),
+        ty0.max(ty1),
+    );
+    let pct = |v: i32| Val::Percent(v as f32 / MINIMAP_PX as f32 * 100.0);
+    node.display = Display::Flex;
+    node.left = pct(x0);
+    node.top = pct(y0);
+    node.width = pct(x1 - x0);
+    node.height = pct(y1 - y0);
+}
+
+/// Left-click on the minimap recenters the main camera on that world point.
+fn minimap_click_to_pan(
+    buttons: Res<ButtonInput<MouseButton>>,
+    ui: Res<MinimapUi>,
+    minimap: Res<Minimap>,
+    image: Query<&RelativeCursorPosition, With<MinimapImageNode>>,
+    mut camera: Query<&mut Transform, With<Camera2d>>,
+) {
+    if !ui.visible || !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(rel) = image.single() else {
+        return;
+    };
+    let Some(n) = rel
+        .normalized
+        .filter(|n| (0.0..=1.0).contains(&n.x) && (0.0..=1.0).contains(&n.y))
+    else {
+        return;
+    };
+    let px = (n.x * MINIMAP_PX as f32) as i32;
+    let py = (n.y * MINIMAP_PX as f32) as i32;
+    let (tx, ty) = minimap_to_world(minimap.view, px, py);
+    let world = grid_to_world(tx, ty);
+    if let Ok(mut cam) = camera.single_mut() {
+        cam.translation.x = world.x;
+        cam.translation.y = world.y;
+    }
+}
+
 fn update_event_log(latest: Res<LatestSnapshot>, mut log: Query<&mut Text, With<EventLogText>>) {
     if !latest.is_changed() {
         return;
@@ -4555,6 +4671,29 @@ mod tests {
         // The extreme corners still map onto the minimap.
         assert!(world_to_minimap(bview, -200, -200).is_some());
         assert!(world_to_minimap(bview, 200, 200).is_some());
+    }
+
+    #[test]
+    fn minimap_viewport_rect_maps_and_clamps() {
+        let view = MinimapView {
+            origin_x: 0,
+            origin_y: 0,
+            tiles_per_px: 1,
+        };
+        // A viewport covering tiles 10..=19 → pixels [10,20) at 1 tile/px.
+        assert_eq!(viewport_rect(view, 10, 10, 19, 19), (10, 10, 20, 20));
+        // A viewport running off the top-left clamps to the minimap edge.
+        assert_eq!(viewport_rect(view, -50, -50, 4, 4), (0, 0, 5, 5));
+        // Off the far edge clamps to MINIMAP_PX.
+        let (_, _, x1, y1) = viewport_rect(view, 100, 100, 900, 900);
+        assert_eq!((x1, y1), (MINIMAP_PX, MINIMAP_PX));
+        // At 4 tiles/pixel the rect coarsens.
+        let coarse = MinimapView {
+            origin_x: 0,
+            origin_y: 0,
+            tiles_per_px: 4,
+        };
+        assert_eq!(viewport_rect(coarse, 0, 0, 7, 7), (0, 0, 2, 2));
     }
 
     #[test]
