@@ -2741,6 +2741,49 @@ fn phase_20_leader_labor_assignments_and_staffing(
     }
 }
 
+/// Passive "devotion" blessings a founded colony's shrine banks per game-hour into
+/// [`ColonyRuntime::global_upgrade_points`] — the god-purchase upgrade currency.
+///
+/// REACHABILITY FIX (long-horizon economy review). The two active blessing faucets
+/// (`Tithe` and `Offering`) only fire on a food/refined or materials *surplus* whose
+/// thresholds a founding colony never reaches in normal play: food is held well below
+/// `food_cap * TITHE_FOOD_RATIO + TITHE_FOOD_AMOUNT`, materials below the analogous
+/// offering gate, and no `refined` is produced before the (tree-gated) generic workshop
+/// exists. Instrumented 120-game-hour runs across five seeds bank only 0–2 points total
+/// (from the occasional ritual) — far short of the cost-5 root node `research_hut` — so
+/// the entire god-purchase upgrade path sits dormant for a very long time, and with it
+/// every building/effect the tree gates. A slow, flat devotion trickle gives that path a
+/// reachable faucet in normal play *without draining any survival resource* (it only
+/// adds), so the survival balance is untouched.
+///
+/// Deliberately slow — the design calls this "a slow upgrade tree", so the trickle is
+/// tuned for reachability, not power: ~20 game-hours to afford the cost-5 root, ~100 to
+/// bank a full era-1. The exact pace is a tunable design call, not a survival constant.
+const SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR: f64 = 0.25;
+
+/// Bank passive shrine devotion into the god-purchase currency
+/// ([`ColonyRuntime::global_upgrade_points`]). Deterministic (a flat function of elapsed
+/// game-hours — no RNG), survival-safe (adds only, drains nothing), and reset-durable
+/// like every other `global_upgrade_points` credit. A no-op for a colony with no
+/// completed shrine or no living cats to keep the faith. See
+/// [`SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR`] for the reachability rationale.
+fn accrue_shrine_devotion(colony: &mut ColonyRuntime, gate: TickGate) {
+    if alive_cats(&colony.cats).next().is_none() {
+        return;
+    }
+    let has_shrine = colony
+        .buildings
+        .iter()
+        .any(|building| building.building_type == BuildingType::Shrine && building.is_complete);
+    if !has_shrine {
+        return;
+    }
+    let gained = SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR * elapsed_game_hours(colony, gate);
+    if gained > 0.0 {
+        colony.global_upgrade_points += gained;
+    }
+}
+
 /// Phase 21: execute leader capital decisions and minute-cadence tithe deposits.
 fn phase_21_leader_capital_decisions_and_tithe(
     colony: &mut ColonyRuntime,
@@ -2748,6 +2791,10 @@ fn phase_21_leader_capital_decisions_and_tithe(
     policy: TickPolicy,
     plan: &DirectorPlan,
 ) {
+    // Reachability: bank the slow shrine-devotion trickle so the god-purchase upgrade
+    // path has a faucet the surplus-gated Tithe/Offering never provide in founding play.
+    accrue_shrine_devotion(colony, gate);
+
     for decision in &plan.decisions {
         match *decision {
             LeaderDecision::BuildStorage => {
@@ -11845,6 +11892,102 @@ mod tests {
                 "seed {seed} ran a resource dry (food {:.1}, water {:.1})",
                 colony.resources.food,
                 colony.resources.water,
+            );
+        }
+    }
+
+    /// Unit guardrail for the shrine-devotion reachability faucet
+    /// ([`accrue_shrine_devotion`] / [`SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR`]).
+    ///
+    /// Pins the exact per-game-hour accrual rate and its two no-op guards (no completed
+    /// shrine, or no living cats). A founded colony has a completed shrine and living
+    /// cats, so one game-hour of elapsed time banks exactly the constant into the
+    /// god-purchase currency `global_upgrade_points` — deterministic, no RNG.
+    #[test]
+    fn shrine_devotion_banks_the_flat_rate_and_guards_no_shrine_and_no_cats() {
+        let mut colony = found_colony(1, "colony-1", 10_000, 1);
+        colony.global_upgrade_points = 0.0;
+        // One game-hour of elapsed time at the default time scale (3600 s).
+        let gate = TickGate {
+            elapsed_sec: 3600,
+            processed_through: colony.last_tick + 3_600_000,
+            minute_rolled: true,
+            previous_water: colony.resources.water.to_bits(),
+        };
+        accrue_shrine_devotion(&mut colony, gate);
+        assert!(
+            (colony.global_upgrade_points - SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR).abs() < 1e-9,
+            "one game-hour must bank exactly the flat devotion rate (got {})",
+            colony.global_upgrade_points,
+        );
+
+        // No completed shrine -> no devotion.
+        let mut no_shrine = found_colony(1, "colony-1", 10_000, 1);
+        no_shrine.buildings.clear();
+        no_shrine.global_upgrade_points = 0.0;
+        accrue_shrine_devotion(&mut no_shrine, gate);
+        assert_eq!(
+            no_shrine.global_upgrade_points, 0.0,
+            "a colony with no shrine keeps no faith"
+        );
+
+        // No living cats -> no devotion.
+        let mut no_cats = found_colony(1, "colony-1", 10_000, 1);
+        for cat in &mut no_cats.cats {
+            cat.death_time = Some(10_000);
+        }
+        no_cats.global_upgrade_points = 0.0;
+        accrue_shrine_devotion(&mut no_cats, gate);
+        assert_eq!(
+            no_cats.global_upgrade_points, 0.0,
+            "a dead colony keeps no faith"
+        );
+    }
+
+    /// Long-horizon economy REACHABILITY guardrail (economy review). Complements the
+    /// survival proofs above: it proves the god-purchase upgrade path is no longer
+    /// dormant. Before the [`accrue_shrine_devotion`] fix, an instrumented 120-game-hour
+    /// run across these five seeds banked only 0–2 `global_upgrade_points` (from the odd
+    /// ritual) — below the cost-5 root node `research_hut` — so a player had nothing to
+    /// spend and the whole tree (and every building/effect it gates) sat unreachable.
+    ///
+    /// Over a ~22-game-hour horizon the slow devotion trickle now banks at least the
+    /// root-node cost, so the path is reachable in normal play. Two representative seeds
+    /// are exercised: a clean seed (7) and one whose founding economy collapse-restarts
+    /// within the horizon (1234) — proving the currency is reset-durable. (The flat
+    /// per-game-hour rate is seed-independent and pinned exactly by
+    /// [`shrine_devotion_banks_the_flat_rate_and_guards_no_shrine_and_no_cats`], so two
+    /// end-to-end seeds suffice here.) The currency reachability holds even across a
+    /// reset — a pre-existing survival-pacing behaviour tracked separately, so this test
+    /// deliberately asserts liveness, not no-reset, and never touches any survival
+    /// resource, keeping the survival proofs green.
+    #[test]
+    fn god_purchase_currency_becomes_reachable_over_a_long_horizon() {
+        let root_cost = get_node("research_hut").expect("root node exists").cost;
+        for seed in [7u32, 1234] {
+            let mut world = new_world(seed);
+            world
+                .colonies
+                .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
+
+            // ~22 game-hours at the minute cadence (1300 game-minutes), clearing the
+            // cost-5 root at the 0.25/game-hour devotion rate with margin.
+            for step in 1..=1_300 {
+                let now = 10_000 + i64::from(step) * 60_000;
+                let _ = world_tick(&mut world, now);
+            }
+
+            let colony = &world.colonies[0];
+            assert_ne!(
+                colony.status,
+                ColonyStatus::Dead,
+                "seed {seed}: colony ended dead"
+            );
+            assert!(
+                colony.global_upgrade_points >= root_cost,
+                "seed {seed}: god-purchase currency only reached {:.2}, below the cost-{root_cost} \
+                 root node — the upgrade path is still unreachable",
+                colony.global_upgrade_points,
             );
         }
     }
