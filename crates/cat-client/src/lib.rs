@@ -2781,9 +2781,40 @@ fn spawn_toolbar(commands: &mut Commands, ui: &UiArt) {
 }
 
 /// Open the WebSocket as a non-send resource (the receiver is `!Sync`).
+/// The cat-server WebSocket URL for this target.
+///
+/// Native: the `CAT_SERVER_URL` env var at launch, else the local default.
+/// Wasm (browser): `std::env::var` always errs, so use a build-time
+/// `CAT_SERVER_URL` bake if present (how the dev wasm build points at a
+/// separate-port server), else derive a same-origin `ws(s)://<host>/ws` from the
+/// page location (the reverse-proxied production default).
+fn server_ws_url() -> String {
+    const DEFAULT: &str = "ws://127.0.0.1:8787/ws";
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("CAT_SERVER_URL").unwrap_or_else(|_| DEFAULT.to_string())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Some(url) = option_env!("CAT_SERVER_URL") {
+            return url.to_string();
+        }
+        web_sys::window()
+            .and_then(|w| {
+                let loc = w.location();
+                let scheme = if loc.protocol().ok()?.as_str() == "https:" {
+                    "wss"
+                } else {
+                    "ws"
+                };
+                Some(format!("{scheme}://{}/ws", loc.host().ok()?))
+            })
+            .unwrap_or_else(|| DEFAULT.to_string())
+    }
+}
+
 fn connect_ws(world: &mut World) {
-    let url =
-        std::env::var("CAT_SERVER_URL").unwrap_or_else(|_| "ws://127.0.0.1:8787/ws".to_string());
+    let url = server_ws_url();
     match ewebsock::connect(url.clone(), ewebsock::Options::default()) {
         Ok((sender, receiver)) => {
             info!("cat-client connecting to {url}");

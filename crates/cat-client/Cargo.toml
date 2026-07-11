@@ -20,5 +20,7 @@ bevy = { version = "0.19", default-features = false, features = ["multi_threaded
 
 # Browser only: wgpu's WebGL2 backend, so the client renders on the near-universal
 # WebGL2 (rather than requiring WebGPU, which not all browsers expose yet).
+# web-sys reads window.location to derive the same-origin WS URL in the browser.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 bevy = { version = "0.19", default-features = false, features = ["webgl2"] }
+web-sys = { version = "0.3", features = ["Window", "Location"] }

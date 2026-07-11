@@ -64,6 +64,8 @@ map-screen-verify*.png
 # rust build artifacts (bevy/rust migration)
 /target/
 **/target/
+# trunk wasm bundle output
+crates/cat-web/dist/
 # agent-skills tooling scratch
 /.agents/
 /skills-lock.json
