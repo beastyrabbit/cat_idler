@@ -24,8 +24,8 @@ use bevy::ui::RelativeCursorPosition;
 use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot, ClientAction,
     ColonySnapshot, EventSnapshot, FootprintSize, GateSide, ItemStackSnapshot, JobKind,
-    OfficerRole, RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp,
-    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
+    OfficerRole, RaiderStatus, ResearchSnapshot, ResourceAmounts, ResourceCapacities, ResourceKind,
+    RoleXp, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
     TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
@@ -33,6 +33,7 @@ use cat_sim::terrain_gen::{
     DecorationRole, RockSize, TerrainTile, WORLD_TERRAIN_OPTIONS, derive_biome_decoration,
     generate_terrain_chunk, tile_climate_biome,
 };
+use cat_sim::upgrade_tree::{UPGRADE_NODES, UpgradeNode};
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
@@ -391,6 +392,16 @@ struct CensusUi {
 
 /// Number of text lines the census panel renders (see `census_report_lines`).
 const CENSUS_LINES: usize = 18;
+
+/// Whether the upgrade-tree panel is open (toggled by `U`).
+#[derive(Resource, Default)]
+struct UpgradeTreeUi {
+    visible: bool,
+}
+
+/// Text-line slots for the upgrade tree: a header block + 3 era headers + up to
+/// ~22 nodes, with headroom for tree growth (smelting, etc.).
+const TREE_LINES: usize = 32;
 
 /// Trade menu (open while a trader is at the gate). `closed` lets the player
 /// dismiss it during a visit; it resets when the trader leaves so the next visit
@@ -1076,6 +1087,15 @@ struct CensusLine(usize);
 /// The HUD button that toggles the census panel.
 #[derive(Component)]
 struct CensusButton;
+/// Marker for the upgrade-tree panel node.
+#[derive(Component)]
+struct TreePanel;
+/// One upgrade-tree text-line slot (coloured by node state).
+#[derive(Component, Clone, Copy)]
+struct TreeLine(usize);
+/// The HUD button that toggles the upgrade-tree panel.
+#[derive(Component)]
+struct TreeButton;
 /// Marker for the trade-menu panel node.
 #[derive(Component)]
 struct TradeMenuPanel;
@@ -1430,6 +1450,74 @@ fn coin_line(coin: f64) -> String {
     format!("Coin: {coin:.0}g")
 }
 
+// ---- Upgrade tree (structure from cat_sim::UPGRADE_NODES, state from the
+// snapshot's ResearchSnapshot). Pure helpers unit-tested. ----
+
+/// A tech node's progression state for the colony, derived from the owned set.
+/// Mirrors the sim's `can_unlock`: a node is available once every prerequisite is
+/// owned; affordability (blessings vs cost) is a further gate on the god-purchase.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NodeState {
+    Owned,
+    Available,
+    Locked,
+}
+
+const NODE_OWNED_COLOR: Color = Color::srgb(0.46, 0.76, 0.42);
+const NODE_READY_COLOR: Color = Color::srgb(0.96, 0.82, 0.36);
+const NODE_UNAFFORDABLE_COLOR: Color = Color::srgb(0.66, 0.60, 0.40);
+const NODE_LOCKED_COLOR: Color = Color::srgb(0.50, 0.45, 0.40);
+const TREE_HEADER_COLOR: Color = Color::srgb(0.86, 0.72, 0.46);
+
+/// Classify a node against the owned-node set (owned / prereqs-met / locked).
+fn node_state(node: &UpgradeNode, owned: &HashSet<&str>) -> NodeState {
+    if owned.contains(node.id) {
+        NodeState::Owned
+    } else if node.prerequisites.iter().all(|p| owned.contains(p)) {
+        NodeState::Available
+    } else {
+        NodeState::Locked
+    }
+}
+
+/// Render the whole tree as colour-coded display lines: a currency + next-target
+/// header, then each era's nodes with their state. Structure comes from the
+/// static `UPGRADE_NODES`, so new nodes appear automatically.
+fn tree_report_lines(research: &ResearchSnapshot) -> Vec<(String, Color)> {
+    let owned: HashSet<&str> = research.owned_node_ids.iter().map(String::as_str).collect();
+    let mut lines: Vec<(String, Color)> = Vec::new();
+    lines.push((
+        format!(
+            "Blessings: {:.0}    Research: {:.0} pts ({} on it)",
+            research.blessings, research.research_points, research.researcher_count
+        ),
+        PARCHMENT_INK,
+    ));
+    let next = research.next_target.as_ref().map_or_else(
+        || "Next auto-unlock: —".to_string(),
+        |t| format!("Next auto-unlock: {} ({:.0} pts)", t.name, t.cost),
+    );
+    lines.push((next, PARCHMENT_INK));
+    lines.push((String::new(), PARCHMENT_INK));
+
+    let max_era = UPGRADE_NODES.iter().map(|n| n.era).max().unwrap_or(0);
+    for era in 1..=max_era {
+        lines.push((format!("- Era {era} -"), TREE_HEADER_COLOR));
+        for node in UPGRADE_NODES.iter().filter(|n| n.era == era) {
+            let (marker, color) = match node_state(node, &owned) {
+                NodeState::Owned => ("[x]", NODE_OWNED_COLOR),
+                NodeState::Available if can_afford(research.blessings, node.cost) => {
+                    ("[>]", NODE_READY_COLOR)
+                }
+                NodeState::Available => ("[ ]", NODE_UNAFFORDABLE_COLOR),
+                NodeState::Locked => ("[-]", NODE_LOCKED_COLOR),
+            };
+            lines.push((format!("{marker} {} ({:.0}b)", node.name, node.cost), color));
+        }
+    }
+    lines
+}
+
 /// A manual-action button and the action it enqueues when clicked.
 #[derive(Component, Clone, Copy)]
 struct ActionButton(ButtonAction);
@@ -1550,6 +1638,7 @@ pub fn run() {
         .insert_resource(AnnouncementsUi::default())
         .insert_resource(GoodsUi::default())
         .insert_resource(CensusUi::default())
+        .insert_resource(UpgradeTreeUi::default())
         .insert_resource(TradeUi::default())
         .insert_resource(MinimapUi::default())
         .insert_resource(CatBodies::default())
@@ -1617,6 +1706,8 @@ pub fn run() {
                     handle_boost_button,
                     toggle_census,
                     update_census,
+                    toggle_upgrade_tree,
+                    update_upgrade_tree,
                     toggle_minimap,
                     update_minimap,
                     update_minimap_viewport,
@@ -2009,14 +2100,14 @@ fn setup(
         )],
     ));
 
-    // "Latest announcement" ticker, to the right of the Goods/Log/Census toggle
-    // buttons (which end at ~452) so it never overlaps them.
+    // "Latest announcement" ticker, to the right of the Goods/Log/Census/Tree
+    // toggle buttons (which end at ~552) so it never overlaps them.
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(14.0),
-            left: Val::Px(468.0),
-            max_width: Val::Px(440.0),
+            left: Val::Px(568.0),
+            max_width: Val::Px(360.0),
             ..default()
         },
         GlobalZIndex(60),
@@ -2207,6 +2298,84 @@ fn setup(
                     },
                     TextColor(PARCHMENT_INK),
                     CensusLine(i),
+                ));
+            }
+        });
+
+    // Upgrade-tree toggle button (beside the Census button).
+    commands.spawn((
+        Button,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(8.0),
+            left: Val::Px(500.0),
+            min_width: Val::Px(52.0),
+            height: Val::Px(28.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        GlobalZIndex(60),
+        sliced_image(ui.button.clone(), BUTTON_BORDER),
+        TreeButton,
+        children![(
+            Text::new("Tree [U]"),
+            TextFont {
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextColor(PARCHMENT_INK),
+        )],
+    ));
+
+    // Upgrade-tree panel (centre, shares the slot with goods/announcements/census
+    // — all mutually exclusive), hidden until toggled.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(430.0),
+                top: Val::Px(60.0),
+                width: Val::Px(400.0),
+                padding: UiRect::axes(Val::Px(24.0), Val::Px(30.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(2.0),
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(82),
+            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            TreePanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(46.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    margin: UiRect::bottom(Val::Px(6.0)),
+                    ..default()
+                },
+                ImageNode::new(ui.banner.clone()),
+                children![(
+                    Text::new("Upgrade Tree"),
+                    TextFont {
+                        font_size: FontSize::Px(15.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
+                )],
+            ));
+            for i in 0..TREE_LINES {
+                panel.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
+                    TextColor(PARCHMENT_INK),
+                    TreeLine(i),
                 ));
             }
         });
@@ -4401,6 +4570,7 @@ fn close_inspectors_on_esc(
     mut announcements: ResMut<AnnouncementsUi>,
     mut goods: ResMut<GoodsUi>,
     mut census: ResMut<CensusUi>,
+    mut tree: ResMut<UpgradeTreeUi>,
     mut trade: ResMut<TradeUi>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -4410,6 +4580,7 @@ fn close_inspectors_on_esc(
         announcements.visible = false;
         goods.visible = false;
         census.visible = false;
+        tree.visible = false;
         trade.closed = true;
     }
 }
@@ -4918,6 +5089,7 @@ fn toggle_announcements(
     mut ui: ResMut<AnnouncementsUi>,
     mut goods: ResMut<GoodsUi>,
     mut census: ResMut<CensusUi>,
+    mut tree: ResMut<UpgradeTreeUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
     if keys.just_pressed(KeyCode::KeyL) || clicked {
@@ -4925,18 +5097,21 @@ fn toggle_announcements(
         if ui.visible {
             goods.visible = false;
             census.visible = false;
+            tree.visible = false;
         }
     }
 }
 
 /// Toggle the goods panel via the `G` key or the Goods HUD button (closes the
 /// announcements + census panels, which share the centre slot).
+#[allow(clippy::too_many_arguments)]
 fn toggle_goods(
     keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<GoodsButton>)>,
     mut ui: ResMut<GoodsUi>,
     mut announce: ResMut<AnnouncementsUi>,
     mut census: ResMut<CensusUi>,
+    mut tree: ResMut<UpgradeTreeUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
     if keys.just_pressed(KeyCode::KeyG) || clicked {
@@ -4944,18 +5119,21 @@ fn toggle_goods(
         if ui.visible {
             announce.visible = false;
             census.visible = false;
+            tree.visible = false;
         }
     }
 }
 
 /// Toggle the census panel via the `C` key or the Census HUD button (closes the
 /// goods + announcements panels, which share the centre slot).
+#[allow(clippy::too_many_arguments)]
 fn toggle_census(
     keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<CensusButton>)>,
     mut ui: ResMut<CensusUi>,
     mut goods: ResMut<GoodsUi>,
     mut announce: ResMut<AnnouncementsUi>,
+    mut tree: ResMut<UpgradeTreeUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
     if keys.just_pressed(KeyCode::KeyC) || clicked {
@@ -4963,6 +5141,7 @@ fn toggle_census(
         if ui.visible {
             goods.visible = false;
             announce.visible = false;
+            tree.visible = false;
         }
     }
 }
@@ -4999,6 +5178,62 @@ fn update_census(
         });
     for (line, mut text) in &mut lines {
         text.0 = report.get(line.0).cloned().unwrap_or_default();
+    }
+}
+
+/// Toggle the upgrade-tree panel via `U` or its HUD button (closes the other
+/// centre panels it shares the slot with).
+fn toggle_upgrade_tree(
+    keys: Res<ButtonInput<KeyCode>>,
+    button: Query<&Interaction, (Changed<Interaction>, With<TreeButton>)>,
+    mut ui: ResMut<UpgradeTreeUi>,
+    mut goods: ResMut<GoodsUi>,
+    mut announce: ResMut<AnnouncementsUi>,
+    mut census: ResMut<CensusUi>,
+) {
+    let clicked = button.iter().any(|i| *i == Interaction::Pressed);
+    if keys.just_pressed(KeyCode::KeyU) || clicked {
+        ui.visible = !ui.visible;
+        if ui.visible {
+            goods.visible = false;
+            announce.visible = false;
+            census.visible = false;
+        }
+    }
+}
+
+/// Show/hide the upgrade-tree panel and repaint each node line (text + colour)
+/// from the live research state, with the tree structure read from UPGRADE_NODES.
+#[allow(clippy::type_complexity)]
+fn update_upgrade_tree(
+    latest: Res<LatestSnapshot>,
+    ui: Res<UpgradeTreeUi>,
+    mut panel: Query<&mut Node, With<TreePanel>>,
+    mut lines: Query<(&TreeLine, &mut Text, &mut TextColor)>,
+) {
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if ui.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if !ui.visible || (!latest.is_changed() && !ui.is_changed()) {
+        return;
+    }
+    let report = latest
+        .0
+        .as_ref()
+        .and_then(|w| w.colonies.first())
+        .map_or_else(Vec::new, |c| tree_report_lines(&c.research));
+    for (line, mut text, mut color) in &mut lines {
+        match report.get(line.0) {
+            Some((s, c)) => {
+                text.0 = s.clone();
+                color.0 = *c;
+            }
+            None => text.0.clear(),
+        }
     }
 }
 
@@ -6063,6 +6298,71 @@ mod tests {
         assert_eq!(hud_res_of(ResourceKind::Weapons), HudRes::Weapons);
         assert_eq!(hud_res_of(ResourceKind::Armor), HudRes::Armor);
         assert_eq!(hud_res_of(ResourceKind::Blessings), HudRes::Blessings);
+    }
+
+    fn research(owned: &[&str], blessings: f64) -> ResearchSnapshot {
+        ResearchSnapshot {
+            owned_node_ids: owned.iter().map(|s| (*s).to_string()).collect(),
+            research_points: 0.0,
+            researcher_count: 0,
+            blessings,
+            next_target: None,
+        }
+    }
+
+    #[test]
+    fn node_state_owned_available_locked() {
+        // "research_hut" (no prereqs) and "basic_tools" (prereq research_hut).
+        let hut = UPGRADE_NODES
+            .iter()
+            .find(|n| n.id == "research_hut")
+            .unwrap();
+        let tools = UPGRADE_NODES
+            .iter()
+            .find(|n| n.id == "basic_tools")
+            .unwrap();
+
+        // Nothing owned: the root is available, its child is locked.
+        let none: HashSet<&str> = HashSet::new();
+        assert_eq!(node_state(hut, &none), NodeState::Available);
+        assert_eq!(node_state(tools, &none), NodeState::Locked);
+
+        // Root owned: root reads owned, child becomes available.
+        let owned: HashSet<&str> = ["research_hut"].into_iter().collect();
+        assert_eq!(node_state(hut, &owned), NodeState::Owned);
+        assert_eq!(node_state(tools, &owned), NodeState::Available);
+    }
+
+    #[test]
+    fn tree_report_lines_classify_and_colour_nodes() {
+        // Own the root; keep enough blessings to afford the 5b root children but
+        // not everything.
+        let r = research(&["research_hut"], 5.0);
+        let lines = tree_report_lines(&r);
+        let find = |name: &str| {
+            lines
+                .iter()
+                .find(|(s, _)| s.contains(name))
+                .cloned()
+                .unwrap_or_else(|| panic!("missing line for {name}"))
+        };
+        // Owned root: green + [x].
+        let (hut, hut_c) = find("Research Hut");
+        assert!(hut.contains("[x]"));
+        assert_eq!(hut_c, NODE_OWNED_COLOR);
+        // Available + affordable child: [>] ready, gold.
+        let (tools, tools_c) = find("Basic Tools");
+        assert!(tools.contains("[>]"));
+        assert_eq!(tools_c, NODE_READY_COLOR);
+        // Header carries the blessings balance.
+        assert!(lines[0].0.contains("Blessings: 5"));
+        // Era headers present.
+        assert!(lines.iter().any(|(s, _)| s == "- Era 1 -"));
+        // Every node gets a line, plus the 3-line header block and one header per
+        // era — and it all fits the panel's slot count.
+        let eras = usize::from(UPGRADE_NODES.iter().map(|n| n.era).max().unwrap());
+        assert_eq!(lines.len(), 3 + eras + UPGRADE_NODES.len());
+        assert!(lines.len() <= TREE_LINES);
     }
 
     #[test]
