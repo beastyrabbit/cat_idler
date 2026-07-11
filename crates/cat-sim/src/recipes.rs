@@ -16,9 +16,14 @@
 //! - [`STONE_TRADE_RECIPE`]: StonePrep bench, [`crate::items::Material::Stone`], spends
 //!   blocks, kinds rotate through Bowl / Trinket.
 //!
-//! Clothing (spec's third material-good line) is skipped this slice — the spec's cloth/
-//! leather intermediates aren't modeled as a `Resources` field yet (a separate raw-
-//! resource chain, out of scope here).
+//! Clothing (spec's third material-good line, P16/P19 deferred slice) lands via two more
+//! benches once the raw fibre/hide → cloth/leather chain exists
+//! ([`crate::entities::Resources::fibre`]/`hide`/`cloth`/`leather`,
+//! [`crate::types::BuildingType::Clothier`]/[`Tannery`](crate::types::BuildingType::Tannery)):
+//! - [`CLOTH_TRADE_RECIPE`]: Clothier bench, [`crate::items::Material::Fibre`], spends
+//!   cloth, kinds: Clothing.
+//! - [`LEATHER_TRADE_RECIPE`]: Tannery bench, [`crate::items::Material::Leather`], spends
+//!   leather, kinds: Clothing.
 
 use std::collections::BTreeMap;
 
@@ -64,6 +69,29 @@ pub const WOOD_TRADE_RECIPE: CraftRecipe = CraftRecipe {
 pub const STONE_TRADE_RECIPE: CraftRecipe = CraftRecipe {
     material: Material::Stone,
     kinds: &[ItemKind::Bowl, ItemKind::Trinket],
+    intermediate_per_cycle: 1.0,
+    cycle_sec: 900.0,
+    surplus_reserve: 20.0,
+};
+
+/// Clothier bench: cloth → clothing (P16/P19 clothing chain slice). The clothier has
+/// no functional (non-trade) recipe competing for cloth — unlike planks/blocks, cloth
+/// only ever feeds this trade craft — so the reserve exists purely to keep a small
+/// buffer against the clothier's own refine cycle (fibre → cloth) outproducing this
+/// craft cycle in a single tick. Mirrors [`WOOD_TRADE_RECIPE`]'s cadence/reserve shape.
+pub const CLOTH_TRADE_RECIPE: CraftRecipe = CraftRecipe {
+    material: Material::Fibre,
+    kinds: &[ItemKind::Clothing],
+    intermediate_per_cycle: 1.0,
+    cycle_sec: 900.0,
+    surplus_reserve: 20.0,
+};
+
+/// Tannery bench: leather → clothing. Mirrors [`CLOTH_TRADE_RECIPE`]'s reasoning for
+/// the tannery's own hide → leather refine.
+pub const LEATHER_TRADE_RECIPE: CraftRecipe = CraftRecipe {
+    material: Material::Leather,
+    kinds: &[ItemKind::Clothing],
     intermediate_per_cycle: 1.0,
     cycle_sec: 900.0,
     surplus_reserve: 20.0,
@@ -208,6 +236,47 @@ mod tests {
         assert_eq!(
             STONE_TRADE_RECIPE.kinds,
             &[ItemKind::Bowl, ItemKind::Trinket]
+        );
+        assert_eq!(CLOTH_TRADE_RECIPE.material, Material::Fibre);
+        assert_eq!(CLOTH_TRADE_RECIPE.kinds, &[ItemKind::Clothing]);
+        assert_eq!(LEATHER_TRADE_RECIPE.material, Material::Leather);
+        assert_eq!(LEATHER_TRADE_RECIPE.kinds, &[ItemKind::Clothing]);
+    }
+
+    #[test]
+    fn clothing_recipes_craft_clothing_items_from_surplus_cloth_and_leather() {
+        // Cloth bench: below the reserve produces nothing, above it crafts Clothing.
+        let starved = advance_craft(0.0, 900.0, options(true, false, 15.0), &CLOTH_TRADE_RECIPE);
+        assert_eq!(starved.items_produced, 0);
+
+        let step = advance_craft(0.0, 900.0, options(true, false, 21.0), &CLOTH_TRADE_RECIPE);
+        assert_eq!(step.items_produced, 1);
+        assert_eq!(step.intermediate_used, 1.0);
+        assert_eq!(
+            next_trade_kind(&BTreeMap::new(), &CLOTH_TRADE_RECIPE),
+            ItemKind::Clothing
+        );
+
+        // Leather bench mirrors the same shape.
+        let starved = advance_craft(
+            0.0,
+            900.0,
+            options(true, false, 15.0),
+            &LEATHER_TRADE_RECIPE,
+        );
+        assert_eq!(starved.items_produced, 0);
+
+        let step = advance_craft(
+            0.0,
+            900.0,
+            options(true, false, 21.0),
+            &LEATHER_TRADE_RECIPE,
+        );
+        assert_eq!(step.items_produced, 1);
+        assert_eq!(step.intermediate_used, 1.0);
+        assert_eq!(
+            next_trade_kind(&BTreeMap::new(), &LEATHER_TRADE_RECIPE),
+            ItemKind::Clothing
         );
     }
 

@@ -47,11 +47,12 @@ use crate::{
     },
     policy::PolicyConfig,
     production::{
-        WoodworkingOptions, WorkshopOptions, advance_woodworking, advance_workshop, field_yield,
+        WoodworkingOptions, WorkshopOptions, advance_woodworking, advance_workshop,
+        fibre_forage_yield, field_yield,
     },
     recipes::{
-        CraftOptions, STONE_TRADE_RECIPE, WOOD_TRADE_RECIPE, advance_craft,
-        craft_quality_from_skill, next_trade_kind,
+        CLOTH_TRADE_RECIPE, CraftOptions, LEATHER_TRADE_RECIPE, STONE_TRADE_RECIPE,
+        WOOD_TRADE_RECIPE, advance_craft, craft_quality_from_skill, next_trade_kind,
     },
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{self, RoadCorridorOptions, RoadTile, select_road_corridor},
@@ -175,6 +176,12 @@ pub struct ColonyRuntime {
     /// StonePrep bench's trade-craft cycle timer (P19 slice 2), mirroring
     /// [`Self::wood_craft_progress`] for [`crate::recipes::STONE_TRADE_RECIPE`].
     pub stone_craft_progress: f64,
+    /// Clothier bench's trade-craft cycle timer (P16/P19 clothing chain slice),
+    /// mirroring [`Self::wood_craft_progress`] for [`crate::recipes::CLOTH_TRADE_RECIPE`].
+    pub clothier_craft_progress: f64,
+    /// Tannery bench's trade-craft cycle timer (P16/P19 clothing chain slice),
+    /// mirroring [`Self::wood_craft_progress`] for [`crate::recipes::LEATHER_TRADE_RECIPE`].
+    pub tannery_craft_progress: f64,
     /// Coin balance (P19 slice 3): earned by [`crate::trader::TraderState::Trading`]
     /// `SellGoods` and spent on `BuyResource`. Its own currency, deliberately not folded
     /// into `resources.blessings` or `global_upgrade_points` (the spec: "Do NOT overload
@@ -294,7 +301,9 @@ pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
         | BuildingType::FoodStorage
         | BuildingType::WoodCutter
         | BuildingType::StonePrep
-        | BuildingType::Woodworking => (3, 3),
+        | BuildingType::Woodworking
+        | BuildingType::Clothier
+        | BuildingType::Tannery => (3, 3),
         // Dwellings, gardens and the mid buildings take a 2x3 plot (P16).
         BuildingType::Den
         | BuildingType::Beds
@@ -602,6 +611,8 @@ impl Default for ColonyRuntime {
             items: BTreeMap::new(),
             wood_craft_progress: 0.0,
             stone_craft_progress: 0.0,
+            clothier_craft_progress: 0.0,
+            tannery_craft_progress: 0.0,
             coin: 0.0,
             trader: None,
             last_trader_departed_at: None,
@@ -769,6 +780,12 @@ fn starting_resources() -> Resources {
         planks: 0.0,
         blocks: 0.0,
         tools: 0.0,
+        // Clothing chain (P16/P19 slice) — also empty at founding; fibre trickles in
+        // passively and hide is a hunt byproduct.
+        fibre: 0.0,
+        hide: 0.0,
+        cloth: 0.0,
+        leather: 0.0,
         blessings: 0.0,
     }
 }
@@ -1171,6 +1188,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_21_leader_capital_decisions_and_tithe(colony, gate, policy, &plan);
         phase_22_ritual_approval(colony, gate);
         phase_23_production(colony, gate);
+        phase_23c_fibre_forage(colony, gate);
         phase_24_research(colony, gate);
         phase_25_survival_deaths_and_carried_yield_salvage(colony, gate, policy);
         phase_25b_prune_dead_scout_provisional_tiles(colony, gate);
@@ -1682,6 +1700,10 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     colony.resources.planks = clamp_resource(colony.resources.planks, caps.planks);
     colony.resources.blocks = clamp_resource(colony.resources.blocks, caps.blocks);
     colony.resources.tools = clamp_resource(colony.resources.tools, caps.tools);
+    colony.resources.fibre = clamp_resource(colony.resources.fibre, caps.fibre);
+    colony.resources.hide = clamp_resource(colony.resources.hide, caps.hide);
+    colony.resources.cloth = clamp_resource(colony.resources.cloth, caps.cloth);
+    colony.resources.leather = clamp_resource(colony.resources.leather, caps.leather);
 }
 
 /// Phase 8: append the water crisis edge event when water crosses the low
@@ -2642,6 +2664,11 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
         gate.processed_through,
         false,
     );
+    // P16/P19 clothing chain slice: the clothier/tannery are luxury benches like the
+    // generic Workshop/AccountingTent above — staffed only from genuine surplus, sticky
+    // (not released every tick like the raw-material trio), announced like Workshop.
+    auto_staff_idle_buildings(colony, BuildingType::Clothier, gate.processed_through, true);
+    auto_staff_idle_buildings(colony, BuildingType::Tannery, gate.processed_through, true);
 
     let production_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
     let building_ids = colony
@@ -2933,6 +2960,135 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
                     );
                 }
             }
+            BuildingType::Clothier => {
+                // P16/P19 clothing chain slice: raw fibre → cloth, on the same
+                // refinement-workshop cadence as the wood-cutter/stone-prep benches
+                // (`advance_workshop` is generic over which resource it refines).
+                let worker = assigned_worker(colony, &building_id);
+                let step = advance_workshop(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    WorkshopOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_architect: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        materials_available: colony.resources.fibre,
+                    },
+                );
+                if step.refined_produced > 0.0 {
+                    colony.resources.fibre =
+                        (colony.resources.fibre - step.materials_used).max(0.0);
+                    colony.resources.cloth += step.refined_produced;
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("production".to_owned()),
+                        format!(
+                            "The clothier wove {} fibre into {} cloth.",
+                            step.materials_used, step.refined_produced,
+                        ),
+                    );
+                }
+                colony.buildings[building_index].production_progress = step.next_progress;
+
+                // Additive trade craft — same bench/worker, its own cycle timer
+                // (`colony.clothier_craft_progress`), spends only *surplus* cloth above
+                // CLOTH_TRADE_RECIPE's reserve. Mirrors the woodworking bench's
+                // wood-trade craft tail exactly.
+                let craft_worker = assigned_worker(colony, &building_id);
+                let craft_has_worker = craft_worker.is_some();
+                let craft_is_architect = craft_worker
+                    .is_some_and(|cat| cat.specialization == Some(CatSpecialization::Architect));
+                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Craft));
+                let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
+                let craft_step = advance_craft(
+                    colony.clothier_craft_progress,
+                    production_elapsed,
+                    CraftOptions {
+                        has_worker: craft_has_worker,
+                        worker_is_architect: craft_is_architect,
+                        intermediate_available: colony.resources.cloth,
+                    },
+                    &CLOTH_TRADE_RECIPE,
+                );
+                colony.clothier_craft_progress = craft_step.next_progress;
+                if craft_step.items_produced > 0 {
+                    colony.resources.cloth =
+                        (colony.resources.cloth - craft_step.intermediate_used).max(0.0);
+                    credit_trade_craft(
+                        colony,
+                        gate,
+                        &CLOTH_TRADE_RECIPE,
+                        craft_skill,
+                        craft_worker_id,
+                        craft_step.items_produced,
+                        "clothier",
+                    );
+                }
+            }
+            BuildingType::Tannery => {
+                // P16/P19 clothing chain slice: raw hide → leather, same refinement
+                // cadence as the clothier above.
+                let worker = assigned_worker(colony, &building_id);
+                let step = advance_workshop(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    WorkshopOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_architect: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        materials_available: colony.resources.hide,
+                    },
+                );
+                if step.refined_produced > 0.0 {
+                    colony.resources.hide = (colony.resources.hide - step.materials_used).max(0.0);
+                    colony.resources.leather += step.refined_produced;
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("production".to_owned()),
+                        format!(
+                            "The tannery tanned {} hide into {} leather.",
+                            step.materials_used, step.refined_produced,
+                        ),
+                    );
+                }
+                colony.buildings[building_index].production_progress = step.next_progress;
+
+                // Additive trade craft, mirroring the clothier's tail above for leather.
+                let craft_worker = assigned_worker(colony, &building_id);
+                let craft_has_worker = craft_worker.is_some();
+                let craft_is_architect = craft_worker
+                    .is_some_and(|cat| cat.specialization == Some(CatSpecialization::Architect));
+                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Craft));
+                let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
+                let craft_step = advance_craft(
+                    colony.tannery_craft_progress,
+                    production_elapsed,
+                    CraftOptions {
+                        has_worker: craft_has_worker,
+                        worker_is_architect: craft_is_architect,
+                        intermediate_available: colony.resources.leather,
+                    },
+                    &LEATHER_TRADE_RECIPE,
+                );
+                colony.tannery_craft_progress = craft_step.next_progress;
+                if craft_step.items_produced > 0 {
+                    colony.resources.leather =
+                        (colony.resources.leather - craft_step.intermediate_used).max(0.0);
+                    credit_trade_craft(
+                        colony,
+                        gate,
+                        &LEATHER_TRADE_RECIPE,
+                        craft_skill,
+                        craft_worker_id,
+                        craft_step.items_produced,
+                        "tannery",
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -2990,6 +3146,18 @@ fn credit_trade_craft(
             kind.as_str()
         ),
     );
+}
+
+/// Phase 23c: a small passive per-cat fibre forage trickle (P16/P19 clothing chain
+/// slice) — independent of any building, job, or worker assignment, feeding the
+/// clothier's fibre → cloth refine. Deliberately minimal and additive: a full
+/// dedicated gather-spot/forage system is a separate, larger card (P16 "Gather
+/// spots") and out of scope here; this just keeps a trickle of raw fibre flowing so
+/// a colony that builds a clothier always has *something* to work with.
+fn phase_23c_fibre_forage(colony: &mut ColonyRuntime, gate: TickGate) {
+    let alive = alive_cats(&colony.cats).count() as f64;
+    let elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
+    colony.resources.fibre += fibre_forage_yield(alive, elapsed);
 }
 
 /// Deposit a produced `amount` of `kind` into the nearest accepting stockpile to `at`
@@ -4411,6 +4579,10 @@ fn starting_resources_with_blessings(blessings: f64) -> Resources {
         planks: 0.0,
         blocks: 0.0,
         tools: 0.0,
+        fibre: 0.0,
+        hide: 0.0,
+        cloth: 0.0,
+        leather: 0.0,
         blessings,
     }
 }
@@ -4869,6 +5041,10 @@ fn clamp_resources_to_caps(resources: &mut Resources, caps: StorageCapacities) {
     resources.planks = clamp_resource(resources.planks, caps.planks);
     resources.blocks = clamp_resource(resources.blocks, caps.blocks);
     resources.tools = clamp_resource(resources.tools, caps.tools);
+    resources.fibre = clamp_resource(resources.fibre, caps.fibre);
+    resources.hide = clamp_resource(resources.hide, caps.hide);
+    resources.cloth = clamp_resource(resources.cloth, caps.cloth);
+    resources.leather = clamp_resource(resources.leather, caps.leather);
 }
 
 fn clamp_resource(value: f64, cap: f64) -> f64 {
@@ -5683,7 +5859,9 @@ fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
         | BuildingType::FoodStorage
         | BuildingType::Smithy
         | BuildingType::Barracks
-        | BuildingType::AccountingTent => building_type,
+        | BuildingType::AccountingTent
+        | BuildingType::Clothier
+        | BuildingType::Tannery => building_type,
         _ => BuildingType::Den,
     }
 }
@@ -5926,6 +6104,15 @@ fn due_active_jobs(colony: &ColonyRuntime, gate: TickGate) -> Vec<JobRuntime> {
         .collect()
 }
 
+/// Raw hide credited per unit of hunt food reward (P16/P19 clothing chain slice) — a
+/// direct byproduct, not hauled: hunts already haul their food reward via
+/// `Carrying` (which only ever carries one resource kind at a time), so rather than
+/// extend the hauling/trips model for a second resource, hide is simply credited to
+/// `colony.resources.hide` the moment a hunt completes. Keeps the tannery fed without
+/// touching the trip-based hauling system (out of scope here). Small on purpose —
+/// hide is a byproduct of hunting, not hunting's point.
+const HUNT_HIDE_YIELD_RATIO: f64 = 0.2;
+
 fn complete_hunt(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
     let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
         return;
@@ -5935,6 +6122,9 @@ fn complete_hunt(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
     let reward = remaining_yield(total, HUNT_TRIP_COUNT, trips_done as i32);
     if let Some(site) = site {
         drain_hunt_site(colony, site, reward, gate.processed_through);
+    }
+    if reward > 0.0 {
+        colony.resources.hide += reward * HUNT_HIDE_YIELD_RATIO;
     }
 
     let cat = &mut colony.cats[cat_index];
@@ -6533,6 +6723,10 @@ mod tests {
                     planks: 0.0,
                     blocks: 0.0,
                     tools: 0.0,
+                    fibre: 0.0,
+                    hide: 0.0,
+                    cloth: 0.0,
+                    leather: 0.0,
                     blessings: 0.0,
                 },
                 cats: vec![adult_idle_cat("cat-1", "colony-1")],
@@ -6602,6 +6796,10 @@ mod tests {
                     planks: 0.0,
                     blocks: 0.0,
                     tools: 0.0,
+                    fibre: 0.0,
+                    hide: 0.0,
+                    cloth: 0.0,
+                    leather: 0.0,
                     blessings: 0.0,
                 },
                 cats,
@@ -7238,6 +7436,10 @@ mod tests {
                     planks: 0.0,
                     blocks: 0.0,
                     tools: 0.0,
+                    fibre: 0.0,
+                    hide: 0.0,
+                    cloth: 0.0,
+                    leather: 0.0,
                     blessings: 7.0,
                 },
                 cats: vec![dead],
@@ -8187,6 +8389,256 @@ mod tests {
             !left.items.is_empty(),
             "the horizon should have completed at least one trade-craft cycle"
         );
+    }
+
+    // ---- P16/P19 clothing chain slice: clothier/tannery refine + trade craft ----
+
+    #[test]
+    fn clothier_refines_fibre_into_cloth_when_it_has_a_worker() {
+        let mut staffed = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: 50.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut staffed, production_gate(30, 30_000));
+        assert_eq!(staffed.resources.cloth, 1.0);
+        assert_eq!(staffed.resources.fibre, 45.0);
+
+        // With no worker at all, the bench makes nothing.
+        let mut no_worker = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: 50.0,
+                ..Resources::default()
+            },
+            false,
+        );
+        no_worker.cats.clear();
+        phase_23_production(&mut no_worker, production_gate(30, 30_000));
+        assert_eq!(no_worker.resources.cloth, 0.0);
+        assert_eq!(no_worker.resources.fibre, 50.0);
+    }
+
+    #[test]
+    fn tannery_tans_hide_into_leather_when_staffed() {
+        let mut colony = chain_colony(
+            BuildingType::Tannery,
+            Resources {
+                hide: 50.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+        assert_eq!(colony.resources.leather, 1.0);
+        assert_eq!(colony.resources.hide, 45.0);
+    }
+
+    #[test]
+    fn clothier_bench_crafts_a_clothing_trade_good_from_surplus_cloth() {
+        let mut colony = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: 50.0,
+                cloth: 21.0, // above CLOTH_TRADE_RECIPE's 20-cloth reserve
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.clothier_craft_progress = 890.0;
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+
+        // The functional refine (unchanged) also completes this tick and adds 1 cloth
+        // (21 + 1 = 22), then the trade craft spends 1 of the surplus: 22 - 1 = 21.
+        assert_eq!(colony.resources.cloth, 21.0);
+
+        let clothing_items: Vec<(&Item, &u32)> = colony
+            .items
+            .iter()
+            .filter(|(item, _)| item.material == Material::Fibre)
+            .collect();
+        assert_eq!(
+            clothing_items.len(),
+            1,
+            "exactly one fibre clothing stack crafted"
+        );
+        let (item, count) = clothing_items[0];
+        assert_eq!(*count, 1);
+        assert_eq!(item.kind, ItemKind::Clothing);
+
+        // The assigned worker's Craft skill is trained the first time it's used.
+        let worker = colony.cats.iter().find(|cat| cat.id == "crafter").unwrap();
+        assert_eq!(worker.skill(Labor::Craft), SKILL_GAIN_PER_JOB);
+    }
+
+    #[test]
+    fn tannery_bench_crafts_a_clothing_trade_good_from_surplus_leather() {
+        let mut colony = chain_colony(
+            BuildingType::Tannery,
+            Resources {
+                hide: 50.0,
+                leather: 21.0, // above LEATHER_TRADE_RECIPE's 20-leather reserve
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.tannery_craft_progress = 890.0;
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+
+        assert_eq!(colony.resources.leather, 21.0);
+
+        let clothing_items: Vec<(&Item, &u32)> = colony
+            .items
+            .iter()
+            .filter(|(item, _)| item.material == Material::Leather)
+            .collect();
+        assert_eq!(
+            clothing_items.len(),
+            1,
+            "exactly one leather clothing stack crafted"
+        );
+        let (item, count) = clothing_items[0];
+        assert_eq!(*count, 1);
+        assert_eq!(item.kind, ItemKind::Clothing);
+    }
+
+    #[test]
+    fn clothing_trade_craft_at_or_below_the_surplus_reserve_produces_no_items() {
+        // 15 cloth sits below CLOTH_TRADE_RECIPE's 20-cloth reserve; zero fibre keeps the
+        // functional refine from topping it up this tick, isolating the surplus gate. The
+        // colony must protect its (already scarce) cloth from trade crafting.
+        let mut colony = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: 0.0,
+                cloth: 15.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.clothier_craft_progress = 890.0;
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+
+        assert_eq!(
+            colony.resources.cloth, 15.0,
+            "surplus gate must leave scarce cloth untouched"
+        );
+        assert!(
+            colony.items.is_empty(),
+            "no trade goods should be crafted at/below the surplus reserve"
+        );
+    }
+
+    #[test]
+    fn clothing_trade_good_quality_reflects_the_assigned_crafters_skill() {
+        fn quality_after_one_cycle(craft_skill: f64) -> u8 {
+            let mut colony = chain_colony(
+                BuildingType::Clothier,
+                Resources {
+                    fibre: 50.0,
+                    cloth: 30.0,
+                    ..Resources::default()
+                },
+                true,
+            );
+            colony.cats[0].gain_skill(Labor::Craft, craft_skill);
+            colony.clothier_craft_progress = 890.0;
+            phase_23_production(&mut colony, production_gate(30, 30_000));
+            colony
+                .items
+                .iter()
+                .find(|(item, _)| item.material == Material::Fibre)
+                .expect("a fibre clothing item was crafted")
+                .0
+                .quality
+        }
+
+        let low_skill_quality = quality_after_one_cycle(0.0);
+        let high_skill_quality = quality_after_one_cycle(400.0);
+        assert_eq!(
+            low_skill_quality, 0,
+            "an untrained crafter yields the crude band"
+        );
+        assert_eq!(
+            high_skill_quality, MAX_QUALITY,
+            "400 craft xp yields masterwork"
+        );
+        assert!(
+            high_skill_quality > low_skill_quality,
+            "a more-skilled crafter must never yield lower quality for the same recipe"
+        );
+    }
+
+    #[test]
+    fn a_colony_that_never_builds_a_clothier_or_tannery_is_unaffected_by_the_clothing_chain() {
+        // Additive guardrail: a colony with no clothier/tannery building must produce no
+        // cloth/leather/clothing items — the chain only ever fires when those benches
+        // exist. Fibre still passively forages (phase 23c is population-scaled, not
+        // gated on a clothier existing) but that alone must never mutate `items`.
+        let mut colony = chain_colony(BuildingType::WoodCutter, Resources::default(), true);
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23c_fibre_forage(&mut colony, production_gate(30, 30_000));
+
+        assert_eq!(colony.resources.cloth, 0.0);
+        assert_eq!(colony.resources.leather, 0.0);
+        assert!(
+            colony
+                .items
+                .keys()
+                .all(|item| item.material != Material::Fibre && item.material != Material::Leather),
+            "no clothing items without a clothier/tannery"
+        );
+    }
+
+    #[test]
+    fn clothing_chain_horizon_is_deterministic_across_identical_runs() {
+        fn build() -> ColonyRuntime {
+            chain_colony(
+                BuildingType::Clothier,
+                Resources {
+                    fibre: 200.0,
+                    cloth: 200.0,
+                    ..Resources::default()
+                },
+                true,
+            )
+        }
+
+        let mut left = build();
+        let mut right = build();
+
+        for step in 1..=60 {
+            let now = i64::from(step) * 60_000;
+            let gate = production_gate(60, now);
+            phase_23_production(&mut left, gate);
+            phase_23c_fibre_forage(&mut left, gate);
+            phase_23_production(&mut right, gate);
+            phase_23c_fibre_forage(&mut right, gate);
+        }
+
+        assert_eq!(
+            left, right,
+            "identical runs (including the items store and cat skills) must be byte-identical"
+        );
+        assert!(
+            !left.items.is_empty(),
+            "the horizon should have completed at least one clothing trade-craft cycle"
+        );
+    }
+
+    #[test]
+    fn fibre_forage_trickles_in_passively_without_any_building_or_worker() {
+        let mut colony = chain_colony(BuildingType::Den, Resources::default(), false);
+        colony.cats = vec![
+            adult_idle_cat("cat-1", "colony-1"),
+            adult_idle_cat("cat-2", "colony-1"),
+        ];
+        phase_23c_fibre_forage(&mut colony, production_gate(3_600, 3_600_000));
+        // 2 living cats * 0.05 fibre/cat/hour * 1 hour = 0.1.
+        assert_eq!(colony.resources.fibre, 0.1);
     }
 
     // ---- P19 slice 3: visiting trader / caravan economy ----
@@ -10081,6 +10533,10 @@ mod tests {
             planks: 0.0,
             blocks: 0.0,
             tools: 0.0,
+            fibre: 100.0,
+            hide: 100.0,
+            cloth: 0.0,
+            leather: 0.0,
             blessings: 0.0,
         }
     }

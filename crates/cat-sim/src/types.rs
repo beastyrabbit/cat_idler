@@ -117,6 +117,8 @@ define_wire_enum! {
         WoodCutter => "wood_cutter",
         StonePrep => "stone_prep",
         Woodworking => "woodworking",
+        Clothier => "clothier",
+        Tannery => "tannery",
     }
 }
 
@@ -285,6 +287,8 @@ mod tests {
             (BuildingType::WoodCutter, "wood_cutter"),
             (BuildingType::StonePrep, "stone_prep"),
             (BuildingType::Woodworking, "woodworking"),
+            (BuildingType::Clothier, "clothier"),
+            (BuildingType::Tannery, "tannery"),
         ];
 
         assert_wire_round_trip(&cases, BuildingType::as_str);

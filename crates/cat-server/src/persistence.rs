@@ -471,6 +471,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         // cosmetic timer restart, not an economy loss).
         wood_craft_progress: 0.0,
         stone_craft_progress: 0.0,
+        // P16/P19 clothing chain slice: same precedent as the wood/stone trade-craft
+        // timers above — a restart just restarts the clothier/tannery rotation from 0.
+        clothier_craft_progress: 0.0,
+        tannery_craft_progress: 0.0,
         // P19 slice 3: `coin` is real player-facing wealth, so it gets a column (see
         // `migrate_add_missing_columns`). The in-progress trader visit + its schedule
         // reference (`last_trader_departed_at`) are NOT persisted this slice, matching
@@ -1447,6 +1451,13 @@ mod tests {
             .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
         world.colonies[0].resources.food = 123.5;
         world.colonies[0].resources.water = 87.25;
+        // P16/P19 clothing chain slice: the new resource fields must round-trip too —
+        // `resources` persists as a single JSON blob column, so this exercises the
+        // Resources serde shape end-to-end (not just the in-memory struct).
+        world.colonies[0].resources.fibre = 6.0;
+        world.colonies[0].resources.hide = 4.5;
+        world.colonies[0].resources.cloth = 2.5;
+        world.colonies[0].resources.leather = 1.5;
 
         let action = ClientAction::RequestJob {
             session_id: "session-1".to_owned(),
@@ -1498,6 +1509,10 @@ mod tests {
         assert_eq!(loaded.world_seed, world.world_seed);
         assert_eq!(loaded.colonies.len(), 1);
         assert_eq!(loaded.colonies[0].resources, world.colonies[0].resources);
+        assert_eq!(loaded.colonies[0].resources.fibre, 6.0);
+        assert_eq!(loaded.colonies[0].resources.hide, 4.5);
+        assert_eq!(loaded.colonies[0].resources.cloth, 2.5);
+        assert_eq!(loaded.colonies[0].resources.leather, 1.5);
         assert_eq!(loaded.colonies[0].cats, world.colonies[0].cats);
         assert!(loaded.colonies[0].cats[0].boosted, "boosted flag persists");
         assert_eq!(loaded.colonies[0].jobs, world.colonies[0].jobs);

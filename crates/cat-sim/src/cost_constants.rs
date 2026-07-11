@@ -46,7 +46,7 @@ pub const ENEMY_STATS: [(EnemyType, EnemyStats); 5] = [
     ),
 ];
 
-pub const BUILDING_COSTS: [(BuildingType, u32); 18] = [
+pub const BUILDING_COSTS: [(BuildingType, u32); 20] = [
     (BuildingType::Den, 0),
     (BuildingType::FoodStorage, 5),
     (BuildingType::WaterBowl, 3),
@@ -65,6 +65,10 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 18] = [
     (BuildingType::WoodCutter, 20),
     (BuildingType::StonePrep, 20),
     (BuildingType::Woodworking, 25),
+    // P16/P19 clothing chain slice — same tier as the wood-cutter/stone-prep raw
+    // refinement benches they mirror.
+    (BuildingType::Clothier, 20),
+    (BuildingType::Tannery, 20),
 ];
 
 pub const TASK_TO_SKILL: [(TaskType, &str); 12] = [
@@ -170,6 +174,8 @@ mod tests {
             (BuildingType::WoodCutter, 20),
             (BuildingType::StonePrep, 20),
             (BuildingType::Woodworking, 25),
+            (BuildingType::Clothier, 20),
+            (BuildingType::Tannery, 20),
         ];
 
         assert_eq!(BUILDING_COSTS.len(), BuildingType::ALL.len());

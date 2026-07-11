@@ -371,6 +371,10 @@ mod tests {
                 planks: 0.0,
                 blocks: 0.0,
                 tools: 0.0,
+                fibre: 0.0,
+                hide: 0.0,
+                cloth: 0.0,
+                leather: 0.0,
                 blessings: 999.0,
             }),
             140.0

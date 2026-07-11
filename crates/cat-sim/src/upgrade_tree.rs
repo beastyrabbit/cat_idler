@@ -203,6 +203,22 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         },
     },
     UpgradeNode {
+        id: "textiles",
+        name: "Textiles",
+        description: "Raise the clothier and tannery. Fibre and hunt hides become cloth, leather, and warm clothing.",
+        era: 2,
+        cost: 12.0,
+        prerequisites: &["foraging_lore"],
+        unlocks: UpgradeUnlocks {
+            buildings: Some(&[
+                BuildingType::Clothier.as_str(),
+                BuildingType::Tannery.as_str(),
+            ]),
+            jobs: Some(&["craft_clothing"]),
+            effects: None,
+        },
+    },
+    UpgradeNode {
         id: "sawmill",
         name: "Sawmill",
         description: "Raise the Sägewerk. Felled timber becomes usable materials far faster.",
@@ -849,8 +865,9 @@ mod tests {
     #[test]
     fn node_table_matches_the_typescript_tree_shape() {
         // 18 TS-parity nodes + the Rust-side `mountaineering` node (unlocks
-        // mountain-tile traversal in pathfinding).
-        assert_eq!(UPGRADE_NODES.len(), 19);
+        // mountain-tile traversal in pathfinding) + the Rust-side `textiles` node
+        // (unlocks the clothier/tannery clothing chain, P16/P19 deferred slice).
+        assert_eq!(UPGRADE_NODES.len(), 20);
         assert_eq!(EffectKey::ALL.len(), 11);
         assert_eq!(effect_kind(EffectKey::HuntYieldMult), EffectKind::Mult);
         assert_eq!(effect_kind(EffectKey::WaterCarryCapacity), EffectKind::Add);

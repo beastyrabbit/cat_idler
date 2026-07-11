@@ -77,6 +77,21 @@ pub struct Resources {
     /// Finished tools from the woodworking shop (P12.4b: planks + blocks → tools).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub tools: f64,
+    /// Raw plant fibre — a small passive forage trickle (P16/P19 clothing chain slice).
+    /// Feeds the clothier's fibre → cloth refine, mirroring how `materials` feeds
+    /// planks/blocks.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fibre: f64,
+    /// Raw hide, a byproduct credited alongside food on hunt completion (P16/P19
+    /// clothing chain slice). Feeds the tannery's hide → leather refine.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hide: f64,
+    /// Woven cloth from the clothier (P16/P19 clothing chain slice: fibre → cloth).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cloth: f64,
+    /// Tanned leather from the tannery (P16/P19 clothing chain slice: hide → leather).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub leather: f64,
     pub blessings: f64,
 }
 
@@ -270,6 +285,10 @@ mod tests {
                 planks: 18.0,
                 blocks: 19.0,
                 tools: 20.0,
+                fibre: 21.0,
+                hide: 22.0,
+                cloth: 23.0,
+                leather: 24.0,
                 blessings: 17.0,
             },
             grid_size: 9,
@@ -413,6 +432,10 @@ mod tests {
         assert_eq!(colony.resources.planks, 0.0);
         assert_eq!(colony.resources.blocks, 0.0);
         assert_eq!(colony.resources.tools, 0.0);
+        assert_eq!(colony.resources.fibre, 0.0);
+        assert_eq!(colony.resources.hide, 0.0);
+        assert_eq!(colony.resources.cloth, 0.0);
+        assert_eq!(colony.resources.leather, 0.0);
 
         assert_eq!(cat.destination, None);
         assert_eq!(cat.carrying, None);
@@ -454,18 +477,30 @@ mod tests {
         assert!(wire.get("planks").is_none());
         assert!(wire.get("blocks").is_none());
         assert!(wire.get("tools").is_none());
+        assert!(wire.get("fibre").is_none());
+        assert!(wire.get("hide").is_none());
+        assert!(wire.get("cloth").is_none());
+        assert!(wire.get("leather").is_none());
 
         // Non-zero values survive a serialize → deserialize round trip.
         let stocked = Resources {
             planks: 7.0,
             blocks: 3.5,
             tools: 2.0,
+            fibre: 6.0,
+            hide: 4.5,
+            cloth: 1.5,
+            leather: 0.5,
             ..Resources::default()
         };
         let wire = serde_json::to_value(&stocked).expect("serialize");
         assert_eq!(wire["planks"], serde_json::json!(7.0));
         assert_eq!(wire["blocks"], serde_json::json!(3.5));
         assert_eq!(wire["tools"], serde_json::json!(2.0));
+        assert_eq!(wire["fibre"], serde_json::json!(6.0));
+        assert_eq!(wire["hide"], serde_json::json!(4.5));
+        assert_eq!(wire["cloth"], serde_json::json!(1.5));
+        assert_eq!(wire["leather"], serde_json::json!(0.5));
         let back: Resources = serde_json::from_value(wire).expect("round-trip");
         assert_eq!(back, stocked);
     }

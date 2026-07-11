@@ -18,6 +18,13 @@ pub struct StorageCapacities {
     pub planks: f64,
     pub blocks: f64,
     pub tools: f64,
+    /// Clothing chain (P16/P19 deferred slice): raw fibre/hide and their
+    /// clothier/tannery refines, cloth/leather. Flat base capacity, no granary/smithy
+    /// bonus — mirrors `planks`/`blocks`/`tools` above exactly.
+    pub fibre: f64,
+    pub hide: f64,
+    pub cloth: f64,
+    pub leather: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -63,6 +70,10 @@ pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     planks: 100.0,
     blocks: 100.0,
     tools: 100.0,
+    fibre: 100.0,
+    hide: 100.0,
+    cloth: 100.0,
+    leather: 100.0,
 };
 
 /// Dry goods a single finished granary adds per level.
@@ -207,6 +218,14 @@ mod tests {
         assert_f64_bits(actual.planks, expected.planks, &format!("{label} planks"));
         assert_f64_bits(actual.blocks, expected.blocks, &format!("{label} blocks"));
         assert_f64_bits(actual.tools, expected.tools, &format!("{label} tools"));
+        assert_f64_bits(actual.fibre, expected.fibre, &format!("{label} fibre"));
+        assert_f64_bits(actual.hide, expected.hide, &format!("{label} hide"));
+        assert_f64_bits(actual.cloth, expected.cloth, &format!("{label} cloth"));
+        assert_f64_bits(
+            actual.leather,
+            expected.leather,
+            &format!("{label} leather"),
+        );
     }
 
     #[test]
@@ -224,6 +243,10 @@ mod tests {
                 planks: 100.0,
                 blocks: 100.0,
                 tools: 100.0,
+                fibre: 100.0,
+                hide: 100.0,
+                cloth: 100.0,
+                leather: 100.0,
             },
             "base capacity",
         );
@@ -261,6 +284,10 @@ mod tests {
                 planks: 100.0,
                 blocks: 100.0,
                 tools: 100.0,
+                fibre: 100.0,
+                hide: 100.0,
+                cloth: 100.0,
+                leather: 100.0,
             },
             "mixed finished buildings",
         );
@@ -298,6 +325,10 @@ mod tests {
                 planks: 100.0,
                 blocks: 100.0,
                 tools: 100.0,
+                fibre: 100.0,
+                hide: 100.0,
+                cloth: 100.0,
+                leather: 100.0,
             },
             "scaled building bonuses",
         );
@@ -331,6 +362,10 @@ mod tests {
                 planks: 100.0,
                 blocks: 100.0,
                 tools: 100.0,
+                fibre: 100.0,
+                hide: 100.0,
+                cloth: 100.0,
+                leather: 100.0,
             },
             "default and minimum level",
         );

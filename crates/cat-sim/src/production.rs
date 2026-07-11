@@ -13,6 +13,21 @@ pub const FIELD_FOOD_PER_HOUR: f64 = 2.0;
 pub const WORKSHOP_UNLOCK_LEVEL: u32 = 2;
 pub const FIELD_UNLOCK_LEVEL: u32 = 4;
 
+/// Passive per-cat fibre forage (P16/P19 clothing chain slice): cats picking up
+/// wayside plant fibre while going about their day, independent of any building,
+/// job, or worker assignment — mirrors `field_yield`'s "elapsed time -> yield"
+/// shape but scales with living population instead of a building count. Kept
+/// deliberately small and background; a dedicated fibre gather-spot/job is a
+/// separate, larger card (P16 "Gather spots") and out of scope here.
+pub const FIBRE_FORAGE_PER_CAT_PER_HOUR: f64 = 0.05;
+
+/// Passive fibre gained this tick from `alive_cat_count` cats foraging in the
+/// background over `elapsed_sec` seconds. Negative/NaN-safe like `field_yield`.
+#[must_use]
+pub fn fibre_forage_yield(alive_cat_count: f64, elapsed_sec: f64) -> f64 {
+    js_max(0.0, alive_cat_count) * js_max(0.0, elapsed_sec) / 3600.0 * FIBRE_FORAGE_PER_CAT_PER_HOUR
+}
+
 // --- P12.4b raw-material refinement chains (P16 blueprint workshops) ---
 //
 // The wood-cutter and stone-prep shops share the refinement-workshop cadence
@@ -30,6 +45,17 @@ pub const WOODCUTTER_PLANKS_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
 pub const STONEPREP_MATERIALS_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
 /// Blocks one stone-prep cycle produces.
 pub const STONEPREP_BLOCKS_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
+
+/// Raw fibre one clothier refine cycle consumes (P16/P19 clothing chain slice,
+/// aliased to the same refinement-workshop rate as the wood-cutter/stone-prep
+/// benches — see the module doc above).
+pub const CLOTHIER_FIBRE_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
+/// Cloth one clothier refine cycle produces.
+pub const CLOTHIER_CLOTH_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
+/// Raw hide one tannery refine cycle consumes.
+pub const TANNERY_HIDE_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
+/// Leather one tannery refine cycle produces.
+pub const TANNERY_LEATHER_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
 
 /// Planks one woodworking cycle consumes.
 pub const WOODWORKING_PLANKS_PER_CYCLE: f64 = 2.0;
@@ -265,7 +291,9 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         | BuildingType::WoodCutter
         | BuildingType::StonePrep
         | BuildingType::Woodworking
-        | BuildingType::Smithy => 1,
+        | BuildingType::Smithy
+        | BuildingType::Clothier
+        | BuildingType::Tannery => 1,
         BuildingType::Den
         | BuildingType::FoodStorage
         | BuildingType::WaterBowl
@@ -291,9 +319,11 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
 #[must_use]
 pub const fn building_cycle_sec(building_type: BuildingType) -> Option<f64> {
     match building_type {
-        BuildingType::Workshop | BuildingType::WoodCutter | BuildingType::StonePrep => {
-            Some(WORKSHOP_CYCLE_SEC)
-        }
+        BuildingType::Workshop
+        | BuildingType::WoodCutter
+        | BuildingType::StonePrep
+        | BuildingType::Clothier
+        | BuildingType::Tannery => Some(WORKSHOP_CYCLE_SEC),
         BuildingType::Woodworking => Some(WOODWORKING_CYCLE_SEC),
         BuildingType::Smithy => Some(crate::smithy::SMITHY_CYCLE_SEC),
         _ => None,
@@ -323,6 +353,8 @@ pub const fn building_output_label(building_type: BuildingType) -> Option<&'stat
         BuildingType::Woodworking => Some("tool"),
         BuildingType::Smithy => Some("weapon+armor"),
         BuildingType::Field => Some("food"),
+        BuildingType::Clothier => Some("cloth"),
+        BuildingType::Tannery => Some("leather"),
         BuildingType::Den
         | BuildingType::FoodStorage
         | BuildingType::WaterBowl
@@ -594,6 +626,31 @@ mod tests {
     }
 
     #[test]
+    fn fibre_forage_yield_scales_with_population_and_elapsed_time() {
+        assert_f64_bits(super::fibre_forage_yield(5.0, 0.0), 0.0, "zero elapsed");
+        assert_f64_bits(
+            super::fibre_forage_yield(0.0, 3_600.0),
+            0.0,
+            "no living cats",
+        );
+        assert_f64_bits(
+            super::fibre_forage_yield(-3.0, 3_600.0),
+            0.0,
+            "negative population clamps to zero",
+        );
+        assert_f64_bits(
+            super::fibre_forage_yield(5.0, -3_600.0),
+            0.0,
+            "negative elapsed clamps to zero",
+        );
+        // 5 cats * 0.05 fibre/cat/hour * 1 hour = 0.25.
+        assert_f64_bits(super::fibre_forage_yield(5.0, 3_600.0), 0.25, "one hour");
+        // Doubling either population or elapsed time doubles the yield.
+        assert_f64_bits(super::fibre_forage_yield(10.0, 3_600.0), 0.5, "double pop");
+        assert_f64_bits(super::fibre_forage_yield(5.0, 7_200.0), 0.5, "double time");
+    }
+
+    #[test]
     fn nan_inputs_match_math_max_min_propagation() {
         let workshop_step = advance_workshop(f64::NAN, 1.0, options(true, false, 5.0));
         assert!(workshop_step.next_progress.is_nan());
@@ -744,21 +801,23 @@ mod tests {
     #[test]
     fn building_output_label_matches_every_verified_recipe() {
         use BuildingType::{
-            AccountingTent, Barracks, Beds, Den, ElderCorner, Field, FoodStorage, HerbGarden,
-            MouseFarm, Nursery, Shrine, Smithy, StonePrep, Walls, WaterBowl, WoodCutter,
-            Woodworking, Workshop,
+            AccountingTent, Barracks, Beds, Clothier, Den, ElderCorner, Field, FoodStorage,
+            HerbGarden, MouseFarm, Nursery, Shrine, Smithy, StonePrep, Tannery, Walls, WaterBowl,
+            WoodCutter, Woodworking, Workshop,
         };
 
         // Producing types: label matches the resource actually credited in
         // `phase_23_production` (workshop -> refined, wood-cutter -> planks,
         // stone-prep -> blocks, woodworking -> tools, smithy -> 1 weapon + 1 armor,
-        // field -> food).
+        // field -> food, clothier -> cloth, tannery -> leather).
         assert_eq!(super::building_output_label(Workshop), Some("refined"));
         assert_eq!(super::building_output_label(WoodCutter), Some("plank"));
         assert_eq!(super::building_output_label(StonePrep), Some("block"));
         assert_eq!(super::building_output_label(Woodworking), Some("tool"));
         assert_eq!(super::building_output_label(Smithy), Some("weapon+armor"));
         assert_eq!(super::building_output_label(Field), Some("food"));
+        assert_eq!(super::building_output_label(Clothier), Some("cloth"));
+        assert_eq!(super::building_output_label(Tannery), Some("leather"));
 
         // Non-producing types: no phase_23 arm credits a resource for these.
         for building_type in [
@@ -791,6 +850,8 @@ mod tests {
             BuildingType::StonePrep,
             BuildingType::Woodworking,
             BuildingType::Smithy,
+            BuildingType::Clothier,
+            BuildingType::Tannery,
         ] {
             assert_eq!(
                 super::building_staff_cap(building_type),
