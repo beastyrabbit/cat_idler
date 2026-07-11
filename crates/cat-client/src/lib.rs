@@ -965,6 +965,9 @@ struct GoodsPanel;
 /// One goods line slot (index 0 = most valuable stack at top).
 #[derive(Component, Clone, Copy)]
 struct GoodsLine(usize);
+/// The per-kind glyph node for a goods line (tinted by material).
+#[derive(Component, Clone, Copy)]
+struct GoodsLineIcon(usize);
 /// The treasury-total line at the top of the goods panel.
 #[derive(Component)]
 struct GoodsTreasury;
@@ -1348,6 +1351,7 @@ struct IconArt {
     weapons: Handle<Image>,
     armor: Handle<Image>,
     blessings: Handle<Image>,
+    goods: Handle<Image>,
 }
 
 impl IconArt {
@@ -1364,6 +1368,7 @@ impl IconArt {
             weapons: assets.load("public/images/game/icons/weapons.png"),
             armor: assets.load("public/images/game/icons/armor.png"),
             blessings: assets.load("public/images/game/icons/blessings.png"),
+            goods: assets.load("public/images/game/icons/goods.png"),
         }
     }
 
@@ -1381,6 +1386,33 @@ impl IconArt {
             HudRes::Armor => self.armor.clone(),
             HudRes::Blessings => self.blessings.clone(),
         }
+    }
+
+    /// The glyph for a crafted-item kind: sword/shield/wrench for weapon/armor/
+    /// tool, else the generic goods pouch (tinted by material at the call site).
+    fn item_glyph(&self, kind: &str) -> Handle<Image> {
+        match kind {
+            "weapon" => self.weapons.clone(),
+            "armor" => self.armor.clone(),
+            "tool" => self.tools.clone(),
+            _ => self.goods.clone(),
+        }
+    }
+}
+
+/// Tint for a crafted item's glyph by its material, so the goods list scans by
+/// colour (wood brown, stone grey, metal steel, …).
+fn material_tint(material: &str) -> Color {
+    match material {
+        "wood" => Color::srgb(0.62, 0.46, 0.29),
+        "stone" => Color::srgb(0.62, 0.64, 0.66),
+        "metal" => Color::srgb(0.72, 0.76, 0.82),
+        "bone" => Color::srgb(0.90, 0.86, 0.74),
+        "fibre" => Color::srgb(0.72, 0.78, 0.52),
+        "leather" => Color::srgb(0.66, 0.45, 0.30),
+        "gem" => Color::srgb(0.42, 0.80, 0.86),
+        "clay" => Color::srgb(0.80, 0.52, 0.40),
+        _ => Color::srgb(0.78, 0.76, 0.72),
     }
 }
 
@@ -1793,15 +1825,33 @@ fn setup(
                 GoodsTreasury,
             ));
             for i in 0..GOODS_LINES {
-                panel.spawn((
-                    Text::new(""),
-                    TextFont {
-                        font_size: FontSize::Px(12.0),
+                panel
+                    .spawn(Node {
+                        align_items: AlignItems::Center,
+                        column_gap: Val::Px(7.0),
                         ..default()
-                    },
-                    TextColor(PARCHMENT_INK),
-                    GoodsLine(i),
-                ));
+                    })
+                    .with_children(|row| {
+                        row.spawn((
+                            Node {
+                                width: Val::Px(15.0),
+                                height: Val::Px(15.0),
+                                display: Display::None,
+                                ..default()
+                            },
+                            ImageNode::new(icons.goods.clone()),
+                            GoodsLineIcon(i),
+                        ));
+                        row.spawn((
+                            Text::new(""),
+                            TextFont {
+                                font_size: FontSize::Px(12.0),
+                                ..default()
+                            },
+                            TextColor(PARCHMENT_INK),
+                            GoodsLine(i),
+                        ));
+                    });
             }
         });
 
@@ -3872,13 +3922,19 @@ fn dashboard_footer_text(colony: &ColonySnapshot) -> String {
         .filter(|j| matches!(j.status, cat_protocol::JobStatus::Active))
         .count();
     format!(
-        "Active jobs: {active_jobs}   Total jobs: {jobs}{ledger}",
+        "Active jobs: {active_jobs}   Total jobs: {jobs}\n{treasury}{ledger}",
         jobs = colony.jobs.len(),
+        treasury = hud_treasury_line(&colony.items),
         ledger = colony
             .stock_ledger
             .as_ref()
             .map_or_else(String::new, |l| format!("\n\n{}", ledger_hud_text(l))),
     )
+}
+
+/// Always-visible HUD line for the colony's tradeable wealth.
+fn hud_treasury_line(items: &[ItemStackSnapshot]) -> String {
+    format!("Treasury: {}g", treasury_total(items))
 }
 
 /// Compact HUD summary of the Accountant's reported stock ledger. When a staffed
@@ -3940,9 +3996,11 @@ fn toggle_goods(
 fn update_goods(
     latest: Res<LatestSnapshot>,
     ui: Res<GoodsUi>,
-    mut panel: Query<&mut Node, With<GoodsPanel>>,
+    icons: Res<IconArt>,
+    mut panel: Query<&mut Node, (With<GoodsPanel>, Without<GoodsLineIcon>)>,
     mut treasury: Query<&mut Text, (With<GoodsTreasury>, Without<GoodsLine>)>,
     mut lines: Query<(&GoodsLine, &mut Text), Without<GoodsTreasury>>,
+    mut icon_nodes: Query<(&GoodsLineIcon, &mut Node, &mut ImageNode), Without<GoodsPanel>>,
 ) {
     if let Ok(mut node) = panel.single_mut() {
         node.display = if ui.visible {
@@ -3973,6 +4031,16 @@ fn update_goods(
             (0, None) if items.is_empty() => "No crafted goods yet".to_string(),
             _ => String::new(),
         };
+    }
+    // Per-kind glyph tinted by material, hidden on empty slots.
+    for (icon, mut node, mut image) in &mut icon_nodes {
+        if let Some(stack) = items.get(icon.0) {
+            image.image = icons.item_glyph(&stack.kind);
+            image.color = material_tint(&stack.material);
+            node.display = Display::Flex;
+        } else {
+            node.display = Display::None;
+        }
     }
 }
 
@@ -5529,8 +5597,20 @@ mod tests {
             value: 5,
         };
         // Treasury sums count*value across stacks: 3*12 + 2*5 = 46.
-        assert_eq!(treasury_total(&[mug, bowl]), 46);
+        assert_eq!(treasury_total(&[mug.clone(), bowl]), 46);
         assert_eq!(treasury_total(&[]), 0);
+
+        // HUD treasury line reflects the same total.
+        assert_eq!(hud_treasury_line(&[mug]), "Treasury: 36g");
+        assert_eq!(hud_treasury_line(&[]), "Treasury: 0g");
+    }
+
+    #[test]
+    fn material_tints_are_distinct_by_material() {
+        assert_ne!(material_tint("wood"), material_tint("metal"));
+        assert_ne!(material_tint("stone"), material_tint("gem"));
+        // An unknown material falls back to a neutral tint, not a panic.
+        assert_eq!(material_tint("mithril"), material_tint("unknown"));
     }
 
     #[test]
