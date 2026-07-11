@@ -96,7 +96,7 @@ use crate::{
         muster_defense,
     },
     world_gen::{TileResources, generate_world_chunk, get_colony_position, tile_to_chunk},
-    zones::{Zone, ZoneKind, ZonePos, ZoneRect, filter_targets_by_zones},
+    zones::{Zone, ZoneKind, ZonePos, ZoneRect, filter_targets_by_zones, pick_target_with_zones},
 };
 
 pub type ColonyId = String;
@@ -2167,6 +2167,16 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
     let food_tiles = food_tiles_near_village(colony);
     let quarry_site = quarry_sites_near_village(colony).into_iter().next();
     let water_site = water_sites_near_village(colony).into_iter().next();
+    // Snapshot the active player zones (phase 10 already dropped expired ones) so hunt
+    // targeting can be steered toward gather rects and away from avoid rects.
+    let active_zones = colony
+        .zones
+        .iter()
+        .map(|zone| Zone {
+            rect: zone.rect,
+            kind: zone.kind,
+        })
+        .collect::<Vec<_>>();
 
     for job_index in active_indices {
         let job = colony.jobs[job_index].clone();
@@ -2222,10 +2232,16 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
         } else {
             None
         };
-        let hunt_tiles = if job.kind == JobKind::HuntExpedition {
-            food_tiles.as_slice()
-        } else {
-            &[]
+        // Zones steer hunts: a gather rect makes its tiles twice as likely and an avoid
+        // rect excludes them (unless nothing else remains), reducing the candidate list to
+        // a single zone-weighted pick. With no zones this collapses to the same uniform
+        // pick `hunt_destination` made from the full list at the same roll — byte-identical.
+        let hunt_pick = (job.kind == JobKind::HuntExpedition)
+            .then(|| pick_zoned_food_tile(&food_tiles, &active_zones, roll.value))
+            .flatten();
+        let hunt_tiles: &[WorldPos] = match &hunt_pick {
+            Some(tile) => std::slice::from_ref(tile),
+            None => &[],
         };
         let context = JobDestinationContext {
             anchor: village_anchor_world(colony.anchor),
@@ -6860,6 +6876,26 @@ fn job_has_destination_metadata(job: &JobRuntime) -> bool {
         JobMetadata::Construction { site: Some(_), .. } => job.kind == JobKind::BuildHouse,
         _ => false,
     }
+}
+
+/// Reduce the food-tile candidates to a single zone-weighted pick, mirroring the TS
+/// `pickTargetWithZones` hunt path. Gather tiles are twice as likely and avoid tiles are
+/// excluded (unless every candidate is avoided, the critical fallback). With no zones this
+/// returns the same tile a uniform `floor(roll * len)` index would, so hunt targeting stays
+/// byte-identical when no player has painted a zone.
+fn pick_zoned_food_tile(food_tiles: &[WorldPos], zones: &[Zone], roll: f64) -> Option<WorldPos> {
+    let zone_tiles = food_tiles
+        .iter()
+        .map(|tile| ZonePos {
+            x: tile.x.round() as i32,
+            y: tile.y.round() as i32,
+        })
+        .collect::<Vec<_>>();
+    let picked = pick_target_with_zones(&zone_tiles, zones, roll)?;
+    let index = zone_tiles
+        .iter()
+        .position(|zone_tile| *zone_tile == picked)?;
+    food_tiles.get(index).copied()
 }
 
 fn food_tiles_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
@@ -12738,6 +12774,276 @@ mod tests {
                 .iter()
                 .any(|event| matches!(&event.kind, EventKind::Other(kind) if kind == "birth")),
             "at least one birth event should have been logged"
+        );
+    }
+
+    /// Governance reachability guardrail (governance review). A headless colony has no
+    /// players and casts no ballots, yet the term-election machinery must still run itself:
+    /// a scheduled election opens on the first tick (no prior election, so `election_due`
+    /// fires), stays open for the ~30-minute window, then resolves and seats a winner from
+    /// the zero-vote fallback (the highest-leadership candidate) — all without player input.
+    /// This proves phase 9 is not a dead-end: the election opens exactly once (no per-tick
+    /// spam), resolves autonomously, and seats a live leader, logging both the open and the
+    /// result. A regression where the election opens but never resolves, or never opens,
+    /// trips this guard.
+    #[test]
+    fn headless_colony_runs_a_term_election_to_a_seated_winner_without_players() {
+        let mut world = new_world(1234);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
+
+        // 40 game-minutes clears the 30-minute election window with margin.
+        for step in 1..=40 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut world, now);
+        }
+
+        let colony = &world.colonies[0];
+        let scheduled = colony
+            .elections
+            .iter()
+            .filter(|election| election.kind == ElectionKind::Scheduled)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            scheduled.len(),
+            1,
+            "exactly one scheduled term election should have opened (no per-tick spam), got {}",
+            scheduled.len()
+        );
+        let election = scheduled[0];
+        assert!(
+            election.resolved_at.is_some(),
+            "the term election never resolved autonomously"
+        );
+        let winner = election
+            .winner_cat_id
+            .as_ref()
+            .expect("a resolved term election seats a winner even with zero ballots");
+        assert_eq!(
+            colony.leader_id.as_ref(),
+            Some(winner),
+            "the seated leader must be the election winner"
+        );
+        assert!(
+            alive_cats(&colony.cats).any(|cat| &cat.id == winner),
+            "the seated winner must be a living cat"
+        );
+        assert!(
+            colony.votes.is_empty(),
+            "headless play casts no ballots — the election resolved without player input"
+        );
+        // Both the opening announcement and the result are logged.
+        assert!(
+            colony
+                .events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::Election))
+                .count()
+                >= 2,
+            "expected both an election-opened and an election-resolved event"
+        );
+    }
+
+    /// Governance reachability guardrail: a leader death must not leave the seat
+    /// permanently empty. When the seated leader dies, phase 4's interim pick refills the
+    /// seat on the very next tick with the highest-leadership living cat — proving the
+    /// "interim pick only when the seat is empty" rule (CLAUDE.md) is wired and reachable.
+    #[test]
+    fn leader_death_refills_the_seat_with_an_interim_pick() {
+        let mut world = new_world(1234);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
+
+        // Seat a leader.
+        let _ = world_tick(&mut world, 70_000);
+        let dead_leader = world.colonies[0]
+            .leader_id
+            .clone()
+            .expect("a leader is seated after the first tick");
+
+        // Kill the seated leader.
+        let leader_index = world.colonies[0]
+            .cats
+            .iter()
+            .position(|cat| cat.id == dead_leader)
+            .expect("the seated leader exists in the roster");
+        world.colonies[0].cats[leader_index].death_time = Some(70_000);
+
+        // Next tick must refill the empty seat.
+        let _ = world_tick(&mut world, 130_000);
+
+        let colony = &world.colonies[0];
+        let new_leader = colony
+            .leader_id
+            .clone()
+            .expect("the seat was refilled after the leader died");
+        assert_ne!(
+            new_leader, dead_leader,
+            "the dead leader must not stay seated"
+        );
+        assert!(
+            alive_cats(&colony.cats).any(|cat| cat.id == new_leader),
+            "the interim leader must be a living cat"
+        );
+    }
+
+    /// Zones reachability guardrail (governance/zones review). Before this fix the Rust
+    /// hunt-assignment phase picked a food tile uniformly and never consulted player zones,
+    /// so painted gather/avoid rects were stored but inert — a dead-end. [`pick_zoned_food_tile`]
+    /// (the exact function phase 15 now calls) must measurably steer the pick: with no zones
+    /// it collapses to the same uniform `floor(roll * len)` index (byte-identical baseline),
+    /// an avoid rect excludes its tile across the whole roll space, and a gather rect makes
+    /// its tile roughly twice as likely.
+    #[test]
+    fn zones_measurably_steer_hunt_food_tile_selection() {
+        let a = WorldPos { x: 12.0, y: 6.0 };
+        let b = WorldPos { x: 12.0, y: 12.0 };
+        let tiles = [a, b];
+        let rect_over = |p: WorldPos| ZoneRect {
+            x1: p.x as i32,
+            y1: p.y as i32,
+            x2: p.x as i32,
+            y2: p.y as i32,
+        };
+
+        // No zones: uniform pick — byte-identical to the old `hunt_destination` indexing.
+        assert_eq!(pick_zoned_food_tile(&tiles, &[], 0.0), Some(a));
+        assert_eq!(pick_zoned_food_tile(&tiles, &[], 0.99), Some(b));
+
+        // Avoid over `a`: `a` is never chosen anywhere in the roll space; the hunt is steered
+        // to `b` even at roll 0 where the uniform pick would have chosen `a`.
+        let avoid_a = Zone {
+            rect: rect_over(a),
+            kind: ZoneKind::Avoid,
+        };
+        for roll in [0.0, 0.25, 0.5, 0.75, 0.999] {
+            assert_eq!(
+                pick_zoned_food_tile(&tiles, &[avoid_a], roll),
+                Some(b),
+                "avoid zone must exclude tile a at roll {roll}"
+            );
+        }
+
+        // Gather over `a`: weighted pool is [a, a, b], so `a` wins the lower two-thirds of the
+        // roll space — including roll 0.6, which the uniform pick sends to `b`.
+        let gather_a = Zone {
+            rect: rect_over(a),
+            kind: ZoneKind::Gather,
+        };
+        assert_eq!(pick_zoned_food_tile(&tiles, &[gather_a], 0.6), Some(a));
+        assert_eq!(pick_zoned_food_tile(&tiles, &[], 0.6), Some(b));
+        // Measurable bias: over an even sweep of the roll space the gather tile is picked
+        // about twice as often as the plain tile.
+        let mut a_hits = 0;
+        let mut b_hits = 0;
+        for i in 0..30 {
+            let roll = f64::from(i) / 30.0;
+            match pick_zoned_food_tile(&tiles, &[gather_a], roll) {
+                Some(tile) if tile == a => a_hits += 1,
+                Some(tile) if tile == b => b_hits += 1,
+                other => panic!("unexpected pick {other:?}"),
+            }
+        }
+        assert_eq!((a_hits, b_hits), (20, 10), "gather tile favoured ~2:1");
+    }
+
+    /// Zones reachability guardrail, end-to-end: a painted avoid zone actually changes the
+    /// hunt site a driven `world_tick` assigns. A queued hunt over two explored food tiles is
+    /// promoted and given a destination in phase 15; re-running with an avoid rect over the
+    /// tile the unzoned run chose steers the hunt to the other tile — proving zones reach the
+    /// live assignment path, not just the pure helper.
+    #[test]
+    fn avoid_zone_changes_the_hunt_site_assigned_by_a_driven_tick() {
+        // Two explored food tiles at Chebyshev radius > 4 from the (6,6) anchor.
+        let food_a = pos(12, 6);
+        let food_b = pos(12, 12);
+        let build_world = |zones: Vec<ZoneRuntime>| WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                name: "MossClan".to_owned(),
+                resources: plentiful_resources(),
+                cats: vec![adult_idle_cat("hunter", "colony-1")],
+                jobs: vec![JobRuntime {
+                    id: "hunt-1".to_owned(),
+                    kind: JobKind::HuntExpedition,
+                    status: JobStatus::Queued,
+                    assigned_cat: Some("hunter".to_owned()),
+                    duration_ms: 60_000,
+                    created_at: 0,
+                    started_at: None,
+                    ends_at: Some(600_000),
+                    ..JobRuntime::default()
+                }],
+                world_tiles: BTreeMap::from([
+                    (
+                        food_a,
+                        WorldTileRuntime {
+                            resources: TileResources {
+                                food: 30,
+                                herbs: 0,
+                                water: 0,
+                            },
+                            ..tile(food_a.x, food_a.y, 63, None)
+                        },
+                    ),
+                    (
+                        food_b,
+                        WorldTileRuntime {
+                            resources: TileResources {
+                                food: 30,
+                                herbs: 0,
+                                water: 0,
+                            },
+                            ..tile(food_b.x, food_b.y, 63, None)
+                        },
+                    ),
+                ]),
+                zones,
+                last_tick: 0,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }],
+        };
+        let hunt_site = |world: &WorldState| match world.colonies[0].jobs[0].metadata {
+            JobMetadata::Hauling {
+                site: Some(site), ..
+            } => site,
+            ref other => panic!("hunt job never got a hauling site: {other:?}"),
+        };
+
+        // Baseline: no zones. Record which food tile the hunt targets.
+        let mut baseline = build_world(Vec::new());
+        let _ = world_tick(&mut baseline, 1_000);
+        let chosen = hunt_site(&baseline);
+        assert!(
+            chosen == food_a || chosen == food_b,
+            "baseline hunt should target one of the two food tiles, got {chosen:?}"
+        );
+        let other = if chosen == food_a { food_b } else { food_a };
+
+        // Paint an avoid zone over the baseline tile; the hunt must be steered to the other.
+        let avoid = ZoneRuntime {
+            rect: ZoneRect {
+                x1: chosen.x,
+                y1: chosen.y,
+                x2: chosen.x,
+                y2: chosen.y,
+            },
+            kind: ZoneKind::Avoid,
+            created_at: 0,
+            expires_at: i64::MAX,
+            player_id: Some(1),
+        };
+        let mut steered = build_world(vec![avoid]);
+        let _ = world_tick(&mut steered, 1_000);
+        assert_eq!(
+            hunt_site(&steered),
+            other,
+            "the avoid zone should have steered the hunt off {chosen:?} to {other:?}"
         );
     }
 
