@@ -350,7 +350,7 @@ struct CensusUi {
 }
 
 /// Number of text lines the census panel renders (see `census_report_lines`).
-const CENSUS_LINES: usize = 17;
+const CENSUS_LINES: usize = 18;
 
 /// Trade menu (open while a trader is at the gate). `closed` lets the player
 /// dismiss it during a visit; it resets when the trader leaves so the next visit
@@ -1134,6 +1134,7 @@ struct Census {
     warriors: u32,
     unspecialized: u32,
     boosted: u32,
+    expecting: u32,
     avg_age_hours: f64,
     births: u32,
     deaths: u32,
@@ -1189,6 +1190,9 @@ fn colony_census(cats: &[CatSnapshot], events: &[EventSnapshot], leader: Option<
         if cat.boosted {
             c.boosted += 1;
         }
+        if cat.pregnant {
+            c.expecting += 1;
+        }
     }
     c.avg_age_hours = if c.total > 0 {
         age_sum / f64::from(c.total)
@@ -1223,6 +1227,7 @@ fn census_report_lines(c: &Census) -> Vec<String> {
             "Avg age: {:.0}h    ★ Boosted: {}",
             c.avg_age_hours, c.boosted
         ),
+        format!("Expecting: {}", c.expecting),
         String::new(),
         "- Life stages -".to_string(),
         format!(
@@ -5546,12 +5551,18 @@ fn inspector_text(cat: &CatSnapshot) -> String {
     } else {
         format!("\nparents: {}", cat.parents.join(", "))
     };
+    // Pregnancy indicator (life-sim: gestating cats are due a litter soon).
+    let expecting = if cat.pregnant {
+        "\nexpecting a litter"
+    } else {
+        ""
+    };
     format!(
         "{name}\n\
          {spec} - {stage} ({age:.0}h)\n\
          at {x},{y} - {activity}\n\
          dest {dest}\n\
-         carrying {carrying}{parents}\n\
+         carrying {carrying}{parents}{expecting}\n\
          \n\
          skills: {skills}\n\
          leadership {lead:.0}",
@@ -5773,9 +5784,14 @@ mod tests {
             census_cat(50.0, Some(Specialization::Warrior), false), // elder
             census_cat(40.0, Some(Specialization::Ritualist), false), // adult
         ];
-        // A dead cat must be excluded from every tally.
+        // A pregnant adult (counts toward Expecting).
+        let mut expecting = census_cat(28.0, None, false);
+        expecting.pregnant = true;
+        cats.push(expecting);
+        // A dead cat must be excluded from every tally — even if flagged pregnant.
         let mut dead = census_cat(35.0, Some(Specialization::Hunter), true);
         dead.death_time = Some(1);
+        dead.pregnant = true;
         cats.push(dead);
 
         let events = vec![
@@ -5794,15 +5810,17 @@ mod tests {
         ];
 
         let c = colony_census(&cats, &events, Some("Bella"));
-        assert_eq!(c.total, 5);
-        assert_eq!((c.kittens, c.young, c.adults, c.elders), (1, 1, 2, 1));
+        assert_eq!(c.total, 6);
+        assert_eq!((c.kittens, c.young, c.adults, c.elders), (1, 1, 3, 1));
         assert_eq!(c.hunters, 1);
         assert_eq!(c.architects, 1);
         assert_eq!(c.ritualists, 1);
         assert_eq!(c.warriors, 1);
-        assert_eq!(c.unspecialized, 1);
+        assert_eq!(c.unspecialized, 2); // the kitten + the pregnant adult
         assert_eq!(c.boosted, 1);
-        assert!((c.avg_age_hours - (3.0 + 10.0 + 30.0 + 50.0 + 40.0) / 5.0).abs() < 1e-9);
+        // Only living pregnant cats count; the dead pregnant cat is excluded.
+        assert_eq!(c.expecting, 1);
+        assert!((c.avg_age_hours - (3.0 + 10.0 + 30.0 + 50.0 + 40.0 + 28.0) / 6.0).abs() < 1e-9);
         // "born" counts as a birth; "expecting a litter" (conception) does not.
         assert_eq!(c.births, 1);
         assert_eq!(c.deaths, 1);
@@ -5837,11 +5855,10 @@ mod tests {
 
     #[test]
     fn census_report_lines_are_stable_length_and_readable() {
+        let mut expecting = census_cat(30.0, Some(Specialization::Hunter), true);
+        expecting.pregnant = true;
         let c = colony_census(
-            &[
-                census_cat(3.0, None, false),
-                census_cat(30.0, Some(Specialization::Hunter), true),
-            ],
+            &[census_cat(3.0, None, false), expecting],
             &[],
             Some("Bella"),
         );
@@ -5850,10 +5867,12 @@ mod tests {
         assert_eq!(lines[0], "Population: 2");
         assert_eq!(lines[1], "Leader: Bella");
         assert!(lines[2].contains("★ Boosted: 1"));
+        assert_eq!(lines[3], "Expecting: 1");
         // A vacant seat renders a placeholder rather than dropping the line.
         let vacant = census_report_lines(&colony_census(&[], &[], None));
         assert_eq!(vacant.len(), CENSUS_LINES);
         assert_eq!(vacant[1], "Leader: (vacant)");
+        assert_eq!(vacant[3], "Expecting: 0");
     }
 
     #[test]
