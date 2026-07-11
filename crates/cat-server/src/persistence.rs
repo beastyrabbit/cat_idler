@@ -6,6 +6,7 @@ use std::{collections::BTreeMap, path::Path};
 use cat_sim::{
     biomes::MaxResources,
     entities::{Carrying, Cat, CatActivity, ColonyStatus, Position, Resources, RoleXp},
+    items::Item,
     ledger::StockLedger,
     officers::OfficerRole,
     skills::Labor,
@@ -85,7 +86,12 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             stockpiles TEXT,
             gatherSpots TEXT,
             stockLedger TEXT,
-            coin REAL
+            coin REAL,
+            items TEXT,
+            woodCraftProgress REAL,
+            stoneCraftProgress REAL,
+            clothierCraftProgress REAL,
+            tanneryCraftProgress REAL
         );
 
         CREATE TABLE IF NOT EXISTS cats (
@@ -243,6 +249,11 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "stockLedger", "TEXT"),
         ("colonies", "revealedTiles", "TEXT"),
         ("colonies", "coin", "REAL"),
+        ("colonies", "items", "TEXT"),
+        ("colonies", "woodCraftProgress", "REAL"),
+        ("colonies", "stoneCraftProgress", "REAL"),
+        ("colonies", "clothierCraftProgress", "REAL"),
+        ("colonies", "tanneryCraftProgress", "REAL"),
         ("cats", "skills", "TEXT"),
         ("cats", "boosted", "INTEGER NOT NULL DEFAULT 0"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
@@ -313,7 +324,8 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, gatherSpots,
-                stockLedger, coin
+                stockLedger, coin, items, woodCraftProgress, stoneCraftProgress,
+                clothierCraftProgress, tanneryCraftProgress
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -338,11 +350,12 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             criticalSince, claimedTiles, revealedTiles, threatPressure, lastRaidAt,
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
-            stockpiles, gatherSpots, stockLedger, coin
+            stockpiles, gatherSpots, stockLedger, coin, items, woodCraftProgress,
+            stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33
+            ?32, ?33, ?34, ?35, ?36, ?37, ?38
         )",
         params![
             colony.id,
@@ -378,6 +391,11 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             serde_json::to_string(&colony.gather_spots).map_err(to_sql_json)?,
             serde_json::to_string(&colony.stock_ledger).map_err(to_sql_json)?,
             colony.coin,
+            serde_json::to_string(&colony.items).map_err(to_sql_json)?,
+            colony.wood_craft_progress,
+            colony.stone_craft_progress,
+            colony.clothier_craft_progress,
+            colony.tannery_craft_progress,
         ],
     )?;
 
@@ -423,6 +441,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let stockpiles_json: Option<String> = row.get("stockpiles")?;
     let gather_spots_json: Option<String> = row.get("gatherSpots")?;
     let stock_ledger_json: Option<String> = row.get("stockLedger")?;
+    let items_json: Option<String> = row.get("items")?;
 
     Ok(ColonyRuntime {
         id: id.clone(),
@@ -473,18 +492,31 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .map(|raw| serde_json::from_str::<StockLedger>(&raw).map_err(from_sql_json))
             .transpose()?
             .unwrap_or_default(),
-        // P19 slice 1: no `items` column yet — the item store isn't persisted this
-        // slice (nothing produces items, so every colony loads with an empty store).
-        items: BTreeMap::new(),
-        // P19 slice 2: bench trade-craft cycle timers aren't persisted either — a
-        // restarted server just restarts each bench's rotation from 0 progress (a
-        // cosmetic timer restart, not an economy loss).
-        wood_craft_progress: 0.0,
-        stone_craft_progress: 0.0,
-        // P16/P19 clothing chain slice: same precedent as the wood/stone trade-craft
-        // timers above — a restart just restarts the clothier/tannery rotation from 0.
-        clothier_craft_progress: 0.0,
-        tannery_craft_progress: 0.0,
+        // P19 slice 2 (persistence audit fix): trade-craft cycles credit real
+        // player-facing goods into `items` (see `world_tick::credit_trade_craft`), so
+        // it gets its own column like `coin` — losing crafted mugs/bowls/furniture/
+        // trinkets/clothing on every restart was silent state loss, not a deferred
+        // slice.
+        items: items_json
+            .map(|raw| serde_json::from_str::<BTreeMap<Item, u32>>(&raw).map_err(from_sql_json))
+            .transpose()?
+            .unwrap_or_default(),
+        // Bench trade-craft cycle timers: persisted alongside `items` for the same
+        // reason `BuildingRuntime::production_progress` is persisted — up to a full
+        // cycle (900s) of accumulated progress is real player-facing state, not
+        // cosmetic. `unwrap_or(0.0)` covers rows saved before this column existed.
+        wood_craft_progress: row
+            .get::<_, Option<f64>>("woodCraftProgress")?
+            .unwrap_or(0.0),
+        stone_craft_progress: row
+            .get::<_, Option<f64>>("stoneCraftProgress")?
+            .unwrap_or(0.0),
+        clothier_craft_progress: row
+            .get::<_, Option<f64>>("clothierCraftProgress")?
+            .unwrap_or(0.0),
+        tannery_craft_progress: row
+            .get::<_, Option<f64>>("tanneryCraftProgress")?
+            .unwrap_or(0.0),
         // P19 slice 3: `coin` is real player-facing wealth, so it gets a column (see
         // `migrate_add_missing_columns`). The in-progress trader visit + its schedule
         // reference (`last_trader_departed_at`) are NOT persisted this slice, matching
@@ -1631,5 +1663,310 @@ mod tests {
             loaded.colonies[0].stock_ledger,
             cat_sim::ledger::StockLedger::default()
         );
+    }
+
+    /// Comprehensive persistence-audit guardrail: every `ColonyRuntime`/`Cat` field is
+    /// set to a distinctive, non-default value, saved, and loaded back. This is the
+    /// test that would have caught `items`/craft-progress silently dropping on
+    /// restart — any future field added to either struct without wiring it into
+    /// `save_colony`/`load_colony`/`save_cat`/`load_cats` should make this test fail
+    /// (either by comparison against a stale expectation, or because the loaded value
+    /// stays at its `Default` while the saved value does not).
+    ///
+    /// `trader`, `last_trader_departed_at`, and `provisional_tiles` are the three
+    /// fields intentionally excluded from the round trip (see the doc comments on
+    /// `ColonyRuntime` and in `load_colony`) — a restart is documented to drop an
+    /// in-flight trader visit and any scout's not-yet-delivered fog reveal. This test
+    /// asserts that documented reset explicitly rather than silently ignoring those
+    /// fields, so a change to that contract shows up here too.
+    #[test]
+    fn save_world_load_world_round_trips_every_field_in_the_persistence_audit() {
+        use cat_sim::{
+            entities::{CarryingKind, MapType},
+            items::{Item, ItemKind, Material},
+            ledger::StockLedger,
+            officers::OfficerRole,
+            stockpiles::{GatherSpot, ResourceKind, Stockpile},
+            world_tick::{
+                ElectionKind, ElectionRuntime, RaiderRuntime, UpgradeLevels, VoteRuntime,
+            },
+            zones::{ZoneKind, ZoneRect},
+        };
+
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+
+        let mut world = new_world(20_260_711);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-audit", 5_000_000, 7));
+        let colony = &mut world.colonies[0];
+
+        // --- top-level scalars ---------------------------------------------------
+        colony.leader_id = Some(colony.cats[0].id.clone());
+        colony.status = ColonyStatus::Thriving;
+        colony.resources = Resources {
+            food: 11.0,
+            water: 12.0,
+            herbs: 13.0,
+            materials: 14.0,
+            refined: 15.0,
+            weapons: 16.0,
+            armor: 17.0,
+            planks: 18.0,
+            blocks: 19.0,
+            tools: 20.0,
+            fibre: 21.0,
+            hide: 22.0,
+            cloth: 23.0,
+            leather: 24.0,
+            blessings: 25.0,
+        };
+        colony.automation_tier = 3.5;
+        colony.global_upgrade_points = 42.0;
+        colony.ritual_requested_at = Some(5_100_000);
+        colony.critical_since = Some(5_200_000);
+        colony.threat_pressure = 63.5;
+        colony.last_raid_at = Some(5_300_000);
+        colony.active_raid = Some("raid-1".to_owned());
+        colony.raid_clicks = 4.0;
+        colony.coin = 88.5;
+        colony.wood_craft_progress = 111.0;
+        colony.stone_craft_progress = 222.0;
+        colony.clothier_craft_progress = 333.0;
+        colony.tannery_craft_progress = 444.0;
+        colony.run_number = 3;
+        colony.run_started_at = 4_900_000;
+        colony.created_at = 4_800_000;
+        colony.last_player_activity_at = Some(5_400_000);
+        colony.last_tick = 5_500_000;
+        colony.test_time_scale = 2.5;
+        colony.test_resource_decay_multiplier = 1.75;
+        colony.test_resilience_hours_override = Some(9.5);
+        colony.test_critical_ms_override = 123_456;
+        colony.test_rng_seed = Some(99);
+
+        // --- upgrade tree / levels -------------------------------------------------
+        colony.upgrade_levels = UpgradeLevels {
+            click_power: 1,
+            supply_speed: 2,
+            hunt_mastery: 3,
+            build_mastery: 4,
+            ritual_mastery: 5,
+            resilience: 6,
+        };
+        colony.upgrade_tree.owned_node_ids =
+            vec!["era1-storage".to_owned(), "era2-workshop".to_owned()];
+        colony.upgrade_tree.research_points = 17.5;
+
+        // --- fog / claimed tiles ----------------------------------------------------
+        colony.claimed_tiles.push(TilePos { x: 40, y: 41 });
+        colony.revealed_tiles.insert(TilePos { x: 40, y: 41 });
+
+        // --- officers / stockpiles / gather spots / ledger / items ------------------
+        colony
+            .officers
+            .insert(OfficerRole::Captain, colony.cats[1].id.clone());
+        colony.stockpiles.push(Stockpile {
+            id: "stockpile-audit".to_owned(),
+            rect: ZoneRect {
+                x1: 8,
+                y1: 8,
+                x2: 9,
+                y2: 9,
+            },
+            accepts: [ResourceKind::Materials].into_iter().collect(),
+            contents: Resources {
+                materials: 6.0,
+                ..Resources::default()
+            },
+        });
+        colony.stockpiles.push(Stockpile {
+            id: "gather-audit".to_owned(),
+            rect: ZoneRect {
+                x1: 30,
+                y1: 30,
+                x2: 30,
+                y2: 30,
+            },
+            accepts: [ResourceKind::Water].into_iter().collect(),
+            contents: Resources::default(),
+        });
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: "gather-audit".to_owned(),
+            kind: ResourceKind::Water,
+            expires_at_ms: 5_600_000,
+        });
+        colony.stock_ledger = StockLedger::counted(&colony.resources, 5_500_000);
+        colony
+            .items
+            .insert(Item::new(ItemKind::Mug, Material::Wood, 2), 7);
+        colony
+            .items
+            .insert(Item::new(ItemKind::Clothing, Material::Leather, 4), 1);
+
+        // --- jobs / buildings / events / zones / elections / votes / raiders -------
+        let mover_cat_id = colony.cats[2].id.clone();
+        colony.jobs.push(JobRuntime {
+            id: "job-audit".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: Some(mover_cat_id),
+            metadata: JobMetadata::GatherHaul {
+                stockpile_id: "gather-audit".to_owned(),
+                site: Some(TilePos { x: 30, y: 30 }),
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        });
+        colony.buildings.push(BuildingRuntime {
+            id: "building-audit".to_owned(),
+            building_type: BuildingType::Smithy,
+            level: 2,
+            position: TilePos { x: 20, y: 21 },
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 5.5,
+            assigned_cat: Some(colony.cats[3].id.clone()),
+        });
+        colony.events.push(EventLog {
+            id: "event-audit".to_owned(),
+            at_ms: 5_450_000,
+            kind: EventKind::Raid,
+            message: "A raid was repelled".to_owned(),
+        });
+        colony.zones.push(ZoneRuntime {
+            rect: ZoneRect {
+                x1: 1,
+                y1: 2,
+                x2: 3,
+                y2: 4,
+            },
+            kind: ZoneKind::Gather,
+            created_at: 5_000_100,
+            expires_at: 5_100_100,
+            player_id: Some(4242),
+        });
+        colony.elections.push(ElectionRuntime {
+            id: "election-audit".to_owned(),
+            opened_at: 5_000_200,
+            closes_at: 5_100_200,
+            resolved_at: Some(5_100_250),
+            winner_cat_id: Some(colony.cats[0].id.clone()),
+            kind: ElectionKind::VoteKick,
+        });
+        colony.votes.push(VoteRuntime {
+            id: "vote-audit".to_owned(),
+            election_id: "election-audit".to_owned(),
+            voter_id: "player-audit".to_owned(),
+            cat_id: colony.cats[0].id.clone(),
+            weight: 1.0,
+        });
+        colony.raiders.push(RaiderRuntime {
+            id: "raider-audit".to_owned(),
+            raid_id: "raid-1".to_owned(),
+            position: Position {
+                map: MapType::World,
+                x: 5.0,
+                y: 6.0,
+            },
+            destination: Some(Position {
+                map: MapType::World,
+                x: 9.0,
+                y: 10.0,
+            }),
+            attack: 12.0,
+            defense: 8.0,
+            health: 30.0,
+        });
+
+        // --- cats: give two cats every optional field a distinctive value -----------
+        let cat_b_id = colony.cats[1].id.clone();
+        {
+            let cat_a = &mut colony.cats[0];
+            cat_a.parent_ids = vec![Some("ancestor-1".to_owned()), None];
+            cat_a.death_time = None;
+            cat_a.current_task = Some(TaskType::Hunt);
+            cat_a.destination = Some(Position {
+                map: MapType::World,
+                x: 3.0,
+                y: 4.0,
+            });
+            cat_a.carrying = Some(Carrying {
+                kind: CarryingKind::Materials,
+                amount: 6.5,
+                job_ended_at: 5_500_500,
+                source_gather_spot: Some("gather-audit".to_owned()),
+            });
+            cat_a.activity = CatActivity::Returning;
+            cat_a.is_pregnant = true;
+            cat_a.pregnancy_due_time = Some(5_600_500);
+            cat_a.age_hours = 30.5;
+            cat_a.pregnancy_due_age_hours = Some(36.0);
+            cat_a.pregnancy_mate_id = Some(cat_b_id.clone());
+            cat_a.sprite_params = Some(BTreeMap::from([(
+                "coat".to_owned(),
+                serde_json::json!("tabby"),
+            )]));
+            cat_a.specialization = Some(CatSpecialization::Warrior);
+            cat_a.role_xp = RoleXp {
+                hunter: 1.0,
+                architect: 2.0,
+                ritualist: 3.0,
+                warrior: 4.0,
+            };
+            cat_a.gain_skill(Labor::Hunt, 9.0);
+            cat_a.gain_skill(Labor::Craft, 3.0);
+            cat_a.boosted = true;
+        }
+        colony.cats[1].death_time = Some(5_700_000);
+
+        let expected = world.clone();
+        save_world(&conn, &world).expect("save world");
+        let loaded = load_world(&conn)
+            .expect("load world")
+            .expect("world should exist");
+
+        assert_eq!(loaded.colonies.len(), expected.colonies.len());
+        let loaded_colony = &loaded.colonies[0];
+        let expected_colony = &expected.colonies[0];
+
+        // Every field except the three documented-transient ones must round-trip
+        // exactly. Compare via a clone with those three fields reset to what
+        // `load_colony` is documented to produce, so any other drift fails the
+        // `assert_eq!` on the whole struct.
+        let mut expected_after_reload = expected_colony.clone();
+        expected_after_reload.trader = None;
+        expected_after_reload.last_trader_departed_at = None;
+        expected_after_reload.provisional_tiles = BTreeMap::new();
+
+        assert_eq!(loaded_colony, &expected_after_reload);
+
+        // Belt-and-suspenders explicit assertions on the fields this test exists to
+        // guard (readable failure messages instead of one big struct diff).
+        assert_eq!(loaded_colony.items, expected_colony.items);
+        assert_eq!(
+            loaded_colony.wood_craft_progress,
+            expected_colony.wood_craft_progress
+        );
+        assert_eq!(
+            loaded_colony.stone_craft_progress,
+            expected_colony.stone_craft_progress
+        );
+        assert_eq!(
+            loaded_colony.clothier_craft_progress,
+            expected_colony.clothier_craft_progress
+        );
+        assert_eq!(
+            loaded_colony.tannery_craft_progress,
+            expected_colony.tannery_craft_progress
+        );
+        assert_eq!(loaded_colony.coin, expected_colony.coin);
+
+        // Documented transient fields: confirm the *reset*, not just its absence from
+        // the equality check above.
+        assert_eq!(loaded_colony.trader, None);
+        assert_eq!(loaded_colony.last_trader_departed_at, None);
+        assert!(loaded_colony.provisional_tiles.is_empty());
     }
 }
