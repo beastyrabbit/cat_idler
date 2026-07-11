@@ -92,6 +92,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             stoneCraftProgress REAL,
             clothierCraftProgress REAL,
             tanneryCraftProgress REAL,
+            metalForgeProgress REAL,
             anchorX INTEGER,
             anchorY INTEGER
         );
@@ -256,6 +257,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "stoneCraftProgress", "REAL"),
         ("colonies", "clothierCraftProgress", "REAL"),
         ("colonies", "tanneryCraftProgress", "REAL"),
+        ("colonies", "metalForgeProgress", "REAL"),
         ("colonies", "anchorX", "INTEGER"),
         ("colonies", "anchorY", "INTEGER"),
         ("cats", "skills", "TEXT"),
@@ -329,7 +331,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 testResourceDecayMultiplier, testResilienceHoursOverride,
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, gatherSpots,
                 stockLedger, coin, items, woodCraftProgress, stoneCraftProgress,
-                clothierCraftProgress, tanneryCraftProgress, anchorX, anchorY
+                clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -355,11 +357,12 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
             stockpiles, gatherSpots, stockLedger, coin, items, woodCraftProgress,
-            stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, anchorX, anchorY
+            stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
+            anchorX, anchorY
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40
+            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41
         )",
         params![
             colony.id,
@@ -400,6 +403,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.stone_craft_progress,
             colony.clothier_craft_progress,
             colony.tannery_craft_progress,
+            colony.metal_forge_progress,
             colony.anchor.x,
             colony.anchor.y,
         ],
@@ -530,11 +534,13 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         tannery_craft_progress: row
             .get::<_, Option<f64>>("tanneryCraftProgress")?
             .unwrap_or(0.0),
-        // Ore/metal: the Smelter's metal-forge sub-cycle timer resets to 0 on load —
-        // at most one ~900s cycle of progress is lost across a restart (the metal bars
-        // it would have produced are not; only the in-flight timer). A follow-up could
-        // give it a column like the other craft timers for full consistency.
-        metal_forge_progress: 0.0,
+        // Ore/metal: the Smelter's metal-forge sub-cycle timer, persisted alongside the
+        // other craft-cycle timers (see `wood_craft_progress` above) so a restart doesn't
+        // drop up to a full ~900s forge cycle. `unwrap_or(0.0)` covers rows saved before
+        // this column existed.
+        metal_forge_progress: row
+            .get::<_, Option<f64>>("metalForgeProgress")?
+            .unwrap_or(0.0),
         // P19 slice 3: `coin` is real player-facing wealth, so it gets a column (see
         // `migrate_add_missing_columns`). The in-progress trader visit + its schedule
         // reference (`last_trader_departed_at`) are NOT persisted this slice, matching
@@ -1791,6 +1797,7 @@ mod tests {
         colony.stone_craft_progress = 222.0;
         colony.clothier_craft_progress = 333.0;
         colony.tannery_craft_progress = 444.0;
+        colony.metal_forge_progress = 555.0;
         colony.run_number = 3;
         colony.run_started_at = 4_900_000;
         colony.created_at = 4_800_000;
@@ -2016,6 +2023,10 @@ mod tests {
         assert_eq!(
             loaded_colony.tannery_craft_progress,
             expected_colony.tannery_craft_progress
+        );
+        assert_eq!(
+            loaded_colony.metal_forge_progress,
+            expected_colony.metal_forge_progress
         );
         assert_eq!(loaded_colony.coin, expected_colony.coin);
 
