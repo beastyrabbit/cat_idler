@@ -22,13 +22,16 @@ Built as a Rust **Cargo workspace** under `crates/`:
 - **cat-dev** — `cargo dev`, a local launcher that builds + runs `cat-server` + `cat-desktop`
   together.
 
-**This is a rebuild in progress.** The game originally shipped as a Next.js/TypeScript web app
-(a Victorian-newspaper-themed single shared colony, Drizzle ORM + `better-sqlite3`). That
-version is frozen — reference only — on branch `archive/web-game` (tag `web-final`); the
-TypeScript source (`app/`, `lib/game/`, `server/`, `db/`, `types/`, `worker/`, `tests/`) still
-physically sits in this tree as the porting reference (per `AGENTS.md`: never edit or run it).
-Retiring it is the pending "cutover" step (`docs/migration/BOARD.md` P11) — not done yet, so
-don't assume those directories are dead weight to delete casually. See `README.md` and
+**The rebuild is complete — this tree is now the Rust/Bevy game.** The game originally shipped
+as a Next.js/TypeScript web app (a Victorian-newspaper-themed single shared colony, Drizzle ORM
++ `better-sqlite3`). That version was ported "same idea, not bit-identical" into this Rust +
+Bevy workspace and then **retired at the P11 cutover** (2026-07-11): the TypeScript source
+(`app/`, `lib/game/`, `server/`, `db/`, `types/`, `worker/`, `tests/`, and its JS build configs)
+was removed from this tree. It remains fully preserved — runnable — on branch `archive/web-game`
+(tag `web-final`, commit `8d3bc5a`); check that branch out if you need the original spec (e.g. to
+regenerate a golden-master fixture). The Rust module doc-comments still cite the TS files they
+were ported from (e.g. "ported from `lib/game/lifeSim.ts`") as historical provenance — those are
+pointers into the archive branch, not files in this tree. See `README.md` and
 `docs/ARCHITECTURE.md` for the full picture; `docs/HANDOFF.md` for hard-won build lessons;
 `docs/migration/BOARD.md` for phase-by-phase status.
 
@@ -62,9 +65,9 @@ cargo fmt --all -- --check         # `cargo fmt --all` to fix
 cargo build -p cat-web --target wasm32-unknown-unknown
 ```
 
-The TypeScript toolchain (`bun run dev`, `bun run db:generate`, `bun run test`, etc.) still
-works against the **archived** web game only — it is not part of the running game anymore and
-should not be used for feature work. See `archive/web-game` if you need it.
+The TypeScript toolchain (`bun run dev`, `bun run db:generate`, `bun run test`, etc.) is gone
+from this tree — it only ever drove the old web game, which now lives on branch
+`archive/web-game`. Check that branch out if you need it.
 
 ## Architecture
 
@@ -235,12 +238,10 @@ Quality gate before any commit (per `AGENTS.md`): `cargo nextest run -p <crate>`
 
 ## Git Hooks (lefthook)
 
-Hooks are glob-scoped so a Rust-only commit never runs the JS toolchain (and vice versa) —
-`lefthook.yml`:
-- **pre-commit**: `gitleaks` (secret detection, all source globs), `bun run lint` /
-  `bun run typecheck` (TS-glob only — archived game), `cargo fmt --all -- --check` (`.rs` only).
-- **pre-push**: `bun run test` (TS-glob only), `cargo clippy --workspace --all-targets -- -D
-  warnings` and `cargo nextest run --workspace` (`.rs` only).
+`lefthook.yml` (Rust-only since the P11 cutover removed the JS toolchain):
+- **pre-commit**: `gitleaks` (secret detection), `cargo fmt --all -- --check` (`.rs` only).
+- **pre-push**: `cargo clippy --workspace --all-targets -- -D warnings` and `cargo nextest run
+  --workspace` (`.rs` only).
 
 Heavy Rust steps (clippy, tests) live on pre-push, not pre-commit, to keep commits fast while
 Bevy is a dependency (slow incremental compiles).
@@ -271,8 +272,9 @@ The world ticks once a second (fixed; not currently configurable via env var).
   Bevy API-shape gotchas (`Sprite::from_color`, `Text` tuple access, `single_mut()` returning a
   `Result`, `Anchor` as its own component).
 - The TypeScript reference tree (`app/`, `lib/game/`, `server/`, `db/`, `types/`, `worker/`,
-  `tests/`) is porting reference only — frozen, never edited, not part of the running game.
-  Don't "fix" or refactor it; port the behavior into `cat-sim` instead.
+  `tests/`) was **removed at the P11 cutover** — it lives on branch `archive/web-game` (tag
+  `web-final`) only. If you need the original behavior spec, read it there; don't try to re-add
+  it here. The Rust doc-comments' "ported from `lib/game/*.ts`" citations point into that branch.
 - If you hit a spurious linker error (`undefined hidden symbol ... drop_in_place`), run `cargo
   clean -p cat-sim` and retest.
 - Docs describing the old TypeScript/Next.js game (`docs/plan.md`, `docs/ROADMAP.md`,

@@ -198,10 +198,11 @@ cat_idler/
 │   ├── HANDOFF.md        # migration status + hard-won lessons for whoever picks this up
 │   ├── migration/        # BOARD.md (task board), specs/ (design specs p2–p19), fixtures/
 │   └── assets/           # sprite pack selection + catalogs for the Bevy client
-├── public/images/game/   # Kenney Roguelike 16px sprites used by cat-client
-├── app/, lib/game/, server/, db/, types/, worker/   # ARCHIVED TypeScript reference (do not run/edit)
-└── tests/                # TypeScript test suite for the archived game (not run as part of this project)
+└── public/images/game/   # Kenney Roguelike 16px sprites used by cat-client
 ```
+
+The original Next.js/TypeScript web game was retired at the P11 cutover — it lives, fully
+runnable, on branch `archive/web-game` (tag `web-final`).
 
 ## Documentation
 
@@ -224,12 +225,14 @@ port — they no longer describe how to build, run, or test this project.
 
 ## Status
 
-Pre-release. Simulation core, server, and multi-colony founding are done and live-verified.
-The Bevy client renders the full top-down world with a working HUD and is mid-buildout on
-newer sim systems (spatial stockpiles, gather spots, the item/material economy, transport
-upgrades). Ore/metal mining is spec'd (`docs/migration/specs/p17-biome-generator.md`) but not
-yet wired into `world_tick`. A browser/WASM build and the final cutover (retiring the
-TypeScript reference tree) are still pending. See `docs/HANDOFF.md` for the living status.
+Pre-release, but the web→Rust/Bevy migration is complete. Simulation core, server, and
+multi-colony founding are done and live-verified. The Bevy client renders the full top-down
+world with a cohesive "cozy ledger" UI (spatial stockpiles, gather spots, the item/material
+economy, ore/metal mining, research/School buildings — all wired). The browser/WASM build runs
+end-to-end in Chromium, and the P11 cutover is done: `main` is now the Rust game and the old
+TypeScript tree lives on `archive/web-game`. The one deliberately-partial area is the
+officer/role split (assignable roles exist; the single leader director still does most labor
+allocation). See `docs/HANDOFF.md` for the living status.
 
 ---
 

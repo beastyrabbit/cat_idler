@@ -1,5 +1,14 @@
 # AGENTS.md — shared context for the codex build team
 
+> **Migration complete (P11 cutover, 2026-07-11).** The rebuild described below is done:
+> `main` is now the Rust/Bevy game and the TypeScript source has been removed from this tree.
+> The old web game (the behaviour spec referenced throughout this doc — `lib/game/*.ts`,
+> `server/game.ts`, `types/game.ts`, `db/schema.ts`, `tests/`) lives on branch
+> `archive/web-game` (tag `web-final`). Check that branch out to read the original spec or
+> regenerate a golden-master fixture. The rest of this file is retained as the porting-era
+> ground rules (determinism discipline, parity bar, the one permitted JS use), which still
+> govern any further work on `cat-sim`.
+
 You are one persona in a team rebuilding the **Cat Colony** god-sim from a
 TypeScript/Next.js web app into a **Rust + Bevy** system. Read your persona file
 (passed in the prompt) for your specific role. This file is the shared ground truth.
