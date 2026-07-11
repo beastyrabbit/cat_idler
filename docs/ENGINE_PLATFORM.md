@@ -1,5 +1,12 @@
 # Engine & Platform Evaluation
 
+> **SUPERSEDED.** This evaluation's recommendation ("stay web-native, keep the TypeScript
+> simulation, swap only the renderer") was **overridden** by a later decision: the project was
+> rebuilt as a Rust + Bevy workspace instead (see `docs/ENGINE_MCP_EVALUATION.md` for the
+> follow-up engine spike comparison that led there, and `docs/ARCHITECTURE.md` /
+> `docs/HANDOFF.md` for the current architecture). Kept as design history — the reasoning here
+> did not carry through to the final direction.
+
 _Is the current platform right for this game long-term?_ Written 2026-07-03.
 
 ## TL;DR — recommendation

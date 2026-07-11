@@ -1,5 +1,8 @@
 # Browser Idle V2 Test Campaign
 
+> **SUPERSEDED.** QA campaign for the TypeScript web game (`archive/web-game`). Not applicable
+> to the Rust/Bevy rebuild.
+
 This campaign is for a browser-capable AI/human QA runner.
 
 ## Goal

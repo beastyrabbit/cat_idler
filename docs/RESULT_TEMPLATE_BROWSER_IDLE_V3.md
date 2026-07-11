@@ -1,5 +1,8 @@
 # Browser Idle V3 Test Results Template
 
+> **SUPERSEDED.** QA template for the TypeScript web game (`archive/web-game`). Not applicable
+> to the Rust/Bevy rebuild.
+
 **Date:**  
 **Tester:**  
 **Branch/Commit:**  

@@ -1,5 +1,10 @@
 # Testing Guide
 
+> **SUPERSEDED.** Vitest/Selenium testing guide for the TypeScript web game (frozen on branch
+> `archive/web-game`). For the Rust rebuild's testing approach (cargo test/nextest, golden-master
+> fixtures, determinism), see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#testing-strategy) and
+> `AGENTS.md`. Kept as history — the TDD *philosophy* carried over, the tooling did not.
+
 This project uses **Test-Driven Development (TDD)**. Write tests FIRST, then implement.
 
 ## TDD Workflow

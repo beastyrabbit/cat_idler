@@ -1,5 +1,11 @@
 # Roadmap — "The Gods Shape, The Cats Live"
 
+> **SUPERSEDED.** Written for the TypeScript web game (frozen on branch `archive/web-game`).
+> The design *feel* described here ("gods shape, cats live") carried over into the Rust rebuild
+> — see [`docs/GAME_VISION.md`](GAME_VISION.md) for the current pillars and
+> [`docs/migration/BOARD.md`](migration/BOARD.md) for what's actually built. This file's
+> specific phase plan and implementation notes are TS-era and no longer current.
+
 The target feel (from the 2026-07-02 design direction): **a self-running
 simulation**. The cats live, age, breed, work, research, fight and die on
 their own; players are gods who nudge and shape — zones, boosts, votes,

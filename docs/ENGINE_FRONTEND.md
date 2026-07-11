@@ -1,5 +1,10 @@
 # Map Rendering Engine — Analysis & Recommendation
 
+> **SUPERSEDED.** Analysis of the TypeScript web game's DOM/PixiJS isometric renderer (frozen
+> on branch `archive/web-game`). The project has since moved to a Bevy 0.19 native/wasm client
+> rendering a **top-down** (not isometric) world — see `docs/ARCHITECTURE.md` and
+> `docs/GAME_VISION.md`. Kept as design history.
+
 _What should render the world map? Diagnosis of today's DOM renderer, evaluation of
 alternatives, and a recommended path. Scope: `components/map/*`, `lib/game/isoProjection.ts`._
 

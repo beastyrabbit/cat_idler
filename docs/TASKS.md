@@ -1,5 +1,10 @@
 # Development Tasks
 
+> **SUPERSEDED.** TDD task breakdown for the TypeScript web game (frozen on branch
+> `archive/web-game`). For the Rust rebuild's task tracking, see
+> [`docs/migration/BOARD.md`](migration/BOARD.md) (card format, phase status) and
+> [`docs/migration/specs/`](migration/specs/) (per-system design specs). Kept as history.
+
 This document contains all development tasks broken down for Test-Driven Development (TDD).
 
 **How to use this document:**

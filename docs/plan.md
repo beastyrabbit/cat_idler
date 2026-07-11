@@ -1,5 +1,11 @@
 # Cat Colony Idle Game - Complete Design Document
 
+> **SUPERSEDED.** This describes the original Next.js/TypeScript/Drizzle web game, frozen on
+> branch `archive/web-game`. The project has been rebuilt as a Rust + Bevy workspace (`crates/`)
+> — see [`README.md`](../README.md), [`docs/ARCHITECTURE.md`](ARCHITECTURE.md), and
+> [`docs/GAME_VISION.md`](GAME_VISION.md) for the current design and architecture. Kept only as
+> design-history reference for the port.
+
 ## Overview
 
 A real-time idle game where a cat colony runs autonomously. Users can help by providing food, defending against intruders, voting on leaders, and building upgrades. The colony can thrive or die based on management - but it runs completely on its own when no one is watching.

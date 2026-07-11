@@ -1,5 +1,10 @@
 # UI Concept Variants
 
+> **SUPERSEDED.** UI concept exploration for the TypeScript web game's newspaper UI (frozen on
+> branch `archive/web-game`; also archived separately on `archive/ui-concepts-all`). The Rust
+> client uses a different, DF-Steam-inspired UI — see
+> `docs/migration/specs/p18-visual-polish.md`. Kept as design history.
+
 This document catalogs all 13 visual concept variants created for the Cat Colony Idle Game during the UI redesign exploration. **V9 — The Catford Examiner** was selected as the production direction.
 
 Each variant is a self-contained `page.tsx` file under `app/game/v{N}-{slug}/`. All variants share the same data layer via `useGameDashboard` from `@/hooks/useGameDashboard` and `summarizeCatIdentity` from `@/lib/game/catTraits`. Styles are inline or injected via `<style>` tags — no globals are modified.

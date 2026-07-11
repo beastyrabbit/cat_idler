@@ -1,5 +1,12 @@
 # Leader AI Design — a colony director that plays like a player
 
+> **SUPERSEDED (design history).** Written for and implemented in the TypeScript
+> `lib/game/leaderDirector.ts` (frozen on branch `archive/web-game`). The utility-AI design
+> described here was ported behaviorally into Rust as `crates/cat-sim/src/leader_director.rs`
+> — see `docs/migration/specs/leader_director.md` for the Rust port's spec and
+> `docs/ARCHITECTURE.md` for how it fits into `world_tick`. Kept as the original design
+> rationale.
+
 Target (from `docs/ROADMAP.md` §6): near-zero idle cats, a portfolio balanced
 across food / water / materials / research / defense, deliberate building, all
 autonomous 24/7 and stable at `testTimeScale` up to 10000x. The current

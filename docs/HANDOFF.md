@@ -75,12 +75,15 @@ labors over time; visible workshops, stockpiles, and farm plots; production chai
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 # 1) server (the world)
-PORT=8787 GAME_DB_PATH=/tmp/db WORKER_TICK_MS=500 ./target/debug/cat-server   # or: cargo run -p cat-server
+PORT=8787 GAME_DB_PATH=/tmp/db ./target/debug/cat-server   # or: cargo run -p cat-server
+# (tick interval is fixed at 1s in main.rs; WORKER_TICK_MS is not read — that was the old TS worker's knob)
 curl http://127.0.0.1:8787/health          # -> ok
 # 2) client (the window) — needs a graphical session; assets load from BEVY_ASSET_ROOT
 BEVY_ASSET_ROOT=$PWD CAT_SERVER_URL=ws://127.0.0.1:8787/ws cargo run -p cat-desktop
 ```
-Art lives in `public/images/iso/tiles`, `public/images/iso/buildings`, `public/images/cats`.
+Art lives in `public/images/game/{terrain,nature,buildings,infra,props,farm,enemies}/` (the
+Kenney Roguelike 16px set — see the "ART / ASSETS DONE" status line and
+`docs/assets/SELECTION.md`; `public/images/iso/*` was the earlier isometric pack, superseded).
 The verified 1653-line render spike `crates/cat-client/reference/spike-bevy-0.19.rs` is the
 source to lift camera/sprite/HUD/atlas patterns from (it renders correctly).
 

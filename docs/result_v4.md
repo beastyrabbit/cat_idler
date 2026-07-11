@@ -1,5 +1,8 @@
 # Browser Idle V4 Test Results
 
+> **SUPERSEDED.** Historical QA report for the TypeScript web game (`archive/web-game`). Not
+> applicable to the Rust/Bevy rebuild.
+
 **Date:** 2026-02-08
 **Tester:** Claude (AI automated via Playwright MCP)
 **Branch/Commit:** `feat/browser-idle-rework` @ `a871bf1`

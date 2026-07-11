@@ -1,5 +1,10 @@
 # Terrain Overhaul — Isometric Nature Design
 
+> **SUPERSEDED.** Isometric sprite work for the TypeScript web game (frozen on branch
+> `archive/web-game`). The Rust/Bevy client renders a flat **top-down** world with Kenney
+> Roguelike 16px sprites instead — see `docs/assets/SELECTION.md` and `docs/ARCHITECTURE.md`.
+> Kept as design history.
+
 Rebuilding the world map on the Kenney **Isometric Nature** pack
 (`public/Kenney Game Assets All-in-1 3.5.0/2D assets/Isometric Nature/PNG/`).
 This is a geometry change: the current map uses the "Miniature" packs
