@@ -187,6 +187,23 @@ pub enum Mining {
     Full,
 }
 
+impl Mining {
+    /// Fraction of a quarry job's base yield this mining rule actually produces:
+    /// `Full` mountains keep the whole base yield, `Trickle` stony/gravel ground
+    /// gives a fifth (a real but minor source), and `None` produces nothing —
+    /// wired into `world_tick::total_yield_for_job`'s `Quarry` arm (P17 mining
+    /// rules) so the leftover base constant (`QUARRY_TOTAL_YIELD`) stays the
+    /// "full mountain" number and every other biome scales down from there.
+    #[must_use]
+    pub const fn yield_multiplier(self) -> f64 {
+        match self {
+            Self::Full => 1.0,
+            Self::Trickle => 0.2,
+            Self::None => 0.0,
+        }
+    }
+}
+
 /// Per-biome property row (the P17 analogue of [`crate::biomes::BiomeProperties`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BiomeClimate {
@@ -973,6 +990,30 @@ mod tests {
             let a = classify_climate_biome(t, 1.0 - t, t, t, false, false);
             let b = classify_climate_biome(t, 1.0 - t, t, t, false, false);
             assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn mining_yield_multiplier_ranks_full_above_trickle_above_none() {
+        assert_eq!(Mining::Full.yield_multiplier(), 1.0);
+        assert!(Mining::Trickle.yield_multiplier() > 0.0);
+        assert!(Mining::Trickle.yield_multiplier() < Mining::Full.yield_multiplier());
+        assert_eq!(Mining::None.yield_multiplier(), 0.0);
+    }
+
+    #[test]
+    fn every_biome_mining_multiplier_matches_its_rule() {
+        for biome in Biome::ALL {
+            let props = biome.properties();
+            assert_eq!(
+                props.mining.yield_multiplier(),
+                props.mining.yield_multiplier()
+            );
+            match props.mining {
+                Mining::Full => assert_eq!(*biome, Biome::Mountains),
+                Mining::None => assert_eq!(props.mining.yield_multiplier(), 0.0),
+                Mining::Trickle => assert!(props.mining.yield_multiplier() > 0.0),
+            }
         }
     }
 }

@@ -1206,7 +1206,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan);
         phase_21_leader_capital_decisions_and_tithe(colony, gate, policy, &plan);
         phase_22_ritual_approval(colony, gate);
-        phase_23_production(colony, gate);
+        phase_23_production(colony, gate, world_seed);
         phase_23c_fibre_forage(colony, gate);
         phase_24_research(colony, gate);
         phase_25_survival_deaths_and_carried_yield_salvage(colony, gate, policy);
@@ -1224,7 +1224,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_28_due_completion_supplies_and_planner_jobs(colony, gate);
         phase_29_due_completion_gathering_explore_expansion(colony, gate);
         phase_30_due_completion_build_ritual_training_return_mark_done(colony, gate);
-        phase_31_mid_job_hauling(colony, gate);
+        phase_31_mid_job_hauling(colony, gate, world_seed);
         let mut movement =
             phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy, world_seed);
         phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
@@ -2679,7 +2679,7 @@ fn phase_22_ritual_approval(_: &mut ColonyRuntime, _: TickGate) {}
 
 /// Phase 23: run fields, workshops, and smithies against patched resources and
 /// building progress.
-fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
+fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
     // Idle mop-up (P12.4a/b). The generic workshop, the accounting tent, and the P16
     // raw-material chains (wood-cutter / stone-prep / woodworking) are all filled here
     // from cats that phase 20 left genuinely idle. The raw chains were released back to
@@ -2733,7 +2733,19 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
     for (building_index, building_id) in building_ids {
         match colony.buildings[building_index].building_type {
             BuildingType::Field => {
-                colony.resources.food += field_yield(production_elapsed);
+                // P17 crop fertility: the base `field_yield` curve is the "full 1.0
+                // fertility" rate; the fine per-tile climate biome under the field
+                // scales it (grass ~0.8x, marsh ~1.5x, …). `tile_is_farmable`
+                // already keeps fields off zero-fertility ground, so this is a
+                // pure rate multiplier, never a placement gate.
+                let fertility = crate::terrain_gen::tile_climate_biome(
+                    world_seed,
+                    colony.buildings[building_index].position.x,
+                    colony.buildings[building_index].position.y,
+                )
+                .properties()
+                .fertility;
+                colony.resources.food += field_yield(production_elapsed) * fertility;
             }
             BuildingType::Workshop => {
                 let worker = assigned_worker(colony, &building_id);
@@ -3557,7 +3569,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
 
 /// Phase 31: run mid-job hauling trips for accepted active gathering and fetch
 /// jobs.
-fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate) {
+fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
     let active_jobs = colony
         .jobs
         .iter()
@@ -3614,7 +3626,8 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate) {
             continue;
         }
 
-        let total = total_yield.unwrap_or_else(|| total_yield_for_job(colony, &job, cat_index));
+        let total =
+            total_yield.unwrap_or_else(|| total_yield_for_job(colony, &job, cat_index, world_seed));
         let share = split_yield(total, HUNT_TRIP_COUNT, trips_done as i32);
         if job.kind == JobKind::HuntExpedition {
             drain_hunt_site(colony, site, share, gate.processed_through);
@@ -5713,6 +5726,15 @@ fn has_complete_building(colony: &ColonyRuntime, building_type: BuildingType) ->
     })
 }
 
+// NOTE (P17): site *discovery* (`has_quarry_site`/`quarry_sites_near_village`)
+// deliberately keeps the cheap legacy coarse-type check only — `tile_is_minable`
+// once OR'd in a fine per-tile climate-biome lookup here too, but that function
+// regenerates its whole 12x12 chunk per call (see `terrain_gen::tile_climate_biome`),
+// and these two scan *every* explored tile *every tick*; OR-ing it in made a
+// long-horizon tick pass effectively hang (each tick paying chunk-regen cost per
+// explored tile). The fine biome's mining rule is still wired in, just at
+// `total_yield_for_job`'s `Quarry` arm below — a single lookup per job, at the
+// job's one dispatched site, not a per-tick full-map scan.
 fn has_quarry_site(colony: &ColonyRuntime) -> bool {
     colony.world_tiles.values().any(|tile| {
         matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
@@ -6261,7 +6283,8 @@ fn next_claimed_building_site(
                 && !occupied.contains(&tile)
                 && !tile_has_water(colony.world_tiles.get(&tile))
                 && !crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y)
-                && (!require_farmable || tile_is_farmable(colony.world_tiles.get(&tile)))
+                && (!require_farmable
+                    || tile_is_farmable(world_seed, tile, colony.world_tiles.get(&tile)))
         })
     };
 
@@ -6305,16 +6328,26 @@ fn tile_has_water(tile: Option<&WorldTileRuntime>) -> bool {
     })
 }
 
-/// Whether a field/farm may be sown on this ground. Mirrors the climate biome
-/// fertility table (`climate::BiomeClimate::farmable`): grass, meadow, and marsh
-/// (swamp) are fertile; rock (mountains), sand (desert), tundra, forest, cave,
-/// enemy, and water tiles are barren. An unrevealed/absent tile is not farmable.
-fn tile_is_farmable(tile: Option<&WorldTileRuntime>) -> bool {
+/// Whether a field/farm may be sown on this ground (P17: relaxed from
+/// "grass/meadow/marsh only" to any farmable biome). A tile is farmable when
+/// either of two independent signals says so: the legacy coarse ground type
+/// (`Field`/`Meadow`/`Swamp`, the original P16 heuristic, kept so no
+/// previously-valid site is ever lost) **or** the fine per-tile P17 climate
+/// biome at this position has positive fertility (`BiomeClimate::farmable`,
+/// e.g. `Plains`/`Meadow`/`FlowerField`/`Marsh`/`Swamp`/`Savanna`/`Jungle`/
+/// `Hills`/`MushroomFields`). Either way water always wins: a tile carrying a
+/// river (including the synthetic starter pond stamped after generation, which
+/// the fine classifier never sees) is never farmable, and an unrevealed/absent
+/// tile is never farmable.
+fn tile_is_farmable(world_seed: u32, pos: TilePos, tile: Option<&WorldTileRuntime>) -> bool {
     tile.is_some_and(|tile| {
-        matches!(
-            tile.tile_type,
-            TileType::Field | TileType::Meadow | TileType::Swamp
-        ) && tile.overlay_feature.as_deref() != Some("river")
+        !tile_has_water(Some(tile))
+            && (matches!(
+                tile.tile_type,
+                TileType::Field | TileType::Meadow | TileType::Swamp
+            ) || crate::terrain_gen::tile_climate_biome(world_seed, pos.x, pos.y)
+                .properties()
+                .farmable())
     })
 }
 
@@ -6776,14 +6809,50 @@ fn skill_scaled_yield(cat: &Cat, kind: JobKind, base: f64) -> f64 {
     }
 }
 
-fn total_yield_for_job(colony: &ColonyRuntime, job: &JobRuntime, cat_index: usize) -> f64 {
+fn total_yield_for_job(
+    colony: &ColonyRuntime,
+    job: &JobRuntime,
+    cat_index: usize,
+    world_seed: u32,
+) -> f64 {
     let cat = &colony.cats[cat_index];
     match job.kind {
         JobKind::FetchWater => skill_scaled_yield(cat, job.kind, WATER_TOTAL_YIELD),
-        JobKind::Quarry => skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD),
+        // P17 mining rules: `QUARRY_TOTAL_YIELD` is the "full mountain" base yield,
+        // scaled by the site's mining rule (`quarry_yield_multiplier`).
+        JobKind::Quarry => {
+            let mult = hauling_metadata(job).0.map_or(1.0, |site| {
+                quarry_yield_multiplier(colony, world_seed, site)
+            });
+            (skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD) * mult).floor()
+        }
         JobKind::HuntExpedition => hunt_yield_for(cat, colony),
         _ => 0.0,
     }
+}
+
+/// P17 mining-yield multiplier for a quarry `site`, the OR/superset of two signals
+/// (mirrors `tile_is_farmable`): the legacy coarse ground type
+/// (`Mountains`/`CaveEntrance` — the same signal `quarry_sites_near_village` uses
+/// to *discover* a site, so a discovered site always mines fully and the founding
+/// material economy never regresses) OR the fine per-tile climate biome's mining
+/// rule (`Full` mountains, `Trickle` stony/gravel, `None` elsewhere). Taking the
+/// max means a legacy mountain is always full even when the fine biome under it is
+/// non-mining (e.g. a `Mountains` tile carved near the founding grass plateau),
+/// while a fine stony biome that isn't a legacy mountain still yields its trickle.
+fn quarry_yield_multiplier(colony: &ColonyRuntime, world_seed: u32, site: TilePos) -> f64 {
+    let legacy = colony.world_tiles.get(&site).map_or(0.0, |tile| {
+        if matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance) {
+            crate::climate::Mining::Full.yield_multiplier()
+        } else {
+            0.0
+        }
+    });
+    let fine = crate::terrain_gen::tile_climate_biome(world_seed, site.x, site.y)
+        .properties()
+        .mining
+        .yield_multiplier();
+    legacy.max(fine)
 }
 
 fn carrying_kind_for_job(kind: JobKind) -> CarryingKind {
@@ -7588,6 +7657,91 @@ mod tests {
             skill_scaled_yield(&cat, JobKind::Explore, QUARRY_TOTAL_YIELD),
             QUARRY_TOTAL_YIELD
         );
+    }
+
+    /// Builds a single quarry job assigned to `cat_id`, hauling from `site`, ready
+    /// for its first trip's total-yield computation.
+    fn quarry_job_at(site: TilePos, cat_id: &str) -> JobRuntime {
+        JobRuntime {
+            id: "quarry-1".to_owned(),
+            kind: JobKind::Quarry,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Leader,
+            assigned_cat: Some(cat_id.to_owned()),
+            duration_ms: 1_000,
+            speed: 1.0,
+            yield_amount: 0.0,
+            click_count: 0,
+            created_at: 0,
+            started_at: Some(0),
+            ends_at: Some(1_000),
+            completed_at: None,
+            metadata: JobMetadata::Hauling {
+                site: Some(site),
+                total_yield: None,
+                trips_done: 0,
+                next_trip_at: None,
+                accepted: true,
+            },
+        }
+    }
+
+    #[test]
+    fn quarry_yield_is_biome_gated_full_on_mountain_trickle_on_stony_none_elsewhere() {
+        // P17 mining rules, wired end to end through `total_yield_for_job`'s
+        // `Quarry` arm: three real sites for seed 42, one per `climate::Mining`
+        // rule (found by scanning `tile_climate_biome`, not hardcoded — biome
+        // placement is seed noise).
+        let seed = 42u32;
+        let full_site = pos(200, 573);
+        let trickle_site = pos(200, 0);
+        let none_site = pos(0, 0);
+        assert_eq!(
+            crate::terrain_gen::tile_climate_biome(seed, full_site.x, full_site.y)
+                .properties()
+                .mining,
+            crate::climate::Mining::Full,
+            "test fixture assumption: full_site mines fully"
+        );
+        assert_eq!(
+            crate::terrain_gen::tile_climate_biome(seed, trickle_site.x, trickle_site.y)
+                .properties()
+                .mining,
+            crate::climate::Mining::Trickle,
+            "test fixture assumption: trickle_site gives a trickle"
+        );
+        assert_eq!(
+            crate::terrain_gen::tile_climate_biome(seed, none_site.x, none_site.y)
+                .properties()
+                .mining,
+            crate::climate::Mining::None,
+            "test fixture assumption: none_site has no mining rule"
+        );
+
+        let colony = ColonyRuntime {
+            cats: vec![adult_idle_cat("miner", "colony-1")],
+            ..ColonyRuntime::default()
+        };
+
+        let full_yield = total_yield_for_job(&colony, &quarry_job_at(full_site, "miner"), 0, seed);
+        let trickle_yield =
+            total_yield_for_job(&colony, &quarry_job_at(trickle_site, "miner"), 0, seed);
+        let none_yield = total_yield_for_job(&colony, &quarry_job_at(none_site, "miner"), 0, seed);
+
+        assert_eq!(
+            full_yield, QUARRY_TOTAL_YIELD,
+            "a mountain site keeps the full base yield"
+        );
+        assert!(
+            trickle_yield > 0.0 && trickle_yield < full_yield,
+            "a stony site should give a nonzero trickle below the full yield, got {trickle_yield}"
+        );
+        assert_eq!(none_yield, 0.0, "a non-mining biome yields nothing");
+
+        // Deterministic: re-running the same site produces byte-identical yield.
+        let twin_yield =
+            total_yield_for_job(&colony, &quarry_job_at(trickle_site, "miner"), 0, seed);
+        assert_eq!(trickle_yield.to_bits(), twin_yield.to_bits());
     }
 
     #[test]
@@ -8975,7 +9129,7 @@ mod tests {
         let mut colony = workshop_colony(true);
 
         // 30s completes one workshop cycle (590 + 30 ≥ 600): 5 materials → 1 refined.
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
         assert_eq!(colony.resources.refined, 1.0);
         assert_eq!(colony.resources.materials, 45.0);
@@ -9037,7 +9191,7 @@ mod tests {
             },
             true,
         );
-        phase_23_production(&mut staffed, production_gate(30, 30_000));
+        phase_23_production(&mut staffed, production_gate(30, 30_000), 123);
         assert_eq!(staffed.resources.planks, 1.0);
         assert_eq!(staffed.resources.materials, 45.0);
 
@@ -9053,7 +9207,7 @@ mod tests {
             },
             false,
         );
-        phase_23_production(&mut auto_staffed, production_gate(30, 30_000));
+        phase_23_production(&mut auto_staffed, production_gate(30, 30_000), 123);
         assert_eq!(auto_staffed.resources.planks, 1.0);
         assert_eq!(auto_staffed.resources.materials, 45.0);
 
@@ -9067,7 +9221,7 @@ mod tests {
             false,
         );
         no_worker.cats.clear();
-        phase_23_production(&mut no_worker, production_gate(30, 30_000));
+        phase_23_production(&mut no_worker, production_gate(30, 30_000), 123);
         assert_eq!(no_worker.resources.planks, 0.0);
         assert_eq!(no_worker.resources.materials, 50.0);
     }
@@ -9082,7 +9236,7 @@ mod tests {
             },
             true,
         );
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
         assert_eq!(colony.resources.blocks, 1.0);
         assert_eq!(colony.resources.materials, 45.0);
     }
@@ -9099,7 +9253,7 @@ mod tests {
             },
             true,
         );
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
         assert_eq!(colony.resources.tools, 1.0);
         assert_eq!(colony.resources.planks, 8.0);
         assert_eq!(colony.resources.blocks, 8.0);
@@ -9114,7 +9268,7 @@ mod tests {
             },
             true,
         );
-        phase_23_production(&mut starved, production_gate(30, 30_000));
+        phase_23_production(&mut starved, production_gate(30, 30_000), 123);
         assert_eq!(starved.resources.tools, 0.0);
         assert_eq!(starved.resources.planks, 10.0);
     }
@@ -9134,7 +9288,7 @@ mod tests {
         );
         // Prime the trade-craft timer so this tick's 30s elapsed completes one 900s cycle.
         colony.wood_craft_progress = 890.0;
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
         // The functional tools recipe (unchanged) also completes this tick — production_progress
         // 590 + 30 >= 600 — and claims its 2 planks + 2 blocks first.
@@ -9187,7 +9341,7 @@ mod tests {
             true,
         );
         colony.stone_craft_progress = 890.0;
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
         // The functional recipe (unchanged) produces 1 block from 5 materials this tick
         // (25 + 1 = 26), then the trade craft spends 1 of the surplus: 26 - 1 = 25.
@@ -9227,7 +9381,7 @@ mod tests {
             );
             colony.cats[0].gain_skill(Labor::Craft, craft_skill);
             colony.wood_craft_progress = 890.0;
-            phase_23_production(&mut colony, production_gate(30, 30_000));
+            phase_23_production(&mut colony, production_gate(30, 30_000), 123);
             colony
                 .items
                 .iter()
@@ -9268,7 +9422,7 @@ mod tests {
             true,
         );
         colony.stone_craft_progress = 890.0;
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
         assert_eq!(
             colony.resources.blocks, 15.0,
@@ -9299,8 +9453,8 @@ mod tests {
 
         for step in 1..=60 {
             let now = i64::from(step) * 60_000;
-            phase_23_production(&mut left, production_gate(60, now));
-            phase_23_production(&mut right, production_gate(60, now));
+            phase_23_production(&mut left, production_gate(60, now), 123);
+            phase_23_production(&mut right, production_gate(60, now), 123);
         }
 
         assert_eq!(
@@ -9325,7 +9479,7 @@ mod tests {
             },
             true,
         );
-        phase_23_production(&mut staffed, production_gate(30, 30_000));
+        phase_23_production(&mut staffed, production_gate(30, 30_000), 123);
         assert_eq!(staffed.resources.cloth, 1.0);
         assert_eq!(staffed.resources.fibre, 45.0);
 
@@ -9339,7 +9493,7 @@ mod tests {
             false,
         );
         no_worker.cats.clear();
-        phase_23_production(&mut no_worker, production_gate(30, 30_000));
+        phase_23_production(&mut no_worker, production_gate(30, 30_000), 123);
         assert_eq!(no_worker.resources.cloth, 0.0);
         assert_eq!(no_worker.resources.fibre, 50.0);
     }
@@ -9354,7 +9508,7 @@ mod tests {
             },
             true,
         );
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
         assert_eq!(colony.resources.leather, 1.0);
         assert_eq!(colony.resources.hide, 45.0);
     }
@@ -9371,7 +9525,7 @@ mod tests {
             true,
         );
         colony.clothier_craft_progress = 890.0;
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
         // The functional refine (unchanged) also completes this tick and adds 1 cloth
         // (21 + 1 = 22), then the trade craft spends 1 of the surplus: 22 - 1 = 21.
@@ -9408,7 +9562,7 @@ mod tests {
             true,
         );
         colony.tannery_craft_progress = 890.0;
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
         assert_eq!(colony.resources.leather, 21.0);
 
@@ -9442,7 +9596,7 @@ mod tests {
             true,
         );
         colony.clothier_craft_progress = 890.0;
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
         assert_eq!(
             colony.resources.cloth, 15.0,
@@ -9468,7 +9622,7 @@ mod tests {
             );
             colony.cats[0].gain_skill(Labor::Craft, craft_skill);
             colony.clothier_craft_progress = 890.0;
-            phase_23_production(&mut colony, production_gate(30, 30_000));
+            phase_23_production(&mut colony, production_gate(30, 30_000), 123);
             colony
                 .items
                 .iter()
@@ -9501,7 +9655,7 @@ mod tests {
         // exist. Fibre still passively forages (phase 23c is population-scaled, not
         // gated on a clothier existing) but that alone must never mutate `items`.
         let mut colony = chain_colony(BuildingType::WoodCutter, Resources::default(), true);
-        phase_23_production(&mut colony, production_gate(30, 30_000));
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
         phase_23c_fibre_forage(&mut colony, production_gate(30, 30_000));
 
         assert_eq!(colony.resources.cloth, 0.0);
@@ -9535,9 +9689,9 @@ mod tests {
         for step in 1..=60 {
             let now = i64::from(step) * 60_000;
             let gate = production_gate(60, now);
-            phase_23_production(&mut left, gate);
+            phase_23_production(&mut left, gate, 123);
             phase_23c_fibre_forage(&mut left, gate);
-            phase_23_production(&mut right, gate);
+            phase_23_production(&mut right, gate, 123);
             phase_23c_fibre_forage(&mut right, gate);
         }
 
@@ -9811,7 +9965,11 @@ mod tests {
         colony.buildings[0].production_progress = 0.0;
         // Ten 600s ticks = ten cycles = 50 materials → 10 planks.
         for step in 1..=10 {
-            phase_23_production(&mut colony, production_gate(600, i64::from(step) * 600_000));
+            phase_23_production(
+                &mut colony,
+                production_gate(600, i64::from(step) * 600_000),
+                123,
+            );
         }
         assert_eq!(colony.resources.planks, 10.0);
         assert_eq!(colony.resources.materials, 50.0);
@@ -9910,8 +10068,8 @@ mod tests {
         let mut with_pile = workshop_colony(true);
         let mut no_pile = workshop_colony(false);
 
-        phase_23_production(&mut with_pile, production_gate(30, 30_000));
-        phase_23_production(&mut no_pile, production_gate(30, 30_000));
+        phase_23_production(&mut with_pile, production_gate(30, 30_000), 123);
+        phase_23_production(&mut no_pile, production_gate(30, 30_000), 123);
 
         for &kind in ResourceKind::ALL {
             assert_eq!(
@@ -9938,7 +10096,11 @@ mod tests {
 
         for step in 1..=10 {
             // 600s per iteration completes exactly one cycle while materials last.
-            phase_23_production(&mut colony, production_gate(600, i64::from(step) * 600_000));
+            phase_23_production(
+                &mut colony,
+                production_gate(600, i64::from(step) * 600_000),
+                123,
+            );
             // Mirror the end-of-tick reconcile that folds net change into the reservoir.
             reconcile_colony_stockpiles(&mut colony);
 
@@ -10020,7 +10182,7 @@ mod tests {
         let mut colony = accounting_colony(5.0, true, 1_000);
         let truth = colony.resources.clone();
 
-        phase_23_production(&mut colony, production_gate(1, 5_000));
+        phase_23_production(&mut colony, production_gate(1, 5_000), 123);
 
         assert_eq!(
             colony.stock_ledger.reported, truth,
@@ -10039,7 +10201,7 @@ mod tests {
         let mut colony = accounting_colony(50.0, false, 1_000);
 
         // Within the recount interval: reported stays stale, resources untouched.
-        phase_23_production(&mut colony, production_gate(1, 1_000 + 5_000));
+        phase_23_production(&mut colony, production_gate(1, 1_000 + 5_000), 123);
         assert_eq!(colony.stock_ledger.reported.food, 50.0, "still lagging");
         assert_eq!(colony.stock_ledger.last_counted, 1_000);
         assert_eq!(colony.resources.food, 200.0, "resources untouched");
@@ -10048,6 +10210,7 @@ mod tests {
         phase_23_production(
             &mut colony,
             production_gate(1, 1_000 + crate::ledger::UNSTAFFED_RECOUNT_INTERVAL_MS),
+            123,
         );
         assert_eq!(colony.stock_ledger.reported.food, 200.0, "recounted");
         assert_eq!(
@@ -11809,32 +11972,61 @@ mod tests {
 
     #[test]
     fn tile_is_farmable_follows_the_climate_fertility_table() {
-        // Grass/meadow/marsh are fertile.
-        assert!(tile_is_farmable(Some(&typed_tile(0, 0, TileType::Field))));
-        assert!(tile_is_farmable(Some(&typed_tile(0, 0, TileType::Meadow))));
-        assert!(tile_is_farmable(Some(&typed_tile(0, 0, TileType::Swamp))));
-        // Rock, sand, tundra, forest, and water are barren.
+        let seed = 42;
+        let at = pos(0, 0);
+        // Grass/meadow/marsh (the original P16 heuristic) are always fertile,
+        // regardless of whatever the fine per-tile climate biome says here — the
+        // two signals are OR'd, so the legacy branch alone is always sufficient.
+        assert!(tile_is_farmable(
+            seed,
+            at,
+            Some(&typed_tile(0, 0, TileType::Field))
+        ));
+        assert!(tile_is_farmable(
+            seed,
+            at,
+            Some(&typed_tile(0, 0, TileType::Meadow))
+        ));
+        assert!(tile_is_farmable(
+            seed,
+            at,
+            Some(&typed_tile(0, 0, TileType::Swamp))
+        ));
+        // Rock/sand/tundra/forest/cave legacy types carry no farmability signal of
+        // their own (P17 relaxation): they fall through to the fine per-tile P17
+        // climate biome at this position, so farmability tracks it exactly.
+        let fine_farmable = crate::terrain_gen::tile_climate_biome(seed, at.x, at.y)
+            .properties()
+            .farmable();
         for tile_type in [
             TileType::Mountains,
             TileType::Desert,
             TileType::Tundra,
             TileType::Forest,
-            TileType::River,
             TileType::CaveEntrance,
         ] {
-            assert!(
-                !tile_is_farmable(Some(&typed_tile(0, 0, tile_type))),
-                "{tile_type:?} is not farmable"
+            assert_eq!(
+                tile_is_farmable(seed, at, Some(&typed_tile(0, 0, tile_type))),
+                fine_farmable,
+                "{tile_type:?} falls through to the fine climate biome"
             );
         }
-        // A meadow flooded by a river overlay is not farmable, and an unrevealed
-        // (absent) tile is never farmable.
+        // Water always wins over both signals: a river tile is never farmable even
+        // though `River`'s fine biome (also barren) would agree either way.
+        assert!(!tile_is_farmable(
+            seed,
+            at,
+            Some(&typed_tile(0, 0, TileType::River))
+        ));
+        // A meadow flooded by a river overlay is not farmable (the synthetic
+        // starter-pond case — the fine classifier never sees this override), and an
+        // unrevealed (absent) tile is never farmable.
         let flooded = WorldTileRuntime {
             overlay_feature: Some("river".to_owned()),
             ..typed_tile(0, 0, TileType::Meadow)
         };
-        assert!(!tile_is_farmable(Some(&flooded)));
-        assert!(!tile_is_farmable(None));
+        assert!(!tile_is_farmable(seed, at, Some(&flooded)));
+        assert!(!tile_is_farmable(seed, at, None));
     }
 
     #[test]
@@ -11851,18 +12043,30 @@ mod tests {
             .expect("a field fits on the grass claim");
         for tile in footprint_tiles(field, 2, 3) {
             assert!(
-                tile_is_farmable(grass.world_tiles.get(&tile)),
+                tile_is_farmable(seed, tile, grass.world_tiles.get(&tile)),
                 "field footprint {tile:?} is fertile"
             );
         }
 
-        // Rock colony: no fertile ground anywhere, so a field is rejected — but a
+        // Rock colony: no fertile ground anywhere — the legacy `Mountains` type
+        // carries no farmability signal of its own, and this origin is pinned to a
+        // patch whose fine per-tile P17 climate biome is barren across the whole
+        // claim too (verified below), so a field is rejected everywhere — but a
         // den (no farmable requirement) still places on the rock.
+        let rock_origin = pos(80, 336);
         let mut rock = ColonyRuntime {
             id: "rock".to_owned(),
             ..ColonyRuntime::default()
         };
-        typed_block(&mut rock, pos(80, 80), 6, 7, TileType::Mountains);
+        typed_block(&mut rock, rock_origin, 6, 7, TileType::Mountains);
+        for tile in footprint_tiles(rock_origin, 6, 7) {
+            assert!(
+                !crate::terrain_gen::tile_climate_biome(seed, tile.x, tile.y)
+                    .properties()
+                    .farmable(),
+                "test fixture assumption: {tile:?} fine biome must be barren"
+            );
+        }
         assert_eq!(
             next_claimed_building_site(&rock, 0.0, seed, BuildingType::Field),
             None,
@@ -11871,6 +12075,104 @@ mod tests {
         assert!(
             next_claimed_building_site(&rock, 0.0, seed, BuildingType::Den).is_some(),
             "a den still fits on the rock claim (farmability is field-only)"
+        );
+    }
+
+    fn single_field_colony(field_pos: TilePos) -> ColonyRuntime {
+        ColonyRuntime {
+            id: "fertility".to_owned(),
+            resources: Resources::default(),
+            buildings: vec![BuildingRuntime {
+                id: "field-1".to_owned(),
+                building_type: BuildingType::Field,
+                level: 1,
+                position: field_pos,
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 0.0,
+                assigned_cat: None,
+            }],
+            ..ColonyRuntime::default()
+        }
+    }
+
+    #[test]
+    fn field_growth_scales_with_the_tile_climate_biomes_fertility() {
+        // P17 crop fertility: scan for two farmable spots whose fine per-tile
+        // climate biome carries meaningfully different fertility (a deterministic
+        // scan, not a hardcoded coordinate — biome placement is seed noise, so
+        // this locates real contrasting ground for `seed` rather than assuming
+        // it landed somewhere specific).
+        let seed = 42;
+        let mut low: Option<(TilePos, f64)> = None;
+        let mut high: Option<(TilePos, f64)> = None;
+        'scan: for y in (0..600).step_by(3) {
+            for x in [0, 40, 80, 120] {
+                let candidate = pos(x, y);
+                let fertility = crate::terrain_gen::tile_climate_biome(seed, x, y)
+                    .properties()
+                    .fertility;
+                if fertility <= 0.0 {
+                    continue;
+                }
+                match low {
+                    None => low = Some((candidate, fertility)),
+                    Some((_, lo)) if high.is_none() && (fertility - lo).abs() > 0.05 => {
+                        high = Some((candidate, fertility));
+                    }
+                    _ => {}
+                }
+                if low.is_some() && high.is_some() {
+                    break 'scan;
+                }
+            }
+        }
+        let (low_pos, low_fertility) = low.expect("a farmable tile exists for seed 42");
+        let (high_pos, high_fertility) =
+            high.expect("a second, differently-fertile farmable tile exists for seed 42");
+        let (low_pos, low_fertility, high_pos, high_fertility) = if low_fertility < high_fertility {
+            (low_pos, low_fertility, high_pos, high_fertility)
+        } else {
+            (high_pos, high_fertility, low_pos, low_fertility)
+        };
+        assert!(
+            high_fertility > low_fertility,
+            "test fixture assumption: fertility actually differs ({low_fertility} vs {high_fertility})"
+        );
+
+        let mut low_colony = single_field_colony(low_pos);
+        let mut high_colony = single_field_colony(high_pos);
+        phase_23_production(&mut low_colony, production_gate(3_600, 3_600_000), seed);
+        phase_23_production(&mut high_colony, production_gate(3_600, 3_600_000), seed);
+
+        let base = field_yield(3_600.0);
+        assert!(
+            (low_colony.resources.food - base * low_fertility).abs() < 1e-9,
+            "low-fertility field yield should be base * {low_fertility}, got {}",
+            low_colony.resources.food
+        );
+        assert!(
+            (high_colony.resources.food - base * high_fertility).abs() < 1e-9,
+            "high-fertility field yield should be base * {high_fertility}, got {}",
+            high_colony.resources.food
+        );
+        assert!(
+            high_colony.resources.food > low_colony.resources.food,
+            "the high-fertility field ({}) must out-grow the low-fertility one ({})",
+            high_colony.resources.food,
+            low_colony.resources.food
+        );
+        // Deterministic ratio: re-running produces byte-identical output.
+        let mut high_colony_twin = single_field_colony(high_pos);
+        phase_23_production(
+            &mut high_colony_twin,
+            production_gate(3_600, 3_600_000),
+            seed,
+        );
+        assert_eq!(
+            high_colony.resources.food.to_bits(),
+            high_colony_twin.resources.food.to_bits(),
+            "field fertility scaling must be deterministic"
         );
     }
 
