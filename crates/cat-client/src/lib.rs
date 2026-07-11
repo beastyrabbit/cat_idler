@@ -819,6 +819,10 @@ struct CatBody(String);
 /// A persistent raider body sprite (its id lives in [`RaiderBodies`]).
 #[derive(Component)]
 struct RaiderBody;
+/// The visiting-trader body sprite (a merchant cat), present only while
+/// `ColonySnapshot.trader` is Some.
+#[derive(Component)]
+struct TraderBody;
 /// The world-space (x, y) a body is gliding toward (its current target tile).
 #[derive(Component)]
 struct MoveTarget(Vec2);
@@ -1261,7 +1265,9 @@ pub fn run() {
                     render_stockpiles,
                     sync_cats,
                     sync_raiders,
+                    sync_trader,
                     move_bodies,
+                    lift_trader_above_fog.after(move_bodies),
                     follow_overlays,
                     animate_sprites,
                     hover_tooltip,
@@ -3223,6 +3229,79 @@ fn sync_raiders(
     });
 }
 
+/// Reconcile the visiting-trader body (a gold-tinted merchant cat with a pack):
+/// present only while a trader is visiting, gliding to its position (arriving ->
+/// gate, trading = idle at the gate, departing -> away).
+fn sync_trader(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    sheets: Option<Res<SpriteSheets>>,
+    mut trader_q: Query<(Entity, &Transform, &mut MoveTarget, &mut AnimSprite), With<TraderBody>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    let (Some(colony), Some(sheets)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), sheets)
+    else {
+        return;
+    };
+    match &colony.trader {
+        Some(trader) => {
+            let target = body_base(trader.position.x, trader.position.y);
+            if let Ok((_, transform, mut move_target, mut anim)) = trader_q.single_mut() {
+                if let Some(group) = facing_from_delta(target - transform.translation.truncate()) {
+                    anim.group = group;
+                }
+                move_target.0 = target;
+            } else {
+                // Initially face the village gate/anchor.
+                let group = facing_from_delta(body_base(colony.anchor.x, colony.anchor.y) - target)
+                    .unwrap_or(6);
+                commands.spawn((
+                    Sprite {
+                        image: sheets.cat.clone(),
+                        texture_atlas: Some(TextureAtlas {
+                            layout: sheets.layout.clone(),
+                            index: atlas_index(group, 0),
+                        }),
+                        custom_size: Some(CAT_SIZE),
+                        // Warm gold tint marks the merchant as friendly, not a raider.
+                        color: Color::srgb(1.0, 0.85, 0.52),
+                        ..default()
+                    },
+                    Anchor::BOTTOM_CENTER,
+                    Transform::from_xyz(target.x, target.y, ysort_z(target.y)),
+                    TraderBody,
+                    MoveTarget(target),
+                    AnimSprite {
+                        group,
+                        moving: false,
+                    },
+                    children![(
+                        // A gold trade-pack on the merchant's back.
+                        Sprite::from_color(Color::srgb(0.86, 0.66, 0.24), Vec2::splat(TILE * 0.5)),
+                        Transform::from_xyz(TILE * 0.3, CAT_SIZE.y * 0.5, 0.6),
+                    )],
+                ));
+            }
+        }
+        None => {
+            for (entity, ..) in &trader_q {
+                commands.entity(entity).despawn();
+            }
+        }
+    }
+}
+
+/// Lift the trader body above the fog layer so the approaching merchant stays
+/// visible while it walks in across still-fogged ground (run after `move_bodies`,
+/// which otherwise y-sorts it back below the fog).
+fn lift_trader_above_fog(mut trader: Query<&mut Transform, With<TraderBody>>) {
+    for mut transform in &mut trader {
+        transform.translation.z = Z_FOG + 5.0;
+    }
+}
+
 /// Walk every persistent body toward its target each frame at a constant speed
 /// (so it strides tile-to-tile, never teleporting), and flag it moving while
 /// it's still en route.
@@ -4181,6 +4260,12 @@ fn update_minimap(
         if let Some((px, py)) = world_to_minimap(view, r.position.x, r.position.y) {
             put_block(&mut buf, px, py, [230, 60, 50, 255]);
         }
+    }
+    // Visiting trader — friendly gold mark.
+    if let Some(trader) = &colony.trader
+        && let Some((px, py)) = world_to_minimap(view, trader.position.x, trader.position.y)
+    {
+        put_block(&mut buf, px, py, [240, 205, 90, 255]);
     }
 
     if let Some(mut image) = images.get_mut(&minimap.image) {
