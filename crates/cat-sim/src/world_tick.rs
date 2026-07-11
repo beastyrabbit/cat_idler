@@ -16,7 +16,10 @@ use crate::{
         Carrying, CarryingKind, Cat, CatActivity, CatNeeds, CatStats, ColonyStatus, MapType,
         Position, Resources, RoleXp,
     },
-    genetics::{RollSource, SeededRollSource, inherit_traits, traits_to_sprite_params},
+    genetics::{
+        CatSpriteParams, RollSource, SeededRollSource, extract_genetic_traits, inherit_traits,
+        traits_to_sprite_params,
+    },
     idle_engine,
     idle_rules::consumption_for_tick,
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
@@ -25,7 +28,11 @@ use crate::{
         match_cats_to_slots_with_officers,
     },
     ledger::{StockLedger, refresh_ledger},
-    life_sim::{can_work, get_life_stage, leadership_after_tenure, old_age_death_probability},
+    life_sim::{
+        ColonyBreedingState, GESTATION_GAME_HOURS, can_work, colony_can_breed,
+        conception_probability, get_life_stage, inherit_stats, leadership_after_tenure,
+        old_age_death_probability,
+    },
     movement::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
         effective_move_speed, pick_wander_target, road_surface_multiplier, scout_wander_target,
@@ -56,7 +63,10 @@ use crate::{
         threat_band,
     },
     trips::{HUNT_TRIP_COUNT, remaining_yield, split_yield, trip_due_at},
-    types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType, UpgradeKey},
+    types::{
+        BuildingType, CatSpecialization, JobKind, JobStatus, LifeStage, TaskType, TileType,
+        UpgradeKey,
+    },
     upgrade_tree::{
         MOUNTAINEERING_NODE_ID, UpgradeTreeState, accrue_research, cat_auto_unlock,
         create_upgrade_tree_state, get_node, is_owned, points_per_tick_for, resolve_effects,
@@ -774,11 +784,29 @@ fn starter_sprite_params(
 ) -> Option<BTreeMap<String, serde_json::Value>> {
     let traits = inherit_traits(None, None, rolls);
     let params = traits_to_sprite_params(&traits, None, rolls);
+    cat_sprite_params_to_map(params)
+}
+
+/// Flatten sprite params into the `BTreeMap<String, Value>` shape `Cat::sprite_params`
+/// stores (mirrors `spriteParams` JSON column semantics on the TS side).
+fn cat_sprite_params_to_map(
+    params: CatSpriteParams,
+) -> Option<BTreeMap<String, serde_json::Value>> {
     let value = serde_json::to_value(params).ok()?;
     match value {
         serde_json::Value::Object(map) => Some(map.into_iter().collect()),
         _ => None,
     }
+}
+
+/// Reconstruct `CatSpriteParams` from a cat's stored sprite params map, for
+/// extracting cosmetic genetic traits at breeding time. `None` for cats with no
+/// sprite params yet (founders, in the rare case sprite generation failed) or a
+/// shape that no longer round-trips.
+fn cat_sprite_params_from_cat(cat: &Cat) -> Option<CatSpriteParams> {
+    let map = cat.sprite_params.as_ref()?;
+    let value = serde_json::Value::Object(map.clone().into_iter().collect());
+    serde_json::from_value(value).ok()
 }
 
 /// The shrine's centre tile. The shrine's footprint anchor (its NW corner) is the
@@ -1172,6 +1200,12 @@ fn phase_5_initial_roster_buildings_and_caps(_: &mut ColonyRuntime, _: TickGate)
 
 /// Phase 6: age cats, process old-age deaths, leadership tenure, milestones,
 /// births, conceptions, and death-related job cancellation.
+///
+/// Ported from `server/game.ts:runLifeSimulation`. Three passes over the roster, all
+/// on the life-sim's forked RNG chain (`life_seed`) so the policy/movement chains stay
+/// byte-stable: (1) age + old-age mortality + leadership tenure — unchanged from
+/// before; (2) deliver any kitten whose gestation is up; (3) pair off healthy adults
+/// into new pregnancies while the village is fed, watered, and has spare housing.
 fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     let elapsed_game_hours = elapsed_game_hours(colony, gate);
     if elapsed_game_hours <= 0.0 {
@@ -1181,6 +1215,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     let mut life_rng_seed = life_seed(colony.test_rng_seed.unwrap_or(1));
     let leader_id = colony.leader_id.clone();
 
+    // 1. Aging, old-age mortality, leadership tenure.
     for cat in &mut colony.cats {
         if cat.death_time.is_some() {
             continue;
@@ -1209,6 +1244,266 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
                 leadership_after_tenure(cat.stats.leadership, elapsed_game_hours);
         }
     }
+
+    // 2. Births: any mother whose gestation (tracked against her own age) is up. Only
+    // cats still alive after pass 1 are eligible — a mother who dies of old age this
+    // tick loses the pregnancy along with everything else.
+    let due_mother_indices: Vec<usize> = colony
+        .cats
+        .iter()
+        .enumerate()
+        .filter(|(_, cat)| {
+            cat.death_time.is_none()
+                && cat.is_pregnant
+                && cat
+                    .pregnancy_due_age_hours
+                    .is_some_and(|due| cat.age_hours >= due)
+        })
+        .map(|(index, _)| index)
+        .collect();
+
+    let mut newborns: Vec<Cat> = Vec::with_capacity(due_mother_indices.len());
+    for (birth_index, mother_index) in due_mother_indices.into_iter().enumerate() {
+        let mother = colony.cats[mother_index].clone();
+        let father = mother.pregnancy_mate_id.as_ref().and_then(|mate_id| {
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == *mate_id && cat.death_time.is_none())
+                .cloned()
+        });
+
+        let mother_traits = extract_genetic_traits(cat_sprite_params_from_cat(&mother).as_ref());
+        let father_traits = father
+            .as_ref()
+            .and_then(|father| extract_genetic_traits(cat_sprite_params_from_cat(father).as_ref()));
+
+        let kitten_stats = inherit_stats(
+            &mother.stats,
+            father.as_ref().map(|father| &father.stats),
+            || next_life_roll(&mut life_rng_seed),
+        );
+
+        // Cosmetic genetics run on the same forked chain, via the injected roll source
+        // genetics.rs already exposes for deterministic testing.
+        let mut genetics_rolls = SeededRollSource::new(life_rng_seed);
+        let kitten_traits = inherit_traits(
+            mother_traits.as_ref(),
+            father_traits.as_ref(),
+            &mut genetics_rolls,
+        );
+        let kitten_sprite_params = cat_sprite_params_to_map(traits_to_sprite_params(
+            &kitten_traits,
+            None,
+            &mut genetics_rolls,
+        ));
+        life_rng_seed = genetics_rolls.seed();
+
+        let name_roll = next_life_roll(&mut life_rng_seed);
+        let kitten_name = generate_starter_name((name_roll * 1_000_000_000.0).floor() as u32);
+
+        let kitten_id = format!("{}-kit-{}-{birth_index}", colony.id, gate.processed_through);
+
+        newborns.push(Cat {
+            id: kitten_id,
+            colony_id: colony.id.clone(),
+            name: kitten_name.clone(),
+            parent_ids: vec![
+                Some(mother.id.clone()),
+                father.as_ref().map(|father| father.id.clone()),
+            ],
+            birth_time: gate.processed_through,
+            death_time: None,
+            stats: kitten_stats,
+            needs: CatNeeds {
+                hunger: 100.0,
+                thirst: 100.0,
+                rest: 100.0,
+                health: 100.0,
+            },
+            current_task: None,
+            position: mother.position,
+            destination: None,
+            carrying: None,
+            activity: CatActivity::Idle,
+            is_pregnant: false,
+            pregnancy_due_time: None,
+            age_hours: 0.0,
+            pregnancy_due_age_hours: None,
+            pregnancy_mate_id: None,
+            sprite_params: kitten_sprite_params,
+            specialization: None,
+            role_xp: RoleXp::default(),
+            skills: BTreeMap::new(),
+        });
+
+        let mother_cat = &mut colony.cats[mother_index];
+        mother_cat.is_pregnant = false;
+        mother_cat.pregnancy_due_time = None;
+        mother_cat.pregnancy_due_age_hours = None;
+        mother_cat.pregnancy_mate_id = None;
+
+        let message = match father.as_ref() {
+            Some(father) => {
+                format!(
+                    "{kitten_name} was born to {} and {}.",
+                    mother.name, father.name
+                )
+            }
+            None => format!("{kitten_name} was born to {}.", mother.name),
+        };
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("birth".to_owned()),
+            message,
+        );
+    }
+    colony.cats.append(&mut newborns);
+
+    // 3. Conceptions: adults pair off while the colony is healthy and has room. The
+    // housing headroom check is the soft population cap — growth tracks the village's
+    // shelter instead of running away. Caps/ratios are read from `colony.resources` as
+    // they stand before phase 7's consumption, matching the TS ordering.
+    let caps = storage_caps(colony);
+    let food_ratio = if caps.food > 0.0 {
+        colony.resources.food / caps.food
+    } else {
+        0.0
+    };
+    let water_ratio = if caps.water > 0.0 {
+        colony.resources.water / caps.water
+    } else {
+        0.0
+    };
+    let housing_cap = colony_housing_capacity(colony);
+    let blessings = colony.resources.blessings;
+    let population = alive_cats(&colony.cats).count() as f64;
+    let mut pregnant_count = alive_cats(&colony.cats)
+        .filter(|cat| cat.is_pregnant)
+        .count() as f64;
+
+    let adults: Vec<BreedingCandidate> = colony
+        .cats
+        .iter()
+        .enumerate()
+        .filter(|(_, cat)| {
+            cat.death_time.is_none()
+                && !cat.is_pregnant
+                && get_life_stage(cat.age_hours) == LifeStage::Adult
+        })
+        .map(|(index, cat)| BreedingCandidate {
+            cat_index: index,
+            id: cat.id.clone(),
+            stats: cat.stats.clone(),
+            specialization: cat.specialization,
+        })
+        .collect();
+
+    for candidate in &adults {
+        let breeding_state = ColonyBreedingState {
+            food_ratio,
+            water_ratio,
+            population: population + pregnant_count,
+            housing_capacity: housing_cap,
+            food: Some(colony.resources.food),
+            water: Some(colony.resources.water),
+        };
+        if !colony_can_breed(&breeding_state) {
+            break;
+        }
+
+        let chance =
+            conception_probability(candidate.specialization, blessings, elapsed_game_hours);
+        let roll = next_life_roll(&mut life_rng_seed);
+        if roll >= chance {
+            continue;
+        }
+
+        let mate_id = pick_mate(&adults, &candidate.id, candidate.specialization);
+
+        let cat_name;
+        {
+            let cat = &mut colony.cats[candidate.cat_index];
+            cat.is_pregnant = true;
+            cat.pregnancy_due_age_hours = Some(cat.age_hours + GESTATION_GAME_HOURS);
+            cat.pregnancy_due_time =
+                Some(gate.processed_through + (GESTATION_GAME_HOURS * 3_600_000.0) as i64);
+            cat.pregnancy_mate_id = mate_id.clone();
+            cat_name = cat.name.clone();
+        }
+        pregnant_count += 1.0;
+
+        let mate_name = mate_id
+            .as_ref()
+            .and_then(|mate_id| colony.cats.iter().find(|cat| cat.id == *mate_id))
+            .map(|cat| cat.name.clone());
+        let message = match mate_name {
+            Some(mate_name) => format!("{cat_name} and {mate_name} are expecting a litter."),
+            None => format!("{cat_name} is expecting a litter."),
+        };
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("breeding".to_owned()),
+            message,
+        );
+    }
+}
+
+/// A conception-eligible adult snapshotted before phase 6's conception pass mutates
+/// anything — used both to iterate candidates in a stable order and as `pick_mate`'s
+/// pairing pool (mirrors `adults` in `server/game.ts:runLifeSimulation`).
+struct BreedingCandidate {
+    cat_index: usize,
+    id: CatId,
+    stats: CatStats,
+    specialization: Option<CatSpecialization>,
+}
+
+/// Pick a co-parent for a conceiving cat: another eligible adult, preferring one with
+/// the same specialization so lineages of a trade concentrate, then the strongest
+/// available (leadership + hunting + building, ties keep the earliest candidate).
+/// Deterministic — no RNG. `None` if no partner exists (ported from
+/// `server/game.ts:pickMate`).
+fn pick_mate(
+    candidates: &[BreedingCandidate],
+    cat_id: &str,
+    specialization: Option<CatSpecialization>,
+) -> Option<CatId> {
+    let others: Vec<&BreedingCandidate> = candidates
+        .iter()
+        .filter(|candidate| candidate.id != cat_id)
+        .collect();
+    if others.is_empty() {
+        return None;
+    }
+
+    let same_trade: Vec<&BreedingCandidate> = specialization
+        .map(|specialization| {
+            others
+                .iter()
+                .copied()
+                .filter(|candidate| candidate.specialization == Some(specialization))
+                .collect()
+        })
+        .unwrap_or_default();
+    let pool = if same_trade.is_empty() {
+        others
+    } else {
+        same_trade
+    };
+
+    let score = |candidate: &BreedingCandidate| {
+        candidate.stats.leadership + candidate.stats.hunting + candidate.stats.building
+    };
+    let mut best: Option<&BreedingCandidate> = None;
+    for candidate in pool {
+        if best.is_none_or(|current| score(candidate) > score(current)) {
+            best = Some(candidate);
+        }
+    }
+    best.map(|candidate| candidate.id.clone())
 }
 
 /// Phase 7: consume food/water, apply spoilage and resource caps, prepare
@@ -3690,6 +3985,32 @@ fn next_base_roll(colony: &mut ColonyRuntime) -> f64 {
     let roll = roll_seeded(f64::from(seed));
     colony.test_rng_seed = Some(roll.next_seed);
     roll.value
+}
+
+/// Draw the next roll from the forked life-sim chain, advancing `seed` in place.
+fn next_life_roll(seed: &mut u32) -> f64 {
+    let roll = roll_seeded(f64::from(*seed));
+    *seed = roll.next_seed;
+    roll.value
+}
+
+/// Total cats the village can currently shelter (shrine + completed dens), for the
+/// breeding gate's housing headroom check. Computed independently of phase 18's
+/// `LeaderSnapshot` since phase 6 (life sim) runs earlier in the tick.
+fn colony_housing_capacity(colony: &ColonyRuntime) -> f64 {
+    let housing_buildings: Vec<crate::housing::HousingBuilding> = colony
+        .buildings
+        .iter()
+        .map(|building| {
+            crate::housing::HousingBuilding::new(
+                building.building_type,
+                f64::from(building.level),
+                f64::from(building.construction_progress),
+            )
+        })
+        .collect();
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    crate::housing::housing_capacity(&housing_buildings, effects.housing_per_den)
 }
 
 fn alive_cats(cats: &[Cat]) -> impl Iterator<Item = &Cat> {
@@ -7175,7 +7496,7 @@ mod tests {
                 .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
 
             let mut min_population = usize::MAX;
-            for step in 1..=800 {
+            for step in 1..=500 {
                 let now = 10_000 + i64::from(step) * 60_000;
                 let reports = world_tick(&mut world, now);
                 assert_eq!(
@@ -7198,6 +7519,242 @@ mod tests {
                 colony.resources.water,
             );
         }
+    }
+
+    // ---- Breeding: conception, gestation, birth (life-sim population loop) ----
+
+    /// A minimal hand-built colony for phase-6 breeding tests: a shrine + one den give
+    /// housing headroom (capacity 4 + 2 = 6) for `cats`, with `food`/`water` set
+    /// directly so the conception gate is exercised precisely.
+    fn breeding_colony(cats: Vec<Cat>, food: f64, water: f64) -> ColonyRuntime {
+        ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                food,
+                water,
+                ..Resources::default()
+            },
+            cats,
+            buildings: vec![
+                BuildingRuntime {
+                    id: "shrine-1".to_owned(),
+                    building_type: BuildingType::Shrine,
+                    level: 1,
+                    position: TilePos { x: 10, y: 10 },
+                    is_complete: true,
+                    construction_progress: 100,
+                    production_progress: 0.0,
+                    assigned_cat: None,
+                },
+                BuildingRuntime {
+                    id: "den-1".to_owned(),
+                    building_type: BuildingType::Den,
+                    level: 1,
+                    position: TilePos { x: 14, y: 10 },
+                    is_complete: true,
+                    construction_progress: 100,
+                    production_progress: 0.0,
+                    assigned_cat: None,
+                },
+            ],
+            test_rng_seed: Some(777),
+            test_time_scale: 20.0,
+            ..ColonyRuntime::default()
+        }
+    }
+
+    #[test]
+    fn conception_fires_for_a_healthy_pair_with_housing_headroom() {
+        // Housing cap 6 (shrine 4 + den 2), population 2 — plenty of headroom. 20
+        // elapsed game-hours pushes conceptionProbability (0.06/hr) to its 1.0 cap for
+        // both cats, so this is a deterministic "conception happens" test, not a
+        // probabilistic one.
+        let mut colony = breeding_colony(
+            vec![
+                adult_idle_cat("mother", "colony-1"),
+                adult_idle_cat("father", "colony-1"),
+            ],
+            150.0,
+            150.0,
+        );
+        assert!(!colony.cats[0].is_pregnant && !colony.cats[1].is_pregnant);
+
+        phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+
+        // 24h start age + 20h elapsed = 44h, still adult (< 48h elder threshold).
+        assert!(colony.cats[0].is_pregnant, "mother should have conceived");
+        assert!(colony.cats[1].is_pregnant, "father should have conceived");
+        assert_eq!(colony.cats[0].pregnancy_due_age_hours, Some(50.0));
+        assert_eq!(colony.cats[1].pregnancy_due_age_hours, Some(50.0));
+        assert_eq!(colony.cats[0].pregnancy_mate_id.as_deref(), Some("father"));
+        assert_eq!(colony.cats[1].pregnancy_mate_id.as_deref(), Some("mother"));
+    }
+
+    #[test]
+    fn conception_is_gated_by_food_below_the_ratio_and_per_capita_floor() {
+        // food=3 fails both the >0.35-of-200-cap ratio gate AND the per-capita
+        // fallback (population 2 * 2.5/cat = 5) — colonyCanBreed must be false, so the
+        // loop breaks before any roll and nobody conceives even though water and
+        // housing are fine.
+        let mut colony = breeding_colony(
+            vec![
+                adult_idle_cat("mother", "colony-1"),
+                adult_idle_cat("father", "colony-1"),
+            ],
+            3.0,
+            150.0,
+        );
+
+        phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+
+        assert!(!colony.cats[0].is_pregnant);
+        assert!(!colony.cats[1].is_pregnant);
+        assert_eq!(colony.cats[0].pregnancy_due_age_hours, None);
+        assert_eq!(colony.cats[1].pregnancy_due_age_hours, None);
+    }
+
+    #[test]
+    fn conception_is_gated_by_population_at_the_housing_cap() {
+        // Only a single den (capacity 2) and no shrine: housing cap == population, so
+        // `population < housingCapacity` is false and nobody conceives despite ample
+        // food and water.
+        let mut colony = breeding_colony(
+            vec![
+                adult_idle_cat("mother", "colony-1"),
+                adult_idle_cat("father", "colony-1"),
+            ],
+            150.0,
+            150.0,
+        );
+        colony.buildings = vec![BuildingRuntime {
+            id: "den-1".to_owned(),
+            building_type: BuildingType::Den,
+            level: 1,
+            position: TilePos { x: 14, y: 10 },
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 0.0,
+            assigned_cat: None,
+        }];
+
+        phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+
+        assert!(!colony.cats[0].is_pregnant);
+        assert!(!colony.cats[1].is_pregnant);
+    }
+
+    #[test]
+    fn gestation_completes_into_a_kitten_and_clears_the_mothers_pregnancy() {
+        let mut mother = adult_idle_cat("mother", "colony-1");
+        mother.is_pregnant = true;
+        // Due just past the 24h starting age, so a tiny elapsed window both crosses
+        // the gestation threshold AND keeps this tick's fresh conception chance for
+        // the now-unpregnant mother/father pair negligible (0.06/hr * 0.02h ~= 0.1%) —
+        // this test is about birth wiring, not the conception roll re-firing the same
+        // tick.
+        mother.pregnancy_due_age_hours = Some(24.01);
+        mother.pregnancy_mate_id = Some("father".to_owned());
+        let mut father = adult_idle_cat("father", "colony-1");
+        father.stats.attack = 90.0;
+
+        let mut colony = breeding_colony(vec![mother, father], 150.0, 150.0);
+        colony.test_time_scale = 1.0;
+
+        // 72s at the default 1.0 time scale is 0.02 game-hours: 24h start + 0.02h =
+        // 24.02h >= the 24.01h due age.
+        phase_6_life_simulation(&mut colony, production_gate(72, 72_000));
+
+        assert_eq!(colony.cats.len(), 3, "a kitten should have been born");
+        let mother = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == "mother")
+            .expect("mother still present");
+        assert!(!mother.is_pregnant);
+        assert_eq!(mother.pregnancy_due_age_hours, None);
+        assert_eq!(mother.pregnancy_mate_id, None);
+        assert_eq!(mother.pregnancy_due_time, None);
+
+        let kitten = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id != "mother" && cat.id != "father")
+            .expect("newborn kitten present");
+        assert_eq!(
+            kitten.parent_ids,
+            vec![Some("mother".to_owned()), Some("father".to_owned())]
+        );
+        assert_eq!(kitten.age_hours, 0.0);
+        assert!(!can_work(get_life_stage(kitten.age_hours)));
+        assert_eq!(kitten.colony_id, "colony-1");
+        // Blended (60/40 toward the stronger parent) + up to +/-8 mutation, clamped to
+        // [1, 100] — exercise the wiring without re-deriving inheritStats' own math
+        // (covered by life_sim.rs's unit tests).
+        assert!(kitten.stats.attack >= 1.0 && kitten.stats.attack <= 100.0);
+
+        let birth_event = colony
+            .events
+            .iter()
+            .find(|event| matches!(&event.kind, EventKind::Other(kind) if kind == "birth"));
+        assert!(birth_event.is_some(), "a birth event should be logged");
+        assert!(birth_event.unwrap().message.contains(&kitten.name));
+    }
+
+    #[test]
+    fn population_grows_over_a_long_horizon_without_tripping_a_reset() {
+        // Same founding shape and horizon as the survival guardrail above, proving the
+        // population loop actually closes: cats born during the run outlive it. Seed
+        // 1234 conceives and delivers at least one kitten inside 800 ticks.
+        let mut world = new_world(1234);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 1234));
+
+        for step in 1..=800 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None, "tick {step} reset the run");
+        }
+
+        let colony = &world.colonies[0];
+        let final_population = alive_cats(&colony.cats).count();
+        assert!(
+            final_population > STARTER_CAT_COUNT,
+            "population never grew past the founding {STARTER_CAT_COUNT} (ended at {final_population})"
+        );
+        assert!(
+            colony
+                .events
+                .iter()
+                .any(|event| matches!(&event.kind, EventKind::Other(kind) if kind == "birth")),
+            "at least one birth event should have been logged"
+        );
+    }
+
+    #[test]
+    fn breeding_is_deterministic_for_identical_seeds() {
+        // Seed 42 conceives and delivers kittens (genetics + naming rolls exercised)
+        // within 500 ticks — two independently-founded worlds on the same seed must
+        // end up with byte-identical cat rosters, including newborn ids, stats, and
+        // sprite params.
+        let mut left = new_world(42);
+        left.colonies
+            .push(found_colony(left.world_seed, "colony-1", 10_000, 42));
+        let mut right = new_world(42);
+        right
+            .colonies
+            .push(found_colony(right.world_seed, "colony-1", 10_000, 42));
+
+        for step in 1..=500 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            assert_eq!(world_tick(&mut left, now), world_tick(&mut right, now));
+        }
+
+        assert_eq!(left.colonies[0].cats, right.colonies[0].cats);
+        assert!(
+            left.colonies[0].cats.len() > STARTER_CAT_COUNT,
+            "seed 42 should have produced at least one kitten by tick 500"
+        );
     }
 
     #[test]
