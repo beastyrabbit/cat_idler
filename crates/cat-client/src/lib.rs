@@ -160,6 +160,15 @@ impl Default for OfficersUi {
     }
 }
 
+/// Whether the announcements / event-log panel is open (toggled by `L`).
+#[derive(Resource, Default)]
+struct AnnouncementsUi {
+    visible: bool,
+}
+
+/// Number of announcement lines the panel shows (newest first).
+const ANNOUNCEMENT_LINES: usize = 14;
+
 /// The five appointable officer roles, in display order.
 const ALL_OFFICER_ROLES: [OfficerRole; 5] = [
     OfficerRole::Steward,
@@ -765,6 +774,111 @@ struct TooltipText;
 /// Marker for the event-log text.
 #[derive(Component)]
 struct EventLogText;
+/// Marker for the announcements panel node (toggled open/closed).
+#[derive(Component)]
+struct AnnouncementsPanel;
+/// One announcement line slot (index 0 = newest at top).
+#[derive(Component, Clone, Copy)]
+struct AnnouncementLine(usize);
+/// The HUD button that toggles the announcements panel.
+#[derive(Component)]
+struct AnnouncementsButton;
+/// The compact "latest announcement" ticker line on the HUD.
+#[derive(Component)]
+struct AnnouncementTicker;
+
+/// The kind of a colony event, inferred from its message (the snapshot carries
+/// only message + timestamp), for colour + glyph coding in the announcements log.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EventKind {
+    Birth,
+    Death,
+    Raid,
+    Crisis,
+    Election,
+    Progress,
+    Neutral,
+}
+
+/// Classify an event message into a kind by keyword (checked in severity order).
+fn classify_event(message: &str) -> EventKind {
+    let m = message.to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| m.contains(n));
+    if has(&["raid", "raider", "warband", "attack", "invad"]) {
+        EventKind::Raid
+    } else if has(&[
+        "died", "death", "killed", "starved", "dehydrat", "perished", "lost",
+    ]) {
+        EventKind::Death
+    } else if has(&[
+        "critical", "crisis", "depleted", "no water", "no food", "thirst", "starv",
+    ]) {
+        EventKind::Crisis
+    } else if has(&["born", "kitten", "birth"]) {
+        EventKind::Birth
+    } else if has(&["election", "elected", "leader", "vote", "steward", "term"]) {
+        EventKind::Election
+    } else if has(&[
+        "upgrade",
+        "research",
+        "built",
+        "build",
+        "construct",
+        "completed",
+        "unlock",
+        "graduat",
+        "blessing",
+    ]) {
+        EventKind::Progress
+    } else {
+        EventKind::Neutral
+    }
+}
+
+/// Line colour for an event kind (DF-style: birth green, death/raid red, crisis
+/// amber, election/progress blue, neutral grey).
+fn event_color(kind: EventKind) -> Color {
+    match kind {
+        EventKind::Birth => Color::srgb(0.45, 0.72, 0.36),
+        EventKind::Death | EventKind::Raid => Color::srgb(0.82, 0.34, 0.30),
+        EventKind::Crisis => Color::srgb(0.86, 0.66, 0.28),
+        EventKind::Election | EventKind::Progress => Color::srgb(0.42, 0.60, 0.85),
+        EventKind::Neutral => Color::srgb(0.42, 0.36, 0.28),
+    }
+}
+
+/// A leading ASCII glyph marking an event's kind in the log.
+fn event_glyph(kind: EventKind) -> char {
+    match kind {
+        EventKind::Birth => '+',
+        EventKind::Death => 'x',
+        EventKind::Raid | EventKind::Crisis => '!',
+        EventKind::Election | EventKind::Progress => '*',
+        EventKind::Neutral => '-',
+    }
+}
+
+/// A short relative age like `5s` / `3m` / `2h` for an event timestamp.
+fn relative_time(now_ms: i64, ts_ms: i64) -> String {
+    let secs = (now_ms - ts_ms).max(0) / 1000;
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}h", secs / 3600)
+    }
+}
+
+/// The formatted announcement line for an event: `age glyph message`.
+fn announcement_line(now_ms: i64, message: &str, ts_ms: i64) -> String {
+    format!(
+        "{:>3} {} {}",
+        relative_time(now_ms, ts_ms),
+        event_glyph(classify_event(message)),
+        message
+    )
+}
 
 /// A manual-action button and the action it enqueues when clicked.
 #[derive(Component, Clone, Copy)]
@@ -883,6 +997,7 @@ pub fn run() {
         .insert_resource(StockpileSelection::default())
         .insert_resource(BuildingSelection::default())
         .insert_resource(OfficersUi::default())
+        .insert_resource(AnnouncementsUi::default())
         .insert_resource(CatBodies::default())
         .insert_resource(RaiderBodies::default())
         .insert_resource(Tools::default())
@@ -933,6 +1048,8 @@ pub fn run() {
                     handle_vacate_buttons,
                     flush_outgoing,
                 ),
+                // announcements / event log
+                (toggle_announcements, update_announcements),
             ),
         )
         .run();
@@ -1200,6 +1317,100 @@ fn setup(
             EventLogText,
         )],
     ));
+
+    // "Latest announcement" ticker (top-centre) + a Log toggle button beside it.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(12.0),
+            left: Val::Px(360.0),
+            max_width: Val::Px(520.0),
+            ..default()
+        },
+        GlobalZIndex(60),
+        Text::new(""),
+        TextFont {
+            font_size: FontSize::Px(13.0),
+            ..default()
+        },
+        TextColor(PARCHMENT_INK),
+        AnnouncementTicker,
+    ));
+    commands.spawn((
+        Button,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(8.0),
+            left: Val::Px(300.0),
+            min_width: Val::Px(52.0),
+            height: Val::Px(28.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        GlobalZIndex(60),
+        sliced_image(ui.button.clone(), BUTTON_BORDER),
+        AnnouncementsButton,
+        children![(
+            Text::new("Log [L]"),
+            TextFont {
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextColor(PARCHMENT_INK),
+        )],
+    ));
+
+    // Announcements / event-log panel (centre), hidden until toggled.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(430.0),
+                top: Val::Px(60.0),
+                width: Val::Px(560.0),
+                padding: UiRect::all(Val::Px(26.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(80),
+            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            AnnouncementsPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(46.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    margin: UiRect::bottom(Val::Px(4.0)),
+                    ..default()
+                },
+                ImageNode::new(ui.banner.clone()),
+                children![(
+                    Text::new("Announcements"),
+                    TextFont {
+                        font_size: FontSize::Px(15.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
+                )],
+            ));
+            for i in 0..ANNOUNCEMENT_LINES {
+                panel.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: FontSize::Px(12.0),
+                        ..default()
+                    },
+                    TextColor(PARCHMENT_INK),
+                    AnnouncementLine(i),
+                ));
+            }
+        });
 
     // Hover tooltip (small, follows the cursor), hidden until hovering an entity.
     // High GlobalZIndex keeps it above the other panels.
@@ -2793,11 +3004,13 @@ fn close_inspectors_on_esc(
     mut cat: ResMut<Selection>,
     mut building: ResMut<BuildingSelection>,
     mut stockpile: ResMut<StockpileSelection>,
+    mut announcements: ResMut<AnnouncementsUi>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
         cat.selected = None;
         building.selected = None;
         stockpile.selected = None;
+        announcements.visible = false;
     }
 }
 
@@ -3285,6 +3498,71 @@ fn ledger_hud_text(ledger: &StockLedgerSnapshot) -> String {
              known ~F{:.0} ~W{:.0} ~M{:.0} ~R{:.0}",
             r.food, r.water, r.materials, r.refined
         )
+    }
+}
+
+/// Toggle the announcements panel via the `L` key or the Log HUD button.
+fn toggle_announcements(
+    keys: Res<ButtonInput<KeyCode>>,
+    button: Query<&Interaction, (Changed<Interaction>, With<AnnouncementsButton>)>,
+    mut ui: ResMut<AnnouncementsUi>,
+) {
+    let clicked = button.iter().any(|i| *i == Interaction::Pressed);
+    if keys.just_pressed(KeyCode::KeyL) || clicked {
+        ui.visible = !ui.visible;
+    }
+}
+
+/// Show/hide the announcements panel and repaint its colour-coded lines
+/// newest-first, plus the HUD "latest announcement" ticker.
+#[allow(clippy::type_complexity)]
+fn update_announcements(
+    latest: Res<LatestSnapshot>,
+    ui: Res<AnnouncementsUi>,
+    mut panel: Query<&mut Node, With<AnnouncementsPanel>>,
+    mut lines: Query<(&AnnouncementLine, &mut Text, &mut TextColor), Without<AnnouncementTicker>>,
+    mut ticker: Query<
+        (&mut Text, &mut TextColor),
+        (With<AnnouncementTicker>, Without<AnnouncementLine>),
+    >,
+) {
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if ui.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if !latest.is_changed() && !ui.is_changed() {
+        return;
+    }
+    let now = latest.0.as_ref().map_or(0, |w| w.now);
+    let mut events = latest
+        .0
+        .as_ref()
+        .and_then(|w| w.colonies.first())
+        .map(|c| c.events.clone())
+        .unwrap_or_default();
+    events.sort_by_key(|e| e.timestamp);
+    // Newest first.
+    let newest: Vec<_> = events.iter().rev().collect();
+
+    for (line, mut text, mut color) in &mut lines {
+        if let Some(e) = newest.get(line.0) {
+            text.0 = announcement_line(now, &e.message, e.timestamp);
+            color.0 = event_color(classify_event(&e.message));
+        } else {
+            text.0 = String::new();
+        }
+    }
+    if let Ok((mut text, mut color)) = ticker.single_mut() {
+        if let Some(e) = newest.first() {
+            let kind = classify_event(&e.message);
+            text.0 = format!("{} {}", event_glyph(kind), e.message);
+            color.0 = event_color(kind);
+        } else {
+            text.0 = String::new();
+        }
     }
 }
 
@@ -4485,6 +4763,56 @@ mod tests {
         assert_eq!(life_stage(24.0), "adult");
         assert_eq!(life_stage(47.9), "adult");
         assert_eq!(life_stage(48.0), "elder");
+    }
+
+    #[test]
+    fn events_classify_by_keyword_and_colour() {
+        assert_eq!(classify_event("Mossfoot was born"), EventKind::Birth);
+        assert_eq!(
+            classify_event("Elder Bramble died of old age"),
+            EventKind::Death
+        );
+        assert_eq!(
+            classify_event("A raider warband approaches!"),
+            EventKind::Raid
+        );
+        assert_eq!(
+            classify_event("Water depleted - critical"),
+            EventKind::Crisis
+        );
+        assert_eq!(
+            classify_event("The colony is holding an election"),
+            EventKind::Election
+        );
+        assert_eq!(
+            classify_event("Research unlocked: sawmill"),
+            EventKind::Progress
+        );
+        assert_eq!(
+            classify_event("A quiet day in the forest"),
+            EventKind::Neutral
+        );
+        // Raid/death outrank the generic buckets; kinds map to distinct colours.
+        assert_ne!(event_color(EventKind::Birth), event_color(EventKind::Death));
+        assert_ne!(
+            event_color(EventKind::Election),
+            event_color(EventKind::Crisis)
+        );
+        assert_eq!(event_glyph(EventKind::Birth), '+');
+        assert_eq!(event_glyph(EventKind::Death), 'x');
+    }
+
+    #[test]
+    fn relative_time_and_announcement_line_format() {
+        assert_eq!(relative_time(10_000, 5_000), "5s");
+        assert_eq!(relative_time(200_000, 20_000), "3m");
+        assert_eq!(relative_time(7_400_000, 200_000), "2h");
+        // Never negative if a stray future timestamp arrives.
+        assert_eq!(relative_time(0, 5_000), "0s");
+        let line = announcement_line(60_000, "Pebble was born", 0);
+        assert!(line.contains("1m"));
+        assert!(line.contains('+')); // birth glyph
+        assert!(line.contains("Pebble was born"));
     }
 
     #[test]
