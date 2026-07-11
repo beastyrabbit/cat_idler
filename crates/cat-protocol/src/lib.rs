@@ -634,10 +634,14 @@ pub struct BuildingSnapshot {
     /// Additive; empty/absent for pre-production-label snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production_output: Option<String>,
-    /// Resource units currently being hauled toward this building/its stockpile.
-    /// Always 0.0 today — the sim's hauling model routes to the shrine/stockpiles, not
-    /// to individual buildings; this is a hook for when per-building inbound hauls are
-    /// modeled. Additive; defaults to 0.0 for older snapshots.
+    /// Resource units physically in flight toward this building right now — the live sum
+    /// of carried cargo whose haul destination resolves to this building's tile (see
+    /// `cat_sim::world_tick::building_inbound_haul`). In practice only ever nonzero for
+    /// the shrine: the sim's hauling model routes every haul to either a stockpile
+    /// (player-designated pile or gather spot — plain rects, not buildings) or the shrine
+    /// anchor fallback; no other building type is ever a haul target, since production
+    /// buildings draw inputs straight from the colony's resource pool rather than from
+    /// physically delivered cargo. Additive; defaults to 0.0 for older snapshots.
     #[serde(default)]
     pub inbound_haul: f64,
 }

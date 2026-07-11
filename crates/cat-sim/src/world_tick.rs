@@ -3764,27 +3764,7 @@ fn phase_33_movement_deposits_and_no_destination_wander(
             // designated piles this is exactly the shrine anchor, matching pre-haul-fill. A
             // P16 mover's cargo is bound for a genuine village pile, never back into a
             // gather spot, so it uses the gather-spot-excluding variant.
-            let deposit_target = if carrying.source_gather_spot.is_some() {
-                let gather_spot_ids: Vec<String> = colony
-                    .gather_spots
-                    .iter()
-                    .map(|spot| spot.stockpile_id.clone())
-                    .collect();
-                let kind = carrying_resource_kind(carrying.kind).unwrap_or(ResourceKind::Food);
-                stockpiles::village_deposit_index(
-                    &colony.stockpiles,
-                    &gather_spot_ids,
-                    kind,
-                    world_pos.x,
-                    world_pos.y,
-                )
-                .map_or_else(village_anchor_world, |idx| {
-                    let (cx, cy) = colony.stockpiles[idx].center();
-                    WorldPos { x: cx, y: cy }
-                })
-            } else {
-                haul_destination(colony, carrying.kind, world_pos)
-            };
+            let deposit_target = haul_deposit_target(colony, &carrying, world_pos);
             if !should_deposit(&carrying, world_pos, deposit_target, gate.processed_through) {
                 continue;
             }
@@ -6930,6 +6910,74 @@ fn haul_destination(
     }
 }
 
+/// Where a carrier's cargo is ultimately bound right now — the exact target the deposit
+/// phase (phase 33) computes to decide whether a haul is done. Mirrors its two branches: a
+/// P16 mover's cargo (picked up from a gather spot, `source_gather_spot: Some(_)`) must
+/// land in a genuine village pile/shrine, never back into a gather spot, so it uses
+/// [`stockpiles::village_deposit_index`]; every other carrier (a gatherer's own haul, or
+/// blessings) uses the ordinary [`haul_destination`] rule. Pulled out as its own function
+/// so the building-inbound-haul projection ([`building_inbound_haul`]) can ask the
+/// identical question the deposit phase asks, without re-deriving the branch.
+fn haul_deposit_target(
+    colony: &ColonyRuntime,
+    carrying: &Carrying,
+    from_pos: WorldPos,
+) -> WorldPos {
+    if carrying.source_gather_spot.is_some() {
+        let gather_spot_ids: Vec<String> = colony
+            .gather_spots
+            .iter()
+            .map(|spot| spot.stockpile_id.clone())
+            .collect();
+        let kind = carrying_resource_kind(carrying.kind).unwrap_or(ResourceKind::Food);
+        stockpiles::village_deposit_index(
+            &colony.stockpiles,
+            &gather_spot_ids,
+            kind,
+            from_pos.x,
+            from_pos.y,
+        )
+        .map_or_else(village_anchor_world, |idx| {
+            let (cx, cy) = colony.stockpiles[idx].center();
+            WorldPos { x: cx, y: cy }
+        })
+    } else {
+        haul_destination(colony, carrying.kind, from_pos)
+    }
+}
+
+/// Resource units physically in flight toward `building` right now: the live sum of
+/// `Carrying.amount` for every living cat whose haul deposit target — the exact rule
+/// [`haul_deposit_target`] uses, the same one the deposit phase checks before crediting a
+/// haul — resolves to this building's tile.
+///
+/// Only ever nonzero for the shrine today. `haul_deposit_target` only ever resolves to a
+/// *stockpile*: a player-designated pile or a P16 gather spot, both plain rects held in
+/// `ColonyRuntime.stockpiles`/`gather_spots` with no building entity of their own — or the
+/// shrine anchor fallback, which coincides with the shrine building's placement (both
+/// anchored at [`village_layout::VILLAGE_ANCHOR`]). No other `BuildingType` is ever a haul
+/// target: production buildings (workshop, wood-cutter, smithy, ...) draw their inputs
+/// straight from `colony.resources` each tick, not from physically delivered cargo (see
+/// `phase_23_production`). Matched by exact position rather than hardcoding
+/// `BuildingType::Shrine` so a future haul target would pick this up automatically.
+pub fn building_inbound_haul(colony: &ColonyRuntime, building: &BuildingRuntime) -> f64 {
+    let building_pos = tile_pos_to_world(building.position);
+    colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .filter_map(|cat| {
+            cat.carrying
+                .as_ref()
+                .map(|carrying| (cat.position, carrying))
+        })
+        .filter(|(position, carrying)| {
+            haul_deposit_target(colony, carrying, position_to_world(*position)) == building_pos
+        })
+        .map(|(_, carrying)| carrying.amount)
+        .sum()
+}
+
 /// Cancel a dead cat's active/queued jobs so none are left stuck waiting on an
 /// assigned cat that no longer exists (mirrors TS `retireCat`). Shared by every
 /// death path — old-age (phase 6 pass 1) and survival (phase 25).
@@ -8287,6 +8335,190 @@ mod tests {
             .find(|p| p.is_shrine())
             .expect("shrine present");
         assert_eq!(shrine.contents.food, 5.0, "food fell back to the shrine");
+    }
+
+    // ---- P15 building-snapshot inbound haul ----
+
+    #[test]
+    fn building_inbound_haul_reflects_a_carrier_bound_for_the_shrine() {
+        // No designated pile accepts food, so the hauler's cargo resolves to the shrine
+        // anchor regardless of how far away it currently stands — the shrine building's
+        // inbound_haul should reflect that live cargo.
+        let anchor = village_anchor_world();
+        let colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![carrying_cat_at(
+                "hauler",
+                CarryingKind::Food,
+                8.0,
+                WorldPos { x: 40.0, y: 3.0 },
+            )],
+            buildings: vec![BuildingRuntime {
+                id: "shrine".to_owned(),
+                building_type: BuildingType::Shrine,
+                position: TilePos {
+                    x: anchor.x as i32,
+                    y: anchor.y as i32,
+                },
+                ..BuildingRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+
+        let shrine = &colony.buildings[0];
+        assert_eq!(building_inbound_haul(&colony, shrine), 8.0);
+    }
+
+    #[test]
+    fn building_inbound_haul_sums_every_live_carrier_bound_for_it() {
+        let anchor = village_anchor_world();
+        let colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![
+                carrying_cat_at(
+                    "hauler-1",
+                    CarryingKind::Food,
+                    8.0,
+                    WorldPos { x: 40.0, y: 3.0 },
+                ),
+                carrying_cat_at(
+                    "hauler-2",
+                    CarryingKind::Water,
+                    3.0,
+                    WorldPos { x: 2.0, y: 40.0 },
+                ),
+            ],
+            buildings: vec![BuildingRuntime {
+                id: "shrine".to_owned(),
+                building_type: BuildingType::Shrine,
+                position: TilePos {
+                    x: anchor.x as i32,
+                    y: anchor.y as i32,
+                },
+                ..BuildingRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+
+        let shrine = &colony.buildings[0];
+        assert_eq!(building_inbound_haul(&colony, shrine), 11.0);
+    }
+
+    #[test]
+    fn building_inbound_haul_is_zero_for_a_building_that_never_receives_hauls() {
+        // The hauler's cargo resolves to the shrine anchor, never to this unrelated den —
+        // no building type other than the shrine is ever a haul target.
+        let colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![carrying_cat_at(
+                "hauler",
+                CarryingKind::Food,
+                8.0,
+                WorldPos { x: 40.0, y: 3.0 },
+            )],
+            buildings: vec![BuildingRuntime {
+                id: "den".to_owned(),
+                building_type: BuildingType::Den,
+                position: TilePos { x: 20, y: 20 },
+                ..BuildingRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+
+        let den = &colony.buildings[0];
+        assert_eq!(building_inbound_haul(&colony, den), 0.0);
+    }
+
+    #[test]
+    fn building_inbound_haul_ignores_a_dead_carrier_and_cargo_bound_elsewhere() {
+        let anchor = village_anchor_world();
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![
+                // Dead cats never deposit, so their stale `carrying` must not count.
+                {
+                    let mut dead = carrying_cat_at(
+                        "ghost",
+                        CarryingKind::Food,
+                        99.0,
+                        WorldPos { x: 40.0, y: 3.0 },
+                    );
+                    dead.death_time = Some(1);
+                    dead
+                },
+                // This hauler's cargo is bound for its designated pile, not the shrine.
+                carrying_cat_at(
+                    "piler",
+                    CarryingKind::Food,
+                    5.0,
+                    WorldPos { x: 10.0, y: 6.0 },
+                ),
+            ],
+            buildings: vec![BuildingRuntime {
+                id: "shrine".to_owned(),
+                building_type: BuildingType::Shrine,
+                position: TilePos {
+                    x: anchor.x as i32,
+                    y: anchor.y as i32,
+                },
+                ..BuildingRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        colony.stockpiles.push(designated_pile(
+            "stockpile-food",
+            tile_rect(10, 6),
+            &[ResourceKind::Food],
+        ));
+
+        let shrine = &colony.buildings[0];
+        assert_eq!(building_inbound_haul(&colony, shrine), 0.0);
+    }
+
+    #[test]
+    fn building_inbound_haul_is_deterministic_across_identical_runs() {
+        let mut left = new_world(4242);
+        left.colonies
+            .push(found_colony(left.world_seed, "colony-1", 1_000, 4242));
+        let mut right = new_world(4242);
+        right
+            .colonies
+            .push(found_colony(right.world_seed, "colony-1", 1_000, 4242));
+
+        let mut saw_nonzero_inbound = false;
+        for step in 1..=120 {
+            let now = 1_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut left, now);
+            let _ = world_tick(&mut right, now);
+
+            let left_colony = &left.colonies[0];
+            let right_colony = &right.colonies[0];
+            assert_eq!(
+                left_colony.buildings.len(),
+                right_colony.buildings.len(),
+                "identical seeds must place identical buildings at tick {step}"
+            );
+            for (left_building, right_building) in left_colony
+                .buildings
+                .iter()
+                .zip(right_colony.buildings.iter())
+            {
+                let left_inbound = building_inbound_haul(left_colony, left_building);
+                let right_inbound = building_inbound_haul(right_colony, right_building);
+                assert_eq!(
+                    left_inbound, right_inbound,
+                    "inbound_haul diverged for building {} at tick {step}",
+                    left_building.id
+                );
+                saw_nonzero_inbound |= left_inbound > 0.0;
+            }
+        }
+
+        assert!(
+            saw_nonzero_inbound,
+            "expected at least one tick with cargo genuinely in flight toward a building"
+        );
     }
 
     // ---- P16 gather spots ----

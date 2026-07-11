@@ -1535,10 +1535,11 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 production_progress,
                 production_output: production::building_output_label(building.building_type)
                     .map(str::to_owned),
-                // The sim's hauling model routes gathered/refined goods to the
-                // shrine/stockpiles, not to individual buildings — there is no
-                // per-building inbound-haul concept to report yet.
-                inbound_haul: 0.0,
+                // Live sum of carried cargo whose haul target resolves to this building's
+                // tile (see `world_tick::building_inbound_haul`). Only ever nonzero for the
+                // shrine today: every other building type draws its inputs straight from
+                // `colony.resources`, never from physically delivered cargo.
+                inbound_haul: crate::world_tick::building_inbound_haul(colony, building),
             })
         })
         .collect()
