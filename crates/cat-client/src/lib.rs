@@ -660,6 +660,8 @@ struct BuildingArt {
     prop_workbench: Handle<Image>,
     prop_bed: Handle<Image>,
     prop_crate: Handle<Image>,
+    prop_furnace: Handle<Image>,
+    prop_altar: Handle<Image>,
 }
 
 impl BuildingArt {
@@ -685,6 +687,8 @@ impl BuildingArt {
             prop_workbench: assets.load("public/images/game/interior/workbench.png"),
             prop_bed: assets.load("public/images/game/interior/bed.png"),
             prop_crate: assets.load("public/images/game/props/crate.png"),
+            prop_furnace: assets.load("public/images/game/interior/furnace.png"),
+            prop_altar: assets.load("public/images/game/interior/altar.png"),
         }
     }
 
@@ -702,6 +706,8 @@ impl BuildingArt {
             InteriorProp::Workbench => Some((self.prop_workbench.clone(), Vec2::new(2.0, 1.0))),
             InteriorProp::Bed => Some((self.prop_bed.clone(), Vec2::new(2.0, 1.0))),
             InteriorProp::Crate => Some((self.prop_crate.clone(), Vec2::new(1.0, 1.0))),
+            InteriorProp::Furnace => Some((self.prop_furnace.clone(), Vec2::new(1.3, 1.3))),
+            InteriorProp::Altar => Some((self.prop_altar.clone(), Vec2::new(1.3, 1.3))),
             InteriorProp::None => None,
         }
     }
@@ -6314,6 +6320,8 @@ enum InteriorProp {
     Workbench,
     Bed,
     Crate,
+    Furnace,
+    Altar,
     None,
 }
 
@@ -6326,16 +6334,16 @@ fn building_interior(building: BuildingType) -> Option<(FloorKind, InteriorProp)
         B::Workshop | B::Woodworking | B::WoodCutter | B::StonePrep | B::Clothier | B::Tannery => {
             (FloorKind::Wood, InteriorProp::Workbench)
         }
-        // Metalworking: a stone forge floor + (for now) a workbench.
-        B::Smithy | B::Smelter => (FloorKind::Stone, InteriorProp::Workbench),
+        // Metalworking: a stone forge floor + a furnace.
+        B::Smithy | B::Smelter => (FloorKind::Stone, InteriorProp::Furnace),
         // Dwellings: a wooden floor + beds.
         B::Den | B::Beds | B::Nursery | B::ElderCorner | B::HerbGarden => {
             (FloorKind::Wood, InteriorProp::Bed)
         }
         // Storage: a wooden floor + crates.
         B::FoodStorage | B::WaterBowl | B::MouseFarm => (FloorKind::Wood, InteriorProp::Crate),
-        // Shrine: a stone floor, altar prop TBD.
-        B::Shrine => (FloorKind::Stone, InteriorProp::None),
+        // Shrine: a stone floor + a candelabra altar.
+        B::Shrine => (FloorKind::Stone, InteriorProp::Altar),
         // Civic/support: stone floors, prop TBD.
         B::ResearchHut | B::School | B::Barracks | B::Field => {
             (FloorKind::Stone, InteriorProp::None)
