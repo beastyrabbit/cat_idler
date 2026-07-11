@@ -972,9 +972,6 @@ struct BuildingInspectorText;
 /// Marker for a building marker sprite.
 #[derive(Component)]
 struct BuildingSprite;
-/// Marker for a building world-space text label.
-#[derive(Component)]
-struct BuildingLabel;
 /// Marker for a zone overlay tile.
 #[derive(Component)]
 struct ZoneSprite;
@@ -1565,8 +1562,8 @@ const STORABLE_KINDS: [ResourceKind; 7] = [
     ResourceKind::Armor,
 ];
 
-/// Query filter for the per-tick redraw of building marker + label entities.
-type BuildingEntities = Or<(With<BuildingSprite>, With<BuildingLabel>)>;
+/// Query filter for the per-tick redraw of building sprite entities.
+type BuildingEntities = With<BuildingSprite>;
 /// Query filter for the per-tick redraw of stockpile visuals + highlight.
 type StockpileEntities = Or<(With<StockpileVis>, With<StockpileHighlight>)>;
 /// Query for the HUD resource value texts, disjoint from the header/footer texts.
@@ -3577,17 +3574,8 @@ fn render_buildings(
             Transform::from_xyz(base.x, base.y, z),
             BuildingSprite,
         ));
-        // Small label centred just under the footprint's front edge.
-        commands.spawn((
-            Text2d::new(building_label(building.building_type)),
-            TextFont {
-                font_size: FontSize::Px(8.0),
-                ..default()
-            },
-            TextColor(Color::srgba(1.0, 0.97, 0.86, 0.90)),
-            Transform::from_xyz(base.x, base.y - TILE * 0.4, z + 0.2),
-            BuildingLabel,
-        ));
+        // No always-on name label under the building: the sprites read distinctly
+        // now, and the hover tooltip names the building on demand.
     }
 }
 
