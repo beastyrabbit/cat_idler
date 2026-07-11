@@ -4,3 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+cat-client.workspace = true
+
+# Browser-only: surface Rust panics in the devtools console instead of an opaque
+# "unreachable executed" trap. Native builds of this bin don't pull it in.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
