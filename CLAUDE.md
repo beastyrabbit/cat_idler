@@ -137,17 +137,17 @@ split; most labor allocation still runs through the single director.
 ### Known gaps (intentionally deferred, not bugs)
 
 - **Ore/metal mining** is wired (mountain biomes, smelter → metal bars → better gear); the
-  officer/role split described above is still partial.
-- **`BuildingType::ResearchHut` / `School`** — the DB schema and upgrade tree reference these
-  building types by string, but the Rust `BuildingType` enum doesn't have variants for them
-  yet, so research-hut/school staffing is inert (`docs/migration/BOARD.md` P7.followup, low
-  priority).
-- **WASM/browser deploy**: `cat-web` compiles clean to `wasm32-unknown-unknown`, but there is
-  no committed `trunk` bundle or in-browser smoke test yet — see `docs/migration/WASM.md`.
+  officer/role split described above is still partial — officer roles are an *additive*
+  assignable automation layer, but the single leader director still runs most labor allocation
+  (it is not yet fully split into per-role directors).
 - **Cutover** (`docs/migration/BOARD.md` P11): the TypeScript reference tree is frozen but
-  still physically present; retiring it is a pending, deliberate step.
-- **Cat sprite licensing**: the current cat sheet's licensing needs confirmation before 1.0; a
-  CC0 replacement may be needed — see `docs/assets/SELECTION.md`.
+  still physically present; retiring it is a pending, deliberate step done at merge time.
+
+Recently closed (no longer gaps): `ResearchHut` and `School` are both fully ported — buildable,
+staffable research faucets (`School` also adds a +50% research-rate multiplier via its upgrade
+node). The WASM/browser build is done — `scripts/build-web.sh` produces a release bundle that
+runs end-to-end in Chromium (WebGL2, live WS stream, 0 console errors); see
+`docs/migration/WASM.md`.
 
 ### cat-protocol — the wire contract
 
@@ -301,9 +301,10 @@ The world ticks once a second (fixed; not currently configurable via env var).
 
 ## Status
 
-Pre-release, migration in progress. Simulation core, server, and multi-colony founding are
-done and live-verified. The Bevy client renders the full top-down world with a working HUD and
-is mid-buildout on newer sim systems. A browser/WASM build and the final cutover (retiring the
-TypeScript reference tree) are still pending. See `docs/HANDOFF.md` for the living status and
+Pre-release, migration effectively complete. Simulation core, server, and multi-colony founding
+are done and live-verified. The Bevy client renders the full top-down world with a cohesive
+"cozy ledger" UI kit (one visual language across every panel), and the browser/WASM build runs
+end-to-end in Chromium. The one remaining step is the **cutover** (P11: retiring the frozen
+TypeScript reference tree), done at merge time. See `docs/HANDOFF.md` for the living status and
 `docs/migration/BOARD.md` for phase-by-phase detail. No CI/CD pipeline — tests enforced locally
 via lefthook.

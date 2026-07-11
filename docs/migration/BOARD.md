@@ -33,7 +33,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P7 | Master loop (`world_tick`, multi-colony) | done |
 | P8 | Protocol + server (+ multi-village founding) | done |
 | P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
-| P10 | WASM/web + native packaging | partial — `cat-web` compiles clean to `wasm32-unknown-unknown`, WS URL derives from `window.location`, a trunk bundle config exists (`7e59c7c`); no committed in-browser build or smoke test yet, see `docs/migration/WASM.md` |
+| P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh` and runs end-to-end in Chromium (WebGL2, new UI kit, live WS stream, 0 console errors — re-verified after the UI redesign); native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Hosting infra + transfer-weight optimization are deploy-time follow-ups, not blockers. See `docs/migration/WASM.md` |
 | P11 | Cutover (retire the TS reference tree, big-bang) | pending |
 | P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | done — officer roles are an additive automation layer (assignable, not a full director split; the single leader director still runs most allocation, see `docs/ARCHITECTURE.md` "Known gaps") |
 | P13 | Client UI for P12: stockpile designation, officer assignment | done (see below) |

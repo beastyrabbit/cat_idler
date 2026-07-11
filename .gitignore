@@ -72,3 +72,7 @@ crates/cat-web/dist/
 
 # Bevy client framebuffer verification screenshots (never commit)
 crates/cat-client/reference/*.png
+# UI-redesign + wasm smoke-test verification screenshots (scratch, never commit)
+/ui-redesign-*.png
+/wasm-smoke-test.png
+/dom-game-fallback.png
