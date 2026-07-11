@@ -8379,6 +8379,172 @@ mod tests {
         assert!(raided.colonies[0].raiders.is_empty());
     }
 
+    /// Reachability guard: threat pressure crossing the threshold fires a raid.
+    ///
+    /// Past the grace window with pressure already at the spawn threshold, the tick's
+    /// threat director must launch a warband — `active_raid` set and raiders spawned on
+    /// the map. Guards the spawn wiring between [`accrue_threat`]/[`should_spawn_raid`]
+    /// and [`spawn_raid`] end to end (the pure pieces are unit-tested in `threat.rs`,
+    /// but nothing else asserts the tick actually stands a warband up).
+    #[test]
+    fn threat_pressure_crossing_the_threshold_launches_a_warband() {
+        let grace_ms = (crate::threat::RAID_GRACE_SEC * 1000.0) as i64;
+        let now = grace_ms + 10 * 60_000; // comfortably past the 8h grace window
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![ColonyRuntime {
+                id: "colony-1".to_owned(),
+                resources: plentiful_resources(),
+                cats: vec![
+                    adult_idle_cat("cat-1", "colony-1"),
+                    adult_idle_cat("cat-2", "colony-1"),
+                ],
+                run_started_at: 0,
+                created_at: 0,
+                last_tick: now - 60_000,
+                // Already at the spawn threshold: this tick's accrual must trip a raid.
+                threat_pressure: crate::threat::RAID_SPAWN_THRESHOLD,
+                test_rng_seed: Some(777),
+                ..ColonyRuntime::default()
+            }],
+        };
+
+        let reports = world_tick(&mut world, now);
+        assert_eq!(reports[0].reset_reason, None);
+        let colony = &world.colonies[0];
+        assert!(
+            colony.active_raid.is_some(),
+            "pressure at the threshold past grace should launch a raid"
+        );
+        assert!(
+            !colony.raiders.is_empty(),
+            "a launched raid must put raiders on the map"
+        );
+        // Pressure resets when the warband launches (see `spawn_raid`).
+        assert_eq!(colony.threat_pressure, 0.0);
+    }
+
+    /// Military balance + reachability guard: gear and warrior training decide raids.
+    ///
+    /// Two colonies face an identical warband already at the gate (same seed, so
+    /// [`resolve_raid`]'s swing roll is identical). Both muster the *same three base
+    /// cats*; the only difference is that the "prepared" colony trained them into
+    /// warriors and stocked weapons + armor for the smithy chain to draw at raid time.
+    /// The prepared colony must drive the raid off with no losses; the unprepared
+    /// militia must be overrun and looted. This is the executable proof that
+    /// `muster_defense` draws gear, that the weapon/armor bonuses and warrior combat
+    /// factor actually move the combat outcome, and that raids are winnable *with*
+    /// preparation and losable *without* it.
+    #[test]
+    fn prepared_colony_repels_the_raid_that_overruns_an_unprepared_one() {
+        fn base_colony() -> ColonyRuntime {
+            ColonyRuntime {
+                id: "colony-1".to_owned(),
+                resources: Resources {
+                    food: 100.0,
+                    water: 100.0,
+                    materials: 20.0,
+                    ..Resources::default()
+                },
+                run_started_at: 0,
+                created_at: 0,
+                last_tick: 0,
+                test_rng_seed: Some(12_345),
+                ..ColonyRuntime::default()
+            }
+        }
+
+        fn defender(id: &str) -> Cat {
+            let mut cat = adult_idle_cat(id, "colony-1");
+            cat.stats.attack = 50.0;
+            cat.stats.defense = 50.0;
+            cat
+        }
+
+        // A three-raider warband already standing at the gate: 40 hp each = 120 raider
+        // power. That sits above the unprepared militia's muster (3 x (50+50) x 0.28 =
+        // 84, at most 84 x 1.25 = 105) and far below the armed-warrior muster
+        // (3 x (75+75) x 1.0 = 450, at least 450 x 0.75 = 337) for every possible swing.
+        fn warband(colony: &ColonyRuntime) -> Vec<RaiderRuntime> {
+            (0..3)
+                .map(|index| RaiderRuntime {
+                    id: format!("raid-1-raider-{}", index + 1),
+                    raid_id: "raid-1".to_owned(),
+                    position: position_from_world(tile_pos_to_world(raid_gate_position(colony))),
+                    destination: None,
+                    attack: 40.0,
+                    defense: 40.0,
+                    health: 40.0,
+                })
+                .collect()
+        }
+
+        // Unprepared: three bare militia, no gear in store.
+        let mut unprepared = base_colony();
+        unprepared.cats = vec![defender("u1"), defender("u2"), defender("u3")];
+        unprepared.raiders = warband(&unprepared);
+        unprepared.active_raid = Some("raid-1".to_owned());
+
+        // Prepared: the same three cats trained into warriors, with weapons + armor
+        // stocked for the muster to draw.
+        let mut prepared = base_colony();
+        prepared.resources.weapons = 5.0;
+        prepared.resources.armor = 5.0;
+        prepared.cats = vec![defender("p1"), defender("p2"), defender("p3")];
+        for cat in &mut prepared.cats {
+            cat.specialization = Some(CatSpecialization::Warrior);
+        }
+        prepared.raiders = warband(&prepared);
+        prepared.active_raid = Some("raid-1".to_owned());
+
+        let mut unprepared_world = WorldState {
+            world_seed: 123,
+            colonies: vec![unprepared],
+        };
+        let mut prepared_world = WorldState {
+            world_seed: 123,
+            colonies: vec![prepared],
+        };
+        let _ = world_tick(&mut unprepared_world, 1_000);
+        let _ = world_tick(&mut prepared_world, 1_000);
+
+        // Unprepared militia are overrun: raid ends, stores are looted, gear stays zero.
+        let unprepared = &unprepared_world.colonies[0];
+        assert!(unprepared.active_raid.is_none(), "raid never resolved");
+        assert!(
+            unprepared.resources.food <= 90.0,
+            "unprepared colony should be looted (>=10% of stores): food {}",
+            unprepared.resources.food
+        );
+
+        // Prepared warriors hold the line: raid ends, nothing is looted, and the drawn
+        // weapons/armor are consumed from the armory.
+        let prepared = &prepared_world.colonies[0];
+        assert!(prepared.active_raid.is_none(), "raid never resolved");
+        assert!(
+            prepared.resources.food >= 99.0,
+            "prepared colony held the gate and should not be looted (only tick consumption): food {}",
+            prepared.resources.food
+        );
+        assert!(
+            prepared.resources.weapons < 5.0 && prepared.resources.armor < 5.0,
+            "prepared muster should draw weapons + armor (weapons {}, armor {})",
+            prepared.resources.weapons,
+            prepared.resources.armor,
+        );
+        assert!(
+            alive_cats(&prepared.cats).count() == 3,
+            "prepared colony should take no casualties"
+        );
+        assert!(
+            prepared
+                .cats
+                .iter()
+                .all(|cat| cat.role_xp.warrior >= WARRIOR_XP_PER_RAID),
+            "surviving warriors should earn raid XP for holding the line"
+        );
+    }
+
     #[test]
     fn all_dead_roster_resets_run_and_skips_later_phases() {
         let mut dead = adult_idle_cat("cat-1", "colony-1");
