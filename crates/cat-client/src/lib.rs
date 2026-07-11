@@ -331,7 +331,7 @@ struct Minimap {
 }
 
 /// Number of announcement lines the panel shows (newest first).
-const ANNOUNCEMENT_LINES: usize = 14;
+const ANNOUNCEMENT_LINES: usize = 11;
 
 /// The five appointable officer roles, in display order.
 const ALL_OFFICER_ROLES: [OfficerRole; 5] = [
@@ -1608,7 +1608,8 @@ fn setup(
                 left: Val::Px(430.0),
                 top: Val::Px(60.0),
                 width: Val::Px(560.0),
-                padding: UiRect::all(Val::Px(26.0)),
+                // Extra bottom padding so the last line clears the wood frame.
+                padding: UiRect::axes(Val::Px(26.0), Val::Px(40.0)),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(3.0),
                 display: Display::None,
@@ -1685,7 +1686,7 @@ fn setup(
                 position_type: PositionType::Absolute,
                 right: Val::Px(8.0),
                 top: Val::Px(8.0),
-                width: Val::Px(256.0),
+                width: Val::Px(300.0),
                 padding: UiRect::all(Val::Px(24.0)),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(6.0),
@@ -1839,8 +1840,10 @@ fn setup(
         Node {
             position_type: PositionType::Absolute,
             right: Val::Px(8.0),
-            top: Val::Px(330.0),
-            width: Val::Px(256.0),
+            // Below the cat inspector (which fits ~300px tall at this width) but
+            // high enough that a tall producer panel still clears the minimap.
+            top: Val::Px(336.0),
+            width: Val::Px(300.0),
             padding: UiRect::all(Val::Px(24.0)),
             display: Display::None,
             ..default()
