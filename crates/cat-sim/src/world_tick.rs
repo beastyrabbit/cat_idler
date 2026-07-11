@@ -5372,10 +5372,18 @@ fn has_quarry_site(colony: &ColonyRuntime) -> bool {
 }
 
 fn has_water_site(colony: &ColonyRuntime) -> bool {
+    // Must agree with `water_sites_near_village`: any water tile that site-finder can
+    // hand a `FetchWater` job is a valid site here, or the leader director's veto
+    // (`!snapshot.has_water_site`) permanently blocks water fetching even though a
+    // reachable source exists. A tile is a usable site when it is explored — worn into
+    // a known route (`path_wear > 62`) OR already inside the founding reveal band
+    // (`cheb_from_anchor <= 6`, see `tile_is_explored`). Before this was reconciled the
+    // founding pond (carved at cheb 2..=6 with `path_wear == 0`) failed this gate, so a
+    // fresh colony never fetched water and slowly bled its founding reservoir dry.
     colony
         .world_tiles
         .values()
-        .any(|tile| tile.resources.water > 0 && tile.path_wear > 62)
+        .any(|tile| tile_has_water(Some(tile)) && tile_is_explored(tile))
 }
 
 fn has_frontier(colony: &ColonyRuntime) -> bool {
@@ -9605,6 +9613,90 @@ mod tests {
                 "seed {seed} ran a resource dry (food {:.1}, water {:.1})",
                 colony.resources.food,
                 colony.resources.water,
+            );
+        }
+    }
+
+    /// Live-cadence founding survival guardrail (bug: founding death spiral).
+    ///
+    /// The long-horizon proof [`founded_colony_thrives_over_a_long_horizon_with_the_small_start`]
+    /// advances `now` in 60_000 ms (one game-minute) jumps, so it only covers ~8.3 game-hours
+    /// in 500 ticks — short enough that the founding water reservoir never bleeds low enough to
+    /// exercise the leader's water-fetch loop. The live server advances `now` ~1000 ms per tick
+    /// (`WORKER_TICK_MS`, default `test_time_scale`), so `gate.minute_rolled` is false on most
+    /// ticks and the leader director's per-tick water projection signal is tiny — water is held
+    /// only by the deficit curve once the reservoir actually runs down. A regression where the
+    /// leader never dispatches `FetchWater` (e.g. `has_water_site` disagreeing with the
+    /// `water_sites_near_village` site-finder) therefore hides from the 60 s proof but bleeds a
+    /// live colony's water to a critical collapse.
+    ///
+    /// This test ticks at the true 1 s live cadence with the *default* time scale and resource
+    /// decay, so the founding water economy runs at its real balance. To reach the water-standup
+    /// window inside a bounded tick budget (a faithful 1 s run to the ~15 game-hour bleed-out
+    /// would be tens of thousands of ticks) it founds each colony with a deliberately lean water
+    /// reservoir; food and hunting stay at their proven default balance. A working founding
+    /// economy must stand up its water loop, refill the reservoir, and never reset. Fails before
+    /// the `has_water_site` fix (no fetch ever dispatched, water bleeds to an
+    /// `UnattendedCollapse`/`AllCatsDead` reset); passes after.
+    #[test]
+    fn founding_colony_stands_up_its_water_loop_at_the_live_one_second_cadence() {
+        for seed in [1234u32, 42, 7] {
+            let mut world = new_world(seed);
+            let mut colony = found_colony(world.world_seed, "colony-1", 10_000, seed);
+            // Lean founding reservoir so the water-standup crisis is reached in a bounded tick
+            // budget; everything else (food, decay, time scale) stays at the live default.
+            colony.resources.water = 10.0;
+            reconcile_colony_stockpiles(&mut colony);
+            world.colonies.push(colony);
+
+            let starting_water = world.colonies[0].resources.water;
+            let mut dispatched_fetch = false;
+            let mut water_max = starting_water;
+            let mut min_population = usize::MAX;
+            for step in 1..=3_000i64 {
+                let now = 10_000 + step * 1_000; // 1 s live cadence, default time scale
+                let reports = world_tick(&mut world, now);
+                let colony = &world.colonies[0];
+
+                assert_eq!(
+                    reports[0].reset_reason, None,
+                    "seed {seed} tick {step}: founding colony reset ({:?}) — the water loop never stood up",
+                    reports[0].reset_reason,
+                );
+
+                if colony
+                    .jobs
+                    .iter()
+                    .any(|job| job.kind == JobKind::FetchWater)
+                {
+                    dispatched_fetch = true;
+                }
+                water_max = water_max.max(colony.resources.water);
+                min_population = min_population.min(alive_cats(&colony.cats).count());
+            }
+
+            let colony = &world.colonies[0];
+            assert_ne!(
+                colony.status,
+                ColonyStatus::Dead,
+                "seed {seed}: colony died"
+            );
+            assert!(
+                dispatched_fetch,
+                "seed {seed}: the leader never dispatched a FetchWater job — water was never replenished"
+            );
+            assert!(
+                water_max >= 60.0,
+                "seed {seed}: water never recovered (peaked at {water_max:.1}) — the fetch loop is not delivering"
+            );
+            assert!(
+                colony.resources.water > starting_water,
+                "seed {seed}: water ended at {:.1}, no better than the lean start — the loop is bleeding, not standing up",
+                colony.resources.water,
+            );
+            assert!(
+                min_population >= STARTER_CAT_COUNT,
+                "seed {seed}: population dipped to {min_population} — a cat died during founding standup"
             );
         }
     }
