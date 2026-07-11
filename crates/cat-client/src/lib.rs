@@ -25,7 +25,8 @@ use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot, ClientAction,
     ColonySnapshot, FootprintSize, GateSide, ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus,
     ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp, Specialization, StockLedgerSnapshot,
-    StockpileSnapshot, TilePoint, WorldSnapshot, ZoneKind,
+    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderVisitState, WorldSnapshot,
+    ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -341,6 +342,18 @@ struct GoodsUi {
 
 /// Number of item-stack lines the goods panel shows (most valuable first).
 const GOODS_LINES: usize = 12;
+
+/// Trade menu (open while a trader is at the gate). `closed` lets the player
+/// dismiss it during a visit; it resets when the trader leaves so the next visit
+/// auto-opens.
+#[derive(Resource, Default)]
+struct TradeUi {
+    closed: bool,
+}
+
+/// Max sell rows (crafted stacks) and buy rows (resource kinds) the menu shows.
+const TRADE_SELL_ROWS: usize = 6;
+const TRADE_BUY_ROWS: usize = 8;
 
 /// The five appointable officer roles, in display order.
 const ALL_OFFICER_ROLES: [OfficerRole; 5] = [
@@ -978,6 +991,36 @@ struct GoodsTreasury;
 /// The HUD button that toggles the goods panel.
 #[derive(Component)]
 struct GoodsButton;
+/// Marker for the trade-menu panel node.
+#[derive(Component)]
+struct TradeMenuPanel;
+/// The coin readout in the trade menu.
+#[derive(Component)]
+struct TradeCoinText;
+/// A sell row (container node, hidden when there's no offer at this index).
+#[derive(Component, Clone, Copy)]
+struct SellRow(usize);
+/// The label text of a sell row.
+#[derive(Component, Clone, Copy)]
+struct SellRowText(usize);
+/// A sell button: sells the offer at `row` (all of it when `all`, else one).
+#[derive(Component, Clone, Copy)]
+struct SellButton {
+    row: usize,
+    all: bool,
+}
+/// A buy row (container node, hidden when there's no offer at this index).
+#[derive(Component, Clone, Copy)]
+struct BuyRow(usize);
+/// The label text of a buy row.
+#[derive(Component, Clone, Copy)]
+struct BuyRowText(usize);
+/// A buy button: buys one unit of the resource offered at `row`.
+#[derive(Component, Clone, Copy)]
+struct BuyButton(usize);
+/// The trade-menu close button.
+#[derive(Component)]
+struct TradeCloseButton;
 /// Marker for the corner minimap panel node (toggled open/closed).
 #[derive(Component)]
 struct MinimapPanel;
@@ -1123,6 +1166,41 @@ fn treasury_total(items: &[ItemStackSnapshot]) -> u32 {
     items.iter().map(|s| s.count * s.value).sum()
 }
 
+// ---- Trade menu (pure formatting/affordability — unit-tested) ----
+
+/// A sell-offer line: `Fine Wood Mug x3 - 8g ea` (the trader buys from you).
+fn sell_offer_label(offer: &TraderBuyOffer) -> String {
+    format!(
+        "{band} {material} {kind} x{avail} - {price:.0}g ea",
+        band = quality_band(offer.quality),
+        material = capitalize_word(&offer.material),
+        kind = capitalize_word(&offer.kind),
+        avail = offer.available,
+        price = offer.unit_price,
+    )
+}
+
+/// A buy-offer line: `Food - 3g ea` (the trader sells to you); flags when you
+/// can't afford one unit.
+fn buy_offer_label(offer: &TraderSellOffer, coin: f64) -> String {
+    let name = capitalize_word(resource_kind_name(offer.resource));
+    if can_afford(coin, offer.unit_price) {
+        format!("{name} - {:.0}g ea", offer.unit_price)
+    } else {
+        format!("{name} - {:.0}g ea  (low coin)", offer.unit_price)
+    }
+}
+
+/// Whether `coin` covers a unit at `unit_price` (small epsilon for float slack).
+fn can_afford(coin: f64, unit_price: f64) -> bool {
+    coin + 1e-6 >= unit_price
+}
+
+/// The prominent coin readout in the trade menu.
+fn coin_line(coin: f64) -> String {
+    format!("Coin: {coin:.0}g")
+}
+
 /// A manual-action button and the action it enqueues when clicked.
 #[derive(Component, Clone, Copy)]
 struct ActionButton(ButtonAction);
@@ -1242,6 +1320,7 @@ pub fn run() {
         .insert_resource(OfficersUi::default())
         .insert_resource(AnnouncementsUi::default())
         .insert_resource(GoodsUi::default())
+        .insert_resource(TradeUi::default())
         .insert_resource(MinimapUi::default())
         .insert_resource(CatBodies::default())
         .insert_resource(RaiderBodies::default())
@@ -1295,12 +1374,14 @@ pub fn run() {
                     handle_vacate_buttons,
                     flush_outgoing,
                 ),
-                // announcements / event log + goods + minimap
+                // announcements / event log + goods + trade + minimap
                 (
                     toggle_announcements,
                     update_announcements,
                     toggle_goods,
                     update_goods,
+                    update_trade_menu,
+                    handle_trade_buttons,
                     toggle_minimap,
                     update_minimap,
                     update_minimap_viewport,
@@ -1859,6 +1940,169 @@ fn setup(
                         ));
                     });
             }
+        });
+
+    // Trade menu (centre), shown only while a trader is Trading at the gate.
+    let small_btn = || Node {
+        min_width: Val::Px(46.0),
+        height: Val::Px(24.0),
+        padding: UiRect::axes(Val::Px(8.0), Val::Px(2.0)),
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        ..default()
+    };
+    let row_node = || Node {
+        width: Val::Percent(100.0),
+        align_items: AlignItems::Center,
+        column_gap: Val::Px(6.0),
+        display: Display::None,
+        ..default()
+    };
+    let label_node = || Node {
+        width: Val::Px(330.0),
+        ..default()
+    };
+    let header = |text: &str| {
+        (
+            Text::new(text.to_string()),
+            TextFont {
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextColor(Color::srgb(0.55, 0.42, 0.24)),
+        )
+    };
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(390.0),
+                top: Val::Px(70.0),
+                width: Val::Px(540.0),
+                padding: UiRect::axes(Val::Px(26.0), Val::Px(34.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(4.0),
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(90),
+            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            TradeMenuPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(46.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    margin: UiRect::bottom(Val::Px(4.0)),
+                    ..default()
+                },
+                ImageNode::new(ui.banner.clone()),
+                children![(
+                    Text::new("Trader"),
+                    TextFont {
+                        font_size: FontSize::Px(15.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
+                )],
+            ));
+            panel.spawn((
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.86, 0.66, 0.28)),
+                TradeCoinText,
+            ));
+            panel.spawn(header("- Sell your crafts -"));
+            for i in 0..TRADE_SELL_ROWS {
+                panel.spawn((row_node(), SellRow(i))).with_children(|row| {
+                    row.spawn((
+                        label_node(),
+                        children![(
+                            Text::new(""),
+                            TextFont {
+                                font_size: FontSize::Px(11.0),
+                                ..default()
+                            },
+                            TextColor(PARCHMENT_INK),
+                            SellRowText(i),
+                        )],
+                    ));
+                    for all in [false, true] {
+                        row.spawn((
+                            Button,
+                            small_btn(),
+                            sliced_image(ui.button.clone(), BUTTON_BORDER),
+                            SellButton { row: i, all },
+                            children![(
+                                Text::new(if all { "All" } else { "Sell 1" }),
+                                TextFont {
+                                    font_size: FontSize::Px(10.0),
+                                    ..default()
+                                },
+                                TextColor(PARCHMENT_INK),
+                            )],
+                        ));
+                    }
+                });
+            }
+            panel.spawn(header("- Buy resources -"));
+            for i in 0..TRADE_BUY_ROWS {
+                panel.spawn((row_node(), BuyRow(i))).with_children(|row| {
+                    row.spawn((
+                        label_node(),
+                        children![(
+                            Text::new(""),
+                            TextFont {
+                                font_size: FontSize::Px(11.0),
+                                ..default()
+                            },
+                            TextColor(PARCHMENT_INK),
+                            BuyRowText(i),
+                        )],
+                    ));
+                    row.spawn((
+                        Button,
+                        small_btn(),
+                        sliced_image(ui.button.clone(), BUTTON_BORDER),
+                        BuyButton(i),
+                        children![(
+                            Text::new("Buy 1"),
+                            TextFont {
+                                font_size: FontSize::Px(10.0),
+                                ..default()
+                            },
+                            TextColor(PARCHMENT_INK),
+                        )],
+                    ));
+                });
+            }
+            panel.spawn((
+                Button,
+                Node {
+                    min_width: Val::Px(90.0),
+                    height: Val::Px(26.0),
+                    margin: UiRect::top(Val::Px(6.0)),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                sliced_image(ui.button.clone(), BUTTON_BORDER),
+                TradeCloseButton,
+                children![(
+                    Text::new("Close [Esc]"),
+                    TextFont {
+                        font_size: FontSize::Px(11.0),
+                        ..default()
+                    },
+                    TextColor(PARCHMENT_INK),
+                )],
+            ));
         });
 
     // Hover tooltip (small, follows the cursor), hidden until hovering an entity.
@@ -3530,6 +3774,7 @@ fn close_inspectors_on_esc(
     mut stockpile: ResMut<StockpileSelection>,
     mut announcements: ResMut<AnnouncementsUi>,
     mut goods: ResMut<GoodsUi>,
+    mut trade: ResMut<TradeUi>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
         cat.selected = None;
@@ -3537,6 +3782,7 @@ fn close_inspectors_on_esc(
         stockpile.selected = None;
         announcements.visible = false;
         goods.visible = false;
+        trade.closed = true;
     }
 }
 
@@ -4120,6 +4366,134 @@ fn update_goods(
         } else {
             node.display = Display::None;
         }
+    }
+}
+
+/// Show the trade menu while a trader is at the gate (Trading) and repaint coin +
+/// the sell/buy offer rows live from the snapshot.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn update_trade_menu(
+    latest: Res<LatestSnapshot>,
+    mut trade_ui: ResMut<TradeUi>,
+    mut panel: Query<&mut Node, (With<TradeMenuPanel>, Without<SellRow>, Without<BuyRow>)>,
+    mut coin: Query<
+        &mut Text,
+        (
+            With<TradeCoinText>,
+            Without<SellRowText>,
+            Without<BuyRowText>,
+        ),
+    >,
+    mut sell_rows: Query<(&SellRow, &mut Node), (Without<TradeMenuPanel>, Without<BuyRow>)>,
+    mut sell_texts: Query<(&SellRowText, &mut Text), (Without<TradeCoinText>, Without<BuyRowText>)>,
+    mut buy_rows: Query<(&BuyRow, &mut Node), (Without<TradeMenuPanel>, Without<SellRow>)>,
+    mut buy_texts: Query<(&BuyRowText, &mut Text), (Without<TradeCoinText>, Without<SellRowText>)>,
+) {
+    let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
+    let trader = colony.and_then(|c| c.trader.as_ref());
+    let trading = trader.is_some_and(|t| matches!(t.state, TraderVisitState::Trading));
+    // Once the trader stops trading, clear any manual dismissal so the next visit
+    // auto-opens.
+    if !trading && trade_ui.closed {
+        trade_ui.closed = false;
+    }
+    let open = trading && !trade_ui.closed;
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if open { Display::Flex } else { Display::None };
+    }
+    let (Some(colony), Some(trader)) = (colony, trader) else {
+        return;
+    };
+    if !open {
+        return;
+    }
+    if let Ok(mut text) = coin.single_mut() {
+        text.0 = coin_line(colony.coin);
+    }
+    for (row, mut node) in &mut sell_rows {
+        node.display = if row.0 < trader.buy_offers.len() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    for (label, mut text) in &mut sell_texts {
+        text.0 = trader
+            .buy_offers
+            .get(label.0)
+            .map_or_else(String::new, sell_offer_label);
+    }
+    for (row, mut node) in &mut buy_rows {
+        node.display = if row.0 < trader.sell_offers.len() {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    for (label, mut text) in &mut buy_texts {
+        text.0 = trader
+            .sell_offers
+            .get(label.0)
+            .map_or_else(String::new, |o| buy_offer_label(o, colony.coin));
+    }
+}
+
+/// Dispatch Sell/Buy actions from the trade-menu buttons (resolved against the
+/// live offers), and close the menu on the Close button. The sim denies any
+/// trade that isn't currently valid, so these are best-effort.
+#[allow(clippy::type_complexity)]
+fn handle_trade_buttons(
+    latest: Res<LatestSnapshot>,
+    session: Res<Session>,
+    mut outgoing: ResMut<OutgoingActions>,
+    mut trade_ui: ResMut<TradeUi>,
+    sell_buttons: Query<(&Interaction, &SellButton), Changed<Interaction>>,
+    buy_buttons: Query<(&Interaction, &BuyButton), Changed<Interaction>>,
+    close: Query<&Interaction, (Changed<Interaction>, With<TradeCloseButton>)>,
+) {
+    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+        return;
+    };
+    let Some(trader) = colony.trader.as_ref() else {
+        return;
+    };
+    for (interaction, button) in &sell_buttons {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if let Some(offer) = trader.buy_offers.get(button.row) {
+            let count = if button.all { offer.available } else { 1 };
+            if count > 0 {
+                outgoing.0.push(ClientAction::SellGoods {
+                    session_id: session.session_id.clone(),
+                    nickname: "Desktop Cat".to_string(),
+                    sig: session.sig.clone(),
+                    kind: offer.kind.clone(),
+                    material: offer.material.clone(),
+                    quality: offer.quality,
+                    count,
+                });
+            }
+        }
+    }
+    for (interaction, button) in &buy_buttons {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if let Some(offer) = trader.sell_offers.get(button.0)
+            && can_afford(colony.coin, offer.unit_price)
+        {
+            outgoing.0.push(ClientAction::BuyResource {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                resource: offer.resource,
+                amount: 1.0,
+            });
+        }
+    }
+    if close.iter().any(|i| *i == Interaction::Pressed) {
+        trade_ui.closed = true;
     }
 }
 
@@ -5688,6 +6062,36 @@ mod tests {
         // HUD treasury line reflects the same total.
         assert_eq!(hud_treasury_line(&[mug]), "Treasury: 36g");
         assert_eq!(hud_treasury_line(&[]), "Treasury: 0g");
+    }
+
+    #[test]
+    fn trade_offer_labels_affordability_and_coin() {
+        let sell = TraderBuyOffer {
+            kind: "mug".to_string(),
+            material: "wood".to_string(),
+            quality: 2,
+            available: 3,
+            unit_price: 8.0,
+        };
+        let label = sell_offer_label(&sell);
+        assert!(label.contains("Fine Wood Mug"));
+        assert!(label.contains("x3"));
+        assert!(label.contains("8g ea"));
+
+        let buy = TraderSellOffer {
+            resource: ResourceKind::Food,
+            unit_price: 5.0,
+        };
+        // Affordable and unaffordable buy labels.
+        assert_eq!(buy_offer_label(&buy, 20.0), "Food - 5g ea");
+        assert!(buy_offer_label(&buy, 2.0).contains("low coin"));
+
+        assert!(can_afford(5.0, 5.0));
+        assert!(can_afford(10.0, 5.0));
+        assert!(!can_afford(4.0, 5.0));
+
+        assert_eq!(coin_line(42.0), "Coin: 42g");
+        assert_eq!(coin_line(0.0), "Coin: 0g");
     }
 
     #[test]
