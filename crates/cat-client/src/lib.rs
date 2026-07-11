@@ -6238,6 +6238,8 @@ fn building_texture(building: BuildingType) -> Option<BuildingTexture> {
         // P18 clothing chain craft stations.
         BuildingType::Clothier => BuildingTexture::Clothier,
         BuildingType::Tannery => BuildingTexture::Tannery,
+        // Ore/metal chain: the smelter is a forge/furnace — reuse the smithy sprite.
+        BuildingType::Smelter => BuildingTexture::Smithy,
         BuildingType::Walls => return None,
     })
 }
@@ -6276,6 +6278,7 @@ fn building_label(building: BuildingType) -> &'static str {
         BuildingType::Woodworking => "woodworking",
         BuildingType::Clothier => "clothier",
         BuildingType::Tannery => "tannery",
+        BuildingType::Smelter => "smelter",
     }
 }
 
@@ -7034,6 +7037,11 @@ mod tests {
             building_texture(BuildingType::Tannery),
             Some(BuildingTexture::Tannery)
         );
+        // The smelter reuses the smithy forge sprite.
+        assert_eq!(
+            building_texture(BuildingType::Smelter),
+            Some(BuildingTexture::Smithy)
+        );
         // Walls render as infra, not a point marker.
         assert_eq!(building_texture(BuildingType::Walls), None);
 
@@ -7634,6 +7642,7 @@ mod tests {
             BuildingType::Barracks,
             BuildingType::Clothier,
             BuildingType::Tannery,
+            BuildingType::Smelter,
         ] {
             assert!(!building_label(building).is_empty());
         }
