@@ -369,8 +369,11 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         | BuildingType::Clothier
         | BuildingType::Tannery
         // A research hut seats one scholar; it accrues upgrade-tree research points rather
-        // than a stockpile resource, so it has no `building_cycle_sec`/output label.
+        // than a stockpile resource, so it has no `building_cycle_sec`/output label. The
+        // school (unlocked by the "school" upgrade node) is a second research building
+        // and shares the same one-scholar staffing shape.
         | BuildingType::ResearchHut
+        | BuildingType::School
         | BuildingType::Smelter => 1,
         BuildingType::Den
         | BuildingType::FoodStorage
@@ -447,6 +450,7 @@ pub const fn building_output_label(building_type: BuildingType) -> Option<&'stat
         | BuildingType::Shrine
         | BuildingType::Barracks
         | BuildingType::ResearchHut
+        | BuildingType::School
         | BuildingType::AccountingTent => None,
     }
 }

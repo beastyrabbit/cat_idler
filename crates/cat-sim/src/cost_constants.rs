@@ -46,7 +46,7 @@ pub const ENEMY_STATS: [(EnemyType, EnemyStats); 5] = [
     ),
 ];
 
-pub const BUILDING_COSTS: [(BuildingType, u32); 22] = [
+pub const BUILDING_COSTS: [(BuildingType, u32); 23] = [
     (BuildingType::Den, 0),
     (BuildingType::FoodStorage, 5),
     (BuildingType::WaterBowl, 3),
@@ -75,6 +75,12 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 22] = [
     // like the field/accounting tent. The autonomous build actually pays the shared
     // plank/block scaffold cost, not this value; it only surfaces in the client inspector.
     (BuildingType::ResearchHut, 15),
+    // Second research building, unlocked by the "school" upgrade node (era 2) — same
+    // mid tier as the research hut it mirrors. Built via `PlanBuilding` (gated on owning
+    // the "school" node) rather than autonomously commissioned, so this is purely the
+    // client-inspector/cost-preview value; the actual build still pays the shared
+    // plank/block scaffold cost like every other `BuildHouse` job.
+    (BuildingType::School, 15),
 ];
 
 pub const TASK_TO_SKILL: [(TaskType, &str); 12] = [
@@ -184,6 +190,7 @@ mod tests {
             (BuildingType::Tannery, 20),
             (BuildingType::Smelter, 30),
             (BuildingType::ResearchHut, 15),
+            (BuildingType::School, 15),
         ];
 
         assert_eq!(BUILDING_COSTS.len(), BuildingType::ALL.len());

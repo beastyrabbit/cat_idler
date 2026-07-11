@@ -129,6 +129,11 @@ define_wire_enum! {
         // StonePrep's materials -> blocks refine. See production::advance_workshop's
         // Smelter arm in world_tick.rs and the "smelting" upgrade node.
         Smelter => "smelter",
+        // Second staffed research building, unlocked by the "school" upgrade node
+        // (era 2, prereq den_insulation). A completed, staffed School contributes to
+        // world_tick::research_workforce exactly like a ResearchHut; the node's own
+        // ResearchRateMult effect (applied in phase_24_research) then scales the total.
+        School => "school",
     }
 }
 
@@ -302,6 +307,7 @@ mod tests {
             (BuildingType::Tannery, "tannery"),
             (BuildingType::ResearchHut, "research_hut"),
             (BuildingType::Smelter, "smelter"),
+            (BuildingType::School, "school"),
         ];
 
         assert_wire_round_trip(&cases, BuildingType::as_str);

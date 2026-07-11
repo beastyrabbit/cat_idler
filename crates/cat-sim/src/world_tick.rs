@@ -350,6 +350,7 @@ pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
         | BuildingType::Field
         | BuildingType::Barracks
         | BuildingType::ResearchHut
+        | BuildingType::School
         | BuildingType::AccountingTent => (2, 3),
         // Bowls and wall segments are single tiles.
         BuildingType::WaterBowl | BuildingType::Walls => (1, 1),
@@ -2951,11 +2952,15 @@ fn phase_20_leader_labor_assignments_and_staffing(
         workshop_queue.extend(buildings_needing_workers(colony, bench_type));
     }
     let mut smithy_queue = buildings_needing_workers(colony, BuildingType::Smithy);
-    // Research huts the director wants staffed this tick. The `AssignResearch` goal is
-    // itself comfort-gated in `leader_director` (vetoed unless food/water are both
-    // comfortable), so this queue only ever yields work when the colony can spare the
-    // mouth — a starving colony opens no research slots and this stays empty.
+    // Research huts and schools the director wants staffed this tick. Both building
+    // types feed the same `research_workforce` faucet (see world_tick.rs), so a
+    // completed-but-unstaffed School competes for the same `AssignResearch` slots a
+    // ResearchHut would. The `AssignResearch` goal is itself comfort-gated in
+    // `leader_director` (vetoed unless food/water are both comfortable), so this queue
+    // only ever yields work when the colony can spare the mouth — a starving colony
+    // opens no research slots and this stays empty.
     let mut research_queue = buildings_needing_workers(colony, BuildingType::ResearchHut);
+    research_queue.extend(buildings_needing_workers(colony, BuildingType::School));
 
     for assignment in assignments {
         if !can_take_policy_action(colony, policy) {
@@ -3122,9 +3127,14 @@ fn has_research_hut_or_build_in_flight(colony: &ColonyRuntime) -> bool {
 ///    ranked slot rarely fires — exactly why the generic workshop also gets a phase-23
 ///    idle-mop-up. This gives the research hut the same treatment. It also re-staffs a hut
 ///    whose scholar has died (research to a node spans several cat lifetimes), so accrual
-///    survives generational turnover.
+///    survives generational turnover. A completed School (player/god-built via
+///    `PlanBuilding`, once the `school` node is owned) gets the identical idle-mop-up
+///    treatment here — staffing plumbing only, not auto-commission: nothing in this
+///    function ever *builds* a School.
 /// 2. **Commission one hut** (at most one at a time) when none exists and none is in flight,
-///    spending an architect + the shared plank/block scaffold cost.
+///    spending an architect + the shared plank/block scaffold cost. Schools are never
+///    auto-commissioned this way — they only come into being through a deliberate
+///    `PlanBuilding` action once the `school` upgrade node is owned.
 ///
 /// Deterministic: comfort and staffing are flat functions of colony state; only the
 /// commission draws the seeded policy-reliability roll (at the same call site the other
@@ -3152,14 +3162,16 @@ fn manage_research_hut(
         return;
     }
 
-    // Step 1: staff any completed but unstaffed research hut from a genuinely idle cat. Only
-    // reached while comfortable, so this never pulls a cat off survival work.
+    // Step 1: staff any completed but unstaffed research hut or school from a genuinely
+    // idle cat. Only reached while comfortable, so this never pulls a cat off survival
+    // work.
     auto_staff_idle_buildings(
         colony,
         BuildingType::ResearchHut,
         gate.processed_through,
         true,
     );
+    auto_staff_idle_buildings(colony, BuildingType::School, gate.processed_through, true);
 
     // Step 2: commission a hut if the colony has none (built or in flight).
     if has_research_hut_or_build_in_flight(colony) {
@@ -7301,6 +7313,7 @@ fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
         | BuildingType::Clothier
         | BuildingType::Tannery
         | BuildingType::ResearchHut
+        | BuildingType::School
         | BuildingType::Smelter => building_type,
         _ => BuildingType::Den,
     }
@@ -7559,19 +7572,21 @@ fn assigned_worker<'a>(colony: &'a ColonyRuntime, building_id: &str) -> Option<&
 }
 
 /// Stage-weighted count of cats actively staffing a completed research building
-/// (currently the research hut; schools fold in when that building type lands). Each
-/// staffed hut contributes its assigned cat's [`life_sim::workforce_weight`] — the same
+/// (research hut or school — both contribute identically). Each staffed building
+/// contributes its assigned cat's [`life_sim::workforce_weight`] — the same
 /// weight the labour budget uses — so an elder scholar researches at 0.7 like every other
 /// job, and a dead/absent assignee contributes nothing. This is the sole input to
-/// [`phase_24_research`]'s point accrual; a colony with no staffed hut yields 0.0 and is
-/// byte-identical to the pre-wiring behaviour.
+/// [`phase_24_research`]'s point accrual; a colony with no staffed hut/school yields 0.0 and
+/// is byte-identical to the pre-wiring behaviour.
 fn research_workforce(colony: &ColonyRuntime) -> f64 {
     colony
         .buildings
         .iter()
         .filter(|building| {
-            building.building_type == BuildingType::ResearchHut
-                && building.construction_progress >= 100
+            matches!(
+                building.building_type,
+                BuildingType::ResearchHut | BuildingType::School
+            ) && building.construction_progress >= 100
         })
         .filter_map(|building| building.assigned_cat.as_deref())
         .filter_map(|cat_id| {
@@ -12831,6 +12846,90 @@ mod tests {
         assert!(
             staffed,
             "a comfortable colony must staff its idle research hut within a few ticks",
+        );
+    }
+
+    /// Attach a completed school, staffed by `scholar`, to `colony`.
+    #[cfg(test)]
+    fn attach_staffed_school(colony: &mut ColonyRuntime, scholar: &str) {
+        colony.buildings.push(BuildingRuntime {
+            id: "school-test".to_owned(),
+            building_type: BuildingType::School,
+            level: 1,
+            position: TilePos {
+                x: colony.anchor.x,
+                y: colony.anchor.y,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            assigned_cat: Some(scholar.to_owned()),
+            ..BuildingRuntime::default()
+        });
+    }
+
+    /// The school is a second staffed research building (unlocked by the "school" upgrade
+    /// node): a completed, staffed school must count toward [`research_workforce`] exactly
+    /// like a research hut, and the two stack — a colony with one of each fields two
+    /// researchers. Mirrors
+    /// [`staffed_research_hut_accrues_points_and_auto_unlocks_the_cheapest_nodes`], swapping
+    /// the hut for a school (and covering the stacked case the hut-only test doesn't).
+    #[test]
+    fn staffed_school_contributes_research_workforce_and_accrues_points() {
+        let mut colony = found_colony(7, "colony-1", 10_000, 7);
+        colony.upgrade_tree = crate::upgrade_tree::create_upgrade_tree_state();
+        let scholar = colony.cats[0].id.clone();
+
+        assert_eq!(
+            research_workforce(&colony),
+            0.0,
+            "a colony with no staffed research building must yield zero research workforce"
+        );
+
+        attach_staffed_school(&mut colony, &scholar);
+        assert!(
+            (research_workforce(&colony) - 1.0).abs() < 1e-9,
+            "one living scholar in a completed school is one researcher"
+        );
+
+        // A research hut staffed by a second scholar stacks on top of the school.
+        let second_scholar = colony.cats[1].id.clone();
+        attach_staffed_research_hut(&mut colony, &second_scholar);
+        assert!(
+            (research_workforce(&colony) - 2.0).abs() < 1e-9,
+            "a staffed school and a staffed research hut must both contribute workforce"
+        );
+
+        // One game-week of two researchers banks ~20 points, comfortably auto-unlocking the
+        // cost-5 root node (`research_hut`) and beyond.
+        let week = crate::upgrade_tree::WEEK_SECONDS as i64;
+        let gate = TickGate {
+            elapsed_sec: week,
+            processed_through: colony.last_tick + week * 1_000,
+            minute_rolled: true,
+            previous_water: colony.resources.water.to_bits(),
+        };
+        phase_24_research(&mut colony, gate);
+
+        assert!(
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .contains(&"research_hut".to_owned()),
+            "a game-week of research from a staffed school must unlock the cost-5 root node, \
+             got {:?}",
+            colony.upgrade_tree.owned_node_ids,
+        );
+
+        // Unstaffing the school (but leaving the hut staffed) drops the workforce by exactly
+        // one — the dead/absent scholar guard applies per-building, not colony-wide.
+        for building in &mut colony.buildings {
+            if building.building_type == BuildingType::School {
+                building.assigned_cat = None;
+            }
+        }
+        assert!(
+            (research_workforce(&colony) - 1.0).abs() < 1e-9,
+            "unstaffing the school must leave only the research hut's researcher"
         );
     }
 

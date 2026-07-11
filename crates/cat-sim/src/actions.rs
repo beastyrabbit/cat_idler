@@ -477,6 +477,7 @@ fn plan_building(
             | BuildingType::FoodStorage
             | BuildingType::Den
             | BuildingType::Smelter
+            | BuildingType::School
     ) {
         return fail("Unknown building type.");
     }
@@ -489,8 +490,10 @@ fn plan_building(
             _ => "Building is locked.",
         });
     }
-    if matches!(building_type, BuildingType::Smithy | BuildingType::Barracks)
-        && !upgrade_tree::is_owned(&colony.upgrade_tree, building_type.as_str())
+    if matches!(
+        building_type,
+        BuildingType::Smithy | BuildingType::Barracks | BuildingType::School
+    ) && !upgrade_tree::is_owned(&colony.upgrade_tree, building_type.as_str())
     {
         return fail("That building must be researched or granted by the gods first.");
     }
@@ -2165,8 +2168,7 @@ fn proto_to_sim_building_type(building_type: proto::BuildingType) -> Option<Buil
         proto::BuildingType::Workshop => Some(BuildingType::Workshop),
         proto::BuildingType::Field => Some(BuildingType::Field),
         proto::BuildingType::ResearchHut => Some(BuildingType::ResearchHut),
-        // School is a later-tree research building not yet ported to the sim runtime.
-        proto::BuildingType::School => None,
+        proto::BuildingType::School => Some(BuildingType::School),
         proto::BuildingType::Smithy => Some(BuildingType::Smithy),
         proto::BuildingType::Barracks => Some(BuildingType::Barracks),
         proto::BuildingType::WoodCutter => Some(BuildingType::WoodCutter),
@@ -2203,6 +2205,7 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         BuildingType::Clothier => Some(proto::BuildingType::Clothier),
         BuildingType::Tannery => Some(proto::BuildingType::Tannery),
         BuildingType::ResearchHut => Some(proto::BuildingType::ResearchHut),
+        BuildingType::School => Some(proto::BuildingType::School),
         // NOTE: cat-client's `building_texture`/`building_label` (exhaustive matches over
         // `proto::BuildingType`) do not have a Smelter sprite arm yet — flagged for
         // catclient3, see `crates/cat-protocol/src/lib.rs`'s `BuildingType::Smelter` doc.
