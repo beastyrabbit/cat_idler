@@ -58,6 +58,7 @@ use crate::{
     storage::{
         StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
     },
+    survival::{SurvivalResources, apply_survival_tick},
     threat::{
         ThreatSnapshot, accrue_threat, colony_wealth, plan_raid, resolve_raid, should_spawn_raid,
         threat_band,
@@ -1069,7 +1070,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_22_ritual_approval(colony, gate);
         phase_23_production(colony, gate);
         phase_24_research(colony, gate);
-        phase_25_survival_deaths_and_carried_yield_salvage(colony, gate);
+        phase_25_survival_deaths_and_carried_yield_salvage(colony, gate, policy);
         if let Some(reset_reason) = phase_26_empty_colony_reset(colony, gate) {
             reconcile_colony_stockpiles(colony);
             reports.push(TickReport {
@@ -2778,7 +2779,122 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
 
 /// Phase 25: apply survival needs, deaths, carried-yield salvage, and
 /// death-related job retirement.
-fn phase_25_survival_deaths_and_carried_yield_salvage(_: &mut ColonyRuntime, _: TickGate) {}
+///
+/// Ported from `server/game.ts:workerTick`'s per-cat `applySurvivalTick` loop
+/// (`lib/game/survival.ts`), which is the sole mutator of `cat.needs` on the
+/// map-first god-sim path (there is no per-cat "eating" event — hunger/thirst
+/// simply decay slower and regenerate toward 90 while the colony's shared food/
+/// water store holds any amount above zero, and decay at the full rate with no
+/// regen once a store is empty). The threshold model itself is deterministic —
+/// no RNG rolls, so none are drawn on any forked chain here.
+///
+/// Iterates alive cats in stable cats-vector order. On death: the carrier's
+/// carried yield (if any) is salvaged via the same `credit_carrying` deposit
+/// path shrine hauling uses (nearest accepting pile, else the shrine anchor),
+/// the cat's own active/queued jobs are cancelled so none are left assigned to
+/// a cat that will never return (`server/game.ts:retireCat`), and activity/
+/// destination/carrying are cleared the same way phase 6's old-age death
+/// clears them. Old-age death (phase 6) does not currently emit any event in
+/// this port, so there is no existing event pattern to match for cause; the
+/// death event here uses `EventKind::Other("death")` with TS's exact cause
+/// string, and reuses `EventKind::ResourceCrisis`/`ResourceRecovered` for the
+/// dehydration start/recovery edges — the same two variants phase 8's colony
+/// water-crisis event uses, matching TS's shared `"crisis"`/`"recovery"` event
+/// type strings.
+fn phase_25_survival_deaths_and_carried_yield_salvage(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    policy: TickPolicy,
+) {
+    let elapsed_sec = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
+    let resources = SurvivalResources {
+        food: colony.resources.food,
+        water: colony.resources.water,
+    };
+
+    let cat_ids: Vec<CatId> = alive_cats(&colony.cats).map(|cat| cat.id.clone()).collect();
+
+    for cat_id in cat_ids {
+        let Some(index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
+            continue;
+        };
+
+        let result = apply_survival_tick(
+            &colony.cats[index].needs,
+            resources,
+            elapsed_sec,
+            policy.config,
+        );
+        colony.cats[index].needs = result.next_needs.clone();
+        let cat_name = colony.cats[index].name.clone();
+
+        if result.dehydrating_started {
+            append_event(
+                colony,
+                gate.processed_through,
+                EventKind::ResourceCrisis,
+                format!("{cat_name} started dehydrating."),
+            );
+        }
+
+        if result.recovered_from_dehydration {
+            append_event(
+                colony,
+                gate.processed_through,
+                EventKind::ResourceRecovered,
+                format!("{cat_name} recovered from dehydration."),
+            );
+        }
+
+        if !result.died {
+            continue;
+        }
+
+        // A dying carrier's yield is salvaged rather than lost, before the
+        // cleanup below clears `carrying`.
+        if let Some(carrying) = colony.cats[index].carrying.clone() {
+            let deposit_at = position_to_world(colony.cats[index].position);
+            credit_carrying(colony, &carrying, deposit_at);
+        }
+
+        // Cancel the dying cat's own active/queued jobs (mirrors `retireCat`)
+        // so none are left stuck waiting on an assigned cat that is now dead.
+        for job in &mut colony.jobs {
+            if job.assigned_cat.as_deref() == Some(cat_id.as_str())
+                && matches!(job.status, JobStatus::Active | JobStatus::Queued)
+            {
+                job.status = JobStatus::Cancelled;
+                job.completed_at = Some(gate.processed_through);
+            }
+        }
+
+        let died_of_thirst = result.next_needs.thirst == 0.0;
+        let died_of_hunger = result.next_needs.hunger == 0.0;
+        let cause = match (died_of_thirst, died_of_hunger) {
+            (true, true) => "starvation and dehydration",
+            (true, false) => "dehydration",
+            _ => "starvation",
+        };
+
+        // Mirror phase 6's old-age death cleanup exactly.
+        let cat = &mut colony.cats[index];
+        cat.death_time = Some(gate.processed_through);
+        cat.activity = CatActivity::default();
+        cat.destination = None;
+        cat.carrying = None;
+
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("death".to_owned()),
+            format!("{cat_name} died from {cause}."),
+        );
+    }
+}
 
 /// Phase 26: reset empty colonies and short-circuit the remaining phases.
 fn phase_26_empty_colony_reset(
@@ -7519,6 +7635,302 @@ mod tests {
                 colony.resources.water,
             );
         }
+    }
+
+    // ---- Phase 25: survival needs, dehydration/starvation death, carried-yield salvage ----
+
+    /// A minimal single-cat colony for phase-25 unit tests — no buildings/stockpiles
+    /// needed since `credit_carrying` degrades gracefully to crediting `resources`
+    /// directly when no designated pile exists (mirrors the no-pile hauling tests).
+    fn survival_colony(cat: Cat, food: f64, water: f64) -> ColonyRuntime {
+        ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                food,
+                water,
+                ..Resources::default()
+            },
+            cats: vec![cat],
+            ..ColonyRuntime::default()
+        }
+    }
+
+    fn survival_cat(needs: CatNeeds) -> Cat {
+        Cat {
+            needs,
+            ..adult_idle_cat("cat-1", "colony-1")
+        }
+    }
+
+    fn normal_policy() -> TickPolicy {
+        TickPolicy {
+            config: crate::policy::config_for_tier(crate::types::PolicyTier::Normal),
+        }
+    }
+
+    #[test]
+    fn water_depletion_crisis_starts_before_death() {
+        // Water fully depleted, food plentiful: thirst decays at the full (water-
+        // unavailable) rate and crosses zero this tick, but the single tick's damage
+        // isn't enough to kill — the cat is in crisis, not dead.
+        let cat = survival_cat(CatNeeds {
+            hunger: 100.0,
+            thirst: 1.0,
+            rest: 100.0,
+            health: 100.0,
+        });
+        let mut colony = survival_colony(cat, 100.0, 0.0);
+
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            production_gate(600, 600_000),
+            normal_policy(),
+        );
+
+        assert_eq!(colony.cats[0].needs.thirst, 0.0);
+        assert!(colony.cats[0].needs.health > 0.0);
+        assert_eq!(colony.cats[0].death_time, None);
+        assert!(
+            colony.events.iter().any(|event| {
+                event.kind == EventKind::ResourceCrisis
+                    && event.message == "Poppy started dehydrating."
+            }),
+            "expected a dehydration crisis event, got {:?}",
+            colony.events
+        );
+    }
+
+    #[test]
+    fn dehydration_death_past_the_threshold_logs_a_death_event() {
+        // Already dehydrating (thirst pinned at 0, water still out) with low health —
+        // this tick's damage finishes the job.
+        let cat = survival_cat(CatNeeds {
+            hunger: 100.0,
+            thirst: 0.0,
+            rest: 100.0,
+            health: 20.0,
+        });
+        let mut colony = survival_colony(cat, 100.0, 0.0);
+
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            production_gate(4_200, 4_200_000),
+            normal_policy(),
+        );
+
+        assert_eq!(colony.cats[0].needs.health, 0.0);
+        assert_eq!(colony.cats[0].death_time, Some(4_200_000));
+        assert_eq!(colony.cats[0].activity, CatActivity::Idle);
+        assert_eq!(colony.cats[0].destination, None);
+        assert_eq!(colony.cats[0].carrying, None);
+        assert!(
+            colony.events.iter().any(
+                |event| matches!(&event.kind, EventKind::Other(kind) if kind == "death")
+                    && event.message == "Poppy died from dehydration."
+            ),
+            "expected a dehydration death event, got {:?}",
+            colony.events
+        );
+    }
+
+    #[test]
+    fn water_restoration_recovers_before_the_death_threshold() {
+        // Thirst is pinned at 0 (already dehydrating) but water is restored this tick —
+        // the counter should reset upward and the cat survives.
+        let cat = survival_cat(CatNeeds {
+            hunger: 100.0,
+            thirst: 0.0,
+            rest: 100.0,
+            health: 50.0,
+        });
+        let mut colony = survival_colony(cat, 100.0, 10.0);
+
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            production_gate(600, 600_000),
+            normal_policy(),
+        );
+
+        assert!(colony.cats[0].needs.thirst > 0.0);
+        assert_eq!(colony.cats[0].needs.health, 50.0);
+        assert_eq!(colony.cats[0].death_time, None);
+        assert!(
+            colony.events.iter().any(|event| {
+                event.kind == EventKind::ResourceRecovered
+                    && event.message == "Poppy recovered from dehydration."
+            }),
+            "expected a dehydration recovery event, got {:?}",
+            colony.events
+        );
+    }
+
+    #[test]
+    fn starvation_death_past_the_threshold_logs_a_starvation_event() {
+        // Food fully depleted (water fine), hunger already pinned at 0 with low
+        // health — this tick's damage kills, and the cause reads "starvation", not
+        // "dehydration" (mirrors `server/game.ts`'s cause-string branching).
+        let cat = survival_cat(CatNeeds {
+            hunger: 0.0,
+            thirst: 100.0,
+            rest: 100.0,
+            health: 10.0,
+        });
+        let mut colony = survival_colony(cat, 0.0, 100.0);
+
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            production_gate(1_200, 1_200_000),
+            normal_policy(),
+        );
+
+        assert_eq!(colony.cats[0].needs.health, 0.0);
+        assert_eq!(colony.cats[0].death_time, Some(1_200_000));
+        assert!(
+            colony.events.iter().any(
+                |event| matches!(&event.kind, EventKind::Other(kind) if kind == "death")
+                    && event.message == "Poppy died from starvation."
+            ),
+            "expected a starvation death event, got {:?}",
+            colony.events
+        );
+    }
+
+    #[test]
+    fn dying_carriers_yield_is_salvaged_into_the_store_and_carrying_is_cleared() {
+        let mut cat = survival_cat(CatNeeds {
+            hunger: 100.0,
+            thirst: 0.0,
+            rest: 100.0,
+            health: 5.0,
+        });
+        cat.carrying = Some(Carrying {
+            kind: CarryingKind::Materials,
+            amount: 12.0,
+            job_ended_at: 0,
+        });
+        let mut colony = survival_colony(cat, 100.0, 0.0);
+        colony.resources.materials = 5.0;
+
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            production_gate(1_200, 1_200_000),
+            normal_policy(),
+        );
+
+        assert_eq!(colony.cats[0].death_time, Some(1_200_000));
+        assert_eq!(colony.cats[0].carrying, None);
+        assert_eq!(colony.resources.materials, 17.0);
+    }
+
+    #[test]
+    fn dying_cats_active_and_queued_jobs_are_cancelled() {
+        let cat = survival_cat(CatNeeds {
+            hunger: 100.0,
+            thirst: 0.0,
+            rest: 100.0,
+            health: 5.0,
+        });
+        let mut colony = survival_colony(cat, 100.0, 0.0);
+        colony.jobs = vec![
+            JobRuntime {
+                id: "job-active".to_owned(),
+                kind: JobKind::HuntExpedition,
+                status: JobStatus::Active,
+                requested_by: JobRequester::Leader,
+                assigned_cat: Some("cat-1".to_owned()),
+                duration_ms: 1_000,
+                speed: 1.0,
+                yield_amount: 0.0,
+                click_count: 0,
+                created_at: 0,
+                started_at: Some(0),
+                ends_at: Some(999_999_999),
+                completed_at: None,
+                metadata: JobMetadata::None,
+            },
+            JobRuntime {
+                id: "job-queued".to_owned(),
+                kind: JobKind::Quarry,
+                status: JobStatus::Queued,
+                requested_by: JobRequester::Leader,
+                assigned_cat: Some("cat-1".to_owned()),
+                duration_ms: 1_000,
+                speed: 1.0,
+                yield_amount: 0.0,
+                click_count: 0,
+                created_at: 0,
+                started_at: None,
+                ends_at: None,
+                completed_at: None,
+                metadata: JobMetadata::None,
+            },
+        ];
+
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            production_gate(1_200, 1_200_000),
+            normal_policy(),
+        );
+
+        assert_eq!(colony.cats[0].death_time, Some(1_200_000));
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .all(|job| job.status == JobStatus::Cancelled),
+            "expected both jobs cancelled, got {:?}",
+            colony.jobs
+        );
+    }
+
+    #[test]
+    fn survival_tick_is_deterministic_across_identical_runs_through_a_depletion() {
+        // Two independently-founded worlds on the same seed, driven through the same
+        // forced water depletion (a direct, non-RNG mutation applied identically to
+        // both), must end up byte-identical — including the eventual dehydration
+        // death. Proves phase 25's deterministic-threshold model (no RNG chain to
+        // desync) stays byte-identical under a real depletion + death event.
+        let mut left = new_world(4242);
+        left.colonies
+            .push(found_colony(left.world_seed, "colony-1", 10_000, 4242));
+        let mut right = new_world(4242);
+        right
+            .colonies
+            .push(found_colony(right.world_seed, "colony-1", 10_000, 4242));
+
+        // Force one cat toward the dehydration-death edge identically on both worlds
+        // — a plain field write, not RNG, so it cannot desync the twin.
+        let starved_needs = CatNeeds {
+            hunger: 100.0,
+            thirst: 1.0,
+            rest: 100.0,
+            health: 5.0,
+        };
+        left.colonies[0].cats[0].needs = starved_needs.clone();
+        right.colonies[0].cats[0].needs = starved_needs;
+
+        for step in 1..=40 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            // Keep water at zero throughout so the depletion is sustained regardless
+            // of any leader fetch-water response, identically on both worlds.
+            left.colonies[0].resources.water = 0.0;
+            right.colonies[0].resources.water = 0.0;
+            assert_eq!(world_tick(&mut left, now), world_tick(&mut right, now));
+        }
+
+        assert_eq!(left.colonies[0].cats, right.colonies[0].cats);
+        assert!(
+            left.colonies[0].cats[0].death_time.is_some(),
+            "the forced depletion never actually killed the cat — twin comparison is vacuous"
+        );
+        assert!(
+            left.colonies[0]
+                .events
+                .iter()
+                .any(|event| event.message.contains("died from")),
+            "expected a death event on both worlds, got {:?}",
+            left.colonies[0].events
+        );
     }
 
     // ---- Breeding: conception, gestation, birth (life-sim population loop) ----
