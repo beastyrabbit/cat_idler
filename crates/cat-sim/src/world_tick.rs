@@ -50,8 +50,9 @@ use crate::{
     },
     policy::PolicyConfig,
     production::{
-        WoodworkingOptions, WorkshopOptions, advance_woodworking, advance_workshop,
-        fibre_forage_yield, field_yield,
+        FIELD_BUILD_MIN_RATIO, FIELD_CATS_PER_FIELD, FIELD_MATERIAL_BUFFER, FIELD_MIN_COUNT,
+        FIELD_STOCK_TARGET_RATIO, WoodworkingOptions, WorkshopOptions, advance_woodworking,
+        advance_workshop, fibre_forage_yield, field_yield,
     },
     recipes::{
         CLOTH_TRADE_RECIPE, CraftOptions, LEATHER_TRADE_RECIPE, STONE_TRADE_RECIPE,
@@ -566,6 +567,10 @@ pub enum EventKind {
     /// The leader broke ground on a research hut (the ungated entry to the
     /// cat-research path) because the colony was comfortable and had none.
     ResearchHutCommissioned,
+    /// The leader broke ground on a field (the ungated, founding-buildable
+    /// food-scaling mechanism) because food was lean and below the population-scaled
+    /// field cap.
+    FieldCommissioned,
     JobQueued,
     JobCompleted,
     JobCancelled,
@@ -614,6 +619,7 @@ impl EventKind {
             EventKind::ResearchUnlocked => "research_unlocked".to_owned(),
             EventKind::NodeOwned => "node_owned".to_owned(),
             EventKind::ResearchHutCommissioned => "research_hut_commissioned".to_owned(),
+            EventKind::FieldCommissioned => "field_commissioned".to_owned(),
             EventKind::JobQueued => "job_queued".to_owned(),
             EventKind::JobCompleted => "job_completed".to_owned(),
             EventKind::JobCancelled => "job_cancelled".to_owned(),
@@ -673,6 +679,7 @@ impl EventKind {
             "research_unlocked" => EventKind::ResearchUnlocked,
             "node_owned" => EventKind::NodeOwned,
             "research_hut_commissioned" => EventKind::ResearchHutCommissioned,
+            "field_commissioned" => EventKind::FieldCommissioned,
             "job_queued" => EventKind::JobQueued,
             "job_completed" => EventKind::JobCompleted,
             "job_cancelled" => EventKind::JobCancelled,
@@ -1594,6 +1601,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan);
         phase_21_leader_capital_decisions_and_tithe(colony, gate, policy, &plan);
         manage_research_hut(colony, gate, policy, &snapshot);
+        manage_field(colony, gate, policy, &snapshot);
         phase_22_ritual_approval(colony, gate);
         phase_23_production(colony, gate, world_seed);
         phase_23c_fibre_forage(colony, gate);
@@ -3180,6 +3188,134 @@ fn manage_research_hut(
         gate.processed_through,
         EventKind::ResearchHutCommissioned,
         "The leader broke ground on a research hut - the cats will start to study.",
+    );
+}
+
+/// Count the colony's fields, whether standing or still under construction (built +
+/// in-flight `build_house` scaffolds targeting a field), so the leader never over-orders
+/// past the population-scaled cap while earlier field jobs are still on the way.
+fn field_count_built_or_in_flight(colony: &ColonyRuntime) -> usize {
+    let built = colony
+        .buildings
+        .iter()
+        .filter(|building| building.building_type == BuildingType::Field)
+        .count();
+    let in_flight = active_or_queued_jobs(colony)
+        .iter()
+        .filter(|job| {
+            job.kind == JobKind::BuildHouse && job_building_type(job) == Some(BuildingType::Field)
+        })
+        .count();
+    built + in_flight
+}
+
+/// FOOD-SCALING food-comfort fix — commission passive fields so a food-lean colony can
+/// reach and sustain food comfort (see [`FIELD_CATS_PER_FIELD`] for the root cause).
+///
+/// The intended food-scaling mechanic (fields, [`field_yield`]) is gated behind village
+/// level 4 — twelve completed non-shrine buildings — which a colony that runs food-lean
+/// never reaches, so food stays a lumpy hunt-only sawtooth that rarely holds above the
+/// comfort bar. This breaks that deadlock the same way [`manage_research_hut`] broke the
+/// research-hut one: the leader auto-commissions fields **ungated by the tree/village
+/// level** at founding, placing each on farmable ground (`next_claimed_building_site`
+/// already refuses barren tiles for a `Field`).
+///
+/// Three guards keep fields strictly ADDITIVE — food scaling that never poaches a cat or a
+/// plank the survival/construction economy needs:
+/// - a build-material surplus ([`FIELD_MATERIAL_BUFFER`] planks AND blocks) so a field never
+///   taxes the wood-cutter/stone-prep chain the colony needs to fund its dens — even the
+///   essential base waits for the materials to exist;
+/// - a small essential base ([`FIELD_MIN_COUNT`]) built regardless of food level (a cat
+///   permitting) as the survival floor under the lean early sawtooth, plus population-scaled
+///   discretionary fields on top ([`FIELD_CATS_PER_FIELD`]), capped so fields stay a
+///   supplement to hunting (food never goes trivial);
+/// - a food band for the *discretionary* tier (`[FIELD_BUILD_MIN_RATIO,
+///   FIELD_STOCK_TARGET_RATIO)`); the base ignores it (it is what ends the trough) and is
+///   self-limited by builder availability — `select_best_cat` yields nobody when every cat
+///   is on survival work, so the base can never strand the founding roster without a hunter.
+///
+/// Deterministic: population, ratios, and the field cap are flat functions of colony state;
+/// only the commission draws the seeded policy-reliability roll, at the same call site the
+/// other capital decisions use.
+fn manage_field(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    policy: TickPolicy,
+    snapshot: &LeaderSnapshot,
+) {
+    let population = snapshot.population;
+    if population == 0 {
+        return;
+    }
+    let has_shrine = colony
+        .buildings
+        .iter()
+        .any(|building| building.building_type == BuildingType::Shrine && building.is_complete);
+    if !has_shrine {
+        return;
+    }
+
+    // ADDITIVE-ONLY guard: a field is food *scaling*, never a tax on the critical build-
+    // material economy. Break ground only out of a genuine plank/block surplus (above the
+    // 2+2 scaffold cost), so the staffed wood-cutter/stone-prep chain keeps its cats and its
+    // output funding dens. Below the buffer the material chain is untouched and no field is
+    // ordered — even the essential base waits for the materials to exist.
+    if colony.resources.planks < FIELD_MATERIAL_BUFFER
+        || colony.resources.blocks < FIELD_MATERIAL_BUFFER
+    {
+        return;
+    }
+
+    // Never keep building once the larder is comfortably stocked — the passive base has done
+    // its job and standing fields persist.
+    let food_r = ratio_or_zero(snapshot.resources.food, snapshot.food_capacity);
+    if food_r >= FIELD_STOCK_TARGET_RATIO {
+        return;
+    }
+
+    // Total cap: an essential base (FIELD_MIN_COUNT) as the survival floor plus
+    // population-scaled discretionary fields on top. Scaling the discretionary tier off
+    // today's headcount lets the complement ramp with the colony rather than front-loading a
+    // whole complement of builders on the fragile founding roster.
+    let fields = field_count_built_or_in_flight(colony);
+    let discretionary_cap = (population as f64 / FIELD_CATS_PER_FIELD).ceil() as usize;
+    let max_fields = FIELD_MIN_COUNT.max(discretionary_cap);
+    if fields >= max_fields {
+        return;
+    }
+
+    // Discretionary fields (beyond the essential base) wait for the moderate food band:
+    // below FIELD_BUILD_MIN_RATIO food is in an acute trough and a cat is worth more out
+    // hunting than tied up building. The essential base ignores this floor.
+    if fields >= FIELD_MIN_COUNT && food_r < FIELD_BUILD_MIN_RATIO {
+        return;
+    }
+
+    if !can_take_policy_action(colony, policy) {
+        return;
+    }
+    // Draw a genuinely free cat (best-fit architect). None => every cat is busy on
+    // survival work, so defer rather than pull one off a hunt.
+    let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Architect)) else {
+        return;
+    };
+    queue_job(
+        colony,
+        gate.processed_through,
+        JobKind::BuildHouse,
+        Some(cat_id),
+        JobMetadata::Construction {
+            phase: ConstructionPhase::ConstructHouse,
+            building_type: BuildingType::Field,
+            building_id: None,
+            site: None,
+        },
+    );
+    append_event(
+        colony,
+        gate.processed_through,
+        EventKind::FieldCommissioned,
+        "The leader broke ground on a field - the cats will grow food to steady the larder.",
     );
 }
 
@@ -15526,28 +15662,44 @@ mod tests {
     #[test]
     #[ignore]
     fn instrument_food_trajectory() {
-        for seed in [7u32, 555, 2024, 1234, 42] {
+        for seed in [7u32, 555, 2024, 42, 99] {
             let mut world = new_world(seed);
             world
                 .colonies
                 .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
             const TICK_MS: i64 = 5 * 60_000;
             let mut resets = 0;
+            let mut first_reset_gh: Option<i64> = None;
             let mut comfort_first: Option<i64> = None;
             let mut comfort_ticks = 0;
             let mut research_owned = 0usize;
+            let mut max_r = 0.0f64;
+            let mut cur_run = 0i64;
+            let mut longest_run = 0i64;
+            let mut final_pop = 0usize;
             println!("=== seed {seed} ===");
-            let horizon = 150 * 60 / 5;
+            let horizon = 200 * 60 / 5;
             for step in 1..=horizon {
                 let now = 10_000 + step * TICK_MS;
                 let reports = world_tick(&mut world, now);
                 if reports[0].reset_reason.is_some() {
                     resets += 1;
+                    if first_reset_gh.is_none() {
+                        first_reset_gh = Some(step * 5 / 60);
+                    }
                 }
                 let c = &world.colonies[0];
                 let caps = storage_caps(c);
                 let pop = alive_cats(&c.cats).count();
+                final_pop = pop;
                 let food_r = c.resources.food / caps.food;
+                max_r = max_r.max(food_r);
+                if food_r >= RESEARCH_COMFORT_RATIO {
+                    cur_run += 5; // game-minutes
+                    longest_run = longest_run.max(cur_run);
+                } else {
+                    cur_run = 0;
+                }
                 let fields = c
                     .buildings
                     .iter()
@@ -15570,12 +15722,16 @@ mod tests {
                     // every ~6 game-hours
                     println!(
                         "gh{gh:>3} pop{pop:>2} food{:>6.1}/{:>6.0} r{food_r:.2} fields{fields} dens{dens} research_pts{:.1} owned{}",
-                        c.resources.food, caps.food, c.upgrade_tree.research_points, c.upgrade_tree.owned_node_ids.len()
+                        c.resources.food,
+                        caps.food,
+                        c.upgrade_tree.research_points,
+                        c.upgrade_tree.owned_node_ids.len()
                     );
                 }
             }
             println!(
-                "  -> resets={resets} comfort_first_gh={comfort_first:?} comfort_ticks={comfort_ticks}/{horizon} research_owned={research_owned}"
+                "  -> resets={resets}(first_gh={first_reset_gh:?}) comfort_first_gh={comfort_first:?} comfort_ticks={comfort_ticks}/{horizon} longest_comfort_gh={:.1} max_r={max_r:.2} final_pop={final_pop} research_owned={research_owned}",
+                longest_run as f64 / 60.0
             );
         }
     }
@@ -15593,5 +15749,111 @@ mod tests {
                 "seed {seed}: identical founding runs diverged — nondeterminism crept in"
             );
         }
+    }
+
+    /// Food-comfort fix guardrail (passive field supplement): the leader's population-scaled
+    /// clutch of auto-commissioned fields ([`manage_field`], `FIELD_MIN_COUNT`/
+    /// `FIELD_CATS_PER_FIELD`) must lift the hunt-only food sawtooth trough above literal
+    /// zero for the whole run, and — separately — must never grow into a replacement for
+    /// hunting. Both halves matter: a fix that lifts the trough by making food infinite would
+    /// "pass" a naive comfort check while breaking the economy it's meant to protect.
+    ///
+    /// Seed 7 at the harsher 5-game-minute cadence (same harness as
+    /// [`run_founding_population_trajectory`]) is a representative hunt-only-starved profile:
+    /// instrumentation of the pre-field-supplement behavior showed this exact seed's larder
+    /// sawtoothing close to zero every ~8 game-hours between hunts. This guardrail runs it
+    /// unattended for 150 game-hours and asserts:
+    /// - no tick ever reports an `UnattendedCollapse`/other reset (the trough never dips low
+    ///   enough, long enough, to trip the critical-resources reset watchdog);
+    /// - the colony never goes fully extinct;
+    /// - the food ratio never actually touches literal zero once the 30-game-hour
+    ///   establishment window has passed (the trough is lifted, not just "not fatal");
+    /// - at the end of the run, the colony's *standing fields'* total passive supply rate
+    ///   (summed [`field_yield`] at each field's real per-tile terrain fertility, the exact
+    ///   formula `phase_23_production` applies) stays strictly below the population's actual
+    ///   consumption rate ([`consumption_for_tick`]) — fields alone could never feed the
+    ///   colony, so hunts stay load-bearing and food never goes trivial/infinite.
+    #[test]
+    fn founding_colony_food_trough_is_lifted_without_going_trivial() {
+        const TICK_MS: i64 = 5 * 60_000; // 5 game-minutes per tick, matching the sustain guardrail.
+        const ESTABLISH_MINUTES: i64 = 30 * 60; // 30 game-hours, same establishment window.
+        const HORIZON_GAME_HOURS: i64 = 150;
+
+        let seed = 7u32;
+        let mut world = new_world(seed);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
+
+        let horizon_ticks = HORIZON_GAME_HOURS * 60 / 5;
+        let mut min_food_ratio_after_establish = f64::MAX;
+        for step in 1..=horizon_ticks {
+            let now = 10_000 + step * TICK_MS;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(
+                reports[0].reset_reason,
+                None,
+                "tick {step} (game-hour {:.1}) tripped a reset ({:?}) — the field supplement \
+                 failed to lift the hunt-only food sawtooth trough",
+                step as f64 * 5.0 / 60.0,
+                reports[0].reset_reason
+            );
+
+            let colony = &world.colonies[0];
+            assert!(
+                alive_cats(&colony.cats).count() > 0,
+                "tick {step}: colony went fully extinct"
+            );
+
+            if step * 5 >= ESTABLISH_MINUTES {
+                let caps = storage_caps(colony);
+                let food_ratio = ratio_or_zero(colony.resources.food, caps.food);
+                min_food_ratio_after_establish = min_food_ratio_after_establish.min(food_ratio);
+            }
+        }
+
+        assert!(
+            min_food_ratio_after_establish > 0.0,
+            "food larder touched literal zero after establishment (min ratio \
+             {min_food_ratio_after_establish:.4}) — the sawtooth trough was not lifted"
+        );
+
+        // SUPPLEMENT check: standing fields' passive supply must stay strictly below the
+        // colony's real consumption rate, so hunting remains necessary and food never
+        // becomes trivial/infinite.
+        let colony = &world.colonies[0];
+        let population = alive_cats(&colony.cats).count() as f64;
+        let field_supply_per_hour: f64 = colony
+            .buildings
+            .iter()
+            .filter(|building| {
+                building.building_type == BuildingType::Field
+                    && building.construction_progress >= 100
+            })
+            .map(|building| {
+                let fertility = crate::terrain_gen::tile_climate_biome(
+                    world.world_seed,
+                    building.position.x,
+                    building.position.y,
+                )
+                .properties()
+                .fertility;
+                field_yield(3_600.0) * fertility
+            })
+            .sum();
+        let consumption_per_hour = consumption_for_tick(
+            population,
+            3_600.0,
+            idle_engine_upgrade_levels(&colony.upgrade_levels),
+        )
+        .food_use;
+
+        assert!(
+            field_supply_per_hour < consumption_per_hour,
+            "passive field supply ({field_supply_per_hour:.2} food/game-hour) reached or \
+             exceeded the colony's actual consumption ({consumption_per_hour:.2} \
+             food/game-hour) at population {population} — fields stopped being a supplement \
+             and food went trivial"
+        );
     }
 }

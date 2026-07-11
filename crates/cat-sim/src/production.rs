@@ -8,10 +8,75 @@ pub const WORKSHOP_CYCLE_SEC: f64 = 600.0;
 /// Architects run workshops at double speed.
 pub const ARCHITECT_SPEED: f64 = 2.0;
 
-pub const FIELD_FOOD_PER_HOUR: f64 = 2.0;
+/// Passive food a single field grows per game-hour at full (1.0) crop fertility, before
+/// the per-tile biome fertility multiplier (grass ~0.8, marsh ~1.5). Raised 2.0 → 3.0 as
+/// part of the food-comfort fix: at the base grass fertility a field now yields ~2.4
+/// food/hour, so the small, population-scaled clutch of fields the leader commissions
+/// (see [`FIELD_CATS_PER_FIELD`]) is a meaningful passive floor under the lumpy hunt
+/// sawtooth without needing so many plots that food goes trivial.
+pub const FIELD_FOOD_PER_HOUR: f64 = 3.0;
 
 pub const WORKSHOP_UNLOCK_LEVEL: u32 = 2;
 pub const FIELD_UNLOCK_LEVEL: u32 = 4;
+
+/// FOOD-SCALING food-comfort fix — a field is the intended food-scaling mechanism
+/// (passive farm plot, `field_yield`), but it is gated behind [`FIELD_UNLOCK_LEVEL`]
+/// (village level 4 = twelve completed non-shrine buildings), which a food-lean colony
+/// never reaches. Left purely hunt-fed, food arrives in lumpy ~24-unit hunt deliveries
+/// every 8 game-hours while consumption drains ~1/cat/hour continuously, so the larder
+/// sawtooths from ~full to near-zero and rarely holds above the comfort bar
+/// (`RESEARCH_COMFORT_RATIO`) — starving research and every comfort-gated advance and
+/// still tripping `UnattendedCollapse` resets.
+///
+/// The leader therefore auto-commissions a small, population-scaled number of fields at
+/// founding, ungated by the tree/village level — exactly mirroring how the research hut
+/// was made founding-buildable (`world_tick::manage_field`). Fields are a passive floor
+/// that lifts the sawtooth trough above comfort; the cap below keeps them a *supplement*
+/// to hunting, never a replacement, so food never becomes trivial/infinite.
+///
+/// Essential passive-food base the leader builds toward regardless of food level (a cat
+/// permitting), as a survival floor under the lumpy early hunt sawtooth. At the base grass
+/// fertility (~0.8) a field yields ~2.4 food/hour, so two fields grow ~4.8 food/hour — a
+/// meaningful cushion that (with the first hunts) keeps a food trough off zero, a mere five
+/// game-minutes of which trips an `UnattendedCollapse` reset. Kept deliberately small (two,
+/// not three) so it never poaches enough of the founding roster to suppress the breed/grow
+/// bootstrap the long-horizon population-sustain proof guards. Over-building past the base
+/// is fenced by the population-scaled cap.
+pub const FIELD_MIN_COUNT: usize = 2;
+
+/// Cats per field the leader targets beyond the essential base: the field cap is
+/// `max(FIELD_MIN_COUNT, ceil(population / FIELD_CATS_PER_FIELD))`. At the base grass
+/// fertility a field yields ~2.4 food/hour, so `3` cats/field leaves a fully-grown colony's
+/// passive base still short of its consumption (~1 food/cat/hour) — hunts must carry the
+/// remainder and build the comfort buffer, so food stays non-trivial while a housing-capped
+/// colony can hold comfort.
+pub const FIELD_CATS_PER_FIELD: f64 = 3.0;
+
+/// Food fill-ratio at/above which the leader stops commissioning fields. Set a touch above
+/// [`RESEARCH_COMFORT_RATIO`] so fields accumulate until the larder is comfortably — not
+/// just barely — stocked; once food is this full the passive base is already doing its job
+/// and no new field is broken ground (standing fields persist).
+pub const FIELD_STOCK_TARGET_RATIO: f64 = 0.75;
+
+/// Acute-crisis floor for *discretionary* fields (those beyond [`FIELD_MIN_COUNT`]): the
+/// leader will not break ground on an above-the-base field while food sits below this
+/// fraction of capacity. In a genuine trough a cat is worth far more out hunting than tied
+/// up on an 8-hour build, so discretionary expansion is confined to the band
+/// `[FIELD_BUILD_MIN_RATIO, FIELD_STOCK_TARGET_RATIO)`. The essential base ignores this
+/// floor — it is precisely what ends the trough — and is self-limited instead by builder
+/// availability (`select_best_cat` yields nobody when every cat is on survival work).
+pub const FIELD_BUILD_MIN_RATIO: f64 = 0.25;
+
+/// Planks AND blocks the colony must already have banked before the leader breaks ground
+/// on ANY field (essential base included). A field scaffold costs 2 planks + 2 blocks
+/// (`SCAFFOLD_PLANK_COST`/`SCAFFOLD_BLOCK_COST`), and those build materials come from the
+/// staffed wood-cutter/stone-prep chain the founding colony needs to fund its dens. Fields
+/// are food *scaling*, and must be strictly ADDITIVE — never a tax on the critical
+/// material economy — so a field is only commissioned out of a genuine build-material
+/// surplus (buffer well above the scaffold cost, leaving plenty for the next den after the
+/// field takes its share). Below this buffer the material chain keeps its cats and its
+/// output, and no field is ordered.
+pub const FIELD_MATERIAL_BUFFER: f64 = 4.0;
 
 /// Passive per-cat fibre forage (P16/P19 clothing chain slice): cats picking up
 /// wayside plant fibre while going about their day, independent of any building,
@@ -455,7 +520,10 @@ mod tests {
         assert_f64_bits(WORKSHOP_MATERIALS_PER_CYCLE, 5.0, "materials per cycle");
         assert_f64_bits(WORKSHOP_REFINED_PER_CYCLE, 1.0, "refined per cycle");
         assert_f64_bits(WORKSHOP_CYCLE_SEC, 600.0, "workshop cycle seconds");
-        assert_f64_bits(FIELD_FOOD_PER_HOUR, 2.0, "field food per hour");
+        // Diverged from the TS export (2.0) by the food-comfort fix — a field now grows
+        // 3.0 food/game-hour at full fertility so the leader's small clutch of passive
+        // plots is a meaningful floor under the hunt sawtooth.
+        assert_f64_bits(FIELD_FOOD_PER_HOUR, 3.0, "field food per hour");
         assert_eq!(WORKSHOP_UNLOCK_LEVEL, 2);
         assert_eq!(FIELD_UNLOCK_LEVEL, 4);
     }
@@ -636,9 +704,10 @@ mod tests {
     fn field_yield_is_passive_food_per_elapsed_window() {
         assert_f64_bits(field_yield(0.0), 0.0, "zero elapsed");
         assert_f64_bits(field_yield(-60.0), 0.0, "negative elapsed");
-        assert_f64_bits(field_yield(1_800.0), 1.0, "half hour");
-        assert_f64_bits(field_yield(3_600.0), 2.0, "one hour");
-        assert_f64_bits(field_yield(5_400.0), 3.0, "one and a half hours");
+        // 3.0 food/game-hour at full fertility (food-comfort fix).
+        assert_f64_bits(field_yield(1_800.0), 1.5, "half hour");
+        assert_f64_bits(field_yield(3_600.0), 3.0, "one hour");
+        assert_f64_bits(field_yield(5_400.0), 4.5, "one and a half hours");
     }
 
     #[test]
