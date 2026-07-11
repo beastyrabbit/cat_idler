@@ -61,6 +61,9 @@ const Z_TERRAIN: f32 = 0.0;
 // below zone overlays and the y-sorted buildings/cats.
 const Z_ROAD: f32 = 0.5;
 const Z_ZONE: f32 = 2.0;
+/// Building interior floor: above roads/zones, below every y-sorted world sprite
+/// (cats/props at ~300) so cats always walk on top of it.
+const Z_BUILDING_FLOOR: f32 = 3.0;
 
 // Standing world sprites (buildings, walls, trees, stockpile piles, cats,
 // raiders) share ONE y-sorted depth band: a sprite lower on the map (more
@@ -238,6 +241,9 @@ fn revealed_biomes(seed: i64, revealed: &[TilePoint]) -> HashMap<(i32, i32), Bio
 /// The bottom-anchored base position (front-edge centre) and pixel size of a
 /// building spanning its footprint (anchored at its NW-corner tile). `aspect` is
 /// the sprite's native width/height; height follows it so the art isn't stretched.
+// Retired by the cutaway-interior render (kept for the footprint unit test + a
+// possible fallback while the interior look is under review).
+#[allow(dead_code)]
 fn footprint_sprite(nw: TilePoint, footprint: FootprintSize, aspect: f32) -> (Vec2, Vec2) {
     let w = footprint.width.max(1);
     let h = footprint.height.max(1);
@@ -626,6 +632,10 @@ enum GroundTexture {
 
 /// Pixel-art building sprite handles, loaded once at startup.
 #[derive(Resource, Clone)]
+// The building-sprite handles + handle() are retired by the cutaway-interior
+// render (floor + prop); kept behind allow(dead_code) while that look is under
+// review, to be removed once confirmed.
+#[allow(dead_code)]
 struct BuildingArt {
     shrine: Handle<Image>,
     den: Handle<Image>,
@@ -642,6 +652,14 @@ struct BuildingArt {
     woodworking: Handle<Image>,
     clothier: Handle<Image>,
     tannery: Handle<Image>,
+    // Cutaway top-down interior tiles: a footprint-filling floor + a centred
+    // workstation prop, viewed straight from above (no roofs). CC0 Kenney
+    // Roguelike.
+    floor_wood: Handle<Image>,
+    floor_stone: Handle<Image>,
+    prop_workbench: Handle<Image>,
+    prop_bed: Handle<Image>,
+    prop_crate: Handle<Image>,
 }
 
 impl BuildingArt {
@@ -662,9 +680,33 @@ impl BuildingArt {
             woodworking: assets.load("public/images/game/buildings/woodworking.png"),
             clothier: assets.load("public/images/game/buildings/clothier.png"),
             tannery: assets.load("public/images/game/buildings/tannery.png"),
+            floor_wood: assets.load("public/images/game/interior/floor_wood.png"),
+            floor_stone: assets.load("public/images/game/interior/floor_stone.png"),
+            prop_workbench: assets.load("public/images/game/interior/workbench.png"),
+            prop_bed: assets.load("public/images/game/interior/bed.png"),
+            prop_crate: assets.load("public/images/game/props/crate.png"),
         }
     }
 
+    fn floor(&self, kind: FloorKind) -> Handle<Image> {
+        match kind {
+            FloorKind::Wood => self.floor_wood.clone(),
+            FloorKind::Stone => self.floor_stone.clone(),
+        }
+    }
+
+    /// A prop handle + its native tile footprint (width, height) so the render can
+    /// size it without stretching (workbench/bed are 2×1, crate 1×1).
+    fn prop(&self, prop: InteriorProp) -> Option<(Handle<Image>, Vec2)> {
+        match prop {
+            InteriorProp::Workbench => Some((self.prop_workbench.clone(), Vec2::new(2.0, 1.0))),
+            InteriorProp::Bed => Some((self.prop_bed.clone(), Vec2::new(2.0, 1.0))),
+            InteriorProp::Crate => Some((self.prop_crate.clone(), Vec2::new(1.0, 1.0))),
+            InteriorProp::None => None,
+        }
+    }
+
+    #[allow(dead_code)]
     fn handle(&self, texture: BuildingTexture) -> Handle<Image> {
         match texture {
             BuildingTexture::Shrine => self.shrine.clone(),
@@ -3554,30 +3596,41 @@ fn render_buildings(
         return;
     };
     for building in &colony.buildings {
-        // Walls render as infra/palisade, not a point marker — skip.
-        let Some(texture) = building_texture(building.building_type) else {
+        // Cutaway top-down interior: the footprint is drawn as a FLOOR (flat on
+        // the ground, no roof) with a centred workstation prop, viewed straight
+        // from above. Walls render as the palisade — skip.
+        let Some((floor_kind, prop)) = building_interior(building.building_type) else {
             continue;
         };
-        // Span the building's footprint (anchored NW), keeping the sprite aspect;
-        // bottom-anchored on the footprint's front edge, y-sorted with the world.
-        let (base, size) = footprint_sprite(
-            building.world_position,
-            building.footprint,
-            building_aspect(texture),
-        );
-        let z = ysort_z(base.y);
+        let w = building.footprint.width.max(1) as f32;
+        let h = building.footprint.height.max(1) as f32;
+        let nw = building.world_position;
+        let cx = (nw.x as f32 + (w - 1.0) / 2.0) * TILE;
+        let cy = -((nw.y as f32 + (h - 1.0) / 2.0) * TILE);
+        // Floor fills the footprint, flat on the ground (low z, not y-sorted).
         commands.spawn((
             Sprite {
-                image: art.handle(texture),
-                custom_size: Some(size),
+                image: art.floor(floor_kind),
+                custom_size: Some(Vec2::new(w * TILE, h * TILE)),
                 ..default()
             },
-            Anchor::BOTTOM_CENTER,
-            Transform::from_xyz(base.x, base.y, z),
+            Anchor::CENTER,
+            Transform::from_xyz(cx, cy, Z_BUILDING_FLOOR),
             BuildingSprite,
         ));
-        // No always-on name label under the building: the sprites read distinctly
-        // now, and the hover tooltip names the building on demand.
+        // Centred workstation prop, y-sorted so cats pass in front of / behind it.
+        if let Some((image, tiles)) = art.prop(prop) {
+            commands.spawn((
+                Sprite {
+                    image,
+                    custom_size: Some(Vec2::new(tiles.x * TILE, tiles.y * TILE)),
+                    ..default()
+                },
+                Anchor::CENTER,
+                Transform::from_xyz(cx, cy, ysort_z(cy) + 0.2),
+                BuildingSprite,
+            ));
+        }
     }
 }
 
@@ -6246,9 +6299,55 @@ fn building_texture(building: BuildingType) -> Option<BuildingTexture> {
     })
 }
 
+/// Interior floor material for a building's cutaway top-down render.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FloorKind {
+    Wood,
+    Stone,
+}
+
+/// The workstation prop placed on a building's floor, distinguishing it by
+/// function rather than by any roof. (Per-building props — loom/anvil/forge —
+/// land in later slices; this set covers the categories.)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InteriorProp {
+    Workbench,
+    Bed,
+    Crate,
+    None,
+}
+
+/// The cutaway top-down interior for a building: its floor material + the
+/// workstation prop that sits on it. `None` for `Walls` (drawn as the palisade).
+fn building_interior(building: BuildingType) -> Option<(FloorKind, InteriorProp)> {
+    use BuildingType as B;
+    Some(match building {
+        // Craft workshops: a wooden shop floor + a workbench.
+        B::Workshop | B::Woodworking | B::WoodCutter | B::StonePrep | B::Clothier | B::Tannery => {
+            (FloorKind::Wood, InteriorProp::Workbench)
+        }
+        // Metalworking: a stone forge floor + (for now) a workbench.
+        B::Smithy | B::Smelter => (FloorKind::Stone, InteriorProp::Workbench),
+        // Dwellings: a wooden floor + beds.
+        B::Den | B::Beds | B::Nursery | B::ElderCorner | B::HerbGarden => {
+            (FloorKind::Wood, InteriorProp::Bed)
+        }
+        // Storage: a wooden floor + crates.
+        B::FoodStorage | B::WaterBowl | B::MouseFarm => (FloorKind::Wood, InteriorProp::Crate),
+        // Shrine: a stone floor, altar prop TBD.
+        B::Shrine => (FloorKind::Stone, InteriorProp::None),
+        // Civic/support: stone floors, prop TBD.
+        B::ResearchHut | B::School | B::Barracks | B::Field => {
+            (FloorKind::Stone, InteriorProp::None)
+        }
+        B::Walls => return None,
+    })
+}
+
 /// Native width/height aspect of a building sprite (48x48 square = 1.0; market
-/// 48x32 wide = 1.5; well 16x32 tall = 0.5). Used to size a footprint-spanning
-/// sprite without stretching the art.
+/// 48x32 wide = 1.5; well 16x32 tall = 0.5). Retired by the cutaway-interior
+/// render; kept for the mapping unit test while the interior look is reviewed.
+#[allow(dead_code)]
 fn building_aspect(texture: BuildingTexture) -> f32 {
     match texture {
         BuildingTexture::Market => 48.0 / 32.0,
