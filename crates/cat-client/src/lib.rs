@@ -72,6 +72,12 @@ const Z_YSORT_SCALE: f32 = 0.01;
 // camera + UI.
 const Z_FOG: f32 = 500.0;
 const FOG_COLOR: Color = Color::srgb(0.02, 0.03, 0.05);
+/// Half-lifted fog for tiles a currently-out scout has *tentatively* uncovered
+/// (`provisional_tiles`): the same dark, but semi-transparent so terrain shows
+/// through a haze — a visible "discovering, not yet delivered" state between
+/// full fog and clear. Snaps to clear when the scout commits the tile, or back
+/// to full fog if the scout dies (both driven by the stream).
+const PROVISIONAL_FOG_COLOR: Color = Color::srgba(0.02, 0.03, 0.05, 0.55);
 
 const CAMERA_Z: f32 = 1000.0;
 
@@ -3156,9 +3162,33 @@ fn revealed_lookup(tiles: &[TilePoint]) -> HashSet<(i32, i32)> {
     tiles.iter().map(|t| (t.x, t.y)).collect()
 }
 
-/// A tile is fogged (undiscovered) when it isn't in the revealed set.
-fn is_fogged(revealed: &HashSet<(i32, i32)>, x: i32, y: i32) -> bool {
-    !revealed.contains(&(x, y))
+/// Three-tier fog visibility for a tile.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FogState {
+    /// Committed-revealed: no overlay, terrain shown fully.
+    Clear,
+    /// Tentatively uncovered by a scout still out — terrain under a dim haze.
+    Dim,
+    /// Undiscovered: full opaque fog.
+    Full,
+}
+
+/// Classify a tile's fog tier. Revealed wins over provisional (a tile that has
+/// committed shouldn't dim just because it's also still in the provisional set
+/// mid-handoff), and provisional over full.
+fn fog_state(
+    revealed: &HashSet<(i32, i32)>,
+    provisional: &HashSet<(i32, i32)>,
+    x: i32,
+    y: i32,
+) -> FogState {
+    if revealed.contains(&(x, y)) {
+        FogState::Clear
+    } else if provisional.contains(&(x, y)) {
+        FogState::Dim
+    } else {
+        FogState::Full
+    }
 }
 
 /// Fog of war: opaque dark tiles over every window tile the colony hasn't
@@ -3187,17 +3217,21 @@ fn render_fog(
     if revealed.is_empty() {
         return;
     }
+    let provisional = revealed_lookup(&colony.provisional_tiles);
     let (x0, y0, x1, y1) = window_bounds();
     for y in y0..=y1 {
         for x in x0..=x1 {
-            if is_fogged(&revealed, x, y) {
-                let p = grid_to_world(x, y);
-                commands.spawn((
-                    Sprite::from_color(FOG_COLOR, Vec2::splat(TILE)),
-                    Transform::from_xyz(p.x, p.y, Z_FOG),
-                    FogTile,
-                ));
-            }
+            let color = match fog_state(&revealed, &provisional, x, y) {
+                FogState::Clear => continue,
+                FogState::Dim => PROVISIONAL_FOG_COLOR,
+                FogState::Full => FOG_COLOR,
+            };
+            let p = grid_to_world(x, y);
+            commands.spawn((
+                Sprite::from_color(color, Vec2::splat(TILE)),
+                Transform::from_xyz(p.x, p.y, Z_FOG),
+                FogTile,
+            ));
         }
     }
 }
@@ -6139,24 +6173,27 @@ mod tests {
     }
 
     #[test]
-    fn fog_lookup_and_predicate() {
+    fn fog_lookup_and_three_tier_state() {
         let revealed = revealed_lookup(&[
             TilePoint { x: 6, y: 6 },
             TilePoint { x: 7, y: 6 },
             TilePoint { x: 6, y: 7 },
         ]);
+        // A scout is tentatively uncovering two tiles out in the fog; one of
+        // them (6,6) has already committed to revealed.
+        let provisional = revealed_lookup(&[TilePoint { x: 9, y: 9 }, TilePoint { x: 6, y: 6 }]);
         assert_eq!(revealed.len(), 3);
-        // Revealed tiles are clear; everything else is fogged.
-        assert!(!is_fogged(&revealed, 6, 6));
-        assert!(!is_fogged(&revealed, 7, 6));
-        assert!(is_fogged(&revealed, 6, 5));
-        assert!(is_fogged(&revealed, 100, 100));
-        // An empty reveal set is treated as "no fog data" by render_fog (it
-        // shows the full map rather than blacking it out); the predicate itself
-        // still reports every tile as fogged against an empty set.
-        let none = revealed_lookup(&[]);
-        assert!(none.is_empty());
-        assert!(is_fogged(&none, 6, 6));
+        // Revealed tiles are clear.
+        assert_eq!(fog_state(&revealed, &provisional, 6, 6), FogState::Clear);
+        assert_eq!(fog_state(&revealed, &provisional, 7, 6), FogState::Clear);
+        // Provisional-only tiles are dim (half-lifted).
+        assert_eq!(fog_state(&revealed, &provisional, 9, 9), FogState::Dim);
+        // Everything else is full fog.
+        assert_eq!(fog_state(&revealed, &provisional, 6, 5), FogState::Full);
+        assert_eq!(fog_state(&revealed, &provisional, 100, 100), FogState::Full);
+        // Revealed wins over provisional when a tile is in both (mid-handoff).
+        assert!(provisional.contains(&(6, 6)));
+        assert_eq!(fog_state(&revealed, &provisional, 6, 6), FogState::Clear);
     }
 
     #[test]
@@ -6435,6 +6472,7 @@ mod tests {
             y2: 3, // deliberately unordered
             accepts: vec![],
             contents: amounts(0.0, 0.0, 0.0),
+            gather_spot: None,
         };
         assert!(point_in_stockpile((3, 4), &pile));
         assert!(point_in_stockpile((2, 3), &pile));
@@ -6997,6 +7035,7 @@ mod tests {
                 tools: 0.0,
                 blessings: 0.0,
             },
+            gather_spot: None,
         };
         let tip = stockpile_tooltip(&pile);
         assert!(tip.contains("Stockpile"));
