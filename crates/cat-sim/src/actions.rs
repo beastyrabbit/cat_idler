@@ -980,6 +980,19 @@ fn cat_snapshot(colony: &ColonyRuntime, cat: &Cat) -> proto::CatSnapshot {
             leadership: cat.stats.leadership,
         },
         death_time: cat.death_time,
+        parent_ids: cat.parent_ids.iter().flatten().cloned().collect(),
+        parents: cat
+            .parent_ids
+            .iter()
+            .flatten()
+            .filter_map(|parent_id| {
+                colony
+                    .cats
+                    .iter()
+                    .find(|candidate| candidate.id == *parent_id)
+                    .map(|parent| parent.name.clone())
+            })
+            .collect(),
     }
 }
 
@@ -1179,6 +1192,20 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
         .filter_map(|building| {
             let building_type = sim_to_proto_building_type(building.building_type)?;
             let (width, height) = crate::world_tick::footprint_for(building.building_type);
+            // A cat only counts as staffing this building while it's still alive —
+            // mirrors `world_tick::assigned_worker`, which the production phase itself
+            // uses to decide whether a bench/smithy has a live worker this tick.
+            let has_live_worker = building.assigned_cat.as_deref().is_some_and(|cat_id| {
+                colony
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+            });
+            let staff_cap = production::building_staff_cap(building.building_type);
+            let production_progress = production::building_cycle_sec(building.building_type)
+                .map_or(0.0, |cycle_sec| {
+                    (building.production_progress / cycle_sec).clamp(0.0, 1.0)
+                });
             Some(proto::BuildingSnapshot {
                 id: building.id.clone(),
                 building_type,
@@ -1187,6 +1214,15 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 world_position: tile_point(&building.position),
                 position: tile_point(&building.position),
                 footprint: proto::FootprintSize { width, height },
+                staff_count: u32::from(has_live_worker),
+                staff_cap,
+                production_progress,
+                production_output: production::building_output_label(building.building_type)
+                    .map(str::to_owned),
+                // The sim's hauling model routes gathered/refined goods to the
+                // shrine/stockpiles, not to individual buildings — there is no
+                // per-building inbound-haul concept to report yet.
+                inbound_haul: 0.0,
             })
         })
         .collect()
@@ -1945,6 +1981,128 @@ mod tests {
         let colony = &snap.colonies[0];
         assert_eq!(colony.cats.len(), world.colonies[0].cats.len());
         assert_eq!(colony.resources.food, world.colonies[0].resources.food);
+    }
+
+    fn idle_worker_cat(id: &str, colony_id: &str, name: &str) -> Cat {
+        Cat {
+            id: id.to_string(),
+            colony_id: colony_id.to_string(),
+            name: name.to_string(),
+            parent_ids: vec![None, None],
+            birth_time: 0,
+            death_time: None,
+            stats: entities::CatStats::default(),
+            needs: entities::CatNeeds::default(),
+            current_task: None,
+            position: Position {
+                map: MapType::Colony,
+                x: 0.0,
+                y: 0.0,
+            },
+            destination: None,
+            carrying: None,
+            activity: CatActivity::Working,
+            is_pregnant: false,
+            pregnancy_due_time: None,
+            age_hours: 24.0,
+            pregnancy_due_age_hours: None,
+            pregnancy_mate_id: None,
+            sprite_params: None,
+            specialization: None,
+            role_xp: Default::default(),
+            skills: Default::default(),
+        }
+    }
+
+    #[test]
+    fn colony_snapshot_reports_staffing_and_progress_for_a_mid_craft_bench() {
+        // A staffed workshop halfway through its 600s refinement cycle should show up
+        // on the wire as ~1/1 staffed and 50% through the current cycle, making
+        // "refined" (see production::building_output_label).
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        let worker_id = "worker-1".to_string();
+        colony
+            .cats
+            .push(idle_worker_cat(&worker_id, &colony.id, "Juniper"));
+        colony.buildings.push(crate::world_tick::BuildingRuntime {
+            id: "building-workshop-test".to_string(),
+            building_type: BuildingType::Workshop,
+            level: 2,
+            position: TilePos { x: 20, y: 20 },
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 300.0,
+            assigned_cat: Some(worker_id),
+        });
+
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let building = snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "building-workshop-test")
+            .expect("workshop building present in snapshot");
+
+        assert_eq!(building.staff_count, 1);
+        assert!(building.staff_cap >= 1);
+        assert!((0.0..=1.0).contains(&building.production_progress));
+        assert_eq!(building.production_progress, 0.5);
+        assert_eq!(building.production_output.as_deref(), Some("refined"));
+    }
+
+    #[test]
+    fn colony_snapshot_reports_zero_progress_for_a_no_cycle_building() {
+        // The founding shrine has no worker slot and no timed production cycle, so it
+        // should report an idle 0/0 staffing line and 0.0 progress with no output.
+        let world = world_with_one_colony();
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let shrine = snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.building_type == proto::BuildingType::Shrine)
+            .expect("founding shrine present in snapshot");
+
+        assert_eq!(shrine.staff_count, 0);
+        assert_eq!(shrine.staff_cap, 0);
+        assert_eq!(shrine.production_progress, 0.0);
+        assert_eq!(shrine.production_output, None);
+    }
+
+    #[test]
+    fn cat_snapshot_resolves_known_parent_ids_and_names() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        let mother_id = "mother-1".to_string();
+        colony
+            .cats
+            .push(idle_worker_cat(&mother_id, &colony.id, "Willow"));
+        let kitten_id = "kitten-1".to_string();
+        let mut kitten = idle_worker_cat(&kitten_id, &colony.id, "Fern");
+        // One known parent (the mother), one unknown slot (`None`, e.g. an
+        // unrecorded/founding father) — matches `Cat::parent_ids`'s shape.
+        kitten.parent_ids = vec![Some(mother_id.clone()), None];
+        colony.cats.push(kitten);
+
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let kitten_snap = snapshot.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id == kitten_id)
+            .expect("kitten present in snapshot");
+
+        assert_eq!(kitten_snap.parent_ids, vec![mother_id]);
+        assert_eq!(kitten_snap.parents, vec!["Willow".to_string()]);
+    }
+
+    #[test]
+    fn cat_snapshot_reports_empty_lineage_for_founding_cats() {
+        // Founding cats are created with `parent_ids: vec![None, None]`.
+        let world = world_with_one_colony();
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        for cat in &snapshot.colonies[0].cats {
+            assert!(cat.parent_ids.is_empty(), "cat {} has no founders", cat.id);
+            assert!(cat.parents.is_empty(), "cat {} has no founders", cat.id);
+        }
     }
 
     // ---- P12.2 officer actions ----

@@ -245,6 +245,99 @@ pub fn advance_woodworking(
     }
 }
 
+/// Max worker occupancy for `building_type` (its worker slots), for the client
+/// building-inspector panel (`BuildingSnapshot::staff_cap`).
+///
+/// The sim currently models a single worker slot per production building —
+/// `BuildingRuntime::assigned_cat` is an `Option<CatId>`, not a list — so this is 1 for
+/// exactly the building types staffed through `buildings_needing_workers` in
+/// `world_tick.rs`: the auto-staff mop-up for the generic workshop and the P16
+/// raw-material benches (wood-cutter, stone-prep, woodworking), plus the
+/// leader-directed smithy queue (`smithy_queue` in `phase_20`-era planning).
+/// Every other building type has no worker-slot concept: dens/storage/walls/etc.
+/// never take an `assigned_cat`, and fields produce passively via `field_yield`
+/// with no worker check at all (see `phase_23_production`'s `BuildingType::Field`
+/// arm, which adds yield unconditionally).
+#[must_use]
+pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
+    match building_type {
+        BuildingType::Workshop
+        | BuildingType::WoodCutter
+        | BuildingType::StonePrep
+        | BuildingType::Woodworking
+        | BuildingType::Smithy => 1,
+        BuildingType::Den
+        | BuildingType::FoodStorage
+        | BuildingType::WaterBowl
+        | BuildingType::Beds
+        | BuildingType::HerbGarden
+        | BuildingType::Nursery
+        | BuildingType::ElderCorner
+        | BuildingType::Walls
+        | BuildingType::MouseFarm
+        | BuildingType::Shrine
+        | BuildingType::Field
+        | BuildingType::Barracks
+        | BuildingType::AccountingTent => 0,
+    }
+}
+
+/// Length of one production cycle, in seconds, for building types that craft on a
+/// timer — `BuildingRuntime::production_progress` accumulates elapsed seconds toward
+/// this in `phase_23_production` (see `advance_workshop`/`advance_woodworking` above
+/// and `smithy::advance_smithy`). `None` for building types with no timed cycle,
+/// including fields: `field_yield` adds food continuously every tick, with no cycle
+/// to complete (`production_progress` is simply never touched for a field).
+#[must_use]
+pub const fn building_cycle_sec(building_type: BuildingType) -> Option<f64> {
+    match building_type {
+        BuildingType::Workshop | BuildingType::WoodCutter | BuildingType::StonePrep => {
+            Some(WORKSHOP_CYCLE_SEC)
+        }
+        BuildingType::Woodworking => Some(WOODWORKING_CYCLE_SEC),
+        BuildingType::Smithy => Some(crate::smithy::SMITHY_CYCLE_SEC),
+        _ => None,
+    }
+}
+
+/// Short, stable, lowercase label of what `building_type` produces, for the client
+/// building-inspector panel (`BuildingSnapshot::production_output`). `None` if the
+/// building type doesn't craft a resource.
+///
+/// Verified against the actual `phase_23_production` recipes in `world_tick.rs`:
+/// workshop → refined (materials → refined, this module's `advance_workshop`),
+/// wood-cutter → plank (materials → planks, same `advance_workshop` cadence credited
+/// to `planks`), stone-prep → block (materials → blocks, credited to `blocks`),
+/// woodworking → tool (planks + blocks → tools, `advance_woodworking`), smithy →
+/// weapon+armor (refined + materials → 1 weapon *and* 1 armor per cycle,
+/// `smithy::advance_smithy`/`SMITHY_WEAPONS_PER_CYCLE`/`SMITHY_ARMOR_PER_CYCLE`, both
+/// 1.0), field → food (`field_yield`, passive, no worker/cycle). Every other building
+/// type (den, storage, walls, mouse farm, shrine, barracks, accounting tent, etc.)
+/// crafts nothing and reports `None`.
+#[must_use]
+pub const fn building_output_label(building_type: BuildingType) -> Option<&'static str> {
+    match building_type {
+        BuildingType::Workshop => Some("refined"),
+        BuildingType::WoodCutter => Some("plank"),
+        BuildingType::StonePrep => Some("block"),
+        BuildingType::Woodworking => Some("tool"),
+        BuildingType::Smithy => Some("weapon+armor"),
+        BuildingType::Field => Some("food"),
+        BuildingType::Den
+        | BuildingType::FoodStorage
+        | BuildingType::WaterBowl
+        | BuildingType::Beds
+        | BuildingType::HerbGarden
+        | BuildingType::Nursery
+        | BuildingType::ElderCorner
+        | BuildingType::Walls
+        | BuildingType::MouseFarm
+        | BuildingType::Shrine
+        | BuildingType::Barracks
+        | BuildingType::AccountingTent => None,
+    }
+}
+
 fn js_max(left: f64, right: f64) -> f64 {
     if left.is_nan() || right.is_nan() {
         f64::NAN
@@ -646,5 +739,111 @@ mod tests {
             },
             "no blocks",
         );
+    }
+
+    #[test]
+    fn building_output_label_matches_every_verified_recipe() {
+        use BuildingType::{
+            AccountingTent, Barracks, Beds, Den, ElderCorner, Field, FoodStorage, HerbGarden,
+            MouseFarm, Nursery, Shrine, Smithy, StonePrep, Walls, WaterBowl, WoodCutter,
+            Woodworking, Workshop,
+        };
+
+        // Producing types: label matches the resource actually credited in
+        // `phase_23_production` (workshop -> refined, wood-cutter -> planks,
+        // stone-prep -> blocks, woodworking -> tools, smithy -> 1 weapon + 1 armor,
+        // field -> food).
+        assert_eq!(super::building_output_label(Workshop), Some("refined"));
+        assert_eq!(super::building_output_label(WoodCutter), Some("plank"));
+        assert_eq!(super::building_output_label(StonePrep), Some("block"));
+        assert_eq!(super::building_output_label(Woodworking), Some("tool"));
+        assert_eq!(super::building_output_label(Smithy), Some("weapon+armor"));
+        assert_eq!(super::building_output_label(Field), Some("food"));
+
+        // Non-producing types: no phase_23 arm credits a resource for these.
+        for building_type in [
+            Den,
+            FoodStorage,
+            WaterBowl,
+            Beds,
+            HerbGarden,
+            Nursery,
+            ElderCorner,
+            Walls,
+            MouseFarm,
+            Shrine,
+            Barracks,
+            AccountingTent,
+        ] {
+            assert_eq!(
+                super::building_output_label(building_type),
+                None,
+                "{building_type:?} should not report a production output"
+            );
+        }
+    }
+
+    #[test]
+    fn building_staff_cap_is_one_only_for_the_single_worker_slot_benches() {
+        for building_type in [
+            BuildingType::Workshop,
+            BuildingType::WoodCutter,
+            BuildingType::StonePrep,
+            BuildingType::Woodworking,
+            BuildingType::Smithy,
+        ] {
+            assert_eq!(
+                super::building_staff_cap(building_type),
+                1,
+                "{building_type:?} should have a 1-cat worker slot"
+            );
+        }
+
+        // No worker-slot concept, including `Field` (passive, unstaffed yield).
+        for building_type in [
+            BuildingType::Den,
+            BuildingType::FoodStorage,
+            BuildingType::WaterBowl,
+            BuildingType::Beds,
+            BuildingType::HerbGarden,
+            BuildingType::Nursery,
+            BuildingType::ElderCorner,
+            BuildingType::Walls,
+            BuildingType::MouseFarm,
+            BuildingType::Shrine,
+            BuildingType::Field,
+            BuildingType::Barracks,
+            BuildingType::AccountingTent,
+        ] {
+            assert_eq!(
+                super::building_staff_cap(building_type),
+                0,
+                "{building_type:?} should have no worker slot"
+            );
+        }
+    }
+
+    #[test]
+    fn building_cycle_sec_matches_each_chains_configured_cadence() {
+        assert_eq!(
+            super::building_cycle_sec(BuildingType::Workshop),
+            Some(600.0)
+        );
+        assert_eq!(
+            super::building_cycle_sec(BuildingType::WoodCutter),
+            Some(600.0)
+        );
+        assert_eq!(
+            super::building_cycle_sec(BuildingType::StonePrep),
+            Some(600.0)
+        );
+        assert_eq!(
+            super::building_cycle_sec(BuildingType::Woodworking),
+            Some(600.0)
+        );
+        assert_eq!(super::building_cycle_sec(BuildingType::Smithy), Some(900.0));
+        // Field has no timed cycle: yield is continuous (`field_yield`).
+        assert_eq!(super::building_cycle_sec(BuildingType::Field), None);
+        assert_eq!(super::building_cycle_sec(BuildingType::Shrine), None);
     }
 }

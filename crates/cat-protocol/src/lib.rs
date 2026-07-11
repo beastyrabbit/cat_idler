@@ -196,6 +196,16 @@ pub struct CatSnapshot {
     pub role_xp: RoleXp,
     pub stats: CatStats,
     pub death_time: Option<i64>,
+    /// Known parent cat ids (mother/father), in `Cat::parent_ids` order, omitting any
+    /// parent the sim doesn't know (founding cats, or a slot that was never filled).
+    /// Additive; empty/absent for pre-lineage snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_ids: Vec<String>,
+    /// Parent names resolved at snapshot time from `parent_ids` (best-effort — a
+    /// deceased parent still resolves by name; a parent id with no matching cat is
+    /// skipped). Additive; empty/absent for pre-lineage snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parents: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -469,7 +479,7 @@ pub enum RaiderStatus {
     Dead,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildingSnapshot {
     #[serde(alias = "_id")]
@@ -485,10 +495,39 @@ pub struct BuildingSnapshot {
     /// type in the sim; defaults to 1x1 for back-compat with older snapshots.
     #[serde(default = "default_footprint")]
     pub footprint: FootprintSize,
+    /// Cats currently assigned/working this building. The sim models a single worker
+    /// slot per production building today (0 or 1), never more than `staff_cap`.
+    /// Additive; defaults to 0 for pre-staffing snapshots.
+    #[serde(default)]
+    pub staff_count: u32,
+    /// Max worker occupancy for this building type (its worker slots). 1 for the
+    /// building types the sim staffs with an assigned cat (workshop and the raw-material
+    /// benches, smithy); 0 for building types with no worker-slot concept, including
+    /// fields, which yield passively with no assigned worker at all. Additive; defaults
+    /// to 0 for pre-staffing snapshots.
+    #[serde(default)]
+    pub staff_cap: u32,
+    /// 0.0..=1.0 through the current production cycle, for buildings that craft on a
+    /// timer (workshop/benches/smithy). 0.0 for buildings with no active cycle,
+    /// including fields (which add yield continuously rather than completing cycles)
+    /// and non-producing buildings. Additive; defaults to 0.0 for older snapshots.
+    #[serde(default)]
+    pub production_progress: f64,
+    /// Short, stable, lowercase label of what this building type makes (e.g. "plank",
+    /// "refined", "weapon+armor"), or `None` if it doesn't produce a resource.
+    /// Additive; empty/absent for pre-production-label snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub production_output: Option<String>,
+    /// Resource units currently being hauled toward this building/its stockpile.
+    /// Always 0.0 today — the sim's hauling model routes to the shrine/stockpiles, not
+    /// to individual buildings; this is a hook for when per-building inbound hauls are
+    /// modeled. Additive; defaults to 0.0 for older snapshots.
+    #[serde(default)]
+    pub inbound_haul: f64,
 }
 
 /// A building's tile footprint size, in tiles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct FootprintSize {
     pub width: i32,
@@ -502,9 +541,10 @@ fn default_footprint() -> FootprintSize {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BuildingType {
+    #[default]
     Den,
     FoodStorage,
     WaterBowl,
@@ -526,7 +566,7 @@ pub enum BuildingType {
     Woodworking,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TilePoint {
     pub x: i32,
@@ -950,6 +990,8 @@ mod tests {
                     },
                     stats: CatStats { leadership: 9.0 },
                     death_time: None,
+                    parent_ids: vec!["cat_0".to_string()],
+                    parents: vec!["Ash".to_string()],
                 }],
                 jobs: vec![JobSnapshot {
                     id: "job_1".to_string(),
@@ -1042,6 +1084,11 @@ mod tests {
                         width: 3,
                         height: 3,
                     },
+                    staff_count: 0,
+                    staff_cap: 0,
+                    production_progress: 0.0,
+                    production_output: None,
+                    inbound_haul: 0.0,
                 }],
                 claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
@@ -1202,5 +1249,108 @@ mod tests {
         assert_eq!(encoded["colonies"][0]["officers"]["farmer"], json!("cat_1"));
         let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
         assert_eq!(round.colonies[0].officers, snap.colonies[0].officers);
+    }
+
+    #[test]
+    fn building_snapshot_production_fields_round_trip_with_camel_case_names() {
+        let building = BuildingSnapshot {
+            id: "building_2".to_string(),
+            building_type: BuildingType::Workshop,
+            level: 2,
+            construction_progress: 100.0,
+            world_position: TilePoint { x: 8, y: 6 },
+            position: TilePoint { x: 8, y: 6 },
+            footprint: FootprintSize {
+                width: 3,
+                height: 3,
+            },
+            staff_count: 1,
+            staff_cap: 1,
+            production_progress: 0.4,
+            production_output: Some("refined".to_string()),
+            inbound_haul: 0.0,
+        };
+
+        let encoded = serde_json::to_value(&building).expect("serialize building");
+        assert_eq!(
+            encoded,
+            json!({
+                "id": "building_2",
+                "type": "workshop",
+                "level": 2,
+                "constructionProgress": 100.0,
+                "worldPosition": { "x": 8, "y": 6 },
+                "position": { "x": 8, "y": 6 },
+                "footprint": { "width": 3, "height": 3 },
+                "staffCount": 1,
+                "staffCap": 1,
+                "productionProgress": 0.4,
+                "productionOutput": "refined",
+                "inboundHaul": 0.0,
+            })
+        );
+
+        let decoded: BuildingSnapshot = serde_json::from_value(encoded).expect("deserialize");
+        assert_eq!(decoded, building);
+    }
+
+    #[test]
+    fn building_snapshot_new_production_fields_default_for_old_payloads() {
+        // A payload from before staffing/production fields existed (only the
+        // original fields present) must still deserialize, defaulting the new
+        // fields to their back-compat values.
+        let old_payload = json!({
+            "id": "building_1",
+            "type": "shrine",
+            "level": 1,
+            "constructionProgress": 100.0,
+            "worldPosition": { "x": 6, "y": 6 },
+            "position": { "x": 6, "y": 6 },
+        });
+
+        let decoded: BuildingSnapshot =
+            serde_json::from_value(old_payload).expect("deserialize old payload");
+        assert_eq!(decoded.staff_count, 0);
+        assert_eq!(decoded.staff_cap, 0);
+        assert_eq!(decoded.production_progress, 0.0);
+        assert_eq!(decoded.production_output, None);
+        assert_eq!(decoded.inbound_haul, 0.0);
+        // The pre-existing footprint back-compat default is untouched by this change.
+        assert_eq!(
+            decoded.footprint,
+            FootprintSize {
+                width: 1,
+                height: 1
+            }
+        );
+    }
+
+    #[test]
+    fn cat_snapshot_lineage_round_trips_and_defaults_empty_for_old_payloads() {
+        let mut snap = sample_world_snapshot();
+        snap.colonies[0].cats[0].parent_ids = vec!["cat_0".to_string(), "cat_-1".to_string()];
+        snap.colonies[0].cats[0].parents = vec!["Ash".to_string(), "Bramble".to_string()];
+        let encoded = serde_json::to_value(&snap).expect("serialize");
+        assert_eq!(
+            encoded["colonies"][0]["cats"][0]["parentIds"],
+            json!(["cat_0", "cat_-1"])
+        );
+        assert_eq!(
+            encoded["colonies"][0]["cats"][0]["parents"],
+            json!(["Ash", "Bramble"])
+        );
+        let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
+        assert_eq!(round, snap);
+
+        // Absent lineage fields (pre-lineage payload) default to empty vecs.
+        let mut old = serde_json::to_value(sample_world_snapshot()).expect("serialize");
+        let cat = old["colonies"][0]["cats"][0]
+            .as_object_mut()
+            .expect("cat object");
+        cat.remove("parentIds");
+        cat.remove("parents");
+        let back: WorldSnapshot = serde_json::from_value(old).expect("deserialize");
+        assert!(back.colonies[0].cats[0].parent_ids.is_empty());
+        assert!(back.colonies[0].cats[0].parents.is_empty());
     }
 }
