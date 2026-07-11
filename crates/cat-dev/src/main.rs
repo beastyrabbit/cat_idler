@@ -51,7 +51,23 @@ fn main() {
     let server_bin = target_dir.join("debug").join("cat-server");
     let client_bin = target_dir.join("debug").join("cat-desktop");
 
-    // 2. Start the server (inherits GAME_DB_PATH / WORKER_TICK_MS from the environment).
+    // 2. Refuse to start if something is already listening on the port. That is a stale
+    //    cat-server left over from an earlier run: our freshly-built server would fail to
+    //    bind, but the readiness probe below would see the OLD process accepting
+    //    connections and hand the client to it — serving pre-rebuild data (e.g. a snapshot
+    //    missing fields we just added, which shows up as 0/0 staffing or absent columns).
+    //    Fail loud instead of silently connecting to the wrong server.
+    let addr = format!("127.0.0.1:{port}");
+    if TcpStream::connect(&addr).is_ok() {
+        eprintln!(
+            "[cat-dev] a process is already listening on {addr} — that's a stale cat-server \
+             from an earlier run. The client would connect to IT and serve outdated data. \
+             Stop it first (e.g. `pkill -f target/debug/cat-server`, or free PORT), then re-run."
+        );
+        std::process::exit(1);
+    }
+
+    // 3. Start the server (inherits GAME_DB_PATH / WORKER_TICK_MS from the environment).
     eprintln!("[cat-dev] starting cat-server on 127.0.0.1:{port} …");
     let mut server = Command::new(&server_bin)
         .current_dir(&workspace_root)
@@ -61,8 +77,7 @@ fn main() {
         .spawn()
         .expect("failed to start cat-server");
 
-    // 3. Wait until it accepts connections (or crashes / times out).
-    let addr = format!("127.0.0.1:{port}");
+    // 4. Wait until it accepts connections (or crashes / times out).
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if TcpStream::connect(&addr).is_ok() {
@@ -81,7 +96,7 @@ fn main() {
     }
     eprintln!("[cat-dev] server ready — launching cat-desktop …");
 
-    // 4. Run the client in the foreground; it talks to the server over the WS.
+    // 5. Run the client in the foreground; it talks to the server over the WS.
     //    Bevy resolves the AssetPlugin `file_path` (".") against BEVY_ASSET_ROOT, else
     //    the inherited CARGO_MANIFEST_DIR (which cargo set to crates/cat-dev) — NOT the
     //    CWD. So point the asset root at the workspace so public/images/* resolves.
@@ -92,7 +107,7 @@ fn main() {
         .env("CAT_SERVER_URL", format!("ws://127.0.0.1:{port}/ws"))
         .status();
 
-    // 5. Client closed → stop the server.
+    // 6. Client closed → stop the server.
     eprintln!("[cat-dev] client exited — stopping cat-server …");
     let _ = server.kill();
     let _ = server.wait();
