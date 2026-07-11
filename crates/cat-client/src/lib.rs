@@ -23,10 +23,10 @@ use bevy::sprite::{Anchor, BorderRect, SliceScaleMode, TextureSlicer};
 use bevy::ui::RelativeCursorPosition;
 use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot, ClientAction,
-    ColonySnapshot, FootprintSize, GateSide, ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus,
-    ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp, Specialization, StockLedgerSnapshot,
-    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderVisitState, WorldSnapshot,
-    ZoneKind,
+    ColonySnapshot, EventSnapshot, FootprintSize, GateSide, ItemStackSnapshot, JobKind,
+    OfficerRole, RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp,
+    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
+    TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -342,6 +342,15 @@ struct GoodsUi {
 
 /// Number of item-stack lines the goods panel shows (most valuable first).
 const GOODS_LINES: usize = 12;
+
+/// Whether the colony census / demographics panel is open (toggled by `C`).
+#[derive(Resource, Default)]
+struct CensusUi {
+    visible: bool,
+}
+
+/// Number of text lines the census panel renders (see `census_report_lines`).
+const CENSUS_LINES: usize = 17;
 
 /// Trade menu (open while a trader is at the gate). `closed` lets the player
 /// dismiss it during a visit; it resets when the trader leaves so the next visit
@@ -1010,6 +1019,15 @@ struct GoodsTreasury;
 /// The HUD button that toggles the goods panel.
 #[derive(Component)]
 struct GoodsButton;
+/// Marker for the colony census / demographics panel node.
+#[derive(Component)]
+struct CensusPanel;
+/// One census text-line slot (index 0 at the top).
+#[derive(Component, Clone, Copy)]
+struct CensusLine(usize);
+/// The HUD button that toggles the census panel.
+#[derive(Component)]
+struct CensusButton;
 /// Marker for the trade-menu panel node.
 #[derive(Component)]
 struct TradeMenuPanel;
@@ -1097,6 +1115,145 @@ fn classify_event(message: &str) -> EventKind {
     } else {
         EventKind::Neutral
     }
+}
+
+/// Aggregated colony demographics for the census panel — a pure function of the
+/// snapshot's cats + events. Life stage is derived from `age_hours` (the snapshot
+/// carries no stage field); pregnancies are intentionally absent because the wire
+/// `CatSnapshot` exposes no pregnancy datum (flagged to the team-lead).
+#[derive(Debug, Clone, PartialEq, Default)]
+struct Census {
+    total: u32,
+    kittens: u32,
+    young: u32,
+    adults: u32,
+    elders: u32,
+    hunters: u32,
+    architects: u32,
+    ritualists: u32,
+    warriors: u32,
+    unspecialized: u32,
+    boosted: u32,
+    avg_age_hours: f64,
+    births: u32,
+    deaths: u32,
+    leader: Option<String>,
+}
+
+/// Recent births + deaths scanned from the event feed. Births count only actual
+/// births ("… was born") so conceptions ("expecting a litter") don't inflate the
+/// tally; deaths reuse the shared `classify_event` death keywords.
+fn count_vital_events(events: &[EventSnapshot]) -> (u32, u32) {
+    let mut births = 0;
+    let mut deaths = 0;
+    for event in events {
+        if event.message.to_ascii_lowercase().contains("born") {
+            births += 1;
+        } else if classify_event(&event.message) == EventKind::Death {
+            deaths += 1;
+        }
+    }
+    (births, deaths)
+}
+
+/// Tally colony demographics from the living cats, the event feed, and the leader
+/// name. Cats with a `death_time` are excluded. Life-stage thresholds mirror the
+/// sim's `age::get_life_stage` (kitten <6h, young <24h, adult <48h, elder ≥48h);
+/// a non-finite age falls through to elder, matching the sim.
+fn colony_census(cats: &[CatSnapshot], events: &[EventSnapshot], leader: Option<&str>) -> Census {
+    let mut c = Census {
+        leader: leader.map(str::to_string),
+        ..Default::default()
+    };
+    let mut age_sum = 0.0;
+    for cat in cats.iter().filter(|k| k.death_time.is_none()) {
+        c.total += 1;
+        age_sum += cat.age_hours;
+        let age = cat.age_hours;
+        if age < 6.0 {
+            c.kittens += 1;
+        } else if age < 24.0 {
+            c.young += 1;
+        } else if age < 48.0 {
+            c.adults += 1;
+        } else {
+            c.elders += 1;
+        }
+        match cat.specialization {
+            Some(Specialization::Hunter) => c.hunters += 1,
+            Some(Specialization::Architect) => c.architects += 1,
+            Some(Specialization::Ritualist) => c.ritualists += 1,
+            Some(Specialization::Warrior) => c.warriors += 1,
+            None => c.unspecialized += 1,
+        }
+        if cat.boosted {
+            c.boosted += 1;
+        }
+    }
+    c.avg_age_hours = if c.total > 0 {
+        age_sum / f64::from(c.total)
+    } else {
+        0.0
+    };
+    let (births, deaths) = count_vital_events(events);
+    c.births = births;
+    c.deaths = deaths;
+    c
+}
+
+/// A proportional `#` bar `width` chars wide, scaled so the largest tally fills it.
+fn census_bar(count: u32, max: u32, width: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let filled = ((f64::from(count) / f64::from(max)) * width as f64).round() as usize;
+    "#".repeat(filled.min(width))
+}
+
+/// Render the census as a fixed block of `CENSUS_LINES` display lines — a DF-style
+/// "units" readout: population + leader + averages, a life-stage breakdown with
+/// bars, a specialization breakdown, and a recent births/deaths line.
+fn census_report_lines(c: &Census) -> Vec<String> {
+    let stage_max = c.kittens.max(c.young).max(c.adults).max(c.elders);
+    let leader = c.leader.as_deref().unwrap_or("(vacant)");
+    vec![
+        format!("Population: {}", c.total),
+        format!("Leader: {leader}"),
+        format!(
+            "Avg age: {:.0}h    ★ Boosted: {}",
+            c.avg_age_hours, c.boosted
+        ),
+        String::new(),
+        "- Life stages -".to_string(),
+        format!(
+            "Kittens {:>3}  {}",
+            c.kittens,
+            census_bar(c.kittens, stage_max, 12)
+        ),
+        format!(
+            "Young   {:>3}  {}",
+            c.young,
+            census_bar(c.young, stage_max, 12)
+        ),
+        format!(
+            "Adults  {:>3}  {}",
+            c.adults,
+            census_bar(c.adults, stage_max, 12)
+        ),
+        format!(
+            "Elders  {:>3}  {}",
+            c.elders,
+            census_bar(c.elders, stage_max, 12)
+        ),
+        "- Specializations -".to_string(),
+        format!("Hunter        {:>3}", c.hunters),
+        format!("Architect     {:>3}", c.architects),
+        format!("Ritualist     {:>3}", c.ritualists),
+        format!("Warrior       {:>3}", c.warriors),
+        format!("Unspecialized {:>3}", c.unspecialized),
+        "- Recent -".to_string(),
+        format!("Births {}   Deaths {}", c.births, c.deaths),
+    ]
 }
 
 /// Line colour for an event kind (DF-style: birth green, death/raid red, crisis
@@ -1339,6 +1496,7 @@ pub fn run() {
         .insert_resource(OfficersUi::default())
         .insert_resource(AnnouncementsUi::default())
         .insert_resource(GoodsUi::default())
+        .insert_resource(CensusUi::default())
         .insert_resource(TradeUi::default())
         .insert_resource(MinimapUi::default())
         .insert_resource(CatBodies::default())
@@ -1403,6 +1561,8 @@ pub fn run() {
                     handle_trade_buttons,
                     update_boost_button,
                     handle_boost_button,
+                    toggle_census,
+                    update_census,
                     toggle_minimap,
                     update_minimap,
                     update_minimap_viewport,
@@ -1882,6 +2042,84 @@ fn setup(
             TextColor(PARCHMENT_INK),
         )],
     ));
+
+    // Census toggle button (beside the Goods button).
+    commands.spawn((
+        Button,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(8.0),
+            left: Val::Px(400.0),
+            min_width: Val::Px(52.0),
+            height: Val::Px(28.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        GlobalZIndex(60),
+        sliced_image(ui.button.clone(), BUTTON_BORDER),
+        CensusButton,
+        children![(
+            Text::new("Census [C]"),
+            TextFont {
+                font_size: FontSize::Px(12.0),
+                ..default()
+            },
+            TextColor(PARCHMENT_INK),
+        )],
+    ));
+
+    // Colony census / demographics panel (centre, shares the slot with goods +
+    // announcements — the three are mutually exclusive), hidden until toggled.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(430.0),
+                top: Val::Px(60.0),
+                width: Val::Px(360.0),
+                padding: UiRect::axes(Val::Px(26.0), Val::Px(40.0)),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(3.0),
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(82),
+            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            CensusPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(46.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    margin: UiRect::bottom(Val::Px(6.0)),
+                    ..default()
+                },
+                ImageNode::new(ui.banner.clone()),
+                children![(
+                    Text::new("Census"),
+                    TextFont {
+                        font_size: FontSize::Px(15.0),
+                        ..default()
+                    },
+                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
+                )],
+            ));
+            for i in 0..CENSUS_LINES {
+                panel.spawn((
+                    Text::new(""),
+                    TextFont {
+                        font_size: FontSize::Px(13.0),
+                        ..default()
+                    },
+                    TextColor(PARCHMENT_INK),
+                    CensusLine(i),
+                ));
+            }
+        });
 
     // Goods / inventory panel (centre, shares the slot with announcements — the
     // two are mutually exclusive), hidden until toggled.
@@ -3878,6 +4116,7 @@ fn update_inspector(
 /// Esc closes any open inspector (cat card / building panel / stockpile remove).
 /// Click-away already clears selection via the pick systems; this is the keyboard
 /// escape hatch.
+#[allow(clippy::too_many_arguments)]
 fn close_inspectors_on_esc(
     keys: Res<ButtonInput<KeyCode>>,
     mut cat: ResMut<Selection>,
@@ -3885,6 +4124,7 @@ fn close_inspectors_on_esc(
     mut stockpile: ResMut<StockpileSelection>,
     mut announcements: ResMut<AnnouncementsUi>,
     mut goods: ResMut<GoodsUi>,
+    mut census: ResMut<CensusUi>,
     mut trade: ResMut<TradeUi>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
@@ -3893,6 +4133,7 @@ fn close_inspectors_on_esc(
         stockpile.selected = None;
         announcements.visible = false;
         goods.visible = false;
+        census.visible = false;
         trade.closed = true;
     }
 }
@@ -4399,30 +4640,88 @@ fn toggle_announcements(
     button: Query<&Interaction, (Changed<Interaction>, With<AnnouncementsButton>)>,
     mut ui: ResMut<AnnouncementsUi>,
     mut goods: ResMut<GoodsUi>,
+    mut census: ResMut<CensusUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
     if keys.just_pressed(KeyCode::KeyL) || clicked {
         ui.visible = !ui.visible;
         if ui.visible {
             goods.visible = false;
+            census.visible = false;
         }
     }
 }
 
 /// Toggle the goods panel via the `G` key or the Goods HUD button (closes the
-/// announcements panel, which shares the centre slot).
+/// announcements + census panels, which share the centre slot).
 fn toggle_goods(
     keys: Res<ButtonInput<KeyCode>>,
     button: Query<&Interaction, (Changed<Interaction>, With<GoodsButton>)>,
     mut ui: ResMut<GoodsUi>,
     mut announce: ResMut<AnnouncementsUi>,
+    mut census: ResMut<CensusUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
     if keys.just_pressed(KeyCode::KeyG) || clicked {
         ui.visible = !ui.visible;
         if ui.visible {
             announce.visible = false;
+            census.visible = false;
         }
+    }
+}
+
+/// Toggle the census panel via the `C` key or the Census HUD button (closes the
+/// goods + announcements panels, which share the centre slot).
+fn toggle_census(
+    keys: Res<ButtonInput<KeyCode>>,
+    button: Query<&Interaction, (Changed<Interaction>, With<CensusButton>)>,
+    mut ui: ResMut<CensusUi>,
+    mut goods: ResMut<GoodsUi>,
+    mut announce: ResMut<AnnouncementsUi>,
+) {
+    let clicked = button.iter().any(|i| *i == Interaction::Pressed);
+    if keys.just_pressed(KeyCode::KeyC) || clicked {
+        ui.visible = !ui.visible;
+        if ui.visible {
+            goods.visible = false;
+            announce.visible = false;
+        }
+    }
+}
+
+/// Show/hide the census panel and repaint its demographic lines from the live
+/// snapshot (population, life-stage + specialization breakdowns, recent vitals).
+fn update_census(
+    latest: Res<LatestSnapshot>,
+    ui: Res<CensusUi>,
+    mut panel: Query<&mut Node, With<CensusPanel>>,
+    mut lines: Query<(&CensusLine, &mut Text)>,
+) {
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if ui.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if !ui.visible || (!latest.is_changed() && !ui.is_changed()) {
+        return;
+    }
+    let report = latest
+        .0
+        .as_ref()
+        .and_then(|w| w.colonies.first())
+        .map_or_else(Vec::new, |c| {
+            let census = colony_census(
+                &c.cats,
+                &c.events,
+                c.leader.as_ref().map(|l| l.name.as_str()),
+            );
+            census_report_lines(&census)
+        });
+    for (line, mut text) in &mut lines {
+        text.0 = report.get(line.0).cloned().unwrap_or_default();
     }
 }
 
@@ -5425,8 +5724,144 @@ fn zone_color(kind: ZoneKind) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cat_protocol::WorldSnapshot;
+    use cat_protocol::{CatStats, MapName, MapPosition, WorldSnapshot};
     use cat_sim::terrain_gen::BiomeRole;
+
+    fn census_cat(age_hours: f64, spec: Option<Specialization>, boosted: bool) -> CatSnapshot {
+        CatSnapshot {
+            id: "c".to_string(),
+            name: "C".to_string(),
+            position: MapPosition {
+                map: MapName::Colony,
+                x: 0,
+                y: 0,
+            },
+            activity: CatActivity::Idle,
+            destination: None,
+            carrying: None,
+            specialization: spec,
+            age_hours,
+            needs: CatNeeds {
+                hunger: 1.0,
+                thirst: 1.0,
+                rest: 1.0,
+                health: 1.0,
+            },
+            current_task: None,
+            assigned_building_id: None,
+            role_xp: RoleXp {
+                hunter: 0.0,
+                architect: 0.0,
+                ritualist: 0.0,
+                warrior: 0.0,
+            },
+            stats: CatStats { leadership: 0.0 },
+            death_time: None,
+            parent_ids: Vec::new(),
+            parents: Vec::new(),
+            boosted,
+        }
+    }
+
+    #[test]
+    fn census_tallies_stages_specs_and_vitals() {
+        let mut cats = vec![
+            census_cat(3.0, None, false),                         // kitten, unspec
+            census_cat(10.0, Some(Specialization::Hunter), true), // young, hunter, boosted
+            census_cat(30.0, Some(Specialization::Architect), false), // adult
+            census_cat(50.0, Some(Specialization::Warrior), false), // elder
+            census_cat(40.0, Some(Specialization::Ritualist), false), // adult
+        ];
+        // A dead cat must be excluded from every tally.
+        let mut dead = census_cat(35.0, Some(Specialization::Hunter), true);
+        dead.death_time = Some(1);
+        cats.push(dead);
+
+        let events = vec![
+            EventSnapshot {
+                message: "Dawnpaw was born to the colony.".to_string(),
+                timestamp: 0,
+            },
+            EventSnapshot {
+                message: "Two cats are expecting a litter.".to_string(),
+                timestamp: 0,
+            },
+            EventSnapshot {
+                message: "Mossfur died of old age.".to_string(),
+                timestamp: 0,
+            },
+        ];
+
+        let c = colony_census(&cats, &events, Some("Bella"));
+        assert_eq!(c.total, 5);
+        assert_eq!((c.kittens, c.young, c.adults, c.elders), (1, 1, 2, 1));
+        assert_eq!(c.hunters, 1);
+        assert_eq!(c.architects, 1);
+        assert_eq!(c.ritualists, 1);
+        assert_eq!(c.warriors, 1);
+        assert_eq!(c.unspecialized, 1);
+        assert_eq!(c.boosted, 1);
+        assert!((c.avg_age_hours - (3.0 + 10.0 + 30.0 + 50.0 + 40.0) / 5.0).abs() < 1e-9);
+        // "born" counts as a birth; "expecting a litter" (conception) does not.
+        assert_eq!(c.births, 1);
+        assert_eq!(c.deaths, 1);
+        assert_eq!(c.leader.as_deref(), Some("Bella"));
+    }
+
+    #[test]
+    fn census_stage_boundaries_and_empty_colony() {
+        // Boundary ages land in the higher stage (age < max), matching the sim.
+        assert_eq!(
+            colony_census(&[census_cat(6.0, None, false)], &[], None).young,
+            1
+        );
+        assert_eq!(
+            colony_census(&[census_cat(24.0, None, false)], &[], None).adults,
+            1
+        );
+        assert_eq!(
+            colony_census(&[census_cat(48.0, None, false)], &[], None).elders,
+            1
+        );
+        // A non-finite age falls through to elder (sim parity), no NaN avg on empty.
+        assert_eq!(
+            colony_census(&[census_cat(f64::NAN, None, false)], &[], None).elders,
+            1
+        );
+        let empty = colony_census(&[], &[], None);
+        assert_eq!(empty.total, 0);
+        assert_eq!(empty.avg_age_hours, 0.0);
+        assert_eq!(empty.leader, None);
+    }
+
+    #[test]
+    fn census_report_lines_are_stable_length_and_readable() {
+        let c = colony_census(
+            &[
+                census_cat(3.0, None, false),
+                census_cat(30.0, Some(Specialization::Hunter), true),
+            ],
+            &[],
+            Some("Bella"),
+        );
+        let lines = census_report_lines(&c);
+        assert_eq!(lines.len(), CENSUS_LINES);
+        assert_eq!(lines[0], "Population: 2");
+        assert_eq!(lines[1], "Leader: Bella");
+        assert!(lines[2].contains("★ Boosted: 1"));
+        // A vacant seat renders a placeholder rather than dropping the line.
+        let vacant = census_report_lines(&colony_census(&[], &[], None));
+        assert_eq!(vacant.len(), CENSUS_LINES);
+        assert_eq!(vacant[1], "Leader: (vacant)");
+    }
+
+    #[test]
+    fn census_bar_scales_to_the_largest_tally() {
+        assert_eq!(census_bar(0, 5, 12), "");
+        assert_eq!(census_bar(5, 5, 12).len(), 12);
+        assert_eq!(census_bar(3, 0, 12), ""); // max 0 → no divide-by-zero
+        assert!(census_bar(1, 5, 12).len() < 12);
+    }
 
     #[test]
     fn boost_button_label_reflects_boosted_state() {
