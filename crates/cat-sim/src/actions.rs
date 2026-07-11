@@ -1183,6 +1183,7 @@ fn cat_snapshot(colony: &ColonyRuntime, cat: &Cat) -> proto::CatSnapshot {
             })
             .collect(),
         boosted: cat.boosted,
+        pregnant: cat.is_pregnant,
     }
 }
 

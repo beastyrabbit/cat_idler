@@ -290,6 +290,11 @@ pub struct CatSnapshot {
     /// lands in a later card).
     #[serde(default)]
     pub boosted: bool,
+    /// Whether this cat is currently expecting a litter (mirrors `entities::Cat::
+    /// is_pregnant`). Lets the census/inspector show an "expecting" state. Additive;
+    /// defaults to `false` for older payloads.
+    #[serde(default)]
+    pub pregnant: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1240,6 +1245,7 @@ mod tests {
                     parent_ids: vec!["cat_0".to_string()],
                     parents: vec!["Ash".to_string()],
                     boosted: false,
+                    pregnant: false,
                 }],
                 jobs: vec![JobSnapshot {
                     id: "job_1".to_string(),
@@ -1704,5 +1710,24 @@ mod tests {
             .remove("boosted");
         let back: WorldSnapshot = serde_json::from_value(old).expect("deserialize");
         assert!(!back.colonies[0].cats[0].boosted);
+    }
+
+    #[test]
+    fn cat_snapshot_pregnant_round_trips_and_defaults_false_for_old_payloads() {
+        let mut snap = sample_world_snapshot();
+        snap.colonies[0].cats[0].pregnant = true;
+        let encoded = serde_json::to_value(&snap).expect("serialize");
+        assert_eq!(encoded["colonies"][0]["cats"][0]["pregnant"], json!(true));
+        let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
+        assert_eq!(round, snap);
+
+        // Absent `pregnant` (pre-life-sim-UI payload) defaults to false.
+        let mut old = serde_json::to_value(sample_world_snapshot()).expect("serialize");
+        old["colonies"][0]["cats"][0]
+            .as_object_mut()
+            .expect("cat object")
+            .remove("pregnant");
+        let back: WorldSnapshot = serde_json::from_value(old).expect("deserialize");
+        assert!(!back.colonies[0].cats[0].pregnant);
     }
 }

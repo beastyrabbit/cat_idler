@@ -5760,6 +5760,7 @@ mod tests {
             parent_ids: Vec::new(),
             parents: Vec::new(),
             boosted,
+            pregnant: false,
         }
     }
 
