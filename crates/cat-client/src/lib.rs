@@ -374,6 +374,18 @@ fn officer_role_name(role: OfficerRole) -> &'static str {
     }
 }
 
+/// Label for the cat-inspector boost toggle, driven by the cat's current
+/// `boosted` flag. Off invites the player to prioritise the cat; on shows the
+/// god-power is active and how to release it. The leading star matches the
+/// on-map marker so the two read as the same affordance.
+fn boost_button_label(boosted: bool) -> &'static str {
+    if boosted {
+        "★ Boosted (click to clear)"
+    } else {
+        "★ Boost"
+    }
+}
+
 /// Active map tool, any in-progress drag, and the accept-type the next stockpile
 /// will be designated with.
 #[derive(Resource, Default)]
@@ -943,6 +955,13 @@ struct VacateButton(OfficerRole);
 /// "Appoint <role>" button in the cat inspector.
 #[derive(Component, Clone, Copy)]
 struct AppointButton(OfficerRole);
+/// The cat-inspector "Boost" toggle button (flips the selected cat's priority
+/// flag via `BoostCat`).
+#[derive(Component)]
+struct BoostButton;
+/// The label text inside the boost button, repainted live from `boosted`.
+#[derive(Component)]
+struct BoostButtonText;
 /// Marker for the HUD colony header text (name / leader / pop / threat).
 #[derive(Component)]
 struct HudHeaderText;
@@ -1374,7 +1393,7 @@ pub fn run() {
                     handle_vacate_buttons,
                     flush_outgoing,
                 ),
-                // announcements / event log + goods + trade + minimap
+                // announcements / event log + goods + trade + boost + minimap
                 (
                     toggle_announcements,
                     update_announcements,
@@ -1382,6 +1401,8 @@ pub fn run() {
                     update_goods,
                     update_trade_menu,
                     handle_trade_buttons,
+                    update_boost_button,
+                    handle_boost_button,
                     toggle_minimap,
                     update_minimap,
                     update_minimap_viewport,
@@ -2203,6 +2224,28 @@ fn setup(
                         ));
                     });
             }
+            // God-power: mark this cat a priority pick for the leader's matcher.
+            panel.spawn((
+                Button,
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(26.0),
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                sliced_image(ui.button.clone(), BUTTON_BORDER),
+                BoostButton,
+                children![(
+                    Text::new(boost_button_label(false)),
+                    TextFont {
+                        font_size: FontSize::Px(11.0),
+                        ..default()
+                    },
+                    TextColor(PARCHMENT_INK),
+                    BoostButtonText,
+                )],
+            ));
             panel.spawn((
                 Text::new("Appoint officer:"),
                 TextFont {
@@ -3243,6 +3286,64 @@ fn handle_appoint_buttons(
     }
 }
 
+/// Repaint the boost button's label from the selected cat's live `boosted`
+/// flag, so the toggle round-trips visibly once the stream echoes the change.
+fn update_boost_button(
+    latest: Res<LatestSnapshot>,
+    selection: Res<Selection>,
+    mut text: Query<&mut Text, With<BoostButtonText>>,
+) {
+    if !latest.is_changed() && !selection.is_changed() {
+        return;
+    }
+    let Ok(mut text) = text.single_mut() else {
+        return;
+    };
+    let boosted = selected_cat(&latest, &selection).is_some_and(|c| c.boosted);
+    text.0 = boost_button_label(boosted).to_string();
+}
+
+/// Toggle the selected cat's priority flag when the Boost button is clicked,
+/// flipping off the cat's current `boosted` state read from the live snapshot.
+#[allow(clippy::type_complexity)]
+fn handle_boost_button(
+    session: Res<Session>,
+    selection: Res<Selection>,
+    latest: Res<LatestSnapshot>,
+    mut outgoing: ResMut<OutgoingActions>,
+    mut buttons: Query<(&Interaction, &mut ImageNode), (Changed<Interaction>, With<BoostButton>)>,
+) {
+    for (interaction, mut image) in &mut buttons {
+        match interaction {
+            Interaction::Pressed => {
+                image.color = BTN_PRESS;
+                if let (Some(cat_id), true) = (selection.selected.clone(), session.ready) {
+                    let current = selected_cat(&latest, &selection).is_some_and(|c| c.boosted);
+                    outgoing.0.push(ClientAction::BoostCat {
+                        session_id: session.session_id.clone(),
+                        nickname: "Desktop Cat".to_string(),
+                        sig: session.sig.clone(),
+                        cat_id,
+                        boosted: !current,
+                    });
+                }
+            }
+            Interaction::Hovered => image.color = BTN_HOVER,
+            Interaction::None => image.color = BTN_IDLE,
+        }
+    }
+}
+
+/// The currently selected, still-living cat in the latest snapshot (if any).
+fn selected_cat<'a>(latest: &'a LatestSnapshot, selection: &Selection) -> Option<&'a CatSnapshot> {
+    let id = selection.selected.as_deref()?;
+    latest
+        .0
+        .as_ref()
+        .and_then(|w| w.colonies.first())
+        .and_then(|c| c.cats.iter().find(|k| k.id == id && k.death_time.is_none()))
+}
+
 /// Vacate a role when its "x" button is clicked.
 fn handle_vacate_buttons(
     session: Res<Session>,
@@ -3384,6 +3485,16 @@ fn sync_cats(
                 &cat.id,
                 Vec3::new(TILE * 0.3, CAT_SIZE.y * 0.55, 0.6),
                 Sprite::from_color(carrying_color(carrying.kind), Vec2::splat(TILE * 0.28)),
+            );
+        }
+        // Boosted cats wear a bright gold star above the head so a priority pick
+        // reads at a glance without opening the inspector.
+        if cat.boosted {
+            spawn_cat_overlay(
+                &mut commands,
+                &cat.id,
+                Vec3::new(0.0, CAT_SIZE.y * 1.05, 0.7),
+                Sprite::from_color(Color::srgb(1.0, 0.90, 0.28), Vec2::splat(TILE * 0.42)),
             );
         }
     }
@@ -4619,6 +4730,12 @@ fn update_minimap(
     let leader_id = colony.leader.as_ref().map(|l| l.id.as_str());
     for c in colony.cats.iter().filter(|c| c.death_time.is_none()) {
         if let Some((px, py)) = world_to_minimap(view, c.position.x, c.position.y) {
+            // Boosted cats get a bright 2x2 gold block so priority picks pop out
+            // of the dot field even on the tiny minimap.
+            if c.boosted {
+                put_block(&mut buf, px, py, [255, 236, 120, 255]);
+                continue;
+            }
             let color = if Some(c.id.as_str()) == leader_id {
                 [236, 206, 92, 255]
             } else if c.specialization == Some(Specialization::Warrior) {
@@ -5310,6 +5427,15 @@ mod tests {
     use super::*;
     use cat_protocol::WorldSnapshot;
     use cat_sim::terrain_gen::BiomeRole;
+
+    #[test]
+    fn boost_button_label_reflects_boosted_state() {
+        assert_eq!(boost_button_label(false), "★ Boost");
+        assert_eq!(boost_button_label(true), "★ Boosted (click to clear)");
+        // The star prefix ties the button to the on-map marker in both states.
+        assert!(boost_button_label(false).starts_with('★'));
+        assert!(boost_button_label(true).starts_with('★'));
+    }
 
     #[test]
     fn grid_projection_is_flat_and_top_down() {
