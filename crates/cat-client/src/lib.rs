@@ -1032,6 +1032,27 @@ fn ui_button() -> impl Bundle {
     )
 }
 
+/// A compact kit button (chips, "x" affordances, inline row buttons): the same
+/// fill/border/states as [`ui_button`] at a smaller height + tighter padding.
+fn ui_button_small() -> impl Bundle {
+    (
+        Button,
+        Node {
+            height: Val::Px(22.0),
+            min_width: Val::Px(22.0),
+            padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(0.0)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            border: UiRect::all(Val::Px(1.0)),
+            border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 3.0)),
+            ..default()
+        },
+        BackgroundColor(UI_BTN),
+        BorderColor::all(UI_BORDER),
+        KitButton,
+    )
+}
+
 /// Marks a button styled by the kit so [`update_kit_buttons`] owns its fill.
 #[derive(Component)]
 struct KitButton;
@@ -2267,43 +2288,52 @@ fn setup(
             });
         });
 
-    // Corner minimap (bottom-right, clear of the inspectors + toolbars), 9-patch
-    // framed, showing the dynamic minimap texture. Toggled with 'M'.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(8.0),
-            bottom: Val::Px(70.0),
-            padding: UiRect::all(Val::Px(14.0)),
-            ..default()
-        },
-        GlobalZIndex(70),
-        sliced_image(ui.panel.clone(), PANEL_BORDER),
-        MinimapPanel,
-        children![(
+    // Corner minimap (bottom-right, clear of the inspectors + toolbars): a kit
+    // panel with a "Map" title bar over the dynamic minimap texture. Toggled 'M'.
+    commands
+        .spawn((
             Node {
-                width: Val::Px(168.0),
-                height: Val::Px(168.0),
-                ..default()
+                right: Val::Px(10.0),
+                bottom: Val::Px(66.0),
+                ..ui_panel_node(Val::Px(168.0 + 2.0 * UI_GAP + 2.0 * UI_BORDER_W))
             },
-            ImageNode::new(minimap_handle),
-            // Button so the world-pick systems (which skip Button interactions)
-            // ignore clicks that land on the minimap.
-            Button,
-            RelativeCursorPosition::default(),
-            MinimapImageNode,
-            // Camera-viewport outline, positioned each frame over the minimap.
-            children![(
-                Node {
-                    position_type: PositionType::Absolute,
-                    border: UiRect::all(Val::Px(1.0)),
+            GlobalZIndex(70),
+            ui_panel_frame(),
+            MinimapPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn(ui_title_bar("Map"));
+            panel
+                .spawn(Node {
+                    padding: UiRect::all(Val::Px(UI_GAP)),
                     ..default()
-                },
-                BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
-                MinimapViewportRect,
-            )],
-        )],
-    ));
+                })
+                .with_children(|body| {
+                    body.spawn((
+                        Node {
+                            width: Val::Px(168.0),
+                            height: Val::Px(168.0),
+                            ..default()
+                        },
+                        ImageNode::new(minimap_handle),
+                        // Button so the world-pick systems (which skip Button
+                        // interactions) ignore clicks that land on the minimap.
+                        Button,
+                        RelativeCursorPosition::default(),
+                        MinimapImageNode,
+                        // Camera-viewport outline, positioned each frame.
+                        children![(
+                            Node {
+                                position_type: PositionType::Absolute,
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
+                            MinimapViewportRect,
+                        )],
+                    ));
+                });
+        });
 
     // Top command bar: game title + panel tabs (Log/Goods/Census/Tree) + the
     // latest-dispatch ticker, all in ONE framed strip so the controls read as a
@@ -2944,46 +2974,27 @@ fn setup(
         });
 
     // Remove-stockpile affordance (right side), hidden until one is selected.
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(8.0),
-            top: Val::Px(170.0),
-            width: Val::Px(210.0),
-            padding: UiRect::all(Val::Px(22.0)),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(6.0),
-            display: Display::None,
-            ..default()
-        },
-        sliced_image(ui.panel.clone(), PANEL_BORDER),
-        RemovePanel,
-        children![
-            (
-                Text::new(""),
-                TextFont {
-                    font_size: FontSize::Px(12.0),
-                    ..default()
-                },
-                TextColor(PARCHMENT_INK),
-                RemovePanelText,
-            ),
-            (
-                Button,
-                wood_button_node(),
-                sliced_image(ui.button.clone(), BUTTON_BORDER),
-                RemoveStockpileButton,
-                children![(
-                    Text::new("Remove stockpile"),
-                    TextFont {
-                        font_size: FontSize::Px(12.0),
-                        ..default()
-                    },
-                    TextColor(PARCHMENT_INK),
-                )],
-            ),
-        ],
-    ));
+    commands
+        .spawn((
+            Node {
+                right: Val::Px(10.0),
+                top: Val::Px(170.0),
+                ..ui_panel_node(Val::Px(224.0))
+            },
+            RemovePanel,
+            ui_panel_frame(),
+        ))
+        .with_children(|panel| {
+            panel.spawn(ui_title_bar("Stockpile"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                body.spawn((ui_text("", FS_BODY, UI_INK), RemovePanelText));
+                body.spawn((
+                    ui_button(),
+                    RemoveStockpileButton,
+                    children![ui_text("Remove stockpile", FS_BODY, UI_INK)],
+                ));
+            });
+        });
 
     // Building inspector (right, below the remove panel), middle-click a
     // building; hidden until one is selected.
@@ -3013,92 +3024,52 @@ fn setup(
     ));
 
     // Officers panel (left, below the dashboard), toggled with `O`.
-    spawn_officers_panel(&mut commands, &ui);
+    spawn_officers_panel(&mut commands);
 
     // Bottom command bar (tool modes + player actions, one framed strip).
     spawn_bottom_bar(&mut commands);
 }
 
-/// A legacy wood-sprite button node (parchment sprite carries the look; text is
-/// dark ink). Still used by the panels not yet migrated to the kit.
-fn wood_button_node() -> Node {
-    Node {
-        min_width: Val::Px(96.0),
-        height: Val::Px(34.0),
-        padding: UiRect::axes(Val::Px(12.0), Val::Px(4.0)),
-        justify_content: JustifyContent::Center,
-        align_items: AlignItems::Center,
-        ..default()
-    }
-}
-
-fn spawn_officers_panel(commands: &mut Commands, ui: &UiArt) {
+fn spawn_officers_panel(commands: &mut Commands) {
     commands
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(8.0),
+                left: Val::Px(10.0),
                 // Below the HUD dashboard, which grew taller with the refinement
                 // tier (planks/blocks/tools) rows.
                 top: Val::Px(500.0),
-                width: Val::Px(268.0),
-                padding: UiRect::all(Val::Px(26.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(4.0),
-                ..default()
+                ..ui_panel_node(Val::Px(268.0))
             },
-            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            ui_panel_frame(),
             OfficersPanel,
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Text::new("Officers  [O]"),
-                TextFont {
-                    font_size: FontSize::Px(13.0),
-                    ..default()
-                },
-                TextColor(PARCHMENT_INK),
-            ));
-            for role in ALL_OFFICER_ROLES {
-                panel
-                    .spawn(Node {
+            panel.spawn(ui_title_bar("Officers  [O]"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                for role in ALL_OFFICER_ROLES {
+                    body.spawn(Node {
                         flex_direction: FlexDirection::Row,
                         align_items: AlignItems::Center,
-                        column_gap: Val::Px(6.0),
+                        column_gap: Val::Px(UI_GAP),
                         ..default()
                     })
                     .with_children(|row| {
                         row.spawn((
-                            Text::new(""),
-                            TextFont {
-                                font_size: FontSize::Px(12.0),
+                            Node {
+                                flex_grow: 1.0,
                                 ..default()
                             },
-                            TextColor(PARCHMENT_INK),
+                            ui_text("", FS_BODY, UI_INK),
                             OfficerRow(role),
                         ));
                         row.spawn((
-                            Button,
-                            Node {
-                                width: Val::Px(22.0),
-                                height: Val::Px(20.0),
-                                justify_content: JustifyContent::Center,
-                                align_items: AlignItems::Center,
-                                ..default()
-                            },
-                            sliced_image(ui.button.clone(), BUTTON_BORDER),
+                            ui_button_small(),
                             VacateButton(role),
-                            children![(
-                                Text::new("x"),
-                                TextFont {
-                                    font_size: FontSize::Px(11.0),
-                                    ..default()
-                                },
-                                TextColor(PARCHMENT_INK),
-                            )],
+                            children![ui_text("x", FS_SMALL, UI_INK)],
                         ));
                     });
-            }
+                }
+            });
         });
 }
 
@@ -3943,24 +3914,19 @@ fn handle_remove_button(
     session: Res<Session>,
     mut selection: ResMut<StockpileSelection>,
     mut outgoing: ResMut<OutgoingActions>,
-    mut button: Query<(&Interaction, &mut ImageNode), With<RemoveStockpileButton>>,
+    button: Query<&Interaction, (Changed<Interaction>, With<RemoveStockpileButton>)>,
 ) {
-    for (interaction, mut image) in &mut button {
-        match interaction {
-            Interaction::Pressed => {
-                image.color = BTN_PRESS;
-                if let (Some(id), true) = (selection.selected.clone(), session.ready) {
-                    outgoing.0.push(ClientAction::RemoveStockpile {
-                        session_id: session.session_id.clone(),
-                        nickname: "Desktop Cat".to_string(),
-                        sig: session.sig.clone(),
-                        stockpile_id: id,
-                    });
-                    selection.selected = None;
-                }
-            }
-            Interaction::Hovered => image.color = BTN_HOVER,
-            Interaction::None => image.color = BTN_IDLE,
+    for interaction in &button {
+        if *interaction == Interaction::Pressed
+            && let (Some(id), true) = (selection.selected.clone(), session.ready)
+        {
+            outgoing.0.push(ClientAction::RemoveStockpile {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                stockpile_id: id,
+            });
+            selection.selected = None;
         }
     }
 }
@@ -4089,23 +4055,16 @@ fn selected_cat<'a>(latest: &'a LatestSnapshot, selection: &Selection) -> Option
 fn handle_vacate_buttons(
     session: Res<Session>,
     mut outgoing: ResMut<OutgoingActions>,
-    mut buttons: Query<(&Interaction, &VacateButton, &mut ImageNode), Changed<Interaction>>,
+    buttons: Query<(&Interaction, &VacateButton), Changed<Interaction>>,
 ) {
-    for (interaction, vacate, mut image) in &mut buttons {
-        match interaction {
-            Interaction::Pressed => {
-                image.color = BTN_PRESS;
-                if session.ready {
-                    outgoing.0.push(ClientAction::UnassignOfficer {
-                        session_id: session.session_id.clone(),
-                        nickname: "Desktop Cat".to_string(),
-                        sig: session.sig.clone(),
-                        role: vacate.0,
-                    });
-                }
-            }
-            Interaction::Hovered => image.color = BTN_HOVER,
-            Interaction::None => image.color = BTN_IDLE,
+    for (interaction, vacate) in &buttons {
+        if *interaction == Interaction::Pressed && session.ready {
+            outgoing.0.push(ClientAction::UnassignOfficer {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                role: vacate.0,
+            });
         }
     }
 }
