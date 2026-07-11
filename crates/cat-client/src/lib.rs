@@ -582,13 +582,14 @@ impl TerrainArt {
     }
 
     /// The nature sprite + its height in tiles for a biome's trees.
+    /// A top-down canopy sprite + the square-size multiplier (× TILE) to render
+    /// it at. All are 16×16 canopies-from-above (Kenney Roguelike, CC0).
     fn tree(&self, sprite: TreeSprite) -> (Handle<Image>, f32) {
         match sprite {
-            TreeSprite::Oak => (self.tree_oak.clone(), 2.0),
-            TreeSprite::Pine => (self.tree_pine.clone(), 2.0),
-            // Tiny Ski sprites are single-cell; render a touch over a tile.
-            TreeSprite::SnowPine => (self.tree_snow_pine.clone(), 1.4),
-            TreeSprite::DeadTree => (self.tree_dead.clone(), 1.2),
+            TreeSprite::Oak => (self.tree_oak.clone(), 1.6),
+            TreeSprite::Pine => (self.tree_pine.clone(), 1.5),
+            TreeSprite::SnowPine => (self.tree_snow_pine.clone(), 1.5),
+            TreeSprite::DeadTree => (self.tree_dead.clone(), 1.3),
         }
     }
 
@@ -3261,18 +3262,19 @@ fn spawn_terrain(
         match decoration {
             Some(DecorationRole::Tree { .. }) => {
                 // Tree species follows the biome (conifer/broadleaf/stump), not a
-                // per-tile species roll. 16×32 sprites are anchored trunk-to-tile
-                // and y-sorted with the rest of the world by their base.
-                let (tree, height) = art.tree(biome_tree(tile.climate_biome));
-                let base_y = p.y - TILE * 0.5;
+                // per-tile species roll. Top-down tree = a canopy seen from above:
+                // a square sprite centred on the tile (not a standing side-view
+                // trunk), sized a touch larger than the tile so the forest reads
+                // as overlapping canopies.
+                let (tree, scale) = art.tree(biome_tree(tile.climate_biome));
                 commands.spawn((
                     Sprite {
                         image: tree,
-                        custom_size: Some(Vec2::new(TILE, TILE * height)),
+                        custom_size: Some(Vec2::splat(TILE * scale)),
                         ..default()
                     },
-                    Anchor::BOTTOM_CENTER,
-                    Transform::from_xyz(p.x, base_y, ysort_z(base_y)),
+                    Anchor::CENTER,
+                    Transform::from_xyz(p.x, p.y, ysort_z(p.y)),
                 ));
             }
             Some(DecorationRole::Rock { size, .. }) => {
