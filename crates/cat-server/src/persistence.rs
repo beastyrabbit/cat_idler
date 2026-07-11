@@ -445,6 +445,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         revealed_tiles: parse_tile_list(revealed_tiles_json.as_deref())?
             .into_iter()
             .collect(),
+        // P15: a scout's in-flight tentative reveal isn't persisted (like `trader`/
+        // `items` above) — a restarted server just drops any not-yet-delivered
+        // provisional fog; the scout resumes and re-reveals it on its way home.
+        provisional_tiles: BTreeMap::new(),
         officers: officers_json
             .map(|raw| {
                 serde_json::from_str::<BTreeMap<OfficerRole, String>>(&raw).map_err(from_sql_json)

@@ -44,6 +44,13 @@ pub struct ColonySnapshot {
     /// Additive since P15; empty/absent for pre-fog snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub revealed_tiles: Vec<TilePoint>,
+    /// Fog-of-war P15: tiles a currently-out scout has *tentatively* uncovered but
+    /// not yet delivered — the client should render these dim/provisional, distinct
+    /// from the solid `revealed_tiles`. A tile moves from here into `revealed_tiles`
+    /// once its scout reaches the shrine; it drops out (never committing) if that
+    /// scout dies first. Additive since P15; empty/absent for pre-P15 snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provisional_tiles: Vec<TilePoint>,
     /// Paved road tiles (`overlay_feature == "road_built"`). The client draws roads
     /// over these. Additive; empty/absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1346,6 +1353,7 @@ mod tests {
                 }],
                 claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
+                provisional_tiles: vec![],
                 road_tiles: vec![],
                 village_gate: Some(GatePlacement {
                     x: 5,

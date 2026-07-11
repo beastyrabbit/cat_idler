@@ -3,7 +3,7 @@
 
 use std::{
     cmp::Reverse,
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
 };
 
 use cat_protocol as proto;
@@ -1012,6 +1012,18 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         buildings: buildings_snapshot(colony),
         claimed_tiles: colony.claimed_tiles.iter().map(tile_point).collect(),
         revealed_tiles: colony.revealed_tiles.iter().map(tile_point).collect(),
+        // Merge every out scout's tentative tiles into one deterministic, deduped,
+        // sorted set (matching `revealed_tiles`'s `BTreeSet` ordering) rather than
+        // exposing per-scout grouping the client doesn't need.
+        provisional_tiles: colony
+            .provisional_tiles
+            .values()
+            .flatten()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .iter()
+            .map(tile_point)
+            .collect(),
         road_tiles: colony
             .world_tiles
             .iter()
@@ -2945,6 +2957,54 @@ mod tests {
             revealed.len() < world.colonies[0].world_tiles.len(),
             "the wilds beyond the village start fogged"
         );
+    }
+
+    #[test]
+    fn build_snapshot_exposes_a_scouts_provisional_tiles_dedeuped_and_sorted() {
+        // P15: an out scout's tentative reveal must reach the client (dim/uncommitted)
+        // distinctly from `revealed_tiles`, merged across every currently-out scout
+        // into one deterministic, deduped, sorted set.
+        let mut world = world_with_one_colony();
+        world.colonies[0].provisional_tiles = BTreeMap::from([
+            (
+                "scout_a".to_owned(),
+                BTreeSet::from([TilePos { x: 40, y: 40 }, TilePos { x: 41, y: 40 }]),
+            ),
+            (
+                "scout_b".to_owned(),
+                // Overlaps scout_a's tile — must not appear twice in the snapshot.
+                BTreeSet::from([TilePos { x: 41, y: 40 }, TilePos { x: -5, y: 90 }]),
+            ),
+        ]);
+
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        let provisional = &snap.colonies[0].provisional_tiles;
+
+        assert_eq!(
+            provisional,
+            &vec![
+                proto::TilePoint { x: -5, y: 90 },
+                proto::TilePoint { x: 40, y: 40 },
+                proto::TilePoint { x: 41, y: 40 },
+            ],
+            "provisional tiles from every out scout are merged, deduped, and sorted"
+        );
+        // Untouched by provisional state — the two tiers stay independent.
+        assert!(
+            !snap.colonies[0]
+                .revealed_tiles
+                .contains(&proto::TilePoint { x: 40, y: 40 }),
+            "provisional tiles must not leak into the committed revealed set"
+        );
+    }
+
+    #[test]
+    fn build_snapshot_omits_provisional_tiles_when_no_scout_is_out() {
+        let world = world_with_one_colony();
+        assert!(world.colonies[0].provisional_tiles.is_empty());
+
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        assert!(snap.colonies[0].provisional_tiles.is_empty());
     }
 
     #[test]

@@ -140,6 +140,16 @@ pub struct ColonyRuntime {
     /// walking near a tile add to it (`reveal_and_wear_walked_tiles`). Does not affect
     /// the sim; a `BTreeSet` keeps the snapshot order deterministic.
     pub revealed_tiles: BTreeSet<TilePos>,
+    /// Fog-of-war P15: tentative reveal for a scout currently out on an `Explore` job
+    /// (and still on its way home) — keyed by scout cat id, holding the tiles that
+    /// scout's walk has newly uncovered but not yet delivered. Committed into
+    /// `revealed_tiles` when the scout reaches the shrine
+    /// (`commit_scout_provisional_tiles`); dropped without committing if the scout
+    /// dies before returning (`phase_25b_prune_dead_scout_provisional_tiles`).
+    /// Transient/runtime-only like `revealed_tiles` — not persisted, and rebuilding
+    /// empty on load simply means an in-flight scout's dim halo restarts (no lost
+    /// permanent knowledge, since nothing here is permanent yet).
+    pub provisional_tiles: BTreeMap<CatId, BTreeSet<TilePos>>,
     /// Appointed officers (role → cat id). P12.2 additive layer; empty = no effect.
     pub officers: BTreeMap<OfficerRole, String>,
     /// On-map stockpiles (P12.3). Always includes the shrine reservoir after a tick;
@@ -581,6 +591,7 @@ impl Default for ColonyRuntime {
             critical_since: None,
             claimed_tiles: Vec::new(),
             revealed_tiles: BTreeSet::new(),
+            provisional_tiles: BTreeMap::new(),
             officers: BTreeMap::new(),
             stockpiles: Vec::new(),
             stock_ledger: StockLedger::default(),
@@ -1158,6 +1169,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_23_production(colony, gate);
         phase_24_research(colony, gate);
         phase_25_survival_deaths_and_carried_yield_salvage(colony, gate, policy);
+        phase_25b_prune_dead_scout_provisional_tiles(colony, gate);
         if let Some(reset_reason) = phase_26_empty_colony_reset(colony, gate) {
             reconcile_colony_stockpiles(colony);
             reports.push(TickReport {
@@ -2082,6 +2094,16 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
                 cat.destination = Some(position_from_world(dest));
                 cat.activity = CatActivity::Traveling;
                 cat.current_task = task_for_job(job.kind);
+            }
+            // P15: register this cat as an out scout for the lifetime of the
+            // excursion — reveal turns provisional the moment this entry exists
+            // (`reveal_and_wear_walked_tiles`) and stays that way through the walk
+            // home, since this is the only place an `Explore` job's destination gets
+            // (re-)assigned; the entry is cleared on shrine arrival
+            // (`commit_scout_provisional_tiles`) or on death
+            // (`phase_25b_prune_dead_scout_provisional_tiles`).
+            if job.kind == JobKind::Explore {
+                colony.provisional_tiles.entry(cat_id).or_default();
             }
         }
     }
@@ -3146,6 +3168,29 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
     }
 }
 
+/// Additive P15 phase: drop any dead scout's tentative fog reveal. A scout that
+/// dies mid-excursion (survival, old age, or a raid earlier this tick) never
+/// reaches the shrine to commit via `commit_scout_provisional_tiles`, so without
+/// this its `provisional_tiles` entry would sit forever — the spec is explicit
+/// that a dead scout's discoveries must NOT become permanent. Runs right after
+/// every phase this tick that can set `death_time` before movement (phase 6 life
+/// sim, phase 25 above); a death from the later raid director (phase 36) is
+/// swept up on the following tick, which matches "should eventually clear."
+fn phase_25b_prune_dead_scout_provisional_tiles(colony: &mut ColonyRuntime, _: TickGate) {
+    if colony.provisional_tiles.is_empty() {
+        return;
+    }
+    let alive_ids: HashSet<&str> = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .map(|cat| cat.id.as_str())
+        .collect();
+    colony
+        .provisional_tiles
+        .retain(|cat_id, _| alive_ids.contains(cat_id.as_str()));
+}
+
 /// Phase 26: reset empty colonies and short-circuit the remaining phases.
 fn phase_26_empty_colony_reset(
     colony: &mut ColonyRuntime,
@@ -3730,7 +3775,17 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         }
 
         if moved {
-            reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, current_task);
+            reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, &cat_id, current_task);
+        }
+
+        // P15: a scout's discoveries commit to the permanent map only once it is
+        // physically back — `return_assigned_cat` (phase 30) is the only place that
+        // sets a completed `Explore` job's cat to `Returning` with the shrine anchor
+        // as its destination, so "arrived while Returning" is precisely "a scout (or
+        // any other returning worker) just walked into the shrine." Non-scouts are a
+        // no-op: they never got a `provisional_tiles` entry to commit.
+        if arrived && activity == CatActivity::Returning {
+            commit_scout_provisional_tiles(colony, &cat_id);
         }
     }
 }
@@ -5324,11 +5379,19 @@ fn reveal_and_wear_walked_tiles(
     colony: &mut ColonyRuntime,
     movement: &MovementPassContext,
     walked: &[WorldPos],
+    cat_id: &str,
     current_task: Option<TaskType>,
 ) {
     if walked.is_empty() {
         return;
     }
+
+    // P15 two-tier reveal: a cat with a live `provisional_tiles` entry is a scout
+    // currently out on (or walking home from) an `Explore` job — see
+    // `phase_15_assign_promoted_job_destinations`, which is the sole place that
+    // entry gets created. Everyone else (regular cats, village-expansion movers)
+    // keeps committing straight to `revealed_tiles`, unchanged from before P15.
+    let is_scout = colony.provisional_tiles.contains_key(cat_id);
 
     let reveal_radius = if current_task == Some(TaskType::Explore) {
         2
@@ -5361,7 +5424,19 @@ fn reveal_and_wear_walked_tiles(
             }
             // Reveal regardless of whether the tile is materialised in `world_tiles`
             // (the live colony's map is sparse); only bump wear on tiles that exist.
-            colony.revealed_tiles.insert(pos);
+            if is_scout {
+                // Tentative: not yet committed to the permanent map. Skip tiles the
+                // colony already knows — nothing new to hold provisionally.
+                if !colony.revealed_tiles.contains(&pos) {
+                    colony
+                        .provisional_tiles
+                        .entry(cat_id.to_owned())
+                        .or_default()
+                        .insert(pos);
+                }
+            } else {
+                colony.revealed_tiles.insert(pos);
+            }
             if let Some(tile) = colony.world_tiles.get_mut(&pos) {
                 if walked_on {
                     tile.path_wear = add_path_wear(tile.path_wear, WALK_WEAR).max(64);
@@ -5370,6 +5445,17 @@ fn reveal_and_wear_walked_tiles(
                 }
             }
         }
+    }
+}
+
+/// P15: deliver a scout's tentative discoveries — folds `cat_id`'s
+/// `provisional_tiles` entry (if any) into the permanent `revealed_tiles` set and
+/// clears the entry. A no-op for any cat that never had one (everyone but a scout
+/// returning from an `Explore` job). Idempotent: committing twice, or committing an
+/// entry that was never created, does nothing on the second call.
+fn commit_scout_provisional_tiles(colony: &mut ColonyRuntime, cat_id: &str) {
+    if let Some(tiles) = colony.provisional_tiles.remove(cat_id) {
+        colony.revealed_tiles.extend(tiles);
     }
 }
 
@@ -8503,6 +8589,276 @@ mod tests {
             world.colonies[0].revealed_tiles.iter().copied().collect()
         };
         assert_eq!(revealed(&left), revealed(&right));
+    }
+
+    // ---- P15: provisional (scout, in-flight) vs committed (permanent) fog reveal ----
+
+    /// Shared movement rig for the P15 reveal-tier unit tests below: a single cat
+    /// walking a short, unobstructed 2-tile leg on open ground far from the village
+    /// (so nothing is skipped as "inside the village"), mirroring
+    /// `movement_advances_toward_destination_and_wears_traversed_tiles`'s proven
+    /// arrival timing (2 tiles covered in an 8-second elapsed window).
+    fn walking_leg_movement_context(colony: &ColonyRuntime) -> MovementPassContext {
+        MovementPassContext {
+            movement_seed: movement_seed(123),
+            movement_elapsed: 8.0,
+            wander_chance: 0.0,
+            ring_radius: 4,
+            claimed_area: Default::default(),
+            area_gate: None,
+            gate: pos(6, 10),
+            walk_tiles: colony
+                .world_tiles
+                .values()
+                .map(walk_tile_from_runtime)
+                .collect(),
+            zones: Vec::new(),
+            world_seed: 123,
+        }
+    }
+
+    fn walking_leg_world_tiles(min_x: i32, max_x: i32) -> BTreeMap<TilePos, WorldTileRuntime> {
+        let mut world_tiles = BTreeMap::new();
+        for x in (min_x - 1)..=(max_x + 1) {
+            for y in 5..=7 {
+                world_tiles.insert(pos(x, y), tile(x, y, 0, None));
+            }
+        }
+        world_tiles
+    }
+
+    #[test]
+    fn regular_cat_reveal_still_commits_directly_to_revealed_tiles() {
+        // A non-scout cat (no `provisional_tiles` entry) must keep revealing straight
+        // into the permanent `revealed_tiles` set, exactly as before P15 — the
+        // two-tier model must not regress ordinary walk-reveal.
+        let mut cat = adult_idle_cat("walker", "colony-1");
+        cat.position = Position {
+            map: MapType::World,
+            x: 20.0,
+            y: 6.0,
+        };
+        cat.destination = Some(Position {
+            map: MapType::World,
+            x: 22.0,
+            y: 6.0,
+        });
+        cat.activity = CatActivity::Traveling;
+
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: plentiful_resources(),
+            cats: vec![cat],
+            world_tiles: walking_leg_world_tiles(20, 22),
+            test_rng_seed: Some(123),
+            ..ColonyRuntime::default()
+        };
+        let movement = walking_leg_movement_context(&colony);
+
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 8,
+                processed_through: 8_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+            &movement,
+        );
+
+        assert!(
+            colony.provisional_tiles.is_empty(),
+            "a plain walking cat must never create a provisional entry"
+        );
+        assert!(colony.revealed_tiles.contains(&pos(20, 6)));
+        assert!(colony.revealed_tiles.contains(&pos(22, 6)));
+    }
+
+    #[test]
+    fn scouts_walk_reveals_into_provisional_not_committed_while_out() {
+        // While an `Explore`-job scout is still traveling, its walk must lift fog
+        // only provisionally — `revealed_tiles` (the permanent map) must stay
+        // untouched until the scout physically reaches the shrine.
+        let mut cat = adult_idle_cat("scout", "colony-1");
+        cat.position = Position {
+            map: MapType::World,
+            x: 20.0,
+            y: 6.0,
+        };
+        cat.destination = Some(Position {
+            map: MapType::World,
+            x: 22.0,
+            y: 6.0,
+        });
+        cat.activity = CatActivity::Traveling;
+        cat.current_task = Some(TaskType::Explore);
+
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: plentiful_resources(),
+            cats: vec![cat],
+            world_tiles: walking_leg_world_tiles(20, 22),
+            // Mirrors the registration `phase_15_assign_promoted_job_destinations`
+            // performs the moment an `Explore` job's destination is (re-)assigned.
+            provisional_tiles: BTreeMap::from([("scout".to_owned(), BTreeSet::new())]),
+            test_rng_seed: Some(123),
+            ..ColonyRuntime::default()
+        };
+        let movement = walking_leg_movement_context(&colony);
+
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 8,
+                processed_through: 8_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+            &movement,
+        );
+
+        assert!(
+            colony.revealed_tiles.is_empty(),
+            "a scout's discoveries must not commit to the permanent map while still out"
+        );
+        let provisional = colony
+            .provisional_tiles
+            .get("scout")
+            .expect("the scout's provisional entry must survive the walk");
+        assert!(provisional.contains(&pos(20, 6)));
+        assert!(provisional.contains(&pos(22, 6)));
+        // Still outbound, not heading home — commit only fires on a `Returning`
+        // arrival (see `scout_provisional_commits_to_revealed_tiles_on_shrine_return_and_clears`),
+        // so nothing should have committed here either way.
+        assert_ne!(colony.cats[0].activity, CatActivity::Returning);
+    }
+
+    #[test]
+    fn scout_provisional_commits_to_revealed_tiles_on_shrine_return_and_clears() {
+        // `return_assigned_cat` (phase 30) is the only place a completed `Explore`
+        // job sends its cat `Returning` toward the shrine anchor. Arriving there
+        // must fold the scout's whole provisional set — not just this tick's final
+        // steps — into `revealed_tiles`, and drop the now-delivered entry.
+        let mut cat = adult_idle_cat("scout", "colony-1");
+        cat.position = Position {
+            map: MapType::World,
+            x: 4.0,
+            y: 6.0,
+        };
+        cat.destination = Some(position_from_world(village_anchor_world()));
+        cat.activity = CatActivity::Returning;
+        cat.current_task = None;
+
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: plentiful_resources(),
+            cats: vec![cat],
+            world_tiles: walking_leg_world_tiles(3, 7),
+            // Discoveries banked earlier in the excursion, before this tick's walk.
+            provisional_tiles: BTreeMap::from([(
+                "scout".to_owned(),
+                BTreeSet::from([pos(50, 50), pos(51, 50)]),
+            )]),
+            test_rng_seed: Some(123),
+            ..ColonyRuntime::default()
+        };
+        let movement = walking_leg_movement_context(&colony);
+
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 8,
+                processed_through: 8_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+            &movement,
+        );
+
+        assert!(
+            !colony.provisional_tiles.contains_key("scout"),
+            "the delivered scout's provisional entry must be cleared"
+        );
+        assert!(
+            colony.revealed_tiles.contains(&pos(50, 50))
+                && colony.revealed_tiles.contains(&pos(51, 50)),
+            "discoveries banked earlier in the excursion must commit on shrine arrival"
+        );
+        assert_eq!(
+            colony.cats[0].activity,
+            CatActivity::Idle,
+            "a Returning cat that reaches its destination goes Idle, same as any other worker"
+        );
+    }
+
+    #[test]
+    fn scout_that_dies_before_returning_never_commits_its_provisional_tiles() {
+        // Spec: "If a scout dies/never returns, its provisional tiles do NOT commit
+        // (and should eventually clear)." `phase_25b_prune_dead_scout_provisional_tiles`
+        // is the cleanup — verify it drops a dead scout's entry without ever folding
+        // it into `revealed_tiles`.
+        let mut scout = adult_idle_cat("scout", "colony-1");
+        scout.death_time = Some(5_000);
+
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![scout],
+            provisional_tiles: BTreeMap::from([(
+                "scout".to_owned(),
+                BTreeSet::from([pos(80, 80)]),
+            )]),
+            ..ColonyRuntime::default()
+        };
+
+        phase_25b_prune_dead_scout_provisional_tiles(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 60,
+                processed_through: 65_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+        );
+
+        assert!(
+            colony.provisional_tiles.is_empty(),
+            "a dead scout's entry must be pruned"
+        );
+        assert!(
+            !colony.revealed_tiles.contains(&pos(80, 80)),
+            "a dead scout's tentative discoveries must never become permanent"
+        );
+    }
+
+    #[test]
+    fn provisional_tiles_are_deterministic_across_identical_runs() {
+        // Two identical seeded runs must produce byte-identical `provisional_tiles`
+        // state at every tick — not just after every scout has come home — so the
+        // dim/tentative fog the client renders mid-excursion is itself deterministic.
+        let run = || {
+            let mut world = new_world(4242);
+            world
+                .colonies
+                .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
+            let mut trace: Vec<BTreeMap<CatId, BTreeSet<TilePos>>> = Vec::new();
+            for step in 1..=200 {
+                let now = 10_000 + i64::from(step) * 60_000;
+                let _ = world_tick(&mut world, now);
+                trace.push(world.colonies[0].provisional_tiles.clone());
+            }
+            trace
+        };
+        let left = run();
+        let right = run();
+
+        assert_eq!(
+            left, right,
+            "provisional fog state must be deterministic across identical runs"
+        );
+        assert!(
+            left.iter().any(|snapshot| !snapshot.is_empty()),
+            "expected at least one tick with a scout mid-excursion (provisional fog present)"
+        );
     }
 
     #[test]
