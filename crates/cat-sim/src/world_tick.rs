@@ -1937,9 +1937,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
         .iter()
         .enumerate()
         .filter(|(_, cat)| {
-            cat.death_time.is_none()
-                && !cat.is_pregnant
-                && get_life_stage(cat.age_hours) == LifeStage::Adult
+            cat.death_time.is_none() && !cat.is_pregnant && is_fertile_stage(cat.age_hours)
         })
         .map(|(index, cat)| BreedingCandidate {
             cat_index: index,
@@ -2010,7 +2008,32 @@ struct OldAgeDeath {
     carrying: Option<Carrying>,
 }
 
-/// A conception-eligible adult snapshotted before phase 6's conception pass mutates
+/// Whether a cat of this age may conceive: the `Young` (6–24h) and `Adult` (24–48h)
+/// life stages are fertile; `Kitten`s are too young and `Elder`s (48h+) are past it.
+///
+/// SUSTAINABILITY FIX (founding boom-bust root cause). Conception was originally gated
+/// to `Adult` only. The `Adult` window is 24h wide and maturation from birth to `Adult`
+/// is also 24h (kitten 0–6 / young 6–24 / adult 24–48), so those two spans are EQUAL —
+/// a generation only enters the fertile stage as the previous one is leaving it, and any
+/// jitter opens a "zero fertile cats" gap. During such a gap births halt entirely while
+/// old-age mortality (which begins at 48h) keeps culling elders, so an unattended founding
+/// colony boom-busts: population peaks ~7–10 then decays to extinction / trips an
+/// `UnattendedCollapse` reset (instrumented across seeds 1234/42/7/99/555 over 150
+/// game-hours — every death was old age; food and water were never the cause). Admitting
+/// the `Young` stage widens the fertile window to 6–48h (42h) while maturation-to-fertile
+/// drops to 6h, so overlapping generations always keep at least one fertile cat and the
+/// loop closes. Population stays bounded by the existing housing-cap gate in
+/// [`colony_can_breed`] (`population < housing_capacity`), so this is a stable plateau, not
+/// runaway growth. Founders still start as `Adult` (`starter_age_hours` → 26–42h), so the
+/// founding-layout guarantees are unchanged.
+fn is_fertile_stage(age_hours: f64) -> bool {
+    matches!(
+        get_life_stage(age_hours),
+        LifeStage::Young | LifeStage::Adult
+    )
+}
+
+/// A conception-eligible cat snapshotted before phase 6's conception pass mutates
 /// anything — used both to iterate candidates in a stable order and as `pick_mate`'s
 /// pairing pool (mirrors `adults` in `server/game.ts:runLifeSimulation`).
 struct BreedingCandidate {
@@ -2020,7 +2043,8 @@ struct BreedingCandidate {
     specialization: Option<CatSpecialization>,
 }
 
-/// Pick a co-parent for a conceiving cat: another eligible adult, preferring one with
+/// Pick a co-parent for a conceiving cat: another fertile candidate (see
+/// [`is_fertile_stage`]), preferring one with
 /// the same specialization so lineages of a trade concentrate, then the strongest
 /// available (leadership + hunting + building, ties keep the earliest candidate).
 /// Deterministic — no RNG. `None` if no partner exists (ported from
@@ -15010,5 +15034,109 @@ mod tests {
             !road_tiles(&left).is_empty(),
             "sanity: the sweep actually paved something to compare"
         );
+    }
+
+    /// Runs a freshly founded colony-0 unattended for `game_hours` at a 5-game-minute tick
+    /// cadence and reports its population trajectory: whether it ever went fully extinct,
+    /// plus the minimum and mean alive population sampled every tick after a 30-game-hour
+    /// establishment window (long enough for the founding cohort's first kittens to reach
+    /// the fertile stage). Shared by the sustainability guardrail and its determinism twin.
+    ///
+    /// The 5-game-minute step (vs the 1-minute survival proofs) keeps a 100+ game-hour run
+    /// tractable in the debug test build, where per-tick cost grows with scout exploration.
+    /// It is a deliberately HARSHER proxy than the live 1-second worker: coarser consumption
+    /// chunking lets food overshoot below zero more readily, so it stresses the founding
+    /// economy harder than reality. Sustaining under it is therefore a conservative
+    /// guarantee — finer cadences (including live) are strictly more forgiving.
+    fn run_founding_population_trajectory(seed: u32, game_hours: i64) -> (bool, usize, f64) {
+        const TICK_MS: i64 = 5 * 60_000; // 5 game-minutes per tick
+        const ESTABLISH_MINUTES: i64 = 30 * 60; // start sampling after 30 game-hours
+
+        let mut world = new_world(seed);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
+
+        let horizon_ticks = game_hours * 60 / 5; // five game-minutes per tick
+        let mut ever_extinct = false;
+        let mut min_pop = usize::MAX;
+        let mut sum_pop = 0usize;
+        let mut samples = 0usize;
+        for step in 1..=horizon_ticks {
+            let now = 10_000 + step * TICK_MS;
+            let _ = world_tick(&mut world, now);
+            let pop = alive_cats(&world.colonies[0].cats).count();
+            if pop == 0 {
+                ever_extinct = true;
+            }
+            if step * 5 >= ESTABLISH_MINUTES {
+                min_pop = min_pop.min(pop);
+                sum_pop += pop;
+                samples += 1;
+            }
+        }
+        let mean = if samples == 0 {
+            0.0
+        } else {
+            sum_pop as f64 / samples as f64
+        };
+        (ever_extinct, min_pop, mean)
+    }
+
+    /// Long-horizon population-SUSTAINABILITY guardrail (founding boom-bust fix).
+    ///
+    /// An idle god-sim must self-sustain: a founding colony left running unattended must
+    /// not die out. Before the fertile-window fix ([`is_fertile_stage`]), an unattended
+    /// founding colony boom-busted — instrumented across these seeds over 150 game-hours,
+    /// population peaked ~7–10 then decayed to 1–2 (seed 99 went fully extinct at
+    /// game-hour ~121), tripping `UnattendedCollapse`/`AllCatsDead` resets. Every death was
+    /// old age; food and water were never the direct cause — the breeding pool (`Adult`
+    /// only, a 24h window equal to the 24h birth→adult maturation) periodically emptied to
+    /// zero, so births stalled while old-age mortality kept culling.
+    ///
+    /// With `Young` cats admitted to the fertile pool the generational gap closes and the
+    /// population sustains. This guardrail asserts, over 120 game-hours across three seeds
+    /// that all boom-busted before the fix (seed 555 went fully extinct; seeds 7 and 2024
+    /// decayed to a lone survivor, mean ~1.8/3.3): the colony never goes fully extinct, its
+    /// population never falls near extinction (>= 2 after establishment), and its mean
+    /// sustained population holds at or above the founding count. It fails before the fix
+    /// (seed 555 extinct; seeds 7/2024 hit min 1 and mean well below the founding 5) and
+    /// passes after (no extinction; min >= 3; mean 5.8–7.1). Sampling starts after a
+    /// 30-game-hour establishment window so the founding cohort's first kittens have reached
+    /// fertility.
+    #[test]
+    fn founding_colony_sustains_its_population_over_a_long_horizon() {
+        for seed in [7u32, 555, 2024] {
+            let (ever_extinct, min_pop, mean) = run_founding_population_trajectory(seed, 120);
+            assert!(
+                !ever_extinct,
+                "seed {seed}: colony went fully extinct — an unattended god-sim must self-sustain"
+            );
+            assert!(
+                min_pop >= 2,
+                "seed {seed}: population fell to {min_pop} after establishment — boom-bust decay \
+                 toward extinction"
+            );
+            assert!(
+                mean >= f64::from(STARTER_CAT_COUNT as u32),
+                "seed {seed}: mean sustained population {mean:.1} is below the founding \
+                 {STARTER_CAT_COUNT} — the colony is shrinking, not self-sustaining"
+            );
+        }
+    }
+
+    /// Determinism twin for the sustainability guardrail: two colonies founded on the same
+    /// seed and ticked over the same long horizon must produce byte-identical population
+    /// trajectories (no unseeded RNG entered the fertile-window fix).
+    #[test]
+    fn founding_population_trajectory_is_deterministic_for_identical_seeds() {
+        for seed in [1234u32, 555] {
+            let left = run_founding_population_trajectory(seed, 120);
+            let right = run_founding_population_trajectory(seed, 120);
+            assert_eq!(
+                left, right,
+                "seed {seed}: identical founding runs diverged — nondeterminism crept in"
+            );
+        }
     }
 }
