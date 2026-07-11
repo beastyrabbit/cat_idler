@@ -49,6 +49,10 @@ use crate::{
     production::{
         WoodworkingOptions, WorkshopOptions, advance_woodworking, advance_workshop, field_yield,
     },
+    recipes::{
+        CraftOptions, STONE_TRADE_RECIPE, WOOD_TRADE_RECIPE, advance_craft,
+        craft_quality_from_skill, next_trade_kind,
+    },
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::should_deposit,
@@ -151,6 +155,15 @@ pub struct ColonyRuntime {
     /// slice 2's material-variant workshop recipes). `BTreeMap` keeps snapshot/iteration
     /// order deterministic.
     pub items: BTreeMap<Item, u32>,
+    /// Woodworking bench's trade-craft cycle timer (P19 slice 2) — carries fractional
+    /// progress toward [`crate::recipes::WOOD_TRADE_RECIPE`]'s cycle, entirely separate
+    /// from `BuildingRuntime::production_progress` (which the bench's *functional*
+    /// tools recipe still owns unchanged). Colony-level rather than per-building
+    /// because exactly one Woodworking bench exists per founded colony.
+    pub wood_craft_progress: f64,
+    /// StonePrep bench's trade-craft cycle timer (P19 slice 2), mirroring
+    /// [`Self::wood_craft_progress`] for [`crate::recipes::STONE_TRADE_RECIPE`].
+    pub stone_craft_progress: f64,
     pub threat_pressure: f64,
     pub last_raid_at: Option<i64>,
     pub active_raid: Option<RaidId>,
@@ -527,6 +540,8 @@ impl Default for ColonyRuntime {
             stockpiles: Vec::new(),
             stock_ledger: StockLedger::default(),
             items: BTreeMap::new(),
+            wood_craft_progress: 0.0,
+            stone_craft_progress: 0.0,
             threat_pressure: 0.0,
             last_raid_at: None,
             active_raid: None,
@@ -2720,6 +2735,42 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
                     );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
+
+                // P19 slice 2: additive stone-trade craft — same bench/worker, its own
+                // cycle timer (`colony.stone_craft_progress`, entirely separate from
+                // `production_progress` above), spends only *surplus* blocks above
+                // STONE_TRADE_RECIPE's reserve so it never competes with construction
+                // or the woodworking tools recipe for blocks.
+                let craft_worker = assigned_worker(colony, &building_id);
+                let craft_has_worker = craft_worker.is_some();
+                let craft_is_architect = craft_worker
+                    .is_some_and(|cat| cat.specialization == Some(CatSpecialization::Architect));
+                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Craft));
+                let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
+                let craft_step = advance_craft(
+                    colony.stone_craft_progress,
+                    production_elapsed,
+                    CraftOptions {
+                        has_worker: craft_has_worker,
+                        worker_is_architect: craft_is_architect,
+                        intermediate_available: colony.resources.blocks,
+                    },
+                    &STONE_TRADE_RECIPE,
+                );
+                colony.stone_craft_progress = craft_step.next_progress;
+                if craft_step.items_produced > 0 {
+                    colony.resources.blocks =
+                        (colony.resources.blocks - craft_step.intermediate_used).max(0.0);
+                    credit_trade_craft(
+                        colony,
+                        gate,
+                        &STONE_TRADE_RECIPE,
+                        craft_skill,
+                        craft_worker_id,
+                        craft_step.items_produced,
+                        "stone-prep shop",
+                    );
+                }
             }
             BuildingType::Woodworking => {
                 // P12.4b: planks + blocks → tools (twin-input crafter).
@@ -2752,6 +2803,42 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
                     );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
+
+                // P19 slice 2: additive wood-trade craft — same bench/worker, its own
+                // cycle timer (`colony.wood_craft_progress`), spends only *surplus*
+                // planks above WOOD_TRADE_RECIPE's reserve so it never competes with
+                // construction or the tools recipe above for planks. Tools ran first
+                // and already claimed its share of `colony.resources.planks` this tick.
+                let craft_worker = assigned_worker(colony, &building_id);
+                let craft_has_worker = craft_worker.is_some();
+                let craft_is_architect = craft_worker
+                    .is_some_and(|cat| cat.specialization == Some(CatSpecialization::Architect));
+                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Craft));
+                let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
+                let craft_step = advance_craft(
+                    colony.wood_craft_progress,
+                    production_elapsed,
+                    CraftOptions {
+                        has_worker: craft_has_worker,
+                        worker_is_architect: craft_is_architect,
+                        intermediate_available: colony.resources.planks,
+                    },
+                    &WOOD_TRADE_RECIPE,
+                );
+                colony.wood_craft_progress = craft_step.next_progress;
+                if craft_step.items_produced > 0 {
+                    colony.resources.planks =
+                        (colony.resources.planks - craft_step.intermediate_used).max(0.0);
+                    credit_trade_craft(
+                        colony,
+                        gate,
+                        &WOOD_TRADE_RECIPE,
+                        craft_skill,
+                        craft_worker_id,
+                        craft_step.items_produced,
+                        "woodworkers",
+                    );
+                }
             }
             _ => {}
         }
@@ -2766,6 +2853,49 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate) {
         &colony.resources,
         staffed,
         gate.processed_through,
+    );
+}
+
+/// Shared item-crediting tail for a completed trade-craft cycle (P19 slice 2): picks
+/// the next rotating [`ItemKind`] from the colony's item store ([`next_trade_kind`]),
+/// derives quality from the assigned crafter's `Labor::Craft` skill
+/// ([`craft_quality_from_skill`]), credits the item into `colony.items`, trains that
+/// skill (ties the long-reserved [`Labor::Craft`] into the sim for the first time), and
+/// logs the craft. Called once a bench's [`advance_craft`] step reports
+/// `items_produced > 0`; the caller has already applied its own resource subtraction
+/// (planks vs blocks) since that is the one thing that differs between the wood and
+/// stone benches.
+fn credit_trade_craft(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    recipe: &crate::recipes::CraftRecipe,
+    craft_skill: f64,
+    craft_worker_id: Option<CatId>,
+    items_produced: u32,
+    bench_label: &str,
+) {
+    let kind = next_trade_kind(&colony.items, recipe);
+    let quality = craft_quality_from_skill(craft_skill);
+    let item = Item::new(kind, recipe.material, quality);
+    colony.add_item(item, items_produced);
+    if let Some(id) = craft_worker_id
+        && let Some(idx) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == id && cat.death_time.is_none())
+    {
+        colony.cats[idx].gain_skill(Labor::Craft, SKILL_GAIN_PER_JOB);
+    }
+    append_event(
+        colony,
+        gate.processed_through,
+        EventKind::Other("production".to_owned()),
+        format!(
+            "The {bench_label} crafted {} {} {} for trade.",
+            items_produced,
+            recipe.material.as_str(),
+            kind.as_str()
+        ),
     );
 }
 
@@ -5732,6 +5862,7 @@ mod tests {
     use super::*;
     use crate::{
         entities::{CatActivity, CatNeeds, CatStats, MapType},
+        items::{ItemKind, MAX_QUALITY, Material},
         storage::BASE_CAPACITY,
     };
 
@@ -7268,6 +7399,200 @@ mod tests {
         phase_23_production(&mut starved, production_gate(30, 30_000));
         assert_eq!(starved.resources.tools, 0.0);
         assert_eq!(starved.resources.planks, 10.0);
+    }
+
+    // ---- P19 slice 2: material-variant trade-good crafting ----
+
+    #[test]
+    fn woodworking_bench_crafts_a_wood_trade_good_from_surplus_planks() {
+        let mut colony = chain_colony(
+            BuildingType::Woodworking,
+            Resources {
+                planks: 30.0, // 20-plank reserve + 10 surplus + headroom for tools' draw
+                blocks: 30.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        // Prime the trade-craft timer so this tick's 30s elapsed completes one 900s cycle.
+        colony.wood_craft_progress = 890.0;
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+
+        // The functional tools recipe (unchanged) also completes this tick — production_progress
+        // 590 + 30 >= 600 — and claims its 2 planks + 2 blocks first.
+        assert_eq!(colony.resources.tools, 1.0);
+        // Trade craft then spends its own 1 plank on top of that: 30 - 2 (tools) - 1 (trade) = 27.
+        assert_eq!(
+            colony.resources.planks, 27.0,
+            "tools ran first, trade craft spent only its own 1 plank of surplus"
+        );
+        assert_eq!(
+            colony.resources.blocks, 28.0,
+            "trade craft never touches blocks on the wood bench"
+        );
+
+        let wood_items: Vec<(&Item, &u32)> = colony
+            .items
+            .iter()
+            .filter(|(item, _)| item.material == Material::Wood)
+            .collect();
+        assert_eq!(
+            wood_items.len(),
+            1,
+            "exactly one wood trade-good stack crafted"
+        );
+        let (item, count) = wood_items[0];
+        assert_eq!(*count, 1);
+        assert!(
+            matches!(
+                item.kind,
+                ItemKind::Mug | ItemKind::Bowl | ItemKind::Furniture | ItemKind::Toy
+            ),
+            "kind {:?} must be one of WOOD_TRADE_RECIPE's rotation",
+            item.kind
+        );
+
+        // The assigned worker's Craft skill is trained the first time it's used.
+        let worker = colony.cats.iter().find(|cat| cat.id == "crafter").unwrap();
+        assert_eq!(worker.skill(Labor::Craft), SKILL_GAIN_PER_JOB);
+    }
+
+    #[test]
+    fn stone_prep_bench_crafts_a_stone_trade_good_from_surplus_blocks() {
+        let mut colony = chain_colony(
+            BuildingType::StonePrep,
+            Resources {
+                materials: 50.0,
+                blocks: 25.0, // already above the 20-block reserve before this tick's own output
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.stone_craft_progress = 890.0;
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+
+        // The functional recipe (unchanged) produces 1 block from 5 materials this tick
+        // (25 + 1 = 26), then the trade craft spends 1 of the surplus: 26 - 1 = 25.
+        assert_eq!(colony.resources.blocks, 25.0);
+        assert_eq!(colony.resources.materials, 45.0);
+
+        let stone_items: Vec<(&Item, &u32)> = colony
+            .items
+            .iter()
+            .filter(|(item, _)| item.material == Material::Stone)
+            .collect();
+        assert_eq!(
+            stone_items.len(),
+            1,
+            "exactly one stone trade-good stack crafted"
+        );
+        let (item, count) = stone_items[0];
+        assert_eq!(*count, 1);
+        assert!(
+            matches!(item.kind, ItemKind::Bowl | ItemKind::Trinket),
+            "kind {:?} must be one of STONE_TRADE_RECIPE's rotation",
+            item.kind
+        );
+    }
+
+    #[test]
+    fn trade_good_quality_reflects_the_assigned_crafters_skill() {
+        fn quality_after_one_cycle(craft_skill: f64) -> u8 {
+            let mut colony = chain_colony(
+                BuildingType::Woodworking,
+                Resources {
+                    planks: 30.0,
+                    blocks: 30.0,
+                    ..Resources::default()
+                },
+                true,
+            );
+            colony.cats[0].gain_skill(Labor::Craft, craft_skill);
+            colony.wood_craft_progress = 890.0;
+            phase_23_production(&mut colony, production_gate(30, 30_000));
+            colony
+                .items
+                .iter()
+                .find(|(item, _)| item.material == Material::Wood)
+                .expect("a wood item was crafted")
+                .0
+                .quality
+        }
+
+        let low_skill_quality = quality_after_one_cycle(0.0);
+        let high_skill_quality = quality_after_one_cycle(400.0);
+        assert_eq!(
+            low_skill_quality, 0,
+            "an untrained crafter yields the crude band"
+        );
+        assert_eq!(
+            high_skill_quality, MAX_QUALITY,
+            "400 craft xp yields masterwork"
+        );
+        assert!(
+            high_skill_quality > low_skill_quality,
+            "a more-skilled crafter must never yield lower quality for the same recipe"
+        );
+    }
+
+    #[test]
+    fn trade_craft_at_or_below_the_surplus_reserve_produces_no_items() {
+        // 15 blocks sits below STONE_TRADE_RECIPE's 20-block reserve; zero materials keeps
+        // the functional block-production recipe from adding to it this tick, isolating the
+        // surplus gate. The colony must protect its (already scarce) blocks from crafting.
+        let mut colony = chain_colony(
+            BuildingType::StonePrep,
+            Resources {
+                materials: 0.0,
+                blocks: 15.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.stone_craft_progress = 890.0;
+        phase_23_production(&mut colony, production_gate(30, 30_000));
+
+        assert_eq!(
+            colony.resources.blocks, 15.0,
+            "surplus gate must leave scarce blocks untouched"
+        );
+        assert!(
+            colony.items.is_empty(),
+            "no trade goods should be crafted at/below the surplus reserve"
+        );
+    }
+
+    #[test]
+    fn trade_craft_horizon_is_deterministic_across_identical_runs() {
+        fn build() -> ColonyRuntime {
+            chain_colony(
+                BuildingType::Woodworking,
+                Resources {
+                    planks: 200.0,
+                    blocks: 200.0,
+                    ..Resources::default()
+                },
+                true,
+            )
+        }
+
+        let mut left = build();
+        let mut right = build();
+
+        for step in 1..=60 {
+            let now = i64::from(step) * 60_000;
+            phase_23_production(&mut left, production_gate(60, now));
+            phase_23_production(&mut right, production_gate(60, now));
+        }
+
+        assert_eq!(
+            left, right,
+            "identical runs (including the items store and cat skills) must be byte-identical"
+        );
+        assert!(
+            !left.items.is_empty(),
+            "the horizon should have completed at least one trade-craft cycle"
+        );
     }
 
     #[test]
