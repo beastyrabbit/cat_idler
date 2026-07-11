@@ -19,7 +19,7 @@ use bevy::asset::{AssetMetaCheck, RenderAssetUsages};
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::sprite::{Anchor, BorderRect, SliceScaleMode, TextureSlicer};
+use bevy::sprite::Anchor;
 use bevy::ui::RelativeCursorPosition;
 use cat_protocol::{
     BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot, ClientAction,
@@ -839,52 +839,6 @@ fn road_sprite_kind(n: bool, s: bool, e: bool, w: bool) -> RoadSprite {
         (false, true) => RoadSprite::StraightH,
         // Both axes (the cross centre) or a lone tile default to the cross.
         _ => RoadSprite::Cross,
-    }
-}
-
-/// DF-Steam UI kit (Kenney Adventure): wood/parchment 9-patch panel, hanging
-/// banner header, wood button. Loaded once at startup.
-#[derive(Resource, Clone)]
-struct UiArt {
-    panel: Handle<Image>,
-    banner: Handle<Image>,
-    button: Handle<Image>,
-}
-
-impl UiArt {
-    fn load(assets: &AssetServer) -> Self {
-        Self {
-            panel: assets.load("public/images/game/ui/panel.png"),
-            banner: assets.load("public/images/game/ui/banner.png"),
-            button: assets.load("public/images/game/ui/button.png"),
-        }
-    }
-}
-
-/// Dark ink for text over the cream parchment panels.
-const PARCHMENT_INK: Color = Color::srgb(0.24, 0.15, 0.07);
-/// Wood-border inset (source px) for the 128px panel / 96x48 button 9-patches.
-const PANEL_BORDER: f32 = 22.0;
-const BUTTON_BORDER: f32 = 12.0;
-
-// Wood-button tint states (multiply the sprite): idle / hover / pressed. Used by
-// the legacy sprite buttons on panels not yet migrated to the kit.
-const BTN_IDLE: Color = Color::srgb(1.0, 1.0, 1.0);
-const BTN_HOVER: Color = Color::srgb(0.86, 0.86, 0.82);
-const BTN_PRESS: Color = Color::srgb(0.70, 0.66, 0.58);
-
-/// A 9-patch panel/button background from a wood-frame sprite: the border stays
-/// crisp while the parchment centre stretches to fill the node.
-fn sliced_image(image: Handle<Image>, border: f32) -> ImageNode {
-    ImageNode {
-        image,
-        image_mode: NodeImageMode::Sliced(TextureSlicer {
-            border: BorderRect::all(border),
-            center_scale_mode: SliceScaleMode::Stretch,
-            sides_scale_mode: SliceScaleMode::Stretch,
-            max_corner_scale: 1.0,
-        }),
-        ..default()
     }
 }
 
@@ -1729,7 +1683,6 @@ const NODE_OWNED_COLOR: Color = Color::srgb(0.46, 0.76, 0.42);
 const NODE_READY_COLOR: Color = Color::srgb(0.96, 0.82, 0.36);
 const NODE_UNAFFORDABLE_COLOR: Color = Color::srgb(0.66, 0.60, 0.40);
 const NODE_LOCKED_COLOR: Color = Color::srgb(0.50, 0.45, 0.40);
-const TREE_HEADER_COLOR: Color = Color::srgb(0.86, 0.72, 0.46);
 
 /// Classify a node against the owned-node set (owned / prereqs-met / locked).
 fn node_state(node: &UpgradeNode, owned: &HashSet<&str>) -> NodeState {
@@ -2176,8 +2129,6 @@ fn setup(
     commands.insert_resource(PropArt::load(&asset_server));
     commands.insert_resource(InfraArt::load(&asset_server));
     commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
-    let ui = UiArt::load(&asset_server);
-    commands.insert_resource(ui.clone());
 
     // Dynamic minimap texture (rewritten each snapshot by update_minimap).
     let minimap_image = Image::new_fill(
@@ -2459,112 +2410,50 @@ fn setup(
     commands
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(430.0),
+                left: Val::Px(456.0),
                 top: Val::Px(60.0),
-                width: Val::Px(400.0),
-                padding: UiRect::axes(Val::Px(24.0), Val::Px(30.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(2.0),
-                display: Display::None,
-                ..default()
+                ..ui_panel_node(Val::Px(400.0))
             },
             GlobalZIndex(82),
-            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            ui_panel_frame(),
             TreePanel,
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(46.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    margin: UiRect::bottom(Val::Px(6.0)),
-                    ..default()
-                },
-                ImageNode::new(ui.banner.clone()),
-                children![(
-                    Text::new("Upgrade Tree"),
-                    TextFont {
-                        font_size: FontSize::Px(15.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
-                )],
-            ));
-            let header = |text: &str| {
-                (
-                    Text::new(text.to_string()),
-                    TextFont {
-                        font_size: FontSize::Px(12.0),
-                        ..default()
-                    },
-                    TextColor(PARCHMENT_INK),
-                )
-            };
-            panel.spawn((header(""), TreeCurrencyText));
-            panel.spawn((header(""), TreeNextText));
-            // One era section per era, each with its nodes. Static structure from
-            // UPGRADE_NODES (ordered by era); rows carry the node id so the update
-            // system can colour them + wire each buy button.
-            let max_era = UPGRADE_NODES.iter().map(|n| n.era).max().unwrap_or(0);
-            for era in 1..=max_era {
-                panel.spawn((
-                    Text::new(format!("- Era {era} -")),
-                    TextFont {
-                        font_size: FontSize::Px(12.0),
-                        ..default()
-                    },
-                    TextColor(TREE_HEADER_COLOR),
-                    Node {
-                        margin: UiRect::top(Val::Px(3.0)),
-                        ..default()
-                    },
-                ));
-                for node in UPGRADE_NODES.iter().filter(|n| n.era == era) {
-                    panel
-                        .spawn(Node {
+            panel.spawn(ui_title_bar("Upgrade Tree"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                body.spawn((ui_text("", FS_BODY, UI_MUTED), TreeCurrencyText));
+                body.spawn((ui_text("", FS_BODY, UI_MUTED), TreeNextText));
+                // One era section per era, each with its nodes. Static structure
+                // from UPGRADE_NODES (ordered by era); rows carry the node id so
+                // the update system can colour them + wire each buy button.
+                let max_era = UPGRADE_NODES.iter().map(|n| n.era).max().unwrap_or(0);
+                for era in 1..=max_era {
+                    body.spawn((
+                        Node {
+                            margin: UiRect::top(Val::Px(UI_GAP_TIGHT)),
+                            ..default()
+                        },
+                        ui_text(format!("- Era {era} -"), FS_BODY, UI_ACCENT),
+                    ));
+                    for node in UPGRADE_NODES.iter().filter(|n| n.era == era) {
+                        body.spawn(Node {
                             width: Val::Percent(100.0),
                             align_items: AlignItems::Center,
                             justify_content: JustifyContent::SpaceBetween,
-                            column_gap: Val::Px(6.0),
+                            column_gap: Val::Px(UI_GAP),
                             ..default()
                         })
                         .with_children(|row| {
+                            row.spawn((ui_text("", FS_BODY, UI_INK), TreeNodeText(node.id)));
                             row.spawn((
-                                Text::new(""),
-                                TextFont {
-                                    font_size: FontSize::Px(12.0),
-                                    ..default()
-                                },
-                                TextColor(PARCHMENT_INK),
-                                TreeNodeText(node.id),
-                            ));
-                            row.spawn((
-                                Button,
-                                Node {
-                                    min_width: Val::Px(40.0),
-                                    height: Val::Px(20.0),
-                                    justify_content: JustifyContent::Center,
-                                    align_items: AlignItems::Center,
-                                    display: Display::None,
-                                    ..default()
-                                },
-                                sliced_image(ui.button.clone(), BUTTON_BORDER),
+                                ui_button_small(),
                                 TreeBuyButton(node.id),
-                                children![(
-                                    Text::new("Buy"),
-                                    TextFont {
-                                        font_size: FontSize::Px(11.0),
-                                        ..default()
-                                    },
-                                    TextColor(PARCHMENT_INK),
-                                )],
+                                children![ui_text("Buy", FS_SMALL, UI_INK)],
                             ));
                         });
+                    }
                 }
-            }
+            });
         });
 
     // Goods / inventory panel (centre, shares the slot with announcements — the
@@ -5161,23 +5050,16 @@ fn update_upgrade_tree(
 fn handle_tree_buy(
     session: Res<Session>,
     mut outgoing: ResMut<OutgoingActions>,
-    mut buttons: Query<(&Interaction, &TreeBuyButton, &mut ImageNode), Changed<Interaction>>,
+    buttons: Query<(&Interaction, &TreeBuyButton), Changed<Interaction>>,
 ) {
-    for (interaction, buy, mut image) in &mut buttons {
-        match interaction {
-            Interaction::Pressed => {
-                image.color = BTN_PRESS;
-                if session.ready {
-                    outgoing.0.push(ClientAction::UnlockNode {
-                        session_id: session.session_id.clone(),
-                        nickname: "Desktop Cat".to_string(),
-                        sig: session.sig.clone(),
-                        node_id: buy.0.to_string(),
-                    });
-                }
-            }
-            Interaction::Hovered => image.color = BTN_HOVER,
-            Interaction::None => image.color = BTN_IDLE,
+    for (interaction, buy) in &buttons {
+        if *interaction == Interaction::Pressed && session.ready {
+            outgoing.0.push(ClientAction::UnlockNode {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                node_id: buy.0.to_string(),
+            });
         }
     }
 }
