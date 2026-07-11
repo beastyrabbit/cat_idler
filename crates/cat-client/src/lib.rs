@@ -2572,55 +2572,23 @@ fn setup(
     commands
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(430.0),
+                left: Val::Px(456.0),
                 top: Val::Px(60.0),
-                width: Val::Px(500.0),
-                padding: UiRect::axes(Val::Px(26.0), Val::Px(40.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(3.0),
-                display: Display::None,
-                ..default()
+                ..ui_panel_node(Val::Px(500.0))
             },
             GlobalZIndex(82),
-            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            ui_panel_frame(),
             GoodsPanel,
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(46.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    margin: UiRect::bottom(Val::Px(4.0)),
-                    ..default()
-                },
-                ImageNode::new(ui.banner.clone()),
-                children![(
-                    Text::new("Goods"),
-                    TextFont {
-                        font_size: FontSize::Px(15.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
-                )],
-            ));
-            // Treasury total.
-            panel.spawn((
-                Text::new(""),
-                TextFont {
-                    font_size: FontSize::Px(13.0),
-                    ..default()
-                },
-                TextColor(Color::srgb(0.86, 0.66, 0.28)),
-                GoodsTreasury,
-            ));
-            for i in 0..GOODS_LINES {
-                panel
-                    .spawn(Node {
+            panel.spawn(ui_title_bar("Goods"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                // Treasury total.
+                body.spawn((ui_text("", FS_SECTION, UI_ACCENT), GoodsTreasury));
+                for i in 0..GOODS_LINES {
+                    body.spawn(Node {
                         align_items: AlignItems::Center,
-                        column_gap: Val::Px(7.0),
+                        column_gap: Val::Px(UI_GAP),
                         ..default()
                     })
                     .with_children(|row| {
@@ -2634,181 +2602,80 @@ fn setup(
                             ImageNode::new(icons.goods.clone()),
                             GoodsLineIcon(i),
                         ));
-                        row.spawn((
-                            Text::new(""),
-                            TextFont {
-                                font_size: FontSize::Px(12.0),
-                                ..default()
-                            },
-                            TextColor(PARCHMENT_INK),
-                            GoodsLine(i),
-                        ));
+                        row.spawn((ui_text("", FS_BODY, UI_INK), GoodsLine(i)));
                     });
-            }
+                }
+            });
         });
 
     // Trade menu (centre), shown only while a trader is Trading at the gate.
-    let small_btn = || Node {
-        min_width: Val::Px(46.0),
-        height: Val::Px(24.0),
-        padding: UiRect::axes(Val::Px(8.0), Val::Px(2.0)),
-        justify_content: JustifyContent::Center,
-        align_items: AlignItems::Center,
-        ..default()
-    };
     let row_node = || Node {
         width: Val::Percent(100.0),
         align_items: AlignItems::Center,
-        column_gap: Val::Px(6.0),
+        column_gap: Val::Px(UI_GAP),
         display: Display::None,
         ..default()
     };
     let label_node = || Node {
-        width: Val::Px(330.0),
+        flex_grow: 1.0,
         ..default()
     };
-    let header = |text: &str| {
-        (
-            Text::new(text.to_string()),
-            TextFont {
-                font_size: FontSize::Px(12.0),
-                ..default()
-            },
-            TextColor(Color::srgb(0.55, 0.42, 0.24)),
-        )
-    };
+    let header = |text: &str| ui_text(text.to_string(), FS_SMALL, UI_MUTED);
     commands
         .spawn((
             Node {
-                position_type: PositionType::Absolute,
                 left: Val::Px(390.0),
                 top: Val::Px(70.0),
-                // Capped to clear the right-side inspector at the 1280 default.
-                width: Val::Px(500.0),
-                padding: UiRect::axes(Val::Px(26.0), Val::Px(34.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(4.0),
-                display: Display::None,
-                ..default()
+                ..ui_panel_node(Val::Px(500.0))
             },
             GlobalZIndex(90),
-            sliced_image(ui.panel.clone(), PANEL_BORDER),
+            ui_panel_frame(),
             TradeMenuPanel,
         ))
         .with_children(|panel| {
-            panel.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(46.0),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    margin: UiRect::bottom(Val::Px(4.0)),
-                    ..default()
-                },
-                ImageNode::new(ui.banner.clone()),
-                children![(
-                    Text::new("Trader"),
-                    TextFont {
-                        font_size: FontSize::Px(15.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgb(1.0, 0.97, 0.90)),
-                )],
-            ));
-            panel.spawn((
-                Text::new(""),
-                TextFont {
-                    font_size: FontSize::Px(14.0),
-                    ..default()
-                },
-                TextColor(Color::srgb(0.86, 0.66, 0.28)),
-                TradeCoinText,
-            ));
-            panel.spawn(header("- Sell your crafts -"));
-            for i in 0..TRADE_SELL_ROWS {
-                panel.spawn((row_node(), SellRow(i))).with_children(|row| {
-                    row.spawn((
-                        label_node(),
-                        children![(
-                            Text::new(""),
-                            TextFont {
-                                font_size: FontSize::Px(11.0),
-                                ..default()
-                            },
-                            TextColor(PARCHMENT_INK),
-                            SellRowText(i),
-                        )],
-                    ));
-                    for all in [false, true] {
+            panel.spawn(ui_title_bar("Trader"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                body.spawn((ui_text("", FS_SECTION, UI_ACCENT), TradeCoinText));
+                body.spawn(header("- Sell your crafts -"));
+                for i in 0..TRADE_SELL_ROWS {
+                    body.spawn((row_node(), SellRow(i))).with_children(|row| {
                         row.spawn((
-                            Button,
-                            small_btn(),
-                            sliced_image(ui.button.clone(), BUTTON_BORDER),
-                            SellButton { row: i, all },
-                            children![(
-                                Text::new(if all { "All" } else { "Sell 1" }),
-                                TextFont {
-                                    font_size: FontSize::Px(10.0),
-                                    ..default()
-                                },
-                                TextColor(PARCHMENT_INK),
-                            )],
+                            label_node(),
+                            children![(ui_text("", FS_SMALL, UI_INK), SellRowText(i))],
                         ));
-                    }
-                });
-            }
-            panel.spawn(header("- Buy resources -"));
-            for i in 0..TRADE_BUY_ROWS {
-                panel.spawn((row_node(), BuyRow(i))).with_children(|row| {
-                    row.spawn((
-                        label_node(),
-                        children![(
-                            Text::new(""),
-                            TextFont {
-                                font_size: FontSize::Px(11.0),
-                                ..default()
-                            },
-                            TextColor(PARCHMENT_INK),
-                            BuyRowText(i),
-                        )],
-                    ));
-                    row.spawn((
-                        Button,
-                        small_btn(),
-                        sliced_image(ui.button.clone(), BUTTON_BORDER),
-                        BuyButton(i),
-                        children![(
-                            Text::new("Buy 1"),
-                            TextFont {
-                                font_size: FontSize::Px(10.0),
-                                ..default()
-                            },
-                            TextColor(PARCHMENT_INK),
-                        )],
-                    ));
-                });
-            }
-            panel.spawn((
-                Button,
-                Node {
-                    min_width: Val::Px(90.0),
-                    height: Val::Px(26.0),
-                    margin: UiRect::top(Val::Px(6.0)),
-                    justify_content: JustifyContent::Center,
-                    align_items: AlignItems::Center,
-                    ..default()
-                },
-                sliced_image(ui.button.clone(), BUTTON_BORDER),
-                TradeCloseButton,
-                children![(
-                    Text::new("Close [Esc]"),
-                    TextFont {
-                        font_size: FontSize::Px(11.0),
-                        ..default()
-                    },
-                    TextColor(PARCHMENT_INK),
-                )],
-            ));
+                        for all in [false, true] {
+                            row.spawn((
+                                ui_button_small(),
+                                SellButton { row: i, all },
+                                children![ui_text(
+                                    if all { "All" } else { "Sell 1" },
+                                    FS_SMALL,
+                                    UI_INK
+                                )],
+                            ));
+                        }
+                    });
+                }
+                body.spawn(header("- Buy resources -"));
+                for i in 0..TRADE_BUY_ROWS {
+                    body.spawn((row_node(), BuyRow(i))).with_children(|row| {
+                        row.spawn((
+                            label_node(),
+                            children![(ui_text("", FS_SMALL, UI_INK), BuyRowText(i))],
+                        ));
+                        row.spawn((
+                            ui_button_small(),
+                            BuyButton(i),
+                            children![ui_text("Buy 1", FS_SMALL, UI_INK)],
+                        ));
+                    });
+                }
+                body.spawn((
+                    ui_button(),
+                    TradeCloseButton,
+                    children![ui_text("Close [Esc]", FS_SMALL, UI_INK)],
+                ));
+            });
         });
 
     // Hover tooltip (small, follows the cursor), hidden until hovering an entity.
@@ -2818,23 +2685,17 @@ fn setup(
             position_type: PositionType::Absolute,
             left: Val::Px(0.0),
             top: Val::Px(0.0),
-            max_width: Val::Px(250.0),
-            padding: UiRect::all(Val::Px(20.0)),
+            max_width: Val::Px(260.0),
+            padding: UiRect::all(Val::Px(UI_PAD)),
+            border: UiRect::all(Val::Px(UI_BORDER_W)),
+            border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
             display: Display::None,
             ..default()
         },
-        sliced_image(ui.panel.clone(), PANEL_BORDER),
+        ui_panel_frame(),
         GlobalZIndex(100),
         TooltipPanel,
-        children![(
-            Text::new(""),
-            TextFont {
-                font_size: FontSize::Px(12.0),
-                ..default()
-            },
-            TextColor(PARCHMENT_INK),
-            TooltipText,
-        )],
+        children![(ui_text("", FS_BODY, UI_INK), TooltipText)],
     ));
 
     // Cat inspector (top-right), hidden until a cat is selected. Includes a row
