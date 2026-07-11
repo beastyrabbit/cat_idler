@@ -456,6 +456,12 @@ fn action_identity_fields(action: &ClientAction) -> Option<(&str, Option<&str>)>
         }
         | ClientAction::BuildRoad {
             session_id, sig, ..
+        }
+        | ClientAction::SellGoods {
+            session_id, sig, ..
+        }
+        | ClientAction::BuyResource {
+            session_id, sig, ..
         } => Some((session_id, Some(sig))),
         _ => None,
     }

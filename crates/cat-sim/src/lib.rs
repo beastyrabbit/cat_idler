@@ -78,3 +78,6 @@ pub mod items;
 
 // P19 slice 2: material-variant trade-good crafting recipes (workshops → items).
 pub mod recipes;
+
+// P19 slice 3: visiting trader / caravan lifecycle + coin economy pricing.
+pub mod trader;

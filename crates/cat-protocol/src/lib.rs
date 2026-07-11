@@ -70,6 +70,64 @@ pub struct ColonySnapshot {
     /// produces items yet (that lands in slice 2's material-variant workshop recipes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<ItemStackSnapshot>,
+    /// Coin balance (P19 slice 3: visiting traders + a coin economy — see
+    /// `docs/migration/specs/p19-items-materials-trade.md`'s "Traders / caravans"
+    /// section). Its own currency, separate from `resources.blessings` and the
+    /// upgrade-tree's research points. Additive; defaults to `0.0` for pre-P19-slice-3
+    /// snapshots.
+    #[serde(default)]
+    pub coin: f64,
+    /// The currently-visiting trader, if any. `None` most of the time — a colony sees
+    /// at most one trader at once. Additive; absent for pre-P19-slice-3 snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trader: Option<TraderSnapshot>,
+}
+
+/// A visiting trader (P19 slice 3): its position/lifecycle state, and what it currently
+/// offers to buy from / sell to the colony, at what coin price.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraderSnapshot {
+    pub id: String,
+    pub position: TilePoint,
+    pub state: TraderVisitState,
+    /// Crafted-item stacks the colony currently holds and could sell to the trader
+    /// (empty while `state != trading`, since selling is only valid then). Mirrors
+    /// [`ItemStackSnapshot`]'s `kind`/`material`/`quality` string convention.
+    pub buy_offers: Vec<TraderBuyOffer>,
+    /// Resource kinds the trader stocks and the colony could buy (constant across a
+    /// visit; empty while `state != trading`).
+    pub sell_offers: Vec<TraderSellOffer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraderVisitState {
+    Arriving,
+    Trading,
+    Departing,
+}
+
+/// One item stack the trader will buy from the colony, and at what coin-per-unit price.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraderBuyOffer {
+    pub kind: String,
+    pub material: String,
+    pub quality: u8,
+    /// How many of this stack the colony currently holds (the max sellable count).
+    pub available: u32,
+    /// Coin the trader pays per unit.
+    pub unit_price: f64,
+}
+
+/// One resource kind the trader will sell to the colony, and at what coin-per-unit price.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraderSellOffer {
+    pub resource: ResourceKind,
+    /// Coin the trader charges per unit.
+    pub unit_price: f64,
 }
 
 /// One distinct crafted-item stack: kind × material × quality, with how many the
@@ -751,6 +809,27 @@ pub enum ClientAction {
         sig: String,
         stockpile_id: String,
     },
+    /// Sell `count` of a crafted-item stack (`kind`/`material`/`quality`, matching
+    /// [`ItemStackSnapshot`]'s wire fields) to the visiting trader for coin (P19 slice 3).
+    /// Only valid while a trader is present and `Trading`.
+    SellGoods {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        kind: String,
+        material: String,
+        quality: u8,
+        count: u32,
+    },
+    /// Buy `amount` of `resource` from the visiting trader with coin (P19 slice 3). Only
+    /// valid while a trader is present, `Trading`, and stocks that resource kind.
+    BuyResource {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        resource: ResourceKind,
+        amount: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -799,6 +878,135 @@ mod tests {
 
         let decoded: ClientAction = serde_json::from_value(encoded).expect("deserialize action");
         assert_eq!(decoded, action);
+    }
+
+    #[test]
+    fn sell_goods_action_round_trips_with_route_field_names() {
+        let action = ClientAction::SellGoods {
+            session_id: "session_1".to_string(),
+            nickname: "Guest Cat".to_string(),
+            sig: "signed".to_string(),
+            kind: "mug".to_string(),
+            material: "wood".to_string(),
+            quality: 2,
+            count: 5,
+        };
+
+        let encoded = serde_json::to_value(&action).expect("serialize action");
+        assert_eq!(
+            encoded,
+            json!({
+                "action": "sellGoods",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "kind": "mug",
+                "material": "wood",
+                "quality": 2,
+                "count": 5
+            })
+        );
+
+        let decoded: ClientAction = serde_json::from_value(encoded).expect("deserialize action");
+        assert_eq!(decoded, action);
+    }
+
+    #[test]
+    fn buy_resource_action_round_trips_with_route_field_names() {
+        let action = ClientAction::BuyResource {
+            session_id: "session_1".to_string(),
+            nickname: "Guest Cat".to_string(),
+            sig: "signed".to_string(),
+            resource: ResourceKind::Food,
+            amount: 12.5,
+        };
+
+        let encoded = serde_json::to_value(&action).expect("serialize action");
+        assert_eq!(
+            encoded,
+            json!({
+                "action": "buyResource",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "resource": "food",
+                "amount": 12.5
+            })
+        );
+
+        let decoded: ClientAction = serde_json::from_value(encoded).expect("deserialize action");
+        assert_eq!(decoded, action);
+    }
+
+    #[test]
+    fn trader_snapshot_round_trips_and_coin_defaults_to_zero_when_absent() {
+        let snapshot = TraderSnapshot {
+            id: "trader-1".to_string(),
+            position: TilePoint { x: 6, y: 12 },
+            state: TraderVisitState::Trading,
+            buy_offers: vec![TraderBuyOffer {
+                kind: "mug".to_string(),
+                material: "wood".to_string(),
+                quality: 1,
+                available: 3,
+                unit_price: 2.4,
+            }],
+            sell_offers: vec![TraderSellOffer {
+                resource: ResourceKind::Food,
+                unit_price: 1.5,
+            }],
+        };
+
+        let encoded = serde_json::to_value(&snapshot).expect("serialize trader snapshot");
+        let decoded: TraderSnapshot =
+            serde_json::from_value(encoded).expect("deserialize trader snapshot");
+        assert_eq!(decoded, snapshot);
+
+        // `coin`/`trader` are additive: a pre-P19-slice-3 payload lacking both fields
+        // must still deserialize, with `coin` defaulting to 0.0 and `trader` to `None`.
+        let legacy_json = json!({
+            "id": "colony_1",
+            "name": "Global Colony",
+            "status": "thriving",
+            "resources": {
+                "food": 0.0, "water": 0.0, "herbs": 0.0, "materials": 0.0, "refined": 0.0,
+                "weapons": 0.0, "armor": 0.0, "planks": 0.0, "blocks": 0.0, "tools": 0.0,
+                "blessings": 0.0
+            },
+            "storage": {
+                "capacities": {
+                    "food": 0.0, "water": 0.0, "herbs": 0.0, "materials": 0.0, "refined": 0.0,
+                    "weapons": 0.0, "armor": 0.0, "planks": 0.0, "blocks": 0.0, "tools": 0.0
+                },
+                "titheRates": { "food": 20.0, "refined": 5.0 }
+            },
+            "leader": null,
+            "cats": [],
+            "jobs": [],
+            "upgrades": [],
+            "events": [],
+            "housing": { "population": 0, "capacity": 0, "pressure": 0.0, "villageLevel": 0 },
+            "research": {
+                "ownedNodeIds": [], "researchPoints": 0.0, "researcherCount": 0, "blessings": 0.0
+            },
+            "election": null,
+            "voteKick": null,
+            "zones": [],
+            "threat": {
+                "pressure": 0.0, "band": "calm", "raidActive": false, "warriors": 0,
+                "weapons": 0.0, "armor": 0.0
+            },
+            "raiders": [],
+            "buildings": [],
+            "claimedTiles": [],
+            "villageGate": null,
+            "villageRadius": 4,
+            "anchor": { "x": 6, "y": 6 }
+        });
+        let colony: ColonySnapshot =
+            serde_json::from_value(legacy_json).expect("deserialize legacy colony snapshot");
+        assert_eq!(colony.coin, 0.0);
+        assert!(colony.trader.is_none());
     }
 
     #[test]
@@ -1125,6 +1333,8 @@ mod tests {
                 stockpiles: Vec::new(),
                 stock_ledger: None,
                 items: Vec::new(),
+                coin: 0.0,
+                trader: None,
             }],
         }
     }

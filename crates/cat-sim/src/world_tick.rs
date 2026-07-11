@@ -68,6 +68,7 @@ use crate::{
         ThreatSnapshot, accrue_threat, colony_wealth, plan_raid, resolve_raid, should_spawn_raid,
         threat_band,
     },
+    trader,
     trips::{HUNT_TRIP_COUNT, remaining_yield, split_yield, trip_due_at},
     types::{
         BuildingType, CatSpecialization, JobKind, JobStatus, LifeStage, TaskType, TileType,
@@ -164,6 +165,23 @@ pub struct ColonyRuntime {
     /// StonePrep bench's trade-craft cycle timer (P19 slice 2), mirroring
     /// [`Self::wood_craft_progress`] for [`crate::recipes::STONE_TRADE_RECIPE`].
     pub stone_craft_progress: f64,
+    /// Coin balance (P19 slice 3): earned by [`crate::trader::TraderState::Trading`]
+    /// `SellGoods` and spent on `BuyResource`. Its own currency, deliberately not folded
+    /// into `resources.blessings` or `global_upgrade_points` (the spec: "Do NOT overload
+    /// blessings/upgrade points — coin is its own thing"). Like `global_upgrade_points`
+    /// and `resources.blessings`, a colony reset (`reset_run`) does not zero this — it is
+    /// banked player-facing wealth, not part of the survival-resource run state.
+    pub coin: f64,
+    /// The currently-visiting trader, if any (P19 slice 3) — `None` most of the time; a
+    /// colony sees at most one trader at once. See [`crate::trader`] for the lifecycle/
+    /// pricing model.
+    pub trader: Option<TraderRuntime>,
+    /// Tick timestamp (ms) the most recent trader visit ended (`TraderState::Departing`
+    /// reaching the off-map spawn point and despawning). `None` before the colony's
+    /// first-ever visit, in which case the schedule counts game-hours from
+    /// `run_started_at` instead. Drives [`crate::trader::TRADER_VISIT_INTERVAL_GAME_HOURS`]'s
+    /// threshold check — see `phase_36b_trader_lifecycle`.
+    pub last_trader_departed_at: Option<i64>,
     pub threat_pressure: f64,
     pub last_raid_at: Option<i64>,
     pub active_raid: Option<RaidId>,
@@ -430,6 +448,19 @@ pub struct RaiderRuntime {
     pub health: f64,
 }
 
+/// A visiting trader's runtime state (P19 slice 3). See [`crate::trader`] for the
+/// lifecycle/pricing model this drives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraderRuntime {
+    pub id: String,
+    pub position: Position,
+    pub destination: Option<Position>,
+    pub state: trader::TraderState,
+    /// Tick timestamp (ms) the trader entered [`crate::trader::TraderState::Trading`].
+    /// `None` while `Arriving`.
+    pub arrived_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UpgradeLevels {
     pub click_power: u32,
@@ -542,6 +573,9 @@ impl Default for ColonyRuntime {
             items: BTreeMap::new(),
             wood_craft_progress: 0.0,
             stone_craft_progress: 0.0,
+            coin: 0.0,
+            trader: None,
+            last_trader_departed_at: None,
             threat_pressure: 0.0,
             last_raid_at: None,
             active_raid: None,
@@ -1137,6 +1171,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             });
             continue;
         }
+        phase_36b_trader_lifecycle(colony, gate);
         let reset_reason = phase_37_final_clamp_critical_collapse_status_persist(colony, gate);
         reconcile_colony_stockpiles(colony);
 
@@ -3783,6 +3818,134 @@ fn phase_36_threat_and_raid_director(
     None
 }
 
+/// Off-map standoff point a trader spawns at / departs to: `TRADER_SPAWN_DISTANCE`
+/// tiles due west of the current village gate. A fixed heading (not a rolled angle like
+/// `spawn_raid`'s) — see `trader` module docs for why traders need no RNG at all.
+fn trader_spawn_world_position(colony: &ColonyRuntime) -> WorldPos {
+    let gate_pos = tile_pos_to_world(raid_gate_position(colony));
+    WorldPos {
+        x: gate_pos.x - trader::TRADER_SPAWN_DISTANCE,
+        y: gate_pos.y,
+    }
+}
+
+fn spawn_trader(colony: &ColonyRuntime, gate: TickGate) -> TraderRuntime {
+    TraderRuntime {
+        id: format!("trader-{}", gate.processed_through),
+        position: position_from_world(trader_spawn_world_position(colony)),
+        destination: None,
+        state: trader::TraderState::Arriving,
+        arrived_at: None,
+    }
+}
+
+/// Phase 36b: spawn a visiting trader on its deterministic game-time schedule, and
+/// advance an in-progress visit's lifecycle (Arriving -> Trading -> Departing -> gone).
+/// A friendly, RNG-free analogue of `phase_36_threat_and_raid_director`'s spawn/march
+/// structure — see [`crate::trader`] for the schedule/movement constants. Purely
+/// additive: never touches `resources`, `threat_pressure`, or any other phase's state,
+/// so a trader visiting (or never having visited) cannot itself destabilize the
+/// survival/threat loops. `SellGoods` / `BuyResource` (player actions) are the only way
+/// `coin`/`items`/`resources` change because of a trader.
+fn phase_36b_trader_lifecycle(colony: &mut ColonyRuntime, gate: TickGate) {
+    let scale = normalize_time_scale(colony);
+
+    if colony.trader.is_none() {
+        let reference_at = colony
+            .last_trader_departed_at
+            .unwrap_or(colony.run_started_at);
+        let elapsed_game_sec =
+            (gate.processed_through - reference_at).max(0) as f64 / 1000.0 * scale;
+        if elapsed_game_sec >= trader::TRADER_VISIT_INTERVAL_GAME_HOURS * 3600.0 {
+            colony.trader = Some(spawn_trader(colony, gate));
+            append_event(
+                colony,
+                gate.processed_through,
+                EventKind::Other("trader_arrived".to_owned()),
+                "A trader's wagon has been spotted approaching the village.",
+            );
+        }
+        return;
+    }
+
+    let gate_pos = tile_pos_to_world(raid_gate_position(colony));
+    let spawn_pos = trader_spawn_world_position(colony);
+    let movement_budget = gate.elapsed_sec as f64 * scale * trader::TRADER_SPEED_TILES_PER_SEC;
+    let state = colony.trader.as_ref().expect("checked Some above").state;
+
+    match state {
+        trader::TraderState::Arriving => {
+            let current = {
+                let unit = colony.trader.as_ref().expect("checked Some above");
+                WorldPos {
+                    x: unit.position.x,
+                    y: unit.position.y,
+                }
+            };
+            let walk = walk_path(current, gate_pos, movement_budget, &[]);
+            let arrived =
+                cheb_distance_world(walk.position, gate_pos) <= trader::TRADER_ARRIVE_RANGE;
+            {
+                let unit = colony.trader.as_mut().expect("checked Some above");
+                unit.position = position_from_world(walk.position);
+                unit.destination = Some(position_from_world(gate_pos));
+                if arrived {
+                    unit.state = trader::TraderState::Trading;
+                    unit.arrived_at = Some(gate.processed_through);
+                }
+            }
+            if arrived {
+                append_event(
+                    colony,
+                    gate.processed_through,
+                    EventKind::Other("trader_trading".to_owned()),
+                    "The trader has set up shop at the gate and is ready to deal.",
+                );
+            }
+        }
+        trader::TraderState::Trading => {
+            let arrived_at = colony
+                .trader
+                .as_ref()
+                .expect("checked Some above")
+                .arrived_at
+                .unwrap_or(gate.processed_through);
+            let linger_sec = (gate.processed_through - arrived_at).max(0) as f64 / 1000.0 * scale;
+            if linger_sec >= trader::TRADER_LINGER_GAME_HOURS * 3600.0 {
+                colony.trader.as_mut().expect("checked Some above").state =
+                    trader::TraderState::Departing;
+            }
+        }
+        trader::TraderState::Departing => {
+            let current = {
+                let unit = colony.trader.as_ref().expect("checked Some above");
+                WorldPos {
+                    x: unit.position.x,
+                    y: unit.position.y,
+                }
+            };
+            let walk = walk_path(current, spawn_pos, movement_budget, &[]);
+            let departed =
+                cheb_distance_world(walk.position, spawn_pos) <= trader::TRADER_ARRIVE_RANGE;
+            {
+                let unit = colony.trader.as_mut().expect("checked Some above");
+                unit.position = position_from_world(walk.position);
+                unit.destination = Some(position_from_world(spawn_pos));
+            }
+            if departed {
+                colony.trader = None;
+                colony.last_trader_departed_at = Some(gate.processed_through);
+                append_event(
+                    colony,
+                    gate.processed_through,
+                    EventKind::Other("trader_departed".to_owned()),
+                    "The trader's wagon has departed for distant lands.",
+                );
+            }
+        }
+    }
+}
+
 /// Phase 37: clamp resources, handle critical collapse, update status, persist
 /// final state, and record `last_tick = processed_through`.
 fn phase_37_final_clamp_critical_collapse_status_persist(
@@ -3888,6 +4051,11 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     colony.active_raid = None;
     colony.raid_clicks = 0.0;
     colony.last_raid_at = None;
+    // A mid-visit trader (if any) doesn't survive a collapse cleanly — its position/
+    // schedule assumptions (e.g. `run_started_at`-relative timing) no longer hold post-
+    // reset. `coin` itself is untouched here (see `ColonyRuntime::coin`'s doc comment):
+    // it is banked player wealth, not run state.
+    colony.trader = None;
 
     append_event(
         colony,
@@ -7592,6 +7760,241 @@ mod tests {
         assert!(
             !left.items.is_empty(),
             "the horizon should have completed at least one trade-craft cycle"
+        );
+    }
+
+    // ---- P19 slice 3: visiting trader / caravan economy ----
+
+    fn trader_test_colony(seed: u32) -> ColonyRuntime {
+        ColonyRuntime {
+            id: "colony-1".to_owned(),
+            run_started_at: 0,
+            created_at: 0,
+            last_tick: 0,
+            test_rng_seed: Some(seed),
+            ..ColonyRuntime::default()
+        }
+    }
+
+    fn game_hours_to_ms(hours: f64) -> i64 {
+        (hours * 3_600.0 * 1_000.0) as i64
+    }
+
+    fn trader_gate_world_pos(colony: &ColonyRuntime) -> WorldPos {
+        tile_pos_to_world(raid_gate_position(colony))
+    }
+
+    #[test]
+    fn trader_does_not_spawn_before_the_scheduled_interval() {
+        let mut colony = trader_test_colony(1);
+        let almost_due = game_hours_to_ms(trader::TRADER_VISIT_INTERVAL_GAME_HOURS) - 1_000;
+        phase_36b_trader_lifecycle(&mut colony, production_gate(0, almost_due));
+        assert!(colony.trader.is_none());
+    }
+
+    #[test]
+    fn trader_spawns_arriving_off_map_at_the_scheduled_interval() {
+        let mut colony = trader_test_colony(1);
+        let due = game_hours_to_ms(trader::TRADER_VISIT_INTERVAL_GAME_HOURS);
+        phase_36b_trader_lifecycle(&mut colony, production_gate(0, due));
+
+        let unit = colony.trader.as_ref().expect("trader should have spawned");
+        assert_eq!(unit.state, trader::TraderState::Arriving);
+        assert_eq!(unit.arrived_at, None);
+        let gate_pos = trader_gate_world_pos(&colony);
+        let position = WorldPos {
+            x: unit.position.x,
+            y: unit.position.y,
+        };
+        assert!(
+            cheb_distance_world(position, gate_pos) > trader::TRADER_ARRIVE_RANGE,
+            "a freshly-spawned trader must start off-map, not already at the gate"
+        );
+        assert!(colony.events.iter().any(
+            |event| matches!(&event.kind, EventKind::Other(kind) if kind == "trader_arrived")
+        ),);
+    }
+
+    #[test]
+    fn trader_lifecycle_advances_arriving_trading_departing_gone_on_the_documented_timeline() {
+        let mut colony = trader_test_colony(1);
+
+        // 1) Spawn at the scheduled interval.
+        let spawn_ms = game_hours_to_ms(trader::TRADER_VISIT_INTERVAL_GAME_HOURS);
+        phase_36b_trader_lifecycle(&mut colony, production_gate(0, spawn_ms));
+        assert_eq!(
+            colony.trader.as_ref().unwrap().state,
+            trader::TraderState::Arriving
+        );
+
+        // 2) A big movement budget (6 real/game-hours at 0.5 tiles/sec = 10_800 tiles,
+        // far more than TRADER_SPAWN_DISTANCE=12) carries it all the way to the gate in
+        // one tick -> Trading.
+        let travel_sec = 6 * 3_600;
+        let arrive_ms = spawn_ms + travel_sec * 1_000;
+        phase_36b_trader_lifecycle(&mut colony, production_gate(travel_sec, arrive_ms));
+        {
+            let unit = colony.trader.as_ref().unwrap();
+            assert_eq!(unit.state, trader::TraderState::Trading);
+            assert_eq!(unit.arrived_at, Some(arrive_ms));
+            let gate_pos = trader_gate_world_pos(&colony);
+            let position = WorldPos {
+                x: unit.position.x,
+                y: unit.position.y,
+            };
+            assert!(cheb_distance_world(position, gate_pos) <= trader::TRADER_ARRIVE_RANGE);
+        }
+        assert!(colony.events.iter().any(
+            |event| matches!(&event.kind, EventKind::Other(kind) if kind == "trader_trading")
+        ),);
+
+        // 3) Still inside the linger window -> stays Trading.
+        let mid_linger_ms = arrive_ms + game_hours_to_ms(trader::TRADER_LINGER_GAME_HOURS - 1.0);
+        phase_36b_trader_lifecycle(&mut colony, production_gate(3_600, mid_linger_ms));
+        assert_eq!(
+            colony.trader.as_ref().unwrap().state,
+            trader::TraderState::Trading,
+            "still within the linger window"
+        );
+
+        // 4) Past the linger window -> Departing.
+        let past_linger_ms = arrive_ms + game_hours_to_ms(trader::TRADER_LINGER_GAME_HOURS + 1.0);
+        phase_36b_trader_lifecycle(&mut colony, production_gate(3_600, past_linger_ms));
+        assert_eq!(
+            colony.trader.as_ref().unwrap().state,
+            trader::TraderState::Departing
+        );
+
+        // 5) Another big movement budget carries it back off-map -> despawns.
+        let depart_ms = past_linger_ms + travel_sec * 1_000;
+        phase_36b_trader_lifecycle(&mut colony, production_gate(travel_sec, depart_ms));
+        assert!(colony.trader.is_none(), "the trader should have despawned");
+        assert_eq!(colony.last_trader_departed_at, Some(depart_ms));
+        assert!(colony.events.iter().any(
+            |event| matches!(&event.kind, EventKind::Other(kind) if kind == "trader_departed")
+        ),);
+    }
+
+    #[test]
+    fn trader_visit_lifecycle_is_deterministic_across_identical_runs() {
+        fn build() -> ColonyRuntime {
+            trader_test_colony(4_242)
+        }
+
+        let mut left = build();
+        let mut right = build();
+
+        // Hourly phase calls across ~60 game-hours: past the 48h spawn interval, the 6h
+        // linger, and the (well-under-an-hour) arrival/departure travel.
+        for step in 1..=60 {
+            let now = i64::from(step) * 3_600_000;
+            phase_36b_trader_lifecycle(&mut left, production_gate(3_600, now));
+            phase_36b_trader_lifecycle(&mut right, production_gate(3_600, now));
+        }
+
+        assert_eq!(
+            left, right,
+            "identical schedules must produce a byte-identical trader lifecycle"
+        );
+        assert!(
+            left.last_trader_departed_at.is_some(),
+            "the horizon should have completed a full trader visit"
+        );
+    }
+
+    #[test]
+    fn trader_visit_is_deterministic_across_identical_worlds_through_a_full_world_tick_horizon() {
+        fn build(seed: u32) -> WorldState {
+            WorldState {
+                world_seed: 777,
+                colonies: vec![ColonyRuntime {
+                    id: "colony-1".to_owned(),
+                    // No cats at all (not merely none alive): `phase_26_empty_colony_reset`
+                    // only resets a roster that HAD cats and lost them all, so an empty
+                    // roster never resets. A hand-built colony (no world tiles, no water
+                    // source, no starter buildings) has no water economy to sustain any
+                    // cats over a horizon this long anyway — the point of this test is
+                    // full-tick determinism through a trader visit, not survival balance
+                    // (the survival proof is a separate, dedicated test).
+                    cats: Vec::new(),
+                    run_started_at: 0,
+                    // `threat_snapshot` derives `colony_age_sec` from `run_started_at` if
+                    // it is `> 0`, else `created_at`. Parking `created_at` far in the
+                    // future keeps `colony_age_sec` clamped to 0 for this whole horizon,
+                    // which keeps threat permanently inside its 8h raid grace window
+                    // (`threat::RAID_GRACE_SEC`) — i.e. no raid ever spawns to contend
+                    // with a cat-less colony's guaranteed "no alive cats" reset check.
+                    // `run_started_at` itself stays `0` since the trader's own schedule
+                    // (`phase_36b_trader_lifecycle`) keys off it directly.
+                    created_at: i64::MAX / 2,
+                    last_tick: 0,
+                    test_rng_seed: Some(seed),
+                    ..ColonyRuntime::default()
+                }],
+            }
+        }
+
+        let mut left = build(9_001);
+        let mut right = build(9_001);
+
+        for step in 1..=60 {
+            let now = i64::from(step) * 3_600_000;
+            assert_eq!(world_tick(&mut left, now), world_tick(&mut right, now));
+        }
+
+        assert_eq!(
+            left.colonies[0], right.colonies[0],
+            "identical seeds must drive a byte-identical world through a full trader visit"
+        );
+        assert!(
+            left.colonies[0].last_trader_departed_at.is_some(),
+            "the horizon should have completed a full trader visit"
+        );
+    }
+
+    #[test]
+    fn trader_feature_is_inert_before_the_first_scheduled_arrival() {
+        // A world that never reaches the trader's first scheduled arrival must be
+        // byte-identical to a world with no trader lifecycle at all — i.e. the feature
+        // does nothing until it's due. 40 one-minute ticks (40 real/game-minutes) is
+        // nowhere near the 48-game-hour interval.
+        let mut with_phase = trader_test_colony(1);
+        let without_phase = with_phase.clone();
+
+        for step in 1..=40 {
+            let now = i64::from(step) * 60_000;
+            let gate = production_gate(60, now);
+            phase_36b_trader_lifecycle(&mut with_phase, gate);
+            // `without_phase` never calls the trader phase at all.
+            let _ = &without_phase;
+        }
+
+        assert_eq!(with_phase, without_phase);
+        assert!(with_phase.trader.is_none());
+        assert!(with_phase.last_trader_departed_at.is_none());
+    }
+
+    #[test]
+    fn coin_survives_a_colony_reset() {
+        let mut colony = trader_test_colony(1);
+        colony.coin = 250.0;
+        colony.trader = Some(TraderRuntime {
+            id: "trader-1".to_owned(),
+            position: position_from_world(trader_gate_world_pos(&colony)),
+            destination: None,
+            state: trader::TraderState::Trading,
+            arrived_at: Some(0),
+        });
+
+        reset_run(&mut colony, 5_000, RunResetReason::AllCatsDead);
+
+        assert_eq!(
+            colony.coin, 250.0,
+            "coin is banked player wealth, not run state"
+        );
+        assert!(
+            colony.trader.is_none(),
+            "a mid-visit trader does not survive a collapse cleanly"
         );
     }
 

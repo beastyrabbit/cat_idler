@@ -83,7 +83,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             testRngSeed INTEGER,
             officers TEXT,
             stockpiles TEXT,
-            stockLedger TEXT
+            stockLedger TEXT,
+            coin REAL
         );
 
         CREATE TABLE IF NOT EXISTS cats (
@@ -238,6 +239,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "stockpiles", "TEXT"),
         ("colonies", "stockLedger", "TEXT"),
         ("colonies", "revealedTiles", "TEXT"),
+        ("colonies", "coin", "REAL"),
         ("cats", "skills", "TEXT"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
     ];
@@ -306,7 +308,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 ritualRequestedAt, criticalSince, claimedTiles, revealedTiles,
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
-                testCriticalMsOverride, testRngSeed, officers, stockpiles, stockLedger
+                testCriticalMsOverride, testRngSeed, officers, stockpiles, stockLedger, coin
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -331,10 +333,10 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             criticalSince, claimedTiles, revealedTiles, threatPressure, lastRaidAt,
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
-            stockpiles, stockLedger
+            stockpiles, stockLedger, coin
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32
         )",
         params![
             colony.id,
@@ -368,6 +370,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             serde_json::to_string(&colony.officers).map_err(to_sql_json)?,
             serde_json::to_string(&colony.stockpiles).map_err(to_sql_json)?,
             serde_json::to_string(&colony.stock_ledger).map_err(to_sql_json)?,
+            colony.coin,
         ],
     )?;
 
@@ -457,6 +460,20 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         // P19 slice 1: no `items` column yet — the item store isn't persisted this
         // slice (nothing produces items, so every colony loads with an empty store).
         items: BTreeMap::new(),
+        // P19 slice 2: bench trade-craft cycle timers aren't persisted either — a
+        // restarted server just restarts each bench's rotation from 0 progress (a
+        // cosmetic timer restart, not an economy loss).
+        wood_craft_progress: 0.0,
+        stone_craft_progress: 0.0,
+        // P19 slice 3: `coin` is real player-facing wealth, so it gets a column (see
+        // `migrate_add_missing_columns`). The in-progress trader visit + its schedule
+        // reference (`last_trader_departed_at`) are NOT persisted this slice, matching
+        // the `items`/craft-progress precedent above — a restart drops any mid-visit
+        // trader and the next visit's game-time schedule falls back to counting from
+        // `run_started_at` (see `world_tick::phase_36b_trader_lifecycle`).
+        coin: row.get::<_, Option<f64>>("coin")?.unwrap_or(0.0),
+        trader: None,
+        last_trader_departed_at: None,
         threat_pressure: row.get::<_, Option<f64>>("threatPressure")?.unwrap_or(0.0),
         last_raid_at: row.get("lastRaidAt")?,
         active_raid: row.get("activeRaidId")?,
@@ -1384,6 +1401,7 @@ mod tests {
             ("colonies", "officers"),
             ("colonies", "stockpiles"),
             ("colonies", "stockLedger"),
+            ("colonies", "coin"),
             ("cats", "skills"),
         ] {
             assert!(!column_exists(&conn, table, column).unwrap());
@@ -1395,6 +1413,7 @@ mod tests {
             ("colonies", "officers"),
             ("colonies", "stockpiles"),
             ("colonies", "stockLedger"),
+            ("colonies", "coin"),
             ("cats", "skills"),
         ] {
             assert!(
