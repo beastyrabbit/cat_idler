@@ -295,6 +295,39 @@ fn click_action(button: MouseButton) -> Option<ClickTarget> {
     }
 }
 
+/// Kind of inspectable a stacked-pick candidate is, in cycle order (cats sit on
+/// top of buildings which sit on stockpiles).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PickKind {
+    Cat,
+    Building,
+    Stockpile,
+}
+
+/// One inspectable found under the cursor for shift+right-click cycling.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct PickCandidate {
+    id: String,
+    kind: PickKind,
+}
+
+/// Given the ordered stack of inspectables under the cursor and the currently
+/// selected id (of any kind), return the next candidate to cycle to, wrapping
+/// around. Falls to the first when nothing is selected or the selection isn't in
+/// the stack. `None` only when the stack is empty.
+fn cycle_stacked_pick<'a>(
+    stack: &'a [PickCandidate],
+    current: Option<&str>,
+) -> Option<&'a PickCandidate> {
+    if stack.is_empty() {
+        return None;
+    }
+    let idx = current
+        .and_then(|c| stack.iter().position(|p| p.id == c))
+        .map_or(0, |i| (i + 1) % stack.len());
+    stack.get(idx)
+}
+
 /// The shrine reservoir's stockpile id — always present, de-emphasized in render.
 const SHRINE_STOCKPILE_ID: &str = "stockpile-shrine";
 
@@ -1559,6 +1592,7 @@ pub fn run() {
                 ),
                 // announcements / event log + goods + trade + boost + minimap
                 (
+                    cycle_stacked_selection,
                     toggle_announcements,
                     update_announcements,
                     toggle_goods,
@@ -4057,8 +4091,10 @@ fn select_cat(
 }
 
 /// Right-click a building to inspect it; right-click empty ground or the same
-/// building again to deselect.
+/// building again to deselect. Shift+right-click is handled by
+/// `cycle_stacked_selection` instead, so bail when shift is held.
 fn select_building(
+    keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
@@ -4066,6 +4102,9 @@ fn select_building(
     latest: Res<LatestSnapshot>,
     mut selection: ResMut<BuildingSelection>,
 ) {
+    if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+        return;
+    }
     if !buttons.just_pressed(MouseButton::Right)
         || click_action(MouseButton::Right) != Some(ClickTarget::Building)
     {
@@ -4094,6 +4133,93 @@ fn select_building(
         .collect();
     let picked = nearest_id(world, &buildings, TILE * 0.9);
     selection.selected = toggle_selection(selection.selected.as_deref(), picked);
+}
+
+/// Shift+right-click cycles through every inspectable stacked under the cursor —
+/// a cat standing on a workshop, a pile on a building tile — so each successive
+/// click targets the next one (cat → building → stockpile → wrap). Routes the
+/// pick to the matching inspector and clears the others.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn cycle_stacked_selection(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    ui: Query<&Interaction, With<Button>>,
+    latest: Res<LatestSnapshot>,
+    mut cat_sel: ResMut<Selection>,
+    mut building_sel: ResMut<BuildingSelection>,
+    mut pile_sel: ResMut<StockpileSelection>,
+) {
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if !shift || !buttons.just_pressed(MouseButton::Right) {
+        return;
+    }
+    if ui.iter().any(|i| !matches!(i, Interaction::None)) {
+        return;
+    }
+    let Some(world) = cursor_world(&windows, &camera) else {
+        return;
+    };
+    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+        return;
+    };
+    // Collect everything under the cursor, using the same hit radii as the
+    // single-click picks so "stacked" means the same thing.
+    let tile = world_to_tile(world);
+    let mut stack: Vec<PickCandidate> = Vec::new();
+    for cat in colony.cats.iter().filter(|c| c.death_time.is_none()) {
+        let p = grid_to_world(cat.position.x, cat.position.y);
+        if p.distance_squared(world) <= (TILE * 0.5).powi(2) {
+            stack.push(PickCandidate {
+                id: cat.id.clone(),
+                kind: PickKind::Cat,
+            });
+        }
+    }
+    for b in colony
+        .buildings
+        .iter()
+        .filter(|b| building_texture(b.building_type).is_some())
+    {
+        let p = grid_to_world(b.world_position.x, b.world_position.y);
+        if p.distance_squared(world) <= (TILE * 0.9).powi(2) {
+            stack.push(PickCandidate {
+                id: b.id.clone(),
+                kind: PickKind::Building,
+            });
+        }
+    }
+    for pile in colony
+        .stockpiles
+        .iter()
+        .filter(|s| s.id != SHRINE_STOCKPILE_ID && point_in_stockpile(tile, s))
+    {
+        stack.push(PickCandidate {
+            id: pile.id.clone(),
+            kind: PickKind::Stockpile,
+        });
+    }
+    // Stable cycle order (cats, then buildings, then stockpiles; by id within a
+    // kind) so the sequence doesn't shuffle between clicks at a fixed cursor.
+    stack.sort_by(|a, b| (a.kind as u8, &a.id).cmp(&(b.kind as u8, &b.id)));
+
+    let current = cat_sel
+        .selected
+        .as_deref()
+        .or(building_sel.selected.as_deref())
+        .or(pile_sel.selected.as_deref());
+    let Some(next) = cycle_stacked_pick(&stack, current).cloned() else {
+        return;
+    };
+    cat_sel.selected = None;
+    building_sel.selected = None;
+    pile_sel.selected = None;
+    match next.kind {
+        PickKind::Cat => cat_sel.selected = Some(next.id),
+        PickKind::Building => building_sel.selected = Some(next.id),
+        PickKind::Stockpile => pile_sel.selected = Some(next.id),
+    }
 }
 
 /// Re-resolve the selected building each tick and repaint its inspector panel;
@@ -5828,6 +5954,40 @@ mod tests {
             boosted,
             pregnant: false,
         }
+    }
+
+    #[test]
+    fn cycle_stacked_pick_advances_and_wraps() {
+        let stack = vec![
+            PickCandidate {
+                id: "cat".to_string(),
+                kind: PickKind::Cat,
+            },
+            PickCandidate {
+                id: "workshop".to_string(),
+                kind: PickKind::Building,
+            },
+            PickCandidate {
+                id: "pile".to_string(),
+                kind: PickKind::Stockpile,
+            },
+        ];
+        // Nothing selected → first in the stack.
+        assert_eq!(cycle_stacked_pick(&stack, None).unwrap().id, "cat");
+        // Each click advances to the next, wrapping past the end.
+        assert_eq!(
+            cycle_stacked_pick(&stack, Some("cat")).unwrap().id,
+            "workshop"
+        );
+        assert_eq!(
+            cycle_stacked_pick(&stack, Some("workshop")).unwrap().id,
+            "pile"
+        );
+        assert_eq!(cycle_stacked_pick(&stack, Some("pile")).unwrap().id, "cat");
+        // A selection not in the stack falls back to the first.
+        assert_eq!(cycle_stacked_pick(&stack, Some("gone")).unwrap().id, "cat");
+        // An empty stack yields nothing.
+        assert!(cycle_stacked_pick(&[], Some("cat")).is_none());
     }
 
     #[test]
