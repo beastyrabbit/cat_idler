@@ -12,6 +12,7 @@ use crate::{
     entities::{self, Cat, CatActivity, MapType, Position},
     housing::{self, HousingBuilding},
     idle_engine, idle_rules,
+    items::Item,
     life_sim::{can_work, get_life_stage},
     officers::OfficerRole,
     production,
@@ -917,7 +918,23 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .collect(),
         stockpiles: colony.stockpiles.iter().map(stockpile_snapshot).collect(),
         stock_ledger: Some(stock_ledger_snapshot(colony)),
+        items: items_snapshot(&colony.items),
     }
+}
+
+/// Builds the item-stack snapshot list from the colony's item store, in the store's
+/// own (deterministic `BTreeMap`) order.
+fn items_snapshot(items: &BTreeMap<Item, u32>) -> Vec<proto::ItemStackSnapshot> {
+    items
+        .iter()
+        .map(|(item, &count)| proto::ItemStackSnapshot {
+            kind: item.kind.as_str().to_owned(),
+            material: item.material.as_str().to_owned(),
+            quality: item.quality,
+            count,
+            value: item.value(),
+        })
+        .collect()
 }
 
 fn stock_ledger_snapshot(colony: &ColonyRuntime) -> proto::StockLedgerSnapshot {
@@ -2381,6 +2398,51 @@ mod tests {
         assert!(
             snap.colonies[0].stockpiles.len() >= 2,
             "designated pile exposed"
+        );
+    }
+
+    #[test]
+    fn build_snapshot_omits_items_for_the_default_empty_store() {
+        // P19 slice 1: every colony's item store starts empty (nothing produces items
+        // yet), so the snapshot's `items` list should be empty too.
+        let world = world_with_one_colony();
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        assert!(snap.colonies[0].items.is_empty());
+    }
+
+    #[test]
+    fn build_snapshot_exposes_a_seeded_item_store_in_deterministic_order_with_values() {
+        use crate::items::{Item, ItemKind, Material, item_value};
+
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        // Insert out of eventual sort order to prove the snapshot reflects the store's
+        // own BTreeMap order, not insertion order.
+        colony.add_item(Item::new(ItemKind::Weapon, Material::Metal, 3), 2);
+        colony.add_item(Item::new(ItemKind::Mug, Material::Wood, 1), 5);
+        colony.add_item(Item::new(ItemKind::Mug, Material::Stone, 1), 1);
+
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        let items = &snap.colonies[0].items;
+        assert_eq!(items.len(), 3);
+
+        // Mug < Weapon (kind order); within Mug, Wood < Stone (material order).
+        assert_eq!(items[0].kind, "mug");
+        assert_eq!(items[0].material, "wood");
+        assert_eq!(items[0].count, 5);
+        assert_eq!(items[0].value, item_value(ItemKind::Mug, Material::Wood, 1));
+
+        assert_eq!(items[1].kind, "mug");
+        assert_eq!(items[1].material, "stone");
+        assert_eq!(items[1].count, 1);
+
+        assert_eq!(items[2].kind, "weapon");
+        assert_eq!(items[2].material, "metal");
+        assert_eq!(items[2].quality, 3);
+        assert_eq!(items[2].count, 2);
+        assert_eq!(
+            items[2].value,
+            item_value(ItemKind::Weapon, Material::Metal, 3)
         );
     }
 

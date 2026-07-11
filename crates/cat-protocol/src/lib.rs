@@ -63,6 +63,27 @@ pub struct ColonySnapshot {
     /// Absent for pre-P12.4a snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stock_ledger: Option<StockLedgerSnapshot>,
+    /// The colony's item/material economy store (P19 slice 1: DF-scale item economy —
+    /// `docs/migration/specs/p19-items-materials-trade.md`). Each stack is a distinct
+    /// `(kind, material, quality)` combination with its held count and per-unit value.
+    /// Additive and inert this slice: empty/absent for every colony, since nothing
+    /// produces items yet (that lands in slice 2's material-variant workshop recipes).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ItemStackSnapshot>,
+}
+
+/// One distinct crafted-item stack: kind × material × quality, with how many the
+/// colony holds and what one is worth. `kind`/`material` are stable lowercase labels
+/// (e.g. `"weapon"` / `"metal"`) rather than enums, so the client/trade UI can render
+/// them without a shared enum type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemStackSnapshot {
+    pub kind: String,
+    pub material: String,
+    pub quality: u8,
+    pub count: u32,
+    pub value: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1103,6 +1124,7 @@ mod tests {
                 officers: BTreeMap::new(),
                 stockpiles: Vec::new(),
                 stock_ledger: None,
+                items: Vec::new(),
             }],
         }
     }
@@ -1249,6 +1271,61 @@ mod tests {
         assert_eq!(encoded["colonies"][0]["officers"]["farmer"], json!("cat_1"));
         let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
         assert_eq!(round.colonies[0].officers, snap.colonies[0].officers);
+    }
+
+    #[test]
+    fn item_stack_snapshot_round_trips_with_camel_case_fields() {
+        let stack = ItemStackSnapshot {
+            kind: "weapon".to_string(),
+            material: "metal".to_string(),
+            quality: 3,
+            count: 2,
+            value: 130,
+        };
+        let encoded = serde_json::to_value(&stack).expect("serialize");
+        assert_eq!(
+            encoded,
+            json!({
+                "kind": "weapon",
+                "material": "metal",
+                "quality": 3,
+                "count": 2,
+                "value": 130
+            })
+        );
+        let back: ItemStackSnapshot = serde_json::from_value(encoded).expect("deserialize");
+        assert_eq!(back, stack);
+    }
+
+    #[test]
+    fn colony_snapshot_items_default_empty_and_omitted_when_absent() {
+        // An empty item store omits `items` from the wire payload entirely (P19 slice 1
+        // is inert for every colony, so this is the common case).
+        let encoded = serde_json::to_value(sample_world_snapshot()).expect("serialize");
+        assert!(encoded["colonies"][0].get("items").is_none());
+
+        // Old payloads with no `items` key at all still deserialize (back-compat).
+        let mut value = encoded.clone();
+        value["colonies"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("items");
+        let back: WorldSnapshot = serde_json::from_value(value).expect("deserialize");
+        assert!(back.colonies[0].items.is_empty());
+
+        // A populated store round-trips.
+        let mut snap = sample_world_snapshot();
+        snap.colonies[0].items.push(ItemStackSnapshot {
+            kind: "mug".to_string(),
+            material: "wood".to_string(),
+            quality: 1,
+            count: 5,
+            value: 4,
+        });
+        let encoded = serde_json::to_value(&snap).expect("serialize");
+        assert_eq!(encoded["colonies"][0]["items"][0]["kind"], json!("mug"));
+        let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
+        assert_eq!(round.colonies[0].items, snap.colonies[0].items);
     }
 
     #[test]

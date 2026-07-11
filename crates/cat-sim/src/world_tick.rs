@@ -22,6 +22,7 @@ use crate::{
     },
     idle_engine,
     idle_rules::consumption_for_tick,
+    items::{self, Item},
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, direct_colony,
@@ -143,6 +144,13 @@ pub struct ColonyRuntime {
     /// Tent keeps it exact each tick, otherwise it recounts on an interval. Never affects the
     /// true `resources`.
     pub stock_ledger: StockLedger,
+    /// DF-scale item/material economy store (P19 slice 1). Distinct `(kind, material,
+    /// quality)` stacks with their held count — additive alongside `resources`, which
+    /// stays the fast, untouched source of truth for the core survival goods. Empty for
+    /// every colony this slice: nothing produces or consumes items yet (that lands in
+    /// slice 2's material-variant workshop recipes). `BTreeMap` keeps snapshot/iteration
+    /// order deterministic.
+    pub items: BTreeMap<Item, u32>,
     pub threat_pressure: f64,
     pub last_raid_at: Option<i64>,
     pub active_raid: Option<RaidId>,
@@ -518,6 +526,7 @@ impl Default for ColonyRuntime {
             officers: BTreeMap::new(),
             stockpiles: Vec::new(),
             stock_ledger: StockLedger::default(),
+            items: BTreeMap::new(),
             threat_pressure: 0.0,
             last_raid_at: None,
             active_raid: None,
@@ -569,6 +578,20 @@ impl Default for BuildingRuntime {
             production_progress: 0.0,
             assigned_cat: None,
         }
+    }
+}
+
+impl ColonyRuntime {
+    /// Adds `count` of `item` to the colony's item store (P19 slice 1). Inert until a
+    /// producer wires in during slice 2 — no code calls this yet.
+    pub fn add_item(&mut self, item: Item, count: u32) {
+        items::add_item(&mut self.items, item, count);
+    }
+
+    /// Removes `count` of `item` from the colony's item store. Returns `false` (store
+    /// left untouched) if the store holds fewer than `count`.
+    pub fn remove_item(&mut self, item: Item, count: u32) -> bool {
+        items::remove_item(&mut self.items, item, count)
     }
 }
 
@@ -5711,6 +5734,34 @@ mod tests {
         entities::{CatActivity, CatNeeds, CatStats, MapType},
         storage::BASE_CAPACITY,
     };
+
+    #[test]
+    fn colony_runtime_items_default_to_an_empty_store() {
+        let colony = ColonyRuntime::default();
+        assert!(colony.items.is_empty());
+    }
+
+    #[test]
+    fn colony_runtime_add_and_remove_item_delegate_to_the_items_store() {
+        use crate::items::{ItemKind, Material};
+
+        let mut colony = ColonyRuntime::default();
+        let mug = Item::new(ItemKind::Mug, Material::Wood, 1);
+
+        colony.add_item(mug, 3);
+        colony.add_item(mug, 2);
+        assert_eq!(colony.items.get(&mug), Some(&5));
+
+        assert!(!colony.remove_item(mug, 10), "insufficient count fails");
+        assert_eq!(
+            colony.items.get(&mug),
+            Some(&5),
+            "store untouched on failure"
+        );
+
+        assert!(colony.remove_item(mug, 5));
+        assert!(!colony.items.contains_key(&mug), "entry dropped at zero");
+    }
 
     #[test]
     fn empty_world_returns_empty_reports() {

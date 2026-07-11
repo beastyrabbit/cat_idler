@@ -71,3 +71,7 @@ pub mod world_tick;
 
 // P8 action application + snapshot building.
 pub mod actions;
+
+// P19 slice 1: DF-scale cat-themed item/material economy data model. Additive and
+// inert this slice — see `items` module docs.
+pub mod items;

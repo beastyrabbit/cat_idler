@@ -454,6 +454,9 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .map(|raw| serde_json::from_str::<StockLedger>(&raw).map_err(from_sql_json))
             .transpose()?
             .unwrap_or_default(),
+        // P19 slice 1: no `items` column yet — the item store isn't persisted this
+        // slice (nothing produces items, so every colony loads with an empty store).
+        items: BTreeMap::new(),
         threat_pressure: row.get::<_, Option<f64>>("threatPressure")?.unwrap_or(0.0),
         last_raid_at: row.get("lastRaidAt")?,
         active_raid: row.get("activeRaidId")?,
