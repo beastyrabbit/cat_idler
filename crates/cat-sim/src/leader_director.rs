@@ -30,6 +30,18 @@ pub const RESEARCH_COMFORT_RATIO: f64 = 0.5;
 pub const TITHE_FOOD_RATIO: f64 = 0.6;
 pub const TITHE_FOOD_AMOUNT: u32 = 20;
 pub const TITHE_REFINED_AMOUNT: u32 = 5;
+/// P12.6 shrine offerings: materials consumed per `carry_offering` job, converted
+/// to blessings at the shrine on arrival (see `world_tick::complete_offering`).
+/// Deliberately reuses [`TITHE_FOOD_RATIO`]'s *value* (not `STORAGE_RATIO`, which
+/// at 0.9 plus this headroom amount is unreachable against the 100-unit base
+/// materials cap — `0.9 * 100 + 30 = 120 > 100`) so the gate is reachable at the
+/// founding colony's base storage, mirroring `Tithe`'s food check shape exactly.
+pub const OFFERING_MATERIALS_RATIO: f64 = TITHE_FOOD_RATIO;
+/// P12.6: materials consumed per `carry_offering` job. Gated against `materials` —
+/// a resource `Tithe` never touches (it only draws food/refined) — so the two
+/// blessing faucets can never double-count the same surplus pool. Materials are
+/// never survival-critical (unlike food/water), so this can't starve the colony.
+pub const OFFERING_MATERIALS_AMOUNT: u32 = 30;
 pub const HUNT_MAX_SLOTS_RATIO: f64 = 0.7;
 pub const WATER_MAX_SLOTS: u32 = 4;
 pub const QUARRY_MAX_SLOTS: u32 = 2;
@@ -560,6 +572,18 @@ pub fn direct_colony(snapshot: &LeaderSnapshot) -> DirectorPlan {
             refined: tithe_refined,
             blessings,
         });
+    }
+
+    // P12.6 shrine offerings: a cat-driven, spatial complement to `Tithe` (which is
+    // an instant, cat-free, food/refined-only conversion). Fires only on a genuine
+    // materials surplus — the same shape as `Tithe`'s food check (comfort ratio +
+    // fixed amount headroom) — and only when no offering is already in flight, so
+    // the director dispatches at most one `carry_offering` job at a time.
+    let materials_surplus = snapshot.materials
+        > snapshot.materials_capacity * OFFERING_MATERIALS_RATIO
+            + f64::from(OFFERING_MATERIALS_AMOUNT);
+    if materials_surplus && snapshot.offering_in_flight.unwrap_or(0) == 0 {
+        decisions.push(LeaderDecision::Offering);
     }
 
     DirectorPlan { decisions, slots }
@@ -1653,6 +1677,7 @@ mod tests {
             has_barracks: Some(false),
             warrior_count: Some(0),
             training_in_flight: Some(0),
+            offering_in_flight: Some(0),
             threat_band: Some(ThreatBand::Calm),
             starving: Some(false),
             officers: BTreeMap::new(),
@@ -1775,5 +1800,95 @@ mod tests {
             &direct_colony(&snapshot),
             "officers filled",
         );
+    }
+
+    // ---- P12.6: shrine offerings (the `Offering` decision) ----
+
+    fn has_offering(snapshot: &LeaderSnapshot) -> bool {
+        direct_colony(snapshot)
+            .decisions
+            .iter()
+            .any(|decision| matches!(decision, LeaderDecision::Offering))
+    }
+
+    #[test]
+    fn offering_fires_on_a_genuine_materials_surplus() {
+        // Threshold at cap=100 is 100*0.6 + 30 = 90 (see OFFERING_MATERIALS_RATIO's
+        // doc comment for why this mirrors Tithe's shape rather than STORAGE_RATIO,
+        // which is unreachable against the 100-unit base materials cap).
+        let mut snapshot = founding_five_cat_snapshot();
+        snapshot.materials = 91.0;
+        assert!(
+            has_offering(&snapshot),
+            "91 materials against a 100 cap must clear the 90-unit surplus threshold"
+        );
+    }
+
+    #[test]
+    fn no_offering_below_the_materials_surplus_threshold() {
+        let mut snapshot = founding_five_cat_snapshot();
+        snapshot.materials = 90.0;
+        assert!(
+            !has_offering(&snapshot),
+            "materials at (not past) the threshold must not fire an offering"
+        );
+
+        snapshot.materials = 40.0;
+        assert!(
+            !has_offering(&snapshot),
+            "a colony with no genuine materials surplus must perform no offering \
+             (survival-protected: nothing is drawn to fund blessings)"
+        );
+    }
+
+    #[test]
+    fn no_duplicate_offering_while_one_is_already_in_flight() {
+        let mut snapshot = founding_five_cat_snapshot();
+        snapshot.materials = 95.0;
+        snapshot.offering_in_flight = Some(1);
+        assert!(
+            !has_offering(&snapshot),
+            "the director must not stack a second carry_offering job on top of one \
+             already carrying the surplus to the shrine"
+        );
+    }
+
+    #[test]
+    fn offering_and_tithe_fire_independently_without_double_counting_the_same_surplus() {
+        // Tithe draws only food/refined; Offering draws only materials. Push both
+        // resources into surplus simultaneously and prove each decision's payload
+        // depends solely on its own resource pool, not the other's.
+        let mut snapshot = founding_five_cat_snapshot();
+        snapshot.resources.food = 200.0; // food_capacity 200 * 0.6 + 20 = 140 -> tithes
+        snapshot.resources.refined = 5.0; // >= TITHE_REFINED_AMOUNT -> tithes too
+        snapshot.materials = 95.0; // > 90 -> offers
+
+        let plan = direct_colony(&snapshot);
+        let tithe = plan
+            .decisions
+            .iter()
+            .find_map(|decision| match decision {
+                LeaderDecision::Tithe {
+                    food,
+                    refined,
+                    blessings,
+                } => Some((*food, *refined, *blessings)),
+                _ => None,
+            })
+            .expect("expected a Tithe decision");
+        assert_eq!(
+            tithe,
+            (TITHE_FOOD_AMOUNT, TITHE_REFINED_AMOUNT, 2),
+            "Tithe's amounts must be unaffected by the simultaneous materials surplus"
+        );
+        assert!(
+            has_offering(&snapshot),
+            "expected an Offering decision alongside Tithe, not instead of it"
+        );
+
+        // Proof by construction, not just assertion: Offering only ever reads
+        // `snapshot.materials`/`materials_capacity`/`offering_in_flight` and Tithe
+        // only ever reads `snapshot.resources.{food,refined}` (see `direct_colony`) —
+        // disjoint fields mean the two can never draw from the same banked surplus.
     }
 }

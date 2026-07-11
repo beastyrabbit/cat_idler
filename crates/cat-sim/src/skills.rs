@@ -51,6 +51,9 @@ impl Labor {
             JobKind::Quarry => Some(Self::Quarry),
             JobKind::FetchWater => Some(Self::FetchWater),
             JobKind::TrainWarrior => Some(Self::Fight),
+            // P12.6: an offering is a ritual act (haul + perform at the shrine), so
+            // it trains the same Ritual labor as the pure-labor `ritual` job.
+            JobKind::CarryOffering => Some(Self::Ritual),
             JobKind::SupplyFood
             | JobKind::SupplyWater
             | JobKind::LeaderPlanHunt
@@ -78,6 +81,7 @@ mod tests {
                 JobKind::Quarry => assert_eq!(mapped, Some(Labor::Quarry)),
                 JobKind::FetchWater => assert_eq!(mapped, Some(Labor::FetchWater)),
                 JobKind::TrainWarrior => assert_eq!(mapped, Some(Labor::Fight)),
+                JobKind::CarryOffering => assert_eq!(mapped, Some(Labor::Ritual)),
                 _ => assert_eq!(mapped, None),
             }
         }

@@ -182,6 +182,7 @@ define_wire_enum! {
         FetchWater => "fetch_water",
         TrainWarrior => "train_warrior",
         ExpandVillage => "expand_village",
+        CarryOffering => "carry_offering",
     }
 }
 
@@ -365,6 +366,7 @@ mod tests {
             (JobKind::FetchWater, "fetch_water"),
             (JobKind::TrainWarrior, "train_warrior"),
             (JobKind::ExpandVillage, "expand_village"),
+            (JobKind::CarryOffering, "carry_offering"),
         ];
 
         assert_wire_round_trip(&cases, JobKind::as_str);

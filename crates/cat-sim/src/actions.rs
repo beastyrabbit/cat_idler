@@ -1760,7 +1760,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         }
         JobKind::SupplyWater | JobKind::FetchWater => Some(TaskType::FetchWater),
         JobKind::LeaderPlanHouse | JobKind::BuildHouse | JobKind::Quarry => Some(TaskType::Build),
-        JobKind::Ritual => Some(TaskType::Guard),
+        JobKind::Ritual | JobKind::CarryOffering => Some(TaskType::Guard),
         JobKind::Explore => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Guard),
         JobKind::ExpandVillage => Some(TaskType::Patrol),
@@ -1922,6 +1922,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::FetchWater => JobKind::FetchWater,
         proto::JobKind::TrainWarrior => JobKind::TrainWarrior,
         proto::JobKind::ExpandVillage => JobKind::ExpandVillage,
+        proto::JobKind::CarryOffering => JobKind::CarryOffering,
     }
 }
 
@@ -1939,6 +1940,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::FetchWater => proto::JobKind::FetchWater,
         JobKind::TrainWarrior => proto::JobKind::TrainWarrior,
         JobKind::ExpandVillage => proto::JobKind::ExpandVillage,
+        JobKind::CarryOffering => proto::JobKind::CarryOffering,
     }
 }
 

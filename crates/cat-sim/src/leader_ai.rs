@@ -98,6 +98,12 @@ pub struct LeaderSnapshot {
     /// `train_warrior` jobs already in flight.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub training_in_flight: Option<u32>,
+    /// `carry_offering` jobs already in flight (P12.6). Mirrors
+    /// `storage_plans_in_flight`/`den_plans_in_flight`: stops the director from
+    /// stacking a fresh offering dispatch on top of one already carrying the same
+    /// materials surplus to the shrine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offering_in_flight: Option<u32>,
     /// Current HUD threat band, used to scale the warrior target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threat_band: Option<ThreatBand>,
@@ -146,6 +152,11 @@ pub enum LeaderDecision {
         refined: u32,
         blessings: u32,
     },
+    /// P12.6: dispatch a `carry_offering` job — a cat-driven, spatial blessing
+    /// source that consumes a genuine *materials* surplus (draws from a resource
+    /// disjoint from `Tithe`'s food/refined draw, so the two never double-count the
+    /// same surplus pool). See `leader_director::OFFERING_MATERIALS_AMOUNT`.
+    Offering,
 }
 
 #[cfg(test)]
@@ -192,6 +203,7 @@ mod tests {
             has_barracks: Some(true),
             warrior_count: Some(4),
             training_in_flight: Some(1),
+            offering_in_flight: Some(0),
             threat_band: Some(ThreatBand::Rising),
             starving: Some(false),
             officers: std::collections::BTreeMap::new(),
@@ -236,6 +248,7 @@ mod tests {
                 "hasBarracks": true,
                 "warriorCount": 4,
                 "trainingInFlight": 1,
+                "offeringInFlight": 0,
                 "threatBand": "rising",
                 "starving": false
             })
@@ -259,6 +272,7 @@ mod tests {
             "hasBarracks",
             "warriorCount",
             "trainingInFlight",
+            "offeringInFlight",
             "threatBand",
             "starving",
         ] {
@@ -276,6 +290,7 @@ mod tests {
         assert_eq!(snapshot.has_barracks, None);
         assert_eq!(snapshot.warrior_count, None);
         assert_eq!(snapshot.training_in_flight, None);
+        assert_eq!(snapshot.offering_in_flight, None);
         assert_eq!(snapshot.threat_band, None);
         assert_eq!(snapshot.starving, None);
     }
@@ -354,6 +369,7 @@ mod tests {
                 },
                 json!({ "kind": "tithe", "food": 20, "refined": 5, "blessings": 2 }),
             ),
+            (LeaderDecision::Offering, json!({ "kind": "offering" })),
         ];
 
         for (decision, expected) in cases {

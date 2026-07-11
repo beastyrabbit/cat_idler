@@ -25,8 +25,8 @@ use crate::{
     items::{self, Item},
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
-        CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, direct_colony,
-        match_cats_to_slots_with_officers,
+        CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions,
+        OFFERING_MATERIALS_AMOUNT, direct_colony, match_cats_to_slots_with_officers,
     },
     ledger::{StockLedger, refresh_ledger},
     life_sim::{
@@ -2299,6 +2299,7 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
                 .count() as u32,
         ),
         training_in_flight: Some(count_jobs(&active_jobs, JobKind::TrainWarrior)),
+        offering_in_flight: Some(count_jobs(&active_jobs, JobKind::CarryOffering)),
         threat_band: Some(current_threat_band),
         starving: Some(starving),
         officers: colony.officers.clone(),
@@ -2553,6 +2554,20 @@ fn phase_21_leader_capital_decisions_and_tithe(
                         if blessings == 1 { "" } else { "s" }
                     ),
                 );
+            }
+            LeaderDecision::Offering => {
+                let ritualist = can_take_policy_action(colony, policy)
+                    .then(|| select_best_cat(colony, Some(CatSpecialization::Ritualist)))
+                    .flatten();
+                if let Some(cat_id) = ritualist {
+                    queue_job(
+                        colony,
+                        gate.processed_through,
+                        JobKind::CarryOffering,
+                        Some(cat_id),
+                        JobMetadata::None,
+                    );
+                }
             }
             _ => {}
         }
@@ -3235,6 +3250,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
             JobKind::BuildHouse => complete_build(colony, job, gate),
             JobKind::Ritual => complete_ritual(colony, job, gate),
             JobKind::TrainWarrior => complete_warrior_training(colony, job, gate),
+            JobKind::CarryOffering => complete_offering(colony, job, gate),
             _ => {}
         }
 
@@ -3247,6 +3263,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
                 | JobKind::Explore
                 | JobKind::FetchWater
                 | JobKind::ExpandVillage
+                | JobKind::CarryOffering
         ) {
             return_assigned_cat(colony, job, gate);
         }
@@ -4791,7 +4808,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::Quarry | JobKind::BuildHouse | JobKind::LeaderPlanHouse => Some(TaskType::Build),
         JobKind::Explore | JobKind::ExpandVillage => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Patrol),
-        JobKind::Ritual => Some(TaskType::Rest),
+        JobKind::Ritual | JobKind::CarryOffering => Some(TaskType::Rest),
         JobKind::SupplyFood | JobKind::SupplyWater => None,
     }
 }
@@ -5742,6 +5759,56 @@ fn complete_ritual(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate)
         amount: blessings,
         job_ended_at: gate.processed_through,
     });
+}
+
+/// Completes a `carry_offering` job (P12.6). Unlike [`complete_ritual`] (pure cat
+/// labor, no resource cost), an offering consumes a genuine hauled-and-banked
+/// surplus — [`OFFERING_MATERIALS_AMOUNT`] materials — converting it to blessings
+/// at the shrine. It reuses the Ritual->blessing carry/credit path unchanged
+/// (`CarryingKind::Blessings` -> the shared shrine-arrival `credit_carrying` ->
+/// `global_upgrade_points`), so no new shrine machinery is needed; only the
+/// resource draw is new. It draws only from `materials`, a resource `Tithe` never
+/// touches (Tithe only spends food/refined), so the two blessing faucets can never
+/// double-count the same surplus pool.
+///
+/// Defensively re-checks the balance here (not just at dispatch time in
+/// `direct_colony`): materials can be spent by other systems (a build, a craft
+/// bench) during the job's travel+duration, so the surplus that justified
+/// dispatch may have evaporated by completion. When that happens this performs no
+/// offering and produces no blessings — the cat simply returns empty-handed.
+/// Materials are never survival-critical (unlike food/water), so this can never
+/// starve the colony either way.
+fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
+    let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
+        return;
+    };
+    if colony.resources.materials < f64::from(OFFERING_MATERIALS_AMOUNT) {
+        return;
+    }
+    colony.resources.materials -= f64::from(OFFERING_MATERIALS_AMOUNT);
+    let blessings = 1.0 + f64::from(colony.upgrade_levels.ritual_mastery / 3);
+    let cat_id = colony.cats[cat_index].id.clone();
+    let cat = &mut colony.cats[cat_index];
+    cat.role_xp.ritualist += 1.0;
+    cat.gain_skill(Labor::Ritual, SKILL_GAIN_PER_JOB);
+    cat.specialization = idle_engine::next_specialization(
+        CatSpecialization::Ritualist,
+        cat.role_xp.ritualist,
+        cat.specialization,
+    );
+    cat.carrying = Some(Carrying {
+        kind: CarryingKind::Blessings,
+        amount: blessings,
+        job_ended_at: gate.processed_through,
+    });
+    append_event(
+        colony,
+        gate.processed_through,
+        EventKind::Other("offering_performed".to_owned()),
+        format!(
+            "{cat_id} offered {OFFERING_MATERIALS_AMOUNT} materials at the shrine for blessings."
+        ),
+    );
 }
 
 fn complete_warrior_training(colony: &mut ColonyRuntime, job: &JobRuntime, _: TickGate) {
@@ -10164,5 +10231,168 @@ mod tests {
             )
         };
         assert_eq!(run(), run());
+    }
+
+    // ---- P12.6: shrine offerings (carry_offering) ----
+
+    fn ritualist_cat(id: &str) -> Cat {
+        Cat {
+            specialization: Some(CatSpecialization::Ritualist),
+            ..adult_idle_cat(id, "colony-1")
+        }
+    }
+
+    fn offering_colony(materials: f64) -> ColonyRuntime {
+        ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                materials,
+                ..Resources::default()
+            },
+            cats: vec![ritualist_cat("cat-1")],
+            test_rng_seed: Some(7),
+            ..ColonyRuntime::default()
+        }
+    }
+
+    fn offering_job(colony: &ColonyRuntime) -> JobRuntime {
+        JobRuntime {
+            id: "job-offering-1".to_owned(),
+            kind: JobKind::CarryOffering,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Leader,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            duration_ms: 2_400_000,
+            speed: 1.0,
+            yield_amount: 1.0,
+            click_count: 0,
+            created_at: 0,
+            started_at: Some(0),
+            ends_at: Some(2_400_000),
+            completed_at: None,
+            metadata: JobMetadata::None,
+        }
+    }
+
+    fn reliable_policy() -> TickPolicy {
+        TickPolicy {
+            config: crate::policy::config_for_tier(crate::types::PolicyTier::Excellent),
+        }
+    }
+
+    #[test]
+    fn complete_offering_converts_surplus_materials_to_blessings_and_logs_an_event() {
+        let mut colony = offering_colony(50.0);
+        let job = offering_job(&colony);
+
+        complete_offering(&mut colony, &job, production_gate(60, 2_400_000));
+
+        assert_eq!(
+            colony.resources.materials,
+            50.0 - f64::from(OFFERING_MATERIALS_AMOUNT),
+            "the documented OFFERING_MATERIALS_AMOUNT must be the amount consumed"
+        );
+        let carrying = colony.cats[0]
+            .carrying
+            .clone()
+            .expect("the cat must be carrying the resulting blessings toward the shrine");
+        assert_eq!(carrying.kind, CarryingKind::Blessings);
+        assert_eq!(
+            carrying.amount, 1.0,
+            "ritual_mastery 0 -> exactly 1 blessing"
+        );
+        assert!(
+            colony
+                .events
+                .iter()
+                .any(|event| { event.kind == EventKind::Other("offering_performed".to_owned()) }),
+            "expected an offering_performed event, got {:?}",
+            colony.events
+        );
+
+        // The carry/credit step is fully reused, unchanged, from the Ritual path:
+        // crediting the resulting carry converts it straight into blessings.
+        let before = colony.global_upgrade_points;
+        credit_carrying(&mut colony, &carrying, village_anchor_world());
+        assert_eq!(colony.global_upgrade_points, before + carrying.amount);
+    }
+
+    #[test]
+    fn complete_offering_produces_no_blessings_when_the_surplus_evaporated_before_completion() {
+        // Materials dropped below OFFERING_MATERIALS_AMOUNT between dispatch and
+        // completion (e.g. spent on a build in the meantime). Survival guardrail:
+        // no offering, no blessings, no resource loss — the cat just returns.
+        let mut colony = offering_colony(10.0);
+        let job = offering_job(&colony);
+
+        complete_offering(&mut colony, &job, production_gate(60, 2_400_000));
+
+        assert_eq!(
+            colony.resources.materials, 10.0,
+            "materials must be untouched"
+        );
+        assert_eq!(
+            colony.cats[0].carrying, None,
+            "no carry should be created when there is no genuine surplus to offer"
+        );
+        assert!(
+            !colony
+                .events
+                .iter()
+                .any(|event| { event.kind == EventKind::Other("offering_performed".to_owned()) }),
+            "no offering_performed event should fire without a real surplus"
+        );
+    }
+
+    #[test]
+    fn phase_21_dispatches_a_carry_offering_job_for_the_offering_decision() {
+        let mut colony = offering_colony(95.0);
+        let plan = DirectorPlan {
+            decisions: vec![LeaderDecision::Offering],
+            slots: Vec::new(),
+        };
+
+        phase_21_leader_capital_decisions_and_tithe(
+            &mut colony,
+            production_gate(60, 60_000),
+            reliable_policy(),
+            &plan,
+        );
+
+        let job = colony
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::CarryOffering)
+            .expect("expected a carry_offering job to be queued");
+        assert_eq!(job.assigned_cat.as_deref(), Some("cat-1"));
+    }
+
+    #[test]
+    fn offering_dispatch_and_completion_is_deterministic_across_identical_runs() {
+        // Two independently-founded worlds on the same seed, forced identically into
+        // a materials surplus every tick, must produce byte-identical reports and
+        // final colony state through the offering's full dispatch -> travel ->
+        // completion -> shrine-credit loop.
+        let mut left = new_world(9001);
+        left.colonies
+            .push(found_colony(left.world_seed, "colony-1", 10_000, 9001));
+        let mut right = new_world(9001);
+        right
+            .colonies
+            .push(found_colony(right.world_seed, "colony-1", 10_000, 9001));
+
+        for step in 1..=60 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            left.colonies[0].resources.materials = 95.0;
+            right.colonies[0].resources.materials = 95.0;
+            assert_eq!(world_tick(&mut left, now), world_tick(&mut right, now));
+        }
+
+        assert_eq!(left.colonies[0].cats, right.colonies[0].cats);
+        assert_eq!(
+            left.colonies[0].global_upgrade_points,
+            right.colonies[0].global_upgrade_points
+        );
+        assert_eq!(left.colonies[0].jobs, right.colonies[0].jobs);
     }
 }

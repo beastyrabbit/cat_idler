@@ -405,6 +405,9 @@ pub enum JobKind {
     FetchWater,
     TrainWarrior,
     ExpandVillage,
+    /// P12.6: haul-then-ritual offering — surplus materials converted to blessings
+    /// at the shrine (complements, never duplicates, the leader's abstract `Tithe`).
+    CarryOffering,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
