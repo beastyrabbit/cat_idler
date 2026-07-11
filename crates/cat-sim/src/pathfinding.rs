@@ -10,6 +10,16 @@ pub const DENSE_WOODS_COST: f64 = 8.0;
 /// Traversal cost of a mountain tile once mining/mountaineering unlocks it. Steep,
 /// slow going — dearer than dense woods so cats still skirt peaks when they can.
 pub const MOUNTAIN_COST: f64 = 10.0;
+/// Traversal cost of a tile covered by a building footprint (P14.2 soft obstacle).
+/// Cost tiers mirror the movement-speed model, cost ∝ 1/speed: the spec's
+/// "tree+building" tier is ~25% speed, i.e. cost `1.0 / 0.25 = 4.0` — the same
+/// numeric value as [`FOREST_COST`] (both realise the same soft-obstacle tier),
+/// kept as its own named constant so a future forest-cost tune doesn't silently
+/// drag building costs along. A* is free to route through a building when the
+/// detour would cost more, but prefers to go around. Never added to
+/// `is_blocked` — buildings are always passable, just expensive, so a cat can
+/// still reach its own building's work tile.
+pub const BUILDING_FOOTPRINT_COST: f64 = 4.0;
 pub const MIN_STEP_COST: f64 = ROAD_COST;
 
 pub const DEFAULT_MAX_EXPANSIONS: usize = 6000;
@@ -134,6 +144,11 @@ pub struct ColonyGridParams<'a> {
     /// Whether the colony has unlocked mountaineering/mining. While `false`,
     /// mountain-biome tiles are impassable; once `true` they are walkable but slow.
     pub mountains_unlocked: bool,
+    /// Tiles covered by a building footprint (P14.2). Never hard-blocked — A*
+    /// costs them at [`BUILDING_FOOTPRINT_COST`] instead, so cats route around a
+    /// building when reasonable but can still cross it, and can always reach a
+    /// tile inside their own building's footprint (it was never blocked).
+    pub soft_obstacles: Option<&'a HashSet<TilePos>>,
 }
 
 pub struct ColonyWalkGrid<'a> {
@@ -145,6 +160,7 @@ pub struct ColonyWalkGrid<'a> {
     area_gate: Option<GatePlacement>,
     terrain: Option<&'a dyn TerrainWalkField>,
     mountains_unlocked: bool,
+    soft_obstacles: Option<&'a HashSet<TilePos>>,
 }
 
 #[must_use]
@@ -174,6 +190,7 @@ pub fn build_colony_walk_grid(params: ColonyGridParams<'_>) -> ColonyWalkGrid<'_
         area_gate: params.area_gate,
         terrain: params.terrain,
         mountains_unlocked: params.mountains_unlocked,
+        soft_obstacles: params.soft_obstacles,
     }
 }
 
@@ -320,7 +337,18 @@ impl WalkGrid for ColonyWalkGrid<'_> {
     }
 
     fn cost(&self, x: i32, y: i32) -> f64 {
-        tile_cost(self.by_key.get(&pack_tile_key(x, y)))
+        let base = tile_cost(self.by_key.get(&pack_tile_key(x, y)));
+        if self
+            .soft_obstacles
+            .is_some_and(|tiles| tiles.contains(&TilePos { x, y }))
+        {
+            // A building never makes a tile *cheaper* than its terrain already
+            // costs (e.g. dense woods under a footprint stays at least as dear) —
+            // take the max, don't override.
+            base.max(BUILDING_FOOTPRINT_COST)
+        } else {
+            base
+        }
     }
 
     fn height_at(&self, x: i32, y: i32) -> Option<i32> {
@@ -543,11 +571,12 @@ mod tests {
     use serde::Deserialize;
 
     use super::{
-        ColonyGridParams, ColonyWalkGrid, DEFAULT_MARGIN, DEFAULT_MAX_EXPANSIONS, DENSE_WOODS_COST,
-        FOREST_COST, FenceSide, FindPathOptions, GatePlacement, MIN_STEP_COST, MOUNTAIN_COST,
-        OPEN_COST, ROAD_COST, ROAD_WEAR_THRESHOLD, TilePos, VillageArea, WORN_PATH_COST, WalkGrid,
-        WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType, WorldPos,
-        build_colony_walk_grid, cliff_blocks_step, find_path,
+        BUILDING_FOOTPRINT_COST, ColonyGridParams, ColonyWalkGrid, DEFAULT_MARGIN,
+        DEFAULT_MAX_EXPANSIONS, DENSE_WOODS_COST, FOREST_COST, FenceSide, FindPathOptions,
+        GatePlacement, MIN_STEP_COST, MOUNTAIN_COST, OPEN_COST, ROAD_COST, ROAD_WEAR_THRESHOLD,
+        TilePos, VillageArea, WORN_PATH_COST, WalkGrid, WalkOverlayFeature, WalkTile,
+        WalkTileResources, WalkTileType, WorldPos, build_colony_walk_grid, cliff_blocks_step,
+        find_path,
     };
 
     #[derive(Debug, Deserialize)]
@@ -827,6 +856,7 @@ mod tests {
             area_gate: None,
             terrain: None,
             mountains_unlocked,
+            soft_obstacles: None,
         });
         check(&grid);
     }
@@ -856,6 +886,174 @@ mod tests {
         with_mountain_and_water_grid(true, |grid| assert!(grid.is_blocked(5, 0)));
     }
 
+    // ---- P14.2: soft-obstacle pathfinding (buildings) ----------------------
+
+    /// A minimal `WalkGrid` for exercising the soft-obstacle *concept* directly
+    /// (unlike `ColonyWalkGrid`, which is exercised separately below): a
+    /// rectangular `footprint` region costs [`BUILDING_FOOTPRINT_COST`], an
+    /// optional set of `walls` hard-blocks (so a test can force the only route
+    /// straight across the footprint), and everything else is open ground.
+    struct SoftObstacleGrid {
+        footprint: HashSet<(i32, i32)>,
+        walls: HashSet<(i32, i32)>,
+    }
+
+    impl WalkGrid for SoftObstacleGrid {
+        fn is_blocked(&self, x: i32, y: i32) -> bool {
+            self.walls.contains(&(x, y))
+        }
+
+        fn cost(&self, x: i32, y: i32) -> f64 {
+            if self.footprint.contains(&(x, y)) {
+                BUILDING_FOOTPRINT_COST
+            } else {
+                OPEN_COST
+            }
+        }
+    }
+
+    fn square_footprint(min: i32, max: i32) -> HashSet<(i32, i32)> {
+        (min..=max)
+            .flat_map(|x| (min..=max).map(move |y| (x, y)))
+            .collect()
+    }
+
+    #[test]
+    fn soft_obstacle_routes_around_when_a_reasonable_detour_exists() {
+        // A 3x3 building footprint sits squarely on the straight line from
+        // (6,0) to (6,10). Crossing it costs 3 footprint tiles at
+        // BUILDING_FOOTPRINT_COST (4.0) each = 12, on top of the 7 open steps
+        // (7.0), for 19.0 total. Going around costs 4 extra open steps (one
+        // tile wider than the footprint) at OPEN_COST — 14.0 total — so A*
+        // must prefer the detour.
+        let grid = SoftObstacleGrid {
+            footprint: square_footprint(5, 7),
+            walls: HashSet::new(),
+        };
+        let path = find_path(
+            WorldPos { x: 6.0, y: 0.0 },
+            WorldPos { x: 6.0, y: 10.0 },
+            &grid,
+            FindPathOptions::default(),
+        )
+        .expect("a route exists — the building never hard-blocks");
+
+        let crosses_footprint = path
+            .iter()
+            .any(|pos| grid.footprint.contains(&(pos.x as i32, pos.y as i32)));
+        assert!(
+            !crosses_footprint,
+            "A* should detour around the building when it's cheaper: {path:?}"
+        );
+    }
+
+    #[test]
+    fn soft_obstacle_is_passable_not_blocking_when_the_only_route_crosses_it() {
+        // Wall off every route except a one-tile-wide corridor straight through
+        // the footprint — the cat MUST cross the building, and can, because a
+        // soft obstacle never hard-blocks.
+        let footprint: HashSet<(i32, i32)> = (3..=5).map(|y| (6, y)).collect();
+        let mut walls = HashSet::new();
+        for y in 0..=8 {
+            for x in [4, 5, 7, 8] {
+                walls.insert((x, y));
+            }
+        }
+        let grid = SoftObstacleGrid { footprint, walls };
+
+        let path = find_path(
+            WorldPos { x: 6.0, y: 0.0 },
+            WorldPos { x: 6.0, y: 8.0 },
+            &grid,
+            FindPathOptions::default(),
+        );
+        assert!(
+            path.is_some(),
+            "a soft obstacle must never make the goal unreachable"
+        );
+        let path = path.expect("checked above");
+        assert!(
+            path.iter()
+                .any(|pos| grid.footprint.contains(&(pos.x as i32, pos.y as i32))),
+            "the only route runs through the footprint, so the path must cross it: {path:?}"
+        );
+    }
+
+    #[test]
+    fn a_buildings_own_work_tile_stays_reachable_even_though_its_footprint_is_costed() {
+        // Destination/work-tile exemption (mirrors the existing mountain-goal
+        // exemption): nothing about a soft obstacle is ever added to
+        // `is_blocked`, so a cat can always path onto a tile inside its own
+        // building's footprint — even the footprint's interior, not just the
+        // near edge.
+        let grid = SoftObstacleGrid {
+            footprint: square_footprint(5, 7),
+            walls: HashSet::new(),
+        };
+        let path = find_path(
+            WorldPos { x: 0.0, y: 0.0 },
+            WorldPos { x: 6.0, y: 6.0 },
+            &grid,
+            FindPathOptions::default(),
+        );
+        assert_eq!(
+            path.as_ref().and_then(|path| path.last().copied()),
+            Some(WorldPos { x: 6.0, y: 6.0 }),
+            "the building's own interior work tile must be reachable: {path:?}"
+        );
+    }
+
+    #[test]
+    fn soft_obstacle_routing_is_deterministic_across_identical_runs() {
+        let grid = SoftObstacleGrid {
+            footprint: square_footprint(5, 7),
+            walls: HashSet::new(),
+        };
+        let a = find_path(
+            WorldPos { x: 6.0, y: 0.0 },
+            WorldPos { x: 6.0, y: 10.0 },
+            &grid,
+            FindPathOptions::default(),
+        );
+        let b = find_path(
+            WorldPos { x: 6.0, y: 0.0 },
+            WorldPos { x: 6.0, y: 10.0 },
+            &grid,
+            FindPathOptions::default(),
+        );
+        assert_eq!(a, b, "identical inputs must produce byte-identical routes");
+    }
+
+    #[test]
+    fn colony_walk_grid_costs_building_footprints_at_the_soft_obstacle_tier_but_never_blocks() {
+        let soft_obstacles: HashSet<TilePos> = [TilePos { x: 5, y: 5 }, TilePos { x: 5, y: 6 }]
+            .into_iter()
+            .collect();
+        let tiles = Vec::new();
+        let grid = build_colony_walk_grid(ColonyGridParams {
+            tiles: &tiles,
+            anchor: TilePos { x: 0, y: 0 },
+            ring_radius: 10_000,
+            gate: TilePos { x: 0, y: 1 },
+            area: None,
+            area_gate: None,
+            terrain: None,
+            mountains_unlocked: false,
+            soft_obstacles: Some(&soft_obstacles),
+        });
+
+        assert_eq!(grid.cost(5, 5), BUILDING_FOOTPRINT_COST);
+        assert!(
+            !grid.is_blocked(5, 5),
+            "buildings are soft obstacles — never hard-blocked"
+        );
+        assert_eq!(
+            grid.cost(9, 9),
+            OPEN_COST,
+            "tiles outside any footprint stay at the plain terrain cost"
+        );
+    }
+
     #[test]
     fn build_colony_walk_grid_matches_ts_fixture() {
         let checks = fixture().colony_checks;
@@ -875,6 +1073,7 @@ mod tests {
             area_gate: None,
             terrain: None,
             mountains_unlocked: false,
+            soft_obstacles: None,
         });
 
         for (key, expected) in checks.blocked {
@@ -916,6 +1115,7 @@ mod tests {
                 area_gate,
                 terrain: None,
                 mountains_unlocked: false,
+                soft_obstacles: None,
             });
 
             let path = find_path(

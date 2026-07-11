@@ -37,7 +37,7 @@ use crate::{
     movement::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
         effective_move_speed, pick_wander_target, road_surface_multiplier, scout_wander_target,
-        walk_path,
+        soft_obstacle_speed_multiplier, walk_path,
     },
     officers::OfficerRole,
     pathfinding::{
@@ -327,6 +327,20 @@ fn occupied_building_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
     colony
         .buildings
         .iter()
+        .flat_map(building_footprint_tiles)
+        .collect()
+}
+
+/// Building-footprint tiles that act as P14.2 soft obstacles for pathfinding
+/// cost and movement speed: every building EXCEPT the shrine, which the spec
+/// calls out as "fully passable (the hub)" — it's the road/haul anchor every
+/// cat converges on, so it stays at open-ground cost/speed rather than the
+/// building-footprint tier.
+fn soft_obstacle_building_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
+    colony
+        .buildings
+        .iter()
+        .filter(|building| building.building_type != BuildingType::Shrine)
         .flat_map(building_footprint_tiles)
         .collect()
 }
@@ -3549,6 +3563,11 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
 ) {
     let area = pathfinding_area(&movement.claimed_area);
     let area_gate = movement.area_gate.map(pathfinding_gate);
+    // Computed once per tick and shared by every cat's A* search this phase (cheap:
+    // a HashSet built from the colony's building list, no terrain regeneration) —
+    // also reused below to apply the matching movement-speed soft-obstacle penalty.
+    let soft_obstacles = soft_obstacle_building_tiles(colony);
+    let path_soft_obstacles = pathfinding_tile_set(&soft_obstacles);
     let walk_grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &movement.walk_tiles,
         anchor: PathTilePos {
@@ -3564,6 +3583,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         area_gate,
         terrain: None,
         mountains_unlocked: is_owned(&colony.upgrade_tree, MOUNTAINEERING_NODE_ID),
+        soft_obstacles: Some(&path_soft_obstacles),
     });
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let cat_ids = colony
@@ -3613,8 +3633,22 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                 tile.path_wear,
             )
         });
+        // P14.2 soft obstacle (×0.25): a cat standing on a building footprint tile
+        // or a terrain-generated tree tile pads along at a quarter speed — real,
+        // not a biome approximation (a per-cat-per-tick check, the same cost order
+        // as the `tile_biome` lookup just above, unlike a per-A*-cell query would
+        // be), matching the same tier `BUILDING_FOOTPRINT_COST`/`FOREST_COST` cost
+        // A* already routes around.
+        let on_soft_obstacle = soft_obstacles.contains(&standing_tile_pos)
+            || crate::terrain_gen::tile_has_tree(
+                movement.world_seed,
+                standing_tile_pos.x,
+                standing_tile_pos.y,
+            );
+        let soft_obstacle_mult = soft_obstacle_speed_multiplier(on_soft_obstacle);
         let speed = effective_move_speed(standing_biome, &cat_id, stage)
             * road_mult
+            * soft_obstacle_mult
             * explore_slowdown
             * effects.move_speed_mult;
 
@@ -5130,6 +5164,18 @@ fn pathfinding_area(area: &crate::village_area::VillageArea) -> pathfinding::Vil
         .map(|key| {
             let pos = crate::village_area::pos_of(key);
             PathTilePos { x: pos.x, y: pos.y }
+        })
+        .collect()
+}
+
+/// Converts a `world_tick::TilePos` set (e.g. [`soft_obstacle_building_tiles`])
+/// into the `pathfinding::TilePos` set `ColonyGridParams::soft_obstacles` expects.
+fn pathfinding_tile_set(tiles: &HashSet<TilePos>) -> HashSet<PathTilePos> {
+    tiles
+        .iter()
+        .map(|tile| PathTilePos {
+            x: tile.x,
+            y: tile.y,
         })
         .collect()
 }
@@ -7011,7 +7057,14 @@ mod tests {
     fn a_designated_pile_does_not_change_the_resource_trajectory() {
         // #1 regression: stockpiles are a view, never the economy. A designated pile
         // (which reroutes deposits) must leave `resources` bit-identical to the
-        // shrine-only baseline every tick.
+        // shrine-only baseline every tick. This is a bookkeeping invariant, not a
+        // pathing one, so the pile's rect is centred exactly on the village anchor
+        // (5,5)-(7,7) → centre (6,6), matching `village_anchor_world()` bit-for-bit
+        // (rather than a `(6,6)-(7,7)` rect, whose 6.5,6.5 centre rounds to a
+        // different goal tile than the shrine baseline's (6,6) — since P14.2 made
+        // building footprints real soft obstacles, routing to two different tiles
+        // can legitimately take a different number of ticks even when both sit on
+        // the shrine hub, which would make this test about pathing, not bookkeeping).
         let mut plain = new_world(31_337);
         plain
             .colonies
@@ -7023,8 +7076,8 @@ mod tests {
         with_pile.colonies[0].stockpiles.push(designated_pile(
             "stockpile-a",
             ZoneRect {
-                x1: 6,
-                y1: 6,
+                x1: 5,
+                y1: 5,
                 x2: 7,
                 y2: 7,
             },
@@ -9514,6 +9567,54 @@ mod tests {
             .resources
             .water = 5;
         assert!(tile_is_occupied(&colony, open, seed));
+    }
+
+    // --- P14.2: soft-obstacle pathfinding (buildings as slow-passable) --------
+
+    #[test]
+    fn soft_obstacle_building_tiles_excludes_the_shrine_but_includes_other_buildings() {
+        // The shrine stays "fully passable (the hub)" per the P14.2 spec — every
+        // haul converges on it, so it must not get the building-footprint cost/
+        // speed tier. Every other founding building (dens/workshops) does.
+        let colony = found_colony(42, "colony-1", 1_000, 42);
+        let shrine = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == BuildingType::Shrine)
+            .expect("founded colony has a shrine");
+        let other = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type != BuildingType::Shrine)
+            .expect("founding blueprint has non-shrine buildings");
+
+        let soft_obstacles = soft_obstacle_building_tiles(&colony);
+        for tile in building_footprint_tiles(shrine) {
+            assert!(
+                !soft_obstacles.contains(&tile),
+                "shrine tile {tile:?} must stay off the soft-obstacle set"
+            );
+        }
+        let other_tiles = building_footprint_tiles(other);
+        assert!(
+            other_tiles.iter().all(|tile| soft_obstacles.contains(tile)),
+            "every non-shrine building tile must be a soft obstacle: {other_tiles:?}"
+        );
+    }
+
+    #[test]
+    fn pathfinding_tile_set_converts_world_tick_tile_pos_to_pathfinding_tile_pos() {
+        let tiles: HashSet<TilePos> = [TilePos { x: 3, y: -2 }, TilePos { x: 0, y: 9 }]
+            .into_iter()
+            .collect();
+        let converted = pathfinding_tile_set(&tiles);
+        assert_eq!(converted.len(), tiles.len());
+        for tile in tiles {
+            assert!(converted.contains(&PathTilePos {
+                x: tile.x,
+                y: tile.y
+            }));
+        }
     }
 
     #[test]

@@ -108,6 +108,28 @@ pub fn road_surface_multiplier(is_road_built: bool, path_wear: u32) -> f64 {
     }
 }
 
+/// P14.2 soft-obstacle speed multiplier: a cat crossing a building footprint or
+/// standing on a tile with a tree decoration moves at ~25% of open-ground speed
+/// (it CAN cross, it's just a bad idea — pathfinding's `BUILDING_FOOTPRINT_COST`
+/// and `FOREST_COST`/`DENSE_WOODS_COST` cost tiers already route A* around these
+/// tiles when a detour is reasonable; this is the matching speed-side factor for
+/// whenever a cat actually is on one). Named to the same 0.25 tier the spec calls
+/// "tree+building" (cost ∝ 1/speed, so cost 4.0 ⇒ speed 0.25 — see
+/// `pathfinding::BUILDING_FOOTPRINT_COST` / `FOREST_COST`).
+pub const SOFT_OBSTACLE_SPEED_MULT: f64 = 0.25;
+
+/// Per-tile soft-obstacle speed multiplier folded into the movement phase's
+/// effective speed, mirroring [`road_surface_multiplier`]'s shape. Deterministic —
+/// a pure function of whether the standing tile is a soft obstacle.
+#[must_use]
+pub fn soft_obstacle_speed_multiplier(is_soft_obstacle: bool) -> f64 {
+    if is_soft_obstacle {
+        SOFT_OBSTACLE_SPEED_MULT
+    } else {
+        1.0
+    }
+}
+
 /// Life-stage gait modifier: kittens and elders pad along a bit slower than
 /// young/adult cats. Adults (the colony's haulers) stay at `1.0`, so the
 /// survival-critical work loop keeps its full speed.
@@ -409,11 +431,12 @@ mod tests {
         BASE_MOVE_SPEED_TILES_PER_SEC, DIRT_ROAD_SPEED_MULT, EXPLORE_SPEED_FACTOR, GAIT_MAX,
         GAIT_MIN, HUNT_RANGE_MAX, HUNT_RANGE_MIN, JobDestinationContext, MOVE_SPEED_TILES_PER_SEC,
         MovementStep, PathWalk, ROAD_BUILT_SPEED_MULT, SCOUT_LEG_MAX, SCOUT_LEG_MIN,
-        SURFACE_FACTOR_FOREST, SURFACE_FACTOR_GRASSLAND, SURFACE_FACTOR_HIGHLAND,
-        SURFACE_FACTOR_LOWLAND, SURFACE_FACTOR_ROCKY, SURFACE_FACTOR_SAND, WANDER_RADIUS,
-        WORN_ROAD_WEAR, WorldPos, advance_movement, advance_movement_default, cat_gait,
-        destination_for_job, effective_move_speed, life_stage_gait, path_tiles, pick_wander_target,
-        road_surface_multiplier, scout_wander_target, terrain_surface_factor, walk_path,
+        SOFT_OBSTACLE_SPEED_MULT, SURFACE_FACTOR_FOREST, SURFACE_FACTOR_GRASSLAND,
+        SURFACE_FACTOR_HIGHLAND, SURFACE_FACTOR_LOWLAND, SURFACE_FACTOR_ROCKY, SURFACE_FACTOR_SAND,
+        WANDER_RADIUS, WORN_ROAD_WEAR, WorldPos, advance_movement, advance_movement_default,
+        cat_gait, destination_for_job, effective_move_speed, life_stage_gait, path_tiles,
+        pick_wander_target, road_surface_multiplier, scout_wander_target,
+        soft_obstacle_speed_multiplier, terrain_surface_factor, walk_path,
     };
 
     fn dist(a: WorldPos, b: WorldPos) -> f64 {
@@ -974,6 +997,43 @@ mod tests {
             "road cat ({}) should out-walk grass cat ({})",
             on_road.position.x,
             on_grass.position.x
+        );
+    }
+
+    // ---- P14.2: soft-obstacle (building/tree) movement speed ---------------
+
+    #[test]
+    fn soft_obstacle_speed_multiplier_is_a_quarter_speed_matching_the_pathfinding_cost_tier() {
+        // cost ∝ 1/speed: pathfinding's BUILDING_FOOTPRINT_COST/FOREST_COST are
+        // both 4.0, i.e. this same 0.25 speed tier.
+        assert_eq!(SOFT_OBSTACLE_SPEED_MULT, 0.25);
+        assert_eq!(
+            soft_obstacle_speed_multiplier(true),
+            SOFT_OBSTACLE_SPEED_MULT
+        );
+        assert_eq!(soft_obstacle_speed_multiplier(false), 1.0);
+    }
+
+    #[test]
+    fn cat_crossing_a_soft_obstacle_covers_a_quarter_the_ground_of_open_terrain() {
+        // Same cat, same biome, same elapsed budget: the only difference is
+        // whether the tile is a soft obstacle (building footprint / tree).
+        let elapsed = 8.0;
+        let start = WorldPos { x: 0.0, y: 0.0 };
+        let dest = WorldPos { x: 40.0, y: 0.0 };
+        let base = effective_move_speed(BiomeRole::Grassland, "cat-11", LifeStage::Adult);
+
+        let open_speed = base * soft_obstacle_speed_multiplier(false);
+        let obstacle_speed = base * soft_obstacle_speed_multiplier(true);
+        assert_eq!(obstacle_speed, open_speed * 0.25);
+
+        let open = walk_path(start, dest, elapsed * open_speed, &[]);
+        let obstacle = walk_path(start, dest, elapsed * obstacle_speed, &[]);
+        assert!(
+            open.position.x > obstacle.position.x,
+            "open-ground cat ({}) should out-walk the cat crossing a soft obstacle ({})",
+            open.position.x,
+            obstacle.position.x
         );
     }
 
