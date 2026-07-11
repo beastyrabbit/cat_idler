@@ -5902,9 +5902,16 @@ fn has_complete_building(colony: &ColonyRuntime, building_type: BuildingType) ->
 // `total_yield_for_job`'s `Quarry` arm below — a single lookup per job, at the
 // job's one dispatched site, not a per-tick full-map scan.
 fn has_quarry_site(colony: &ColonyRuntime) -> bool {
+    // Must agree with `quarry_sites_near_village` (which gates on `tile_is_explored`),
+    // exactly like the `has_water_site`/`water_sites_near_village` pair below. Keying
+    // the leader director's Quarry veto (`!snapshot.has_quarry_site`) on the strict
+    // `path_wear > 62` while the finder accepts `tile_is_explored` (`path_wear > 62` OR
+    // `cheb_from_anchor <= 6`) is the same veto/finder asymmetry that starved water: a
+    // mountain inside the founding reveal band but off any traffic halo would be a valid
+    // site the veto permanently rejects. Reconciled to `tile_is_explored`.
     colony.world_tiles.values().any(|tile| {
         matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
-            && tile.path_wear > 62
+            && tile_is_explored(tile)
     })
 }
 
