@@ -185,6 +185,11 @@ pub fn apply_action(
         } => with_colony(world, ctx, |colony| {
             buy_resource(colony, *resource, *amount, ctx)
         }),
+        proto::ClientAction::BoostCat {
+            cat_id, boosted, ..
+        } => with_colony(world, ctx, |colony| {
+            boost_cat(colony, cat_id, *boosted, ctx)
+        }),
     }
 }
 
@@ -601,6 +606,26 @@ fn unassign_officer(
 ) -> proto::ActionResult {
     colony.officers.remove(&role);
     colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+/// Set/clear `cat_id`'s player priority flag (P15 "cat booster"). A no-op (still `ok`)
+/// when the cat id is unknown or belongs to a dead cat — this is a player toggle on an
+/// inspector panel, so an out-of-date/missing target should never surface as an error.
+fn boost_cat(
+    colony: &mut ColonyRuntime,
+    cat_id: &str,
+    boosted: bool,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if let Some(cat) = colony
+        .cats
+        .iter_mut()
+        .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+    {
+        cat.boosted = boosted;
+        colony.last_player_activity_at = Some(ctx.now_ms);
+    }
     ok()
 }
 
@@ -1157,6 +1182,7 @@ fn cat_snapshot(colony: &ColonyRuntime, cat: &Cat) -> proto::CatSnapshot {
                     .map(|parent| parent.name.clone())
             })
             .collect(),
+        boosted: cat.boosted,
     }
 }
 
@@ -2176,6 +2202,7 @@ mod tests {
             specialization: None,
             role_xp: Default::default(),
             skills: Default::default(),
+            boosted: false,
         }
     }
 
@@ -2375,6 +2402,72 @@ mod tests {
         );
         assert!(res.ok, "{res:?}");
         assert!(world.colonies[0].officers.is_empty());
+    }
+
+    // ---- P15 cat booster ----
+
+    fn boost_cat_action(cat_id: &str, boosted: bool) -> proto::ClientAction {
+        proto::ClientAction::BoostCat {
+            session_id: "sess_1".to_string(),
+            nickname: "Guest".to_string(),
+            sig: "sig".to_string(),
+            cat_id: cat_id.to_string(),
+            boosted,
+        }
+    }
+
+    #[test]
+    fn boost_cat_sets_and_clears_the_flag() {
+        let mut world = world_with_one_colony();
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        assert!(!world.colonies[0].cats[0].boosted);
+
+        let res = apply_action(&mut world, &boost_cat_action(&cat_id, true), &ctx());
+        assert!(res.ok, "{res:?}");
+        assert!(world.colonies[0].cats[0].boosted);
+
+        let res = apply_action(&mut world, &boost_cat_action(&cat_id, false), &ctx());
+        assert!(res.ok, "{res:?}");
+        assert!(!world.colonies[0].cats[0].boosted);
+    }
+
+    #[test]
+    fn boost_cat_is_a_clean_noop_for_an_unknown_or_dead_cat_id() {
+        let mut world = world_with_one_colony();
+        let before = world.colonies[0].clone();
+
+        let res = apply_action(&mut world, &boost_cat_action("no-such-cat", true), &ctx());
+        assert!(res.ok, "unknown cat id should still be ok: {res:?}");
+        assert_eq!(world.colonies[0], before);
+
+        let dead_cat_id = world.colonies[0].cats[0].id.clone();
+        world.colonies[0].cats[0].death_time = Some(1);
+        let before_dead = world.colonies[0].clone();
+        let res = apply_action(&mut world, &boost_cat_action(&dead_cat_id, true), &ctx());
+        assert!(res.ok, "dead cat id should still be ok: {res:?}");
+        assert_eq!(world.colonies[0], before_dead);
+    }
+
+    #[test]
+    fn cat_snapshot_round_trips_the_boosted_flag() {
+        let mut world = world_with_one_colony();
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        world.colonies[0].cats[0].boosted = true;
+
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let cat_snap = snapshot.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id == cat_id)
+            .expect("boosted cat present in snapshot");
+        assert!(cat_snap.boosted);
+
+        let other = snapshot.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id != cat_id)
+            .expect("second founding cat present");
+        assert!(!other.boosted);
     }
 
     #[test]

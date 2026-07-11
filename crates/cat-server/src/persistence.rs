@@ -110,7 +110,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             spriteParams TEXT,
             specialization TEXT,
             roleXp TEXT,
-            skills TEXT
+            skills TEXT,
+            boosted INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS jobs (
@@ -241,6 +242,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "revealedTiles", "TEXT"),
         ("colonies", "coin", "REAL"),
         ("cats", "skills", "TEXT"),
+        ("cats", "boosted", "INTEGER NOT NULL DEFAULT 0"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
     ];
     for (table, column, decl) in ADDITIONS {
@@ -503,10 +505,10 @@ fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<(
             id, colonyId, name, parentIds, birthTime, deathTime, stats, needs,
             currentTask, position, destination, carrying, activity, isPregnant,
             pregnancyDueTime, ageHours, pregnancyDueAgeHours, pregnancyMateId,
-            spriteParams, specialization, roleXp, skills
+            spriteParams, specialization, roleXp, skills, boosted
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
         )",
         params![
             cat.id,
@@ -543,6 +545,7 @@ fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<(
             specialization,
             serde_json::to_string(&cat.role_xp).map_err(to_sql_json)?,
             serde_json::to_string(&cat.skills).map_err(to_sql_json)?,
+            cat.boosted,
         ],
     )?;
     Ok(())
@@ -553,7 +556,7 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
         "SELECT id, name, parentIds, birthTime, deathTime, stats, needs,
                 currentTask, position, destination, carrying, activity, isPregnant,
                 pregnancyDueTime, ageHours, pregnancyDueAgeHours, pregnancyMateId,
-                spriteParams, specialization, roleXp, skills
+                spriteParams, specialization, roleXp, skills, boosted
          FROM cats WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
@@ -614,6 +617,7 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
                 })
                 .transpose()?
                 .unwrap_or_default(),
+            boosted: row.get("boosted")?,
         })
     })?;
     rows.collect()
@@ -1403,6 +1407,7 @@ mod tests {
             ("colonies", "stockLedger"),
             ("colonies", "coin"),
             ("cats", "skills"),
+            ("cats", "boosted"),
         ] {
             assert!(!column_exists(&conn, table, column).unwrap());
         }
@@ -1415,6 +1420,7 @@ mod tests {
             ("colonies", "stockLedger"),
             ("colonies", "coin"),
             ("cats", "skills"),
+            ("cats", "boosted"),
         ] {
             assert!(
                 column_exists(&conn, table, column).unwrap(),
@@ -1458,6 +1464,8 @@ mod tests {
         // P12.1/P12.2/P12.3 state must survive the round trip.
         let officer_cat = world.colonies[0].cats[0].id.clone();
         world.colonies[0].cats[0].gain_skill(cat_sim::skills::Labor::Hunt, 3.0);
+        // P15 cat booster: the boosted flag must persist across a save/load cycle.
+        world.colonies[0].cats[0].boosted = true;
         world.colonies[0]
             .officers
             .insert(cat_sim::officers::OfficerRole::Captain, officer_cat);
@@ -1487,6 +1495,7 @@ mod tests {
         assert_eq!(loaded.colonies.len(), 1);
         assert_eq!(loaded.colonies[0].resources, world.colonies[0].resources);
         assert_eq!(loaded.colonies[0].cats, world.colonies[0].cats);
+        assert!(loaded.colonies[0].cats[0].boosted, "boosted flag persists");
         assert_eq!(loaded.colonies[0].jobs, world.colonies[0].jobs);
         assert_eq!(loaded.colonies[0].officers, world.colonies[0].officers);
         assert_eq!(loaded.colonies[0].stockpiles, world.colonies[0].stockpiles);

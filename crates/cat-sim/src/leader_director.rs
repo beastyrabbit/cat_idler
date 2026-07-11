@@ -277,7 +277,25 @@ pub struct CatBrief {
     pub id: String,
     pub specialization: Option<CatSpecialization>,
     pub stats: CatBriefStats,
+    /// Player-set priority flag (P15 "cat booster"), mirrors `entities::Cat::boosted`.
+    /// Absent in older fixtures/callers → `false`, matching the field's own
+    /// `#[serde(default)]` on the `Cat` entity.
+    #[serde(default)]
+    pub boosted: bool,
 }
+
+/// Multiplicative fit bonus for a boosted cat, applied alongside (and independent of)
+/// the `SPECIALIZATION_FIT_MULTIPLIER`. Chosen slightly above the specialization bonus
+/// so a boosted cat can win a marginally-better unboosted rival — including tipping a
+/// close specialization matchup — while still being a *multiplicative* scale on the
+/// cat's own base fit rather than a flat additive bump. That keeps the bonus bounded:
+/// a boosted cat with near-zero base fit for a goal still scores near zero (1.6x of
+/// ~0 is ~0), so it can never displace a genuinely strong specialist from a slot it's
+/// useless for. Stacks with specialization (a boosted specialist gets both), which is
+/// intentional — boosting a cat already suited for a role should make it an even
+/// stronger pick.
+const BOOST_FIT_MULTIPLIER: f64 = 1.6;
+const SPECIALIZATION_FIT_MULTIPLIER: f64 = 1.5;
 
 #[must_use]
 pub fn assignment_fit(cat: &CatBrief, goal: LaborGoalKind) -> f64 {
@@ -293,7 +311,18 @@ pub fn assignment_fit(cat: &CatBrief, goal: LaborGoalKind) -> f64 {
     let spec_match =
         spec.prefer_specialization.is_some() && cat.specialization == spec.prefer_specialization;
 
-    base * if spec_match { 1.5 } else { 1.0 }
+    let spec_multiplier = if spec_match {
+        SPECIALIZATION_FIT_MULTIPLIER
+    } else {
+        1.0
+    };
+    let boost_multiplier = if cat.boosted {
+        BOOST_FIT_MULTIPLIER
+    } else {
+        1.0
+    };
+
+    base * spec_multiplier * boost_multiplier
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1088,6 +1117,131 @@ mod tests {
         }
     }
 
+    // ---- P15 cat booster (leader director matcher bonus) ----
+    //
+    // `assignment_fits_match_ts_fixture` and `match_cats_to_slots_matches_ts_fixture`
+    // (above) already double as the "unboosted matching is byte-identical to
+    // pre-change" guardrail: every fixture `CatBrief` deserializes with
+    // `boosted: false` (the field is `#[serde(default)]` and the TS-derived JSON
+    // never carries it), and their `expected` values were computed under the
+    // pre-boost formula — so those two tests only stay green if `boost_multiplier`
+    // is an exact 1.0 (i.e. a true no-op) for every unboosted cat in the fixture.
+
+    #[test]
+    fn boosted_cat_wins_an_equal_fit_tie() {
+        let slots = vec![OpenSlots {
+            goal: LaborGoalKind::Hunt,
+            count: 1,
+            score: 0.5,
+        }];
+        let cats = vec![
+            cat_brief("plain", 10.0, 10.0),
+            boosted(cat_brief("boosted", 10.0, 10.0)),
+        ];
+
+        let assignments = match_cats_to_slots(&slots, &cats, MatchOptions::default());
+        assert_eq!(
+            assignments,
+            vec![Assignment {
+                cat_id: "boosted".to_owned(),
+                goal: LaborGoalKind::Hunt,
+            }]
+        );
+    }
+
+    #[test]
+    fn boosted_cat_wins_over_a_marginally_better_unboosted_cat() {
+        // "better" unboosted cat has higher raw hunting (12 vs 10), but the boosted
+        // cat's 1.6x multiplier (16.0) clears the unboosted cat's raw fit (12.0) —
+        // within the bonus margin.
+        let slots = vec![OpenSlots {
+            goal: LaborGoalKind::Hunt,
+            count: 1,
+            score: 0.5,
+        }];
+        let cats = vec![
+            cat_brief("better-unboosted", 10.0, 12.0),
+            boosted(cat_brief("boosted", 10.0, 10.0)),
+        ];
+
+        let assignments = match_cats_to_slots(&slots, &cats, MatchOptions::default());
+        assert_eq!(
+            assignments,
+            vec![Assignment {
+                cat_id: "boosted".to_owned(),
+                goal: LaborGoalKind::Hunt,
+            }]
+        );
+    }
+
+    #[test]
+    fn boosted_hopelessly_unfit_cat_does_not_displace_a_strong_specialist() {
+        // A Hunter specialist with strong hunting stats (fit = 20 * 1.5 = 30) must keep
+        // the slot over a boosted cat with almost no hunting skill (fit = 1 * 1.6 =
+        // 1.6) — the multiplicative bonus scales the boosted cat's own (near-zero)
+        // base fit, so it never manufactures a competitive score out of nothing.
+        let specialist = CatBrief {
+            id: "specialist".to_owned(),
+            specialization: Some(CatSpecialization::Hunter),
+            stats: CatBriefStats {
+                hunting: 20.0,
+                building: 10.0,
+                vision: 10.0,
+                medicine: 10.0,
+                attack: 10.0,
+                defense: 10.0,
+                leadership: 10.0,
+            },
+            boosted: false,
+        };
+        let boosted_but_useless = CatBrief {
+            id: "boosted-unfit".to_owned(),
+            specialization: None,
+            stats: CatBriefStats {
+                hunting: 1.0,
+                building: 10.0,
+                vision: 10.0,
+                medicine: 10.0,
+                attack: 10.0,
+                defense: 10.0,
+                leadership: 10.0,
+            },
+            boosted: true,
+        };
+
+        let slots = vec![OpenSlots {
+            goal: LaborGoalKind::Hunt,
+            count: 1,
+            score: 0.5,
+        }];
+        let cats = vec![specialist, boosted_but_useless];
+
+        let assignments = match_cats_to_slots(&slots, &cats, MatchOptions::default());
+        assert_eq!(
+            assignments,
+            vec![Assignment {
+                cat_id: "specialist".to_owned(),
+                goal: LaborGoalKind::Hunt,
+            }]
+        );
+    }
+
+    #[test]
+    fn assignment_fit_boost_multiplier_is_a_strict_no_op_when_unboosted() {
+        // Direct arithmetic check, independent of the fixture: an unboosted cat's fit
+        // is exactly base * spec_multiplier (boost contributes a literal 1.0 factor,
+        // which is exact under IEEE754 multiplication — no drift).
+        let cat = cat_brief("plain", 10.0, 12.0);
+        assert!(!cat.boosted);
+        assert_eq!(assignment_fit(&cat, LaborGoalKind::Hunt), 12.0);
+
+        let boosted_cat = boosted(cat_brief("boosted", 10.0, 12.0));
+        assert_eq!(
+            assignment_fit(&boosted_cat, LaborGoalKind::Hunt),
+            12.0 * BOOST_FIT_MULTIPLIER
+        );
+    }
+
     // ---- P12.2 officers (additive layer) ----
 
     fn cat_brief(id: &str, attack: f64, hunting: f64) -> CatBrief {
@@ -1103,7 +1257,13 @@ mod tests {
                 defense: 10.0,
                 leadership: 10.0,
             },
+            boosted: false,
         }
+    }
+
+    fn boosted(mut cat: CatBrief) -> CatBrief {
+        cat.boosted = true;
+        cat
     }
 
     #[test]

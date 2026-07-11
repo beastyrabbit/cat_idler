@@ -198,6 +198,12 @@ pub struct Cat {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub skills: BTreeMap<Labor, f64>,
+    /// Player-set priority flag (P15 "cat booster"). Biases the leader director's
+    /// matcher toward this cat for job/role slots — a persistent preference, not a
+    /// timed effect. Absent in legacy rows → `false` (mirrors `specialization`'s
+    /// null-default back-compat).
+    #[serde(default)]
+    pub boosted: bool,
 }
 
 impl Cat {
@@ -331,6 +337,7 @@ mod tests {
                 warrior: 4.0,
             },
             skills: BTreeMap::from([(Labor::Hunt, 5.0), (Labor::Haul, 2.0)]),
+            boosted: true,
         };
 
         assert_eq!(colony.world_seed, Some(42));
@@ -339,6 +346,7 @@ mod tests {
         assert_eq!(cat.role_xp.warrior, 4.0);
         assert_eq!(cat.skill(Labor::Hunt), 5.0);
         assert_eq!(cat.skill(Labor::Fight), 0.0);
+        assert!(cat.boosted);
     }
 
     #[test]
@@ -416,6 +424,7 @@ mod tests {
         assert_eq!(cat.role_xp.warrior, 0.0);
         assert!(cat.skills.is_empty());
         assert_eq!(cat.skill(Labor::Hunt), 0.0);
+        assert!(!cat.boosted);
     }
 
     #[test]

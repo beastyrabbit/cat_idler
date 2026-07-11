@@ -806,6 +806,7 @@ fn create_starter_cats(colony_id: &str, now_ms: i64, seed: u32) -> Vec<Cat> {
                 specialization: None,
                 role_xp: RoleXp::default(),
                 skills: Default::default(),
+                boosted: false,
             }
         })
         .collect()
@@ -1451,6 +1452,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
             specialization: None,
             role_xp: RoleXp::default(),
             skills: BTreeMap::new(),
+            boosted: false,
         });
 
         let mother_cat = &mut colony.cats[mother_index];
@@ -4807,6 +4809,7 @@ fn cat_brief(cat: &Cat) -> CatBrief {
             defense: cat.stats.defense,
             leadership: cat.stats.leadership,
         },
+        boosted: cat.boosted,
     }
 }
 
@@ -9374,6 +9377,7 @@ mod tests {
             specialization: None,
             role_xp: Default::default(),
             skills: Default::default(),
+            boosted: false,
         }
     }
 

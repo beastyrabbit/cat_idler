@@ -230,6 +230,7 @@ mod tests {
             specialization: None,
             role_xp: RoleXp::default(),
             skills: Default::default(),
+            boosted: false,
         }
     }
 

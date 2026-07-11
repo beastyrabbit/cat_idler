@@ -462,6 +462,9 @@ fn action_identity_fields(action: &ClientAction) -> Option<(&str, Option<&str>)>
         }
         | ClientAction::BuyResource {
             session_id, sig, ..
+        }
+        | ClientAction::BoostCat {
+            session_id, sig, ..
         } => Some((session_id, Some(sig))),
         _ => None,
     }

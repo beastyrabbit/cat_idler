@@ -285,6 +285,11 @@ pub struct CatSnapshot {
     /// skipped). Additive; empty/absent for pre-lineage snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parents: Vec<String>,
+    /// Player-set priority flag (P15 "cat booster"), mirrors `entities::Cat::boosted`.
+    /// Additive; defaults to `false` for older payloads (client inspector button
+    /// lands in a later card).
+    #[serde(default)]
+    pub boosted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -830,6 +835,16 @@ pub enum ClientAction {
         resource: ResourceKind,
         amount: f64,
     },
+    /// Set/clear a cat's player priority flag (P15 "cat booster"). A persistent bias
+    /// toward this cat in the leader director's job/role matcher — not a timed effect.
+    /// `boosted` makes this a toggle so the client can set or clear from one action.
+    BoostCat {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        cat_id: String,
+        boosted: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1221,6 +1236,7 @@ mod tests {
                     death_time: None,
                     parent_ids: vec!["cat_0".to_string()],
                     parents: vec!["Ash".to_string()],
+                    boosted: false,
                 }],
                 jobs: vec![JobSnapshot {
                     id: "job_1".to_string(),
@@ -1358,6 +1374,33 @@ mod tests {
                 "sig": "signed",
                 "role": "captain",
                 "catId": "cat_1"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(encoded).expect("deserialize"),
+            action
+        );
+    }
+
+    #[test]
+    fn boost_cat_action_round_trips_with_camel_case_fields() {
+        let action = ClientAction::BoostCat {
+            session_id: "session_1".to_string(),
+            nickname: "Guest Cat".to_string(),
+            sig: "signed".to_string(),
+            cat_id: "cat_1".to_string(),
+            boosted: true,
+        };
+        let encoded = serde_json::to_value(&action).expect("serialize boostCat");
+        assert_eq!(
+            encoded,
+            json!({
+                "action": "boostCat",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "catId": "cat_1",
+                "boosted": true
             })
         );
         assert_eq!(
@@ -1639,5 +1682,24 @@ mod tests {
         let back: WorldSnapshot = serde_json::from_value(old).expect("deserialize");
         assert!(back.colonies[0].cats[0].parent_ids.is_empty());
         assert!(back.colonies[0].cats[0].parents.is_empty());
+    }
+
+    #[test]
+    fn cat_snapshot_boosted_round_trips_and_defaults_false_for_old_payloads() {
+        let mut snap = sample_world_snapshot();
+        snap.colonies[0].cats[0].boosted = true;
+        let encoded = serde_json::to_value(&snap).expect("serialize");
+        assert_eq!(encoded["colonies"][0]["cats"][0]["boosted"], json!(true));
+        let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
+        assert_eq!(round, snap);
+
+        // Absent `boosted` (pre-P15 payload) defaults to false.
+        let mut old = serde_json::to_value(sample_world_snapshot()).expect("serialize");
+        old["colonies"][0]["cats"][0]
+            .as_object_mut()
+            .expect("cat object")
+            .remove("boosted");
+        let back: WorldSnapshot = serde_json::from_value(old).expect("deserialize");
+        assert!(!back.colonies[0].cats[0].boosted);
     }
 }
