@@ -27,7 +27,8 @@ use crate::{
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions,
-        OFFERING_MATERIALS_AMOUNT, direct_colony, match_cats_to_slots_with_officers,
+        OFFERING_MATERIALS_AMOUNT, RESEARCH_COMFORT_RATIO, direct_colony,
+        match_cats_to_slots_with_officers,
     },
     ledger::{StockLedger, refresh_ledger},
     life_sim::{
@@ -347,6 +348,7 @@ pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
         | BuildingType::MouseFarm
         | BuildingType::Field
         | BuildingType::Barracks
+        | BuildingType::ResearchHut
         | BuildingType::AccountingTent => (2, 3),
         // Bowls and wall segments are single tiles.
         BuildingType::WaterBowl | BuildingType::Walls => (1, 1),
@@ -561,6 +563,9 @@ pub enum EventKind {
     ResearchUnlocked,
     /// A player spent blessings to directly purchase an upgrade-tree node.
     NodeOwned,
+    /// The leader broke ground on a research hut (the ungated entry to the
+    /// cat-research path) because the colony was comfortable and had none.
+    ResearchHutCommissioned,
     JobQueued,
     JobCompleted,
     JobCancelled,
@@ -608,6 +613,7 @@ impl EventKind {
             EventKind::VillageFounded => "village_founded".to_owned(),
             EventKind::ResearchUnlocked => "research_unlocked".to_owned(),
             EventKind::NodeOwned => "node_owned".to_owned(),
+            EventKind::ResearchHutCommissioned => "research_hut_commissioned".to_owned(),
             EventKind::JobQueued => "job_queued".to_owned(),
             EventKind::JobCompleted => "job_completed".to_owned(),
             EventKind::JobCancelled => "job_cancelled".to_owned(),
@@ -666,6 +672,7 @@ impl EventKind {
             "village_founded" => EventKind::VillageFounded,
             "research_unlocked" => EventKind::ResearchUnlocked,
             "node_owned" => EventKind::NodeOwned,
+            "research_hut_commissioned" => EventKind::ResearchHutCommissioned,
             "job_queued" => EventKind::JobQueued,
             "job_completed" => EventKind::JobCompleted,
             "job_cancelled" => EventKind::JobCancelled,
@@ -1586,6 +1593,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         let plan = phase_19_leader_cancellations(colony, gate, &snapshot);
         phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan);
         phase_21_leader_capital_decisions_and_tithe(colony, gate, policy, &plan);
+        manage_research_hut(colony, gate, policy, &snapshot);
         phase_22_ritual_approval(colony, gate);
         phase_23_production(colony, gate, world_seed);
         phase_23c_fibre_forage(colony, gate);
@@ -2805,7 +2813,9 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         workshops_needing_workers: buildings_needing_workers(colony, BuildingType::Workshop).len()
             as u32
             + craft_benches_needing_workers,
-        research_huts_needing_workers: Some(0),
+        research_huts_needing_workers: Some(
+            buildings_needing_workers(colony, BuildingType::ResearchHut).len() as u32,
+        ),
         smithies_needing_workers: Some(
             buildings_needing_workers(colony, BuildingType::Smithy).len() as u32,
         ),
@@ -2933,6 +2943,11 @@ fn phase_20_leader_labor_assignments_and_staffing(
         workshop_queue.extend(buildings_needing_workers(colony, bench_type));
     }
     let mut smithy_queue = buildings_needing_workers(colony, BuildingType::Smithy);
+    // Research huts the director wants staffed this tick. The `AssignResearch` goal is
+    // itself comfort-gated in `leader_director` (vetoed unless food/water are both
+    // comfortable), so this queue only ever yields work when the colony can spare the
+    // mouth — a starving colony opens no research slots and this stays empty.
+    let mut research_queue = buildings_needing_workers(colony, BuildingType::ResearchHut);
 
     for assignment in assignments {
         if !can_take_policy_action(colony, policy) {
@@ -2996,7 +3011,17 @@ fn phase_20_leader_labor_assignments_and_staffing(
                     );
                 }
             }
-            LaborGoalKind::AssignResearch => {}
+            LaborGoalKind::AssignResearch => {
+                if let Some(building_id) = research_queue.pop() {
+                    staff_building(
+                        colony,
+                        &building_id,
+                        &assignment.cat_id,
+                        gate.processed_through,
+                        true,
+                    );
+                }
+            }
             LaborGoalKind::AssignSmithy => {
                 if let Some(building_id) = smithy_queue.pop() {
                     staff_building(
@@ -3052,6 +3077,118 @@ fn accrue_shrine_devotion(colony: &mut ColonyRuntime, gate: TickGate) {
     let gained = SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR * elapsed_game_hours(colony, gate);
     if gained > 0.0 {
         colony.global_upgrade_points += gained;
+    }
+}
+
+/// Whether the colony already has a research hut standing or a build for one under way,
+/// so the commission below only ever puts a single hut in play.
+fn has_research_hut_or_build_in_flight(colony: &ColonyRuntime) -> bool {
+    let has_building = colony
+        .buildings
+        .iter()
+        .any(|building| building.building_type == BuildingType::ResearchHut);
+    let building_in_flight = active_or_queued_jobs(colony).iter().any(|job| {
+        job.kind == JobKind::BuildHouse && job_building_type(job) == Some(BuildingType::ResearchHut)
+    });
+    has_building || building_in_flight
+}
+
+/// DEADLOCK RESOLUTION + reliable staffing (unattended cat-research path). The upgrade
+/// tree's root node `research_hut` is the only prereq-free node, and it *unlocks* the
+/// research hut building/job — so an unattended colony could never earn the node it needs
+/// to build the hut that earns it. We break the cycle by making the research hut buildable
+/// at founding, **ungated by the tree** (it is the entry to research, not a reward of it):
+/// once a comfy colony stands one up and staffs it, [`phase_24_research`] accrues points and
+/// auto-unlocks the cheapest affordable node — starting with `research_hut` itself — and the
+/// tree climbs on its own.
+///
+/// Everything here is gated on the colony being *comfortable* (food and water both at/above
+/// [`RESEARCH_COMFORT_RATIO`] of capacity), the same bar the `AssignResearch` labour goal
+/// carries — so research never draws a cat off survival work during a crisis, and a colony
+/// that is not comfortable is untouched (byte-identical). Two comfort-gated steps run each
+/// tick:
+///
+/// 1. **Staff idle huts** from genuinely idle cats. The director's `AssignResearch` labour
+///    goal lives in the ranked employment budget, but the ~0.95 idle-employment floor keeps
+///    nearly every cat on a long hunt/scout job, so `idle_cats` is almost always zero and the
+///    ranked slot rarely fires — exactly why the generic workshop also gets a phase-23
+///    idle-mop-up. This gives the research hut the same treatment. It also re-staffs a hut
+///    whose scholar has died (research to a node spans several cat lifetimes), so accrual
+///    survives generational turnover.
+/// 2. **Commission one hut** (at most one at a time) when none exists and none is in flight,
+///    spending an architect + the shared plank/block scaffold cost.
+///
+/// Deterministic: comfort and staffing are flat functions of colony state; only the
+/// commission draws the seeded policy-reliability roll (at the same call site the other
+/// capital decisions use).
+fn manage_research_hut(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    policy: TickPolicy,
+    snapshot: &LeaderSnapshot,
+) {
+    if snapshot.population == 0 {
+        return;
+    }
+    let has_shrine = colony
+        .buildings
+        .iter()
+        .any(|building| building.building_type == BuildingType::Shrine && building.is_complete);
+    if !has_shrine {
+        return;
+    }
+    let food_r = ratio_or_zero(snapshot.resources.food, snapshot.food_capacity);
+    let water_r = ratio_or_zero(snapshot.water, snapshot.water_capacity);
+    let comfortable = food_r >= RESEARCH_COMFORT_RATIO && water_r >= RESEARCH_COMFORT_RATIO;
+    if !comfortable {
+        return;
+    }
+
+    // Step 1: staff any completed but unstaffed research hut from a genuinely idle cat. Only
+    // reached while comfortable, so this never pulls a cat off survival work.
+    auto_staff_idle_buildings(
+        colony,
+        BuildingType::ResearchHut,
+        gate.processed_through,
+        true,
+    );
+
+    // Step 2: commission a hut if the colony has none (built or in flight).
+    if has_research_hut_or_build_in_flight(colony) {
+        return;
+    }
+    if !can_take_policy_action(colony, policy) {
+        return;
+    }
+    let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Architect)) else {
+        return;
+    };
+    queue_job(
+        colony,
+        gate.processed_through,
+        JobKind::BuildHouse,
+        Some(cat_id),
+        JobMetadata::Construction {
+            phase: ConstructionPhase::ConstructHouse,
+            building_type: BuildingType::ResearchHut,
+            building_id: None,
+            site: None,
+        },
+    );
+    append_event(
+        colony,
+        gate.processed_through,
+        EventKind::ResearchHutCommissioned,
+        "The leader broke ground on a research hut - the cats will start to study.",
+    );
+}
+
+/// Non-panicking ratio: `value / capacity`, or `0.0` when capacity is non-positive.
+fn ratio_or_zero(value: f64, capacity: f64) -> f64 {
+    if capacity > 0.0 {
+        value / capacity
+    } else {
+        0.0
     }
 }
 
@@ -7027,6 +7164,7 @@ fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
         | BuildingType::AccountingTent
         | BuildingType::Clothier
         | BuildingType::Tannery
+        | BuildingType::ResearchHut
         | BuildingType::Smelter => building_type,
         _ => BuildingType::Den,
     }
@@ -7284,8 +7422,31 @@ fn assigned_worker<'a>(colony: &'a ColonyRuntime, building_id: &str) -> Option<&
         .find(|cat| cat.id == assigned_cat && cat.death_time.is_none())
 }
 
-fn research_workforce(_: &ColonyRuntime) -> f64 {
-    0.0
+/// Stage-weighted count of cats actively staffing a completed research building
+/// (currently the research hut; schools fold in when that building type lands). Each
+/// staffed hut contributes its assigned cat's [`life_sim::workforce_weight`] — the same
+/// weight the labour budget uses — so an elder scholar researches at 0.7 like every other
+/// job, and a dead/absent assignee contributes nothing. This is the sole input to
+/// [`phase_24_research`]'s point accrual; a colony with no staffed hut yields 0.0 and is
+/// byte-identical to the pre-wiring behaviour.
+fn research_workforce(colony: &ColonyRuntime) -> f64 {
+    colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.building_type == BuildingType::ResearchHut
+                && building.construction_progress >= 100
+        })
+        .filter_map(|building| building.assigned_cat.as_deref())
+        .filter_map(|cat_id| {
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+        })
+        .filter(|cat| can_work(get_life_stage(cat.age_hours)))
+        .map(|cat| crate::life_sim::workforce_weight(get_life_stage(cat.age_hours)))
+        .sum()
 }
 
 fn due_active_jobs(colony: &ColonyRuntime, gate: TickGate) -> Vec<JobRuntime> {
@@ -12252,6 +12413,93 @@ mod tests {
         );
     }
 
+    /// Comfort harness: model a colony that has solved its food/water economy (a full-ish
+    /// larder every tick, no player actions) so the cat-research mechanic is exercised in
+    /// isolation from the orthogonal founding-food balance. Keeps food/water at 0.6 of cap —
+    /// comfortably over [`RESEARCH_COMFORT_RATIO`] without slamming the larder to the cap
+    /// (which over-breeds into an old-age collapse). Deterministic; touches only food/water.
+    #[cfg(test)]
+    fn keep_comfortable(colony: &mut ColonyRuntime) {
+        let caps = storage_caps(colony);
+        colony.resources.food = colony.resources.food.max(caps.food * 0.6);
+        colony.resources.water = colony.resources.water.max(caps.water * 0.6);
+    }
+
+    /// AUTONOMOUS TREE-ADVANCE guardrail — the headline proof that the cat-research path is
+    /// no longer dormant: with no player input, a comfortable colony commissions and builds a
+    /// research hut, staffs it, accrues research points, and auto-unlocks an upgrade-tree node
+    /// on its own.
+    ///
+    /// The end-to-end pieces are covered thus: the build/staff/accrue wiring runs live here
+    /// from a founded colony; [`staffed_research_hut_accrues_points_and_auto_unlocks_the_cheapest_nodes`]
+    /// proves a full week of accrual crosses several node thresholds; and
+    /// [`research_staffing_and_commission_respect_the_comfort_gate`] proves the survival gate.
+    /// A node costs ~84 game-hours of a single scholar (10 pts/researcher/week) — several cat
+    /// lifetimes — so an unaided founding colony's *own* long-horizon population balance (a
+    /// separate, tracked survival-pacing concern) would otherwise dominate this test. We
+    /// therefore give the tree a head start of prior study (research points persist across
+    /// run resets by design), so the run proves the autonomous **build → staff → accrue →
+    /// cross-threshold → own** path within a bounded, population-safe horizon. Multi-seed;
+    /// every colony must end owning at least one researched node without a single player action.
+    #[test]
+    fn an_unattended_comfortable_colony_advances_the_research_tree() {
+        for seed in [7u32, 4242, 1234] {
+            let mut world = new_world(seed);
+            let mut colony = found_colony(world.world_seed, "colony-1", 10_000, seed);
+            // Prior study already banked most of the cost-5 root (persists across resets).
+            colony.upgrade_tree.research_points = 4.5;
+            assert!(
+                colony.upgrade_tree.owned_node_ids.is_empty(),
+                "seed {seed}: the colony must start with no researched nodes"
+            );
+            world.colonies.push(colony);
+
+            let mut built_and_staffed = false;
+            for step in 1..=2_500i64 {
+                keep_comfortable(&mut world.colonies[0]);
+                let now = 10_000 + step * 60_000;
+                let _ = world_tick(&mut world, now);
+                if research_workforce(&world.colonies[0]) > 0.0 {
+                    built_and_staffed = true;
+                }
+                if !world.colonies[0].upgrade_tree.owned_node_ids.is_empty() {
+                    break;
+                }
+            }
+
+            let colony = &world.colonies[0];
+            assert!(
+                built_and_staffed,
+                "seed {seed}: the colony never autonomously built and staffed a research hut"
+            );
+            assert!(
+                !colony.upgrade_tree.owned_node_ids.is_empty(),
+                "seed {seed}: the research tree never advanced to an owned node — the cat path is dormant"
+            );
+        }
+    }
+
+    /// Determinism twin for the autonomous tree-advance: two byte-identical runs must reach
+    /// the identical owned-node set and research-point total. Guards that research staffing
+    /// and point accrual draw no unseeded RNG.
+    #[test]
+    fn autonomous_research_advance_is_deterministic() {
+        let run = || {
+            let mut world = new_world(7);
+            let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 7);
+            colony.upgrade_tree.research_points = 4.5;
+            world.colonies.push(colony);
+            for step in 1..=1_500i64 {
+                keep_comfortable(&mut world.colonies[0]);
+                let now = 10_000 + step * 60_000;
+                let _ = world_tick(&mut world, now);
+            }
+            let tree = &world.colonies[0].upgrade_tree;
+            (tree.owned_node_ids.clone(), tree.research_points.to_bits())
+        };
+        assert_eq!(run(), run());
+    }
+
     /// Long-horizon economy REACHABILITY guardrail (economy review). Complements the
     /// survival proofs above: it proves the god-purchase upgrade path is no longer
     /// dormant. Before the [`accrue_shrine_devotion`] fix, an instrumented 120-game-hour
@@ -12298,6 +12546,156 @@ mod tests {
                 colony.global_upgrade_points,
             );
         }
+    }
+
+    /// Attach a completed research hut, staffed by `scholar`, to `colony`.
+    #[cfg(test)]
+    fn attach_staffed_research_hut(colony: &mut ColonyRuntime, scholar: &str) {
+        colony.buildings.push(BuildingRuntime {
+            id: "research-hut-test".to_owned(),
+            building_type: BuildingType::ResearchHut,
+            level: 1,
+            position: TilePos {
+                x: colony.anchor.x,
+                y: colony.anchor.y,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            assigned_cat: Some(scholar.to_owned()),
+            ..BuildingRuntime::default()
+        });
+    }
+
+    /// Cat-research accrual wiring ([`research_workforce`] + [`phase_24_research`]). Before
+    /// this fix `research_workforce` was hard-coded `0.0`, so a staffed hut banked nothing
+    /// and the whole tech tree sat dormant in unattended play. A completed hut staffed by a
+    /// living cat must now count as one researcher, and a game-week of accrual (10
+    /// pts/researcher/week) must auto-unlock the cheapest-first nodes — proving the tree can
+    /// advance on the cat path alone. Deterministic: a flat function of elapsed game-seconds,
+    /// no RNG.
+    #[test]
+    fn staffed_research_hut_accrues_points_and_auto_unlocks_the_cheapest_nodes() {
+        let mut colony = found_colony(7, "colony-1", 10_000, 7);
+        colony.upgrade_tree = crate::upgrade_tree::create_upgrade_tree_state();
+        let scholar = colony.cats[0].id.clone();
+
+        // Unstaffed to start: the workforce is zero and no accrual happens.
+        assert_eq!(
+            research_workforce(&colony),
+            0.0,
+            "a colony with no staffed hut must yield zero research workforce"
+        );
+
+        attach_staffed_research_hut(&mut colony, &scholar);
+        assert!(
+            (research_workforce(&colony) - 1.0).abs() < 1e-9,
+            "one living scholar in a completed hut is one researcher"
+        );
+
+        // One game-week of a single researcher banks ~10 points, enough to auto-unlock the
+        // cost-5 root (`research_hut`) and then the next cheapest node (`basic_tools`, 5).
+        let week = crate::upgrade_tree::WEEK_SECONDS as i64;
+        let gate = TickGate {
+            elapsed_sec: week,
+            processed_through: colony.last_tick + week * 1_000,
+            minute_rolled: true,
+            previous_water: colony.resources.water.to_bits(),
+        };
+        phase_24_research(&mut colony, gate);
+
+        assert!(
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .contains(&"research_hut".to_owned()),
+            "a game-week of research must unlock the cost-5 root node, got {:?}",
+            colony.upgrade_tree.owned_node_ids,
+        );
+        assert!(
+            colony.upgrade_tree.owned_node_ids.len() >= 2,
+            "cheapest-first auto-unlock must claim more than the root from ~10 banked points, got {:?}",
+            colony.upgrade_tree.owned_node_ids,
+        );
+
+        // Unstaffing the hut drops the workforce back to zero (dead/absent scholar guard).
+        for building in &mut colony.buildings {
+            if building.building_type == BuildingType::ResearchHut {
+                building.assigned_cat = None;
+            }
+        }
+        assert_eq!(research_workforce(&colony), 0.0);
+    }
+
+    /// Survival guardrail for the cat-research path: staffing a research hut must respect the
+    /// comfort gate the `AssignResearch` labour goal already carries, so a *starving* colony
+    /// never pulls a mouth off survival work to study. A completed, unstaffed hut in a colony
+    /// held below [`RESEARCH_COMFORT_RATIO`] on food/water stays unstaffed and commissions no
+    /// new hut; the same colony made comfortable staffs it. Deterministic (short bounded run).
+    #[test]
+    fn research_staffing_and_commission_respect_the_comfort_gate() {
+        // Starving: food/water pinned near zero every tick, so no comfortable ticks pass.
+        let mut world = new_world(7);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 7);
+        let scholar = colony.cats[0].id.clone();
+        attach_staffed_research_hut(&mut colony, &scholar);
+        // Free the scholar so only the leader (comfort-gated) could re-staff it.
+        for building in &mut colony.buildings {
+            if building.building_type == BuildingType::ResearchHut {
+                building.assigned_cat = None;
+            }
+        }
+        world.colonies.push(colony);
+        for step in 1..=20 {
+            // Re-starve before each tick so the colony can never read as comfortable.
+            let c = &mut world.colonies[0];
+            c.resources.food = 1.0;
+            c.resources.water = 1.0;
+            let now = 10_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut world, now);
+            assert_eq!(
+                research_workforce(&world.colonies[0]),
+                0.0,
+                "tick {step}: a starving colony must not staff its research hut",
+            );
+        }
+        assert!(
+            world.colonies[0]
+                .buildings
+                .iter()
+                .filter(|b| b.building_type == BuildingType::ResearchHut)
+                .count()
+                == 1,
+            "a starving colony must not commission a second research hut",
+        );
+
+        // Comfortable: food/water pinned at capacity, so the leader staffs the idle hut.
+        let mut comfy = new_world(7);
+        let mut colony = found_colony(comfy.world_seed, "colony-1", 10_000, 7);
+        let scholar = colony.cats[0].id.clone();
+        attach_staffed_research_hut(&mut colony, &scholar);
+        for building in &mut colony.buildings {
+            if building.building_type == BuildingType::ResearchHut {
+                building.assigned_cat = None;
+            }
+        }
+        comfy.colonies.push(colony);
+        let mut staffed = false;
+        for step in 1..=40 {
+            let c = &mut comfy.colonies[0];
+            let caps = storage_caps(c);
+            c.resources.food = caps.food;
+            c.resources.water = caps.water;
+            let now = 10_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut comfy, now);
+            if research_workforce(&comfy.colonies[0]) > 0.0 {
+                staffed = true;
+                break;
+            }
+        }
+        assert!(
+            staffed,
+            "a comfortable colony must staff its idle research hut within a few ticks",
+        );
     }
 
     /// Live-cadence founding survival guardrail (bug: founding death spiral).
@@ -15121,6 +15519,63 @@ mod tests {
                 mean >= f64::from(STARTER_CAT_COUNT as u32),
                 "seed {seed}: mean sustained population {mean:.1} is below the founding \
                  {STARTER_CAT_COUNT} — the colony is shrinking, not self-sustaining"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn instrument_food_trajectory() {
+        for seed in [7u32, 555, 2024, 1234, 42] {
+            let mut world = new_world(seed);
+            world
+                .colonies
+                .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
+            const TICK_MS: i64 = 5 * 60_000;
+            let mut resets = 0;
+            let mut comfort_first: Option<i64> = None;
+            let mut comfort_ticks = 0;
+            let mut research_owned = 0usize;
+            println!("=== seed {seed} ===");
+            let horizon = 150 * 60 / 5;
+            for step in 1..=horizon {
+                let now = 10_000 + step * TICK_MS;
+                let reports = world_tick(&mut world, now);
+                if reports[0].reset_reason.is_some() {
+                    resets += 1;
+                }
+                let c = &world.colonies[0];
+                let caps = storage_caps(c);
+                let pop = alive_cats(&c.cats).count();
+                let food_r = c.resources.food / caps.food;
+                let fields = c
+                    .buildings
+                    .iter()
+                    .filter(|b| b.building_type == BuildingType::Field)
+                    .count();
+                let dens = c
+                    .buildings
+                    .iter()
+                    .filter(|b| b.building_type == BuildingType::Den && b.is_complete)
+                    .count();
+                let gh = step * 5 / 60;
+                if food_r >= RESEARCH_COMFORT_RATIO {
+                    comfort_ticks += 1;
+                    if comfort_first.is_none() {
+                        comfort_first = Some(gh);
+                    }
+                }
+                research_owned = c.upgrade_tree.owned_node_ids.len();
+                if step % (12 * 6) == 0 {
+                    // every ~6 game-hours
+                    println!(
+                        "gh{gh:>3} pop{pop:>2} food{:>6.1}/{:>6.0} r{food_r:.2} fields{fields} dens{dens} research_pts{:.1} owned{}",
+                        c.resources.food, caps.food, c.upgrade_tree.research_points, c.upgrade_tree.owned_node_ids.len()
+                    );
+                }
+            }
+            println!(
+                "  -> resets={resets} comfort_first_gh={comfort_first:?} comfort_ticks={comfort_ticks}/{horizon} research_owned={research_owned}"
             );
         }
     }

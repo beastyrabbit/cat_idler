@@ -2164,7 +2164,9 @@ fn proto_to_sim_building_type(building_type: proto::BuildingType) -> Option<Buil
         proto::BuildingType::Shrine => Some(BuildingType::Shrine),
         proto::BuildingType::Workshop => Some(BuildingType::Workshop),
         proto::BuildingType::Field => Some(BuildingType::Field),
-        proto::BuildingType::ResearchHut | proto::BuildingType::School => None,
+        proto::BuildingType::ResearchHut => Some(BuildingType::ResearchHut),
+        // School is a later-tree research building not yet ported to the sim runtime.
+        proto::BuildingType::School => None,
         proto::BuildingType::Smithy => Some(BuildingType::Smithy),
         proto::BuildingType::Barracks => Some(BuildingType::Barracks),
         proto::BuildingType::WoodCutter => Some(BuildingType::WoodCutter),
@@ -2200,6 +2202,7 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         BuildingType::AccountingTent => None,
         BuildingType::Clothier => Some(proto::BuildingType::Clothier),
         BuildingType::Tannery => Some(proto::BuildingType::Tannery),
+        BuildingType::ResearchHut => Some(proto::BuildingType::ResearchHut),
         // NOTE: cat-client's `building_texture`/`building_label` (exhaustive matches over
         // `proto::BuildingType`) do not have a Smelter sprite arm yet — flagged for
         // catclient3, see `crates/cat-protocol/src/lib.rs`'s `BuildingType::Smelter` doc.

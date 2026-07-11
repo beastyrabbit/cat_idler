@@ -46,7 +46,7 @@ pub const ENEMY_STATS: [(EnemyType, EnemyStats); 5] = [
     ),
 ];
 
-pub const BUILDING_COSTS: [(BuildingType, u32); 21] = [
+pub const BUILDING_COSTS: [(BuildingType, u32); 22] = [
     (BuildingType::Den, 0),
     (BuildingType::FoodStorage, 5),
     (BuildingType::WaterBowl, 3),
@@ -71,6 +71,10 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 21] = [
     (BuildingType::Tannery, 20),
     // P17/P19 ore→metal chain — same era-3 tier as the smithy it feeds.
     (BuildingType::Smelter, 30),
+    // Cat-research entry building (port extension, no TS BUILDING_COSTS entry) — mid-tier
+    // like the field/accounting tent. The autonomous build actually pays the shared
+    // plank/block scaffold cost, not this value; it only surfaces in the client inspector.
+    (BuildingType::ResearchHut, 15),
 ];
 
 pub const TASK_TO_SKILL: [(TaskType, &str); 12] = [
@@ -179,6 +183,7 @@ mod tests {
             (BuildingType::Clothier, 20),
             (BuildingType::Tannery, 20),
             (BuildingType::Smelter, 30),
+            (BuildingType::ResearchHut, 15),
         ];
 
         assert_eq!(BUILDING_COSTS.len(), BuildingType::ALL.len());

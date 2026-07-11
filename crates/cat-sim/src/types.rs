@@ -119,6 +119,12 @@ define_wire_enum! {
         Woodworking => "woodworking",
         Clothier => "clothier",
         Tannery => "tannery",
+        // Cat-research building: a staffed research hut is the autonomous faucet for
+        // upgrade-tree research points (see world_tick::research_workforce /
+        // phase_24_research). It is buildable at founding (ungated by the tree) because it
+        // is the *entry* to the research path — the tree's root node it would otherwise
+        // gate cannot be earned by cats until a hut already exists to staff.
+        ResearchHut => "research_hut",
         // P17/P19 ore -> metal chain: refines mountain ore into metal bars, mirroring
         // StonePrep's materials -> blocks refine. See production::advance_workshop's
         // Smelter arm in world_tick.rs and the "smelting" upgrade node.
@@ -294,6 +300,7 @@ mod tests {
             (BuildingType::Woodworking, "woodworking"),
             (BuildingType::Clothier, "clothier"),
             (BuildingType::Tannery, "tannery"),
+            (BuildingType::ResearchHut, "research_hut"),
             (BuildingType::Smelter, "smelter"),
         ];
 
