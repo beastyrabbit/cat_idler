@@ -47,6 +47,11 @@ const WINDOW_RADIUS: i32 = 30;
 /// Starting (and R-reset) camera zoom, tuned to frame the village at the small
 /// tile — a little zoomed in since there's now more world per screen.
 const DEFAULT_ZOOM: f32 = 0.4;
+/// Orthographic-scale zoom bounds (smaller scale = closer). `MIN_ZOOM` lets the
+/// wheel push all the way in to individual-cat level; `MAX_ZOOM` frames the
+/// whole known map.
+const MIN_ZOOM: f32 = 0.1;
+const MAX_ZOOM: f32 = 3.0;
 
 // Flat ground layers (terrain + ground markings) sit below the y-sorted world
 // sprites; all strictly below the camera at Z=1000 so nothing is clipped.
@@ -293,16 +298,12 @@ fn click_action(button: MouseButton) -> Option<ClickTarget> {
 /// The shrine reservoir's stockpile id — always present, de-emphasized in render.
 const SHRINE_STOCKPILE_ID: &str = "stockpile-shrine";
 
-/// Whether the officers panel is currently shown (toggled with the `O` key).
-#[derive(Resource)]
+/// Whether the officers panel is shown (toggled by `O`). Hidden by default
+/// (`visible` = false) so it can't pile up on the HUD + event-log in the left
+/// column on a normal-height window; appointment is also in the cat inspector.
+#[derive(Resource, Default)]
 struct OfficersUi {
     visible: bool,
-}
-
-impl Default for OfficersUi {
-    fn default() -> Self {
-        Self { visible: true }
-    }
 }
 
 /// Whether the announcements / event-log panel is open (toggled by `L`).
@@ -1734,7 +1735,20 @@ fn setup(
     asset_server: Res<AssetServer>,
     mut atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     mut images: ResMut<Assets<Image>>,
+    mut fonts: ResMut<Assets<Font>>,
 ) {
+    // Swap Bevy's embedded default sans for a crisp Kenney pixel face. Every
+    // TextFont uses the default font handle, so overwriting that asset restyles
+    // the whole UI with no per-call-site change. Embedded (not asset-loaded) so
+    // it also works on wasm and can't 404. CC0 (Kenney).
+    const UI_FONT: &[u8] = include_bytes!("../../../public/fonts/kenney-future-narrow.ttf");
+    if let Err(err) = fonts.insert(
+        &Handle::<Font>::default(),
+        Font::from_bytes(UI_FONT.to_vec()),
+    ) {
+        warn!("failed to install UI font: {err:?}");
+    }
+
     commands.insert_resource(TerrainArt::load(&asset_server));
     commands.insert_resource(BuildingArt::load(&asset_server));
     let icons = IconArt::load(&asset_server);
@@ -1927,13 +1941,14 @@ fn setup(
         )],
     ));
 
-    // "Latest announcement" ticker (top-centre) + a Log toggle button beside it.
+    // "Latest announcement" ticker, to the right of the Goods/Log/Census toggle
+    // buttons (which end at ~452) so it never overlaps them.
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Px(12.0),
-            left: Val::Px(360.0),
-            max_width: Val::Px(520.0),
+            top: Val::Px(14.0),
+            left: Val::Px(468.0),
+            max_width: Val::Px(440.0),
             ..default()
         },
         GlobalZIndex(60),
@@ -1977,7 +1992,9 @@ fn setup(
                 position_type: PositionType::Absolute,
                 left: Val::Px(430.0),
                 top: Val::Px(60.0),
-                width: Val::Px(560.0),
+                // Capped so the panel clears the right-side cat inspector at the
+                // 1280-wide default (inspector left edge ≈ 972).
+                width: Val::Px(500.0),
                 // Extra bottom padding so the last line clears the wood frame.
                 padding: UiRect::axes(Val::Px(26.0), Val::Px(40.0)),
                 flex_direction: FlexDirection::Column,
@@ -2242,7 +2259,8 @@ fn setup(
                 position_type: PositionType::Absolute,
                 left: Val::Px(390.0),
                 top: Val::Px(70.0),
-                width: Val::Px(540.0),
+                // Capped to clear the right-side inspector at the 1280 default.
+                width: Val::Px(500.0),
                 padding: UiRect::axes(Val::Px(26.0), Val::Px(34.0)),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(4.0),
@@ -4558,7 +4576,8 @@ fn camera_controls(
         motion.clear();
     }
     for ev in wheel.read() {
-        projection.scale = (projection.scale * if ev.y > 0.0 { 0.9 } else { 1.1 }).clamp(0.3, 3.0);
+        projection.scale =
+            (projection.scale * if ev.y > 0.0 { 0.9 } else { 1.1 }).clamp(MIN_ZOOM, MAX_ZOOM);
     }
 }
 
@@ -5187,7 +5206,7 @@ fn update_event_log(latest: Res<LatestSnapshot>, mut log: Query<&mut Text, With<
     let lines: Vec<String> = events
         .iter()
         .rev()
-        .take(6)
+        .take(4)
         .map(|e| format!("- {}", e.message))
         .collect();
     text.0 = if lines.is_empty() {
