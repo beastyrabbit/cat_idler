@@ -54,7 +54,7 @@ use crate::{
         craft_quality_from_skill, next_trade_kind,
     },
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
-    roads::{RoadCorridorOptions, RoadTile, select_road_corridor},
+    roads::{self, RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::should_deposit,
     skills::{HAUL_SKILL_GAIN, Labor, SKILL_GAIN_PER_JOB},
     smithy::{SmithyOptions, advance_smithy},
@@ -527,6 +527,10 @@ const MAX_PATH_DECAY_PER_TICK: u32 = 2;
 const QUARRY_TOTAL_YIELD: f64 = 15.0;
 const ROAD_MATERIALS_RESERVE: f64 = 30.0;
 const ROAD_MAX_PAVE_PER_BATCH: i32 = 6;
+/// P14.4: bounds the accessibility router's BFS so a pathological map (or a
+/// building stranded with no reachable network) can't spin the tick forever.
+/// Generous relative to any realistic village span.
+const ACCESS_ROAD_MAX_EXPANSIONS: usize = 2_000;
 const WATER_TOTAL_YIELD: f64 = 40.0;
 const WALK_WEAR: u32 = 8;
 const RAIDER_SPEED_TILES_PER_SEC: f64 = 0.4;
@@ -1189,6 +1193,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
         phase_35_deliberate_roads(colony, gate);
+        phase_35b_road_accessibility(colony, gate, world_seed);
         if let Some(reset_reason) = phase_36_threat_and_raid_director(colony, gate) {
             reconcile_colony_stockpiles(colony);
             reports.push(TickReport {
@@ -3854,6 +3859,218 @@ fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate) {
             format!(
                 "The leader had a well-worn trail paved into a road ({paved} tile{}).",
                 if paved == 1 { "" } else { "s" }
+            ),
+        );
+    }
+}
+
+/// P14.4: tiles bordering `building`'s footprint but not part of it — the
+/// candidate spots a connecting road tile could occupy. Sorted `(y, x)`
+/// ascending so callers get a stable "first" entrance, matching the tie-break
+/// convention [`select_road_corridor`] already uses for corridor picking.
+fn building_entrance_candidates(building: &BuildingRuntime) -> Vec<TilePos> {
+    let (w, h) = footprint_for(building.building_type);
+    let footprint: HashSet<TilePos> = footprint_tiles(building.position, w, h)
+        .into_iter()
+        .collect();
+    let mut entrances: HashSet<TilePos> = HashSet::new();
+    for tile in &footprint {
+        for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+            let neighbour = TilePos {
+                x: tile.x + dx,
+                y: tile.y + dy,
+            };
+            if !footprint.contains(&neighbour) {
+                entrances.insert(neighbour);
+            }
+        }
+    }
+    let mut entrances: Vec<TilePos> = entrances.into_iter().collect();
+    entrances.sort_by_key(|tile| (tile.y, tile.x));
+    entrances
+}
+
+/// The shrine's footprint tiles — the road network's anchor. Empty before the
+/// shrine exists (never happens for a founded colony, but keeps this total).
+fn shrine_footprint_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
+    colony
+        .buildings
+        .iter()
+        .find(|building| building.building_type == BuildingType::Shrine)
+        .map(building_footprint_tiles)
+        .map(|tiles| tiles.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// A freshly-generated ground tile for a position `colony.world_tiles` hasn't
+/// recorded yet. The accessibility spur can path outside the initial
+/// chunk-populated area (the claimed-site fallback spiral in
+/// `next_claimed_building_site` already does the same) — meadow, no
+/// resources, no danger, matching the sparse-population convention `tile_cost`
+/// already assumes elsewhere (`None` reads as open ground).
+fn fresh_ground_tile(pos: TilePos) -> WorldTileRuntime {
+    WorldTileRuntime {
+        pos,
+        tile_type: TileType::Meadow,
+        resources: TileResources {
+            food: 0,
+            herbs: 0,
+            water: 0,
+        },
+        max_resources: MaxResources { food: 0, herbs: 0 },
+        danger_level: 0.0,
+        path_wear: 0,
+        last_depleted: 0,
+        overlay_feature: None,
+    }
+}
+
+/// P14.4 accessibility router: the fresh tiles (network tile excluded) that
+/// would connect `building`'s entrance to the existing road network, or
+/// `None` if no entrance can reach it within [`ACCESS_ROAD_MAX_EXPANSIONS`]
+/// steps. `Some(&[])` means the building already touches the network (an
+/// existing road, or the shrine's own footprint) — nothing to pave.
+///
+/// The network predicate takes priority over the blocked predicate: the
+/// shrine's footprint is technically "occupied" by the shrine building, but
+/// the spec calls it out as passable — the hub every road leads to — so a
+/// route may terminate there even though `tile_is_occupied` would otherwise
+/// refuse to step on it.
+fn building_road_route_to_shrine(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+    world_seed: u32,
+) -> Option<Vec<TilePos>> {
+    let entrances = building_entrance_candidates(building);
+    let shrine_footprint = shrine_footprint_tiles(colony);
+    let is_network = |pos: roads::RoadPos| {
+        let tile = TilePos { x: pos.x, y: pos.y };
+        shrine_footprint.contains(&tile)
+            || colony
+                .world_tiles
+                .get(&tile)
+                .is_some_and(|t| t.overlay_feature.as_deref() == Some("road_built"))
+    };
+    let is_blocked =
+        |pos: roads::RoadPos| tile_is_occupied(colony, TilePos { x: pos.x, y: pos.y }, world_seed);
+    let road_entrances: Vec<roads::RoadPos> = entrances
+        .iter()
+        .map(|tile| roads::RoadPos {
+            x: tile.x,
+            y: tile.y,
+        })
+        .collect();
+
+    roads::road_route_to_network(
+        &road_entrances,
+        is_blocked,
+        is_network,
+        ACCESS_ROAD_MAX_EXPANSIONS,
+    )
+    .map(|route| {
+        route
+            .into_iter()
+            .map(|pos| TilePos { x: pos.x, y: pos.y })
+            .collect()
+    })
+}
+
+/// P14.4 accessibility invariant: does `building`'s footprint already touch a
+/// road tile connected — through the paved network — back to the shrine? A
+/// building bordering the shrine's own footprint directly counts as connected
+/// (zero-length route) with no paving required.
+#[must_use]
+pub fn building_is_road_connected_to_shrine(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+    world_seed: u32,
+) -> bool {
+    // `Some(&[])` is "already touches the network" (nothing to pave); a
+    // `Some` non-empty route means the network is *reachable* but not yet
+    // paved to — still disconnected until `phase_35b_road_accessibility`
+    // actually lays it.
+    building_road_route_to_shrine(colony, building, world_seed)
+        .is_some_and(|route| route.is_empty())
+}
+
+/// Phase 35b: P14.4 road accessibility. Once per minute, sweep buildings that
+/// aren't yet road-connected to the shrine and pave a fresh spur to the
+/// nearest network tile — gated on the same [`ROAD_MATERIALS_RESERVE`] spare-
+/// materials reserve [`phase_35_deliberate_roads`] already protects, so
+/// accessibility paving draws from the same "spare capacity only" budget and
+/// never competes with construction/offerings for the reserve.
+///
+/// Policy: a building whose full spur wouldn't fit the remaining per-sweep
+/// budget is skipped this minute and retried later once materials recover —
+/// paving is all-or-nothing per building (never a dangling half-route that
+/// doesn't actually reach the network). The shrine (already the network's
+/// anchor) and wall segments (not villager buildings) are excluded from the
+/// sweep.
+fn phase_35b_road_accessibility(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
+    if !gate.minute_rolled {
+        return;
+    }
+
+    let mut budget = colony.resources.materials - ROAD_MATERIALS_RESERVE;
+    if budget <= 0.0 {
+        return;
+    }
+
+    let mut candidates: Vec<usize> = colony
+        .buildings
+        .iter()
+        .enumerate()
+        .filter(|(_, building)| {
+            !matches!(
+                building.building_type,
+                BuildingType::Shrine | BuildingType::Walls
+            )
+        })
+        .map(|(index, _)| index)
+        .collect();
+    // Stable sweep order independent of incidental Vec ordering noise.
+    candidates.sort_by(|&left, &right| colony.buildings[left].id.cmp(&colony.buildings[right].id));
+
+    let mut paved_tiles = 0_usize;
+    let mut connected_buildings = 0_usize;
+
+    for index in candidates {
+        if budget <= 0.0 {
+            break;
+        }
+
+        let Some(route) =
+            building_road_route_to_shrine(colony, &colony.buildings[index], world_seed)
+        else {
+            continue;
+        };
+        if route.is_empty() || route.len() as f64 > budget {
+            continue;
+        }
+
+        for tile_pos in &route {
+            let tile = colony
+                .world_tiles
+                .entry(*tile_pos)
+                .or_insert_with(|| fresh_ground_tile(*tile_pos));
+            tile.overlay_feature = Some("road_built".to_owned());
+            tile.path_wear = 100;
+        }
+        colony.resources.materials -= route.len() as f64;
+        budget -= route.len() as f64;
+        paved_tiles += route.len();
+        connected_buildings += 1;
+    }
+
+    if paved_tiles > 0 {
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("road_built".to_owned()),
+            format!(
+                "The leader paved {paved_tiles} tile{} of road to connect {connected_buildings} building{} to the shrine.",
+                if paved_tiles == 1 { "" } else { "s" },
+                if connected_buildings == 1 { "" } else { "s" }
             ),
         );
     }
@@ -10750,5 +10967,234 @@ mod tests {
             right.colonies[0].global_upgrade_points
         );
         assert_eq!(left.colonies[0].jobs, right.colonies[0].jobs);
+    }
+
+    // --- P14.4: road accessibility (`roads::road_route_to_network` wired into
+    // `phase_35b_road_accessibility` + `building_is_road_connected_to_shrine`) ------
+
+    /// A minimal synthetic colony for accessibility tests: a shrine and a den
+    /// sitting on a tree/water-free 9x7 meadow claim, three tiles apart with
+    /// open ground between them and no road yet. The block's origin (48, 40)
+    /// was picked well away from the real village anchor specifically because
+    /// it is tree-free for `world_seed`/`seed` 42 across this whole footprint
+    /// (verified by direct inspection of `terrain_gen::tile_has_tree`), so the
+    /// accessibility router's route is exercised deterministically without
+    /// depending on incidental terrain-generator output near the real anchor.
+    fn accessibility_test_colony(materials: f64) -> ColonyRuntime {
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                materials,
+                ..Resources::default()
+            },
+            ..ColonyRuntime::default()
+        };
+        typed_block(&mut colony, pos(48, 40), 9, 7, TileType::Meadow);
+        colony.buildings.push(BuildingRuntime {
+            id: "building-shrine".to_owned(),
+            building_type: BuildingType::Shrine,
+            level: 1,
+            position: pos(48, 40), // 3x3 footprint: (48,40)-(50,42)
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 0.0,
+            assigned_cat: None,
+        });
+        colony.buildings.push(BuildingRuntime {
+            id: "building-test-den".to_owned(),
+            building_type: BuildingType::Den,
+            level: 1,
+            position: pos(54, 40), // 2x3 footprint: (54,40)-(55,42); 3 tiles from the shrine
+            is_complete: false,
+            construction_progress: 0,
+            production_progress: 0.0,
+            assigned_cat: None,
+        });
+        colony
+    }
+
+    fn minute_gate(processed_through: i64) -> TickGate {
+        TickGate {
+            elapsed_sec: 60,
+            processed_through,
+            minute_rolled: true,
+            previous_water: 0,
+        }
+    }
+
+    fn test_den(colony: &ColonyRuntime) -> BuildingRuntime {
+        colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "building-test-den")
+            .expect("the test den is in the colony")
+            .clone()
+    }
+
+    #[test]
+    fn a_building_placed_away_from_roads_starts_disconnected() {
+        let seed = 42;
+        let colony = accessibility_test_colony(100.0);
+        let den = test_den(&colony);
+        assert!(
+            !building_is_road_connected_to_shrine(&colony, &den, seed),
+            "a den three tiles from the shrine with no road yet is not connected"
+        );
+    }
+
+    #[test]
+    fn accessibility_sweep_paves_a_contiguous_road_path_to_the_shrine() {
+        let seed = 42;
+        let mut colony = accessibility_test_colony(100.0);
+        let den = test_den(&colony);
+
+        let route = building_road_route_to_shrine(&colony, &den, seed)
+            .expect("open ground connects the den to the shrine");
+        assert!(
+            !route.is_empty(),
+            "the den starts disconnected, so there is something to pave"
+        );
+
+        phase_35b_road_accessibility(&mut colony, minute_gate(60_000), seed);
+
+        // Every tile the router planned to pave is now a built road.
+        for tile_pos in &route {
+            let tile = colony
+                .world_tiles
+                .get(tile_pos)
+                .unwrap_or_else(|| panic!("{tile_pos:?} was stamped with a road tile"));
+            assert_eq!(
+                tile.overlay_feature.as_deref(),
+                Some("road_built"),
+                "{tile_pos:?} is paved"
+            );
+        }
+
+        // The paved spur actually reaches the network: its last tile borders
+        // either the shrine footprint or another road tile.
+        let shrine_tiles = shrine_footprint_tiles(&colony);
+        let last = *route.last().expect("non-empty route");
+        let touches_network = [(0, -1), (1, 0), (0, 1), (-1, 0)].iter().any(|(dx, dy)| {
+            let neighbour = pos(last.x + dx, last.y + dy);
+            shrine_tiles.contains(&neighbour)
+                || colony
+                    .world_tiles
+                    .get(&neighbour)
+                    .is_some_and(|t| t.overlay_feature.as_deref() == Some("road_built"))
+        });
+        assert!(touches_network, "the paved spur reaches the road network");
+
+        // The helper agrees: the den is connected now.
+        let den = test_den(&colony);
+        assert!(building_is_road_connected_to_shrine(&colony, &den, seed));
+    }
+
+    #[test]
+    fn accessibility_sweep_does_not_pave_when_materials_are_at_or_below_the_reserve() {
+        let seed = 42;
+        let mut colony = accessibility_test_colony(ROAD_MATERIALS_RESERVE);
+        let materials_before = colony.resources.materials;
+
+        phase_35b_road_accessibility(&mut colony, minute_gate(60_000), seed);
+
+        assert_eq!(
+            colony.resources.materials, materials_before,
+            "no materials are spent while at/below the reserve"
+        );
+        let den = test_den(&colony);
+        assert!(
+            !building_is_road_connected_to_shrine(&colony, &den, seed),
+            "nothing was paved while broke, so the den is still disconnected"
+        );
+        assert!(
+            colony
+                .world_tiles
+                .values()
+                .all(|tile| tile.overlay_feature.is_none()),
+            "no tile anywhere was paved"
+        );
+    }
+
+    #[test]
+    fn accessibility_sweep_skips_the_shrine_and_costs_nothing_when_already_connected() {
+        let seed = 42;
+        // A den anchored directly against the shrine's east edge is already
+        // connected (its entrance borders the shrine footprint) — the sweep
+        // should recognise that without spending any materials.
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                materials: 100.0,
+                ..Resources::default()
+            },
+            ..ColonyRuntime::default()
+        };
+        typed_block(&mut colony, pos(48, 40), 9, 7, TileType::Meadow);
+        colony.buildings.push(BuildingRuntime {
+            id: "building-shrine".to_owned(),
+            building_type: BuildingType::Shrine,
+            level: 1,
+            position: pos(48, 40), // 3x3 footprint: (48,40)-(50,42)
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 0.0,
+            assigned_cat: None,
+        });
+        colony.buildings.push(BuildingRuntime {
+            id: "building-adjacent-den".to_owned(),
+            building_type: BuildingType::Den,
+            level: 1,
+            position: pos(51, 40), // 2x3 footprint: (51,40)-(52,42); borders shrine at x=50
+            is_complete: false,
+            construction_progress: 0,
+            production_progress: 0.0,
+            assigned_cat: None,
+        });
+
+        let den = colony.buildings[1].clone();
+        assert!(
+            building_is_road_connected_to_shrine(&colony, &den, seed),
+            "a den bordering the shrine directly is already connected"
+        );
+
+        let materials_before = colony.resources.materials;
+        phase_35b_road_accessibility(&mut colony, minute_gate(60_000), seed);
+        assert_eq!(
+            colony.resources.materials, materials_before,
+            "an already-connected building costs nothing to pave"
+        );
+        assert!(
+            colony
+                .world_tiles
+                .values()
+                .all(|tile| tile.overlay_feature.is_none()),
+            "nothing needed paving"
+        );
+    }
+
+    #[test]
+    fn accessibility_paving_is_deterministic_for_identical_inputs() {
+        let seed = 42;
+        let gate = minute_gate(60_000);
+
+        let mut left = accessibility_test_colony(100.0);
+        let mut right = accessibility_test_colony(100.0);
+        phase_35b_road_accessibility(&mut left, gate, seed);
+        phase_35b_road_accessibility(&mut right, gate, seed);
+
+        let road_tiles = |colony: &ColonyRuntime| -> Vec<TilePos> {
+            colony
+                .world_tiles
+                .iter()
+                .filter(|(_, tile)| tile.overlay_feature.as_deref() == Some("road_built"))
+                .map(|(pos, _)| *pos)
+                .collect()
+        };
+        assert_eq!(road_tiles(&left), road_tiles(&right));
+        assert_eq!(left.resources.materials, right.resources.materials);
+        assert!(
+            !road_tiles(&left).is_empty(),
+            "sanity: the sweep actually paved something to compare"
+        );
     }
 }
