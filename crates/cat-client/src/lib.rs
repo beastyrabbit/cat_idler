@@ -1792,7 +1792,7 @@ fn setup(
                 width: Val::Px(330.0),
                 padding: UiRect::all(Val::Px(26.0)),
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(6.0),
+                row_gap: Val::Px(4.0),
                 ..default()
             },
             sliced_image(ui.panel.clone(), PANEL_BORDER),
@@ -1801,7 +1801,7 @@ fn setup(
             panel.spawn((
                 Node {
                     width: Val::Percent(100.0),
-                    height: Val::Px(52.0),
+                    height: Val::Px(46.0),
                     justify_content: JustifyContent::Center,
                     align_items: AlignItems::Center,
                     ..default()
@@ -1826,21 +1826,26 @@ fn setup(
                 TextColor(PARCHMENT_INK),
                 HudHeaderText,
             ));
-            // Resource readout: a tinted glyph + value per resource.
+            // Resource readout: a tinted glyph + value per resource, in TWO
+            // columns (a wrapping row of fixed-width cells) so the 11 resources
+            // fit ~6 rows instead of 11 — keeps the dashboard short enough to
+            // clear the event log on short windows.
             panel
                 .spawn(Node {
                     width: Val::Percent(100.0),
-                    flex_direction: FlexDirection::Column,
+                    flex_direction: FlexDirection::Row,
+                    flex_wrap: FlexWrap::Wrap,
                     row_gap: Val::Px(3.0),
+                    column_gap: Val::Px(6.0),
                     ..default()
                 })
                 .with_children(|grid| {
                     for kind in HUD_RESOURCES {
                         grid.spawn((
                             Node {
-                                width: Val::Percent(100.0),
+                                width: Val::Px(126.0),
                                 align_items: AlignItems::Center,
-                                column_gap: Val::Px(7.0),
+                                column_gap: Val::Px(6.0),
                                 ..default()
                             },
                             children![
