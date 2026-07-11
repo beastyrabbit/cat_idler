@@ -1,9 +1,32 @@
-# P10 — WebAssembly / browser build (feasibility scouting)
+# P10 — WebAssembly / browser build
 
-Status: **compiles clean to `wasm32-unknown-unknown`.** The full Bevy client
-(`cat-client`) and the browser entry bin (`cat-web`) link to wasm with zero
-errors. A running in-browser build is not yet wired end-to-end (trunk bundle +
-asset serving + WS URL config remain); this doc is the lay of the land.
+Status: **RUNS IN A BROWSER — verified end-to-end.** `trunk build --release`
+produces a working `dist/`, and the game renders + streams live in headless
+Chromium (Playwright): WebGL2, the sprite atlas, the 9-patch parchment UI, all
+assets, and the WebSocket snapshot stream (live HUD: online count, pop, jobs,
+event feed) — including the current top-down cutaway-interior look. Native
+`cargo dev` is unaffected (wasm is a separate target).
+
+## Verified running build (Playwright smoke test)
+
+- Build: `cd crates/cat-web && CAT_SERVER_URL=ws://127.0.0.1:8787/ws trunk build
+  --release` (bakes the dev WS URL via `option_env!`; omit for a same-origin
+  deploy that derives `ws(s)://<host>/ws` from `web_sys` location).
+- Serve: any static host over `dist/` (e.g. `python3 -m http.server 8090`) — no
+  COOP/COEP needed (single-threaded wasm, no SharedArrayBuffer). Run `cat-server`
+  on `:8787`.
+- **Real release bundle size: wasm 27 MB raw / 8.4 MB gzipped** + 104 KB JS glue
+  + ~2.5 MB assets (~31 MB `dist/` total). 8.4 MB gzipped is the transfer cost —
+  heavy but workable; further shrink is possible (more aggressive wasm-opt/LTO).
+- Result in-browser: full scene renders on WebGL2; the HUD shows live snapshot
+  data (WS connected + streaming). The only console errors are harmless
+  `*.png.meta` 404s (Bevy requests optional metadata sidecars; the real `.png`
+  assets load fine) + a favicon 404. No WebGL/wgpu errors, no wasm panic.
+
+## Earlier scouting (compile feasibility)
+
+The full Bevy client (`cat-client`) and the browser entry bin (`cat-web`) link
+to wasm with zero errors.
 
 ## What was attempted / result
 
