@@ -855,24 +855,26 @@ fn road_sprite_kind(n: bool, s: bool, e: bool, w: bool) -> RoadSprite {
 // ============================================================================
 
 // -- Palette: small, disciplined, warm + high-contrast ----------------------
-/// Panel body — dark warm brown, near-opaque so text stays legible over the map.
-const UI_BG: Color = Color::srgba(0.13, 0.10, 0.07, 0.95);
+/// Panel body — warm brown, near-opaque so text stays legible over the map.
+/// A touch lighter/warmer than a flat black so panels read as crafted wood.
+const UI_BG: Color = Color::srgba(0.16, 0.115, 0.08, 0.96);
 /// Title-bar strip at the top of every panel.
-const UI_HEADER: Color = Color::srgba(0.22, 0.16, 0.10, 1.0);
-/// Wood edge around panels and buttons.
-const UI_BORDER: Color = Color::srgb(0.50, 0.37, 0.23);
+const UI_HEADER: Color = Color::srgba(0.26, 0.19, 0.115, 1.0);
+/// Wood edge around panels and buttons — brighter than the fill so the frame
+/// reads with a bit more weight (crafted, not flat).
+const UI_BORDER: Color = Color::srgb(0.60, 0.44, 0.26);
 /// Faint divider inside a panel body.
-const UI_DIVIDER: Color = Color::srgba(0.44, 0.32, 0.20, 0.45);
+const UI_DIVIDER: Color = Color::srgba(0.52, 0.38, 0.23, 0.5);
 /// Primary text — warm cream.
 const UI_INK: Color = Color::srgb(0.94, 0.90, 0.82);
 /// Secondary / de-emphasised text.
 const UI_MUTED: Color = Color::srgb(0.70, 0.62, 0.52);
 /// Gold — titles, values worth the eye, the active accent.
 const UI_ACCENT: Color = Color::srgb(0.95, 0.77, 0.41);
-/// Good news (births, gains).
-const UI_POSITIVE: Color = Color::srgb(0.56, 0.81, 0.49);
-/// Trouble (deaths, crises, raids).
-const UI_WARNING: Color = Color::srgb(0.93, 0.51, 0.35);
+/// Good news (births, gains) — saturated so it pops in the dispatch feed.
+const UI_POSITIVE: Color = Color::srgb(0.45, 0.87, 0.40);
+/// Trouble (deaths, crises, raids) — saturated red-orange.
+const UI_WARNING: Color = Color::srgb(0.98, 0.40, 0.28);
 
 // Button backgrounds by state (solid fills, not sprite tints).
 const UI_BTN: Color = Color::srgba(0.23, 0.17, 0.11, 1.0);
@@ -891,7 +893,7 @@ const UI_PAD: f32 = 12.0;
 const UI_GAP: f32 = 6.0;
 const UI_GAP_TIGHT: f32 = 3.0;
 const UI_RADIUS: f32 = 6.0;
-const UI_BORDER_W: f32 = 2.0;
+const UI_BORDER_W: f32 = 2.5;
 const UI_BTN_H: f32 = 30.0;
 
 /// A text bundle at a kit size + colour (one font everywhere, via the default).
@@ -1548,10 +1550,11 @@ fn event_color(kind: EventKind) -> Color {
     match kind {
         EventKind::Birth => UI_POSITIVE,
         EventKind::Death | EventKind::Raid => UI_WARNING,
-        EventKind::Crisis => UI_ACCENT,
-        // Elections + progress read as calm "info"; a soft blue reads clearly on
-        // the dark panel and is the one hue outside the warm kit palette.
-        EventKind::Election | EventKind::Progress => Color::srgb(0.52, 0.70, 0.92),
+        // A saturated amber, distinct from the calmer gold used for titles/tabs.
+        EventKind::Crisis => Color::srgb(1.0, 0.66, 0.16),
+        // Elections + progress read as calm "info"; a punchy blue reads clearly
+        // on the dark panel and is the one hue outside the warm kit palette.
+        EventKind::Election | EventKind::Progress => Color::srgb(0.40, 0.66, 1.0),
         EventKind::Neutral => UI_MUTED,
     }
 }
