@@ -171,6 +171,16 @@ pub fn apply_action(
                 remove_stockpile(colony, stockpile_id, ctx)
             })
         }
+        proto::ClientAction::DesignateGatherSpot { a, b, kind, .. } => {
+            with_colony(world, ctx, |colony| {
+                designate_gather_spot(colony, *a, *b, *kind, ctx)
+            })
+        }
+        proto::ClientAction::RemoveGatherSpot { stockpile_id, .. } => {
+            with_colony(world, ctx, |colony| {
+                remove_gather_spot(colony, stockpile_id, ctx)
+            })
+        }
         proto::ClientAction::SellGoods {
             kind,
             material,
@@ -701,6 +711,95 @@ fn remove_stockpile(
     ok()
 }
 
+/// Designate a **gather spot** (P16): a temporary, single-resource pile, deliberately
+/// smaller than a general stockpile (`GATHER_SPOT_MAX_EDGE`) and capped by its own
+/// budget (`MAX_GATHER_SPOTS`, separate from the general designated-pile pool). May be
+/// placed anywhere — including outside the claimed village, unlike a general
+/// `DesignateStockpile`'s intent — since it reuses the same `Stockpile` machinery
+/// unchanged: deposit routing/reconcile/capacity all apply exactly as for any other
+/// pile. Only food/water/materials are accepted: the only resources a gatherer job can
+/// currently carry (`entities::CarryingKind`).
+fn designate_gather_spot(
+    colony: &mut ColonyRuntime,
+    a: proto::TilePoint,
+    b: proto::TilePoint,
+    kind: proto::ResourceKind,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if !matches!(
+        kind,
+        proto::ResourceKind::Food | proto::ResourceKind::Water | proto::ResourceKind::Materials
+    ) {
+        return fail("Gather spots only collect food, water, or materials.");
+    }
+    let rect = zones::normalize_rect(
+        f64::from(a.x),
+        f64::from(a.y),
+        f64::from(b.x),
+        f64::from(b.y),
+    );
+    if rect.x2 - rect.x1 + 1 > stockpiles::GATHER_SPOT_MAX_EDGE
+        || rect.y2 - rect.y1 + 1 > stockpiles::GATHER_SPOT_MAX_EDGE
+    {
+        return fail(format!(
+            "Gather spots are limited to {}x{} tiles.",
+            stockpiles::GATHER_SPOT_MAX_EDGE,
+            stockpiles::GATHER_SPOT_MAX_EDGE
+        ));
+    }
+    if colony.gather_spots.len() >= stockpiles::MAX_GATHER_SPOTS {
+        return fail(format!(
+            "You already have {} gather spots.",
+            stockpiles::MAX_GATHER_SPOTS
+        ));
+    }
+
+    let sim_kind = proto_to_sim_resource_kind(kind);
+    let id = format!("gather-{}-{}", ctx.now_ms, colony.stockpiles.len() + 1);
+    colony.stockpiles.push(stockpiles::Stockpile {
+        id: id.clone(),
+        rect,
+        accepts: std::iter::once(sim_kind).collect(),
+        contents: entities::Resources::default(),
+    });
+    colony.gather_spots.push(stockpiles::GatherSpot {
+        stockpile_id: id,
+        kind: sim_kind,
+        expires_at_ms: ctx.now_ms + stockpiles::GATHER_SPOT_TTL_MS,
+    });
+    reconcile_colony_stockpiles(colony);
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+/// Remove a gather spot by its stockpile id before its TTL. Any in-flight
+/// `haul_gather_spot` mover job targeting it is cancelled and its cat freed (see
+/// `world_tick::cancel_gather_haul_jobs_for_spot`), mirroring the P16 TTL-expiry
+/// cleanup, so it never dangles waiting on a site that no longer exists. Remaining
+/// contents fold back into the shrine reservoir via reconcile, exactly like
+/// `remove_stockpile`.
+fn remove_gather_spot(
+    colony: &mut ColonyRuntime,
+    stockpile_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if !colony
+        .gather_spots
+        .iter()
+        .any(|spot| spot.stockpile_id == stockpile_id)
+    {
+        return fail("Unknown gather spot.");
+    }
+    colony
+        .gather_spots
+        .retain(|spot| spot.stockpile_id != stockpile_id);
+    colony.stockpiles.retain(|pile| pile.id != stockpile_id);
+    crate::world_tick::cancel_gather_haul_jobs_for_spot(colony, stockpile_id, ctx.now_ms);
+    reconcile_colony_stockpiles(colony);
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
 /// Sell `count` of the crafted-item stack (`kind`/`material`/`quality`) to the visiting
 /// trader for coin (P19 slice 3). Only valid while a trader is present and `Trading`;
 /// fails cleanly (store/coin untouched) on an unknown kind/material, a zero count, or
@@ -1041,7 +1140,11 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .iter()
             .map(|(role, cat_id)| (sim_to_proto_officer_role(*role), cat_id.clone()))
             .collect(),
-        stockpiles: colony.stockpiles.iter().map(stockpile_snapshot).collect(),
+        stockpiles: colony
+            .stockpiles
+            .iter()
+            .map(|pile| stockpile_snapshot(pile, &colony.gather_spots))
+            .collect(),
         stock_ledger: Some(stock_ledger_snapshot(colony)),
         items: items_snapshot(&colony.items),
         coin: colony.coin,
@@ -1129,7 +1232,10 @@ fn stock_ledger_snapshot(colony: &ColonyRuntime) -> proto::StockLedgerSnapshot {
     }
 }
 
-fn stockpile_snapshot(pile: &stockpiles::Stockpile) -> proto::StockpileSnapshot {
+fn stockpile_snapshot(
+    pile: &stockpiles::Stockpile,
+    gather_spots: &[stockpiles::GatherSpot],
+) -> proto::StockpileSnapshot {
     proto::StockpileSnapshot {
         id: pile.id.clone(),
         x1: pile.rect.x1,
@@ -1142,6 +1248,13 @@ fn stockpile_snapshot(pile: &stockpiles::Stockpile) -> proto::StockpileSnapshot 
             .map(|kind| sim_to_proto_resource_kind(*kind))
             .collect(),
         contents: resources_snapshot(&pile.contents),
+        gather_spot: gather_spots
+            .iter()
+            .find(|spot| spot.stockpile_id == pile.id)
+            .map(|spot| proto::GatherSpotSnapshot {
+                kind: sim_to_proto_resource_kind(spot.kind),
+                expires_at_ms: spot.expires_at_ms,
+            }),
     }
 }
 
@@ -1777,6 +1890,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::Explore => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Guard),
         JobKind::ExpandVillage => Some(TaskType::Patrol),
+        JobKind::HaulGatherSpot => Some(TaskType::Build),
     }
 }
 
@@ -1936,6 +2050,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::TrainWarrior => JobKind::TrainWarrior,
         proto::JobKind::ExpandVillage => JobKind::ExpandVillage,
         proto::JobKind::CarryOffering => JobKind::CarryOffering,
+        proto::JobKind::HaulGatherSpot => JobKind::HaulGatherSpot,
     }
 }
 
@@ -1954,6 +2069,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::TrainWarrior => proto::JobKind::TrainWarrior,
         JobKind::ExpandVillage => proto::JobKind::ExpandVillage,
         JobKind::CarryOffering => proto::JobKind::CarryOffering,
+        JobKind::HaulGatherSpot => proto::JobKind::HaulGatherSpot,
     }
 }
 
@@ -2639,6 +2755,172 @@ mod tests {
         assert!(noop.ok, "unknown id is a no-op");
     }
 
+    fn designate_gather_action(
+        a: proto::TilePoint,
+        b: proto::TilePoint,
+        kind: proto::ResourceKind,
+    ) -> proto::ClientAction {
+        proto::ClientAction::DesignateGatherSpot {
+            session_id: "sess_1".to_string(),
+            nickname: "Guest".to_string(),
+            sig: "sig".to_string(),
+            a,
+            b,
+            kind,
+        }
+    }
+
+    #[test]
+    fn designate_gather_spot_adds_a_pile_and_bookkeeping_record() {
+        let mut world = world_with_one_colony();
+        let res = apply_action(
+            &mut world,
+            &designate_gather_action(tp(30, 30), tp(30, 30), proto::ResourceKind::Food),
+            &ctx(),
+        );
+        assert!(res.ok, "{res:?}");
+        assert_eq!(world.colonies[0].gather_spots.len(), 1);
+        let spot = &world.colonies[0].gather_spots[0];
+        assert_eq!(spot.kind, stockpiles::ResourceKind::Food);
+        let pile = world.colonies[0]
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == spot.stockpile_id)
+            .expect("underlying pile exists");
+        assert_eq!(
+            pile.accepts,
+            [stockpiles::ResourceKind::Food].into_iter().collect()
+        );
+        assert_stockpile_invariant(&world.colonies[0]);
+    }
+
+    #[test]
+    fn designate_gather_spot_rejects_unsupported_resources_and_oversized_rects() {
+        let mut world = world_with_one_colony();
+
+        let unsupported = apply_action(
+            &mut world,
+            &designate_gather_action(tp(30, 30), tp(30, 30), proto::ResourceKind::Blessings),
+            &ctx(),
+        );
+        assert!(!unsupported.ok, "only food/water/materials are collectable");
+
+        let too_big = apply_action(
+            &mut world,
+            &designate_gather_action(tp(0, 0), tp(10, 0), proto::ResourceKind::Food),
+            &ctx(),
+        );
+        assert!(
+            !too_big.ok,
+            "gather spots are capped at GATHER_SPOT_MAX_EDGE"
+        );
+        assert!(world.colonies[0].gather_spots.is_empty());
+    }
+
+    #[test]
+    fn designate_gather_spot_enforces_its_own_budget() {
+        let mut world = world_with_one_colony();
+        for i in 0..stockpiles::MAX_GATHER_SPOTS {
+            let x = 30 + i as i32;
+            let res = apply_action(
+                &mut world,
+                &designate_gather_action(tp(x, 30), tp(x, 30), proto::ResourceKind::Food),
+                &ctx(),
+            );
+            assert!(res.ok, "spot {i}: {res:?}");
+        }
+        let over_budget = apply_action(
+            &mut world,
+            &designate_gather_action(tp(99, 99), tp(99, 99), proto::ResourceKind::Food),
+            &ctx(),
+        );
+        assert!(
+            !over_budget.ok,
+            "budget enforced independent of MAX_DESIGNATED_STOCKPILES"
+        );
+        assert_eq!(
+            world.colonies[0].gather_spots.len(),
+            stockpiles::MAX_GATHER_SPOTS
+        );
+    }
+
+    #[test]
+    fn remove_gather_spot_folds_contents_back_and_cancels_its_mover() {
+        let mut world = world_with_one_colony();
+        let _ = apply_action(
+            &mut world,
+            &designate_gather_action(tp(30, 30), tp(30, 30), proto::ResourceKind::Food),
+            &ctx(),
+        );
+        let spot_id = world.colonies[0].gather_spots[0].stockpile_id.clone();
+        {
+            let colony = &mut world.colonies[0];
+            colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == spot_id)
+                .unwrap()
+                .contents
+                .food = 9.0;
+            colony.resources.food += 9.0;
+            let cat_id = colony.cats[0].id.clone();
+            colony.jobs.push(JobRuntime {
+                id: "job-mover".to_owned(),
+                kind: JobKind::HaulGatherSpot,
+                status: JobStatus::Active,
+                assigned_cat: Some(cat_id.clone()),
+                metadata: JobMetadata::GatherHaul {
+                    stockpile_id: spot_id.clone(),
+                    site: Some(TilePos { x: 30, y: 30 }),
+                    accepted: true,
+                },
+                ..JobRuntime::default()
+            });
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                cat.activity = CatActivity::Working;
+            }
+        }
+
+        let removed = apply_action(
+            &mut world,
+            &proto::ClientAction::RemoveGatherSpot {
+                session_id: "sess_1".to_string(),
+                nickname: "Guest".to_string(),
+                sig: "sig".to_string(),
+                stockpile_id: spot_id.clone(),
+            },
+            &ctx(),
+        );
+        assert!(removed.ok, "{removed:?}");
+        assert!(world.colonies[0].gather_spots.is_empty());
+        assert!(!world.colonies[0].stockpiles.iter().any(|p| p.id == spot_id));
+        assert_stockpile_invariant(&world.colonies[0]);
+
+        let job = world.colonies[0]
+            .jobs
+            .iter()
+            .find(|job| job.id == "job-mover")
+            .unwrap();
+        assert_eq!(job.status, JobStatus::Cancelled, "dangling mover cancelled");
+        assert_eq!(
+            world.colonies[0].cats[0].activity,
+            CatActivity::Idle,
+            "cat freed since it was not yet carrying anything"
+        );
+
+        let unknown = apply_action(
+            &mut world,
+            &proto::ClientAction::RemoveGatherSpot {
+                session_id: "sess_1".to_string(),
+                nickname: "Guest".to_string(),
+                sig: "sig".to_string(),
+                stockpile_id: "gather-nope".to_string(),
+            },
+            &ctx(),
+        );
+        assert!(!unknown.ok, "unknown gather spot id is rejected");
+    }
+
     #[test]
     fn build_snapshot_exposes_stockpiles() {
         let mut world = world_with_one_colony();
@@ -2659,6 +2941,33 @@ mod tests {
             snap.colonies[0].stockpiles.len() >= 2,
             "designated pile exposed"
         );
+    }
+
+    #[test]
+    fn build_snapshot_flags_gather_spots_on_their_stockpile_snapshot() {
+        let mut world = world_with_one_colony();
+        let _ = apply_action(
+            &mut world,
+            &designate_gather_action(tp(30, 30), tp(30, 30), proto::ResourceKind::Water),
+            &ctx(),
+        );
+        let spot_id = world.colonies[0].gather_spots[0].stockpile_id.clone();
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        let pile = snap.colonies[0]
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == spot_id)
+            .expect("gather spot pile exposed");
+        let gather_spot = pile.gather_spot.expect("flagged as a gather spot");
+        assert_eq!(gather_spot.kind, proto::ResourceKind::Water);
+
+        // The shrine and a general stockpile are never flagged as gather spots.
+        let shrine = snap.colonies[0]
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == stockpiles::SHRINE_STOCKPILE_ID)
+            .expect("shrine exposed");
+        assert!(shrine.gather_spot.is_none());
     }
 
     #[test]

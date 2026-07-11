@@ -173,6 +173,20 @@ pub struct StockpileSnapshot {
     pub y2: i32,
     pub accepts: Vec<ResourceKind>,
     pub contents: ResourceAmounts,
+    /// Present when this pile is a P16 gather spot: a temporary, single-resource drop
+    /// point placeable outside the claimed village. Absent for the shrine reservoir and
+    /// every general player stockpile, and for pre-P16 snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gather_spot: Option<GatherSpotSnapshot>,
+}
+
+/// A gather spot's P16-specific bookkeeping (see [`StockpileSnapshot::gather_spot`]):
+/// the single resource it collects and when it expires.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatherSpotSnapshot {
+    pub kind: ResourceKind,
+    pub expires_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -420,6 +434,9 @@ pub enum JobKind {
     /// P12.6: haul-then-ritual offering — surplus materials converted to blessings
     /// at the shrine (complements, never duplicates, the leader's abstract `Tithe`).
     CarryOffering,
+    /// P16 gather spots: a mover walks to a gather spot, picks up its contents, and
+    /// hauls them back to a village stockpile/shrine — see [`ClientAction::DesignateGatherSpot`].
+    HaulGatherSpot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -824,6 +841,28 @@ pub enum ClientAction {
         accepts: Vec<ResourceKind>,
     },
     RemoveStockpile {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        stockpile_id: String,
+    },
+    /// Designate a **gather spot** (P16): a temporary, single-resource drop point that
+    /// may be placed outside the claimed village, unlike a general [`Self::DesignateStockpile`].
+    /// A nearby gatherer job (hunt/quarry/fetch-water) drops its yield here instead of
+    /// walking all the way to the shrine; a separate mover then hauls the contents on to
+    /// a village stockpile/shrine. Expires automatically (TTL) or when removed.
+    DesignateGatherSpot {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        a: TilePoint,
+        b: TilePoint,
+        kind: ResourceKind,
+    },
+    /// Remove a gather spot by its underlying stockpile id before its TTL. Its
+    /// remaining contents fold back into the shrine reservoir via reconcile, exactly
+    /// like [`Self::RemoveStockpile`].
+    RemoveGatherSpot {
         session_id: String,
         nickname: String,
         sig: String,
@@ -1478,6 +1517,7 @@ mod tests {
             y2: 6,
             accepts: vec![ResourceKind::Food],
             contents,
+            gather_spot: None,
         });
         let encoded = serde_json::to_value(&snap).expect("serialize");
         assert_eq!(

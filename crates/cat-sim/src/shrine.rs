@@ -115,6 +115,7 @@ mod tests {
             kind: CarryingKind::Food,
             amount: 8.0,
             job_ended_at,
+            source_gather_spot: None,
         }
     }
 

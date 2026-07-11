@@ -60,7 +60,7 @@ use crate::{
     skills::{HAUL_SKILL_GAIN, Labor, SKILL_GAIN_PER_JOB},
     smithy::{SmithyOptions, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
-    stockpiles::{self, ResourceKind, Stockpile},
+    stockpiles::{self, GatherSpot, ResourceKind, Stockpile},
     storage::{
         StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
     },
@@ -156,6 +156,10 @@ pub struct ColonyRuntime {
     /// On-map stockpiles (P12.3). Always includes the shrine reservoir after a tick;
     /// their contents sum to `resources` per the balancing-reservoir invariant.
     pub stockpiles: Vec<Stockpile>,
+    /// P16 gather spots: bookkeeping (resource kind + TTL) for whichever `stockpiles`
+    /// entries are currently gather spots. Empty/inert for every colony that never
+    /// designates one — the gatherer/mover split only activates once a spot exists.
+    pub gather_spots: Vec<GatherSpot>,
     /// Reported stock ledger (P12.4a). A lagging *view* of `resources`; a staffed Accounting
     /// Tent keeps it exact each tick, otherwise it recounts on an interval. Never affects the
     /// true `resources`.
@@ -262,6 +266,18 @@ pub enum JobMetadata {
     },
     Site {
         site: TilePos,
+        accepted: bool,
+    },
+    /// A P16 gather-spot mover job: travel to the gather spot (`stockpile_id`), pick up
+    /// its contents, and haul them to a village stockpile/shrine. `site` starts `None`
+    /// (freshly queued) and is resolved to the gather spot's rect center by phase 15,
+    /// exactly like [`Self::Hauling`]'s `site`. `accepted` flips once the assigned cat
+    /// physically arrives (the generic accept-on-arrival mechanism shared with
+    /// [`Self::Site`]/[`Self::Hauling`]) — the gather-spot pickup phase then completes
+    /// the job.
+    GatherHaul {
+        stockpile_id: String,
+        site: Option<TilePos>,
         accepted: bool,
     },
 }
@@ -607,6 +623,7 @@ impl Default for ColonyRuntime {
             provisional_tiles: BTreeMap::new(),
             officers: BTreeMap::new(),
             stockpiles: Vec::new(),
+            gather_spots: Vec::new(),
             stock_ledger: StockLedger::default(),
             items: BTreeMap::new(),
             wood_craft_progress: 0.0,
@@ -1210,6 +1227,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy, world_seed);
         phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
+        phase_p16_gather_spot_logistics(colony, gate);
         phase_35_deliberate_roads(colony, gate);
         phase_35b_road_accessibility(colony, gate, world_seed);
         if let Some(reset_reason) = phase_36_threat_and_raid_director(colony, gate) {
@@ -2018,6 +2036,20 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
             JobMetadata::Expansion { target, .. } => Some(tile_pos_to_world(target)),
             _ => None,
         };
+        // A P16 mover's outbound leg targets the gather spot it was dispatched for
+        // (resolved by id, since a colony can have several) — its rect center, matching
+        // how deposit routing measures a pile's position (`Stockpile::center`).
+        let gather_spot_site = match &job.metadata {
+            JobMetadata::GatherHaul { stockpile_id, .. } => colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == *stockpile_id)
+                .map(|pile| {
+                    let (cx, cy) = pile.center();
+                    WorldPos { x: cx, y: cy }
+                }),
+            _ => None,
+        };
         // Scouts random-walk rather than beeline a fixed frontier tile: the first leg
         // heads outward from wherever the scout is forming up (the anchor at promotion),
         // and phase 33 re-picks a fresh outward leg each time it arrives. Two extra draws
@@ -2055,6 +2087,7 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
             quarry_site,
             water_site,
             explore_site,
+            gather_spot_site,
         };
 
         let Some(destination) = destination_for_job(job.kind.as_str(), &context) else {
@@ -2075,6 +2108,17 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
             JobKind::ExpandVillage => JobMetadata::Expansion {
                 target: site,
                 accepted: false,
+            },
+            JobKind::HaulGatherSpot => match colony.jobs[job_index].metadata.clone() {
+                JobMetadata::GatherHaul { stockpile_id, .. } => JobMetadata::GatherHaul {
+                    stockpile_id,
+                    site: Some(site),
+                    accepted: false,
+                },
+                _ => JobMetadata::Site {
+                    site,
+                    accepted: false,
+                },
             },
             JobKind::BuildHouse => match colony.jobs[job_index].metadata.clone() {
                 JobMetadata::Construction {
@@ -2101,9 +2145,11 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
 
         if let Some(cat_id) = colony.jobs[job_index].assigned_cat.clone() {
             // Gathering cats head toward the pile they will ultimately haul to (nearest
-            // designated pile accepting their yield); every other job still forms up at the
-            // village anchor. With no designated piles both resolve to the anchor, so this is
-            // byte-identical to pre-haul-fill.
+            // designated pile accepting their yield); a gather-spot mover heads straight
+            // for the gather spot itself (`destination`, already resolved above); every
+            // other job still forms up at the village anchor. With no designated piles
+            // both of the first two resolve to the anchor, so this is byte-identical to
+            // pre-haul-fill.
             let dest = if matches!(
                 job.kind,
                 JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
@@ -2114,6 +2160,8 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
                 .map(|cat| position_to_world(cat.position))
             {
                 haul_destination(colony, carrying_kind_for_job(job.kind), cat_pos)
+            } else if job.kind == JobKind::HaulGatherSpot {
+                destination
             } else {
                 village_anchor_world()
             };
@@ -3596,6 +3644,7 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate) {
             kind: carrying_kind,
             amount: share,
             job_ended_at: gate.processed_through,
+            source_gather_spot: None,
         });
         colony.cats[cat_index].destination = Some(position_from_world(haul_to));
         colony.cats[cat_index].activity = CatActivity::Returning;
@@ -3712,8 +3761,30 @@ fn phase_33_movement_deposits_and_no_destination_wander(
             let world_pos = position_to_world(position);
             // Deposit once the carrier reaches its haul destination — the pile it walked to,
             // or the shrine anchor when no designated pile accepts the resource. With no
-            // designated piles this is exactly the shrine anchor, matching pre-haul-fill.
-            let deposit_target = haul_destination(colony, carrying.kind, world_pos);
+            // designated piles this is exactly the shrine anchor, matching pre-haul-fill. A
+            // P16 mover's cargo is bound for a genuine village pile, never back into a
+            // gather spot, so it uses the gather-spot-excluding variant.
+            let deposit_target = if carrying.source_gather_spot.is_some() {
+                let gather_spot_ids: Vec<String> = colony
+                    .gather_spots
+                    .iter()
+                    .map(|spot| spot.stockpile_id.clone())
+                    .collect();
+                let kind = carrying_resource_kind(carrying.kind).unwrap_or(ResourceKind::Food);
+                stockpiles::village_deposit_index(
+                    &colony.stockpiles,
+                    &gather_spot_ids,
+                    kind,
+                    world_pos.x,
+                    world_pos.y,
+                )
+                .map_or_else(village_anchor_world, |idx| {
+                    let (cx, cy) = colony.stockpiles[idx].center();
+                    WorldPos { x: cx, y: cy }
+                })
+            } else {
+                haul_destination(colony, carrying.kind, world_pos)
+            };
             if !should_deposit(&carrying, world_pos, deposit_target, gate.processed_through) {
                 continue;
             }
@@ -3960,6 +4031,281 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         if arrived && activity == CatActivity::Returning {
             commit_scout_provisional_tiles(colony, &cat_id);
         }
+    }
+}
+
+/// P16 gather-spot logistics, run once per tick right after movement/job-acceptance
+/// (phase 34) so a mover that just arrived is picked up the same tick: expire TTL'd
+/// gather spots (cancelling any mover mid-flight to one), complete arrived movers
+/// (pick up the gather spot's contents and start the return haul), and — only once a
+/// Steward is appointed, mirroring every other officer automation's "unfilled role,
+/// no auto effect" contract (P12.2) — dispatch a fresh mover for any non-empty gather
+/// spot that doesn't already have one in flight. Entirely additive/inert: a colony
+/// with no gather spots takes none of these branches, so this is a no-op byte-identical
+/// to pre-P16 behavior until a gather spot is designated.
+fn phase_p16_gather_spot_logistics(colony: &mut ColonyRuntime, gate: TickGate) {
+    expire_gather_spots(colony, gate.processed_through);
+    complete_arrived_gather_haul_movers(colony, gate.processed_through);
+    if colony.officers.contains_key(&OfficerRole::Steward) {
+        dispatch_gather_haul_movers(colony, gate.processed_through);
+    }
+}
+
+/// Clear every gather spot whose TTL has elapsed: drop its bookkeeping record and its
+/// underlying pile, cancel any mover job still targeting it, and let the next
+/// `reconcile_colony_stockpiles` fold whatever it still held back into the shrine
+/// reservoir — exactly like a manual `RemoveGatherSpot` (nothing is ever lost, just
+/// re-routed).
+fn expire_gather_spots(colony: &mut ColonyRuntime, now_ms: i64) {
+    let expired: Vec<String> = colony
+        .gather_spots
+        .iter()
+        .filter(|spot| spot.is_expired(now_ms))
+        .map(|spot| spot.stockpile_id.clone())
+        .collect();
+    if expired.is_empty() {
+        return;
+    }
+    colony
+        .gather_spots
+        .retain(|spot| !expired.contains(&spot.stockpile_id));
+    colony.stockpiles.retain(|pile| !expired.contains(&pile.id));
+    for stockpile_id in &expired {
+        cancel_gather_haul_jobs_for_spot(colony, stockpile_id, now_ms);
+    }
+    reconcile_colony_stockpiles(colony);
+}
+
+/// Cancel any in-flight `haul_gather_spot` mover job(s) targeting `stockpile_id` and
+/// free their assigned cat (unless it is already carrying picked-up cargo home — that
+/// carry finishes normally; only the outbound leg is voided). Shared by the P16 TTL
+/// expiry phase above and the player-facing `RemoveGatherSpot` action, so a job never
+/// dangles waiting on a site that no longer exists.
+pub(crate) fn cancel_gather_haul_jobs_for_spot(
+    colony: &mut ColonyRuntime,
+    stockpile_id: &str,
+    now_ms: i64,
+) {
+    let cat_ids: Vec<CatId> = colony
+        .jobs
+        .iter_mut()
+        .filter(|job| {
+            job.kind == JobKind::HaulGatherSpot
+                && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                && matches!(
+                    &job.metadata,
+                    JobMetadata::GatherHaul { stockpile_id: id, .. } if id == stockpile_id
+                )
+        })
+        .filter_map(|job| {
+            job.status = JobStatus::Cancelled;
+            job.completed_at = Some(now_ms);
+            job.assigned_cat.clone()
+        })
+        .collect();
+
+    for cat_id in cat_ids {
+        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+            && cat.carrying.is_none()
+        {
+            cat.destination = None;
+            cat.activity = CatActivity::Idle;
+        }
+    }
+}
+
+/// The resource a mover carries for a gather spot of this kind — the only three
+/// resources a gatherer job can currently produce/carry (`entities::CarryingKind`).
+fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
+    match kind {
+        ResourceKind::Food => Some(CarryingKind::Food),
+        ResourceKind::Water => Some(CarryingKind::Water),
+        ResourceKind::Materials => Some(CarryingKind::Materials),
+        ResourceKind::Herbs
+        | ResourceKind::Refined
+        | ResourceKind::Weapons
+        | ResourceKind::Armor
+        | ResourceKind::Blessings => None,
+    }
+}
+
+/// Complete every `haul_gather_spot` job whose mover has arrived (`accepted: true`,
+/// per the generic accept-on-arrival mechanism shared with `Site`/`Hauling` jobs) and
+/// isn't already carrying something: pick up the gather spot's entire current balance
+/// (a pile-to-pile transfer — `resources` is untouched, it was already counted when the
+/// gatherer first dropped the yield here) and start the cat walking to the nearest
+/// village pile/shrine that isn't itself a gather spot. If the spot emptied or
+/// disappeared out from under the job (e.g. a concurrent expiry), the job still
+/// completes and the cat is simply released, rather than left stuck forever.
+fn complete_arrived_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
+    let candidates: Vec<(usize, String, CatId)> = colony
+        .jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, job)| {
+            if job.status != JobStatus::Active || job.kind != JobKind::HaulGatherSpot {
+                return None;
+            }
+            let JobMetadata::GatherHaul {
+                stockpile_id,
+                accepted: true,
+                ..
+            } = &job.metadata
+            else {
+                return None;
+            };
+            let cat_id = job.assigned_cat.clone()?;
+            Some((index, stockpile_id.clone(), cat_id))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+
+    let gather_spot_ids: Vec<String> = colony
+        .gather_spots
+        .iter()
+        .map(|spot| spot.stockpile_id.clone())
+        .collect();
+
+    for (job_index, stockpile_id, cat_id) in candidates {
+        let Some(cat_index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
+            continue;
+        };
+        if colony.cats[cat_index].carrying.is_some() {
+            continue;
+        }
+
+        let spot_kind = colony
+            .gather_spots
+            .iter()
+            .find(|spot| spot.stockpile_id == stockpile_id)
+            .map(|spot| spot.kind);
+        let pile_index = colony
+            .stockpiles
+            .iter()
+            .position(|pile| pile.id == stockpile_id);
+
+        let picked_up = match (spot_kind, pile_index) {
+            (Some(kind), Some(pile_index)) => {
+                let amount =
+                    stockpiles::resource_amount(&colony.stockpiles[pile_index].contents, kind);
+                if amount > 0.0 {
+                    stockpiles::set_resource(
+                        &mut colony.stockpiles[pile_index].contents,
+                        kind,
+                        0.0,
+                    );
+                    Some((kind, amount))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        if let Some((kind, amount)) = picked_up
+            && let Some(carrying_kind) = carrying_kind_for_resource(kind)
+        {
+            let cat_pos = position_to_world(colony.cats[cat_index].position);
+            let dest_index = stockpiles::village_deposit_index(
+                &colony.stockpiles,
+                &gather_spot_ids,
+                kind,
+                cat_pos.x,
+                cat_pos.y,
+            );
+            let dest = dest_index.map_or_else(village_anchor_world, |idx| {
+                let (cx, cy) = colony.stockpiles[idx].center();
+                WorldPos { x: cx, y: cy }
+            });
+
+            let cat = &mut colony.cats[cat_index];
+            cat.gain_skill(Labor::Haul, HAUL_SKILL_GAIN);
+            cat.carrying = Some(Carrying {
+                kind: carrying_kind,
+                amount,
+                job_ended_at: now_ms,
+                source_gather_spot: Some(stockpile_id.clone()),
+            });
+            cat.destination = Some(position_from_world(dest));
+            cat.activity = CatActivity::Returning;
+        } else {
+            // Nothing to pick up (the spot emptied/vanished underneath the job) —
+            // release the cat instead of leaving it stuck on an unaccepted-forever job.
+            let cat = &mut colony.cats[cat_index];
+            cat.destination = None;
+            cat.activity = CatActivity::Idle;
+        }
+
+        if let Some(job) = colony.jobs.get_mut(job_index) {
+            job.status = JobStatus::Completed;
+            job.completed_at = Some(now_ms);
+        }
+        append_event(
+            colony,
+            now_ms,
+            EventKind::JobCompleted,
+            "A mover collected a gather spot's goods.".to_owned(),
+        );
+    }
+}
+
+/// Steward-gated (P12.6-style officer automation, folded in from the P16 spec's
+/// "Steward auto-stockpile automation" ask): dispatch one fresh `haul_gather_spot`
+/// mover per non-empty gather spot that doesn't already have a queued/active mover, in
+/// stable designation order, using the same generic best-idle-cat picker every other
+/// quiet system dispatch uses (`select_best_cat`, no specialization preference — hauling
+/// is unspecialized labor). Choosing *where* to place gather spots automatically is
+/// deliberately out of scope here (flagged follow-up) — this only automates the
+/// logistics leg once a spot already exists.
+fn dispatch_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
+    let targeted_spots: HashSet<String> = colony
+        .jobs
+        .iter()
+        .filter(|job| {
+            job.kind == JobKind::HaulGatherSpot
+                && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+        })
+        .filter_map(|job| match &job.metadata {
+            JobMetadata::GatherHaul { stockpile_id, .. } => Some(stockpile_id.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let due_spots: Vec<String> = colony
+        .gather_spots
+        .iter()
+        .filter(|spot| !targeted_spots.contains(&spot.stockpile_id))
+        .filter(|spot| {
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == spot.stockpile_id)
+                .is_some_and(|pile| stockpiles::resource_amount(&pile.contents, spot.kind) > 0.0)
+        })
+        .map(|spot| spot.stockpile_id.clone())
+        .collect();
+
+    for stockpile_id in due_spots {
+        let Some(cat_id) = select_best_cat(colony, None) else {
+            break;
+        };
+        queue_job(
+            colony,
+            now_ms,
+            JobKind::HaulGatherSpot,
+            Some(cat_id),
+            JobMetadata::GatherHaul {
+                stockpile_id,
+                site: None,
+                accepted: false,
+            },
+        );
     }
 }
 
@@ -4533,6 +4879,9 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     colony.resources = starting_resources_with_blessings(blessings);
     // Drop player piles; the end-of-tick reconcile reseeds the shrine reservoir.
     colony.stockpiles.clear();
+    // P16: every gather spot's underlying pile just got dropped above, so drop their
+    // bookkeeping records too (no stale entries pointing at piles that no longer exist).
+    colony.gather_spots.clear();
     colony.status = ColonyStatus::Starting;
     colony.leader_id = choose_interim_leader_excluding(colony, None);
     colony.run_number = colony.run_number.saturating_add(1);
@@ -5257,6 +5606,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::Explore | JobKind::ExpandVillage => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Patrol),
         JobKind::Ritual | JobKind::CarryOffering => Some(TaskType::Rest),
+        JobKind::HaulGatherSpot => Some(TaskType::Build),
         JobKind::SupplyFood | JobKind::SupplyWater => None,
     }
 }
@@ -5743,6 +6093,11 @@ fn unaccepted_active_job_site(colony: &ColonyRuntime, cat_id: &str) -> Option<(u
                 target,
                 accepted: false,
             } => Some((index, target)),
+            JobMetadata::GatherHaul {
+                site: Some(site),
+                accepted: false,
+                ..
+            } => Some((index, site)),
             _ => None,
         }
     })
@@ -5770,6 +6125,13 @@ fn accept_job(colony: &mut ColonyRuntime, job_index: usize) {
         },
         JobMetadata::Expansion { target, .. } => JobMetadata::Expansion {
             target,
+            accepted: true,
+        },
+        JobMetadata::GatherHaul {
+            stockpile_id, site, ..
+        } => JobMetadata::GatherHaul {
+            stockpile_id,
+            site,
             accepted: true,
         },
         other => other,
@@ -5966,6 +6328,7 @@ fn job_has_destination_metadata(job: &JobRuntime) -> bool {
         }
         | JobMetadata::Site { .. }
         | JobMetadata::Expansion { accepted: _, .. } => true,
+        JobMetadata::GatherHaul { site: Some(_), .. } => true,
         JobMetadata::Construction { site: Some(_), .. } => job.kind == JobKind::BuildHouse,
         _ => false,
     }
@@ -6148,6 +6511,7 @@ fn complete_hunt(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
         kind: CarryingKind::Food,
         amount: reward,
         job_ended_at: gate.processed_through,
+        source_gather_spot: None,
     });
 }
 
@@ -6175,6 +6539,7 @@ fn complete_fixed_yield_job(
         kind,
         amount: reward,
         job_ended_at: gate.processed_through,
+        source_gather_spot: None,
     });
 }
 
@@ -6259,6 +6624,7 @@ fn complete_ritual(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate)
         kind: CarryingKind::Blessings,
         amount: blessings,
         job_ended_at: gate.processed_through,
+        source_gather_spot: None,
     });
 }
 
@@ -6301,6 +6667,7 @@ fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGat
         kind: CarryingKind::Blessings,
         amount: blessings,
         job_ended_at: gate.processed_through,
+        source_gather_spot: None,
     });
     append_event(
         colony,
@@ -6589,6 +6956,29 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
             return;
         }
     };
+
+    // P16 mover arrival: this cargo was already counted in `resources` the moment the
+    // gatherer first dropped it into the gather spot, so this is a pure pile-to-pile
+    // transfer — never re-add to `resources` (that would double-count it) — and the
+    // destination must be a genuine village pile, never back into a gather spot
+    // (`village_deposit_index` excludes them).
+    if carrying.source_gather_spot.is_some() {
+        let gather_spot_ids: Vec<String> = colony
+            .gather_spots
+            .iter()
+            .map(|spot| spot.stockpile_id.clone())
+            .collect();
+        if let Some(idx) = stockpiles::village_deposit_index(
+            &colony.stockpiles,
+            &gather_spot_ids,
+            kind,
+            deposit_at.x,
+            deposit_at.y,
+        ) {
+            stockpiles::add_resource(&mut colony.stockpiles[idx].contents, kind, carrying.amount);
+        }
+        return;
+    }
 
     stockpiles::add_resource(&mut colony.resources, kind, carrying.amount);
     if let Some(idx) =
@@ -7090,6 +7480,7 @@ mod tests {
                 kind: CarryingKind::Food,
                 amount: 4.0,
                 job_ended_at: 3_000,
+                source_gather_spot: None,
             })
         );
         assert_eq!(colony.cats[0].activity, CatActivity::Returning);
@@ -7722,6 +8113,7 @@ mod tests {
             kind,
             amount,
             job_ended_at: 0,
+            source_gather_spot: None,
         });
         cat
     }
@@ -7895,6 +8287,277 @@ mod tests {
             .find(|p| p.is_shrine())
             .expect("shrine present");
         assert_eq!(shrine.contents.food, 5.0, "food fell back to the shrine");
+    }
+
+    // ---- P16 gather spots ----
+
+    #[test]
+    fn a_gatherer_drops_its_yield_into_an_adjacent_gather_spot_instead_of_the_shrine() {
+        // A gather spot behaves exactly like a general designated pile for the
+        // *gatherer* side of P16 — it reuses P12.3 haul-fill routing verbatim (only
+        // extra bookkeeping is the `GatherSpot` record; no special-case code needed).
+        let pile_at = WorldPos { x: 30.0, y: 30.0 };
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![carrying_cat_at("hunter", CarryingKind::Food, 8.0, pile_at)],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        colony.stockpiles.push(designated_pile(
+            "gather-1",
+            tile_rect(30, 30),
+            &[ResourceKind::Food],
+        ));
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: "gather-1".to_owned(),
+            kind: ResourceKind::Food,
+            expires_at_ms: 1_000_000,
+        });
+
+        let gate = production_gate(1, 1_000);
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut colony,
+            gate,
+            &mut haul_movement_ctx(),
+        );
+
+        let spot = colony
+            .stockpiles
+            .iter()
+            .find(|p| p.id == "gather-1")
+            .expect("gather spot present");
+        assert_eq!(
+            spot.contents.food, 8.0,
+            "yield dropped at the adjacent gather spot"
+        );
+        let shrine = colony.stockpiles.iter().find(|p| p.is_shrine()).unwrap();
+        assert_eq!(shrine.contents.food, 0.0, "not the shrine");
+        assert_eq!(colony.resources.food, 8.0, "credited exactly once");
+    }
+
+    #[test]
+    fn mover_hauls_a_gather_spots_contents_to_a_village_stockpile_without_double_crediting() {
+        // Gather spot far out at (30,30); a real village stockpile much closer to it
+        // than the shrine at (25,25) is the intended landing pad, so the mover's
+        // destination unambiguously demonstrates the gather-spot exclusion.
+        let gather_at = WorldPos { x: 30.0, y: 30.0 };
+        let village_pile_at = WorldPos { x: 25.0, y: 25.0 };
+
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![{
+                let mut cat = adult_idle_cat("mover", "colony-1");
+                cat.activity = CatActivity::Working;
+                cat.position = position_from_world(gather_at);
+                cat
+            }],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+
+        let mut spot_pile = designated_pile("gather-1", tile_rect(30, 30), &[ResourceKind::Food]);
+        spot_pile.contents.food = 12.0;
+        colony.stockpiles.push(spot_pile);
+        colony.stockpiles.push(designated_pile(
+            "stockpile-village",
+            tile_rect(25, 25),
+            &[ResourceKind::Food],
+        ));
+        // The gatherer already credited this yield into `resources` when it dropped it
+        // at the gather spot — the mover only ever transfers it between piles.
+        colony.resources.food = 12.0;
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: "gather-1".to_owned(),
+            kind: ResourceKind::Food,
+            expires_at_ms: 1_000_000,
+        });
+        colony.jobs.push(JobRuntime {
+            id: "job-mover".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: Some("mover".to_owned()),
+            metadata: JobMetadata::GatherHaul {
+                stockpile_id: "gather-1".to_owned(),
+                site: Some(world_pos_to_tile(gather_at)),
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        });
+
+        // Pickup: the mover has arrived (accepted: true) and isn't carrying yet.
+        complete_arrived_gather_haul_movers(&mut colony, 5_000);
+
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|p| p.id == "gather-1")
+                .unwrap()
+                .contents
+                .food,
+            0.0,
+            "gather spot emptied by pickup"
+        );
+        assert_eq!(
+            colony.resources.food, 12.0,
+            "pickup never re-adds to resources"
+        );
+        let job = colony.jobs.iter().find(|j| j.id == "job-mover").unwrap();
+        assert_eq!(job.status, JobStatus::Completed);
+
+        let carrying = colony.cats[0]
+            .carrying
+            .clone()
+            .expect("mover picked up cargo");
+        assert_eq!(carrying.kind, CarryingKind::Food);
+        assert_eq!(carrying.amount, 12.0);
+        assert_eq!(carrying.source_gather_spot.as_deref(), Some("gather-1"));
+        assert_eq!(colony.cats[0].activity, CatActivity::Returning);
+        // Heads for the real village pile — never back into the (now empty) gather spot.
+        assert_eq!(
+            colony.cats[0].destination,
+            Some(position_from_world(village_pile_at))
+        );
+
+        // Walk it there and let the generic deposit loop credit the village pile.
+        colony.cats[0].position = position_from_world(village_pile_at);
+        let gate = production_gate(1, 6_000);
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut colony,
+            gate,
+            &mut haul_movement_ctx(),
+        );
+
+        assert!(colony.cats[0].carrying.is_none(), "mover unloaded");
+        let village_pile = colony
+            .stockpiles
+            .iter()
+            .find(|p| p.id == "stockpile-village")
+            .unwrap();
+        assert_eq!(
+            village_pile.contents.food, 12.0,
+            "goods landed in the village pile"
+        );
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|p| p.id == "gather-1")
+                .unwrap()
+                .contents
+                .food,
+            0.0,
+            "never routed back into the gather spot"
+        );
+        assert_eq!(colony.resources.food, 12.0, "never double-credited");
+    }
+
+    #[test]
+    fn expired_gather_spot_is_cleared_folds_contents_back_and_cancels_its_mover() {
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![adult_idle_cat("mover", "colony-1")],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        let mut spot_pile = designated_pile("gather-1", tile_rect(30, 30), &[ResourceKind::Food]);
+        spot_pile.contents.food = 6.0;
+        colony.stockpiles.push(spot_pile);
+        colony.resources.food = 6.0;
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: "gather-1".to_owned(),
+            kind: ResourceKind::Food,
+            expires_at_ms: 10_000,
+        });
+        colony.jobs.push(JobRuntime {
+            id: "job-mover".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: Some("mover".to_owned()),
+            metadata: JobMetadata::GatherHaul {
+                stockpile_id: "gather-1".to_owned(),
+                site: Some(TilePos { x: 30, y: 30 }),
+                accepted: false,
+            },
+            ..JobRuntime::default()
+        });
+
+        // Not yet expired.
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 9_999));
+        assert_eq!(colony.gather_spots.len(), 1, "TTL not yet elapsed");
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .find(|j| j.id == "job-mover")
+                .unwrap()
+                .status,
+            JobStatus::Active
+        );
+
+        // Past the TTL.
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 10_000));
+        assert!(colony.gather_spots.is_empty(), "expired spot cleared");
+        assert!(!colony.stockpiles.iter().any(|p| p.id == "gather-1"));
+        let shrine = colony.stockpiles.iter().find(|p| p.is_shrine()).unwrap();
+        assert_eq!(
+            shrine.contents.food, 6.0,
+            "contents folded back into the reservoir"
+        );
+        let job = colony.jobs.iter().find(|j| j.id == "job-mover").unwrap();
+        assert_eq!(job.status, JobStatus::Cancelled, "dangling mover cancelled");
+        assert_eq!(
+            colony.cats[0].activity,
+            CatActivity::Idle,
+            "cat freed since it was not yet carrying anything"
+        );
+    }
+
+    #[test]
+    fn gather_spot_logistics_phase_is_a_true_no_op_with_no_gather_spots_even_with_a_steward() {
+        // Exercises every branch of `phase_p16_gather_spot_logistics` (expiry, pickup,
+        // and — since a Steward is appointed — the dispatch branch too) while no gather
+        // spot ever exists: the phase must do nothing observable. Every pre-existing
+        // determinism/trajectory test in this module (unchanged by this feature) is the
+        // rest of the "byte-identical to pre-P16" evidence; this test isolates P16's own
+        // phase specifically.
+        let mut world = new_world(9_191);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000, 3_030));
+        let steward_cat = world.colonies[0].cats[0].id.clone();
+        world.colonies[0]
+            .officers
+            .insert(OfficerRole::Steward, steward_cat);
+
+        for step in 1..=40 {
+            let now = 1_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut world, now);
+            let colony = &world.colonies[0];
+            assert!(
+                colony.gather_spots.is_empty(),
+                "no gather spot ever designated at step {step}"
+            );
+            assert!(
+                !colony
+                    .jobs
+                    .iter()
+                    .any(|job| job.kind == JobKind::HaulGatherSpot),
+                "nothing to dispatch a mover for at step {step}"
+            );
+            for &kind in ResourceKind::ALL {
+                let sum: f64 = colony
+                    .stockpiles
+                    .iter()
+                    .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
+                    .sum();
+                let total = stockpiles::resource_amount(&colony.resources, kind);
+                assert!(
+                    (sum - total).abs() <= 1e-6,
+                    "{kind:?}: pile sum {sum} != resources {total} at step {step}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -9871,6 +10534,7 @@ mod tests {
             kind: CarryingKind::Materials,
             amount: 12.0,
             job_ended_at: 0,
+            source_gather_spot: None,
         });
         let mut colony = survival_colony(cat, 100.0, 0.0);
         colony.resources.materials = 5.0;
@@ -10032,6 +10696,7 @@ mod tests {
             kind: CarryingKind::Materials,
             amount: 12.0,
             job_ended_at: 0,
+            source_gather_spot: None,
         });
         let mut colony = old_age_colony(cat, 5.0);
 

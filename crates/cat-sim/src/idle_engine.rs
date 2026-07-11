@@ -12,7 +12,7 @@ pub struct UpgradeLevels {
     pub resilience: f64,
 }
 
-pub const BASE_JOB_SECONDS: [(JobKind, f64); 13] = [
+pub const BASE_JOB_SECONDS: [(JobKind, f64); 14] = [
     (JobKind::SupplyFood, 20.0),
     (JobKind::SupplyWater, 15.0),
     (JobKind::LeaderPlanHunt, 30.0 * 60.0),
@@ -28,6 +28,11 @@ pub const BASE_JOB_SECONDS: [(JobKind, f64); 13] = [
     // P12.6 (Rust-only, no TS predecessor): shorter than the labor-only Ritual
     // (6h) because it is mostly a haul-to-shrine chore, not a full ceremony.
     (JobKind::CarryOffering, 40.0 * 60.0),
+    // P16 (Rust-only, no TS predecessor): a gather-spot mover's "duration" is really
+    // just a nominal travel buffer — the job completes as soon as the assigned cat
+    // reaches the gather spot and picks up its cargo (see `world_tick`'s gather-spot
+    // pickup phase), not on this timer.
+    (JobKind::HaulGatherSpot, 5.0 * 60.0),
 ];
 
 #[must_use]
@@ -216,6 +221,7 @@ mod tests {
             (JobKind::TrainWarrior, 10_800.0),
             (JobKind::ExpandVillage, 600.0),
             (JobKind::CarryOffering, 2_400.0),
+            (JobKind::HaulGatherSpot, 300.0),
         ];
 
         assert_eq!(BASE_JOB_SECONDS.len(), JobKind::ALL.len());

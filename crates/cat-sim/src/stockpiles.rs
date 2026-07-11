@@ -33,6 +33,50 @@ pub const STOCKPILE_MAX_EDGE: i32 = crate::zones::ZONE_MAX_EDGE;
 /// Most designated (non-shrine) stockpiles a colony may hold at once.
 pub const MAX_DESIGNATED_STOCKPILES: usize = 8;
 
+/// A **gather spot** (P16): a temporary, single-resource drop point placeable outside
+/// the claimed village, unlike a general designated [`Stockpile`]. Reuses the ordinary
+/// `Stockpile` machinery unchanged (deposit routing/`reconcile`/capacity all apply
+/// exactly as for any other pile with a single-element `accepts` set) — this record is
+/// purely the P16 bookkeeping layered on top: which resource it exists for, and when it
+/// expires. Held in `ColonyRuntime.gather_spots`, one entry per gather-spot stockpile
+/// (matched by [`Self::stockpile_id`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatherSpot {
+    /// Id of the underlying [`Stockpile`] this record annotates.
+    pub stockpile_id: String,
+    /// The single resource this gather spot collects. Restricted to the resources a
+    /// gatherer job can actually carry (see `entities::CarryingKind`): food, water,
+    /// materials.
+    pub kind: ResourceKind,
+    /// Game-tick ms after which this gather spot expires and is cleared, folding
+    /// whatever it still holds back into the shrine reservoir (same as a manual
+    /// [`crate::stockpiles`] removal — never lost, just re-routed).
+    pub expires_at_ms: i64,
+}
+
+impl GatherSpot {
+    /// Whether this gather spot's TTL has elapsed by `now_ms`.
+    #[must_use]
+    pub fn is_expired(&self, now_ms: i64) -> bool {
+        now_ms >= self.expires_at_ms
+    }
+}
+
+/// Default lifetime of a gather spot from designation (P16: "temporary" — expires on
+/// its own so an abandoned or exhausted spot doesn't permanently squat on the map).
+pub const GATHER_SPOT_TTL_MS: i64 = 30 * 60 * 1000;
+
+/// Largest square edge (in tiles) a gather spot may span. Deliberately smaller than a
+/// general stockpile's [`STOCKPILE_MAX_EDGE`] — it is a small temp drop point next to a
+/// worked resource, not a warehouse.
+pub const GATHER_SPOT_MAX_EDGE: i32 = 3;
+
+/// Most gather spots a colony may have designated at once, independent of the general
+/// [`MAX_DESIGNATED_STOCKPILES`] pool (gather spots are cheap and short-lived, so they
+/// get their own, slightly larger, budget).
+pub const MAX_GATHER_SPOTS: usize = 6;
+
 /// A resource kind — the eight fields of [`Resources`], usable as a set element / map key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -197,6 +241,39 @@ pub fn deposit_index(
     let mut best: Option<(usize, f64)> = None;
     for (idx, pile) in stockpiles.iter().enumerate() {
         if !pile.has_headroom(kind) {
+            continue;
+        }
+        let (cx, cy) = rect_center(pile.rect);
+        let dist = (cx - from_x).powi(2) + (cy - from_y).powi(2);
+        let better = match best {
+            None => true,
+            Some((best_idx, best_dist)) => {
+                dist < best_dist || (dist == best_dist && pile.id < stockpiles[best_idx].id)
+            }
+        };
+        if better {
+            best = Some((idx, dist));
+        }
+    }
+    best.map(|(idx, _)| idx)
+        .or_else(|| stockpiles.iter().position(Stockpile::is_shrine))
+}
+
+/// Like [`deposit_index`], but skips every pile whose id is in `gather_spot_ids` — used
+/// when a P16 mover hauls a gather spot's contents onward: it must land in a genuine
+/// village stockpile/shrine, never back into the same (or another) gather spot, which
+/// would just shuffle the goods sideways instead of moving them toward the village.
+#[must_use]
+pub fn village_deposit_index(
+    stockpiles: &[Stockpile],
+    gather_spot_ids: &[String],
+    kind: ResourceKind,
+    from_x: f64,
+    from_y: f64,
+) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (idx, pile) in stockpiles.iter().enumerate() {
+        if gather_spot_ids.contains(&pile.id) || !pile.has_headroom(kind) {
             continue;
         }
         let (cx, cy) = rect_center(pile.rect);
@@ -388,5 +465,66 @@ mod tests {
         assert_eq!(json["accepts"], serde_json::json!(["food", "water"]));
         let back: Stockpile = serde_json::from_value(json).unwrap();
         assert_eq!(back, pile);
+    }
+
+    #[test]
+    fn gather_spot_is_expired_uses_inclusive_ttl_boundary() {
+        let spot = GatherSpot {
+            stockpile_id: "gather-1".to_owned(),
+            kind: ResourceKind::Food,
+            expires_at_ms: 10_000,
+        };
+        assert!(!spot.is_expired(9_999));
+        assert!(spot.is_expired(10_000));
+        assert!(spot.is_expired(10_001));
+    }
+
+    #[test]
+    fn gather_spot_round_trips_through_serde() {
+        let spot = GatherSpot {
+            stockpile_id: "gather-1".to_owned(),
+            kind: ResourceKind::Materials,
+            expires_at_ms: 42,
+        };
+        let json = serde_json::to_value(&spot).unwrap();
+        assert_eq!(json["stockpileId"], serde_json::json!("gather-1"));
+        assert_eq!(json["kind"], serde_json::json!("materials"));
+        let back: GatherSpot = serde_json::from_value(json).unwrap();
+        assert_eq!(back, spot);
+    }
+
+    #[test]
+    fn village_deposit_skips_gather_spots_even_when_nearest() {
+        let piles = vec![
+            // Shrine at (6,6): distance² 8 from (8,8).
+            make_shrine(small_rect(6, 6)),
+            // Gather spot exactly at (8,8): distance² 0 — nearest of all three.
+            player_pile("gather-near", small_rect(8, 8), &[ResourceKind::Food]),
+            // A genuine village pile at (9,9): distance² 2 — closer than the shrine,
+            // but still farther than the (excluded) gather spot.
+            player_pile("stockpile-village", small_rect(9, 9), &[ResourceKind::Food]),
+        ];
+        let gather_ids = vec!["gather-near".to_owned()];
+        // The plain deposit_index would pick the near gather spot...
+        assert_eq!(deposit_index(&piles, ResourceKind::Food, 8.0, 8.0), Some(1));
+        // ...but village_deposit_index skips it, routing to the next-nearest real
+        // village pile instead of either the gather spot or the farther-away shrine.
+        assert_eq!(
+            village_deposit_index(&piles, &gather_ids, ResourceKind::Food, 8.0, 8.0),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn village_deposit_falls_back_to_shrine_when_only_gather_spots_accept() {
+        let piles = vec![
+            make_shrine(small_rect(6, 6)),
+            player_pile("gather-1", small_rect(8, 8), &[ResourceKind::Water]),
+        ];
+        let gather_ids = vec!["gather-1".to_owned()];
+        assert_eq!(
+            village_deposit_index(&piles, &gather_ids, ResourceKind::Water, 8.0, 8.0),
+            Some(0)
+        );
     }
 }

@@ -9,7 +9,7 @@ use cat_sim::{
     ledger::StockLedger,
     officers::OfficerRole,
     skills::Labor,
-    stockpiles::Stockpile,
+    stockpiles::{GatherSpot, Stockpile},
     types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType},
     upgrade_tree::{UpgradeTreeState, create_upgrade_tree_state},
     world_gen::TileResources,
@@ -83,6 +83,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             testRngSeed INTEGER,
             officers TEXT,
             stockpiles TEXT,
+            gatherSpots TEXT,
             stockLedger TEXT,
             coin REAL
         );
@@ -238,6 +239,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
     const ADDITIONS: &[(&str, &str, &str)] = &[
         ("colonies", "officers", "TEXT"),
         ("colonies", "stockpiles", "TEXT"),
+        ("colonies", "gatherSpots", "TEXT"),
         ("colonies", "stockLedger", "TEXT"),
         ("colonies", "revealedTiles", "TEXT"),
         ("colonies", "coin", "REAL"),
@@ -310,7 +312,8 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 ritualRequestedAt, criticalSince, claimedTiles, revealedTiles,
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
-                testCriticalMsOverride, testRngSeed, officers, stockpiles, stockLedger, coin
+                testCriticalMsOverride, testRngSeed, officers, stockpiles, gatherSpots,
+                stockLedger, coin
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -335,10 +338,11 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             criticalSince, claimedTiles, revealedTiles, threatPressure, lastRaidAt,
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
-            stockpiles, stockLedger, coin
+            stockpiles, gatherSpots, stockLedger, coin
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
+            ?32, ?33
         )",
         params![
             colony.id,
@@ -371,6 +375,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.test_rng_seed.map(i64::from),
             serde_json::to_string(&colony.officers).map_err(to_sql_json)?,
             serde_json::to_string(&colony.stockpiles).map_err(to_sql_json)?,
+            serde_json::to_string(&colony.gather_spots).map_err(to_sql_json)?,
             serde_json::to_string(&colony.stock_ledger).map_err(to_sql_json)?,
             colony.coin,
         ],
@@ -416,6 +421,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let revealed_tiles_json: Option<String> = row.get("revealedTiles")?;
     let officers_json: Option<String> = row.get("officers")?;
     let stockpiles_json: Option<String> = row.get("stockpiles")?;
+    let gather_spots_json: Option<String> = row.get("gatherSpots")?;
     let stock_ledger_json: Option<String> = row.get("stockLedger")?;
 
     Ok(ColonyRuntime {
@@ -457,6 +463,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .unwrap_or_default(),
         stockpiles: stockpiles_json
             .map(|raw| serde_json::from_str::<Vec<Stockpile>>(&raw).map_err(from_sql_json))
+            .transpose()?
+            .unwrap_or_default(),
+        gather_spots: gather_spots_json
+            .map(|raw| serde_json::from_str::<Vec<GatherSpot>>(&raw).map_err(from_sql_json))
             .transpose()?
             .unwrap_or_default(),
         stock_ledger: stock_ledger_json
@@ -1183,6 +1193,16 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
             "site": tile_pos_json(site),
             "accepted": accepted,
         }),
+        JobMetadata::GatherHaul {
+            stockpile_id,
+            site,
+            accepted,
+        } => json!({
+            "kind": "gatherHaul",
+            "stockpileId": stockpile_id,
+            "site": site.as_ref().map(tile_pos_json),
+            "accepted": accepted,
+        }),
     }
 }
 
@@ -1238,6 +1258,22 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
         }),
         Some("site") => Ok(JobMetadata::Site {
             site: parse_tile_pos_value(value.get("site").unwrap_or(&Value::Null))?,
+            accepted: value
+                .get("accepted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }),
+        Some("gatherHaul") => Ok(JobMetadata::GatherHaul {
+            stockpile_id: value
+                .get("stockpileId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            site: value
+                .get("site")
+                .filter(|site| !site.is_null())
+                .map(parse_tile_pos_value)
+                .transpose()?,
             accepted: value
                 .get("accepted")
                 .and_then(Value::as_bool)
@@ -1500,6 +1536,43 @@ mod tests {
                     .collect(),
                 contents: cat_sim::entities::Resources::default(),
             });
+        // P16: a gather spot (its own pile + bookkeeping record) and an in-flight mover
+        // job referencing it (`JobMetadata::GatherHaul`) must all survive the round trip.
+        world.colonies[0]
+            .stockpiles
+            .push(cat_sim::stockpiles::Stockpile {
+                id: "gather-1".to_owned(),
+                rect: cat_sim::zones::ZoneRect {
+                    x1: 30,
+                    y1: 30,
+                    x2: 30,
+                    y2: 30,
+                },
+                accepts: [cat_sim::stockpiles::ResourceKind::Water]
+                    .into_iter()
+                    .collect(),
+                contents: cat_sim::entities::Resources::default(),
+            });
+        world.colonies[0]
+            .gather_spots
+            .push(cat_sim::stockpiles::GatherSpot {
+                stockpile_id: "gather-1".to_owned(),
+                kind: cat_sim::stockpiles::ResourceKind::Water,
+                expires_at_ms: 1_500_000,
+            });
+        let mover_cat_id = world.colonies[0].cats[0].id.clone();
+        world.colonies[0].jobs.push(JobRuntime {
+            id: "job-mover".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: Some(mover_cat_id),
+            metadata: JobMetadata::GatherHaul {
+                stockpile_id: "gather-1".to_owned(),
+                site: Some(TilePos { x: 30, y: 30 }),
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        });
 
         save_world(&conn, &world).expect("save world");
         let loaded = load_world(&conn)
@@ -1519,6 +1592,10 @@ mod tests {
         assert_eq!(loaded.colonies[0].officers, world.colonies[0].officers);
         assert_eq!(loaded.colonies[0].stockpiles, world.colonies[0].stockpiles);
         assert_eq!(
+            loaded.colonies[0].gather_spots,
+            world.colonies[0].gather_spots
+        );
+        assert_eq!(
             loaded.colonies[0].stock_ledger,
             world.colonies[0].stock_ledger
         );
@@ -1535,9 +1612,11 @@ mod tests {
             .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
         save_world(&conn, &world).expect("save world");
 
-        // Simulate a pre-P12.2/P12.3/P12.4a row: officers + stockpiles + stockLedger NULL.
+        // Simulate a pre-P12.2/P12.3/P12.4a/P16 row: officers + stockpiles + gatherSpots
+        // + stockLedger NULL.
         conn.execute(
-            "UPDATE colonies SET officers = NULL, stockpiles = NULL, stockLedger = NULL",
+            "UPDATE colonies SET officers = NULL, stockpiles = NULL, gatherSpots = NULL,
+                stockLedger = NULL",
             [],
         )
         .expect("null columns");
@@ -1546,6 +1625,7 @@ mod tests {
             .expect("world should exist");
         assert!(loaded.colonies[0].officers.is_empty());
         assert!(loaded.colonies[0].stockpiles.is_empty());
+        assert!(loaded.colonies[0].gather_spots.is_empty());
         // A NULL ledger loads as the default (empty reported totals, never counted).
         assert_eq!(
             loaded.colonies[0].stock_ledger,

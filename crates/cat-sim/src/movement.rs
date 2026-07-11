@@ -181,6 +181,8 @@ pub struct JobDestinationContext<'a> {
     pub quarry_site: Option<WorldPos>,
     pub water_site: Option<WorldPos>,
     pub explore_site: Option<WorldPos>,
+    /// P16: the gather spot a `haul_gather_spot` mover job targets, if it still exists.
+    pub gather_spot_site: Option<WorldPos>,
 }
 
 #[must_use]
@@ -374,6 +376,7 @@ pub fn destination_for_job(kind: &str, context: &JobDestinationContext<'_>) -> O
         "fetch_water" => context.water_site,
         "explore" => context.explore_site,
         "hunt_expedition" => hunt_destination(context),
+        "haul_gather_spot" => context.gather_spot_site,
         _ => None,
     }
 }
@@ -800,6 +803,7 @@ mod tests {
                 quarry_site: case.context.quarry_site.map(PosFixture::into_world_pos),
                 water_site: case.context.water_site.map(PosFixture::into_world_pos),
                 explore_site: case.context.explore_site.map(PosFixture::into_world_pos),
+                gather_spot_site: None,
             };
 
             assert_eq!(

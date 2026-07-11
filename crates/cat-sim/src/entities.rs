@@ -128,6 +128,14 @@ pub struct Carrying {
     pub kind: CarryingKind,
     pub amount: f64,
     pub job_ended_at: i64,
+    /// The gather-spot stockpile id this cargo was picked up from (P16 gather spots).
+    /// `None` for every normal gathering haul (hunt/quarry/fetch-water) — those credit
+    /// freshly produced yield into `resources` on arrival. When `Some`, the resource was
+    /// already counted in `resources` the moment the gatherer first dropped it into the
+    /// gather spot, so a P16 mover's arrival only *transfers* it between piles and must
+    /// never re-add it to `resources` (see `world_tick::credit_carrying`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_gather_spot: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -337,6 +345,7 @@ mod tests {
                 kind: CarryingKind::Food,
                 amount: 3.5,
                 job_ended_at: 4000,
+                source_gather_spot: None,
             }),
             activity: CatActivity::Returning,
             is_pregnant: true,

@@ -54,6 +54,9 @@ impl Labor {
             // P12.6: an offering is a ritual act (haul + perform at the shrine), so
             // it trains the same Ritual labor as the pure-labor `ritual` job.
             JobKind::CarryOffering => Some(Self::Ritual),
+            // P16: a gather-spot mover is pure hauling, same labor as the mid-job haul
+            // trips other gathering jobs already train (`HAUL_SKILL_GAIN`).
+            JobKind::HaulGatherSpot => Some(Self::Haul),
             JobKind::SupplyFood
             | JobKind::SupplyWater
             | JobKind::LeaderPlanHunt
@@ -82,6 +85,7 @@ mod tests {
                 JobKind::FetchWater => assert_eq!(mapped, Some(Labor::FetchWater)),
                 JobKind::TrainWarrior => assert_eq!(mapped, Some(Labor::Fight)),
                 JobKind::CarryOffering => assert_eq!(mapped, Some(Labor::Ritual)),
+                JobKind::HaulGatherSpot => assert_eq!(mapped, Some(Labor::Haul)),
                 _ => assert_eq!(mapped, None),
             }
         }
