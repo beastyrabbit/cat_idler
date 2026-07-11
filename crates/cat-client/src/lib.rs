@@ -1200,39 +1200,29 @@ enum EventKind {
     Neutral,
 }
 
-/// Classify an event message into a kind by keyword (checked in severity order).
-fn classify_event(message: &str) -> EventKind {
-    let m = message.to_ascii_lowercase();
-    let has = |needles: &[&str]| needles.iter().any(|n| m.contains(n));
-    if has(&["raid", "raider", "warband", "attack", "invad"]) {
-        EventKind::Raid
-    } else if has(&[
-        "died", "death", "killed", "starved", "dehydrat", "perished", "lost",
-    ]) {
-        EventKind::Death
-    } else if has(&[
-        "critical", "crisis", "depleted", "no water", "no food", "thirst", "starv",
-    ]) {
-        EventKind::Crisis
-    } else if has(&["born", "kitten", "birth", "expecting", "litter"]) {
-        // Births and conceptions ("… are expecting a litter.") read as positive.
-        EventKind::Birth
-    } else if has(&["election", "elected", "leader", "vote", "steward", "term"]) {
-        EventKind::Election
-    } else if has(&[
-        "upgrade",
-        "research",
-        "built",
-        "build",
-        "construct",
-        "completed",
-        "unlock",
-        "graduat",
-        "blessing",
-    ]) {
-        EventKind::Progress
-    } else {
-        EventKind::Neutral
+/// Classify an event into a display bucket from its exact wire `kind`
+/// (`EventSnapshot.kind`, snake_case categories from `cat_sim`'s `wire_kind`),
+/// not by guessing at the message text. Death and raid share the red treatment;
+/// crisis recoveries read as positive progress.
+fn event_kind_of(kind: &str) -> EventKind {
+    match kind {
+        "birth" | "conception" => EventKind::Birth,
+        // "death_<cause>" incl. death_raid (a defender lost in a raid).
+        k if k.starts_with("death") => EventKind::Death,
+        // "raid_<phase>" incl. raid_lost / raid_wipeout — all red-adjacent.
+        k if k.starts_with("raid") => EventKind::Raid,
+        "water_crisis" | "dehydration_crisis" => EventKind::Crisis,
+        // Recoveries get the softer positive treatment, not the amber crisis one.
+        "water_recovered" | "dehydration_recovery" => EventKind::Progress,
+        "leader_change" => EventKind::Election,
+        k if k.starts_with("election") => EventKind::Election,
+        "research_unlocked" | "node_owned" | "warrior_trained" | "village_founded"
+        | "village_expanded" | "road_built" | "production" | "discovery" | "forest_chopped"
+        | "tithe" | "offering" | "blessing_delivered" => EventKind::Progress,
+        // "trade_sell"/"trade_buy" (note the underscore — not "trader_*" lifecycle).
+        k if k.starts_with("trade_") => EventKind::Progress,
+        // trader lifecycle, jobs, rituals, resets, empty (pre-taxonomy) → neutral.
+        _ => EventKind::Neutral,
     }
 }
 
@@ -1260,16 +1250,15 @@ struct Census {
     leader: Option<String>,
 }
 
-/// Recent births + deaths scanned from the event feed. Births count only actual
-/// births ("… was born") so conceptions ("expecting a litter") don't inflate the
-/// tally; deaths reuse the shared `classify_event` death keywords.
+/// Recent births + deaths counted from the event feed by exact wire `kind`:
+/// `birth` (so conceptions don't inflate it) and any `death_*` cause.
 fn count_vital_events(events: &[EventSnapshot]) -> (u32, u32) {
     let mut births = 0;
     let mut deaths = 0;
     for event in events {
-        if event.message.to_ascii_lowercase().contains("born") {
+        if event.kind == "birth" {
             births += 1;
-        } else if classify_event(&event.message) == EventKind::Death {
+        } else if event.kind.starts_with("death") {
             deaths += 1;
         }
     }
@@ -1415,12 +1404,13 @@ fn relative_time(now_ms: i64, ts_ms: i64) -> String {
     }
 }
 
-/// The formatted announcement line for an event: `age glyph message`.
-fn announcement_line(now_ms: i64, message: &str, ts_ms: i64) -> String {
+/// The formatted announcement line for an event: `age glyph message`. The glyph
+/// comes from the event's exact wire `kind`; the text is the human `message`.
+fn announcement_line(now_ms: i64, kind: &str, message: &str, ts_ms: i64) -> String {
     format!(
         "{:>3} {} {}",
         relative_time(now_ms, ts_ms),
-        event_glyph(classify_event(message)),
+        event_glyph(event_kind_of(kind)),
         message
     )
 }
@@ -5630,15 +5620,15 @@ fn update_announcements(
 
     for (line, mut text, mut color) in &mut lines {
         if let Some(e) = newest.get(line.0) {
-            text.0 = announcement_line(now, &e.message, e.timestamp);
-            color.0 = event_color(classify_event(&e.message));
+            text.0 = announcement_line(now, &e.kind, &e.message, e.timestamp);
+            color.0 = event_color(event_kind_of(&e.kind));
         } else {
             text.0 = String::new();
         }
     }
     if let Ok((mut text, mut color)) = ticker.single_mut() {
         if let Some(e) = newest.first() {
-            let kind = classify_event(&e.message);
+            let kind = event_kind_of(&e.kind);
             text.0 = format!("{} {}", event_glyph(kind), e.message);
             color.0 = event_color(kind);
         } else {
@@ -6658,14 +6648,17 @@ mod tests {
             EventSnapshot {
                 message: "Dawnpaw was born to the colony.".to_string(),
                 timestamp: 0,
+                kind: "birth".to_string(),
             },
             EventSnapshot {
                 message: "Two cats are expecting a litter.".to_string(),
                 timestamp: 0,
+                kind: "conception".to_string(),
             },
             EventSnapshot {
                 message: "Mossfur died of old age.".to_string(),
                 timestamp: 0,
+                kind: "death_old_age".to_string(),
             },
         ];
 
@@ -7440,41 +7433,34 @@ mod tests {
     }
 
     #[test]
-    fn events_classify_by_keyword_and_colour() {
-        // Real breeding-feed formats: births + conceptions both read as positive.
-        assert_eq!(
-            classify_event("Pebble was born to Ash and Bramble."),
-            EventKind::Birth
-        );
-        assert_eq!(
-            classify_event("Ash and Bramble are expecting a litter."),
-            EventKind::Birth
-        );
-        assert_eq!(
-            classify_event("Elder Bramble died of old age"),
-            EventKind::Death
-        );
-        assert_eq!(
-            classify_event("A raider warband approaches!"),
-            EventKind::Raid
-        );
-        assert_eq!(
-            classify_event("Water depleted - critical"),
-            EventKind::Crisis
-        );
-        assert_eq!(
-            classify_event("The colony is holding an election"),
-            EventKind::Election
-        );
-        assert_eq!(
-            classify_event("Research unlocked: sawmill"),
-            EventKind::Progress
-        );
-        assert_eq!(
-            classify_event("A quiet day in the forest"),
-            EventKind::Neutral
-        );
-        // Raid/death outrank the generic buckets; kinds map to distinct colours.
+    fn events_classify_by_wire_kind_and_colour() {
+        // Births + conceptions both read as positive Birth.
+        assert_eq!(event_kind_of("birth"), EventKind::Birth);
+        assert_eq!(event_kind_of("conception"), EventKind::Birth);
+        // Every death cause maps to Death; a defender lost in a raid is a death.
+        assert_eq!(event_kind_of("death_old_age"), EventKind::Death);
+        assert_eq!(event_kind_of("death_starvation"), EventKind::Death);
+        assert_eq!(event_kind_of("death_raid"), EventKind::Death);
+        // Raid phases map to Raid.
+        assert_eq!(event_kind_of("raid_launched"), EventKind::Raid);
+        assert_eq!(event_kind_of("raid_wipeout"), EventKind::Raid);
+        // Crises are amber; recoveries get the softer positive treatment.
+        assert_eq!(event_kind_of("water_crisis"), EventKind::Crisis);
+        assert_eq!(event_kind_of("dehydration_crisis"), EventKind::Crisis);
+        assert_eq!(event_kind_of("water_recovered"), EventKind::Progress);
+        // Governance.
+        assert_eq!(event_kind_of("election_started"), EventKind::Election);
+        assert_eq!(event_kind_of("leader_change"), EventKind::Election);
+        // Progress: research, building, trade, blessings.
+        assert_eq!(event_kind_of("research_unlocked"), EventKind::Progress);
+        assert_eq!(event_kind_of("village_founded"), EventKind::Progress);
+        assert_eq!(event_kind_of("trade_sell"), EventKind::Progress);
+        assert_eq!(event_kind_of("tithe"), EventKind::Progress);
+        // Trader lifecycle / jobs / unknown / empty (pre-taxonomy) → neutral.
+        assert_eq!(event_kind_of("trader_arrived"), EventKind::Neutral);
+        assert_eq!(event_kind_of("job_completed"), EventKind::Neutral);
+        assert_eq!(event_kind_of(""), EventKind::Neutral);
+        // Kinds map to distinct colours + glyphs.
         assert_ne!(event_color(EventKind::Birth), event_color(EventKind::Death));
         assert_ne!(
             event_color(EventKind::Election),
@@ -7568,9 +7554,9 @@ mod tests {
         assert_eq!(relative_time(7_400_000, 200_000), "2h");
         // Never negative if a stray future timestamp arrives.
         assert_eq!(relative_time(0, 5_000), "0s");
-        let line = announcement_line(60_000, "Pebble was born", 0);
+        let line = announcement_line(60_000, "birth", "Pebble was born", 0);
         assert!(line.contains("1m"));
-        assert!(line.contains('+')); // birth glyph
+        assert!(line.contains('+')); // birth glyph from the "birth" kind
         assert!(line.contains("Pebble was born"));
     }
 
