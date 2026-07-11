@@ -1216,7 +1216,12 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     let mut life_rng_seed = life_seed(colony.test_rng_seed.unwrap_or(1));
     let leader_id = colony.leader_id.clone();
 
-    // 1. Aging, old-age mortality, leadership tenure.
+    // 1. Aging, old-age mortality, leadership tenure. Deaths are snapshotted here and
+    // their salvage/job-cancel/event cleanup deferred until after the loop: those
+    // steps need `&mut ColonyRuntime` as a whole, which conflicts with the
+    // `&mut colony.cats` borrow this loop holds (same deferral pattern pass 2 below
+    // uses for newborn insertion).
+    let mut old_age_deaths: Vec<OldAgeDeath> = Vec::new();
     for cat in &mut colony.cats {
         if cat.death_time.is_some() {
             continue;
@@ -1232,6 +1237,12 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
             let roll = roll_seeded(f64::from(life_rng_seed));
             life_rng_seed = roll.next_seed;
             if roll.value < death_probability {
+                old_age_deaths.push(OldAgeDeath {
+                    id: cat.id.clone(),
+                    name: cat.name.clone(),
+                    position: cat.position,
+                    carrying: cat.carrying.clone(),
+                });
                 cat.death_time = Some(gate.processed_through);
                 cat.activity = Default::default();
                 cat.destination = None;
@@ -1244,6 +1255,23 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
             cat.stats.leadership =
                 leadership_after_tenure(cat.stats.leadership, elapsed_game_hours);
         }
+    }
+
+    // Salvage each old-age death's carried yield, cancel its outstanding jobs, and
+    // log a death event — mirrors phase 25's survival-death cleanup and TS
+    // `retireCat`, which runs for every death including old age.
+    for death in old_age_deaths {
+        if let Some(carrying) = death.carrying {
+            let deposit_at = position_to_world(death.position);
+            credit_carrying(colony, &carrying, deposit_at);
+        }
+        cancel_cat_jobs(colony, &death.id, gate.processed_through);
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Other("death".to_owned()),
+            format!("{} died peacefully of old age.", death.name),
+        );
     }
 
     // 2. Births: any mother whose gestation (tracked against her own age) is up. Only
@@ -1450,6 +1478,16 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
             message,
         );
     }
+}
+
+/// A cat that died of old age in phase 6 pass 1, snapshotted before the pass's
+/// mutable borrow of `colony.cats` ends. Processed afterward to salvage carried
+/// yield, cancel jobs, and log a death event against `&mut ColonyRuntime`.
+struct OldAgeDeath {
+    id: CatId,
+    name: String,
+    position: Position,
+    carrying: Option<Carrying>,
 }
 
 /// A conception-eligible adult snapshotted before phase 6's conception pass mutates
@@ -2863,14 +2901,7 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
 
         // Cancel the dying cat's own active/queued jobs (mirrors `retireCat`)
         // so none are left stuck waiting on an assigned cat that is now dead.
-        for job in &mut colony.jobs {
-            if job.assigned_cat.as_deref() == Some(cat_id.as_str())
-                && matches!(job.status, JobStatus::Active | JobStatus::Queued)
-            {
-                job.status = JobStatus::Cancelled;
-                job.completed_at = Some(gate.processed_through);
-            }
-        }
+        cancel_cat_jobs(colony, &cat_id, gate.processed_through);
 
         let died_of_thirst = result.next_needs.thirst == 0.0;
         let died_of_hunger = result.next_needs.hunger == 0.0;
@@ -5594,6 +5625,20 @@ fn haul_destination(
     }
 }
 
+/// Cancel a dead cat's active/queued jobs so none are left stuck waiting on an
+/// assigned cat that no longer exists (mirrors TS `retireCat`). Shared by every
+/// death path — old-age (phase 6 pass 1) and survival (phase 25).
+fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
+    for job in &mut colony.jobs {
+        if job.assigned_cat.as_deref() == Some(cat_id)
+            && matches!(job.status, JobStatus::Active | JobStatus::Queued)
+        {
+            job.status = JobStatus::Cancelled;
+            job.completed_at = Some(now_ms);
+        }
+    }
+}
+
 fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: WorldPos) {
     // Blessings never enter `resources` (they fund the global upgrade pool), so they are
     // not placed in a pile — keeping `sum(piles) == resources` intact.
@@ -7929,6 +7974,163 @@ mod tests {
                 .iter()
                 .any(|event| event.message.contains("died from")),
             "expected a death event on both worlds, got {:?}",
+            left.colonies[0].events
+        );
+    }
+
+    // ---- Phase 6 pass 1: old-age death parity with phase 25 survival deaths ----
+
+    /// A cat old enough that, after phase 6's per-tick age increment, the
+    /// `hoursPastThreshold` term alone drives `old_age_death_probability` to its 1.0
+    /// clamp for any positive elapsed window — deterministic old-age death regardless
+    /// of the RNG roll (reached here via extreme age rather than extreme elapsed
+    /// hours, unlike `life_sim::old_age_death_probability_scales_and_clamps`'s
+    /// "skip-time cap" case, but the same clamp).
+    fn ancient_cat(id: &str, colony_id: &str) -> Cat {
+        Cat {
+            age_hours: 100_000.0,
+            ..adult_idle_cat(id, colony_id)
+        }
+    }
+
+    fn old_age_colony(cat: Cat, materials: f64) -> ColonyRuntime {
+        ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                materials,
+                ..Resources::default()
+            },
+            cats: vec![cat],
+            test_rng_seed: Some(777),
+            ..ColonyRuntime::default()
+        }
+    }
+
+    #[test]
+    fn old_age_death_salvages_the_dying_cats_carried_yield() {
+        let mut cat = ancient_cat("elder", "colony-1");
+        cat.carrying = Some(Carrying {
+            kind: CarryingKind::Materials,
+            amount: 12.0,
+            job_ended_at: 0,
+        });
+        let mut colony = old_age_colony(cat, 5.0);
+
+        phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+
+        assert_eq!(colony.cats[0].death_time, Some(3_600_000));
+        assert_eq!(colony.cats[0].carrying, None);
+        assert_eq!(colony.resources.materials, 17.0);
+    }
+
+    #[test]
+    fn old_age_death_cancels_the_dying_cats_active_and_queued_jobs() {
+        let cat = ancient_cat("elder", "colony-1");
+        let mut colony = old_age_colony(cat, 0.0);
+        colony.jobs = vec![
+            JobRuntime {
+                id: "job-active".to_owned(),
+                kind: JobKind::HuntExpedition,
+                status: JobStatus::Active,
+                requested_by: JobRequester::Leader,
+                assigned_cat: Some("elder".to_owned()),
+                duration_ms: 1_000,
+                speed: 1.0,
+                yield_amount: 0.0,
+                click_count: 0,
+                created_at: 0,
+                started_at: Some(0),
+                ends_at: Some(999_999_999),
+                completed_at: None,
+                metadata: JobMetadata::None,
+            },
+            JobRuntime {
+                id: "job-queued".to_owned(),
+                kind: JobKind::Quarry,
+                status: JobStatus::Queued,
+                requested_by: JobRequester::Leader,
+                assigned_cat: Some("elder".to_owned()),
+                duration_ms: 1_000,
+                speed: 1.0,
+                yield_amount: 0.0,
+                click_count: 0,
+                created_at: 0,
+                started_at: None,
+                ends_at: None,
+                completed_at: None,
+                metadata: JobMetadata::None,
+            },
+        ];
+
+        phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+
+        assert_eq!(colony.cats[0].death_time, Some(3_600_000));
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .all(|job| job.status == JobStatus::Cancelled),
+            "expected both jobs cancelled, got {:?}",
+            colony.jobs
+        );
+    }
+
+    #[test]
+    fn old_age_death_logs_a_died_peacefully_event() {
+        let cat = ancient_cat("elder", "colony-1");
+        let mut colony = old_age_colony(cat, 0.0);
+
+        phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
+
+        assert_eq!(colony.cats[0].death_time, Some(3_600_000));
+        assert!(
+            colony.events.iter().any(
+                |event| matches!(&event.kind, EventKind::Other(kind) if kind == "death")
+                    && event.message == "Poppy died peacefully of old age."
+            ),
+            "expected an old-age death event, got {:?}",
+            colony.events
+        );
+    }
+
+    #[test]
+    fn old_age_death_is_deterministic_across_identical_runs() {
+        // Two independently-founded worlds on the same seed, driven through the same
+        // forced old age (a direct, non-RNG mutation applied identically to both),
+        // must end up byte-identical — including the eventual old-age death, its
+        // salvage/job-cancel cleanup, and its event. Proves phase 6 pass 1's deferred
+        // post-loop processing (collected during the loop, applied after) stays
+        // byte-identical and doesn't perturb the life-chain RNG draw sequence.
+        let mut left = new_world(9001);
+        left.colonies
+            .push(found_colony(left.world_seed, "colony-1", 10_000, 9001));
+        let mut right = new_world(9001);
+        right
+            .colonies
+            .push(found_colony(right.world_seed, "colony-1", 10_000, 9001));
+
+        // Force one cat toward a guaranteed old-age death identically on both worlds —
+        // a plain field write, not RNG, so it cannot desync the twin.
+        left.colonies[0].cats[0].age_hours = 100_000.0;
+        right.colonies[0].cats[0].age_hours = 100_000.0;
+
+        for step in 1..=10 {
+            let now = 10_000 + i64::from(step) * 60_000;
+            assert_eq!(world_tick(&mut left, now), world_tick(&mut right, now));
+        }
+
+        assert_eq!(left.colonies[0].cats, right.colonies[0].cats);
+        assert_eq!(left.colonies[0].events, right.colonies[0].events);
+        assert!(
+            left.colonies[0].cats[0].death_time.is_some(),
+            "the forced old age never actually killed the cat — twin comparison is vacuous"
+        );
+        assert!(
+            left.colonies[0]
+                .events
+                .iter()
+                .any(|event| event.message.contains("died peacefully of old age")),
+            "expected an old-age death event on both worlds, got {:?}",
             left.colonies[0].events
         );
     }
