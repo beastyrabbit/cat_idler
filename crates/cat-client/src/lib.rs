@@ -987,7 +987,8 @@ fn classify_event(message: &str) -> EventKind {
         "critical", "crisis", "depleted", "no water", "no food", "thirst", "starv",
     ]) {
         EventKind::Crisis
-    } else if has(&["born", "kitten", "birth"]) {
+    } else if has(&["born", "kitten", "birth", "expecting", "litter"]) {
+        // Births and conceptions ("… are expecting a litter.") read as positive.
         EventKind::Birth
     } else if has(&["election", "elected", "leader", "vote", "steward", "term"]) {
         EventKind::Election
@@ -5232,7 +5233,15 @@ mod tests {
 
     #[test]
     fn events_classify_by_keyword_and_colour() {
-        assert_eq!(classify_event("Mossfoot was born"), EventKind::Birth);
+        // Real breeding-feed formats: births + conceptions both read as positive.
+        assert_eq!(
+            classify_event("Pebble was born to Ash and Bramble."),
+            EventKind::Birth
+        );
+        assert_eq!(
+            classify_event("Ash and Bramble are expecting a litter."),
+            EventKind::Birth
+        );
         assert_eq!(
             classify_event("Elder Bramble died of old age"),
             EventKind::Death
