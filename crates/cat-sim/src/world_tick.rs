@@ -95,7 +95,7 @@ use crate::{
         CombatModifiers, DefenseStock, MusterCombatant, WARRIOR_XP_PER_RAID, can_fight,
         muster_defense,
     },
-    world_gen::{TileResources, generate_world_chunk, get_colony_position},
+    world_gen::{TileResources, generate_world_chunk, get_colony_position, tile_to_chunk},
     zones::{Zone, ZoneKind, ZonePos, ZoneRect, filter_targets_by_zones},
 };
 
@@ -139,6 +139,14 @@ pub struct ColonyRuntime {
     pub ritual_requested_at: Option<i64>,
     pub critical_since: Option<i64>,
     pub claimed_tiles: Vec<TilePos>,
+    /// World-tile coordinate of this colony's village anchor (the shrine footprint's NW
+    /// corner). Colony 0 (the single founding colony) is always [`VILLAGE_ANCHOR`], so its
+    /// every anchor-relative computation is byte-identical to the pre-multi-village code.
+    /// A second village founded via `FoundVillage` gets a distinct anchor at a valid site
+    /// far from every existing colony, and its whole spatial frame (blueprint, claimed
+    /// tiles, roads, reveal, raids, movement conversions) is taken relative to *this*
+    /// anchor rather than the global constant.
+    pub anchor: TilePos,
     /// Fog-of-war: the set of world tiles the client is allowed to render un-fogged.
     /// Runtime-only and independent of `world_tiles` (which is lazily/​sparsely
     /// populated for the live colony) — the founding village reveal seeds it and cats
@@ -572,6 +580,14 @@ const RAIDER_SPEED_TILES_PER_SEC: f64 = 0.4;
 const RAID_SPAWN_DISTANCE: f64 = 14.0;
 const ENGAGE_RANGE: f64 = 1.5;
 const DEFEND_CLICK_DAMAGE: f64 = 6.0;
+/// [`VILLAGE_ANCHOR`] (a `village_layout::GridPos`) as a `TilePos` — the world-tile type
+/// the colony's spatial state is stored in. This is the canonical anchor colony 0 always
+/// uses, so every anchor-relative computation stays byte-identical for the single colony.
+const VILLAGE_ANCHOR_TILE: TilePos = TilePos {
+    x: VILLAGE_ANCHOR.x,
+    y: VILLAGE_ANCHOR.y,
+};
+
 /// Small fixed start (P16): a founded colony begins with exactly this many adult cats.
 const STARTER_CAT_COUNT: usize = 5;
 /// Starter cats are spread across the adult band (kitten 0–6 / young 6–24 / adult
@@ -596,6 +612,9 @@ struct MovementPassContext {
     movement_elapsed: f64,
     wander_chance: f64,
     ring_radius: i32,
+    /// This colony's village anchor (world tile of the shrine footprint NW corner) —
+    /// every colony-local ↔ world conversion in the movement pass is taken relative to it.
+    anchor: TilePos,
     claimed_area: crate::village_area::VillageArea,
     area_gate: Option<AreaGatePlacement>,
     gate: TilePos,
@@ -629,6 +648,7 @@ impl Default for ColonyRuntime {
             ritual_requested_at: None,
             critical_since: None,
             claimed_tiles: Vec::new(),
+            anchor: VILLAGE_ANCHOR_TILE,
             revealed_tiles: BTreeSet::new(),
             provisional_tiles: BTreeMap::new(),
             officers: BTreeMap::new(),
@@ -741,6 +761,23 @@ pub fn found_colony(
     now_ms: i64,
     seed: u32,
 ) -> ColonyRuntime {
+    // The single founding colony (colony 0) always sits on the canonical anchor, so its
+    // whole blueprint/roads/reveal/terrain are byte-identical to the pre-multi-village code.
+    found_colony_at(world_seed, colony_id, now_ms, seed, VILLAGE_ANCHOR_TILE)
+}
+
+/// Found a colony whose village anchor is `anchor` (world tile of the shrine footprint's
+/// NW corner). Every spatial helper it calls is anchor-relative, so a second village lands
+/// its blueprint, claimed square, road cross, reveal halo and starter terrain plateau at
+/// `anchor` rather than the global constant. Cats are stored colony-local (relative to the
+/// anchor via [`position_to_world`]), so they need no per-site offset.
+pub fn found_colony_at(
+    world_seed: u32,
+    colony_id: impl Into<ColonyId>,
+    now_ms: i64,
+    seed: u32,
+    anchor: TilePos,
+) -> ColonyRuntime {
     let colony_id = colony_id.into();
     let mut colony = ColonyRuntime {
         id: colony_id.clone(),
@@ -748,9 +785,10 @@ pub fn found_colony(
         status: ColonyStatus::Starting,
         resources: starting_resources(),
         cats: create_starter_cats(&colony_id, now_ms, seed),
-        buildings: starter_buildings(world_seed),
-        world_tiles: starter_world_tiles(world_seed),
-        claimed_tiles: founding_claimed_tiles(),
+        anchor,
+        buildings: starter_buildings(anchor, world_seed),
+        world_tiles: starter_world_tiles(anchor, world_seed),
+        claimed_tiles: founding_claimed_tiles(anchor),
         run_number: 1,
         run_started_at: now_ms,
         created_at: now_ms,
@@ -772,6 +810,86 @@ pub fn found_colony(
     colony
 }
 
+/// Minimum Chebyshev separation (world tiles) required between any two colony anchors. It
+/// is comfortably larger than a village's claimed square (`2 * VILLAGE_START_RADIUS + 1`
+/// wide, centred one tile SE of the anchor) plus its `FOUNDING_REVEAL_RADIUS` fog halo, so
+/// two founded settlements never share claimed ground, fences, or their initial reveal.
+pub const MIN_VILLAGE_SEPARATION: i32 = 48;
+
+/// The bounded outward extent (in lattice shells of [`MIN_VILLAGE_SEPARATION`]) the site
+/// search scans before giving up and taking the guaranteed-separated fallback.
+const MAX_FOUNDING_LATTICE_RING: i32 = 16;
+
+/// Deterministically choose a village anchor for a newly founded colony: a buildable grass
+/// tile at least [`MIN_VILLAGE_SEPARATION`] tiles (Chebyshev) from every existing colony
+/// anchor. Pure and RNG-free — it scans a fixed outward square lattice of candidate sites
+/// (each one separation step apart) in a stable ring-then-`(dy, dx)` order and returns the
+/// first candidate that is both far enough from every existing village and sits on
+/// grassland/lowland ground. If the bounded search finds no grass tile it falls back to a
+/// guaranteed-separated offset east of the farthest existing anchor (the founding blueprint
+/// synthesises its own flat plateau at whatever anchor it is given, so the fallback is still
+/// a valid, playable site — just not hand-picked grass).
+#[must_use]
+pub fn select_founding_site(world_seed: u32, existing_anchors: &[TilePos]) -> TilePos {
+    let base = VILLAGE_ANCHOR_TILE;
+    for ring in 1..=MAX_FOUNDING_LATTICE_RING {
+        for candidate in lattice_ring_candidates(base, ring) {
+            if is_separated_from_all(candidate, existing_anchors)
+                && is_grass_founding_site(world_seed, candidate)
+            {
+                return candidate;
+            }
+        }
+    }
+    let max_x = existing_anchors
+        .iter()
+        .map(|anchor| anchor.x)
+        .max()
+        .unwrap_or(base.x);
+    TilePos {
+        x: max_x + MIN_VILLAGE_SEPARATION,
+        y: base.y,
+    }
+}
+
+/// Whether `candidate` is at least [`MIN_VILLAGE_SEPARATION`] tiles from every existing
+/// anchor (Chebyshev). Vacuously true for the first colony.
+fn is_separated_from_all(candidate: TilePos, existing_anchors: &[TilePos]) -> bool {
+    existing_anchors
+        .iter()
+        .all(|anchor| cheb_from_anchor(*anchor, candidate) >= MIN_VILLAGE_SEPARATION)
+}
+
+/// Whether the shrine-centre tile at `anchor` sits on buildable grass (grassland/lowland
+/// terrain role). Water is not required here: the founding stamp guarantees a reachable
+/// water source at any anchor.
+fn is_grass_founding_site(world_seed: u32, anchor: TilePos) -> bool {
+    let center = shrine_center_tile(anchor);
+    matches!(
+        crate::terrain_gen::tile_biome(world_seed, center.x, center.y),
+        crate::terrain_gen::BiomeRole::Grassland | crate::terrain_gen::BiomeRole::Lowland
+    )
+}
+
+/// Candidate anchors on the `ring`-th square lattice shell around `base`, each spaced a whole
+/// [`MIN_VILLAGE_SEPARATION`] apart, in a stable `(dy, dx)` scan order.
+fn lattice_ring_candidates(base: TilePos, ring: i32) -> Vec<TilePos> {
+    let step = MIN_VILLAGE_SEPARATION;
+    let mut out = Vec::new();
+    for dy in -ring..=ring {
+        for dx in -ring..=ring {
+            if dx.abs().max(dy.abs()) != ring {
+                continue;
+            }
+            out.push(TilePos {
+                x: base.x + dx * step,
+                y: base.y + dy * step,
+            });
+        }
+    }
+    out
+}
+
 /// Lift the fog for the founding village reveal: the whole claimed village ground
 /// starts revealed (players can see their own settlement), plus a `FOUNDING_REVEAL_RADIUS`
 /// halo around the anchor so the immediately-adjacent water source is visible. Nothing
@@ -779,13 +897,14 @@ pub fn found_colony(
 /// reveal set is independent of `world_tiles`, so it is correct even when the live
 /// colony's tile map is sparse.
 fn reveal_founding_area(colony: &mut ColonyRuntime) {
+    let anchor = colony.anchor;
     let claimed = colony.claimed_tiles.clone();
     colony.revealed_tiles.extend(claimed);
     for dy in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
         for dx in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
             colony.revealed_tiles.insert(TilePos {
-                x: VILLAGE_ANCHOR.x + dx,
-                y: VILLAGE_ANCHOR.y + dy,
+                x: anchor.x + dx,
+                y: anchor.y + dy,
             });
         }
     }
@@ -964,10 +1083,10 @@ fn cat_sprite_params_from_cat(cat: &Cat) -> Option<CatSpriteParams> {
 /// The shrine's centre tile. The shrine's footprint anchor (its NW corner) is the
 /// village anchor; a 3×3 footprint puts the centre one tile SE of it. Roads radiate
 /// from this tile and the claimed square is centred on it.
-const fn shrine_center_tile() -> TilePos {
+const fn shrine_center_tile(anchor: TilePos) -> TilePos {
     TilePos {
-        x: VILLAGE_ANCHOR.x + 1,
-        y: VILLAGE_ANCHOR.y + 1,
+        x: anchor.x + 1,
+        y: anchor.y + 1,
     }
 }
 
@@ -992,11 +1111,17 @@ const STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 7] = [
     (BuildingType::StonePrep, 9, 9, 1),
 ];
 
-fn starter_buildings(_world_seed: u32) -> Vec<BuildingRuntime> {
+fn starter_buildings(anchor: TilePos, _world_seed: u32) -> Vec<BuildingRuntime> {
+    // The blueprint is authored at [`VILLAGE_ANCHOR`]; a colony founded elsewhere shifts
+    // every footprint by the same delta so the whole layout rides its own anchor. Colony 0
+    // (anchor == VILLAGE_ANCHOR) shifts by zero and is byte-identical.
+    let dx = anchor.x - VILLAGE_ANCHOR.x;
+    let dy = anchor.y - VILLAGE_ANCHOR.y;
     STARTER_BLUEPRINT
         .into_iter()
         .enumerate()
         .map(|(index, (building_type, x, y, level))| {
+            let (x, y) = (x + dx, y + dy);
             let id = if building_type == BuildingType::Shrine {
                 "building-shrine".to_owned()
             } else {
@@ -1018,13 +1143,13 @@ fn starter_buildings(_world_seed: u32) -> Vec<BuildingRuntime> {
 
 /// The stone-road tiles of the founding cross: the shrine's centre row/column extended
 /// out to each wall (N/S/E/W), skipping the shrine's own footprint.
-fn founding_road_tiles() -> Vec<TilePos> {
-    let center = shrine_center_tile();
+fn founding_road_tiles(anchor: TilePos) -> Vec<TilePos> {
+    let center = shrine_center_tile(anchor);
     let (shrine_w, shrine_h) = footprint_for(BuildingType::Shrine);
-    let shrine_min_x = VILLAGE_ANCHOR.x;
-    let shrine_max_x = VILLAGE_ANCHOR.x + shrine_w - 1;
-    let shrine_min_y = VILLAGE_ANCHOR.y;
-    let shrine_max_y = VILLAGE_ANCHOR.y + shrine_h - 1;
+    let shrine_min_x = anchor.x;
+    let shrine_max_x = anchor.x + shrine_w - 1;
+    let shrine_min_y = anchor.y;
+    let shrine_max_y = anchor.y + shrine_h - 1;
     let lo = -VILLAGE_START_RADIUS;
     let hi = VILLAGE_START_RADIUS;
 
@@ -1048,7 +1173,8 @@ fn founding_road_tiles() -> Vec<TilePos> {
 /// ground: clear any water that collides with a building or road footprint, then make
 /// sure a reachable water source remains (carving a deterministic pond if not).
 fn stamp_founding_roads_and_water(colony: &mut ColonyRuntime) {
-    let roads = founding_road_tiles();
+    let anchor = colony.anchor;
+    let roads = founding_road_tiles(anchor);
     let mut blocked: HashSet<TilePos> = colony
         .buildings
         .iter()
@@ -1078,7 +1204,7 @@ fn stamp_founding_roads_and_water(colony: &mut ColonyRuntime) {
     // the nearest free in-band tile (deterministic — no RNG).
     let has_reachable_water = colony.world_tiles.values().any(|tile| {
         tile_has_water(Some(tile))
-            && cheb_from_anchor(tile.pos) <= 6
+            && cheb_from_anchor(anchor, tile.pos) <= 6
             && !blocked.contains(&tile.pos)
     });
     if !has_reachable_water && let Some(pos) = founding_pond_site(colony, &blocked) {
@@ -1116,7 +1242,7 @@ fn founding_pond_site(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Opt
         .copied()
         .filter(|pos| {
             !blocked.contains(pos)
-                && (2..=6).contains(&cheb_from_anchor(*pos))
+                && (2..=6).contains(&cheb_from_anchor(colony.anchor, *pos))
                 && colony
                     .world_tiles
                     .get(pos)
@@ -1127,8 +1253,8 @@ fn founding_pond_site(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Opt
     candidates.into_iter().next()
 }
 
-fn founding_claimed_tiles() -> Vec<TilePos> {
-    let center = shrine_center_tile();
+fn founding_claimed_tiles(anchor: TilePos) -> Vec<TilePos> {
+    let center = shrine_center_tile(anchor);
     let mut tiles = Vec::new();
     for dy in -VILLAGE_START_RADIUS..=VILLAGE_START_RADIUS {
         for dx in -VILLAGE_START_RADIUS..=VILLAGE_START_RADIUS {
@@ -1141,19 +1267,25 @@ fn founding_claimed_tiles() -> Vec<TilePos> {
     tiles
 }
 
-fn starter_world_tiles(world_seed: u32) -> BTreeMap<TilePos, WorldTileRuntime> {
-    let colony_pos = get_colony_position();
+fn starter_world_tiles(anchor: TilePos, world_seed: u32) -> BTreeMap<TilePos, WorldTileRuntime> {
+    // Generate the 3×3 chunk neighbourhood centred on the colony's own anchor chunk, with
+    // the anchor as the guaranteed-flat plateau centre. Colony 0's anchor is
+    // `get_colony_position()` (== VILLAGE_ANCHOR, chunk (0,0)), so this reproduces the
+    // original fixed `-1..=1` chunk sweep byte-for-byte; a relocated village gets the same
+    // buildable plateau carved around *its* site.
+    debug_assert_eq!(
+        (get_colony_position().x, get_colony_position().y),
+        (VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y),
+        "starter plateau centre must track the village anchor",
+    );
+    let center_chunk = tile_to_chunk(anchor.x, anchor.y);
     let mut tiles = BTreeMap::new();
 
-    for chunk_y in -1..=1 {
-        for chunk_x in -1..=1 {
-            for tile in generate_world_chunk(
-                chunk_x,
-                chunk_y,
-                i64::from(world_seed),
-                colony_pos.x,
-                colony_pos.y,
-            ) {
+    for chunk_y in (center_chunk.chunk_y - 1)..=(center_chunk.chunk_y + 1) {
+        for chunk_x in (center_chunk.chunk_x - 1)..=(center_chunk.chunk_x + 1) {
+            for tile in
+                generate_world_chunk(chunk_x, chunk_y, i64::from(world_seed), anchor.x, anchor.y)
+            {
                 let pos = TilePos {
                     x: tile.x,
                     y: tile.y,
@@ -1418,7 +1550,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     // `retireCat`, which runs for every death including old age.
     for death in old_age_deaths {
         if let Some(carrying) = death.carrying {
-            let deposit_at = position_to_world(death.position);
+            let deposit_at = position_to_world(colony.anchor, death.position);
             credit_carrying(colony, &carrying, deposit_at);
         }
         cancel_cat_jobs(colony, &death.id, gate.processed_through);
@@ -2074,13 +2206,16 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
                 .assigned_cat
                 .as_deref()
                 .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == cat_id))
-                .map_or_else(village_anchor_world, |cat| position_to_world(cat.position));
+                .map_or_else(
+                    || village_anchor_world(colony.anchor),
+                    |cat| position_to_world(colony.anchor, cat.position),
+                );
             let dir = roll_seeded(f64::from(movement_seed));
             let len = roll_seeded(f64::from(dir.next_seed));
             movement_seed = len.next_seed;
             Some(scout_wander_target(
                 from,
-                village_anchor_world(),
+                village_anchor_world(colony.anchor),
                 dir.value,
                 len.value,
             ))
@@ -2093,8 +2228,8 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
             &[]
         };
         let context = JobDestinationContext {
-            anchor: village_anchor_world(),
-            shrine: village_anchor_world(),
+            anchor: village_anchor_world(colony.anchor),
+            shrine: village_anchor_world(colony.anchor),
             food_tiles: hunt_tiles,
             roll: roll.value,
             site: construction_site,
@@ -2172,13 +2307,13 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
                 .cats
                 .iter()
                 .find(|cat| cat.id == cat_id)
-                .map(|cat| position_to_world(cat.position))
+                .map(|cat| position_to_world(colony.anchor, cat.position))
             {
                 haul_destination(colony, carrying_kind_for_job(job.kind), cat_pos)
             } else if job.kind == JobKind::HaulGatherSpot {
                 destination
             } else {
-                village_anchor_world()
+                village_anchor_world(colony.anchor)
             };
             if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
                 cat.destination = Some(position_from_world(dest));
@@ -3483,7 +3618,7 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
         // A dying carrier's yield is salvaged rather than lost, before the
         // cleanup below clears `carrying`.
         if let Some(carrying) = colony.cats[index].carrying.clone() {
-            let deposit_at = position_to_world(colony.cats[index].position);
+            let deposit_at = position_to_world(colony.anchor, colony.cats[index].position);
             credit_carrying(colony, &carrying, deposit_at);
         }
 
@@ -3775,7 +3910,7 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
 
         colony.cats[cat_index].gain_skill(Labor::Haul, HAUL_SKILL_GAIN);
         let carrying_kind = carrying_kind_for_job(job.kind);
-        let haul_from = position_to_world(colony.cats[cat_index].position);
+        let haul_from = position_to_world(colony.anchor, colony.cats[cat_index].position);
         let haul_to = haul_destination(colony, carrying_kind, haul_from);
         colony.cats[cat_index].carrying = Some(Carrying {
             kind: carrying_kind,
@@ -3849,13 +3984,14 @@ fn phase_32_movement_setup_and_village_expansion_queue(
     let area_gate = (!claimed_area.is_empty())
         .then(|| gate_placement_default(&claimed_area))
         .flatten();
-    let gate_pos = movement_gate(area_gate, ring_radius);
+    let gate_pos = movement_gate(colony.anchor, area_gate, ring_radius);
 
     MovementPassContext {
         movement_seed,
         movement_elapsed,
         wander_chance,
         ring_radius,
+        anchor: colony.anchor,
         claimed_area,
         area_gate,
         gate: gate_pos,
@@ -3895,7 +4031,7 @@ fn phase_33_movement_deposits_and_no_destination_wander(
 
     for (cat_id, position, carrying) in cat_ids {
         if let Some(carrying) = carrying {
-            let world_pos = position_to_world(position);
+            let world_pos = position_to_world(colony.anchor, position);
             // Deposit once the carrier reaches its haul destination — the pile it walked to,
             // or the shrine anchor when no designated pile accepts the resource. With no
             // designated piles this is exactly the shrine anchor, matching pre-haul-fill. A
@@ -3956,7 +4092,7 @@ fn phase_33_movement_deposits_and_no_destination_wander(
                 if next_movement_roll(movement) >= movement.wander_chance {
                     continue;
                 }
-                let world_pos = position_to_world(colony.cats[cat_index].position);
+                let world_pos = position_to_world(colony.anchor, colony.cats[cat_index].position);
                 let anchor = wander_anchor(colony, &cat_id);
                 let target = pick_wander_target(
                     anchor,
@@ -3996,8 +4132,8 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
     let walk_grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &movement.walk_tiles,
         anchor: PathTilePos {
-            x: VILLAGE_ANCHOR.x,
-            y: VILLAGE_ANCHOR.y,
+            x: movement.anchor.x,
+            y: movement.anchor.y,
         },
         ring_radius: movement.ring_radius,
         gate: PathTilePos {
@@ -4036,8 +4172,8 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             continue;
         };
 
-        let world_pos = position_to_world(colony.cats[cat_index].position);
-        let destination = position_to_world(destination);
+        let world_pos = position_to_world(colony.anchor, colony.cats[cat_index].position);
+        let destination = position_to_world(colony.anchor, destination);
         let activity = colony.cats[cat_index].activity;
         let current_task = colony.cats[cat_index].current_task;
         let standing_tile_pos = world_pos_to_tile(world_pos);
@@ -4348,7 +4484,7 @@ fn complete_arrived_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) 
         if let Some((kind, amount)) = picked_up
             && let Some(carrying_kind) = carrying_kind_for_resource(kind)
         {
-            let cat_pos = position_to_world(colony.cats[cat_index].position);
+            let cat_pos = position_to_world(colony.anchor, colony.cats[cat_index].position);
             let dest_index = stockpiles::village_deposit_index(
                 &colony.stockpiles,
                 &gather_spot_ids,
@@ -4356,10 +4492,13 @@ fn complete_arrived_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) 
                 cat_pos.x,
                 cat_pos.y,
             );
-            let dest = dest_index.map_or_else(village_anchor_world, |idx| {
-                let (cx, cy) = colony.stockpiles[idx].center();
-                WorldPos { x: cx, y: cy }
-            });
+            let dest = dest_index.map_or_else(
+                || village_anchor_world(colony.anchor),
+                |idx| {
+                    let (cx, cy) = colony.stockpiles[idx].center();
+                    WorldPos { x: cx, y: cy }
+                },
+            );
 
             let cat = &mut colony.cats[cat_index];
             cat.gain_skill(Labor::Haul, HAUL_SKILL_GAIN);
@@ -4433,7 +4572,7 @@ fn tile_cheb_distance(a: TilePos, b: TilePos) -> i32 {
 /// sit on open ground beside the site, not on it. Biasing toward the anchor also shortens the
 /// mover's long-haul leg. Ties broken by a fixed compass order (north, east, south, west) —
 /// no RNG, so this is fully deterministic.
-fn gather_spot_tile_adjacent_to(site: TilePos) -> TilePos {
+fn gather_spot_tile_adjacent_to(anchor: TilePos, site: TilePos) -> TilePos {
     const OFFSETS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
     OFFSETS
         .iter()
@@ -4441,7 +4580,7 @@ fn gather_spot_tile_adjacent_to(site: TilePos) -> TilePos {
             x: site.x + dx,
             y: site.y + dy,
         })
-        .min_by_key(|&tile| (cheb_from_anchor(tile), tile.x, tile.y))
+        .min_by_key(|&tile| (cheb_from_anchor(anchor, tile), tile.x, tile.y))
         .expect("OFFSETS is non-empty")
 }
 
@@ -4472,6 +4611,7 @@ fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64) {
     if colony.gather_spots.len() >= MAX_GATHER_SPOTS {
         return;
     }
+    let anchor = colony.anchor;
 
     let mut worker_counts: BTreeMap<(ResourceKind, TilePos), usize> = BTreeMap::new();
     for job in &colony.jobs {
@@ -4509,7 +4649,7 @@ fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64) {
         .into_iter()
         .filter(|&((_, site), count)| {
             count >= AUTO_GATHER_SPOT_MIN_WORKERS
-                && cheb_from_anchor(site) >= AUTO_GATHER_SPOT_MIN_DISTANCE
+                && cheb_from_anchor(anchor, site) >= AUTO_GATHER_SPOT_MIN_DISTANCE
         })
         .filter(|&((kind, site), _)| {
             !already_served.iter().any(|&(served_kind, served_site)| {
@@ -4522,8 +4662,8 @@ fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64) {
     // Deterministic order: farthest (most beneficial split) first, then most heavily
     // worked, then stable tile/kind order as a final tie-break. No RNG.
     candidates.sort_by(|a, b| {
-        cheb_from_anchor(b.1)
-            .cmp(&cheb_from_anchor(a.1))
+        cheb_from_anchor(anchor, b.1)
+            .cmp(&cheb_from_anchor(anchor, a.1))
             .then_with(|| b.2.cmp(&a.2))
             .then_with(|| a.1.cmp(&b.1))
             .then_with(|| a.0.cmp(&b.0))
@@ -4533,7 +4673,7 @@ fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64) {
         if colony.gather_spots.len() >= MAX_GATHER_SPOTS {
             break;
         }
-        let spot_tile = gather_spot_tile_adjacent_to(site);
+        let spot_tile = gather_spot_tile_adjacent_to(anchor, site);
         let id = format!("gather-auto-{now_ms}-{}", colony.stockpiles.len() + 1);
         colony.stockpiles.push(Stockpile {
             id: id.clone(),
@@ -4637,8 +4777,8 @@ fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate) {
     let corridor = select_road_corridor(
         &road_tiles,
         RoadCorridorOptions {
-            anchor_x: VILLAGE_ANCHOR.x,
-            anchor_y: VILLAGE_ANCHOR.y,
+            anchor_x: colony.anchor.x,
+            anchor_y: colony.anchor.y,
             ring_radius,
             max_tiles,
             wear_threshold: None,
@@ -5277,8 +5417,8 @@ fn spawn_raid(
     let gate_pos = raid_gate_position(colony);
     let angle = next_raid_roll() * std::f64::consts::TAU;
     let origin = TilePos {
-        x: (f64::from(VILLAGE_ANCHOR.x) + angle.cos() * RAID_SPAWN_DISTANCE).round() as i32,
-        y: (f64::from(VILLAGE_ANCHOR.y) + angle.sin() * RAID_SPAWN_DISTANCE).round() as i32,
+        x: (f64::from(colony.anchor.x) + angle.cos() * RAID_SPAWN_DISTANCE).round() as i32,
+        y: (f64::from(colony.anchor.y) + angle.sin() * RAID_SPAWN_DISTANCE).round() as i32,
     };
     let raid_id = format!(
         "raid-{}-{}",
@@ -5335,6 +5475,7 @@ fn apply_banked_raid_clicks(colony: &mut ColonyRuntime, gate: TickGate) {
         return;
     };
     let gate_pos = tile_pos_to_world(raid_gate_position(colony));
+    let anchor = colony.anchor;
 
     for _ in 0..clicks {
         let target = colony
@@ -5343,9 +5484,9 @@ fn apply_banked_raid_clicks(colony: &mut ColonyRuntime, gate: TickGate) {
             .enumerate()
             .filter(|(_, raider)| raider.raid_id == active_raid_id && raider.health > 0.0)
             .min_by(|(_, left), (_, right)| {
-                cheb_distance_world(position_to_world(left.position), gate_pos)
+                cheb_distance_world(position_to_world(anchor, left.position), gate_pos)
                     .partial_cmp(&cheb_distance_world(
-                        position_to_world(right.position),
+                        position_to_world(anchor, right.position),
                         gate_pos,
                     ))
                     .unwrap_or(std::cmp::Ordering::Equal)
@@ -5587,8 +5728,8 @@ fn end_raid(colony: &mut ColonyRuntime, raid_id: &str) {
 
 fn raid_gate_position(colony: &ColonyRuntime) -> TilePos {
     TilePos {
-        x: VILLAGE_ANCHOR.x,
-        y: VILLAGE_ANCHOR.y + village_ring_radius(colony.buildings.len() as i32),
+        x: colony.anchor.x,
+        y: colony.anchor.y + village_ring_radius(colony.buildings.len() as i32),
     }
 }
 
@@ -6035,7 +6176,7 @@ fn has_quarry_site(colony: &ColonyRuntime) -> bool {
     // site the veto permanently rejects. Reconciled to `tile_is_explored`.
     colony.world_tiles.values().any(|tile| {
         matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
-            && tile_is_explored(tile)
+            && tile_is_explored(colony.anchor, tile)
     })
 }
 
@@ -6051,7 +6192,7 @@ fn has_water_site(colony: &ColonyRuntime) -> bool {
     colony
         .world_tiles
         .values()
-        .any(|tile| tile_has_water(Some(tile)) && tile_is_explored(tile))
+        .any(|tile| tile_has_water(Some(tile)) && tile_is_explored(colony.anchor, tile))
 }
 
 fn has_frontier(colony: &ColonyRuntime) -> bool {
@@ -6197,10 +6338,10 @@ fn prune_events_to_newest(colony: &mut ColonyRuntime, keep: usize) {
     colony.events = next_events;
 }
 
-fn village_anchor_world() -> WorldPos {
+fn village_anchor_world(anchor: TilePos) -> WorldPos {
     WorldPos {
-        x: f64::from(VILLAGE_ANCHOR.x),
-        y: f64::from(VILLAGE_ANCHOR.y),
+        x: f64::from(anchor.x),
+        y: f64::from(anchor.y),
     }
 }
 
@@ -6226,12 +6367,12 @@ fn position_from_world(pos: WorldPos) -> Position {
     }
 }
 
-fn position_to_world(pos: Position) -> WorldPos {
+fn position_to_world(anchor: TilePos, pos: Position) -> WorldPos {
     match pos.map {
         MapType::World => WorldPos { x: pos.x, y: pos.y },
         MapType::Colony => WorldPos {
-            x: pos.x + f64::from(VILLAGE_ANCHOR.x),
-            y: pos.y + f64::from(VILLAGE_ANCHOR.y),
+            x: pos.x + f64::from(anchor.x),
+            y: pos.y + f64::from(anchor.y),
         },
     }
 }
@@ -6270,10 +6411,15 @@ fn next_scout_leg(
         .cats
         .iter()
         .find(|cat| cat.id == cat_id)
-        .map(|cat| position_to_world(cat.position))?;
+        .map(|cat| position_to_world(colony.anchor, cat.position))?;
     let dir = next_movement_roll(movement);
     let len = next_movement_roll(movement);
-    Some(scout_wander_target(from, village_anchor_world(), dir, len))
+    Some(scout_wander_target(
+        from,
+        village_anchor_world(colony.anchor),
+        dir,
+        len,
+    ))
 }
 
 fn claimed_area(colony: &ColonyRuntime) -> crate::village_area::VillageArea {
@@ -6288,7 +6434,11 @@ fn claimed_area(colony: &ColonyRuntime) -> crate::village_area::VillageArea {
     from_tiles(&tiles)
 }
 
-fn movement_gate(area_gate: Option<AreaGatePlacement>, ring_radius: i32) -> TilePos {
+fn movement_gate(
+    anchor: TilePos,
+    area_gate: Option<AreaGatePlacement>,
+    ring_radius: i32,
+) -> TilePos {
     if let Some(gate) = area_gate {
         let delta = side_delta(gate.side);
         return TilePos {
@@ -6298,8 +6448,8 @@ fn movement_gate(area_gate: Option<AreaGatePlacement>, ring_radius: i32) -> Tile
     }
 
     TilePos {
-        x: VILLAGE_ANCHOR.x,
-        y: VILLAGE_ANCHOR.y + ring_radius,
+        x: anchor.x,
+        y: anchor.y + ring_radius,
     }
 }
 
@@ -6380,14 +6530,15 @@ fn wander_anchor(colony: &ColonyRuntime, cat_id: &str) -> WorldPos {
         .buildings
         .iter()
         .find(|building| building.assigned_cat.as_deref() == Some(cat_id))
-        .map_or_else(village_anchor_world, |building| {
-            tile_pos_to_world(building.position)
-        })
+        .map_or_else(
+            || village_anchor_world(colony.anchor),
+            |building| tile_pos_to_world(building.position),
+        )
 }
 
 fn is_inside_movement_village(pos: TilePos, movement: &MovementPassContext) -> bool {
     if movement.claimed_area.is_empty() {
-        return cheb_from_anchor(pos) < movement.ring_radius;
+        return cheb_from_anchor(movement.anchor, pos) < movement.ring_radius;
     }
     is_inside_village(GridPos { x: pos.x, y: pos.y }, &movement.claimed_area)
 }
@@ -6669,7 +6820,9 @@ fn food_tiles_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
         .world_tiles
         .values()
         .filter(|tile| {
-            tile.resources.food >= 25 && tile_is_explored(tile) && cheb_from_anchor(tile.pos) > 4
+            tile.resources.food >= 25
+                && tile_is_explored(colony.anchor, tile)
+                && cheb_from_anchor(colony.anchor, tile.pos) > 4
         })
         .map(|tile| tile_pos_to_world(tile.pos))
         .collect()
@@ -6681,11 +6834,11 @@ fn quarry_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
         .values()
         .filter(|tile| {
             matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
-                && tile_is_explored(tile)
+                && tile_is_explored(colony.anchor, tile)
         })
         .map(|tile| tile.pos)
         .collect::<Vec<_>>();
-    sites.sort_by_key(|site| cheb_from_anchor(*site));
+    sites.sort_by_key(|site| cheb_from_anchor(colony.anchor, *site));
     sites.into_iter().map(tile_pos_to_world).collect()
 }
 
@@ -6693,21 +6846,19 @@ fn water_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
     let mut sites = colony
         .world_tiles
         .values()
-        .filter(|tile| tile_has_water(Some(tile)) && tile_is_explored(tile))
+        .filter(|tile| tile_has_water(Some(tile)) && tile_is_explored(colony.anchor, tile))
         .map(|tile| tile.pos)
         .collect::<Vec<_>>();
-    sites.sort_by_key(|site| cheb_from_anchor(*site));
+    sites.sort_by_key(|site| cheb_from_anchor(colony.anchor, *site));
     sites.into_iter().map(tile_pos_to_world).collect()
 }
 
-fn tile_is_explored(tile: &WorldTileRuntime) -> bool {
-    tile.path_wear > 62 || cheb_from_anchor(tile.pos) <= 6
+fn tile_is_explored(anchor: TilePos, tile: &WorldTileRuntime) -> bool {
+    tile.path_wear > 62 || cheb_from_anchor(anchor, tile.pos) <= 6
 }
 
-fn cheb_from_anchor(pos: TilePos) -> i32 {
-    (pos.x - VILLAGE_ANCHOR.x)
-        .abs()
-        .max((pos.y - VILLAGE_ANCHOR.y).abs())
+fn cheb_from_anchor(anchor: TilePos, pos: TilePos) -> i32 {
+    (pos.x - anchor.x).abs().max((pos.y - anchor.y).abs())
 }
 
 /// The P12.4b raw-material refinement benches. The leader staffs these as a mop-up
@@ -7071,7 +7222,11 @@ fn return_assigned_cat(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickG
     let destination = if job.kind == JobKind::BuildHouse {
         let first = roll_seeded(f64::from(movement_seed(colony.test_rng_seed.unwrap_or(1))));
         let second = roll_seeded(f64::from(first.next_seed));
-        pick_wander_target(village_anchor_world(), first.value, second.value)
+        pick_wander_target(
+            village_anchor_world(colony.anchor),
+            first.value,
+            second.value,
+        )
     } else if matches!(
         job.kind,
         JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
@@ -7079,10 +7234,10 @@ fn return_assigned_cat(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickG
         // The completing gatherer carries its final trip's yield home; route it to the pile
         // that yield belongs in (nearest designated pile accepting it), falling back to the
         // shrine anchor when none does — byte-identical with no designated piles.
-        let from = position_to_world(colony.cats[cat_index].position);
+        let from = position_to_world(colony.anchor, colony.cats[cat_index].position);
         haul_destination(colony, carrying_kind_for_job(job.kind), from)
     } else {
-        village_anchor_world()
+        village_anchor_world(colony.anchor)
     };
     let cat = &mut colony.cats[cat_index];
     cat.destination = Some(position_from_world(destination));
@@ -7251,9 +7406,9 @@ fn chop_nearest_explored_forest(colony: &mut ColonyRuntime, now_ms: i64) {
     let nearest = colony
         .world_tiles
         .values()
-        .filter(|tile| is_forest_type(tile.tile_type) && tile_is_explored(tile))
+        .filter(|tile| is_forest_type(tile.tile_type) && tile_is_explored(colony.anchor, tile))
         .map(|tile| tile.pos)
-        .min_by_key(|site| cheb_from_anchor(*site));
+        .min_by_key(|site| cheb_from_anchor(colony.anchor, *site));
     if let Some(site) = nearest {
         clear_claimed_forest_tile(colony, site, now_ms);
         append_event(
@@ -7268,9 +7423,9 @@ fn chop_nearest_explored_forest(colony: &mut ColonyRuntime, now_ms: i64) {
     }
 }
 
-/// The shrine reservoir's footprint at this world's village anchor.
-fn shrine_stockpile_rect() -> ZoneRect {
-    stockpiles::shrine_rect(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y)
+/// The shrine reservoir's footprint at a colony's village anchor.
+fn shrine_stockpile_rect(anchor: TilePos) -> ZoneRect {
+    stockpiles::shrine_rect(anchor.x, anchor.y)
 }
 
 /// Restore the stockpile balancing-reservoir invariant for a colony (seeds the shrine
@@ -7279,7 +7434,7 @@ pub fn reconcile_colony_stockpiles(colony: &mut ColonyRuntime) {
     stockpiles::reconcile(
         &mut colony.stockpiles,
         &colony.resources,
-        shrine_stockpile_rect(),
+        shrine_stockpile_rect(colony.anchor),
     );
 }
 
@@ -7309,7 +7464,7 @@ fn haul_destination(
     from_pos: WorldPos,
 ) -> WorldPos {
     let Some(kind) = carrying_resource_kind(carrying_kind) else {
-        return village_anchor_world();
+        return village_anchor_world(colony.anchor);
     };
     let mut best: Option<(&Stockpile, f64)> = None;
     for pile in &colony.stockpiles {
@@ -7333,7 +7488,7 @@ fn haul_destination(
             let (cx, cy) = pile.center();
             WorldPos { x: cx, y: cy }
         }
-        None => village_anchor_world(),
+        None => village_anchor_world(colony.anchor),
     }
 }
 
@@ -7364,10 +7519,13 @@ fn haul_deposit_target(
             from_pos.x,
             from_pos.y,
         )
-        .map_or_else(village_anchor_world, |idx| {
-            let (cx, cy) = colony.stockpiles[idx].center();
-            WorldPos { x: cx, y: cy }
-        })
+        .map_or_else(
+            || village_anchor_world(colony.anchor),
+            |idx| {
+                let (cx, cy) = colony.stockpiles[idx].center();
+                WorldPos { x: cx, y: cy }
+            },
+        )
     } else {
         haul_destination(colony, carrying.kind, from_pos)
     }
@@ -7399,7 +7557,11 @@ pub fn building_inbound_haul(colony: &ColonyRuntime, building: &BuildingRuntime)
                 .map(|carrying| (cat.position, carrying))
         })
         .filter(|(position, carrying)| {
-            haul_deposit_target(colony, carrying, position_to_world(*position)) == building_pos
+            haul_deposit_target(
+                colony,
+                carrying,
+                position_to_world(colony.anchor, *position),
+            ) == building_pos
         })
         .map(|(_, carrying)| carrying.amount)
         .sum()
@@ -8248,6 +8410,7 @@ mod tests {
             movement_elapsed: 8.0,
             wander_chance: 0.0,
             ring_radius: 4,
+            anchor: VILLAGE_ANCHOR_TILE,
             claimed_area: Default::default(),
             area_gate: None,
             gate: pos(6, 10),
@@ -8765,7 +8928,7 @@ mod tests {
         // (which reroutes deposits) must leave `resources` bit-identical to the
         // shrine-only baseline every tick. This is a bookkeeping invariant, not a
         // pathing one, so the pile's rect is centred exactly on the village anchor
-        // (5,5)-(7,7) → centre (6,6), matching `village_anchor_world()` bit-for-bit
+        // (5,5)-(7,7) → centre (6,6), matching `village_anchor_world(VILLAGE_ANCHOR_TILE)` bit-for-bit
         // (rather than a `(6,6)-(7,7)` rect, whose 6.5,6.5 centre rounds to a
         // different goal tile than the shrine baseline's (6,6) — since P14.2 made
         // building footprints real soft obstacles, routing to two different tiles
@@ -8828,6 +8991,7 @@ mod tests {
             // No wandering, so a deposited carrier keeps a stable (None) destination.
             wander_chance: 0.0,
             ring_radius: 4,
+            anchor: VILLAGE_ANCHOR_TILE,
             claimed_area: Default::default(),
             area_gate: None,
             gate: pos(6, 10),
@@ -8862,7 +9026,7 @@ mod tests {
         for from in [WorldPos { x: 6.0, y: 6.0 }, WorldPos { x: 40.0, y: 3.0 }] {
             assert_eq!(
                 haul_destination(&colony, CarryingKind::Food, from),
-                village_anchor_world()
+                village_anchor_world(VILLAGE_ANCHOR_TILE)
             );
         }
     }
@@ -8915,7 +9079,7 @@ mod tests {
         // A food carrier ignores a materials-only pile and heads for the shrine anchor.
         assert_eq!(
             haul_destination(&colony, CarryingKind::Food, WorldPos { x: 9.0, y: 6.0 }),
-            village_anchor_world()
+            village_anchor_world(VILLAGE_ANCHOR_TILE)
         );
         // Blessings fund the global pool (never piled), so they always fall back to the anchor.
         assert_eq!(
@@ -8924,7 +9088,7 @@ mod tests {
                 CarryingKind::Blessings,
                 WorldPos { x: 9.0, y: 6.0 }
             ),
-            village_anchor_world()
+            village_anchor_world(VILLAGE_ANCHOR_TILE)
         );
     }
 
@@ -9028,7 +9192,7 @@ mod tests {
         // No designated pile accepts food, so the hauler's cargo resolves to the shrine
         // anchor regardless of how far away it currently stands — the shrine building's
         // inbound_haul should reflect that live cargo.
-        let anchor = village_anchor_world();
+        let anchor = village_anchor_world(VILLAGE_ANCHOR_TILE);
         let colony = ColonyRuntime {
             id: "colony-1".to_owned(),
             cats: vec![carrying_cat_at(
@@ -9055,7 +9219,7 @@ mod tests {
 
     #[test]
     fn building_inbound_haul_sums_every_live_carrier_bound_for_it() {
-        let anchor = village_anchor_world();
+        let anchor = village_anchor_world(VILLAGE_ANCHOR_TILE);
         let colony = ColonyRuntime {
             id: "colony-1".to_owned(),
             cats: vec![
@@ -9115,7 +9279,7 @@ mod tests {
 
     #[test]
     fn building_inbound_haul_ignores_a_dead_carrier_and_cargo_bound_elsewhere() {
-        let anchor = village_anchor_world();
+        let anchor = village_anchor_world(VILLAGE_ANCHOR_TILE);
         let mut colony = ColonyRuntime {
             id: "colony-1".to_owned(),
             cats: vec![
@@ -11218,7 +11382,8 @@ mod tests {
                     saw_explore = true;
                 }
                 for tile in &colony.revealed_tiles {
-                    max_reveal_cheb = max_reveal_cheb.max(cheb_from_anchor(*tile));
+                    max_reveal_cheb =
+                        max_reveal_cheb.max(cheb_from_anchor(VILLAGE_ANCHOR_TILE, *tile));
                 }
             }
             let revealed = world.colonies[0]
@@ -11277,6 +11442,7 @@ mod tests {
             movement_elapsed: 8.0,
             wander_chance: 0.0,
             ring_radius: 4,
+            anchor: VILLAGE_ANCHOR_TILE,
             claimed_area: Default::default(),
             area_gate: None,
             gate: pos(6, 10),
@@ -11418,7 +11584,9 @@ mod tests {
             x: 4.0,
             y: 6.0,
         };
-        cat.destination = Some(position_from_world(village_anchor_world()));
+        cat.destination = Some(position_from_world(village_anchor_world(
+            VILLAGE_ANCHOR_TILE,
+        )));
         cat.activity = CatActivity::Returning;
         cat.current_task = None;
 
@@ -12585,6 +12753,199 @@ mod tests {
         assert_ne!(alpha.test_rng_seed, beta.test_rng_seed);
     }
 
+    #[test]
+    fn found_colony_is_byte_identical_to_founding_at_the_canonical_anchor() {
+        // The single-colony founding path must be a no-op alias for founding at the canonical
+        // anchor — colony 0 stays byte-identical while a second village opts into a distinct
+        // anchor. Whole-struct `PartialEq` proves every spatial field matches.
+        let base = found_colony(4242, "colony-1", 10_000, 99);
+        let at = found_colony_at(4242, "colony-1", 10_000, 99, VILLAGE_ANCHOR_TILE);
+        assert_eq!(base, at);
+        assert_eq!(base.anchor, VILLAGE_ANCHOR_TILE);
+    }
+
+    #[test]
+    fn select_founding_site_places_a_second_village_far_from_colony_zero_on_grass() {
+        // A second village must land at a distinct, valid grass site at least a full
+        // separation from colony 0's anchor — never stacked on it.
+        for world_seed in [1234u32, 42, 7, 99, 555, 20_240_703] {
+            let existing = vec![VILLAGE_ANCHOR_TILE];
+            let site = select_founding_site(world_seed, &existing);
+            assert!(
+                cheb_from_anchor(VILLAGE_ANCHOR_TILE, site) >= MIN_VILLAGE_SEPARATION,
+                "seed {world_seed}: site {site:?} too close to colony 0",
+            );
+            assert_ne!(
+                site, VILLAGE_ANCHOR_TILE,
+                "seed {world_seed}: site stacked on colony 0"
+            );
+            // The chosen site (or the guaranteed-separated fallback) is buildable ground.
+            let center = shrine_center_tile(site);
+            assert!(
+                matches!(
+                    crate::terrain_gen::tile_biome(world_seed, center.x, center.y),
+                    crate::terrain_gen::BiomeRole::Grassland
+                        | crate::terrain_gen::BiomeRole::Lowland
+                ) || cheb_from_anchor(VILLAGE_ANCHOR_TILE, site) > MIN_VILLAGE_SEPARATION,
+                "seed {world_seed}: site {site:?} is neither grass nor the fallback",
+            );
+        }
+    }
+
+    #[test]
+    fn select_founding_site_is_deterministic_and_separates_from_every_existing_village() {
+        let world_seed = 20_240_703;
+        // Twin calls with identical inputs yield an identical site.
+        let existing = vec![VILLAGE_ANCHOR_TILE];
+        assert_eq!(
+            select_founding_site(world_seed, &existing),
+            select_founding_site(world_seed, &existing),
+        );
+        // A third village keeps its distance from *both* prior anchors.
+        let second = select_founding_site(world_seed, &existing);
+        let existing_two = vec![VILLAGE_ANCHOR_TILE, second];
+        let third = select_founding_site(world_seed, &existing_two);
+        assert!(cheb_from_anchor(VILLAGE_ANCHOR_TILE, third) >= MIN_VILLAGE_SEPARATION);
+        assert!(cheb_from_anchor(second, third) >= MIN_VILLAGE_SEPARATION);
+        assert_ne!(third, second);
+    }
+
+    #[test]
+    fn founded_second_village_stamps_its_blueprint_on_its_own_anchor() {
+        // The whole spatial frame of a relocated village rides its own anchor: shrine, claimed
+        // square, roads and reveal are all taken relative to the new site, none left at (6, 6).
+        let world_seed = 20_240_703;
+        let site = select_founding_site(world_seed, &[VILLAGE_ANCHOR_TILE]);
+        let colony = found_colony_at(world_seed, "beta", 10_000, 200, site);
+
+        assert_eq!(colony.anchor, site);
+        // The shrine footprint's NW corner sits exactly on the new anchor.
+        let shrine = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == BuildingType::Shrine)
+            .expect("founded colony has a shrine");
+        assert_eq!(shrine.position, site);
+        // Every building and claimed tile is centred on the new anchor, never colony 0's.
+        let center = shrine_center_tile(site);
+        assert!(colony.claimed_tiles.iter().all(|tile| {
+            (tile.x - center.x).abs() <= VILLAGE_START_RADIUS
+                && (tile.y - center.y).abs() <= VILLAGE_START_RADIUS
+        }));
+        assert!(
+            colony.buildings.iter().all(|building| {
+                cheb_from_anchor(site, building.position) <= VILLAGE_START_RADIUS
+            })
+        );
+        // Its reveal halo is around its own anchor and nowhere near colony 0's anchor.
+        assert!(
+            colony.revealed_tiles.iter().all(|tile| {
+                cheb_from_anchor(VILLAGE_ANCHOR_TILE, *tile) > VILLAGE_START_RADIUS
+            })
+        );
+    }
+
+    #[test]
+    fn two_villages_run_independent_ticks_each_relative_to_its_own_anchor() {
+        let world_seed = 20_240_703u32;
+        let start = 10_000;
+        let mut world = new_world(world_seed);
+        let site = select_founding_site(world_seed, &[VILLAGE_ANCHOR_TILE]);
+        world
+            .colonies
+            .push(found_colony(world_seed, "colony-1", start, 1234));
+        world
+            .colonies
+            .push(found_colony_at(world_seed, "beta", start, 4321, site));
+
+        for step in 1..=200 {
+            let now = start + i64::from(step) * 60_000;
+            let reports = world_tick(&mut world, now);
+            for report in &reports {
+                assert_eq!(
+                    report.reset_reason, None,
+                    "tick {step} reset {}",
+                    report.colony_id
+                );
+            }
+        }
+
+        let base = world.colonies.iter().find(|c| c.id == "colony-1").unwrap();
+        let beta = world.colonies.iter().find(|c| c.id == "beta").unwrap();
+        assert_ne!(base.anchor, beta.anchor);
+        // No cross-mutation: each colony's cats belong to it and its buildings hug its anchor.
+        assert!(base.cats.iter().all(|cat| cat.colony_id == "colony-1"));
+        assert!(beta.cats.iter().all(|cat| cat.colony_id == "beta"));
+        assert!(
+            beta.buildings
+                .iter()
+                .all(|b| cheb_from_anchor(beta.anchor, b.position) <= DEFAULT_MAX_RING + 2),
+            "beta's buildings drifted away from its own anchor",
+        );
+        // The second village actually lives: it kept its founders and its stores did not empty.
+        assert!(alive_cats(&beta.cats).count() >= 1);
+        assert!(beta.resources.food > 0.0 && beta.resources.water > 0.0);
+    }
+
+    #[test]
+    fn colony_zero_is_unchanged_by_the_presence_of_a_second_village() {
+        // The critical survival guardrail: adding a second village must not perturb colony 0's
+        // simulation at all. Run colony 0 alone and again alongside a distant second village on
+        // the same world seed/cadence, and its full runtime state must stay byte-identical.
+        let world_seed = 1234u32;
+        let start = 10_000;
+
+        let mut solo = new_world(world_seed);
+        solo.colonies
+            .push(found_colony(world_seed, "colony-1", start, 1234));
+
+        let mut shared = new_world(world_seed);
+        let site = select_founding_site(world_seed, &[VILLAGE_ANCHOR_TILE]);
+        shared
+            .colonies
+            .push(found_colony(world_seed, "colony-1", start, 1234));
+        shared
+            .colonies
+            .push(found_colony_at(world_seed, "beta", start, 4321, site));
+
+        for step in 1..=120 {
+            let now = start + i64::from(step) * 60_000;
+            let _ = world_tick(&mut solo, now);
+            let _ = world_tick(&mut shared, now);
+        }
+
+        let solo_zero = solo.colonies.iter().find(|c| c.id == "colony-1").unwrap();
+        let shared_zero = shared.colonies.iter().find(|c| c.id == "colony-1").unwrap();
+        assert_eq!(
+            solo_zero, shared_zero,
+            "colony 0 diverged when a second village existed"
+        );
+    }
+
+    #[test]
+    fn two_village_world_ticks_are_deterministic_across_identical_runs() {
+        let world_seed = 20_240_703u32;
+        let start = 10_000;
+        let build = || {
+            let mut world = new_world(world_seed);
+            let site = select_founding_site(world_seed, &[VILLAGE_ANCHOR_TILE]);
+            world
+                .colonies
+                .push(found_colony(world_seed, "colony-1", start, 1234));
+            world
+                .colonies
+                .push(found_colony_at(world_seed, "beta", start, 4321, site));
+            for step in 1..=150 {
+                let _ = world_tick(&mut world, start + i64::from(step) * 60_000);
+            }
+            world
+        };
+        assert!(
+            build() == build(),
+            "two-village world tick is not deterministic"
+        );
+    }
+
     fn adult_idle_cat(id: &str, colony_id: &str) -> Cat {
         Cat {
             id: id.to_owned(),
@@ -13366,7 +13727,7 @@ mod tests {
     #[test]
     fn founding_paves_stone_roads_from_the_shrine_to_all_four_walls() {
         let colony = found_colony(4242, "colony-1", 1_000, 4242);
-        let center = shrine_center_tile();
+        let center = shrine_center_tile(VILLAGE_ANCHOR_TILE);
         let r = VILLAGE_START_RADIUS;
 
         // Each cardinal wall tile on the shrine's centre row/column is a built road.
@@ -13440,7 +13801,7 @@ mod tests {
                 .iter()
                 .flat_map(building_footprint_tiles)
                 .collect();
-            blocked.extend(founding_road_tiles());
+            blocked.extend(founding_road_tiles(VILLAGE_ANCHOR_TILE));
             for pos in &blocked {
                 assert!(
                     !tile_has_water(colony.world_tiles.get(pos)),
@@ -13449,10 +13810,8 @@ mod tests {
             }
 
             assert!(
-                colony
-                    .world_tiles
-                    .values()
-                    .any(|t| tile_has_water(Some(t)) && cheb_from_anchor(t.pos) <= 6),
+                colony.world_tiles.values().any(|t| tile_has_water(Some(t))
+                    && cheb_from_anchor(VILLAGE_ANCHOR_TILE, t.pos) <= 6),
                 "seed {seed}: the village has no reachable water source"
             );
         }
@@ -13641,7 +14000,11 @@ mod tests {
         // The carry/credit step is fully reused, unchanged, from the Ritual path:
         // crediting the resulting carry converts it straight into blessings.
         let before = colony.global_upgrade_points;
-        credit_carrying(&mut colony, &carrying, village_anchor_world());
+        credit_carrying(
+            &mut colony,
+            &carrying,
+            village_anchor_world(VILLAGE_ANCHOR_TILE),
+        );
         assert_eq!(colony.global_upgrade_points, before + carrying.amount);
     }
 

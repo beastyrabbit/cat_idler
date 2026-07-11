@@ -91,7 +91,9 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             woodCraftProgress REAL,
             stoneCraftProgress REAL,
             clothierCraftProgress REAL,
-            tanneryCraftProgress REAL
+            tanneryCraftProgress REAL,
+            anchorX INTEGER,
+            anchorY INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS cats (
@@ -254,6 +256,8 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "stoneCraftProgress", "REAL"),
         ("colonies", "clothierCraftProgress", "REAL"),
         ("colonies", "tanneryCraftProgress", "REAL"),
+        ("colonies", "anchorX", "INTEGER"),
+        ("colonies", "anchorY", "INTEGER"),
         ("cats", "skills", "TEXT"),
         ("cats", "boosted", "INTEGER NOT NULL DEFAULT 0"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
@@ -325,7 +329,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 testResourceDecayMultiplier, testResilienceHoursOverride,
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, gatherSpots,
                 stockLedger, coin, items, woodCraftProgress, stoneCraftProgress,
-                clothierCraftProgress, tanneryCraftProgress
+                clothierCraftProgress, tanneryCraftProgress, anchorX, anchorY
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -351,11 +355,11 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
             stockpiles, gatherSpots, stockLedger, coin, items, woodCraftProgress,
-            stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress
+            stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, anchorX, anchorY
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33, ?34, ?35, ?36, ?37, ?38
+            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40
         )",
         params![
             colony.id,
@@ -396,6 +400,8 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.stone_craft_progress,
             colony.clothier_craft_progress,
             colony.tannery_craft_progress,
+            colony.anchor.x,
+            colony.anchor.y,
         ],
     )?;
 
@@ -466,6 +472,13 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .unwrap_or(0.0),
         ritual_requested_at: row.get("ritualRequestedAt")?,
         critical_since: row.get("criticalSince")?,
+        // A colony persisted before the multi-village anchor column is colony 0 on the
+        // canonical anchor (6, 6) == `village_layout::VILLAGE_ANCHOR`, so a NULL restores
+        // there and keeps the single-colony game byte-identical.
+        anchor: TilePos {
+            x: row.get::<_, Option<i32>>("anchorX")?.unwrap_or(6),
+            y: row.get::<_, Option<i32>>("anchorY")?.unwrap_or(6),
+        },
         claimed_tiles: parse_tile_list(claimed_tiles_json.as_deref())?,
         revealed_tiles: parse_tile_list(revealed_tiles_json.as_deref())?
             .into_iter()
@@ -1461,7 +1474,7 @@ mod tests {
     use cat_protocol::{ClientAction, JobKind as ProtoJobKind};
     use cat_sim::{
         actions::apply_action,
-        world_tick::{found_colony, new_world},
+        world_tick::{found_colony, found_colony_at, new_world},
     };
 
     use super::*;
@@ -1668,6 +1681,57 @@ mod tests {
             loaded.colonies[0].stock_ledger,
             cat_sim::ledger::StockLedger::default()
         );
+    }
+
+    #[test]
+    fn a_second_villages_anchor_round_trips_and_stays_distinct() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+
+        let mut world = new_world(20_240_703);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
+        // A second village founded at a deliberately distinct anchor.
+        let beta_anchor = TilePos { x: 60, y: 66 };
+        world.colonies.push(found_colony_at(
+            world.world_seed,
+            "beta",
+            1_000_000,
+            4321,
+            beta_anchor,
+        ));
+
+        save_world(&conn, &world).expect("save world");
+        let loaded = load_world(&conn)
+            .expect("load world")
+            .expect("world should exist");
+
+        let zero = loaded.colonies.iter().find(|c| c.id == "colony-1").unwrap();
+        let beta = loaded.colonies.iter().find(|c| c.id == "beta").unwrap();
+        assert_eq!(zero.anchor, TilePos { x: 6, y: 6 });
+        assert_eq!(beta.anchor, beta_anchor);
+        assert_ne!(zero.anchor, beta.anchor);
+    }
+
+    #[test]
+    fn legacy_colony_row_without_an_anchor_column_loads_at_the_canonical_anchor() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+
+        let mut world = new_world(20_240_703);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
+        save_world(&conn, &world).expect("save world");
+
+        // Simulate a pre-multi-village row: the anchor columns are NULL.
+        conn.execute("UPDATE colonies SET anchorX = NULL, anchorY = NULL", [])
+            .expect("null anchor columns");
+        let loaded = load_world(&conn)
+            .expect("load world")
+            .expect("world should exist");
+        assert_eq!(loaded.colonies[0].anchor, TilePos { x: 6, y: 6 });
     }
 
     /// Comprehensive persistence-audit guardrail: every `ColonyRuntime`/`Cat` field is

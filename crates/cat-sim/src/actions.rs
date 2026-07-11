@@ -23,11 +23,12 @@ use crate::{
     types::{self, BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, UpgradeKey},
     upgrade_tree,
     village_area::{self, gate_placement_default},
-    village_layout::{GridPos, VILLAGE_ANCHOR, village_ring_radius},
+    village_layout::{GridPos, village_ring_radius},
     world_tick::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, TilePos, VoteRuntime, WorldState,
-        ZoneRuntime, found_colony, reconcile_colony_stockpiles, world_tick,
+        ZoneRuntime, found_colony, found_colony_at, reconcile_colony_stockpiles,
+        select_founding_site, world_tick,
     },
     zones,
 };
@@ -1026,7 +1027,12 @@ fn found_village(
     }
     let id = next_colony_id(world);
     let seed = stable_seed(&[session_id, name, &id]);
-    let mut colony = found_colony(world.world_seed, id, ctx.now_ms, seed);
+    // Place the new village at a distinct, valid site far from every existing colony so two
+    // settlements never stack on the same anchor. Deterministic (RNG-free) site search.
+    let existing_anchors: Vec<TilePos> =
+        world.colonies.iter().map(|colony| colony.anchor).collect();
+    let anchor = select_founding_site(world.world_seed, &existing_anchors);
+    let mut colony = found_colony_at(world.world_seed, id, ctx.now_ms, seed, anchor);
     colony.name = name.to_owned();
     world.colonies.push(colony);
     ok()
@@ -1141,8 +1147,8 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         village_gate: village_gate_snapshot(colony),
         village_radius: village_ring_radius(colony.buildings.len() as i32) as u32,
         anchor: proto::TilePoint {
-            x: VILLAGE_ANCHOR.x,
-            y: VILLAGE_ANCHOR.y,
+            x: colony.anchor.x,
+            y: colony.anchor.y,
         },
         officers: colony
             .officers
@@ -1766,8 +1772,8 @@ fn has_complete_building(colony: &ColonyRuntime, building_type: BuildingType) ->
 
 fn raid_gate_position(colony: &ColonyRuntime) -> TilePos {
     TilePos {
-        x: VILLAGE_ANCHOR.x,
-        y: VILLAGE_ANCHOR.y + village_ring_radius(colony.buildings.len() as i32),
+        x: colony.anchor.x,
+        y: colony.anchor.y + village_ring_radius(colony.buildings.len() as i32),
     }
 }
 
@@ -2233,6 +2239,7 @@ fn sim_to_proto_threat_band(band: threat::ThreatBand) -> proto::ThreatBand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::village_layout::VILLAGE_ANCHOR;
     use crate::world_tick::TraderRuntime;
 
     fn ctx() -> ActionCtx {
