@@ -57,6 +57,15 @@ pub const TANNERY_HIDE_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
 /// Leather one tannery refine cycle produces.
 pub const TANNERY_LEATHER_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
 
+/// Raw ore one smelter refine cycle consumes (P17/P19 ore→metal chain, aliased to the
+/// same refinement-workshop rate as the wood-cutter/stone-prep/clothier/tannery
+/// benches above). Ore only ever comes from mountain quarrying
+/// (`world_tick::credit_quarry_ore`), so a colony that never reaches the mountains
+/// simply never accumulates ore and this bench sits permanently idle — additive/inert.
+pub const SMELTER_ORE_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
+/// Metal bars one smelter refine cycle produces.
+pub const SMELTER_METAL_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
+
 /// Planks one woodworking cycle consumes.
 pub const WOODWORKING_PLANKS_PER_CYCLE: f64 = 2.0;
 /// Blocks one woodworking cycle consumes.
@@ -293,7 +302,8 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         | BuildingType::Woodworking
         | BuildingType::Smithy
         | BuildingType::Clothier
-        | BuildingType::Tannery => 1,
+        | BuildingType::Tannery
+        | BuildingType::Smelter => 1,
         BuildingType::Den
         | BuildingType::FoodStorage
         | BuildingType::WaterBowl
@@ -323,7 +333,8 @@ pub const fn building_cycle_sec(building_type: BuildingType) -> Option<f64> {
         | BuildingType::WoodCutter
         | BuildingType::StonePrep
         | BuildingType::Clothier
-        | BuildingType::Tannery => Some(WORKSHOP_CYCLE_SEC),
+        | BuildingType::Tannery
+        | BuildingType::Smelter => Some(WORKSHOP_CYCLE_SEC),
         BuildingType::Woodworking => Some(WOODWORKING_CYCLE_SEC),
         BuildingType::Smithy => Some(crate::smithy::SMITHY_CYCLE_SEC),
         _ => None,
@@ -355,6 +366,7 @@ pub const fn building_output_label(building_type: BuildingType) -> Option<&'stat
         BuildingType::Field => Some("food"),
         BuildingType::Clothier => Some("cloth"),
         BuildingType::Tannery => Some("leather"),
+        BuildingType::Smelter => Some("metal"),
         BuildingType::Den
         | BuildingType::FoodStorage
         | BuildingType::WaterBowl
@@ -802,14 +814,14 @@ mod tests {
     fn building_output_label_matches_every_verified_recipe() {
         use BuildingType::{
             AccountingTent, Barracks, Beds, Clothier, Den, ElderCorner, Field, FoodStorage,
-            HerbGarden, MouseFarm, Nursery, Shrine, Smithy, StonePrep, Tannery, Walls, WaterBowl,
-            WoodCutter, Woodworking, Workshop,
+            HerbGarden, MouseFarm, Nursery, Shrine, Smelter, Smithy, StonePrep, Tannery, Walls,
+            WaterBowl, WoodCutter, Woodworking, Workshop,
         };
 
         // Producing types: label matches the resource actually credited in
         // `phase_23_production` (workshop -> refined, wood-cutter -> planks,
         // stone-prep -> blocks, woodworking -> tools, smithy -> 1 weapon + 1 armor,
-        // field -> food, clothier -> cloth, tannery -> leather).
+        // field -> food, clothier -> cloth, tannery -> leather, smelter -> metal).
         assert_eq!(super::building_output_label(Workshop), Some("refined"));
         assert_eq!(super::building_output_label(WoodCutter), Some("plank"));
         assert_eq!(super::building_output_label(StonePrep), Some("block"));
@@ -818,6 +830,7 @@ mod tests {
         assert_eq!(super::building_output_label(Field), Some("food"));
         assert_eq!(super::building_output_label(Clothier), Some("cloth"));
         assert_eq!(super::building_output_label(Tannery), Some("leather"));
+        assert_eq!(super::building_output_label(Smelter), Some("metal"));
 
         // Non-producing types: no phase_23 arm credits a resource for these.
         for building_type in [
@@ -852,6 +865,7 @@ mod tests {
             BuildingType::Smithy,
             BuildingType::Clothier,
             BuildingType::Tannery,
+            BuildingType::Smelter,
         ] {
             assert_eq!(
                 super::building_staff_cap(building_type),
@@ -903,8 +917,20 @@ mod tests {
             Some(600.0)
         );
         assert_eq!(super::building_cycle_sec(BuildingType::Smithy), Some(900.0));
+        assert_eq!(
+            super::building_cycle_sec(BuildingType::Smelter),
+            Some(600.0)
+        );
         // Field has no timed cycle: yield is continuous (`field_yield`).
         assert_eq!(super::building_cycle_sec(BuildingType::Field), None);
         assert_eq!(super::building_cycle_sec(BuildingType::Shrine), None);
+    }
+
+    #[test]
+    fn smelter_constants_mirror_the_workshop_refine_rate() {
+        // P17/P19 ore→metal chain: the smelter reuses `advance_workshop` at the same
+        // 5:1/600s rate as the wood-cutter/stone-prep benches.
+        assert_f64_bits(super::SMELTER_ORE_PER_CYCLE, 5.0, "ore per cycle");
+        assert_f64_bits(super::SMELTER_METAL_PER_CYCLE, 1.0, "metal per cycle");
     }
 }

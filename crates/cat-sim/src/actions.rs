@@ -475,6 +475,7 @@ fn plan_building(
             | BuildingType::Barracks
             | BuildingType::FoodStorage
             | BuildingType::Den
+            | BuildingType::Smelter
     ) {
         return fail("Unknown building type.");
     }
@@ -489,6 +490,14 @@ fn plan_building(
     }
     if matches!(building_type, BuildingType::Smithy | BuildingType::Barracks)
         && !upgrade_tree::is_owned(&colony.upgrade_tree, building_type.as_str())
+    {
+        return fail("That building must be researched or granted by the gods first.");
+    }
+    // P17/P19 ore→metal chain: the smelter's node id ("smelting") intentionally differs
+    // from the building's own wire string ("smelter"), so it needs its own check rather
+    // than reusing `building_type.as_str()` like the smithy/barracks gate above.
+    if building_type == BuildingType::Smelter
+        && !upgrade_tree::is_owned(&colony.upgrade_tree, upgrade_tree::SMELTING_NODE_ID)
     {
         return fail("That building must be researched or granted by the gods first.");
     }
@@ -2128,6 +2137,7 @@ fn proto_to_sim_building_type(building_type: proto::BuildingType) -> Option<Buil
         proto::BuildingType::Woodworking => Some(BuildingType::Woodworking),
         proto::BuildingType::Clothier => Some(BuildingType::Clothier),
         proto::BuildingType::Tannery => Some(BuildingType::Tannery),
+        proto::BuildingType::Smelter => Some(BuildingType::Smelter),
     }
 }
 
@@ -2155,6 +2165,10 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         BuildingType::AccountingTent => None,
         BuildingType::Clothier => Some(proto::BuildingType::Clothier),
         BuildingType::Tannery => Some(proto::BuildingType::Tannery),
+        // NOTE: cat-client's `building_texture`/`building_label` (exhaustive matches over
+        // `proto::BuildingType`) do not have a Smelter sprite arm yet — flagged for
+        // catclient3, see `crates/cat-protocol/src/lib.rs`'s `BuildingType::Smelter` doc.
+        BuildingType::Smelter => Some(proto::BuildingType::Smelter),
     }
 }
 

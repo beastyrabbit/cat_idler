@@ -686,6 +686,11 @@ pub enum BuildingType {
     Woodworking,
     Clothier,
     Tannery,
+    /// P17/P19 ore→metal chain: refines mountain ore into metal bars. NOTE: cat-client
+    /// needs a `BuildingTexture`/sprite arm for this variant (`building_texture` and
+    /// `building_label` in `crates/cat-client/src/lib.rs` are exhaustive matches and
+    /// will fail to compile until one is added).
+    Smelter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

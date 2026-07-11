@@ -46,7 +46,7 @@ pub const ENEMY_STATS: [(EnemyType, EnemyStats); 5] = [
     ),
 ];
 
-pub const BUILDING_COSTS: [(BuildingType, u32); 20] = [
+pub const BUILDING_COSTS: [(BuildingType, u32); 21] = [
     (BuildingType::Den, 0),
     (BuildingType::FoodStorage, 5),
     (BuildingType::WaterBowl, 3),
@@ -69,6 +69,8 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 20] = [
     // refinement benches they mirror.
     (BuildingType::Clothier, 20),
     (BuildingType::Tannery, 20),
+    // P17/P19 ore→metal chain — same era-3 tier as the smithy it feeds.
+    (BuildingType::Smelter, 30),
 ];
 
 pub const TASK_TO_SKILL: [(TaskType, &str); 12] = [
@@ -176,6 +178,7 @@ mod tests {
             (BuildingType::Woodworking, 25),
             (BuildingType::Clothier, 20),
             (BuildingType::Tannery, 20),
+            (BuildingType::Smelter, 30),
         ];
 
         assert_eq!(BUILDING_COSTS.len(), BuildingType::ALL.len());

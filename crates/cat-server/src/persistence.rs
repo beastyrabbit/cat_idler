@@ -517,6 +517,11 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         tannery_craft_progress: row
             .get::<_, Option<f64>>("tanneryCraftProgress")?
             .unwrap_or(0.0),
+        // Ore/metal: the Smelter's metal-forge sub-cycle timer resets to 0 on load —
+        // at most one ~900s cycle of progress is lost across a restart (the metal bars
+        // it would have produced are not; only the in-flight timer). A follow-up could
+        // give it a column like the other craft timers for full consistency.
+        metal_forge_progress: 0.0,
         // P19 slice 3: `coin` is real player-facing wealth, so it gets a column (see
         // `migrate_add_missing_columns`). The in-progress trader visit + its schedule
         // reference (`last_trader_departed_at`) are NOT persisted this slice, matching
@@ -1720,6 +1725,8 @@ mod tests {
             hide: 22.0,
             cloth: 23.0,
             leather: 24.0,
+            ore: 25.5,
+            metal: 26.5,
             blessings: 25.0,
         };
         colony.automation_tier = 3.5;

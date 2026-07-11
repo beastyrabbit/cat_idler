@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::{
     biomes::MaxResources,
+    climate::Mining,
     depletion::{CHOPPED_FOREST_FOOD_CAP, is_forest_type, regrowth_amount},
     elections::{
         BallotVote, ELECTION_WINDOW_MS, ElectionCandidate, KICK_WINDOW_MS, TERM_MS,
@@ -59,13 +60,14 @@ use crate::{
     roads::{self, RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::should_deposit,
     skills::{HAUL_SKILL_GAIN, Labor, SKILL_GAIN_PER_JOB},
-    smithy::{SmithyOptions, advance_smithy},
+    smithy::{MetalForgeOptions, SmithyOptions, advance_metal_forge, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
     stockpiles::{self, GatherSpot, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
     storage::{
         StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
     },
     survival::{SurvivalResources, apply_survival_tick},
+    terrain_gen::tile_climate_biome,
     threat::{
         ThreatSnapshot, accrue_threat, colony_wealth, plan_raid, resolve_raid, should_spawn_raid,
         threat_band,
@@ -188,6 +190,11 @@ pub struct ColonyRuntime {
     /// Tannery bench's trade-craft cycle timer (P16/P19 clothing chain slice),
     /// mirroring [`Self::wood_craft_progress`] for [`crate::recipes::LEATHER_TRADE_RECIPE`].
     pub tannery_craft_progress: f64,
+    /// Smithy's additive metal-forge cycle timer (P17/P19 ore→metal chain), mirroring
+    /// [`Self::wood_craft_progress`]'s "entirely separate from `production_progress`"
+    /// shape for [`crate::smithy::advance_metal_forge`]. Stays at `0.0` forever for any
+    /// colony that never builds a smelter (no metal ever exists to spend).
+    pub metal_forge_progress: f64,
     /// Coin balance (P19 slice 3): earned by [`crate::trader::TraderState::Trading`]
     /// `SellGoods` and spent on `BuyResource`. Its own currency, deliberately not folded
     /// into `resources.blessings` or `global_upgrade_points` (the spec: "Do NOT overload
@@ -321,7 +328,8 @@ pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
         | BuildingType::StonePrep
         | BuildingType::Woodworking
         | BuildingType::Clothier
-        | BuildingType::Tannery => (3, 3),
+        | BuildingType::Tannery
+        | BuildingType::Smelter => (3, 3),
         // Dwellings, gardens and the mid buildings take a 2x3 plot (P16).
         BuildingType::Den
         | BuildingType::Beds
@@ -632,6 +640,7 @@ impl Default for ColonyRuntime {
             stone_craft_progress: 0.0,
             clothier_craft_progress: 0.0,
             tannery_craft_progress: 0.0,
+            metal_forge_progress: 0.0,
             coin: 0.0,
             trader: None,
             last_trader_departed_at: None,
@@ -805,6 +814,10 @@ fn starting_resources() -> Resources {
         hide: 0.0,
         cloth: 0.0,
         leather: 0.0,
+        // Ore/metal chain (P17/P19) — also empty at founding; ore only ever comes from
+        // quarrying a mountain, which needs the `mountaineering` unlock first.
+        ore: 0.0,
+        metal: 0.0,
         blessings: 0.0,
     }
 }
@@ -1222,7 +1235,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         }
         phase_27_due_job_prelude(colony, gate);
         phase_28_due_completion_supplies_and_planner_jobs(colony, gate);
-        phase_29_due_completion_gathering_explore_expansion(colony, gate);
+        phase_29_due_completion_gathering_explore_expansion(colony, gate, world_seed);
         phase_30_due_completion_build_ritual_training_return_mark_done(colony, gate);
         phase_31_mid_job_hauling(colony, gate, world_seed);
         let mut movement =
@@ -2719,6 +2732,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     // (not released every tick like the raw-material trio), announced like Workshop.
     auto_staff_idle_buildings(colony, BuildingType::Clothier, gate.processed_through, true);
     auto_staff_idle_buildings(colony, BuildingType::Tannery, gate.processed_through, true);
+    // P17/P19 ore→metal chain: the smelter is the same luxury/late-game shape as the
+    // clothier/tannery above — staffed only from genuine idle surplus, sticky. A colony
+    // with no smelter building has nothing to auto-staff here (no-op).
+    auto_staff_idle_buildings(colony, BuildingType::Smelter, gate.processed_through, true);
 
     let production_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
     let building_ids = colony
@@ -2845,6 +2862,62 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
+
+                // P17/P19 ore→metal chain: additive metal-forge sub-cycle, same bench/
+                // worker, its own cycle timer (`colony.metal_forge_progress`, entirely
+                // separate from `production_progress` above) — mirrors how the P19
+                // trade-craft benches run alongside a workshop's primary refine. With no
+                // metal ever smelted (`resources.metal == 0.0`, the case for every colony
+                // without a smelter or without mountains) `advance_metal_forge` always
+                // floors to zero cycles, so this is a strict no-op and the smithy's
+                // forged-gear output stays byte-identical to before this chain existed.
+                let forge_worker = assigned_worker(colony, &building_id);
+                let forge_step = advance_metal_forge(
+                    colony.metal_forge_progress,
+                    production_elapsed,
+                    MetalForgeOptions {
+                        has_worker: forge_worker.is_some(),
+                        worker_is_fast: forge_worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        metal_available: colony.resources.metal,
+                    },
+                );
+                colony.metal_forge_progress = forge_step.next_progress;
+                if forge_step.weapons_produced > 0.0 || forge_step.armor_produced > 0.0 {
+                    colony.resources.metal =
+                        (colony.resources.metal - forge_step.metal_used).max(0.0);
+                    colony.resources.weapons += forge_step.weapons_produced;
+                    colony.resources.armor += forge_step.armor_produced;
+                    let site = colony.buildings[building_index].position;
+                    route_output_to_nearest_pile(
+                        colony,
+                        ResourceKind::Weapons,
+                        forge_step.weapons_produced,
+                        site,
+                    );
+                    route_output_to_nearest_pile(
+                        colony,
+                        ResourceKind::Armor,
+                        forge_step.armor_produced,
+                        site,
+                    );
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("production".to_owned()),
+                        format!(
+                            "The smith worked banked metal into {} extra weapon{} and {} extra armor.",
+                            forge_step.weapons_produced,
+                            if forge_step.weapons_produced == 1.0 {
+                                ""
+                            } else {
+                                "s"
+                            },
+                            forge_step.armor_produced,
+                        ),
+                    );
+                }
             }
             BuildingType::WoodCutter => {
                 // P12.4b: raw materials → planks, on the refinement-workshop cadence.
@@ -3021,6 +3094,45 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         "woodworkers",
                     );
                 }
+            }
+            BuildingType::Smelter => {
+                // P17/P19 ore→metal chain: raw ore → refined metal bars, on the same
+                // refinement-workshop cadence as the wood-cutter/stone-prep benches above.
+                // `resources.ore` is only ever nonzero for a colony that has both reached
+                // the mountains (mountaineering) and quarried them (`credit_quarry_ore`),
+                // so a colony without either input simply never runs a cycle here.
+                let worker = assigned_worker(colony, &building_id);
+                let step = advance_workshop(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    WorkshopOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_architect: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        materials_available: colony.resources.ore,
+                    },
+                );
+                if step.refined_produced > 0.0 {
+                    colony.resources.ore = (colony.resources.ore - step.materials_used).max(0.0);
+                    colony.resources.metal += step.refined_produced;
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Other("production".to_owned()),
+                        format!(
+                            "The smelter refined {} ore into {} metal bar{}.",
+                            step.materials_used,
+                            step.refined_produced,
+                            if step.refined_produced == 1.0 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ),
+                    );
+                }
+                colony.buildings[building_index].production_progress = step.next_progress;
             }
             BuildingType::Clothier => {
                 // P16/P19 clothing chain slice: raw fibre → cloth, on the same
@@ -3487,7 +3599,11 @@ fn phase_28_due_completion_supplies_and_planner_jobs(colony: &mut ColonyRuntime,
 
 /// Phase 29: complete hunt/quarry/water/explore/expansion jobs, including tile
 /// depletion and claimed-area mutation.
-fn phase_29_due_completion_gathering_explore_expansion(colony: &mut ColonyRuntime, gate: TickGate) {
+fn phase_29_due_completion_gathering_explore_expansion(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    world_seed: u32,
+) {
     let due_jobs = due_active_jobs(colony, gate);
 
     for job in due_jobs {
@@ -3499,10 +3615,16 @@ fn phase_29_due_completion_gathering_explore_expansion(colony: &mut ColonyRuntim
                 gate,
                 QUARRY_TOTAL_YIELD,
                 CarryingKind::Materials,
+                world_seed,
             ),
-            JobKind::FetchWater => {
-                complete_fixed_yield_job(colony, &job, gate, WATER_TOTAL_YIELD, CarryingKind::Water)
-            }
+            JobKind::FetchWater => complete_fixed_yield_job(
+                colony,
+                &job,
+                gate,
+                WATER_TOTAL_YIELD,
+                CarryingKind::Water,
+                world_seed,
+            ),
             JobKind::Explore => {
                 append_event(
                     colony,
@@ -5110,6 +5232,8 @@ fn starting_resources_with_blessings(blessings: f64) -> Resources {
         hide: 0.0,
         cloth: 0.0,
         leather: 0.0,
+        ore: 0.0,
+        metal: 0.0,
         blessings,
     }
 }
@@ -6425,7 +6549,8 @@ fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
         | BuildingType::Barracks
         | BuildingType::AccountingTent
         | BuildingType::Clothier
-        | BuildingType::Tannery => building_type,
+        | BuildingType::Tannery
+        | BuildingType::Smelter => building_type,
         _ => BuildingType::Den,
     }
 }
@@ -6726,16 +6851,20 @@ fn complete_fixed_yield_job(
     gate: TickGate,
     total: f64,
     kind: CarryingKind,
+    world_seed: u32,
 ) {
     let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
         return;
     };
-    let (_, total_yield, trips_done) = hauling_metadata(job);
+    let (site, total_yield, trips_done) = hauling_metadata(job);
     // Reuse the total cached by an earlier haul trip so skill scaling is applied once;
     // otherwise scale the base constant by this cat's labor skill here.
     let scaled_total =
         total_yield.unwrap_or_else(|| skill_scaled_yield(&colony.cats[cat_index], job.kind, total));
     let reward = remaining_yield(scaled_total, HUNT_TRIP_COUNT, trips_done as i32);
+    if job.kind == JobKind::Quarry {
+        credit_quarry_ore(colony, site, reward, world_seed);
+    }
     let cat = &mut colony.cats[cat_index];
     if let Some(labor) = Labor::for_job_kind(job.kind) {
         cat.gain_skill(labor, SKILL_GAIN_PER_JOB);
@@ -6746,6 +6875,43 @@ fn complete_fixed_yield_job(
         job_ended_at: gate.processed_through,
         source_gather_spot: None,
     });
+}
+
+/// Fraction of a completed quarry's materials reward that also comes back as raw ore,
+/// when (and only when) the quarry site sits on a genuine Mountain biome
+/// ([`Mining::Full`] — never the stony-shore/rocky [`Mining::Trickle`] tiles). Mirrors
+/// [`HUNT_HIDE_YIELD_RATIO`]'s "byproduct credited directly to `resources`, not hauled
+/// separately" shape (P17/P19 ore→metal chain).
+///
+/// Checked once per completed quarry job, not per tick/per tile:
+/// [`tile_climate_biome`] regenerates a whole terrain chunk per call, so calling it from
+/// a hot per-tick or per-tile path would be a real perf hazard — a single lookup at job
+/// completion (a quarry job takes minutes) is cheap. Reaching a mountain quarry site at
+/// all already requires the `mountaineering` upgrade node (mountain tiles are otherwise
+/// impassable to pathfinding), so ore implicitly gates on that unlock too. A colony that
+/// never reaches the mountains never has a quarry site with `Mining::Full`, so
+/// `resources.ore` simply never moves off zero — additive/inert.
+const QUARRY_ORE_YIELD_RATIO: f64 = 0.3;
+
+fn credit_quarry_ore(
+    colony: &mut ColonyRuntime,
+    site: Option<TilePos>,
+    reward: f64,
+    world_seed: u32,
+) {
+    if reward <= 0.0 {
+        return;
+    }
+    let Some(site) = site else {
+        return;
+    };
+    if tile_climate_biome(world_seed, site.x, site.y)
+        .properties()
+        .mining
+        == Mining::Full
+    {
+        colony.resources.ore += reward * QUARRY_ORE_YIELD_RATIO;
+    }
 }
 
 fn complete_village_expansion(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
@@ -7434,6 +7600,8 @@ mod tests {
                     hide: 0.0,
                     cloth: 0.0,
                     leather: 0.0,
+                    ore: 0.0,
+                    metal: 0.0,
                     blessings: 0.0,
                 },
                 cats: vec![adult_idle_cat("cat-1", "colony-1")],
@@ -7507,6 +7675,8 @@ mod tests {
                     hide: 0.0,
                     cloth: 0.0,
                     leather: 0.0,
+                    ore: 0.0,
+                    metal: 0.0,
                     blessings: 0.0,
                 },
                 cats,
@@ -8233,6 +8403,8 @@ mod tests {
                     hide: 0.0,
                     cloth: 0.0,
                     leather: 0.0,
+                    ore: 0.0,
+                    metal: 0.0,
                     blessings: 7.0,
                 },
                 cats: vec![dead],
@@ -9669,6 +9841,159 @@ mod tests {
         assert_eq!(colony.resources.materials, 45.0);
     }
 
+    // --- P17/P19 ore -> metal chain ---
+
+    #[test]
+    fn smelter_refines_ore_into_metal_when_staffed() {
+        // Staffed: 590 + 30 >= 600 completes one cycle -> 5 ore become 1 metal bar,
+        // mirroring stone_prep_dresses_materials_into_blocks_when_staffed exactly.
+        let mut colony = chain_colony(
+            BuildingType::Smelter,
+            Resources {
+                ore: 50.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+        assert_eq!(colony.resources.metal, 1.0);
+        assert_eq!(colony.resources.ore, 45.0);
+    }
+
+    #[test]
+    fn smelter_without_ore_or_a_worker_produces_nothing() {
+        // No ore on hand: the bench still auto-staffs (idle cat) but has nothing to refine.
+        let mut no_ore = chain_colony(BuildingType::Smelter, Resources::default(), false);
+        phase_23_production(&mut no_ore, production_gate(30, 30_000), 123);
+        assert_eq!(no_ore.resources.metal, 0.0);
+
+        // Ore on hand but no cat at all to mop the bench up.
+        let mut no_worker = chain_colony(
+            BuildingType::Smelter,
+            Resources {
+                ore: 50.0,
+                ..Resources::default()
+            },
+            false,
+        );
+        no_worker.cats.clear();
+        phase_23_production(&mut no_worker, production_gate(30, 30_000), 123);
+        assert_eq!(no_worker.resources.metal, 0.0);
+        assert_eq!(no_worker.resources.ore, 50.0);
+    }
+
+    #[test]
+    fn a_colony_with_no_smelter_building_never_produces_metal_even_with_banked_ore() {
+        // Additive/inert guardrail: `resources.ore` can only ever move (via
+        // `credit_quarry_ore`) into `resources.metal` through an actual Smelter
+        // building. A colony that banked ore but never built one must see it sit
+        // completely untouched through production.
+        let mut colony = chain_colony(
+            BuildingType::WoodCutter,
+            Resources {
+                ore: 50.0,
+                materials: 0.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+        assert_eq!(
+            colony.resources.ore, 50.0,
+            "ore is untouched with no smelter"
+        );
+        assert_eq!(
+            colony.resources.metal, 0.0,
+            "metal never appears without a smelter"
+        );
+    }
+
+    /// Find one tile whose [`Mining`] rule does/doesn't match `wants_full`, for a given
+    /// `world_seed`. Scans whole terrain chunks via `generate_terrain_chunk` (144 tiles
+    /// per call) rather than `tile_climate_biome` tile-by-tile — `tile_climate_biome`
+    /// regenerates its owning chunk on *every single call*, so a naive per-tile scan
+    /// over any real search area is a perf trap (this is exactly the hazard flagged for
+    /// `credit_quarry_ore`: never do this from a hot per-tick/per-tile path). A test-only
+    /// helper scanning a bounded chunk grid once is fine.
+    fn find_mining_site(world_seed: u32, wants_full: bool) -> TilePos {
+        for chunk_x in -12..=12 {
+            for chunk_y in -12..=12 {
+                let tiles = crate::terrain_gen::generate_terrain_chunk(
+                    chunk_x,
+                    chunk_y,
+                    i64::from(world_seed),
+                    crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                );
+                if let Some(tile) = tiles.iter().find(|tile| {
+                    (tile.climate_biome.properties().mining == Mining::Full) == wants_full
+                }) {
+                    return TilePos {
+                        x: tile.x,
+                        y: tile.y,
+                    };
+                }
+            }
+        }
+        panic!("no tile with mining == Full ({wants_full}) found within the scanned chunk radius");
+    }
+
+    #[test]
+    fn quarry_completion_credits_ore_only_on_a_genuine_mountain_biome_site() {
+        // Pick a world seed/tile pair where the site is a true Mountains biome
+        // (Mining::Full) versus one that reliably is not, and drive `phase_29` through
+        // a completed quarry job at each site to prove the ore byproduct only ever
+        // appears on the former.
+        let world_seed = 777u32;
+        let mountain_site = find_mining_site(world_seed, true);
+        let non_mountain_site = find_mining_site(world_seed, false);
+
+        for (site, expect_ore) in [(mountain_site, true), (non_mountain_site, false)] {
+            let mut colony = ColonyRuntime {
+                id: "colony-1".to_owned(),
+                resources: Resources::default(),
+                cats: vec![adult_idle_cat("quarrier", "colony-1")],
+                jobs: vec![JobRuntime {
+                    id: "job-1".to_owned(),
+                    kind: JobKind::Quarry,
+                    status: JobStatus::Active,
+                    assigned_cat: Some("quarrier".to_owned()),
+                    started_at: Some(0),
+                    ends_at: Some(1_000),
+                    metadata: JobMetadata::Hauling {
+                        site: Some(site),
+                        total_yield: Some(QUARRY_TOTAL_YIELD),
+                        trips_done: (HUNT_TRIP_COUNT - 1) as u32,
+                        next_trip_at: None,
+                        accepted: true,
+                    },
+                    ..JobRuntime::default()
+                }],
+                last_tick: 0,
+                test_rng_seed: Some(1),
+                ..ColonyRuntime::default()
+            };
+            colony.cats[0].activity = CatActivity::Working;
+
+            phase_29_due_completion_gathering_explore_expansion(
+                &mut colony,
+                production_gate(0, 1_000),
+                world_seed,
+            );
+
+            if expect_ore {
+                assert!(
+                    colony.resources.ore > 0.0,
+                    "mountain quarry site {site:?} should credit ore"
+                );
+            } else {
+                assert_eq!(
+                    colony.resources.ore, 0.0,
+                    "non-mountain quarry site {site:?} should never credit ore"
+                );
+            }
+        }
+    }
+
     #[test]
     fn woodworking_crafts_tools_from_planks_and_blocks_only_when_both_present() {
         // Both inputs present → one cycle consumes 2 planks + 2 blocks → 1 tool.
@@ -11065,6 +11390,74 @@ mod tests {
         );
     }
 
+    /// Seed a founded colony with the `mountaineering`/`smelting` nodes owned, a staffed
+    /// Smelter bench, and a bank of ore — the minimal setup that actually exercises the
+    /// P17/P19 ore→metal chain's new mutable state (`resources.ore`/`metal`,
+    /// `metal_forge_progress`, the Smelter's `production_progress`) instead of leaving
+    /// it permanently at rest.
+    fn ore_chain_colony(world_seed: u32) -> WorldState {
+        let mut world = new_world(world_seed);
+        let mut colony = found_colony(world.world_seed, "colony-1", 1_000, 42);
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push(MOUNTAINEERING_NODE_ID.to_owned());
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push(crate::upgrade_tree::SMELTING_NODE_ID.to_owned());
+        colony.resources.ore = 200.0;
+        // Assign a smelter worker directly rather than relying on the leader's
+        // idle-surplus mop-up to eventually claim the bench — the founding roster's
+        // cats are mostly busy on hunt/water in the opening ticks, and this test cares
+        // about the ore→metal chain's determinism, not the labour market's emergent
+        // staffing timing.
+        let smelter_cat_id = colony.cats[0].id.clone();
+        colony.buildings.push(BuildingRuntime {
+            id: "smelter-1".to_owned(),
+            building_type: BuildingType::Smelter,
+            level: 1,
+            position: TilePos { x: 3, y: 3 },
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 0.0,
+            assigned_cat: Some(smelter_cat_id),
+        });
+        world.colonies.push(colony);
+        world
+    }
+
+    #[test]
+    fn ore_to_metal_chain_is_deterministic_across_identical_runs() {
+        let mut left = ore_chain_colony(555);
+        let mut right = ore_chain_colony(555);
+
+        for step in 1..=40 {
+            let now = 1_000 + i64::from(step) * 60_000;
+            let _ = world_tick(&mut left, now);
+            let _ = world_tick(&mut right, now);
+        }
+
+        assert_eq!(
+            left.colonies[0].resources, right.colonies[0].resources,
+            "ore/metal (and everything they feed) must be byte-identical across identical seeded runs"
+        );
+        assert_eq!(
+            left.colonies[0].metal_forge_progress,
+            right.colonies[0].metal_forge_progress
+        );
+        // The chain must actually have run (not stayed inertly at its seeded values) —
+        // otherwise this test would trivially pass without exercising anything new.
+        assert!(
+            left.colonies[0].resources.metal > 0.0,
+            "the smelter should have refined some of the seeded ore into metal by now"
+        );
+        assert!(
+            left.colonies[0].resources.ore < 200.0,
+            "the seeded ore bank should have been drawn down"
+        );
+    }
+
     #[test]
     fn founded_colony_survives_opening_ticks() {
         let mut world = new_world(1234);
@@ -12136,6 +12529,8 @@ mod tests {
             hide: 100.0,
             cloth: 0.0,
             leather: 0.0,
+            ore: 100.0,
+            metal: 100.0,
             blessings: 0.0,
         }
     }

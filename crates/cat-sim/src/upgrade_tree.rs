@@ -136,6 +136,13 @@ pub const RAIL_NODE_ID: &str = "rail";
 /// `ColonyGridParams::shipping_unlocked` call site.
 pub const SHIPPING_NODE_ID: &str = "shipping";
 
+/// Tech node that unlocks the smelter building (P17/P19 ore→metal chain). Checked
+/// directly at the `actions::plan_building` call site, like [`MOUNTAINEERING_NODE_ID`]
+/// and the smithy/barracks ownership gate — the node id ("smelting") intentionally
+/// differs from the building's own wire string ("smelter") so it can't reuse
+/// `BuildingType::as_str()` the way the smithy/barracks nodes do.
+pub const SMELTING_NODE_ID: &str = "smelting";
+
 pub const UPGRADE_NODES: &[UpgradeNode] = &[
     UpgradeNode {
         id: "research_hut",
@@ -271,6 +278,19 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         prerequisites: &["masonry"],
         unlocks: UpgradeUnlocks {
             buildings: None,
+            jobs: None,
+            effects: None,
+        },
+    },
+    UpgradeNode {
+        id: SMELTING_NODE_ID,
+        name: "Smelting",
+        description: "A proper forge-hearth for the ore mountaineering finally opened up. Raw stone off the peak comes back down as metal bars.",
+        era: 3,
+        cost: 22.0,
+        prerequisites: &[MOUNTAINEERING_NODE_ID],
+        unlocks: UpgradeUnlocks {
+            buildings: Some(&[BuildingType::Smelter.as_str()]),
             jobs: None,
             effects: None,
         },
@@ -947,8 +967,9 @@ mod tests {
         // (unlocks the clothier/tannery clothing chain, P16/P19 deferred slice) +
         // the Rust-side `rail`/`shipping` P17 transport-upgrade pair (long-haul
         // speed + water traversal, both gates checked directly at their pathfinding/
-        // movement call sites like `mountaineering`).
-        assert_eq!(UPGRADE_NODES.len(), 22);
+        // movement call sites like `mountaineering`) + the Rust-side `smelting` node
+        // (unlocks the smelter building, P17/P19 ore→metal chain).
+        assert_eq!(UPGRADE_NODES.len(), 23);
         assert_eq!(EffectKey::ALL.len(), 11);
         assert_eq!(effect_kind(EffectKey::HuntYieldMult), EffectKind::Mult);
         assert_eq!(effect_kind(EffectKey::WaterCarryCapacity), EffectKind::Add);

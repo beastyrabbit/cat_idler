@@ -115,6 +115,85 @@ pub fn advance_smithy(progress_sec: f64, elapsed_sec: f64, options: SmithyOption
     }
 }
 
+/// Metal bars one bonus metal-forge cycle consumes (P17/P19 ore→metal chain).
+pub const METAL_FORGE_METAL_PER_CYCLE: f64 = 2.0;
+/// Bonus weapons one metal-forge cycle produces.
+pub const METAL_FORGE_WEAPONS_PER_CYCLE: f64 = 1.0;
+/// Bonus armor one metal-forge cycle produces.
+pub const METAL_FORGE_ARMOR_PER_CYCLE: f64 = 1.0;
+/// Seconds of work one full metal-forge cycle takes. Same cadence as the smithy's
+/// primary refined+materials cycle ([`SMITHY_CYCLE_SEC`]) — the smith works both
+/// cycles off the same clock, exactly like the P19 trade-craft benches run their
+/// additive craft cycle alongside a workshop's primary refine (see
+/// `crate::recipes::advance_craft`).
+pub const METAL_FORGE_CYCLE_SEC: f64 = SMITHY_CYCLE_SEC;
+
+/// Inputs for the smithy's additive metal-forge sub-cycle: whether a worker is
+/// present/fast, and how much metal is on hand.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MetalForgeOptions {
+    pub has_worker: bool,
+    pub worker_is_fast: bool,
+    pub metal_available: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MetalForgeStep {
+    /// Carry-over cycle time in seconds after this tick.
+    pub next_progress: f64,
+    /// Metal bars consumed this tick.
+    pub metal_used: f64,
+    /// Bonus weapons produced this tick.
+    pub weapons_produced: f64,
+    /// Bonus armor produced this tick.
+    pub armor_produced: f64,
+}
+
+/// Advance the smithy's additive metal-forge sub-cycle: metal bars → bonus
+/// weapons+armor, entirely on top of [`advance_smithy`]'s refined+materials cycle
+/// (a separate progress timer, e.g. `ColonyRuntime::metal_forge_progress` — never
+/// touches `production_progress`). A colony that never smelts any metal always calls
+/// this with `metal_available == 0.0`, which floors `cycles` to zero and returns a
+/// step identical to "no time passed" — so the smithy's forged-gear output is
+/// byte-identical to before this chain existed. Mirrors [`advance_smithy`]'s shape
+/// with a single input instead of two.
+#[must_use]
+pub fn advance_metal_forge(
+    progress_sec: f64,
+    elapsed_sec: f64,
+    options: MetalForgeOptions,
+) -> MetalForgeStep {
+    if !options.has_worker || elapsed_sec <= 0.0 {
+        return MetalForgeStep {
+            next_progress: progress_sec,
+            metal_used: 0.0,
+            weapons_produced: 0.0,
+            armor_produced: 0.0,
+        };
+    }
+
+    let speed = if options.worker_is_fast {
+        SMITH_FAST_SPEED
+    } else {
+        1.0
+    };
+    let mut progress = progress_sec + elapsed_sec * speed;
+
+    let cycles_by_time = (progress / METAL_FORGE_CYCLE_SEC).floor();
+    let cycles_by_metal = (options.metal_available / METAL_FORGE_METAL_PER_CYCLE).floor();
+    let cycles = js_max(0.0, js_min(cycles_by_time, cycles_by_metal));
+
+    progress -= cycles * METAL_FORGE_CYCLE_SEC;
+    progress = js_min(progress, METAL_FORGE_CYCLE_SEC);
+
+    MetalForgeStep {
+        next_progress: progress,
+        metal_used: cycles * METAL_FORGE_METAL_PER_CYCLE,
+        weapons_produced: cycles * METAL_FORGE_WEAPONS_PER_CYCLE,
+        armor_produced: cycles * METAL_FORGE_ARMOR_PER_CYCLE,
+    }
+}
+
 fn js_max(left: f64, right: f64) -> f64 {
     if left.is_nan() || right.is_nan() {
         f64::NAN
@@ -140,9 +219,11 @@ mod tests {
     use crate::types::CatSpecialization;
 
     use super::{
-        SMITH_FAST_SPEED, SMITHY_ARMOR_PER_CYCLE, SMITHY_CYCLE_SEC, SMITHY_MATERIALS_PER_CYCLE,
+        METAL_FORGE_ARMOR_PER_CYCLE, METAL_FORGE_CYCLE_SEC, METAL_FORGE_METAL_PER_CYCLE,
+        METAL_FORGE_WEAPONS_PER_CYCLE, MetalForgeOptions, MetalForgeStep, SMITH_FAST_SPEED,
+        SMITHY_ARMOR_PER_CYCLE, SMITHY_CYCLE_SEC, SMITHY_MATERIALS_PER_CYCLE,
         SMITHY_REFINED_PER_CYCLE, SMITHY_WEAPONS_PER_CYCLE, SmithyOptions, SmithyStep,
-        advance_smithy, smith_worker_is_fast,
+        advance_metal_forge, advance_smithy, smith_worker_is_fast,
     };
 
     fn options(
@@ -410,5 +491,139 @@ mod tests {
         assert!(smithy_step.materials_used.is_nan());
         assert!(smithy_step.weapons_produced.is_nan());
         assert!(smithy_step.armor_produced.is_nan());
+    }
+
+    // --- P17/P19 ore -> metal chain: the smithy's additive metal-forge sub-cycle ---
+
+    fn forge_options(
+        has_worker: bool,
+        worker_is_fast: bool,
+        metal_available: f64,
+    ) -> MetalForgeOptions {
+        MetalForgeOptions {
+            has_worker,
+            worker_is_fast,
+            metal_available,
+        }
+    }
+
+    fn assert_forge_step_bits(actual: MetalForgeStep, expected: MetalForgeStep, label: &str) {
+        assert_f64_bits(
+            actual.next_progress,
+            expected.next_progress,
+            &format!("{label} next_progress"),
+        );
+        assert_f64_bits(
+            actual.metal_used,
+            expected.metal_used,
+            &format!("{label} metal_used"),
+        );
+        assert_f64_bits(
+            actual.weapons_produced,
+            expected.weapons_produced,
+            &format!("{label} weapons_produced"),
+        );
+        assert_f64_bits(
+            actual.armor_produced,
+            expected.armor_produced,
+            &format!("{label} armor_produced"),
+        );
+    }
+
+    #[test]
+    fn metal_forge_constants_mirror_the_smithy_cadence() {
+        assert_f64_bits(METAL_FORGE_METAL_PER_CYCLE, 2.0, "metal per cycle");
+        assert_f64_bits(
+            METAL_FORGE_WEAPONS_PER_CYCLE,
+            1.0,
+            "bonus weapons per cycle",
+        );
+        assert_f64_bits(METAL_FORGE_ARMOR_PER_CYCLE, 1.0, "bonus armor per cycle");
+        assert_f64_bits(
+            METAL_FORGE_CYCLE_SEC,
+            SMITHY_CYCLE_SEC,
+            "shares the smithy's cycle seconds",
+        );
+    }
+
+    #[test]
+    fn a_colony_with_no_metal_ever_produces_nothing_from_the_forge() {
+        // The inert case: no smelter has ever run, so metal_available is always 0.0.
+        // The bonus cycle must be a strict no-op — this is what keeps a no-smelter
+        // colony's smithy output byte-identical to before this chain existed.
+        let step = advance_metal_forge(0.0, 10_000.0, forge_options(true, true, 0.0));
+        assert_forge_step_bits(
+            step,
+            MetalForgeStep {
+                next_progress: SMITHY_CYCLE_SEC,
+                metal_used: 0.0,
+                weapons_produced: 0.0,
+                armor_produced: 0.0,
+            },
+            "zero metal stalls at one full cycle",
+        );
+    }
+
+    #[test]
+    fn metal_forge_does_not_progress_without_worker_or_positive_elapsed_time() {
+        assert_forge_step_bits(
+            advance_metal_forge(123.0, 900.0, forge_options(false, false, 50.0)),
+            MetalForgeStep {
+                next_progress: 123.0,
+                metal_used: 0.0,
+                weapons_produced: 0.0,
+                armor_produced: 0.0,
+            },
+            "without worker",
+        );
+        assert_forge_step_bits(
+            advance_metal_forge(123.0, 0.0, forge_options(true, true, 50.0)),
+            MetalForgeStep {
+                next_progress: 123.0,
+                metal_used: 0.0,
+                weapons_produced: 0.0,
+                armor_produced: 0.0,
+            },
+            "zero elapsed",
+        );
+    }
+
+    #[test]
+    fn metal_forge_converts_complete_cycles_and_floors_by_available_metal() {
+        assert_forge_step_bits(
+            advance_metal_forge(0.0, 900.0, forge_options(true, false, 4.0)),
+            MetalForgeStep {
+                next_progress: 0.0,
+                metal_used: 2.0,
+                weapons_produced: 1.0,
+                armor_produced: 1.0,
+            },
+            "one completed cycle",
+        );
+
+        assert_forge_step_bits(
+            advance_metal_forge(0.0, 900.0, forge_options(true, false, 1.0)),
+            MetalForgeStep {
+                next_progress: 900.0,
+                metal_used: 0.0,
+                weapons_produced: 0.0,
+                armor_produced: 0.0,
+            },
+            "insufficient metal for even one cycle",
+        );
+    }
+
+    #[test]
+    fn fast_worker_advances_the_forge_at_double_speed() {
+        assert_forge_step_bits(
+            advance_metal_forge(0.0, 450.0, forge_options(true, true, 2.0)),
+            MetalForgeStep {
+                next_progress: 0.0,
+                metal_used: 2.0,
+                weapons_produced: 1.0,
+                armor_produced: 1.0,
+            },
+            "fast worker cycle",
+        );
     }
 }

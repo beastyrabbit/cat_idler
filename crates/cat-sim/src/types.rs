@@ -119,6 +119,10 @@ define_wire_enum! {
         Woodworking => "woodworking",
         Clothier => "clothier",
         Tannery => "tannery",
+        // P17/P19 ore -> metal chain: refines mountain ore into metal bars, mirroring
+        // StonePrep's materials -> blocks refine. See production::advance_workshop's
+        // Smelter arm in world_tick.rs and the "smelting" upgrade node.
+        Smelter => "smelter",
     }
 }
 
@@ -290,6 +294,7 @@ mod tests {
             (BuildingType::Woodworking, "woodworking"),
             (BuildingType::Clothier, "clothier"),
             (BuildingType::Tannery, "tannery"),
+            (BuildingType::Smelter, "smelter"),
         ];
 
         assert_wire_round_trip(&cases, BuildingType::as_str);

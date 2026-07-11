@@ -121,6 +121,8 @@ mod tests {
             hide: 0.0,
             cloth: 0.0,
             leather: 0.0,
+            ore: 0.0,
+            metal: 0.0,
             blessings: 0.0,
         }
     }

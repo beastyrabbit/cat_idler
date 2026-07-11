@@ -92,6 +92,15 @@ pub struct Resources {
     /// Tanned leather from the tannery (P16/P19 clothing chain slice: hide → leather).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub leather: f64,
+    /// Raw ore, a mountain-only byproduct of quarrying (P17/P19 ore→metal chain).
+    /// Feeds the smelter's ore → metal refine, mirroring how `materials` feeds
+    /// planks/blocks. See `world_tick::credit_quarry_ore`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ore: f64,
+    /// Refined metal bars from the smelter (P17/P19 ore→metal chain: ore → metal).
+    /// Feeds the smithy's bonus metal-forge cycle (`smithy::advance_metal_forge`).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub metal: f64,
     pub blessings: f64,
 }
 
@@ -297,6 +306,8 @@ mod tests {
                 hide: 22.0,
                 cloth: 23.0,
                 leather: 24.0,
+                ore: 25.0,
+                metal: 26.0,
                 blessings: 17.0,
             },
             grid_size: 9,
