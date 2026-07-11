@@ -61,7 +61,7 @@ use crate::{
     skills::{HAUL_SKILL_GAIN, Labor, SKILL_GAIN_PER_JOB},
     smithy::{SmithyOptions, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
-    stockpiles::{self, GatherSpot, ResourceKind, Stockpile},
+    stockpiles::{self, GatherSpot, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
     storage::{
         StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
     },
@@ -4051,14 +4051,17 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
 /// gather spots (cancelling any mover mid-flight to one), complete arrived movers
 /// (pick up the gather spot's contents and start the return haul), and — only once a
 /// Steward is appointed, mirroring every other officer automation's "unfilled role,
-/// no auto effect" contract (P12.2) — dispatch a fresh mover for any non-empty gather
-/// spot that doesn't already have one in flight. Entirely additive/inert: a colony
-/// with no gather spots takes none of these branches, so this is a no-op byte-identical
-/// to pre-P16 behavior until a gather spot is designated.
+/// no auto effect" contract (P12.2) — auto-designate a spot beside a distant,
+/// heavily-worked resource site (P12.6/P16 follow-up) and dispatch a fresh mover for
+/// any non-empty gather spot that doesn't already have one in flight. Entirely
+/// additive/inert: a colony with no gather spots and no Steward takes none of these
+/// branches, so this is a no-op byte-identical to pre-P16 behavior until a gather spot
+/// is designated (manually, or automatically once a Steward is appointed).
 fn phase_p16_gather_spot_logistics(colony: &mut ColonyRuntime, gate: TickGate) {
     expire_gather_spots(colony, gate.processed_through);
     complete_arrived_gather_haul_movers(colony, gate.processed_through);
     if colony.officers.contains_key(&OfficerRole::Steward) {
+        auto_designate_gather_spots(colony, gate.processed_through);
         dispatch_gather_haul_movers(colony, gate.processed_through);
     }
 }
@@ -4267,14 +4270,177 @@ fn complete_arrived_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) 
     }
 }
 
+/// Minimum Chebyshev distance from the village anchor a resource site must sit at before
+/// [`auto_designate_gather_spots`] will place a spot beside it. Inside this radius a
+/// gatherer's own round trip to the shrine is already short, so splitting it into a
+/// short-gather + long-haul mover leg would only add overhead instead of saving it. Set to
+/// the leader's normal outer building ring ([`DEFAULT_MAX_RING`]) — sites the colony would
+/// have to range beyond its own footprint for are exactly the ones the split pays off for.
+const AUTO_GATHER_SPOT_MIN_DISTANCE: i32 = DEFAULT_MAX_RING;
+
+/// A resource site must be drawing at least this many concurrent active/queued gatherers
+/// before [`auto_designate_gather_spots`] treats it as "heavily/repeatedly worked" enough to
+/// justify auto-placing a spot. A single gatherer's own round trip gets no benefit from a
+/// hand-off (it would just add a mover leg on top), so this keeps placement conservative —
+/// never spamming a spot for one lone hunter/quarrier/water-fetcher.
+const AUTO_GATHER_SPOT_MIN_WORKERS: usize = 2;
+
+/// The [`ResourceKind`] an active/queued job of `kind` gathers, for the three job kinds
+/// [`auto_designate_gather_spots`] watches — the same three [`carrying_kind_for_job`] (via
+/// [`carrying_resource_kind`]) maps a gatherer's own haul to. `None` for every other job
+/// kind (nothing else resolves a [`JobMetadata::Hauling`] site to a gatherable resource).
+fn resource_kind_for_gather_job(kind: JobKind) -> Option<ResourceKind> {
+    match kind {
+        JobKind::HuntExpedition => Some(ResourceKind::Food),
+        JobKind::Quarry => Some(ResourceKind::Materials),
+        JobKind::FetchWater => Some(ResourceKind::Water),
+        _ => None,
+    }
+}
+
+/// Chebyshev (8-directional) tile distance between two tiles — the same metric
+/// [`cheb_from_anchor`] uses against the village anchor, generalized to any pair.
+fn tile_cheb_distance(a: TilePos, b: TilePos) -> i32 {
+    (a.x - b.x).abs().max((a.y - b.y).abs())
+}
+
+/// The cardinal-neighbour tile of `site` closest to the village anchor — where an
+/// auto-designated gather spot lands. Deliberately adjacent to (never on top of) the worked
+/// resource tile itself: many resource tiles (river water, mountain/cave quarry ground) are
+/// otherwise hard-blocked terrain (see `pathfinding::WalkGrid::is_blocked`), so the spot must
+/// sit on open ground beside the site, not on it. Biasing toward the anchor also shortens the
+/// mover's long-haul leg. Ties broken by a fixed compass order (north, east, south, west) —
+/// no RNG, so this is fully deterministic.
+fn gather_spot_tile_adjacent_to(site: TilePos) -> TilePos {
+    const OFFSETS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
+    OFFSETS
+        .iter()
+        .map(|&(dx, dy)| TilePos {
+            x: site.x + dx,
+            y: site.y + dy,
+        })
+        .min_by_key(|&tile| (cheb_from_anchor(tile), tile.x, tile.y))
+        .expect("OFFSETS is non-empty")
+}
+
+/// Steward automation (P12.6/P16 follow-up): auto-designate a gather spot beside a distant,
+/// heavily-worked resource site, exactly as if a player had run `DesignateGatherSpot` there.
+/// Reuses every downstream P16/P12.3 mechanism unchanged — deposit routing already favours
+/// the new spot over the shrine once it exists (it's nearer the gatherer's work site),
+/// [`dispatch_gather_haul_movers`] picks up its contents next tick, and TTL expiry clears it
+/// exactly like a manual spot.
+///
+/// A resource site qualifies only when *all* of the following hold, so this stays
+/// conservative and never spams spots:
+/// - it is currently the resolved `site` of `>=` [`AUTO_GATHER_SPOT_MIN_WORKERS`] concurrent
+///   active/queued `hunt_expedition`/`quarry`/`fetch_water` jobs (repeatedly worked *right
+///   now*, not merely once, historically);
+/// - it sits `>=` [`AUTO_GATHER_SPOT_MIN_DISTANCE`] tiles (Chebyshev) from the village anchor
+///   (far enough that the short-gather + long-haul split actually pays off);
+/// - no existing gather spot of the same resource kind already sits within 1 tile of it (no
+///   duplicate spot on an already-served site);
+/// - the gather-spot budget ([`MAX_GATHER_SPOTS`]) has room.
+///
+/// Candidates are ordered deterministically (farthest first, then most heavily worked, then
+/// stable tile order — no RNG) and placed one at a time until the budget is spent, so a tick
+/// with several qualifying sites still produces a fully reproducible result. A no-op — byte
+/// identical to pre-this-feature behavior — whenever no site qualifies (including every
+/// colony with no Steward, since the caller only invokes this once one is appointed).
+fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64) {
+    if colony.gather_spots.len() >= MAX_GATHER_SPOTS {
+        return;
+    }
+
+    let mut worker_counts: BTreeMap<(ResourceKind, TilePos), usize> = BTreeMap::new();
+    for job in &colony.jobs {
+        if !matches!(job.status, JobStatus::Active | JobStatus::Queued) {
+            continue;
+        }
+        let Some(kind) = resource_kind_for_gather_job(job.kind) else {
+            continue;
+        };
+        let JobMetadata::Hauling {
+            site: Some(site), ..
+        } = job.metadata
+        else {
+            continue;
+        };
+        *worker_counts.entry((kind, site)).or_insert(0) += 1;
+    }
+
+    let already_served: Vec<(ResourceKind, TilePos)> = colony
+        .gather_spots
+        .iter()
+        .filter_map(|spot| {
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == spot.stockpile_id)
+                .map(|pile| {
+                    let (cx, cy) = pile.center();
+                    (spot.kind, world_pos_to_tile(WorldPos { x: cx, y: cy }))
+                })
+        })
+        .collect();
+
+    let mut candidates: Vec<(ResourceKind, TilePos, usize)> = worker_counts
+        .into_iter()
+        .filter(|&((_, site), count)| {
+            count >= AUTO_GATHER_SPOT_MIN_WORKERS
+                && cheb_from_anchor(site) >= AUTO_GATHER_SPOT_MIN_DISTANCE
+        })
+        .filter(|&((kind, site), _)| {
+            !already_served.iter().any(|&(served_kind, served_site)| {
+                served_kind == kind && tile_cheb_distance(served_site, site) <= 1
+            })
+        })
+        .map(|((kind, site), count)| (kind, site, count))
+        .collect();
+
+    // Deterministic order: farthest (most beneficial split) first, then most heavily
+    // worked, then stable tile/kind order as a final tie-break. No RNG.
+    candidates.sort_by(|a, b| {
+        cheb_from_anchor(b.1)
+            .cmp(&cheb_from_anchor(a.1))
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+
+    for (kind, site, _) in candidates {
+        if colony.gather_spots.len() >= MAX_GATHER_SPOTS {
+            break;
+        }
+        let spot_tile = gather_spot_tile_adjacent_to(site);
+        let id = format!("gather-auto-{now_ms}-{}", colony.stockpiles.len() + 1);
+        colony.stockpiles.push(Stockpile {
+            id: id.clone(),
+            rect: ZoneRect {
+                x1: spot_tile.x,
+                y1: spot_tile.y,
+                x2: spot_tile.x,
+                y2: spot_tile.y,
+            },
+            accepts: std::iter::once(kind).collect(),
+            contents: Resources::default(),
+        });
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: id,
+            kind,
+            expires_at_ms: now_ms + stockpiles::GATHER_SPOT_TTL_MS,
+        });
+    }
+    reconcile_colony_stockpiles(colony);
+}
+
 /// Steward-gated (P12.6-style officer automation, folded in from the P16 spec's
 /// "Steward auto-stockpile automation" ask): dispatch one fresh `haul_gather_spot`
 /// mover per non-empty gather spot that doesn't already have a queued/active mover, in
 /// stable designation order, using the same generic best-idle-cat picker every other
 /// quiet system dispatch uses (`select_best_cat`, no specialization preference — hauling
-/// is unspecialized labor). Choosing *where* to place gather spots automatically is
-/// deliberately out of scope here (flagged follow-up) — this only automates the
-/// logistics leg once a spot already exists.
+/// is unspecialized labor). *Where* gather spots come from — manually player-designated,
+/// or auto-designated by [`auto_designate_gather_spots`] just above — is irrelevant here;
+/// this only automates the logistics leg once a spot already exists.
 fn dispatch_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
     let targeted_spots: HashSet<String> = colony
         .jobs
@@ -8918,11 +9084,266 @@ mod tests {
         );
     }
 
+    // ---- P12.6 Steward auto-placed gather spots ----
+
+    /// A qualifying `Quarry` (materials) job pair: two active jobs both resolved to `site`,
+    /// mirroring how phase 15 gives every concurrent quarry job the same nearest-site target.
+    fn quarry_pair_at(site: TilePos) -> Vec<JobRuntime> {
+        (0..AUTO_GATHER_SPOT_MIN_WORKERS)
+            .map(|i| JobRuntime {
+                id: format!("job-quarry-{i}"),
+                kind: JobKind::Quarry,
+                status: JobStatus::Active,
+                assigned_cat: Some(format!("quarrier-{i}")),
+                metadata: JobMetadata::Hauling {
+                    site: Some(site),
+                    total_yield: None,
+                    trips_done: 0,
+                    next_trip_at: None,
+                    accepted: false,
+                },
+                ..JobRuntime::default()
+            })
+            .collect()
+    }
+
+    fn steward_colony() -> ColonyRuntime {
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![adult_idle_cat("steward-cat", "colony-1")],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        colony
+            .officers
+            .insert(OfficerRole::Steward, "steward-cat".to_owned());
+        colony
+    }
+
+    #[test]
+    fn steward_auto_designates_a_gather_spot_beside_a_distant_heavily_worked_site() {
+        let mut colony = steward_colony();
+        let site = TilePos {
+            x: VILLAGE_ANCHOR.x + AUTO_GATHER_SPOT_MIN_DISTANCE + 2,
+            y: VILLAGE_ANCHOR.y,
+        };
+        colony.jobs.extend(quarry_pair_at(site));
+
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+
+        assert_eq!(colony.gather_spots.len(), 1, "one spot auto-designated");
+        let spot = &colony.gather_spots[0];
+        assert_eq!(spot.kind, ResourceKind::Materials);
+        assert!(spot.stockpile_id.starts_with("gather-auto-"));
+        let pile = colony
+            .stockpiles
+            .iter()
+            .find(|p| p.id == spot.stockpile_id)
+            .expect("backing pile present");
+        // Adjacent to (not on top of) the site, on the cardinal neighbour closest to the
+        // anchor — west, since the site sits due east of it.
+        assert_eq!(
+            pile.rect,
+            tile_rect(site.x - 1, site.y),
+            "placed adjacent to the site, biased toward the village"
+        );
+        assert_eq!(pile.accepts.len(), 1);
+        assert!(pile.accepts.contains(&ResourceKind::Materials));
+    }
+
+    #[test]
+    fn steward_auto_placement_is_inert_without_a_steward() {
+        // Same distant, heavily-worked site as the positive case above, but no Steward
+        // appointed — additive/inert (P12.2 "unfilled role, no auto effect" contract).
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![adult_idle_cat("cat-1", "colony-1")],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        let site = TilePos {
+            x: VILLAGE_ANCHOR.x + AUTO_GATHER_SPOT_MIN_DISTANCE + 2,
+            y: VILLAGE_ANCHOR.y,
+        };
+        colony.jobs.extend(quarry_pair_at(site));
+        let before = colony.clone();
+
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+
+        assert!(colony.gather_spots.is_empty(), "no Steward, no placement");
+        assert_eq!(
+            colony.stockpiles, before.stockpiles,
+            "byte-identical: not even the shrine reservoir changes"
+        );
+    }
+
+    #[test]
+    fn steward_auto_placement_ignores_a_site_inside_the_distance_threshold() {
+        let mut colony = steward_colony();
+        // One tile inside the qualifying radius.
+        let near_site = TilePos {
+            x: VILLAGE_ANCHOR.x + AUTO_GATHER_SPOT_MIN_DISTANCE - 1,
+            y: VILLAGE_ANCHOR.y,
+        };
+        colony.jobs.extend(quarry_pair_at(near_site));
+
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+
+        assert!(
+            colony.gather_spots.is_empty(),
+            "site is too close to the village for the split to pay off"
+        );
+    }
+
+    #[test]
+    fn steward_auto_placement_ignores_a_site_with_only_one_worker() {
+        let mut colony = steward_colony();
+        let site = TilePos {
+            x: VILLAGE_ANCHOR.x + AUTO_GATHER_SPOT_MIN_DISTANCE + 2,
+            y: VILLAGE_ANCHOR.y,
+        };
+        // Only one concurrent worker — below AUTO_GATHER_SPOT_MIN_WORKERS.
+        colony.jobs.push(quarry_pair_at(site).remove(0));
+
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+
+        assert!(
+            colony.gather_spots.is_empty(),
+            "a lone gatherer's round trip gets no benefit from a hand-off"
+        );
+    }
+
+    #[test]
+    fn steward_auto_placement_respects_the_gather_spot_budget() {
+        let mut colony = steward_colony();
+        // Fill the budget with manually designated spots on unrelated, near sites first.
+        for i in 0..MAX_GATHER_SPOTS {
+            let id = format!("gather-manual-{i}");
+            colony.stockpiles.push(designated_pile(
+                &id,
+                tile_rect(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y + 1 + i as i32),
+                &[ResourceKind::Food],
+            ));
+            colony.gather_spots.push(GatherSpot {
+                stockpile_id: id,
+                kind: ResourceKind::Food,
+                expires_at_ms: i64::MAX,
+            });
+        }
+        assert_eq!(colony.gather_spots.len(), MAX_GATHER_SPOTS);
+
+        let site = TilePos {
+            x: VILLAGE_ANCHOR.x + AUTO_GATHER_SPOT_MIN_DISTANCE + 2,
+            y: VILLAGE_ANCHOR.y,
+        };
+        colony.jobs.extend(quarry_pair_at(site));
+
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+
+        assert_eq!(
+            colony.gather_spots.len(),
+            MAX_GATHER_SPOTS,
+            "budget already spent — no over-placement"
+        );
+    }
+
+    #[test]
+    fn steward_auto_placement_never_duplicates_a_spot_on_an_already_served_site() {
+        let mut colony = steward_colony();
+        let site = TilePos {
+            x: VILLAGE_ANCHOR.x + AUTO_GATHER_SPOT_MIN_DISTANCE + 2,
+            y: VILLAGE_ANCHOR.y,
+        };
+        // A manually designated materials spot already sits right beside this exact site.
+        colony.stockpiles.push(designated_pile(
+            "gather-manual",
+            tile_rect(site.x - 1, site.y),
+            &[ResourceKind::Materials],
+        ));
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: "gather-manual".to_owned(),
+            kind: ResourceKind::Materials,
+            expires_at_ms: i64::MAX,
+        });
+        colony.jobs.extend(quarry_pair_at(site));
+
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+
+        assert_eq!(
+            colony.gather_spots.len(),
+            1,
+            "the existing spot already serves this site — no duplicate"
+        );
+    }
+
+    #[test]
+    fn steward_auto_placement_is_deterministic_for_identical_inputs() {
+        let mut left = steward_colony();
+        let mut right = left.clone();
+
+        // Several simultaneous candidates across kinds/sites so ordering actually matters.
+        let quarry_site = TilePos {
+            x: VILLAGE_ANCHOR.x + AUTO_GATHER_SPOT_MIN_DISTANCE + 2,
+            y: VILLAGE_ANCHOR.y,
+        };
+        let hunt_site = TilePos {
+            x: VILLAGE_ANCHOR.x,
+            y: VILLAGE_ANCHOR.y - AUTO_GATHER_SPOT_MIN_DISTANCE - 4,
+        };
+        let water_site = TilePos {
+            x: VILLAGE_ANCHOR.x - AUTO_GATHER_SPOT_MIN_DISTANCE - 6,
+            y: VILLAGE_ANCHOR.y,
+        };
+        let mut jobs = quarry_pair_at(quarry_site);
+        jobs.extend((0..AUTO_GATHER_SPOT_MIN_WORKERS).map(|i| JobRuntime {
+            id: format!("job-hunt-{i}"),
+            kind: JobKind::HuntExpedition,
+            status: JobStatus::Active,
+            assigned_cat: Some(format!("hunter-{i}")),
+            metadata: JobMetadata::Hauling {
+                site: Some(hunt_site),
+                total_yield: None,
+                trips_done: 0,
+                next_trip_at: None,
+                accepted: false,
+            },
+            ..JobRuntime::default()
+        }));
+        jobs.extend((0..AUTO_GATHER_SPOT_MIN_WORKERS).map(|i| JobRuntime {
+            id: format!("job-water-{i}"),
+            kind: JobKind::FetchWater,
+            status: JobStatus::Queued,
+            assigned_cat: Some(format!("fetcher-{i}")),
+            metadata: JobMetadata::Hauling {
+                site: Some(water_site),
+                total_yield: None,
+                trips_done: 0,
+                next_trip_at: None,
+                accepted: false,
+            },
+            ..JobRuntime::default()
+        }));
+        left.jobs.clone_from(&jobs);
+        right.jobs = jobs;
+
+        phase_p16_gather_spot_logistics(&mut left, production_gate(1, 5_000));
+        phase_p16_gather_spot_logistics(&mut right, production_gate(1, 5_000));
+
+        assert!(
+            !left.gather_spots.is_empty(),
+            "test exercises real placement"
+        );
+        assert_eq!(left.gather_spots, right.gather_spots);
+        assert_eq!(left.stockpiles, right.stockpiles);
+    }
+
     #[test]
     fn gather_spot_logistics_phase_is_a_true_no_op_with_no_gather_spots_even_with_a_steward() {
         // Exercises every branch of `phase_p16_gather_spot_logistics` (expiry, pickup,
-        // and — since a Steward is appointed — the dispatch branch too) while no gather
-        // spot ever exists: the phase must do nothing observable. Every pre-existing
+        // and — since a Steward is appointed — the dispatch and auto-placement branches
+        // too) while no gather spot ever exists and no candidate site in this founding
+        // colony reaches the auto-placement thresholds (distance + concurrent workers)
+        // within the window: the phase must do nothing observable. Every pre-existing
         // determinism/trajectory test in this module (unchanged by this feature) is the
         // rest of the "byte-identical to pre-P16" evidence; this test isolates P16's own
         // phase specifically.
