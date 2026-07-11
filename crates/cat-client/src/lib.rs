@@ -1735,6 +1735,21 @@ fn material_tint(material: &str) -> Color {
 #[derive(Component, Clone, Copy)]
 struct HudResource(HudRes);
 
+/// Map a wire [`ResourceKind`] to the HUD/icon glyph key, so gather-spot markers
+/// (and anything else keyed by resource) reuse the resource icon set.
+fn hud_res_of(kind: ResourceKind) -> HudRes {
+    match kind {
+        ResourceKind::Food => HudRes::Food,
+        ResourceKind::Water => HudRes::Water,
+        ResourceKind::Herbs => HudRes::Herbs,
+        ResourceKind::Materials => HudRes::Materials,
+        ResourceKind::Refined => HudRes::Refined,
+        ResourceKind::Weapons => HudRes::Weapons,
+        ResourceKind::Armor => HudRes::Armor,
+        ResourceKind::Blessings => HudRes::Blessings,
+    }
+}
+
 /// The tint applied to a resource's white glyph so the readout reads at a glance.
 fn resource_icon_tint(kind: HudRes) -> Color {
     match kind {
@@ -3414,11 +3429,18 @@ fn render_zones(
 /// Draw each player stockpile as an amber overlay + a pile prop sized to its
 /// contents + a dominant-resource label. The shrine reservoir is skipped (it's
 /// always present and sits on the village).
+/// Gather-spot flag: a teal banner (distinct from pile/accept tints) on a wood
+/// pole, carrying the spot's resource icon — marks a temporary gather drop.
+const GATHER_FLAG_COLOR: Color = Color::srgb(0.24, 0.60, 0.52);
+const GATHER_POLE_COLOR: Color = Color::srgb(0.34, 0.25, 0.16);
+
+#[allow(clippy::type_complexity)]
 fn render_stockpiles(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
     selection: Res<StockpileSelection>,
     art: Option<Res<PropArt>>,
+    icons: Option<Res<IconArt>>,
     existing: Query<Entity, StockpileEntities>,
 ) {
     if !latest.is_changed() && !selection.is_changed() {
@@ -3522,6 +3544,33 @@ fn render_stockpiles(
             Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, ysort_z(cy) + 0.5),
             StockpileVis,
         ));
+
+        // A gather spot (P16) is a temporary, resource-typed drop — often out
+        // beyond the claimed area. Fly a little resource-icon flag above it so it
+        // reads as distinct from an ordinary player stockpile, regardless of how
+        // much it's currently holding.
+        if let (Some(gs), Some(icons)) = (pile.gather_spot.as_ref(), icons.as_ref()) {
+            let flag_y = cy + h / 2.0 + TILE * 0.5;
+            commands.spawn((
+                Sprite::from_color(GATHER_POLE_COLOR, Vec2::new(TILE * 0.14, TILE)),
+                Transform::from_xyz(cx, flag_y, ysort_z(cy) + 3.0),
+                StockpileVis,
+            ));
+            commands.spawn((
+                Sprite::from_color(GATHER_FLAG_COLOR, Vec2::splat(TILE * 0.66)),
+                Transform::from_xyz(cx, flag_y + TILE * 0.45, ysort_z(cy) + 3.1),
+                StockpileVis,
+            ));
+            commands.spawn((
+                Sprite {
+                    image: icons.get(hud_res_of(gs.kind)),
+                    custom_size: Some(Vec2::splat(TILE * 0.46)),
+                    ..default()
+                },
+                Transform::from_xyz(cx, flag_y + TILE * 0.45, ysort_z(cy) + 3.2),
+                StockpileVis,
+            ));
+        }
     }
 }
 
@@ -5988,6 +6037,19 @@ mod tests {
             boosted,
             pregnant: false,
         }
+    }
+
+    #[test]
+    fn hud_res_maps_every_resource_kind_to_its_glyph() {
+        // Every wire ResourceKind a gather spot can carry maps to a HUD glyph.
+        assert_eq!(hud_res_of(ResourceKind::Food), HudRes::Food);
+        assert_eq!(hud_res_of(ResourceKind::Water), HudRes::Water);
+        assert_eq!(hud_res_of(ResourceKind::Herbs), HudRes::Herbs);
+        assert_eq!(hud_res_of(ResourceKind::Materials), HudRes::Materials);
+        assert_eq!(hud_res_of(ResourceKind::Refined), HudRes::Refined);
+        assert_eq!(hud_res_of(ResourceKind::Weapons), HudRes::Weapons);
+        assert_eq!(hud_res_of(ResourceKind::Armor), HudRes::Armor);
+        assert_eq!(hud_res_of(ResourceKind::Blessings), HudRes::Blessings);
     }
 
     #[test]
