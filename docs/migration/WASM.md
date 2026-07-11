@@ -17,11 +17,16 @@ event feed) — including the current top-down cutaway-interior look. Native
   on `:8787`.
 - **Real release bundle size: wasm 27 MB raw / 8.4 MB gzipped** + 104 KB JS glue
   + ~2.5 MB assets (~31 MB `dist/` total). 8.4 MB gzipped is the transfer cost —
-  heavy but workable; further shrink is possible (more aggressive wasm-opt/LTO).
-- Result in-browser: full scene renders on WebGL2; the HUD shows live snapshot
-  data (WS connected + streaming). The only console errors are harmless
-  `*.png.meta` 404s (Bevy requests optional metadata sidecars; the real `.png`
-  assets load fine) + a favicon 404. No WebGL/wgpu errors, no wasm panic.
+  heavy but workable. `index.html` requests `data-wasm-opt="z"`, but that only
+  fires when a `wasm-opt` binary is on `PATH` (trunk silently skips it otherwise);
+  on a lightly-loaded machine it trims the module, but a full `-Oz` pass on this
+  27 MB module is minutes-to-hours of CPU, so it's opt-in, not on the default loop.
+- Result in-browser: full scene renders on WebGL2 (top-down cutaway interiors,
+  sprite-atlas cats, 9-patch UI); the HUD shows live snapshot data and the event
+  feed streams (WS connected). **0 console errors** — the former `*.png.meta` 404
+  flood is gone (`AssetMetaCheck::Never` on the client `AssetPlugin`; the game
+  ships no `.meta` sidecars) and the favicon 404 is gone (a pixel-cat
+  `favicon.png` is bundled + linked). No WebGL/wgpu errors, no wasm panic.
 
 ## Earlier scouting (compile feasibility)
 
