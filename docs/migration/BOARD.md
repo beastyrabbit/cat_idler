@@ -32,9 +32,25 @@ codex, plus a Claude review for high-value slices) signs off.
 | P6 | Military + governance + upgrade tree | done |
 | P7 | Master loop (`world_tick`, multi-colony) | done |
 | P8 | Protocol + server (+ multi-village founding) | done |
-| P9 | Client render + UI (dashboard + log page) | in progress |
-| P10 | WASM/web + native packaging | pending |
-| P11 | Cutover (big-bang) | pending |
+| P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
+| P10 | WASM/web + native packaging | partial — `cat-web` compiles clean to `wasm32-unknown-unknown`, WS URL derives from `window.location`, a trunk bundle config exists (`7e59c7c`); no committed in-browser build or smoke test yet, see `docs/migration/WASM.md` |
+| P11 | Cutover (retire the TS reference tree, big-bang) | pending |
+| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | done — officer roles are an additive automation layer (assignable, not a full director split; the single leader director still runs most allocation, see `docs/ARCHITECTURE.md` "Known gaps") |
+| P13 | Client UI for P12: stockpile designation, officer assignment | done (see below) |
+| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done (see below) |
+| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | done (see below) |
+| P16 | Founding village blueprint, gather spots, tile recalibration | done (see below) |
+| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | done (see below) |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done (see below) |
+| P19 | Item/material economy: crafting chains, traders, coin | done (see below) |
+
+**Notes on P12–P19**: these phases were decomposed and executed after this board's card
+format fell out of active use for day-to-day tracking — the per-slice specs live in
+`docs/migration/specs/p12-idle-cat-forest.md` through `p19-items-materials-trade.md`, and
+the authoritative status for each slice is the git log (commit subjects are tagged with
+their phase/slice, e.g. `P12.1:`, `P19 slice 2/4:`). This table is a summary rollup, not a
+card-by-card log; see "P12–P19 — what actually shipped" below for the feature list and
+`docs/HANDOFF.md` for the living status of anything still in flight underneath a "done" row.
 
 ---
 
@@ -527,7 +543,101 @@ scope: REWRITTEN flat top-down (per docs/GAME_VISION.md — no iso). Terrain reg
 scope: WASD/arrow pan, middle-drag pan, wheel zoom, R reset — centred on the village anchor. (tool modes/selection inspector deferred.)
 ### P9.4 dashboard + action buttons   [status: done]
 scope: HUD dashboard (resources w/ caps, status, leader, pop/housing, threat, jobs) + event-log panel from the snapshot; toolbar buttons (Supply food/water, Plan hunt, Found village) -> ClientAction over WS after a Presence handshake issues the signed session. Round-trip framebuffer-verified (Supply food -> supply_food job appears next snapshot).
-### P9.5 bevy_brp_extras + polish   [status: todo]
+### P9.5 bevy_brp_extras + polish   [status: todo — superseded, see P9 table note]
 scope: add BrpExtrasPlugin (brp_status green + screenshot/input MCP tools); life-stage cat scale, hats/crown/badges.
-### P9.gate   [status: todo]
+### P9.gate   [status: todo — superseded, see P9 table note]
 scope: client connects to cat-server, renders the live world, an action round-trips; screenshot via bevy_brp_mcp.
+
+---
+
+## P12–P19 — what actually shipped
+
+These phases ran outside the card-by-card `todo → researching → red → dev → qa → done`
+workflow used above — they're tracked as design specs in `docs/migration/specs/` plus the
+git log, not as individual cards on this board (per `README.md`'s note that P12+ is
+"tracked in specs/ and the git log rather than the board"). This section is a rollup of
+what actually landed on `migration/bevy-rust`, grouped by phase, for anyone auditing status
+without reading ~150 commits. It intentionally does not restate every commit — see `git log`
+for exact commit hashes/messages, and the corresponding spec doc for the original design.
+
+### P12 — Sim expansion (spec: `docs/migration/specs/p12-idle-cat-forest.md`)
+- **P12.1 skills** — per-labor proficiency; cats improve at what they do.
+- **P12.2 officers** — assignable officer roles as an additive automation layer (steward/etc.),
+  `AssignOfficer`/`UnassignOfficer` actions. Not a full split of the leader director into
+  per-role automation — most labor allocation still runs through the single director (tracked
+  as a known gap in `docs/ARCHITECTURE.md`).
+- **P12.3 spatial stockpiles** — real containers with a balancing reservoir (stockpiles are
+  places in the world, not an abstract number).
+- **P12.4a/b workshop chains + Accountant** — inter-workshop stockpile routing, a stock-ledger
+  freshness system ("Accountant"), workshop crafting chains (planks/blocks/tools).
+- **P12.6 logistics** — general/limited stockpile designation, shrine offerings (cats convert
+  surplus materials to blessings), the Steward auto-placing gather spots near distant worked
+  sites.
+
+### P13 — Client UI for P12
+- Spatial stockpile designation + render (`b3d28fb`).
+- Officer assignment UI (`e32e32d`).
+
+### P14 — Spatial placement (spec: `docs/migration/specs/p14-spatial-placement.md`)
+- **P14.1** building footprints + tile-occupancy + tree collision.
+- **P14.2** buildings/trees as soft obstacles cats route around (cost-based pathfinding, not
+  hard blocking).
+- **P14.4** road-accessibility invariant — buildings get paved to the shrine.
+- **P14.5** footprint building render + y-sort 2.5D depth in the client.
+
+### P15 — Playtest-feedback backlog (spec: `docs/migration/specs/p15-playtest-feedback.md`)
+- Fog of war: first slice (tiny start + revealed-tile state), then provisional → committed
+  scout fog reveal, rendered as a dim half-lifted haze.
+- Cat booster: a per-cat priority flag that biases the leader's job/role matcher, plus an
+  inspector toggle and on-map priority marker.
+- Control rebind + building inspector (real inbound-haul readout); smooth cat/raider movement
+  (persisted + interpolated, no more teleport-to-tile snapping); final control scheme +
+  constant-speed walking.
+
+### P16 — Founding village blueprint (spec: `docs/migration/specs/p16-village-blueprint.md`)
+- Fixed founding blueprint (5-cat small start) + a fog-reveal fix.
+- Gather spots (temporary drop points) + a gatherer/mover work split, with resource-typed
+  markers rendered on the map.
+- Tile recalibration (smaller render tile, footprint sizes tuned: house 2×3, workshop 3×3,
+  shrine 3×3 with a road ring, tree 2×3).
+
+### P17 — Climate-driven biome generator (spec: `docs/migration/specs/p17-biome-generator.md`)
+- Climate-driven biome generator (~26 biomes) at the sim layer, rendered client-side as ground
+  tint + per-biome tree density.
+- Per-biome crop fertility + mining rules; **ore/metal mining is wired** (mountain-biome ore,
+  a `Smelter` building refining ore → metal bars, metal-bars-for-better-gear via
+  `smithy::advance_metal_forge`) — note this contradicts the "ore/metal not yet wired" line
+  still present in `README.md`'s Status section as of this writing; trust the git log
+  (`edc1f21`, `341cf2a`, `c4ed4a3`) and `crates/cat-sim/src/world_tick.rs`/`smithy.rs` over
+  that stale README line.
+- Transport upgrades: rail (long-haul speed) and shipping (cross-water routes).
+
+### P18 — Visual polish (spec: `docs/migration/specs/p18-visual-polish.md`)
+- DF-Steam-styled wood/parchment UI panels, HUD resource icons + hover tooltips.
+- Dedicated craft-station sprites for the P16 workshops; climate-biome rendering (shared with
+  P17).
+
+### P19 — Item/material economy (spec: `docs/migration/specs/p19-items-materials-trade.md`)
+- Slice 1: item/material data model + per-colony item store; workshop crafting chains
+  (planks/blocks/tools).
+- Slice 1b: workshops go live — auto-staffing + wired resources + build cost.
+- Slice 2: workshops craft material-variant trade goods.
+- Slice 3/4: visiting traders + a coin economy + sell/buy actions; the client renders the
+  visiting trader (merchant cat + minimap mark), a goods/inventory panel, item glyphs, and an
+  always-visible HUD treasury total.
+
+### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)
+- **Multi-village founding**: per-colony anchors, distinct village sites (`a8a5503`).
+- **Top-down building interiors**: cutaway (no-roof) interiors, then a second slice adding
+  textured floors + furnace/altar props (`546d852`, `4b6a375`).
+- **Life-sim breeding wired into the tick loop** — population is a loop, not a fixed roster
+  (`b55637c`); old-age death made consistent with survival death (`2bba148`); a long-horizon
+  "founding population boom-bust" fix admitting `Young` cats to the fertile pool so the colony
+  self-sustains unattended (`b84c2a5` — see the `Testing Contract` section of `CLAUDE.md` for
+  the survival-proof test this fix is guarded by).
+- **Census**: a colony census panel (live demographics) and inspector surfacing cat pregnancy
+  ("expecting") (`fe9161a`, `410bb70`).
+- **Upgrade-tree UI**: read-only browse of the whole tech tree by era, plus a god-purchase
+  button on affordable nodes (`f8f9822`, `678a289`).
+- Two founding-economy death-spiral fixes: the leader never fetching water due to a
+  veto/finder mismatch (`addb9a7`), and the same bug's twin in quarry assignment (`bde92d5`).

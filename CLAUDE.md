@@ -4,183 +4,306 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Cat Colony Idle Game — a real-time idle game where a shared cat colony runs autonomously. Players can boost jobs with clicks, but the colony self-sustains. Built with Next.js 16, Drizzle ORM + SQLite (better-sqlite3), and TypeScript.
+**Idle Cat Forest** — "an idle version of Dwarf Fortress, played by cats, in a forest." A
+top-down, single-level god-sim: a cat colony lives, works, breeds, ages, researches, and
+fights on its own, driven by an authoritative server that ticks the simulation once a second
+whether or not anyone is watching. Players are gods, not controllers — found villages, paint
+zones, boost jobs, assign leadership roles, vote, and spend a slow tech tree.
+
+Built as a Rust **Cargo workspace** under `crates/`:
+- **cat-sim** — pure, deterministic simulation core (no I/O). `world_tick()` is the single
+  source of truth, ~40 ordered phases per colony per tick.
+- **cat-protocol** — `serde` wire DTOs (`WorldSnapshot`/`ColonySnapshot` + `ClientAction`)
+  shared by server and client.
+- **cat-server** — tokio + axum authoritative server: runs `world_tick` for every colony once
+  a second, broadcasts snapshots over WebSocket, persists to SQLite (`rusqlite`).
+- **cat-client** — Bevy 0.19 renderer/UI (library, native + wasm-targetable), top-down.
+- **cat-desktop** / **cat-web** — thin native / wasm launcher binaries over `cat-client`.
+- **cat-dev** — `cargo dev`, a local launcher that builds + runs `cat-server` + `cat-desktop`
+  together.
+
+**This is a rebuild in progress.** The game originally shipped as a Next.js/TypeScript web app
+(a Victorian-newspaper-themed single shared colony, Drizzle ORM + `better-sqlite3`). That
+version is frozen — reference only — on branch `archive/web-game` (tag `web-final`); the
+TypeScript source (`app/`, `lib/game/`, `server/`, `db/`, `types/`, `worker/`, `tests/`) still
+physically sits in this tree as the porting reference (per `AGENTS.md`: never edit or run it).
+Retiring it is the pending "cutover" step (`docs/migration/BOARD.md` P11) — not done yet, so
+don't assume those directories are dead weight to delete casually. See `README.md` and
+`docs/ARCHITECTURE.md` for the full picture; `docs/HANDOFF.md` for hard-won build lessons;
+`docs/migration/BOARD.md` for phase-by-phase status.
 
 ## Commands
 
 ```bash
-# Development (run in separate terminals)
-bun run dev                 # Terminal 1: Next.js frontend via portless (prints a *.localhost URL — port varies)
-bun run dev:url             # Print the current worktree's dev URL without starting the server
-bun run dev:worker          # Terminal 2: Worker simulation loop (tsx watch)
+# Run the game (native; requires a graphical session — Bevy opens a window)
+cargo dev                    # builds + runs cat-server + cat-desktop together, one command.
+                              # Refuses to start if something is already listening on the port
+                              # (stale cat-server from an earlier run) — kill it first
+                              # (e.g. `pkill -f target/debug/cat-server`) rather than silently
+                              # connecting a fresh client to stale, pre-rebuild server data.
 
-# Database
-bun run db:generate         # Generate SQL migration after editing db/schema.ts
-bun run db:studio           # Drizzle Studio (DB browser)
+# Or run the two halves yourself in separate terminals:
+cargo run -p cat-server                                                     # Terminal 1: the world
+BEVY_ASSET_ROOT=$PWD CAT_SERVER_URL=ws://127.0.0.1:8787/ws cargo run -p cat-desktop  # Terminal 2: the window
+
+# Reset to a fresh founding
+rm data/cat.db                # SQLite is recreated + migrated automatically on next server start
 
 # Testing
-bun run test                # Run all unit tests once (vitest run)
-bun run test:watch          # Vitest watch mode
-bun test tests/unit/game/needs.test.ts   # Single test file
-bun test -- --grep "pattern"             # Filter by test name
-bun run test:coverage       # Coverage report (v8)
-bun run test:e2e            # Selenium E2E tests
+cargo nextest run -p cat-sim       # ~680 pure unit tests, no I/O — fast (preferred runner)
+cargo nextest run --workspace      # everything (cat-sim, cat-protocol, cat-server)
+cargo test -p cat-sim              # works too if cargo-nextest isn't installed
 
-# Quality
-bun run lint                # biome + ESLint
-bun run typecheck           # tsc --noEmit
-bun run format              # Prettier
+# Quality (must be green before any commit, per AGENTS.md)
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check         # `cargo fmt --all` to fix
+
+# WASM (compiles clean; not yet wired to a running in-browser build — see docs/migration/WASM.md)
+cargo build -p cat-web --target wasm32-unknown-unknown
 ```
+
+The TypeScript toolchain (`bun run dev`, `bun run db:generate`, `bun run test`, etc.) still
+works against the **archived** web game only — it is not part of the running game anymore and
+should not be used for feature work. See `archive/web-game` if you need it.
 
 ## Architecture
 
 ```
-Browser (Next.js + React 19)
-  ↕ SSE stream (/api/game/stream) + POST actions (/api/game/actions)
-Next.js route handlers (app/api/game/*)
-  ↕ calls server logic
-server/ (game orchestration over Drizzle)  +  db/ (schema, client, migrations)
-  ↕ calls pure functions
-lib/game/ (pure game logic, NO side effects)
-  ↑ driven by
-worker/index.ts (always-on tick loop, writes SQLite directly)
+cat-sim::world_tick()  ──every colony, every 1s──▶  cat-server (owns the only WorldState)
+        ▲                                                    │
+        │ apply_action()                                     │ build_snapshot()
+        │                                                     ▼
+cat-server  ◀── ClientAction (JSON over WS) ──  cat-client  ◀── WorldSnapshot (JSON over WS)
+                                                     │
+                                                     ▼
+                                          Bevy ECS: sprites, HUD, input
 ```
 
-**The worker drives the game.** The worker (`bun run dev:worker`) calls `server/game.ts:workerTick` every 1s (configurable via `WORKER_TICK_MS`). The web server and worker are separate processes sharing `data/game.db` — WAL mode + busy_timeout handle concurrency.
+The server is the single source of truth. Clients hold no authoritative state — every frame
+they render whatever `WorldSnapshot` they last received, and a player action is only reflected
+once the server's next tick includes its effect. No client-side prediction.
 
-### Tick System
+### The tick
 
-- **`server/game.ts:workerTick`** is the single source of truth for simulation.
-- Do not introduce parallel tick paths (no crons, no per-request ticking).
+- **`world_tick(&mut WorldState, now_ms) -> Vec<TickReport>`** (`crates/cat-sim/src/world_tick.rs`)
+  is the single entry point, called once per colony per second by `cat-server`'s tokio loop.
+  It runs ~40 ordered phases (`fn phase_*`) — life sim → consumption/spoilage →
+  elections/zones → path decay/regrowth → job promotion → leader plan/direct/assign →
+  production/research → survival → due-job completion → hauling → movement → roads → raids →
+  status/persist-prep — mirroring the original TS `server/game.ts:workerTick`'s phase ordering
+  (per `AGENTS.md` rule #1: "parity, not reinvention"). **Do not add a second tick path.**
+- **World shape is multi-colony from the ground up**: `WorldState { colonies: Vec<ColonyRuntime>, .. }`.
+  The old TS game's single global colony is now just `colonies[0]`; `found_colony(...)` is a
+  first-class primitive for player-founded villages elsewhere on the map.
 
-### Key Layers
+### Determinism
 
-- **`lib/game/`** — All game logic as pure functions. No DB imports, no side effects. This is the core that gets unit tested.
-- **`db/`** — Drizzle schema (`schema.ts`), client factory (`client.ts`, WAL + migrations on open), and generated SQL migrations (`migrations/`).
-- **`server/`** — Functions that read/write the DB and call into `lib/game/`. `game.ts` handles initialization, leader assignment, jobs, upgrades, and the `workerTick` entry point. All synchronous (better-sqlite3); mutations wrapped in transactions.
-- **`app/api/game/`** — Route handlers: `stream` (SSE, pushes the dashboard once per second), `actions` (POST `{action, ...payload}`), `dashboard` (one-shot GET).
-- **`types/game.ts`** — All shared TypeScript types and constants (Cat, Colony, Building, etc.)
-- **`worker/index.ts`** — Lightweight Node process that calls `workerTick` on an interval. Opens the DB itself; no env needed (optional `GAME_DB_PATH`).
+All randomness goes through a ported seeded LCG (`crates/cat-sim/src/rng.rs`:
+`seed × 1_664_525 + 1_013_904_223 mod 2^32`, matching the original TS `seededRng.ts` bit for
+bit). Independent subsystems fork the seed by a fixed offset so adding a roll to one subsystem
+doesn't perturb another's sequence in the same tick: movement `+1_000_003`, life sim
+(breeding/aging/mortality) `+2_000_003`, raids `+3_000_003`. `#![forbid(unsafe_code)]`, no
+`rand` crate in `cat-sim`. This is what makes golden-master testing and "determinism twin"
+tests possible (same seed → byte-identical trajectory across two independent runs).
 
-### Browser Idle v2 Job System
+### cat-sim module map (by concern)
 
-The game operates on a **job-based system** (`db/schema.ts:jobs` table, `lib/game/idleEngine.ts`). Job `kind`s:
+| Concern | Modules |
+| --- | --- |
+| Foundation | `rng`, `types`, `entities`, `cost_constants`, `needs_constants`, `test_acceleration` |
+| World generation | `noise`, `terrain_gen`, `world_gen`, `biomes`, `climate` |
+| Cat AI | `pathfinding`, `movement`, `policy`, `tasks`, `cat_ai`, `leader_ai`, `leader_director`, `officers` |
+| Life sim | `needs`, `age`, `breeding`, `genetics`, `life_sim`, `survival` |
+| Economy | `idle_engine`, `idle_rules`, `production`, `smithy`, `storage`, `shrine`, `trips`, `depletion`, `spoilage`, `housing`, `roads`, `village_layout`, `village_area`, `stockpiles`, `skills`, `ledger` |
+| Military & governance | `threat`, `warriors`, `combat`, `elections`, `zones`, `upgrade_tree` |
+| Item economy | `items`, `recipes`, `trader` |
+| Orchestration | `world_tick` (the tick loop), `actions` (pure `apply_action` + `build_snapshot`) |
 
-- Short player actions: `supply_food` (20s), `supply_water` (15s)
-- Long cat jobs: `hunt_expedition` (8h), `build_house` (8h), `ritual` (6h), `quarry` (materials), `explore` (scout/reveal fog), `fetch_water` (colony water economy), `train_warrior` (barracks graduation)
-- Leader planning: `leader_plan_hunt` (30min), `leader_plan_house` (20h)
-- Cat specializations reduce relevant job durations (50% for hunter/architect, 40% for ritualist; `warrior` is the fourth specialization)
-- Click boosting reduces active job time (diminishing returns above 30 clicks/min)
-- Global upgrades persist across colony resets (`globalUpgrades` table)
-- Colonies auto-reset after extended critical state (configurable via `testCriticalMsOverride`)
+Each module's doc comment cites the original TypeScript file it was ported from (e.g.
+`leader_director.rs` ← `lib/game/leaderDirector.ts`) — the fastest way to find the ported
+behavior's original spec/tests. Design detail beyond this table (leader director response
+curves, pathfinding cost model, world_tick phase list, per-phase P12–P19 gameplay specs) lives
+in `docs/migration/specs/` — read the relevant spec before touching a system, don't rely on
+memory of the old TS code.
 
-### Map-First God-Sim (all on the single `workerTick` path)
+**Leader director** (`leader_director.rs`, per `docs/LEADER_AI_DESIGN.md` design intent) is a
+utility-AI (IAUS-style) that scores colony goals on one [0,1] scale from response curves, then
+hands a shared labor budget to the highest-scoring goals. It's the seed of a planned
+role/officer system (Steward/Forester/Farmer/Captain/Loremaster, per `docs/GAME_VISION.md`)
+that would split automation into assignable roles — `officers.rs` and
+`AssignOfficer`/`UnassignOfficer` actions are scaffolded but the director is not yet fully
+split; most labor allocation still runs through the single director.
 
-The game is a self-running map simulation: cats live, age, breed, work, research, fight, and die on their own; players are gods who nudge via zones, boosts, votes, roads, and a slow upgrade tree. `workerTick` runs ~30 ordered phases each tick (life sim → consumption → elections → jobs → leader director → assignment → production → research → survival → job completion → hauling → movement → road paving → raids → status). Do not add parallel tick paths.
+### Known gaps (intentionally deferred, not bugs)
 
-- **Leader director** (`lib/game/leaderDirector.ts`, per `docs/LEADER_AI_DESIGN.md`): a pure utility AI (IAUS-style) that replaced the hand-ordered `leaderAI.ts` rule list. Scores every colony goal on one [0,1] scale from response curves over a `LeaderSnapshot` (deficit / projection / pressure curves + opportunity vetoes), then hands a shared employment budget (~0.7 of stage-weighted workforce, idle floor 0.8) to the highest-scoring goals. Emits labour goals (`hunt`, `fetch_water`, `quarry`, `scout`, `train_warrior`, `assign_workshop`, `assign_research`, `assign_smithy`) plus standalone decisions (`cancel_hunts`, `build_storage`, `build_den`, `tithe`). `matchCatsToSlots` is a deterministic greedy best-cat-per-slot matcher (skill fit × 1.5 specialization bonus, ties by stable cat id). The seeded policy-reliability roll stays at the executor call site.
-- **Movement & pathfinding** (`lib/game/movement.ts`, `lib/game/pathfinding.ts`): cats travel to job sites, wander when idle; movement randomness runs on a forked seeded chain so policy-roll determinism is preserved. Cats walk *every* tile (no fog teleports); travel wears paths and reveals a fog halo (3x3, explorers 5x5). Pathing is bounded 4-directional A* over a `WalkGrid` — rivers and the palisade fence block (except the single gate), roads are cheap; a straight L-walk fast-path skips A* when unobstructed; failure falls back to a straight walk.
-- **Roads** (`lib/game/roads.ts`): `selectRoadCorridor` deliberately paves the highest cumulative-wear trafficked corridor outside the fence when materials are spare (wear ≥ 70). Paved roads are exempt from path-wear decay and cheap to traverse.
-- **Life simulation** (`lib/game/lifeSim.ts`, `age.ts`, `breeding.ts`, `genetics.ts`): aging through life stages in game-hours (kitten 0–6 / young 6–24 / adult 24–48 / elder 48+; kittens can't work, elders 0.7 weight), old-age mortality hazard, and breeding with lineages. Conception needs food+water above 0.35 capacity and population under housing cap; gestation 6 game-hours; stats blend 60/40 from parents with ±8 mutation (deterministic), visual traits inherit 50/50. `cats.ageHours` tracks the accelerated clock (responds to `advanceTime`). Population is a loop, not a fixed 20.
-- **Upgrade tree & research** (`lib/game/upgradeTree.ts`): one tech tree, ~18 nodes across 3 eras (cost 5–25), persisted on the colony (`colonies.upgradeTree`, survives run resets). Two advancement paths — gods spend blessings for instant purchases; cats accrue research points from staffed research huts + schools (~10 pts/researcher/week) and auto-unlock the cheapest affordable node. Nodes unlock buildings (research_hut, sawmill, smithy, barracks, school, field), jobs, and effect multipliers (`resolveEffects` → flat modifier map the tick consumes).
-- **Military, threat & raids** (`lib/game/threat.ts`, `server/raids.ts`, `lib/game/warriors.ts`, `smithy.ts`, `combat.ts`): threat pressure builds per game-hour after a 6h grace window from wealth/population/warriors/age; a raid launches at pressure 100 (HUD bands calm/rising/imminent). Smithies (staffed, 15min cycle) forge 2 refined + 3 materials → 1 weapon + 1 armor into the armory; warrior-specialized cats (and hunters, worse) muster to defend, drawing gear at raid time. `runRaidDirector` marches the warband to the gate on a forked roll chain and resolves combat there — loss loots stores and can cost a defender; a wipeout resets the run. Player defense clicks bank against the active raid (`colonies.raidClicks`).
-- **Production, hauling & storage** (`lib/game/production.ts`, `storage.ts`, `shrine.ts`, `trips.ts`): workshops (village level 2+) refine 5 materials → 1 refined/10min; fields (level 4+) grow food passively; the leader auto-staffs idle workshops. Storage is per-resource with caps raised by granaries/water bowls/smithy scaled by the tree's `storagePerLevelMult`; resources are clamped to caps each tick. Hunt/quarry/water yields are hauled SC2-drone-style in 3 trips and credited on shrine arrival (Chebyshev radius 1), force-credited after a 60s grace window.
-- **Terrain generator** (`lib/game/terrainGen.ts`): pure, deterministic, world-seeded value-noise terrain in 12x12 chunks — continuous elevation/moisture → quantized heights 0–3, biomes (lowland/grassland/forest/rocky/highland), auto-tiled oriented cliffs with stairs on straight runs, monotonic-descent rivers, and scattered decoration. Emits abstract *roles* (no sprite names); a guaranteed flat plateau surrounds the village anchor. Render integration is still in flight (`/dev/tiles` explorer).
-- **Construction** (`lib/game/housing.ts`): `build_house` jobs place scaffolds via `nextBuildingSite`; the leader commissions dens when housing pressure ≥ 0.8 (shrine shelters 4, dens 2/level). `villageLevel` gates building unlocks.
-- **Elections** (`lib/game/elections.ts`, `server/elections.ts`): NO per-tick leader auto-replace — interim pick only when the seat is empty. Term elections + vote-kick (5 distinct players) resolve in `runElectionLifecycle`. Voter identity = sessionId (forgeable; HMAC hardening is a flagged follow-up).
-- **Zones** (`lib/game/zones.ts`, `server/zones.ts`): player-painted avoid/gather rects (max 2/player, 8x8, 10min–2h) steer hunts and wandering.
+- **Ore/metal mining** is wired (mountain biomes, smelter → metal bars → better gear); the
+  officer/role split described above is still partial.
+- **`BuildingType::ResearchHut` / `School`** — the DB schema and upgrade tree reference these
+  building types by string, but the Rust `BuildingType` enum doesn't have variants for them
+  yet, so research-hut/school staffing is inert (`docs/migration/BOARD.md` P7.followup, low
+  priority).
+- **WASM/browser deploy**: `cat-web` compiles clean to `wasm32-unknown-unknown`, but there is
+  no committed `trunk` bundle or in-browser smoke test yet — see `docs/migration/WASM.md`.
+- **Cutover** (`docs/migration/BOARD.md` P11): the TypeScript reference tree is frozen but
+  still physically present; retiring it is a pending, deliberate step.
+- **Cat sprite licensing**: the current cat sheet's licensing needs confirmation before 1.0; a
+  CC0 replacement may be needed — see `docs/assets/SELECTION.md`.
 
-### Test Acceleration
+### cat-protocol — the wire contract
 
-`lib/game/testAcceleration.ts` provides QA presets that scale time and resource decay for faster testing. Colony schema has `testTimeScale`, `testResourceDecayMultiplier`, and other override fields.
+One dependency (`serde`). `WorldSnapshot` (top-level, `Vec<ColonySnapshot>` + world fields) /
+`ColonySnapshot` (one colony's full renderable state) / `ClientAction` (a large enum covering
+everything a player can do — found/join village, request job, boost, purchase upgrade, vote,
+zones, plan building, unlock node, assign worker/officer, train warrior, defend raid, build
+road, designate stockpile/gather spot, sell/buy goods, boost cat, test-acceleration controls).
+Field names are `camelCase` on the wire (matching the old TS API shape where it still matters).
 
-`server/game.ts:advanceTime` is available for deterministic skip-time testing (advance last tick by N seconds). All test controls are reachable via POST `/api/game/actions` (`setTestAcceleration`, `advanceTime`, `setTestRngSeed`) and via the `?test=1` UI controls.
+### cat-server — the authoritative server
+
+`GET /health` liveness probe; `GET /ws` WebSocket upgrade (each connection reads `ClientAction`
+JSON frames, calls `apply_action` against the shared `Arc<Mutex<WorldState>>`, forwards the
+broadcast `WorldSnapshot` stream). A `tokio::spawn`ed loop calls `world_tick` once per second
+for the whole world (fixed `Duration::from_secs(1)` in `main.rs` — not currently
+env-configurable), broadcasts the resulting snapshot, and saves to SQLite every 5 ticks plus
+once on graceful shutdown. Identity (`identity.rs`) issues/verifies HMAC-signed sessions
+(`SESSION_HMAC_SECRET`; refuses to boot in `NODE_ENV=production` without one, falls back to an
+insecure dev secret otherwise). Rate limiting caps actions at 30 per 10-second window per
+session.
+
+### cat-client / cat-desktop / cat-web — the renderer
+
+Bevy 0.19 library (`cat_client::run()`) shared by native (`cat-desktop`) and wasm (`cat-web`).
+Connects to `cat-server` over WebSocket via `ewebsock`, deserializes `WorldSnapshot` on
+receipt, stores it as a Bevy resource that render/UI systems read each frame. **Top-down**, not
+isometric — a deliberate design pivot mid-migration (`docs/GAME_VISION.md`). Draws biome
+terrain generated client-side from the shared `world_seed` (via `cat_sim::generate_terrain_chunk`
+— no need for the server to stream tile data), fog of war, roads, cats (colored by
+specialization, carried-item glyph), labelled buildings with craft-station sprites,
+stockpiles/gather spots, raiders, zone overlays, cutaway top-down building interiors, and a
+DF-Steam-styled HUD (resources w/ caps, census, event log, upgrade tree browse + purchase,
+trade menu, cat/building inspectors).
+
+Art: curated Kenney "Roguelike 16px" sprites under
+`public/images/game/{terrain,nature,buildings,infra,props,farm,enemies}/` — see
+`docs/assets/SELECTION.md` for licensing rationale. Bevy-specific gotchas (camera Z-layering —
+keep the camera at Z~1000, sprites below it or they get clipped/black-screened; `Sprite`/`Text`
+API shapes; asset-root resolution via `BEVY_ASSET_ROOT`) are documented in `docs/HANDOFF.md` —
+read it before touching client rendering code. There is no automated visual test suite; Bevy
+rendering is verified manually by capturing the client's own framebuffer to a PNG and reading
+it back (method in `docs/HANDOFF.md`), since "it compiles" has previously hidden a black-screen
+regression.
+
+## Persistence (cat-server)
+
+`crates/cat-server/src/persistence.rs` uses `rusqlite` (bundled SQLite, not Drizzle) with
+tables mirroring the old TS schema (`world`, `colonies`, `cats`, `jobs`, `buildings`,
+`world_tiles`, `events`, `zones`, `elections`, `votes`, `raiders`). Colony resources are stored
+as a JSON blob rather than one column per resource. Migrations are idempotent `ALTER
+TABLE`/`ADD COLUMN`-style statements applied on open — same "migrate on connect" discipline as
+the old `db/client.ts`, but hand-written Rust rather than generated SQL files (there is no
+`db:generate` equivalent; add a new column by adding an `ADD COLUMN` migration statement plus
+the corresponding struct field and read/write code).
 
 ## Testing Contract
 
-- Use deterministic tests for simulation logic:
-  - Seed RNG via `setTestRngSeed`
-  - Use `advanceTime` and `setTestAcceleration` for time-sensitive scenarios
-- Server logic is integration-tested against in-memory SQLite (`createDb(':memory:')`) — see `tests/integration/serverGame.test.ts`. No running backend needed.
-- Critical automated scenarios:
-  - Water depletion crisis headline/event
-  - Cat thirst decay after water depletion
-  - Dehydration start, dehydration death, and recovery after water restoration
-  - Build-request prerequisite chaining (`supply_water` / material gathering before construction)
-  - Upgrade validation (insufficient points, max-level rejection, correct cost progression)
-  - Leader-policy tier behavior (`simple`/`normal`/`excellent`) under seeded RNG
-  - Leader director cross-axis trade-off (e.g. a water crisis pulls cats off hunting) via `leaderDirector` unit tests
-  - Life-sim aging/breeding/mortality, upgrade-tree god-purchase and cat-auto-unlock paths, and raid spawn/resolution
-- Any new simulation constant/limit must include boundary tests in `tests/unit/game/`.
+- **`cat-sim`** is pure and deterministic (no `std::time`, no threads, no `rand`): plain
+  `#[test]` unit tests (~680, sub-20s) plus golden-master fixtures under
+  `docs/migration/fixtures/` for modules ported from TS (generated by a one-off `npx tsx`
+  script run against the frozen, never-edited TS source — the sole permitted JS use in this
+  codebase, per `AGENTS.md` rule #5). Parity bar is *behavioral* ("same idea"), not
+  byte-identical `Math.random` output.
+- **Determinism twins**: for long-horizon / RNG-sensitive behavior, pair a guardrail test with
+  a twin that runs the same seed twice and asserts byte-identical trajectories (e.g.
+  `founding_colony_sustains_its_population_over_a_long_horizon` /
+  `founding_population_trajectory_is_deterministic_for_identical_seeds` in `world_tick.rs`) —
+  this is the pattern to follow for any new long-running or seed-driven guardrail.
+  `run_founding_population_trajectory` (`world_tick.rs`) is the current "survival proof": it
+  runs a freshly founded colony unattended at a 5-game-minute tick cadence over 100+ game hours
+  and asserts it never goes fully extinct, never dips near extinction after a 30h establishment
+  window, and sustains a mean population at or above the founding count — a deliberately
+  harsher proxy than the live 1s tick, so passing it is a conservative sustainability guarantee.
+- **`cat-protocol`**: serde round-trip tests (serialize → deserialize → equal).
+- **`cat-server`**: integration tests spin up the axum app in-process (no real socket needed)
+  and drive it through `ClientAction` JSON (e.g. founding a village, asserting the shared
+  snapshot updates).
+- **`cat-client`**: no automated tests; verified manually via framebuffer capture (see above).
+- Any new simulation constant/limit needs a boundary test in the owning `cat-sim` module, same
+  discipline the old TS project enforced.
 
-## Frontend
-
-- Main UI: `/game` renders `components/map/MapScreen.tsx` — full-screen 2.5D isometric world map (pure projection math in `lib/game/isoProjection.ts`, chunk culling via `visibleChunksIso`). The Catford Examiner newspaper lives at `/game/newspaper` (linked from the map HUD).
-- Map art: curated Kenney "Isometric Miniature" sprites in `public/images/iso/` (256x512 bottom-anchored, 256x128 ground diamond). Source pack `public/Kenney Game Assets All-in-1 3.5.0/` is gitignored — copy what you need out of it; standalone tree sprites need a grass `base` underlay (see `TILE_SPRITES`).
-- Shared game hook: `hooks/useGameDashboard.ts` — subscribes to the SSE stream and exposes actions; all UI variants import this for game state, actions, and session management
-- README screenshots: `docs/screenshots/` — referenced by relative path from README.md
-- 13 UI concept variants documented in `docs/UI_CONCEPTS.md` (archived on `archive/ui-concepts-all` branch)
-- Subscriber identity: `app/api/subscriber-hash/route.ts` — IP-based anonymous hash, salt via `SUBSCRIBER_HASH_SALT` env var
-
-## Database Schema
-
-13 tables in `db/schema.ts`: `colonies`, `cats`, `buildings`, `worldTiles`, `events`, `players`, `jobs`, `globalUpgrades`, `runHistory`, `elections`, `votes`, `zones`, `raiders`. Rows keep the `_id` property (TEXT nanoid, mapped to the `id` column) so API payloads match what the frontend expects. The legacy `tasks` and `encounters` tables were dropped with the retired `/colony/[id]` UI.
-
-Notable columns added since the map-first rework:
-- `colonies`: `upgradeTree` (JSON tech-tree progress, survives resets), `threatPressure` / `lastRaidAt` / `activeRaidId` / `raidClicks` (military), `criticalSince` / `ritualRequestedAt`, plus the `test*` override fields.
-- `cats`: `ageHours` / `pregnancyDueAgeHours` / `pregnancyMateId` (life sim), `specialization` and `roleXp` now include `warrior`, `carrying` / `activity` / `destination` (movement + shrine hauling).
-- `buildings.type` now covers `mouse_farm`, `shrine`, `workshop`, `field`, `research_hut`, `school`, `smithy`, `barracks` alongside the original den/storage/needs buildings.
-- `raiders`: enemy warband units for the active raid — position, target (village gate), strength/hp, and `advancing`/`engaging`/`retreating`/`dead` status.
-
-After editing `db/schema.ts`, run `bun run db:generate` and commit the new migration file — `db/client.ts` runs pending migrations on open.
-
-## Testing Patterns
-
-- **Vitest** with jsdom environment, globals enabled (no imports needed for `describe`/`it`/`expect`)
-- ~87 test files: pure `lib/game/` modules unit-tested in `tests/unit/game/`, server orchestration integration-tested against in-memory SQLite in `tests/integration/` (`serverGame`, `serverRaids`, `serverUpgradeTree`, `serverWorldMap`)
-- Test factories in `tests/factories/` for building test data
-- Path alias `@/` maps to repo root (matches tsconfig)
-- Coverage targets (gated): simulation-core modules 99%+
-- Avoid flaky assertions in browser E2E for simulation correctness; prefer unit/integration checks on deterministic modules.
-- TDD workflow: write failing tests first, then implement
+Quality gate before any commit (per `AGENTS.md`): `cargo nextest run -p <crate>`,
+`cargo clippy -p <crate> --all-targets -- -D warnings`, `cargo fmt`.
 
 ## Git Hooks (lefthook)
 
-- **pre-commit**: gitleaks (secret detection), lint, typecheck — all run in parallel
-- **pre-push**: unit tests must pass
+Hooks are glob-scoped so a Rust-only commit never runs the JS toolchain (and vice versa) —
+`lefthook.yml`:
+- **pre-commit**: `gitleaks` (secret detection, all source globs), `bun run lint` /
+  `bun run typecheck` (TS-glob only — archived game), `cargo fmt --all -- --check` (`.rs` only).
+- **pre-push**: `bun run test` (TS-glob only), `cargo clippy --workspace --all-targets -- -D
+  warnings` and `cargo nextest run --workspace` (`.rs` only).
+
+Heavy Rust steps (clippy, tests) live on pre-push, not pre-commit, to keep commits fast while
+Bevy is a dependency (slow incremental compiles).
 
 ## Environment
 
-No environment variables are required for local dev. Optional:
-
 ```
-GAME_DB_PATH=data/game.db     # SQLite file location (default shown)
-WORKER_TICK_MS=1000           # Worker tick interval
-SUBSCRIBER_HASH_SALT=...      # Salt for the anonymous subscriber hash
+PORT=8787                              # cat-server listen port (both binaries agree via cat-dev)
+GAME_DB_PATH=data/cat.db               # SQLite file (created + migrated automatically)
+SESSION_HMAC_SECRET=...                # required in NODE_ENV=production; insecure dev default otherwise
+CAT_SERVER_URL=ws://127.0.0.1:8787/ws  # cat-desktop/cat-web: which server to connect to
+BEVY_ASSET_ROOT=$PWD                   # cat-desktop: resolve public/images/... from the workspace root
 ```
 
-The database file is created (and migrations applied) automatically on first open.
+The world ticks once a second (fixed; not currently configurable via env var).
 
 ## Gotchas
 
-- `bun run build` uses `next build --webpack` (not the default Turbopack)
-- `bun run dev` routes through portless (`scripts/portless.mjs`), so the dev URL and port **vary per worktree** — run `bun run dev:url` to print it rather than assuming `localhost:3000`. For raw port-based dev, use `PORTLESS=skip bun run dev`. A stale server may still be running from another worktree — check `ss -tlnp | grep -E '13|30'` before starting.
-- If `next dev` fails with "Unable to acquire lock", delete `.next/dev/lock` first
-- The worker (`bun run dev:worker`) must be running for the simulation to advance — without it the UI loads but nothing ticks
-- `better-sqlite3` is a native module: route handlers using it must run in the Node runtime (default for route handlers; do not mark them `edge`)
-- The one-shot `dashboard` and `chunks` GET routes are `export const dynamic = "force-dynamic"` — the live simulation must never be served from Next's static/data cache
-- To skip a slow lefthook step on a commit, use lefthook's env exclude, e.g. `LEFTHOOK_EXCLUDE=lint git commit …` (the pre-commit `lint` step runs biome + eslint + typecheck + tests and is the slow one). Prefer fixing over skipping.
-- Greptile MCP `addressed: false` may persist even after GitHub review threads are resolved — verify with `pull_request_read get_review_comments` (check `IsResolved` field) as the source of truth
-- Repo-wide `bun run biome` currently reports pre-existing errors unrelated to recent work; scope biome checks to your changed files
+- Requires a graphical session for the native client (Bevy opens a window).
+- `cargo dev` refuses to start if something is already listening on the target port — that's a
+  stale `cat-server` from an earlier run; kill it first rather than letting a fresh client
+  silently attach to stale, pre-rebuild server data.
+- `BEVY_ASSET_ROOT` must point at the workspace root (not `cat-desktop`'s `CARGO_MANIFEST_DIR`)
+  for `public/images/...` to resolve — `cargo dev` handles this for you; set it yourself when
+  running `cat-desktop` directly.
+- Bevy 0.19: a default `Camera2d` sits at Z=0 and clips sprites at Z>0 — keep the camera at
+  Z~1000, sprites below it, or you'll get a silent black screen. See `docs/HANDOFF.md` for more
+  Bevy API-shape gotchas (`Sprite::from_color`, `Text` tuple access, `single_mut()` returning a
+  `Result`, `Anchor` as its own component).
+- The TypeScript reference tree (`app/`, `lib/game/`, `server/`, `db/`, `types/`, `worker/`,
+  `tests/`) is porting reference only — frozen, never edited, not part of the running game.
+  Don't "fix" or refactor it; port the behavior into `cat-sim` instead.
+- If you hit a spurious linker error (`undefined hidden symbol ... drop_in_place`), run `cargo
+  clean -p cat-sim` and retest.
+- Docs describing the old TypeScript/Next.js game (`docs/plan.md`, `docs/ROADMAP.md`,
+  `docs/LEADER_AI_DESIGN.md`, `docs/TERRAIN_DESIGN.md`, `docs/ENGINE_PLATFORM.md`,
+  `docs/ENGINE_FRONTEND.md`, `docs/TASKS.md`, `docs/TESTING.md`, `docs/UI_CONCEPTS.md`) are
+  marked superseded and kept only as design-history reference — they don't describe how to
+  build, run, or test this project anymore.
 
 ## Key Documentation
 
-- `docs/plan.md` — Full game design document with architecture diagrams
-- `docs/TASKS.md` — Development tasks with TDD instructions
-- `docs/TESTING.md` — Testing guide, patterns, and mocking strategies
+- `README.md` — quick start, environment, testing/determinism summary
+- `docs/ARCHITECTURE.md` — the Rust workspace: crates, the tick loop, protocol, persistence,
+  client rendering (start here for anything architectural)
+- `docs/GAME_VISION.md` — design pillars for "Idle Cat Forest" (manual → role-automation,
+  visible workplaces, production chains)
+- `docs/HANDOFF.md` — migration status + hard-won Bevy/codex build lessons
+- `docs/migration/BOARD.md` — phase-by-phase task board (P0–P9 tracked in detail; later phases
+  tracked in `docs/migration/specs/` and the git log)
+- `docs/migration/specs/` — design specs for pathfinding, leader director, `world_tick`, and
+  the P12–P19 gameplay systems (skills/roles, spatial placement, biome generator, visual
+  polish, item economy)
+- `docs/migration/WASM.md` — browser/WASM build feasibility + remaining steps
+- `docs/assets/SELECTION.md` — sprite pack selection + licensing notes for the Bevy client's art
+- `AGENTS.md` — ground rules for the codex/Claude build team doing the port (parity discipline,
+  determinism rules, the one permitted JS use, commit conventions)
 
-## Releases
+## Status
 
-- Latest release: `v0.3.1` — Modernized README with screenshots & badges
-- Pre-1.0, semver
-- No CI/CD pipeline — tests enforced locally via lefthook
+Pre-release, migration in progress. Simulation core, server, and multi-colony founding are
+done and live-verified. The Bevy client renders the full top-down world with a working HUD and
+is mid-buildout on newer sim systems. A browser/WASM build and the final cutover (retiring the
+TypeScript reference tree) are still pending. See `docs/HANDOFF.md` for the living status and
+`docs/migration/BOARD.md` for phase-by-phase detail. No CI/CD pipeline — tests enforced locally
+via lefthook.
