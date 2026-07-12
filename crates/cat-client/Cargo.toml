@@ -16,7 +16,11 @@ serde_json.workspace = true
 # Native only: Linux windowing backends + the multithreaded executor. These do
 # not apply to wasm (winit uses the browser canvas; wasm runs single-threaded).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-bevy = { version = "0.19", default-features = false, features = ["multi_threaded", "x11", "wayland"] }
+# `bevy_remote` adds the built-in Bevy Remote Protocol server (RemotePlugin +
+# RemoteHttpPlugin, port 15702) so the bevy MCP can `world_query`/introspect the
+# running game. Compiled in on native but only ACTIVATED when the `CAT_BRP` env
+# var is set (see BrpDevPlugin in lib.rs), so a normal `cargo dev` is unaffected.
+bevy = { version = "0.19", default-features = false, features = ["multi_threaded", "x11", "wayland", "bevy_remote"] }
 
 # Browser only: wgpu's WebGL2 backend, so the client renders on the near-universal
 # WebGL2 (rather than requiring WebGPU, which not all browsers expose yet).

@@ -1819,6 +1819,37 @@ impl ButtonAction {
     }
 }
 
+/// Dev-only plugin that turns on the Bevy Remote Protocol server (BRP, port
+/// 15702) so the bevy MCP can `world_query`/introspect the running game for
+/// automated playtesting. Compiled in on native (via the `bevy_remote` feature)
+/// but a **no-op unless the `CAT_BRP` env var is set**, so a normal `cargo dev`
+/// never opens the port. On wasm it does nothing (no TCP listener in the browser).
+struct BrpDevPlugin;
+
+impl Plugin for BrpDevPlugin {
+    fn build(&self, _app: &mut App) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("CAT_BRP").is_ok() {
+            _app.add_plugins((
+                bevy::remote::RemotePlugin::default(),
+                bevy::remote::http::RemoteHttpPlugin::default(),
+            ));
+            // Bevy 0.19 with default-features=false does not auto-register these
+            // render/UI types for reflection, so BRP `world.query` can't see them
+            // out of the box. Register the ones a playtester wants to read: Text
+            // (the live HUD strings), Transform/Sprite (positions of cats,
+            // buildings), and Node (UI layout).
+            _app.register_type::<Text>()
+                .register_type::<Transform>()
+                .register_type::<GlobalTransform>()
+                .register_type::<Sprite>()
+                .register_type::<Node>()
+                .register_type::<Anchor>();
+            info!("BRP enabled on port 15702 (CAT_BRP set) — bevy MCP can world_query this app");
+        }
+    }
+}
+
 /// Build and run the client. `CAT_SERVER_URL` overrides the server address.
 pub fn run() {
     App::new()
@@ -1844,6 +1875,7 @@ pub fn run() {
                     ..default()
                 }),
         )
+        .add_plugins(BrpDevPlugin)
         .insert_resource(LatestSnapshot::default())
         .insert_resource(Session::default())
         .insert_resource(OutgoingActions::default())
