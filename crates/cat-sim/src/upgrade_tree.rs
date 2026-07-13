@@ -685,7 +685,7 @@ pub fn god_purchase(state: &UpgradeTreeState, id: &str) -> PurchaseResult {
 }
 
 /// Target accrual for one full-time researcher.
-pub const RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK: f64 = 10.0;
+pub const RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK: f64 = 20.0;
 /// Seconds in a week (7 * 24 * 60 * 60).
 pub const WEEK_SECONDS: f64 = 604_800.0;
 /// Per-second research rate for a single full-time researcher.
@@ -1087,7 +1087,7 @@ mod tests {
         // tight tolerance (the mathematical value is what matters).
         let close = |a: f64, b: f64| assert!((a - b).abs() <= 1e-12, "{a} vs {b}");
         let hour = 3_600.0;
-        let one_researcher_hour = 10.0 / 168.0;
+        let one_researcher_hour = 20.0 / 168.0;
         close(points_per_tick_for_default(1.0, hour), one_researcher_hour);
         close(
             points_per_tick_for_default(2.0, hour),
@@ -1097,7 +1097,7 @@ mod tests {
             points_per_tick_for(1.0, hour * 2.0, 1.0),
             one_researcher_hour * 2.0,
         );
-        assert_eq!(points_per_tick_for(1.0, WEEK_SECONDS, 1.5), 15.0);
+        assert_eq!(points_per_tick_for(1.0, WEEK_SECONDS, 1.5), 30.0);
         assert_eq!(points_per_tick_for(0.0, WEEK_SECONDS, 1.0), 0.0);
         assert_eq!(points_per_tick_for(1.0, 0.0, 1.0), 0.0);
         assert_eq!(points_per_tick_for(-3.0, 10.0, 1.0), 0.0);

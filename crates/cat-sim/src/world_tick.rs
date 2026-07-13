@@ -27,8 +27,8 @@ use crate::{
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions,
-        OFFERING_MATERIALS_AMOUNT, direct_colony, is_research_comfortable,
-        match_cats_to_slots_with_officers,
+        OFFERING_MATERIALS_AMOUNT, OFFERING_MATERIALS_RESERVE, direct_colony,
+        is_research_comfortable, match_cats_to_slots_with_officers,
     },
     ledger::{StockLedger, refresh_ledger},
     life_sim::{
@@ -1173,10 +1173,11 @@ fn starting_resources() -> Resources {
         refined: 0.0,
         weapons: 0.0,
         armor: 0.0,
-        // P12.4b refinement tier — empty at founding; the wood-cutter, stone-prep
-        // and woodworking chains build planks/blocks/tools from raw materials.
-        planks: 0.0,
-        blocks: 0.0,
+        // One exact 6/6 woodworking boundary is banked so the visible tools chain
+        // can complete before construction consumes its 4/4 reserve. Later output
+        // still comes from the raw benches.
+        planks: 6.0,
+        blocks: 6.0,
         tools: 0.0,
         // Clothing chain (P16/P19 slice) — also empty at founding; fibre trickles in
         // passively and hide is a hunt byproduct.
@@ -1610,6 +1611,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_15_assign_promoted_job_destinations(colony, gate);
         phase_16_active_scaffold_progress(colony, gate);
         phase_17_legacy_emergency_hunt(colony, gate, policy);
+        phase_17b_emergency_water_fetch(colony, gate);
         let snapshot = phase_18_leader_snapshot_assembly(colony, gate);
         let plan = phase_19_leader_cancellations(colony, gate, &snapshot);
         phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan);
@@ -2338,12 +2340,15 @@ fn phase_13_tick_local_target_caches(_: &mut ColonyRuntime, _: TickGate) {}
 const SCAFFOLD_PLANK_COST: f64 = 2.0;
 /// Dressed-stone blocks a construction scaffold consumes at break-ground.
 const SCAFFOLD_BLOCK_COST: f64 = 2.0;
+/// Planks and blocks the tools bench must leave available for construction.
+const TOOL_BUILD_MATERIAL_RESERVE: f64 = 4.0;
 
 fn phase_14_promote_queued_jobs_and_break_ground(
     colony: &mut ColonyRuntime,
     gate: TickGate,
     world_seed: u32,
 ) {
+    queue_orphaned_scaffold_recovery(colony, gate.processed_through);
     let queued_indices = colony
         .jobs
         .iter()
@@ -2360,6 +2365,14 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 next_metadata,
                 JobMetadata::Construction {
                     phase: ConstructionPhase::ConstructHouse,
+                    ..
+                }
+            )
+            && !matches!(
+                next_metadata,
+                JobMetadata::Construction {
+                    building_id: Some(_),
+                    site: Some(_),
                     ..
                 }
             )
@@ -2432,6 +2445,54 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             job.started_at = Some(gate.processed_through);
         }
         job.metadata = next_metadata;
+    }
+}
+
+/// Reassign unfinished scaffolds whose builder died or otherwise left the job.
+/// Construction progress belongs to the building, so recovery resumes the existing
+/// scaffold without charging a second 2/2 break-ground cost or claiming a second site.
+fn queue_orphaned_scaffold_recovery(colony: &mut ColonyRuntime, now_ms: i64) {
+    let orphaned = colony
+        .buildings
+        .iter()
+        .filter(|building| !building.is_complete)
+        .filter(|building| {
+            !active_or_queued_jobs(colony).iter().any(|job| {
+                job.kind == JobKind::BuildHouse
+                    && matches!(
+                        &job.metadata,
+                        JobMetadata::Construction {
+                            building_id: Some(building_id),
+                            ..
+                        } if building_id == &building.id
+                    )
+            })
+        })
+        .map(|building| {
+            (
+                building.id.clone(),
+                building.building_type,
+                building.position,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for (building_id, building_type, site) in orphaned {
+        let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Architect)) else {
+            break;
+        };
+        queue_job(
+            colony,
+            now_ms,
+            JobKind::BuildHouse,
+            Some(cat_id),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type,
+                building_id: Some(building_id),
+                site: Some(site),
+            },
+        );
     }
 }
 
@@ -2688,6 +2749,33 @@ fn phase_17_legacy_emergency_hunt(colony: &mut ColonyRuntime, gate: TickGate, po
         JobKind::LeaderPlanHunt,
         Some(cat_id),
         JobMetadata::None,
+    );
+}
+
+/// Keep one water carrier moving whenever the colony falls below the absolute
+/// crisis edge. Coarse unattended ticks exposed a real scheduling hole: long
+/// expeditions can occupy every work-capable cat while water reaches zero. Assigning
+/// yet another carrier made the most food-fragile seed collapse instead. The
+/// founding blueprint already guarantees a drinkable source inside the village, so
+/// this small local draw is the last-resort floor while the normal 45-minute fetch
+/// loop remains load-bearing.
+fn phase_17b_emergency_water_fetch(colony: &mut ColonyRuntime, gate: TickGate) {
+    const WATER_CRISIS_EDGE: f64 = 5.0;
+    const EMERGENCY_BUCKET: f64 = 8.0;
+
+    if alive_cats(&colony.cats).next().is_none()
+        || colony.resources.water > WATER_CRISIS_EDGE
+        || !has_water_site(colony)
+    {
+        return;
+    }
+
+    colony.resources.water += EMERGENCY_BUCKET;
+    append_event(
+        colony,
+        gate.processed_through,
+        EventKind::Production,
+        "The cats drew an emergency bucket from the village spring.",
     );
 }
 
@@ -2962,7 +3050,12 @@ fn phase_20_leader_labor_assignments_and_staffing(
     // while the idle-employment-floor fill pass (below `direct_colony`) keeps claiming
     // every idle cat for Hunt/Scout/Quarry first.
     let mut workshop_queue = buildings_needing_workers(colony, BuildingType::Workshop);
-    for bench_type in RAW_MATERIAL_WORKSHOPS {
+    // `workshop_queue` is popped from the end, so append the deterministic
+    // resource-aware priority in reverse.
+    for bench_type in raw_material_staffing_priority(&colony.resources)
+        .into_iter()
+        .rev()
+    {
         workshop_queue.extend(buildings_needing_workers(colony, bench_type));
     }
     let mut smithy_queue = buildings_needing_workers(colony, BuildingType::Smithy);
@@ -3064,55 +3157,19 @@ fn phase_20_leader_labor_assignments_and_staffing(
     }
 }
 
-/// Passive "devotion" blessings a founded colony's shrine banks per game-hour into
-/// [`ColonyRuntime::global_upgrade_points`] — the god-purchase upgrade currency.
-///
-/// REACHABILITY FIX (long-horizon economy review). The two active blessing faucets
-/// (`Tithe` and `Offering`) only fire on a food/refined or materials *surplus* whose
-/// thresholds a founding colony never reaches in normal play: food is held well below
-/// `food_cap * TITHE_FOOD_RATIO + TITHE_FOOD_AMOUNT`, materials below the analogous
-/// offering gate, and no `refined` is produced before the (tree-gated) generic workshop
-/// exists. Instrumented 120-game-hour runs across five seeds bank only 0–2 points total
-/// (from the occasional ritual) — far short of the cost-5 root node `research_hut` — so
-/// the entire god-purchase upgrade path sits dormant for a very long time, and with it
-/// every building/effect the tree gates. A slow, flat devotion trickle gives that path a
-/// reachable faucet in normal play *without draining any survival resource* (it only
-/// adds), so the survival balance is untouched.
-///
-/// Deliberately slow — the design calls this "a slow upgrade tree", so the trickle is
-/// tuned for reachability, not power: ~20 game-hours to afford the cost-5 root, ~100 to
-/// bank a full era-1. The exact pace is a tunable design call, not a survival constant.
-const SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR: f64 = 0.25;
-
-/// Bank passive shrine devotion into the god-purchase currency
-/// ([`ColonyRuntime::global_upgrade_points`]). Deterministic (a flat function of elapsed
-/// game-hours — no RNG), survival-safe (adds only, drains nothing), and reset-durable
-/// like every other `global_upgrade_points` credit. A no-op for a colony with no
-/// completed shrine or no living cats to keep the faith. See
-/// [`SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR`] for the reachability rationale.
-fn accrue_shrine_devotion(colony: &mut ColonyRuntime, gate: TickGate) {
-    if alive_cats(&colony.cats).next().is_none() {
-        return;
-    }
-    let has_shrine = colony
-        .buildings
-        .iter()
-        .any(|building| building.building_type == BuildingType::Shrine && building.is_complete);
-    if !has_shrine {
-        return;
-    }
-    let gained = SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR * elapsed_game_hours(colony, gate);
-    if gained > 0.0 {
-        colony.global_upgrade_points += gained;
-    }
-}
-
 /// Whether the colony already has a research hut standing or a build for one under way,
 /// so the commission below only ever puts a single hut in play.
 /// Game-time a run must be old before the leader spends anything on research (see the
 /// establishment-window comment in [`manage_research_hut`]). Matches the 30-game-hour
 /// establishment window `run_founding_population_trajectory` samples after.
 const RESEARCH_ESTABLISHMENT_MS: i64 = 30 * 3_600_000;
+/// Active shrine economy begins only after the founding survival window. This keeps
+/// the opening larder and construction bank focused on establishing the village.
+const SHRINE_ESTABLISHMENT_MS: i64 = RESEARCH_ESTABLISHMENT_MS;
+/// A tithe is a meaningful colony-scale offering, not a per-minute tax. This
+/// cadence keeps the active faucet slow while preventing a replenishing larder
+/// from losing hundreds of food over a few days.
+const TITHE_COOLDOWN_MS: i64 = 24 * 3_600_000;
 
 /// Research occupancy is comfort-conditional, not just comfort-gated at entry: any tick
 /// the colony is below the [`is_research_comfortable`] per-capita bar, every scholar is
@@ -3399,9 +3456,14 @@ fn phase_21_leader_capital_decisions_and_tithe(
     policy: TickPolicy,
     plan: &DirectorPlan,
 ) {
-    // Reachability: bank the slow shrine-devotion trickle so the god-purchase upgrade
-    // path has a faucet the surplus-gated Tithe/Offering never provide in founding play.
-    accrue_shrine_devotion(colony, gate);
+    let shrine_established =
+        gate.processed_through - colony.run_started_at >= SHRINE_ESTABLISHMENT_MS;
+    let tithe_ready = colony
+        .events
+        .iter()
+        .rev()
+        .find(|event| event.kind == EventKind::Tithe)
+        .is_none_or(|event| gate.processed_through - event.at_ms >= TITHE_COOLDOWN_MS);
 
     for decision in &plan.decisions {
         match *decision {
@@ -3441,7 +3503,7 @@ fn phase_21_leader_capital_decisions_and_tithe(
                 refined,
                 blessings,
             } => {
-                if !gate.minute_rolled {
+                if !shrine_established || !tithe_ready || !gate.minute_rolled {
                     continue;
                 }
                 colony.resources.food -= f64::from(food);
@@ -3458,8 +3520,18 @@ fn phase_21_leader_capital_decisions_and_tithe(
                 );
             }
             LeaderDecision::Offering => {
+                if !shrine_established {
+                    continue;
+                }
                 let ritualist = can_take_policy_action(colony, policy)
-                    .then(|| select_best_cat(colony, Some(CatSpecialization::Ritualist)))
+                    .then(|| {
+                        select_best_cat(colony, Some(CatSpecialization::Ritualist)).or_else(|| {
+                            select_best_raw_material_worker(
+                                colony,
+                                Some(CatSpecialization::Ritualist),
+                            )
+                        })
+                    })
                     .flatten();
                 if let Some(cat_id) = ritualist {
                     queue_job(
@@ -3498,25 +3570,35 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         gate.processed_through,
         true,
     );
-    // Fund construction first: staff the scarcer of the two build-material benches
+    // Once both 4-unit scaffold reserves plus one 2/2 tools cycle are funded, give
+    // woodworking first claim on an idle cat. Otherwise fund construction first by
+    // staffing the scarcer of the two build-material benches
     // (wood-cutter → planks, stone-prep → blocks) so a single spare cat keeps planks and
     // blocks balanced enough to break ground. The woodworking (tools) bench is a luxury
     // tier that only draws a cat once both build materials are already stocked — leaving
     // it earlier would let it drain the planks/blocks the colony needs to grow. The order
     // keys only off pile-invariant resource totals, so it stays deterministic.
-    let (first_bench, second_bench) = if colony.resources.planks <= colony.resources.blocks {
-        (BuildingType::WoodCutter, BuildingType::StonePrep)
+    // A dispatched offering has physically claimed its 10 goods plus the fixed
+    // 20-material construction reserve. Raw-material benches must not consume
+    // that escrow before the ritualist reaches the shrine.
+    let offering_in_flight = active_or_queued_jobs(colony)
+        .iter()
+        .any(|job| job.kind == JobKind::CarryOffering);
+    let offering_materials_reserve = if offering_in_flight {
+        OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
     } else {
-        (BuildingType::StonePrep, BuildingType::WoodCutter)
+        0.0
     };
-    auto_staff_idle_buildings(colony, first_bench, gate.processed_through, false);
-    auto_staff_idle_buildings(colony, second_bench, gate.processed_through, false);
-    auto_staff_idle_buildings(
-        colony,
-        BuildingType::Woodworking,
-        gate.processed_through,
-        false,
-    );
+    let spendable_materials = (colony.resources.materials - offering_materials_reserve).max(0.0);
+    let raw_material_reserve = if colony.resources.tools >= 1.0 && !offering_in_flight {
+        OFFERING_MATERIALS_RESERVE
+    } else {
+        0.0
+    };
+    let raw_spendable_materials = (spendable_materials - raw_material_reserve).max(0.0);
+    for bench_type in raw_material_staffing_priority(&colony.resources) {
+        auto_staff_idle_buildings(colony, bench_type, gate.processed_through, false);
+    }
     // P16/P19 clothing chain slice: the clothier/tannery are luxury benches like the
     // generic Workshop/AccountingTent above — staffed only from genuine surplus, sticky
     // (not released every tick like the raw-material trio), announced like Workshop.
@@ -3564,7 +3646,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         worker_is_architect: worker.is_some_and(|cat| {
                             cat.specialization == Some(CatSpecialization::Architect)
                         }),
-                        materials_available: colony.resources.materials,
+                        materials_available: spendable_materials,
                     },
                 );
                 if step.refined_produced > 0.0 {
@@ -3610,7 +3692,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                             cat.specialization == Some(CatSpecialization::Architect)
                         }),
                         refined_available: colony.resources.refined,
-                        materials_available: colony.resources.materials,
+                        materials_available: spendable_materials,
                     },
                 );
                 if step.weapons_produced > 0.0 || step.armor_produced > 0.0 {
@@ -3720,7 +3802,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         worker_is_architect: worker.is_some_and(|cat| {
                             cat.specialization == Some(CatSpecialization::Architect)
                         }),
-                        materials_available: colony.resources.materials,
+                        materials_available: raw_spendable_materials,
                     },
                 );
                 if step.refined_produced > 0.0 {
@@ -3756,7 +3838,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         worker_is_architect: worker.is_some_and(|cat| {
                             cat.specialization == Some(CatSpecialization::Architect)
                         }),
-                        materials_available: colony.resources.materials,
+                        materials_available: raw_spendable_materials,
                     },
                 );
                 if step.refined_produced > 0.0 {
@@ -3828,8 +3910,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         worker_is_architect: worker.is_some_and(|cat| {
                             cat.specialization == Some(CatSpecialization::Architect)
                         }),
-                        planks_available: colony.resources.planks,
-                        blocks_available: colony.resources.blocks,
+                        planks_available: (colony.resources.planks - TOOL_BUILD_MATERIAL_RESERVE)
+                            .max(0.0),
+                        blocks_available: (colony.resources.blocks - TOOL_BUILD_MATERIAL_RESERVE)
+                            .max(0.0),
                     },
                 );
                 if step.tools_produced > 0.0 {
@@ -6058,8 +6142,8 @@ fn starting_resources_with_blessings(blessings: f64) -> Resources {
         refined: 0.0,
         weapons: 0.0,
         armor: 0.0,
-        planks: 0.0,
-        blocks: 0.0,
+        planks: 6.0,
+        blocks: 6.0,
         tools: 0.0,
         fibre: 0.0,
         hide: 0.0,
@@ -6642,6 +6726,52 @@ fn select_best_cat(
         preferred
     };
 
+    let mut best: Option<&Cat> = None;
+    for cat in pool {
+        if best.is_none_or(|current| {
+            specialization_stat(cat, specialization) > specialization_stat(current, specialization)
+        }) {
+            best = Some(cat);
+        }
+    }
+    best.map(|cat| cat.id.clone())
+}
+
+/// Offerings outrank the non-sticky raw-material benches: if the director's
+/// employment fill used every idle cat, reclaim one luxury-bench worker rather
+/// than leaving an otherwise reachable shrine action permanently undispatched.
+/// `queue_job` releases the selected worker's bench assignment.
+fn select_best_raw_material_worker(
+    colony: &ColonyRuntime,
+    specialization: Option<CatSpecialization>,
+) -> Option<CatId> {
+    let busy_ids = active_or_queued_jobs(colony)
+        .iter()
+        .filter_map(|job| job.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let raw_worker_ids = colony
+        .buildings
+        .iter()
+        .filter(|building| RAW_MATERIAL_WORKSHOPS.contains(&building.building_type))
+        .filter_map(|building| building.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let available = colony
+        .cats
+        .iter()
+        .filter(|cat| {
+            raw_worker_ids.contains(&cat.id.as_str()) && can_take_new_job_with_busy(cat, &busy_ids)
+        })
+        .collect::<Vec<_>>();
+    let preferred = available
+        .iter()
+        .copied()
+        .filter(|cat| cat.specialization == specialization && specialization.is_some())
+        .collect::<Vec<_>>();
+    let pool = if preferred.is_empty() {
+        available
+    } else {
+        preferred
+    };
     let mut best: Option<&Cat> = None;
     for cat in pool {
         if best.is_none_or(|current| {
@@ -7591,6 +7721,27 @@ const RAW_MATERIAL_WORKSHOPS: [BuildingType; 3] = [
     BuildingType::Woodworking,
 ];
 
+/// Highest-first staffing order for the founding raw-material chain. Balance
+/// planks/blocks until one tools cycle can run without crossing the 4/4 build
+/// reserve, then put woodworking first. Shared by phase 20's director assignment
+/// and phase 23's idle mop-up so they cannot fight each other.
+fn raw_material_staffing_priority(resources: &Resources) -> [BuildingType; 3] {
+    let (scarcer, other) = if resources.planks <= resources.blocks {
+        (BuildingType::WoodCutter, BuildingType::StonePrep)
+    } else {
+        (BuildingType::StonePrep, BuildingType::WoodCutter)
+    };
+    let tools_cycle_funded = resources.planks
+        >= TOOL_BUILD_MATERIAL_RESERVE + crate::production::WOODWORKING_PLANKS_PER_CYCLE
+        && resources.blocks
+            >= TOOL_BUILD_MATERIAL_RESERVE + crate::production::WOODWORKING_BLOCKS_PER_CYCLE;
+    if tools_cycle_funded {
+        [BuildingType::Woodworking, scarcer, other]
+    } else {
+        [scarcer, other, BuildingType::Woodworking]
+    }
+}
+
 /// Release every cat bound to a raw-material refinement bench so the leader's labour
 /// pass can re-draft them for hunting/water first. Whatever remains genuinely idle is
 /// re-staffed by phase 23's mop-up (or claimed directly by `AssignWorkshop` in phase 20
@@ -7911,7 +8062,9 @@ fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGat
     let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
         return;
     };
-    if colony.resources.materials < f64::from(OFFERING_MATERIALS_AMOUNT) {
+    if colony.resources.materials
+        < OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
+    {
         return;
     }
     colony.resources.materials -= f64::from(OFFERING_MATERIALS_AMOUNT);
@@ -11148,6 +11301,57 @@ mod tests {
         phase_23_production(&mut starved, production_gate(30, 30_000), 123);
         assert_eq!(starved.resources.tools, 0.0);
         assert_eq!(starved.resources.planks, 10.0);
+
+        // Exactly 6/6 can spend one 2/2 cycle while preserving the 4/4 build
+        // reserve. Anything below that boundary stalls rather than consuming the
+        // scaffold reserve.
+        let mut at_reserve_boundary = chain_colony(
+            BuildingType::Woodworking,
+            Resources {
+                planks: 6.0,
+                blocks: 6.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut at_reserve_boundary, production_gate(30, 30_000), 123);
+        assert_eq!(at_reserve_boundary.resources.tools, 1.0);
+        assert_eq!(at_reserve_boundary.resources.planks, 4.0);
+        assert_eq!(at_reserve_boundary.resources.blocks, 4.0);
+
+        let mut below_reserve_boundary = chain_colony(
+            BuildingType::Woodworking,
+            Resources {
+                planks: 5.9,
+                blocks: 6.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(
+            &mut below_reserve_boundary,
+            production_gate(30, 30_000),
+            123,
+        );
+        assert_eq!(below_reserve_boundary.resources.tools, 0.0);
+        assert_eq!(below_reserve_boundary.resources.planks, 5.9);
+        assert_eq!(below_reserve_boundary.resources.blocks, 6.0);
+    }
+
+    #[test]
+    fn raw_benches_preserve_the_offering_reserve_after_tool_bootstrap() {
+        let mut colony = chain_colony(
+            BuildingType::WoodCutter,
+            Resources {
+                materials: 25.0,
+                tools: 1.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+        assert_eq!(colony.resources.materials, OFFERING_MATERIALS_RESERVE);
+        assert_eq!(colony.resources.planks, 1.0);
     }
 
     // ---- P19 slice 2: material-variant trade-good crafting ----
@@ -11908,6 +12112,68 @@ mod tests {
     }
 
     #[test]
+    fn unfinished_scaffold_is_reassigned_without_paying_break_ground_twice() {
+        let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
+        colony.resources.planks = 10.0;
+        colony.resources.blocks = 10.0;
+        let first_builder = colony.cats[0].id.clone();
+        queue_job(
+            &mut colony,
+            10_000,
+            JobKind::BuildHouse,
+            Some(first_builder.clone()),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::ResearchHut,
+                building_id: None,
+                site: None,
+            },
+        );
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(60, 70_000),
+            4242,
+        );
+        let scaffold_id = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == BuildingType::ResearchHut)
+            .expect("research scaffold")
+            .id
+            .clone();
+        assert_eq!(
+            (colony.resources.planks, colony.resources.blocks),
+            (8.0, 8.0)
+        );
+
+        mark_cat_dead(&mut colony, &first_builder, 80_000);
+        let buildings_before = colony.buildings.len();
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(60, 130_000),
+            4242,
+        );
+
+        assert_eq!(colony.buildings.len(), buildings_before);
+        assert_eq!(
+            (colony.resources.planks, colony.resources.blocks),
+            (8.0, 8.0),
+            "resuming an existing scaffold must not charge the 2/2 site cost again"
+        );
+        assert!(colony.jobs.iter().any(|job| {
+            job.status == JobStatus::Active
+                && job.assigned_cat.as_deref() != Some(first_builder.as_str())
+                && matches!(
+                    &job.metadata,
+                    JobMetadata::Construction {
+                        building_id: Some(building_id),
+                        ..
+                    } if building_id == &scaffold_id
+                )
+        }));
+    }
+
+    #[test]
     fn breaking_ground_defers_when_build_materials_are_short() {
         // With planks below the scaffold cost, the build job stays Queued to retry once
         // the benches have banked enough — nothing is spent and no scaffold appears.
@@ -12177,7 +12443,10 @@ mod tests {
                 .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
             let mut saw_explore = false;
             let mut max_reveal_cheb = 0;
-            for step in 1..=200 {
+            // The founding benches and construction queue legitimately consume the
+            // first work shifts; give the idle colony sixteen game-hours to reach its
+            // first frontier expedition.
+            for step in 1..=1_000 {
                 let now = 10_000 + i64::from(step) * 60_000;
                 let _ = world_tick(&mut world, now);
                 let colony = &world.colonies[0];
@@ -12485,7 +12754,7 @@ mod tests {
                 .colonies
                 .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
             let mut trace: Vec<BTreeMap<CatId, BTreeSet<TilePos>>> = Vec::new();
-            for step in 1..=200 {
+            for step in 1..=1_000 {
                 let now = 10_000 + i64::from(step) * 60_000;
                 let _ = world_tick(&mut world, now);
                 trace.push(world.colonies[0].provisional_tiles.clone());
@@ -12652,54 +12921,6 @@ mod tests {
         }
     }
 
-    /// Unit guardrail for the shrine-devotion reachability faucet
-    /// ([`accrue_shrine_devotion`] / [`SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR`]).
-    ///
-    /// Pins the exact per-game-hour accrual rate and its two no-op guards (no completed
-    /// shrine, or no living cats). A founded colony has a completed shrine and living
-    /// cats, so one game-hour of elapsed time banks exactly the constant into the
-    /// god-purchase currency `global_upgrade_points` — deterministic, no RNG.
-    #[test]
-    fn shrine_devotion_banks_the_flat_rate_and_guards_no_shrine_and_no_cats() {
-        let mut colony = found_colony(1, "colony-1", 10_000, 1);
-        colony.global_upgrade_points = 0.0;
-        // One game-hour of elapsed time at the default time scale (3600 s).
-        let gate = TickGate {
-            elapsed_sec: 3600,
-            processed_through: colony.last_tick + 3_600_000,
-            minute_rolled: true,
-            previous_water: colony.resources.water.to_bits(),
-        };
-        accrue_shrine_devotion(&mut colony, gate);
-        assert!(
-            (colony.global_upgrade_points - SHRINE_DEVOTION_BLESSINGS_PER_GAME_HOUR).abs() < 1e-9,
-            "one game-hour must bank exactly the flat devotion rate (got {})",
-            colony.global_upgrade_points,
-        );
-
-        // No completed shrine -> no devotion.
-        let mut no_shrine = found_colony(1, "colony-1", 10_000, 1);
-        no_shrine.buildings.clear();
-        no_shrine.global_upgrade_points = 0.0;
-        accrue_shrine_devotion(&mut no_shrine, gate);
-        assert_eq!(
-            no_shrine.global_upgrade_points, 0.0,
-            "a colony with no shrine keeps no faith"
-        );
-
-        // No living cats -> no devotion.
-        let mut no_cats = found_colony(1, "colony-1", 10_000, 1);
-        for cat in &mut no_cats.cats {
-            cat.death_time = Some(10_000);
-        }
-        no_cats.global_upgrade_points = 0.0;
-        accrue_shrine_devotion(&mut no_cats, gate);
-        assert_eq!(
-            no_cats.global_upgrade_points, 0.0,
-            "a dead colony keeps no faith"
-        );
-    }
-
     /// Comfort harness: model a colony that has solved its food/water economy (a full-ish
     /// larder every tick, no player actions) so the cat-research mechanic is exercised in
     /// isolation from the orthogonal founding-food balance. Keeps food/water at 0.6 of cap —
@@ -12722,7 +12943,7 @@ mod tests {
     /// from a founded colony; [`staffed_research_hut_accrues_points_and_auto_unlocks_the_cheapest_nodes`]
     /// proves a full week of accrual crosses several node thresholds; and
     /// [`research_staffing_and_commission_respect_the_comfort_gate`] proves the survival gate.
-    /// A node costs ~84 game-hours of a single scholar (10 pts/researcher/week) — several cat
+    /// A node costs ~42 game-hours of a single scholar (20 pts/researcher/week) — more than a cat
     /// lifetimes — so an unaided founding colony's *own* long-horizon population balance (a
     /// separate, tracked survival-pacing concern) would otherwise dominate this test. We
     /// therefore give the tree a head start of prior study (research points persist across
@@ -12834,52 +13055,179 @@ mod tests {
         assert_eq!(run(), run());
     }
 
-    /// Long-horizon economy REACHABILITY guardrail (economy review). Complements the
-    /// survival proofs above: it proves the god-purchase upgrade path is no longer
-    /// dormant. Before the [`accrue_shrine_devotion`] fix, an instrumented 120-game-hour
-    /// run across these five seeds banked only 0–2 `global_upgrade_points` (from the odd
-    /// ritual) — below the cost-5 root node `research_hut` — so a player had nothing to
-    /// spend and the whole tree (and every building/effect it gates) sat unreachable.
-    ///
-    /// Over a ~22-game-hour horizon the slow devotion trickle now banks at least the
-    /// root-node cost, so the path is reachable in normal play. Two representative seeds
-    /// are exercised: a clean seed (7) and one whose founding economy collapse-restarts
-    /// within the horizon (1234) — proving the currency is reset-durable. (The flat
-    /// per-game-hour rate is seed-independent and pinned exactly by
-    /// [`shrine_devotion_banks_the_flat_rate_and_guards_no_shrine_and_no_cats`], so two
-    /// end-to-end seeds suffice here.) The currency reachability holds even across a
-    /// reset — a pre-existing survival-pacing behaviour tracked separately, so this test
-    /// deliberately asserts liveness, not no-reset, and never touches any survival
-    /// resource, keeping the survival proofs green.
-    #[test]
-    fn god_purchase_currency_becomes_reachable_over_a_long_horizon() {
-        let root_cost = get_node("research_hut").expect("root node exists").cost;
-        for seed in [7u32, 1234] {
-            let mut world = new_world(seed);
-            world
-                .colonies
-                .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
+    #[derive(Debug, Clone, PartialEq)]
+    struct LongHorizonEconomy {
+        resets: u32,
+        reset_events: Vec<(i64, RunResetReason)>,
+        tithes: usize,
+        offerings: usize,
+        offering_jobs: usize,
+        tools: f64,
+        blessings: f64,
+        research_nodes: Vec<String>,
+        research_points: f64,
+        research_commissions: usize,
+        research_huts: usize,
+        completed_research_huts: usize,
+        staffed_research_huts: usize,
+        research_build_jobs: Vec<(JobStatus, Option<String>)>,
+        research_hut_progress: Vec<u8>,
+        max_materials: f64,
+        max_materials_after_establishment: f64,
+        min_food: f64,
+        min_water: f64,
+        first_research_hour: Option<i64>,
+        population: usize,
+    }
 
-            // ~22 game-hours at the minute cadence (1300 game-minutes), clearing the
-            // cost-5 root at the 0.25/game-hour devotion rate with margin.
-            for step in 1..=1_300 {
-                let now = 10_000 + i64::from(step) * 60_000;
-                let _ = world_tick(&mut world, now);
+    /// Exercise every formerly dormant founding-economy output for 200 game-hours at
+    /// the deliberately harsh five-minute proxy cadence. Unlike the removed flat
+    /// devotion bypass, every blessing here must come from a visible active ritual:
+    /// food/refined tithes or cat-carried material offerings.
+    fn run_long_horizon_economy(seed: u32, game_hours: i64) -> LongHorizonEconomy {
+        const TICK_MS: i64 = 5 * 60_000;
+        let mut world = new_world(seed);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
+        let mut resets = 0;
+        let mut reset_events = Vec::new();
+        let mut first_research_hour = None;
+        let mut max_materials = 0.0f64;
+        let mut max_materials_after_establishment = 0.0f64;
+        let mut min_food = f64::MAX;
+        let mut min_water = f64::MAX;
+        let mut seen_tithes = std::collections::HashSet::new();
+        let mut seen_offerings = std::collections::HashSet::new();
+        let mut seen_offering_jobs = std::collections::HashSet::new();
+        let mut seen_research_commissions = std::collections::HashSet::new();
+        for step in 1..=game_hours * 60 / 5 {
+            let reports = world_tick(&mut world, 10_000 + step * TICK_MS);
+            if let Some(reason) = reports[0].reset_reason {
+                resets += 1;
+                reset_events.push((step * 5 / 60, reason));
             }
+            if first_research_hour.is_none()
+                && !world.colonies[0].upgrade_tree.owned_node_ids.is_empty()
+            {
+                first_research_hour = Some(step * 5 / 60);
+            }
+            max_materials = max_materials.max(world.colonies[0].resources.materials);
+            min_food = min_food.min(world.colonies[0].resources.food);
+            min_water = min_water.min(world.colonies[0].resources.water);
+            if step * 5 >= 30 * 60 {
+                max_materials_after_establishment =
+                    max_materials_after_establishment.max(world.colonies[0].resources.materials);
+            }
+            for event in &world.colonies[0].events {
+                if event.kind == EventKind::Tithe {
+                    seen_tithes.insert(event.id.clone());
+                } else if event.kind == EventKind::Offering {
+                    seen_offerings.insert(event.id.clone());
+                } else if event.kind == EventKind::ResearchHutCommissioned {
+                    seen_research_commissions.insert(event.id.clone());
+                }
+            }
+            for job in &world.colonies[0].jobs {
+                if job.kind == JobKind::CarryOffering {
+                    seen_offering_jobs.insert(job.id.clone());
+                }
+            }
+        }
+        let colony = &world.colonies[0];
+        LongHorizonEconomy {
+            resets,
+            reset_events,
+            tithes: seen_tithes.len(),
+            offerings: seen_offerings.len(),
+            offering_jobs: seen_offering_jobs.len(),
+            tools: colony.resources.tools,
+            blessings: colony.global_upgrade_points,
+            research_nodes: colony.upgrade_tree.owned_node_ids.clone(),
+            research_points: colony.upgrade_tree.research_points,
+            research_commissions: seen_research_commissions.len(),
+            research_huts: colony
+                .buildings
+                .iter()
+                .filter(|building| building.building_type == BuildingType::ResearchHut)
+                .count(),
+            completed_research_huts: colony
+                .buildings
+                .iter()
+                .filter(|building| {
+                    building.building_type == BuildingType::ResearchHut && building.is_complete
+                })
+                .count(),
+            staffed_research_huts: colony
+                .buildings
+                .iter()
+                .filter(|building| {
+                    building.building_type == BuildingType::ResearchHut
+                        && building.is_complete
+                        && building.assigned_cat.is_some()
+                })
+                .count(),
+            research_build_jobs: colony
+                .jobs
+                .iter()
+                .filter(|job| {
+                    job.kind == JobKind::BuildHouse
+                        && job_building_type(job) == Some(BuildingType::ResearchHut)
+                })
+                .map(|job| (job.status, job.assigned_cat.clone()))
+                .collect(),
+            research_hut_progress: colony
+                .buildings
+                .iter()
+                .filter(|building| building.building_type == BuildingType::ResearchHut)
+                .map(|building| building.construction_progress)
+                .collect(),
+            max_materials,
+            max_materials_after_establishment,
+            min_food,
+            min_water,
+            first_research_hour,
+            population: alive_cats(&colony.cats).count(),
+        }
+    }
 
-            let colony = &world.colonies[0];
-            assert_ne!(
-                colony.status,
-                ColonyStatus::Dead,
-                "seed {seed}: colony ended dead"
+    #[test]
+    fn founding_economy_faucets_are_active_across_a_two_hundred_hour_campaign() {
+        let mut offering_seeds = 0;
+        for seed in [7u32, 555, 2024, 42, 99] {
+            let result = run_long_horizon_economy(seed, 200);
+            eprintln!("seed {seed}: {result:?}");
+            assert_eq!(result.resets, 0, "seed {seed}: {result:?}");
+            offering_seeds += usize::from(result.offerings > 0);
+            assert!(
+                result.tithes + result.offerings > 0 && result.blessings > 0.0,
+                "seed {seed}: active shrine economy stayed dormant: {result:?}"
             );
             assert!(
-                colony.global_upgrade_points >= root_cost,
-                "seed {seed}: god-purchase currency only reached {:.2}, below the cost-{root_cost} \
-                 root node — the upgrade path is still unreachable",
-                colony.global_upgrade_points,
+                result.tools > 0.0,
+                "seed {seed}: tool chain stayed dormant: {result:?}"
+            );
+            assert!(
+                result.research_points > 0.0 || !result.research_nodes.is_empty(),
+                "seed {seed}: research stayed dormant: {result:?}"
+            );
+            assert!(
+                result.population > 0,
+                "seed {seed}: colony ended extinct: {result:?}"
             );
         }
+        assert!(
+            offering_seeds >= 2,
+            "offerings were not organically reachable across enough seeds ({offering_seeds}/5)"
+        );
+    }
+
+    #[test]
+    fn long_horizon_economy_is_deterministic_for_identical_seeds() {
+        assert_eq!(
+            run_long_horizon_economy(7, 200),
+            run_long_horizon_economy(7, 200)
+        );
     }
 
     /// Attach a completed research hut, staffed by `scholar`, to `colony`.
@@ -12903,7 +13251,7 @@ mod tests {
     /// Cat-research accrual wiring ([`research_workforce`] + [`phase_24_research`]). Before
     /// this fix `research_workforce` was hard-coded `0.0`, so a staffed hut banked nothing
     /// and the whole tech tree sat dormant in unattended play. A completed hut staffed by a
-    /// living cat must now count as one researcher, and a game-week of accrual (10
+    /// living cat must now count as one researcher, and a game-week of accrual (20
     /// pts/researcher/week) must auto-unlock the cheapest-first nodes — proving the tree can
     /// advance on the cat path alone. Deterministic: a flat function of elapsed game-seconds,
     /// no RNG.
@@ -12926,7 +13274,7 @@ mod tests {
             "one living scholar in a completed hut is one researcher"
         );
 
-        // One game-week of a single researcher banks ~10 points, enough to auto-unlock the
+        // One game-week of a single researcher banks ~20 points, enough to auto-unlock the
         // cost-5 root (`research_hut`) and then the next cheapest node (`basic_tools`, 5).
         let week = crate::upgrade_tree::WEEK_SECONDS as i64;
         let gate = TickGate {
@@ -12947,7 +13295,7 @@ mod tests {
         );
         assert!(
             colony.upgrade_tree.owned_node_ids.len() >= 2,
-            "cheapest-first auto-unlock must claim more than the root from ~10 banked points, got {:?}",
+            "cheapest-first auto-unlock must claim more than the root from ~20 banked points, got {:?}",
             colony.upgrade_tree.owned_node_ids,
         );
 
@@ -13464,6 +13812,21 @@ mod tests {
         right
             .colonies
             .push(found_colony(right.world_seed, "colony-1", 10_000, 4242));
+
+        // This fixture is specifically a no-supply depletion. A normal founding
+        // village now has a guaranteed spring and can draw an emergency bucket, so
+        // remove every water tile from both twins before forcing the reservoir dry.
+        for world in [&mut left, &mut right] {
+            let water_tiles = world.colonies[0]
+                .world_tiles
+                .iter()
+                .filter_map(|(pos, tile)| tile_has_water(Some(tile)).then_some(*pos))
+                .collect::<Vec<_>>();
+            for pos in water_tiles {
+                clear_water_tile(&mut world.colonies[0], pos);
+            }
+            assert!(!has_water_site(&world.colonies[0]));
+        }
 
         // Force one cat toward the dehydration-death edge identically on both worlds
         // — a plain field write, not RNG, so it cannot desync the twin.
@@ -15461,6 +15824,62 @@ mod tests {
         assert_eq!(run(), run());
     }
 
+    #[test]
+    fn woodworking_gets_first_idle_worker_once_both_build_reserves_are_funded() {
+        let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
+        colony.jobs.clear();
+        colony.resources.planks = 6.0;
+        colony.resources.blocks = 6.0;
+        // Leave exactly one work-capable cat so staffing order is observable.
+        for cat in colony.cats.iter_mut().skip(1) {
+            cat.death_time = Some(10_000);
+        }
+        for building in &mut colony.buildings {
+            building.assigned_cat = None;
+        }
+
+        phase_23_production(&mut colony, production_gate(1, 11_000), 4242);
+
+        let staffed = colony
+            .buildings
+            .iter()
+            .find(|building| building.assigned_cat.is_some())
+            .expect("one idle cat should staff one raw-material bench");
+        assert_eq!(staffed.building_type, BuildingType::Woodworking);
+    }
+
+    #[test]
+    fn low_water_draws_one_emergency_bucket_without_diverting_labor() {
+        let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
+        colony.jobs.clear();
+        colony.resources.water = 1.0;
+        let worker_ids = colony
+            .cats
+            .iter()
+            .take(2)
+            .map(|cat| cat.id.clone())
+            .collect::<Vec<_>>();
+        for (building, cat_id) in colony
+            .buildings
+            .iter_mut()
+            .filter(|building| RAW_MATERIAL_WORKSHOPS.contains(&building.building_type))
+            .zip(worker_ids)
+        {
+            building.assigned_cat = Some(cat_id);
+        }
+
+        phase_17b_emergency_water_fetch(&mut colony, production_gate(1, 11_000));
+
+        assert_eq!(colony.resources.water, 9.0);
+        assert!(
+            colony.jobs.is_empty(),
+            "the crisis floor must not steal a food worker"
+        );
+        assert!(colony.events.iter().any(|event| {
+            event.kind == EventKind::Production && event.message.contains("emergency bucket")
+        }));
+    }
+
     // ---- P12.6: shrine offerings (carry_offering) ----
 
     fn ritualist_cat(id: &str) -> Cat {
@@ -15510,14 +15929,13 @@ mod tests {
 
     #[test]
     fn complete_offering_converts_surplus_materials_to_blessings_and_logs_an_event() {
-        let mut colony = offering_colony(50.0);
+        let mut colony = offering_colony(30.0);
         let job = offering_job(&colony);
 
         complete_offering(&mut colony, &job, production_gate(60, 2_400_000));
 
         assert_eq!(
-            colony.resources.materials,
-            50.0 - f64::from(OFFERING_MATERIALS_AMOUNT),
+            colony.resources.materials, 20.0,
             "the documented OFFERING_MATERIALS_AMOUNT must be the amount consumed"
         );
         let carrying = colony.cats[0]
@@ -15578,7 +15996,8 @@ mod tests {
 
     #[test]
     fn phase_21_dispatches_a_carry_offering_job_for_the_offering_decision() {
-        let mut colony = offering_colony(95.0);
+        let mut colony = offering_colony(30.0);
+        colony.run_started_at = 60_000 - SHRINE_ESTABLISHMENT_MS;
         let plan = DirectorPlan {
             decisions: vec![LeaderDecision::Offering],
             slots: Vec::new(),
@@ -15600,6 +16019,71 @@ mod tests {
     }
 
     #[test]
+    fn shrine_faucets_wait_for_the_thirty_hour_establishment_window() {
+        let plan = DirectorPlan {
+            decisions: vec![
+                LeaderDecision::Tithe {
+                    food: crate::leader_director::TITHE_FOOD_AMOUNT,
+                    refined: 0,
+                    blessings: 1,
+                },
+                LeaderDecision::Offering,
+            ],
+            slots: Vec::new(),
+        };
+        let mut colony = offering_colony(30.0);
+        colony.resources.food = 100.0;
+        colony.run_started_at = 0;
+
+        let gate_at = |processed_through| TickGate {
+            elapsed_sec: 60,
+            processed_through,
+            minute_rolled: true,
+            previous_water: 0,
+        };
+        phase_21_leader_capital_decisions_and_tithe(
+            &mut colony,
+            gate_at(SHRINE_ESTABLISHMENT_MS - 1),
+            reliable_policy(),
+            &plan,
+        );
+        assert_eq!(colony.resources.food, 100.0);
+        assert!(colony.jobs.is_empty());
+        assert_eq!(colony.global_upgrade_points, 0.0);
+
+        phase_21_leader_capital_decisions_and_tithe(
+            &mut colony,
+            gate_at(SHRINE_ESTABLISHMENT_MS),
+            reliable_policy(),
+            &plan,
+        );
+        assert_eq!(colony.resources.food, 80.0);
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .any(|job| job.kind == JobKind::CarryOffering)
+        );
+        assert_eq!(colony.global_upgrade_points, 1.0);
+
+        phase_21_leader_capital_decisions_and_tithe(
+            &mut colony,
+            gate_at(SHRINE_ESTABLISHMENT_MS + TITHE_COOLDOWN_MS - 1),
+            reliable_policy(),
+            &plan,
+        );
+        assert_eq!(colony.resources.food, 80.0, "daily tithe cooldown");
+        phase_21_leader_capital_decisions_and_tithe(
+            &mut colony,
+            gate_at(SHRINE_ESTABLISHMENT_MS + TITHE_COOLDOWN_MS),
+            reliable_policy(),
+            &plan,
+        );
+        assert_eq!(colony.resources.food, 60.0, "cooldown is inclusive");
+        assert_eq!(colony.global_upgrade_points, 2.0);
+    }
+
+    #[test]
     fn offering_dispatch_and_completion_is_deterministic_across_identical_runs() {
         // Two independently-founded worlds on the same seed, forced identically into
         // a materials surplus every tick, must produce byte-identical reports and
@@ -15612,11 +16096,13 @@ mod tests {
         right
             .colonies
             .push(found_colony(right.world_seed, "colony-1", 10_000, 9001));
+        left.colonies[0].run_started_at = 10_000 - SHRINE_ESTABLISHMENT_MS;
+        right.colonies[0].run_started_at = 10_000 - SHRINE_ESTABLISHMENT_MS;
 
         for step in 1..=60 {
             let now = 10_000 + i64::from(step) * 60_000;
-            left.colonies[0].resources.materials = 95.0;
-            right.colonies[0].resources.materials = 95.0;
+            left.colonies[0].resources.materials = 30.0;
+            right.colonies[0].resources.materials = 30.0;
             assert_eq!(world_tick(&mut left, now), world_tick(&mut right, now));
         }
 
@@ -15626,6 +16112,13 @@ mod tests {
             right.colonies[0].global_upgrade_points
         );
         assert_eq!(left.colonies[0].jobs, right.colonies[0].jobs);
+        assert!(
+            left.colonies[0]
+                .events
+                .iter()
+                .any(|event| event.kind == EventKind::Offering),
+            "determinism comparison must exercise a completed active offering"
+        );
     }
 
     // --- P14.4: road accessibility (`roads::road_route_to_network` wired into

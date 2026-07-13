@@ -46,11 +46,11 @@ pub const FIELD_MIN_COUNT: usize = 2;
 
 /// Cats per field the leader targets beyond the essential base: the field cap is
 /// `max(FIELD_MIN_COUNT, ceil(population / FIELD_CATS_PER_FIELD))`. At the base grass
-/// fertility a field yields ~2.4 food/hour, so `3` cats/field leaves a fully-grown colony's
+/// fertility a field yields ~2.4 food/hour. Five cats/field leaves a fully-grown colony's
 /// passive base still short of its consumption (~1 food/cat/hour) — hunts must carry the
 /// remainder and build the comfort buffer, so food stays non-trivial while a housing-capped
 /// colony can hold comfort.
-pub const FIELD_CATS_PER_FIELD: f64 = 3.0;
+pub const FIELD_CATS_PER_FIELD: f64 = 5.0;
 
 /// Food fill-ratio at/above which the leader stops commissioning fields. Set comfortably
 /// above the per-capita research-comfort bar (`leader_director::is_research_comfortable`;

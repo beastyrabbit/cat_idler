@@ -50,21 +50,20 @@ pub const RESEARCH_COMFORT_WATER_PER_CAT: f64 = 6.0;
 /// "comfortable" (a 3-cat colony holding 12 food is scraping by, not studying).
 /// Matches the shape of the ritual gate's 16-unit absolute floor in `idle_rules`.
 pub const RESEARCH_COMFORT_FLOOR: f64 = 20.0;
-pub const TITHE_FOOD_RATIO: f64 = 0.6;
+/// Food retained per living cat before the leader may tithe. Uses the same
+/// survival-sized buffer as research comfort so storage upgrades cannot make the
+/// threshold unreachable and offerings never consume the colony's operating larder.
+pub const TITHE_FOOD_RESERVE_PER_CAT: f64 = RESEARCH_COMFORT_FOOD_PER_CAT;
+/// Absolute food reserve for very small colonies.
+pub const TITHE_FOOD_RESERVE_FLOOR: f64 = RESEARCH_COMFORT_FLOOR;
 pub const TITHE_FOOD_AMOUNT: u32 = 20;
 pub const TITHE_REFINED_AMOUNT: u32 = 5;
-/// P12.6 shrine offerings: materials consumed per `carry_offering` job, converted
-/// to blessings at the shrine on arrival (see `world_tick::complete_offering`).
-/// Deliberately reuses [`TITHE_FOOD_RATIO`]'s *value* (not `STORAGE_RATIO`, which
-/// at 0.9 plus this headroom amount is unreachable against the 100-unit base
-/// materials cap — `0.9 * 100 + 30 = 120 > 100`) so the gate is reachable at the
-/// founding colony's base storage, mirroring `Tithe`'s food check shape exactly.
-pub const OFFERING_MATERIALS_RATIO: f64 = TITHE_FOOD_RATIO;
-/// P12.6: materials consumed per `carry_offering` job. Gated against `materials` —
-/// a resource `Tithe` never touches (it only draws food/refined) — so the two
-/// blessing faucets can never double-count the same surplus pool. Materials are
-/// never survival-critical (unlike food/water), so this can't starve the colony.
-pub const OFFERING_MATERIALS_AMOUNT: u32 = 30;
+/// Build-material reserve retained after an offering. This is fixed rather than a
+/// storage-capacity ratio: quarry supply follows construction demand and naturally
+/// settles near 30 materials regardless of how large storage becomes.
+pub const OFFERING_MATERIALS_RESERVE: f64 = 20.0;
+/// Materials consumed per `carry_offering` job.
+pub const OFFERING_MATERIALS_AMOUNT: u32 = 10;
 pub const HUNT_MAX_SLOTS_RATIO: f64 = 0.7;
 pub const WATER_MAX_SLOTS: u32 = 4;
 pub const QUARRY_MAX_SLOTS: u32 = 2;
@@ -576,8 +575,10 @@ pub fn direct_colony(snapshot: &LeaderSnapshot) -> DirectorPlan {
         decisions.push(LeaderDecision::BuildDen);
     }
 
-    let tithe_food = if snapshot.resources.food
-        > snapshot.food_capacity * TITHE_FOOD_RATIO + f64::from(TITHE_FOOD_AMOUNT)
+    let tithe_food_reserve =
+        (f64::from(snapshot.population) * TITHE_FOOD_RESERVE_PER_CAT).max(TITHE_FOOD_RESERVE_FLOOR);
+    let tithe_food = if snapshot.population > 0
+        && snapshot.resources.food >= tithe_food_reserve + f64::from(TITHE_FOOD_AMOUNT)
     {
         TITHE_FOOD_AMOUNT
     } else {
@@ -599,12 +600,11 @@ pub fn direct_colony(snapshot: &LeaderSnapshot) -> DirectorPlan {
 
     // P12.6 shrine offerings: a cat-driven, spatial complement to `Tithe` (which is
     // an instant, cat-free, food/refined-only conversion). Fires only on a genuine
-    // materials surplus — the same shape as `Tithe`'s food check (comfort ratio +
-    // fixed amount headroom) — and only when no offering is already in flight, so
+    // materials surplus above a fixed construction reserve, and only when no
+    // offering is already in flight, so
     // the director dispatches at most one `carry_offering` job at a time.
-    let materials_surplus = snapshot.materials
-        > snapshot.materials_capacity * OFFERING_MATERIALS_RATIO
-            + f64::from(OFFERING_MATERIALS_AMOUNT);
+    let materials_surplus =
+        snapshot.materials >= OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT);
     if materials_surplus && snapshot.offering_in_flight.unwrap_or(0) == 0 {
         decisions.push(LeaderDecision::Offering);
     }
@@ -1043,6 +1043,27 @@ mod tests {
         }
     }
 
+    /// The P3 fixture is the frozen TS director oracle. Rust's reachable shrine
+    /// tithe deliberately diverges from its capacity-ratio rule, so fixture parity
+    /// still covers every other decision and labor slot while the dedicated tithe
+    /// boundary tests own the new rule.
+    fn assert_plan_eq_ignoring_tithe(
+        actual: &DirectorPlan,
+        expected: &DirectorPlan,
+        context: &str,
+    ) {
+        let without_tithe = |plan: &DirectorPlan| DirectorPlan {
+            decisions: plan
+                .decisions
+                .iter()
+                .filter(|decision| !matches!(decision, LeaderDecision::Tithe { .. }))
+                .cloned()
+                .collect(),
+            slots: plan.slots.clone(),
+        };
+        assert_plan_eq(&without_tithe(actual), &without_tithe(expected), context);
+    }
+
     #[test]
     fn fixture_is_generated_from_leader_ts_sources() {
         let fixture = fixture();
@@ -1132,7 +1153,7 @@ mod tests {
     fn direct_colony_matches_ts_fixture() {
         for case in fixture().direct_colony {
             let actual = direct_colony(&case.snapshot);
-            assert_plan_eq(&actual, &case.expected, &case.name);
+            assert_plan_eq_ignoring_tithe(&actual, &case.expected, &case.name);
         }
     }
 
@@ -1355,13 +1376,57 @@ mod tests {
     }
 
     #[test]
+    fn tithe_food_keeps_a_per_capita_survival_reserve() {
+        let mut snapshot = founding_five_cat_snapshot();
+        snapshot.population = 10;
+        snapshot.resources.refined = 0.0;
+
+        // Ten cats reserve 50 food (10 × 5), and the 20-food tithe may only fire
+        // when the larder can pay it without crossing that bar.
+        snapshot.resources.food = 69.9;
+        assert!(
+            direct_colony(&snapshot)
+                .decisions
+                .iter()
+                .all(|decision| !matches!(decision, LeaderDecision::Tithe { food: 20, .. })),
+            "a tithe must not eat into the per-cat survival reserve"
+        );
+        snapshot.resources.food = 70.0;
+        assert!(
+            direct_colony(&snapshot)
+                .decisions
+                .iter()
+                .any(|decision| matches!(decision, LeaderDecision::Tithe { food: 20, .. })),
+            "reserve plus exact tithe cost must be sufficient"
+        );
+
+        // Tiny colonies use the absolute 20-food floor, not a dangerously small
+        // population multiple.
+        snapshot.population = 2;
+        snapshot.resources.food = 39.9;
+        assert!(
+            direct_colony(&snapshot)
+                .decisions
+                .iter()
+                .all(|decision| !matches!(decision, LeaderDecision::Tithe { food: 20, .. }))
+        );
+        snapshot.resources.food = 40.0;
+        assert!(
+            direct_colony(&snapshot)
+                .decisions
+                .iter()
+                .any(|decision| matches!(decision, LeaderDecision::Tithe { food: 20, .. }))
+        );
+    }
+
+    #[test]
     fn empty_officers_leave_direct_colony_byte_identical() {
         // Every TS-derived fixture carries no officers; clearing the (empty) map must
         // not shift the plan — the officer layer is inert until a role is filled.
         for case in fixture().direct_colony {
             let mut cleared = case.snapshot.clone();
             cleared.officers.clear();
-            assert_plan_eq(&direct_colony(&cleared), &case.expected, &case.name);
+            assert_plan_eq_ignoring_tithe(&direct_colony(&cleared), &case.expected, &case.name);
         }
     }
 
@@ -1877,38 +1942,37 @@ mod tests {
 
     #[test]
     fn offering_fires_on_a_genuine_materials_surplus() {
-        // Threshold at cap=100 is 100*0.6 + 30 = 90 (see OFFERING_MATERIALS_RATIO's
-        // doc comment for why this mirrors Tithe's shape rather than STORAGE_RATIO,
-        // which is unreachable against the 100-unit base materials cap).
+        // A 20-material build reserve plus the 10-material offering cost is the
+        // inclusive dispatch threshold, independent of storage capacity.
         let mut snapshot = founding_five_cat_snapshot();
-        snapshot.materials = 91.0;
+        snapshot.materials = 30.0;
         assert!(
             has_offering(&snapshot),
-            "91 materials against a 100 cap must clear the 90-unit surplus threshold"
+            "30 materials must pay the offering while retaining the 20-material reserve"
         );
     }
 
     #[test]
     fn no_offering_below_the_materials_surplus_threshold() {
         let mut snapshot = founding_five_cat_snapshot();
-        snapshot.materials = 90.0;
+        snapshot.materials = 29.9;
         assert!(
             !has_offering(&snapshot),
-            "materials at (not past) the threshold must not fire an offering"
+            "materials below reserve plus cost must not fire an offering"
         );
 
-        snapshot.materials = 40.0;
+        snapshot.materials_capacity = 10_000.0;
+        snapshot.materials = 30.0;
         assert!(
-            !has_offering(&snapshot),
-            "a colony with no genuine materials surplus must perform no offering \
-             (survival-protected: nothing is drawn to fund blessings)"
+            has_offering(&snapshot),
+            "the fixed reserve must remain reachable when storage capacity grows"
         );
     }
 
     #[test]
     fn no_duplicate_offering_while_one_is_already_in_flight() {
         let mut snapshot = founding_five_cat_snapshot();
-        snapshot.materials = 95.0;
+        snapshot.materials = 30.0;
         snapshot.offering_in_flight = Some(1);
         assert!(
             !has_offering(&snapshot),
@@ -1923,9 +1987,9 @@ mod tests {
         // resources into surplus simultaneously and prove each decision's payload
         // depends solely on its own resource pool, not the other's.
         let mut snapshot = founding_five_cat_snapshot();
-        snapshot.resources.food = 200.0; // food_capacity 200 * 0.6 + 20 = 140 -> tithes
+        snapshot.resources.food = 45.0; // five cats reserve 25 + 20 cost -> tithes
         snapshot.resources.refined = 5.0; // >= TITHE_REFINED_AMOUNT -> tithes too
-        snapshot.materials = 95.0; // > 90 -> offers
+        snapshot.materials = 30.0; // 20 reserve + 10 cost -> offers
 
         let plan = direct_colony(&snapshot);
         let tithe = plan
