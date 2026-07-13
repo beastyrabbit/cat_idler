@@ -44,6 +44,7 @@ const SNAPSHOT_CHANNEL_CAPACITY: usize = 32;
 const ACTION_LIMIT_MAX: usize = 30;
 const ACTION_LIMIT_WINDOW_MS: i64 = 10_000;
 const SAVE_EVERY_TICKS: u64 = 5;
+const TEST_ACTIONS_ENV: &str = "CAT_SERVER_ENABLE_TEST_ACTIONS";
 
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -55,6 +56,7 @@ struct AppState {
     online_count: Arc<AtomicU32>,
     rate_limiter: Arc<Mutex<RateLimiter>>,
     session_secret: Arc<String>,
+    allow_test_actions: bool,
 }
 
 #[tokio::main]
@@ -64,6 +66,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let conn = open_database_from_env()?;
     let session_secret = identity::session_secret_from_env()?;
     let state = build_state_from_connection(now_ms(), conn, session_secret)?;
+    if state.allow_test_actions {
+        warn!(
+            env = TEST_ACTIONS_ENV,
+            "development-only WebSocket test actions are enabled"
+        );
+    }
     spawn_tick_task(state.clone());
 
     let port = std::env::var("PORT")
@@ -113,10 +121,20 @@ fn build_state_from_connection(
     session_secret: String,
 ) -> rusqlite::Result<AppState> {
     let world = load_world(&conn)?.unwrap_or_else(|| starter_world(now_ms));
-    Ok(build_state_from_world(world, conn, session_secret))
+    Ok(build_state_from_world(
+        world,
+        conn,
+        session_secret,
+        test_actions_enabled(),
+    ))
 }
 
-fn build_state_from_world(world: WorldState, conn: Connection, session_secret: String) -> AppState {
+fn build_state_from_world(
+    world: WorldState,
+    conn: Connection,
+    session_secret: String,
+    allow_test_actions: bool,
+) -> AppState {
     let (snapshots, _) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
 
     AppState {
@@ -129,7 +147,22 @@ fn build_state_from_world(world: WorldState, conn: Connection, session_secret: S
             ACTION_LIMIT_WINDOW_MS,
         ))),
         session_secret: Arc::new(session_secret),
+        allow_test_actions,
     }
+}
+
+/// Enable deterministic automation actions only for an explicitly opted-in debug
+/// build. A release binary cannot expose them even if the environment is wrong.
+#[cfg(debug_assertions)]
+fn test_actions_enabled() -> bool {
+    std::env::var(TEST_ACTIONS_ENV)
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(debug_assertions))]
+fn test_actions_enabled() -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -140,6 +173,7 @@ fn build_state(now_ms: i64) -> AppState {
         starter_world(now_ms),
         conn,
         "test-session-secret".to_owned(),
+        false,
     )
 }
 
@@ -214,11 +248,11 @@ async fn save_current_world(state: &AppState) -> rusqlite::Result<()> {
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
-    let session_id = format!("ws-{connection_id}");
+    let mut connection = ConnectionContext::new(format!("ws-{connection_id}"));
     let online_count = state.online_count.fetch_add(1, Ordering::SeqCst) + 1;
     let mut snapshots = state.snapshots.subscribe();
 
-    if send_current_snapshot(&mut socket, &state, online_count)
+    if send_current_snapshot(&mut socket, &state, online_count, &connection.colony_id)
         .await
         .is_err()
     {
@@ -231,6 +265,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             snapshot = snapshots.recv() => {
                 match snapshot {
                     Ok(snapshot) => {
+                        let snapshot = prioritize_colony(snapshot, &connection.colony_id);
                         if send_snapshot(&mut socket, &snapshot).await.is_err() {
                             break;
                         }
@@ -244,7 +279,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             message = socket.recv() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        let result = handle_client_text(&state, &session_id, text.as_str()).await;
+                        let result = handle_client_text(&state, &mut connection, text.as_str()).await;
                         if send_action_result(&mut socket, &result).await.is_err() {
                             break;
                         }
@@ -272,13 +307,52 @@ async fn send_current_snapshot(
     socket: &mut WebSocket,
     state: &AppState,
     online_count: u32,
+    colony_id: &str,
 ) -> Result<(), axum::Error> {
     let now = now_ms();
     let snapshot = {
         let world = state.world.lock().await;
-        build_snapshot(&world, now, online_count)
+        prioritize_colony(build_snapshot(&world, now, online_count), colony_id)
     };
     send_snapshot(socket, &snapshot).await
+}
+
+/// Keep the socket-selected colony first because the current client renders the
+/// first colony while retaining the complete shared-world snapshot for world-map
+/// features.
+fn prioritize_colony(mut snapshot: WorldSnapshot, colony_id: &str) -> WorldSnapshot {
+    if let Some(index) = snapshot
+        .colonies
+        .iter()
+        .position(|colony| colony.id == colony_id)
+    {
+        snapshot.colonies.swap(0, index);
+    }
+    snapshot
+}
+
+#[derive(Debug)]
+struct ConnectionContext {
+    limiter_fallback: String,
+    identity: Option<SignedSession>,
+    colony_id: String,
+}
+
+impl ConnectionContext {
+    fn new(limiter_fallback: String) -> Self {
+        Self {
+            limiter_fallback,
+            identity: None,
+            colony_id: STARTER_COLONY_ID.to_owned(),
+        }
+    }
+
+    fn limiter_key(&self) -> String {
+        self.identity.as_ref().map_or_else(
+            || format!("ip:{}", self.limiter_fallback),
+            |identity| format!("s:{}", identity.session_id),
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,7 +408,7 @@ impl ServerActionResult {
 
 async fn handle_client_text(
     state: &AppState,
-    connection_session_id: &str,
+    connection: &mut ConnectionContext,
     text: &str,
 ) -> ServerActionResult {
     let Ok(action) = serde_json::from_str::<ClientAction>(text) else {
@@ -342,11 +416,7 @@ async fn handle_client_text(
     };
 
     let now = now_ms();
-    let limiter_key = rate_limiter_key(
-        &action,
-        state.session_secret.as_str(),
-        connection_session_id,
-    );
+    let limiter_key = connection.limiter_key();
     {
         let mut limiter = state.rate_limiter.lock().await;
         limiter.prune(now);
@@ -355,69 +425,111 @@ async fn handle_client_text(
         }
     }
 
-    if let ClientAction::Presence {
-        session_id, sig, ..
-    } = &action
-    {
-        let signed = if verify_session(session_id, sig.as_deref(), state.session_secret.as_str()) {
-            signed_session(session_id.clone(), state.session_secret.as_str())
+    let authentication = action_authentication(&action);
+    if let ActionAuthentication::Presence { session_id, sig } = authentication {
+        let signed = if verify_session(session_id, sig, state.session_secret.as_str()) {
+            signed_session(session_id.to_owned(), state.session_secret.as_str())
         } else {
             issue_session(state.session_secret.as_str(), now)
         };
+        if connection
+            .identity
+            .as_ref()
+            .is_some_and(|identity| identity.session_id != signed.session_id)
+        {
+            connection.colony_id = STARTER_COLONY_ID.to_owned();
+        }
+        connection.identity = Some(signed.clone());
         return ServerActionResult::ok().with_signed_session(signed);
     }
 
-    let identity = match verified_identity(&action, state.session_secret.as_str()) {
-        Ok(identity) => identity,
-        Err(message) => return ServerActionResult::fail(message),
+    let Some(identity) = connection.identity.clone() else {
+        return ServerActionResult::fail(
+            "Authenticate with presence before sending actions.".to_owned(),
+        );
     };
-    let ctx_session_id = identity.as_ref().map_or_else(
-        || action_session_id(&action, connection_session_id),
-        |identity| identity.session_id.clone(),
-    );
-    let player_id = identity
-        .as_ref()
-        .map_or_else(String::new, |identity| identity.player_id.clone());
+
+    match authentication {
+        ActionAuthentication::Presence { .. } => unreachable!("handled above"),
+        ActionAuthentication::Signed { session_id, sig } => {
+            if session_id != identity.session_id
+                || !verify_session(session_id, Some(sig), state.session_secret.as_str())
+            {
+                return ServerActionResult::fail(
+                    "Session signature missing or invalid. Refresh to re-establish your session."
+                        .to_owned(),
+                );
+            }
+        }
+        ActionAuthentication::SessionBound { session_id } => {
+            if session_id != identity.session_id {
+                return ServerActionResult::fail(
+                    "Action session does not match this connection.".to_owned(),
+                );
+            }
+        }
+        ActionAuthentication::TestOnly => {
+            if !state.allow_test_actions {
+                return ServerActionResult::fail(
+                    "Test actions are disabled on this server.".to_owned(),
+                );
+            }
+        }
+    }
 
     let ctx = ActionCtx {
-        session_id: ctx_session_id,
-        player_id,
+        session_id: identity.session_id,
+        player_id: identity.player_id,
+        colony_id: connection.colony_id.clone(),
         now_ms: now,
     };
 
     let mut world = state.world.lock().await;
-    ServerActionResult::from_result(apply_action(&mut world, &action, &ctx))
-}
-
-fn rate_limiter_key(action: &ClientAction, secret: &str, fallback: &str) -> String {
-    if let Some((session_id, sig)) = action_identity_fields(action)
-        && verify_session(session_id, sig, secret)
-    {
-        return format!("s:{session_id}");
+    let result = apply_action(&mut world, &action, &ctx);
+    if result.ok {
+        match &action {
+            ClientAction::FoundVillage { .. } => {
+                if let Some(colony) = world.colonies.last() {
+                    connection.colony_id.clone_from(&colony.id);
+                }
+            }
+            ClientAction::JoinVillage { colony_id, .. } => {
+                connection.colony_id.clone_from(colony_id);
+            }
+            _ => {}
+        }
     }
-
-    format!("ip:{fallback}")
+    ServerActionResult::from_result(result)
 }
 
-fn verified_identity(action: &ClientAction, secret: &str) -> Result<Option<SignedSession>, String> {
-    let Some((session_id, sig)) = action_identity_fields(action) else {
-        return Ok(None);
-    };
-    if verify_session(session_id, sig, secret) {
-        Ok(Some(signed_session(session_id.to_owned(), secret)))
-    } else {
-        Err(
-            "Session signature missing or invalid. Refresh to re-establish your session."
-                .to_owned(),
-        )
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionAuthentication<'a> {
+    Presence {
+        session_id: &'a str,
+        sig: Option<&'a str>,
+    },
+    Signed {
+        session_id: &'a str,
+        sig: &'a str,
+    },
+    /// Found/join predate per-action signatures. They are accepted only after a
+    /// signed Presence handshake and only for that exact socket-bound session.
+    SessionBound {
+        session_id: &'a str,
+    },
+    TestOnly,
 }
 
-fn action_identity_fields(action: &ClientAction) -> Option<(&str, Option<&str>)> {
+/// Exhaustive authentication policy. Adding a protocol action is a compile error
+/// until its production authentication class is chosen deliberately.
+fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
     match action {
         ClientAction::Presence {
             session_id, sig, ..
-        } => Some((session_id, sig.as_deref())),
+        } => ActionAuthentication::Presence {
+            session_id,
+            sig: sig.as_deref(),
+        },
         ClientAction::RequestJob {
             session_id, sig, ..
         }
@@ -465,16 +577,33 @@ fn action_identity_fields(action: &ClientAction) -> Option<(&str, Option<&str>)>
         }
         | ClientAction::BoostCat {
             session_id, sig, ..
-        } => Some((session_id, Some(sig))),
-        _ => None,
-    }
-}
-
-fn action_session_id(action: &ClientAction, fallback: &str) -> String {
-    match action {
+        }
+        | ClientAction::AssignOfficer {
+            session_id, sig, ..
+        }
+        | ClientAction::UnassignOfficer {
+            session_id, sig, ..
+        }
+        | ClientAction::DesignateStockpile {
+            session_id, sig, ..
+        }
+        | ClientAction::RemoveStockpile {
+            session_id, sig, ..
+        }
+        | ClientAction::DesignateGatherSpot {
+            session_id, sig, ..
+        }
+        | ClientAction::RemoveGatherSpot {
+            session_id, sig, ..
+        } => ActionAuthentication::Signed { session_id, sig },
         ClientAction::FoundVillage { session_id, .. }
-        | ClientAction::JoinVillage { session_id, .. } => session_id.clone(),
-        _ => fallback.to_owned(),
+        | ClientAction::JoinVillage { session_id, .. } => {
+            ActionAuthentication::SessionBound { session_id }
+        }
+        ClientAction::Ensure
+        | ClientAction::SetTestAcceleration { .. }
+        | ClientAction::AdvanceTime { .. }
+        | ClientAction::SetTestRngSeed { .. } => ActionAuthentication::TestOnly,
     }
 }
 
@@ -519,7 +648,23 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cat_protocol::ClientAction;
+    use cat_protocol::{AccelerationPreset, ClientAction, OfficerRole, ResourceKind, TilePoint};
+
+    fn authenticated_connection(state: &AppState) -> (ConnectionContext, SignedSession) {
+        let signed = signed_session("session-1".to_owned(), state.session_secret.as_str());
+        let mut connection = ConnectionContext::new("test-connection".to_owned());
+        connection.identity = Some(signed.clone());
+        (connection, signed)
+    }
+
+    async fn send_action(
+        state: &AppState,
+        connection: &mut ConnectionContext,
+        action: &ClientAction,
+    ) -> ServerActionResult {
+        let encoded = serde_json::to_string(action).expect("serialize action");
+        handle_client_text(state, connection, &encoded).await
+    }
 
     #[tokio::test]
     async fn found_village_action_updates_shared_snapshot() {
@@ -531,6 +676,7 @@ mod tests {
         let ctx = ActionCtx {
             session_id: "session-1".to_owned(),
             player_id: String::new(),
+            colony_id: STARTER_COLONY_ID.to_owned(),
             now_ms: 1_000_000,
         };
 
@@ -561,5 +707,200 @@ mod tests {
         let decoded: ClientAction = serde_json::from_str(&encoded).expect("deserialize action");
 
         assert_eq!(decoded, action);
+    }
+
+    #[tokio::test]
+    async fn actions_require_a_socket_bound_presence_identity() {
+        let state = build_state(1_000_000);
+        let mut connection = ConnectionContext::new("connection-a".to_owned());
+        let signed = signed_session("session-1".to_owned(), state.session_secret.as_str());
+        let cat_id = state.world.lock().await.colonies[0].cats[0].id.clone();
+        let action = ClientAction::AssignOfficer {
+            session_id: signed.session_id,
+            nickname: "Tester".to_owned(),
+            sig: signed.sig,
+            role: OfficerRole::Farmer,
+            cat_id,
+        };
+
+        let result = send_action(&state, &mut connection, &action).await;
+
+        assert!(!result.result.ok);
+        assert!(
+            result
+                .result
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("presence"))
+        );
+        assert!(state.world.lock().await.colonies[0].officers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn legacy_found_action_must_match_the_authenticated_socket_session() {
+        let state = build_state(1_000_000);
+        let (mut connection, _) = authenticated_connection(&state);
+        let action = ClientAction::FoundVillage {
+            name: "Intruder Hollow".to_owned(),
+            session_id: "different-session".to_owned(),
+        };
+
+        let result = send_action(&state, &mut connection, &action).await;
+
+        assert!(!result.result.ok);
+        assert_eq!(state.world.lock().await.colonies.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn newer_officer_and_designation_actions_cannot_bypass_hmac() {
+        let state = build_state(1_000_000);
+        let (mut connection, signed) = authenticated_connection(&state);
+        let cat_id = state.world.lock().await.colonies[0].cats[0].id.clone();
+        let actions = [
+            ClientAction::AssignOfficer {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                role: OfficerRole::Farmer,
+                cat_id,
+            },
+            ClientAction::UnassignOfficer {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                role: OfficerRole::Farmer,
+            },
+            ClientAction::DesignateStockpile {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                a: TilePoint { x: 6, y: 6 },
+                b: TilePoint { x: 7, y: 7 },
+                accepts: vec![ResourceKind::Food],
+            },
+            ClientAction::RemoveStockpile {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                stockpile_id: "stockpile-1".to_owned(),
+            },
+            ClientAction::DesignateGatherSpot {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                a: TilePoint { x: 8, y: 8 },
+                b: TilePoint { x: 8, y: 8 },
+                kind: ResourceKind::Materials,
+            },
+            ClientAction::RemoveGatherSpot {
+                session_id: signed.session_id,
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                stockpile_id: "gather-1".to_owned(),
+            },
+        ];
+
+        for action in actions {
+            let result = send_action(&state, &mut connection, &action).await;
+            assert!(!result.result.ok, "unsigned {action:?} was accepted");
+            assert!(
+                result
+                    .result
+                    .message
+                    .as_deref()
+                    .is_some_and(|message| message.contains("signature")),
+                "unexpected rejection for {action:?}: {result:?}"
+            );
+        }
+
+        let world = state.world.lock().await;
+        assert!(world.colonies[0].officers.is_empty());
+        assert_eq!(world.colonies[0].stockpiles.len(), 1);
+        assert!(world.colonies[0].gather_spots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn authenticated_join_routes_mutations_and_snapshots_to_selected_colony() {
+        let state = build_state(1_000_000);
+        {
+            let mut world = state.world.lock().await;
+            let world_seed = world.world_seed;
+            world
+                .colonies
+                .push(found_colony(world_seed, "beta", 1_000_000, 22));
+        }
+        let (mut connection, signed) = authenticated_connection(&state);
+        let join = ClientAction::JoinVillage {
+            colony_id: "beta".to_owned(),
+            session_id: signed.session_id.clone(),
+        };
+        assert!(send_action(&state, &mut connection, &join).await.result.ok);
+        assert_eq!(connection.colony_id, "beta");
+
+        let beta_cat_id = state.world.lock().await.colonies[1].cats[0].id.clone();
+        let assign = ClientAction::AssignOfficer {
+            session_id: signed.session_id,
+            nickname: "Tester".to_owned(),
+            sig: signed.sig,
+            role: OfficerRole::Farmer,
+            cat_id: beta_cat_id.clone(),
+        };
+        assert!(
+            send_action(&state, &mut connection, &assign)
+                .await
+                .result
+                .ok
+        );
+
+        let world = state.world.lock().await;
+        assert!(world.colonies[0].officers.is_empty());
+        assert_eq!(
+            world.colonies[1]
+                .officers
+                .get(&cat_sim::officers::OfficerRole::Farmer),
+            Some(&beta_cat_id)
+        );
+        let snapshot = prioritize_colony(build_snapshot(&world, 1_000_000, 1), "beta");
+        assert_eq!(snapshot.colonies[0].id, "beta");
+    }
+
+    #[tokio::test]
+    async fn test_actions_need_authentication_and_explicit_debug_opt_in() {
+        let state = build_state(1_000_000);
+        let (mut connection, _) = authenticated_connection(&state);
+        let before = state.world.lock().await.clone();
+        let actions = [
+            ClientAction::Ensure,
+            ClientAction::SetTestAcceleration {
+                preset: AccelerationPreset::Ludicrous,
+            },
+            ClientAction::AdvanceTime { seconds: 60 },
+            ClientAction::SetTestRngSeed { seed: Some(9) },
+        ];
+
+        for action in actions {
+            let result = send_action(&state, &mut connection, &action).await;
+            assert!(!result.result.ok, "production accepted {action:?}");
+            assert_eq!(
+                result.result.message.as_deref(),
+                Some("Test actions are disabled on this server.")
+            );
+        }
+        assert_eq!(*state.world.lock().await, before);
+
+        let mut dev_state = build_state(1_000_000);
+        dev_state.allow_test_actions = true;
+        let (mut dev_connection, _) = authenticated_connection(&dev_state);
+        let result = send_action(
+            &dev_state,
+            &mut dev_connection,
+            &ClientAction::SetTestRngSeed { seed: Some(9) },
+        )
+        .await;
+        assert!(result.result.ok);
+        assert_eq!(
+            dev_state.world.lock().await.colonies[0].test_rng_seed,
+            Some(9)
+        );
     }
 }

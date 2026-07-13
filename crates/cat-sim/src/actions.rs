@@ -52,6 +52,9 @@ const UPGRADE_DEFAULTS: [(UpgradeKey, u32, u32); 6] = [
 pub struct ActionCtx {
     pub session_id: String,
     pub player_id: String,
+    /// Colony selected by the authenticated server connection. Mutating actions
+    /// must never infer this from world order in a multi-colony world.
+    pub colony_id: String,
     pub now_ms: i64,
 }
 
@@ -224,8 +227,14 @@ fn with_colony(
     ctx: &ActionCtx,
     f: impl FnOnce(&mut ColonyRuntime) -> proto::ActionResult,
 ) -> proto::ActionResult {
-    ensure_colony(world, ctx.now_ms);
-    f(&mut world.colonies[0])
+    let Some(colony) = world
+        .colonies
+        .iter_mut()
+        .find(|colony| colony.id == ctx.colony_id)
+    else {
+        return fail("Village not found.");
+    };
+    f(colony)
 }
 
 fn ensure_colony(world: &mut WorldState, now_ms: i64) {
@@ -2281,6 +2290,7 @@ mod tests {
         ActionCtx {
             session_id: "sess_1".to_string(),
             player_id: "player_1".to_string(),
+            colony_id: "c1".to_string(),
             now_ms: 1_000_000,
         }
     }
@@ -2330,6 +2340,34 @@ mod tests {
         assert!(
             !world.colonies[0].cats.is_empty(),
             "founded colony should have starter cats"
+        );
+    }
+
+    #[test]
+    fn action_context_routes_mutations_to_the_selected_colony() {
+        let mut world = world_with_one_colony();
+        let world_seed = world.world_seed;
+        world
+            .colonies
+            .push(found_colony(world_seed, "c2", 1_000_000, 5678));
+        let cat_id = world.colonies[1].cats[0].id.clone();
+        let mut selected_ctx = ctx();
+        selected_ctx.colony_id = "c2".to_owned();
+        let action = proto::ClientAction::AssignOfficer {
+            session_id: selected_ctx.session_id.clone(),
+            nickname: "Tester".to_owned(),
+            sig: "server-verified".to_owned(),
+            role: proto::OfficerRole::Farmer,
+            cat_id: cat_id.clone(),
+        };
+
+        let result = apply_action(&mut world, &action, &selected_ctx);
+
+        assert!(result.ok, "{result:?}");
+        assert!(world.colonies[0].officers.is_empty());
+        assert_eq!(
+            world.colonies[1].officers.get(&OfficerRole::Farmer),
+            Some(&cat_id)
         );
     }
 

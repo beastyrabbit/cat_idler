@@ -1548,6 +1548,7 @@ mod tests {
             &cat_sim::actions::ActionCtx {
                 session_id: "session-1".to_owned(),
                 player_id: "player-1".to_owned(),
+                colony_id: "colony-1".to_owned(),
                 now_ms: 1_000_000,
             },
         );

@@ -5551,6 +5551,10 @@ fn handle_buttons(
 }
 
 fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction> {
+    if !session.ready {
+        warn!("session not ready; dropping action");
+        return None;
+    }
     let kind = match action {
         ButtonAction::SupplyFood => JobKind::SupplyFood,
         ButtonAction::SupplyWater => JobKind::SupplyWater,
@@ -5558,18 +5562,10 @@ fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction>
         ButtonAction::FoundVillage => {
             return Some(ClientAction::FoundVillage {
                 name: "Forest Hollow".to_string(),
-                session_id: if session.session_id.is_empty() {
-                    "desktop".to_string()
-                } else {
-                    session.session_id.clone()
-                },
+                session_id: session.session_id.clone(),
             });
         }
     };
-    if !session.ready {
-        warn!("session not ready; dropping action");
-        return None;
-    }
     Some(ClientAction::RequestJob {
         session_id: session.session_id.clone(),
         nickname: "Desktop Cat".to_string(),
@@ -6157,6 +6153,25 @@ mod tests {
     use super::*;
     use cat_protocol::{CatStats, MapName, MapPosition, WorldSnapshot};
     use cat_sim::terrain_gen::BiomeRole;
+
+    #[test]
+    fn founding_a_village_waits_for_and_uses_the_signed_session() {
+        assert!(build_action(ButtonAction::FoundVillage, &Session::default()).is_none());
+
+        let session = Session {
+            session_id: "signed-session".to_owned(),
+            sig: "signed".to_owned(),
+            presence_sent: true,
+            ready: true,
+        };
+        assert_eq!(
+            build_action(ButtonAction::FoundVillage, &session),
+            Some(ClientAction::FoundVillage {
+                name: "Forest Hollow".to_owned(),
+                session_id: "signed-session".to_owned(),
+            })
+        );
+    }
 
     fn census_cat(age_hours: f64, spec: Option<Specialization>, boosted: bool) -> CatSnapshot {
         CatSnapshot {

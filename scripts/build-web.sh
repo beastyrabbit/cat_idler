@@ -10,7 +10,7 @@
 # Usage:
 #   scripts/build-web.sh                 # release bundle -> crates/cat-web/dist/
 #   scripts/build-web.sh --serve         # bundle + live-serve on http://127.0.0.1:8080
-#   CAT_SERVER_URL=ws://host:8787/ws scripts/build-web.sh   # bake a non-default WS URL
+#   CAT_SERVER_URL=wss://api.example/ws scripts/build-web.sh # bake a non-default WS URL
 #
 # Requires: `trunk` (cargo install trunk), the wasm32 target
 # (rustup target add wasm32-unknown-unknown), and — for the -Oz size pass that
@@ -21,19 +21,25 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../crates/cat-web"
 
-# Default the baked WS URL to the local dev server; omit CAT_SERVER_URL entirely
-# for a same-origin deploy where the client derives ws(s)://<host>/ws from the
-# page location.
-: "${CAT_SERVER_URL:=ws://127.0.0.1:8787/ws}"
-export CAT_SERVER_URL
-
 if [[ "${1:-}" == "--serve" ]]; then
+  # `trunk serve` and cat-server use different local ports, so the development
+  # server needs an explicit cross-port URL unless the caller supplied one.
+  : "${CAT_SERVER_URL:=ws://127.0.0.1:8787/ws}"
+  export CAT_SERVER_URL
   echo "Serving browser client on http://127.0.0.1:8080 (CAT_SERVER_URL=$CAT_SERVER_URL)"
   echo "Run 'cargo run -p cat-server' in another terminal for a live colony."
   exec trunk serve --release --port 8080
 fi
 
-echo "Building release WASM bundle (CAT_SERVER_URL=$CAT_SERVER_URL) ..."
+# A release bundle defaults to same-origin ws(s)://<page-host>/ws. In particular,
+# do not silently bake localhost into an artifact intended for deployment.
+if [[ -n "${CAT_SERVER_URL:-}" ]]; then
+  export CAT_SERVER_URL
+  echo "Building release WASM bundle (CAT_SERVER_URL=$CAT_SERVER_URL) ..."
+else
+  unset CAT_SERVER_URL
+  echo "Building release WASM bundle (same-origin WebSocket /ws) ..."
+fi
 trunk build --release
 echo "Bundle written to crates/cat-web/dist/ :"
 ls -lh dist/
