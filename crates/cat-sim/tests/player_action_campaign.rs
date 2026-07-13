@@ -63,6 +63,7 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::Ensure => "ensure",
         proto::ClientAction::Presence { .. } => "presence",
         proto::ClientAction::RequestJob { .. } => "request_job",
+        proto::ClientAction::DispatchScout { .. } => "dispatch_scout",
         proto::ClientAction::Boost { .. } => "boost",
         proto::ClientAction::PurchaseUpgrade { .. } => "purchase_upgrade",
         proto::ClientAction::CastVote { .. } => "cast_vote",

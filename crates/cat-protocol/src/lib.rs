@@ -39,8 +39,8 @@ pub struct ColonySnapshot {
     pub raiders: Vec<RaiderSnapshot>,
     pub buildings: Vec<BuildingSnapshot>,
     pub claimed_tiles: Vec<TilePoint>,
-    /// Fog-of-war: world tiles the colony has revealed (the founding village area plus
-    /// wherever cats have walked). The client draws fog over any tile NOT in this set.
+    /// Permanent fog-of-war knowledge: the founding village area plus discoveries that
+    /// scouts have delivered at the shrine. The client fogs every tile outside this set.
     /// Additive since P15; empty/absent for pre-fog snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub revealed_tiles: Vec<TilePoint>,
@@ -781,6 +781,30 @@ pub struct TilePoint {
     pub y: i32,
 }
 
+/// A resource the player or colony leader can ask a scout to locate.
+///
+/// Kept deliberately separate from [`ResourceKind`]: scouting targets terrain
+/// knowledge (a tree, forage, spring, or workable stone), not an amount already
+/// held in a stockpile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScoutResource {
+    Wood,
+    Food,
+    Water,
+    Stone,
+}
+
+/// The purpose of a scout excursion. General exploration advances the nearest
+/// reachable fog frontier; a resource mission picks the nearest useful,
+/// unrevealed terrain target with deterministic tie-breaking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "resource", rename_all = "camelCase")]
+pub enum ScoutMission {
+    Explore,
+    Resource(ScoutResource),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatePlacement {
@@ -816,6 +840,12 @@ pub enum ClientAction {
         nickname: String,
         sig: String,
         kind: JobKind,
+    },
+    DispatchScout {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        mission: ScoutMission,
     },
     Boost {
         session_id: String,
@@ -1053,6 +1083,47 @@ mod tests {
 
         let decoded: ClientAction = serde_json::from_value(encoded).expect("deserialize action");
         assert_eq!(decoded, action);
+    }
+
+    #[test]
+    fn scout_actions_are_typed_and_round_trip_for_both_mission_shapes() {
+        let cases = [
+            (
+                ScoutMission::Explore,
+                json!({
+                    "action": "dispatchScout",
+                    "sessionId": "session_1",
+                    "nickname": "Guest Cat",
+                    "sig": "signed",
+                    "mission": { "kind": "explore" }
+                }),
+            ),
+            (
+                ScoutMission::Resource(ScoutResource::Wood),
+                json!({
+                    "action": "dispatchScout",
+                    "sessionId": "session_1",
+                    "nickname": "Guest Cat",
+                    "sig": "signed",
+                    "mission": { "kind": "resource", "resource": "wood" }
+                }),
+            ),
+        ];
+
+        for (mission, expected) in cases {
+            let action = ClientAction::DispatchScout {
+                session_id: "session_1".to_owned(),
+                nickname: "Guest Cat".to_owned(),
+                sig: "signed".to_owned(),
+                mission,
+            };
+            let encoded = serde_json::to_value(&action).expect("serialize scout action");
+            assert_eq!(encoded, expected);
+            assert_eq!(
+                serde_json::from_value::<ClientAction>(encoded).expect("deserialize scout action"),
+                action
+            );
+        }
     }
 
     #[test]

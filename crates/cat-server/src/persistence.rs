@@ -1,7 +1,10 @@
 //! SQLite persistence for `cat-server`, mirroring the relevant tables from
 //! `db/schema.ts`.
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use cat_sim::{
     biomes::MaxResources,
@@ -18,7 +21,7 @@ use cat_sim::{
     world_tick::{
         BuildingRuntime, ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime,
         EventKind, EventLog, JobMetadata, JobRequester, JobRuntime, RaiderRuntime, TilePos,
-        VoteRuntime, WorldState, WorldTileRuntime, ZoneRuntime,
+        VoteRuntime, WorldState, WorldTileRuntime, ZoneRuntime, founding_revealed_tiles,
     },
     zones::{ZoneKind, ZoneRect},
 };
@@ -74,6 +77,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             criticalSince INTEGER,
             claimedTiles TEXT,
             revealedTiles TEXT,
+            provisionalTiles TEXT,
             threatPressure REAL,
             lastRaidAt INTEGER,
             activeRaidId TEXT,
@@ -255,6 +259,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "gatherSpots", "TEXT"),
         ("colonies", "stockLedger", "TEXT"),
         ("colonies", "revealedTiles", "TEXT"),
+        ("colonies", "provisionalTiles", "TEXT"),
         ("colonies", "coin", "REAL"),
         ("colonies", "items", "TEXT"),
         ("colonies", "woodCraftProgress", "REAL"),
@@ -330,7 +335,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
         "SELECT id, name, leaderId, status, resources, createdAt, lastTick,
                 worldSeed, runNumber, runStartedAt, lastPlayerActivityAt,
                 automationTier, globalUpgradePoints, upgradeTree, upgradeLevels,
-                ritualRequestedAt, criticalSince, claimedTiles, revealedTiles,
+                ritualRequestedAt, criticalSince, claimedTiles, revealedTiles, provisionalTiles,
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, farms, gatherSpots,
@@ -357,7 +362,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             id, name, leaderId, status, resources, createdAt, lastTick, worldSeed,
             runNumber, runStartedAt, lastPlayerActivityAt, automationTier,
             globalUpgradePoints, upgradeTree, upgradeLevels, ritualRequestedAt,
-            criticalSince, claimedTiles, revealedTiles, threatPressure, lastRaidAt,
+            criticalSince, claimedTiles, revealedTiles, provisionalTiles, threatPressure, lastRaidAt,
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
             stockpiles, farms, gatherSpots, stockLedger, coin, items, woodCraftProgress,
@@ -366,7 +371,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42
+            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43
         )",
         params![
             colony.id,
@@ -388,6 +393,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.critical_since,
             tile_list_json(&colony.claimed_tiles),
             tile_list_json(&colony.revealed_tiles.iter().copied().collect::<Vec<_>>()),
+            provisional_tiles_json(&colony.provisional_tiles),
             colony.threat_pressure,
             colony.last_raid_at,
             colony.active_raid,
@@ -452,12 +458,25 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let upgrade_levels_json: Option<String> = row.get("upgradeLevels")?;
     let claimed_tiles_json: Option<String> = row.get("claimedTiles")?;
     let revealed_tiles_json: Option<String> = row.get("revealedTiles")?;
+    let provisional_tiles_json: Option<String> = row.get("provisionalTiles")?;
     let officers_json: Option<String> = row.get("officers")?;
     let stockpiles_json: Option<String> = row.get("stockpiles")?;
     let farms_json: Option<String> = row.get("farms")?;
     let gather_spots_json: Option<String> = row.get("gatherSpots")?;
     let stock_ledger_json: Option<String> = row.get("stockLedger")?;
     let items_json: Option<String> = row.get("items")?;
+    let anchor = TilePos {
+        x: row.get::<_, Option<i32>>("anchorX")?.unwrap_or(6),
+        y: row.get::<_, Option<i32>>("anchorY")?.unwrap_or(6),
+    };
+    let claimed_tiles = parse_tile_list(claimed_tiles_json.as_deref())?;
+    let revealed_tiles = if revealed_tiles_json.is_some() {
+        parse_tile_list(revealed_tiles_json.as_deref())?
+            .into_iter()
+            .collect()
+    } else {
+        founding_revealed_tiles(anchor, &claimed_tiles)
+    };
 
     Ok(ColonyRuntime {
         id: id.clone(),
@@ -485,18 +504,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         // A colony persisted before the multi-village anchor column is colony 0 on the
         // canonical anchor (6, 6) == `village_layout::VILLAGE_ANCHOR`, so a NULL restores
         // there and keeps the single-colony game byte-identical.
-        anchor: TilePos {
-            x: row.get::<_, Option<i32>>("anchorX")?.unwrap_or(6),
-            y: row.get::<_, Option<i32>>("anchorY")?.unwrap_or(6),
-        },
-        claimed_tiles: parse_tile_list(claimed_tiles_json.as_deref())?,
-        revealed_tiles: parse_tile_list(revealed_tiles_json.as_deref())?
-            .into_iter()
-            .collect(),
-        // P15: a scout's in-flight tentative reveal isn't persisted (like `trader`/
-        // `items` above) — a restarted server just drops any not-yet-delivered
-        // provisional fog; the scout resumes and re-reveals it on its way home.
-        provisional_tiles: BTreeMap::new(),
+        anchor,
+        claimed_tiles,
+        revealed_tiles,
+        provisional_tiles: parse_provisional_tiles(provisional_tiles_json.as_deref())?,
         officers: officers_json
             .map(|raw| {
                 serde_json::from_str::<BTreeMap<OfficerRole, String>>(&raw).map_err(from_sql_json)
@@ -1153,6 +1164,46 @@ fn tile_list_json(tiles: &[TilePos]) -> String {
     Value::Array(tiles.iter().map(tile_pos_json).collect()).to_string()
 }
 
+fn provisional_tiles_json(tiles_by_scout: &BTreeMap<String, BTreeSet<TilePos>>) -> String {
+    Value::Object(
+        tiles_by_scout
+            .iter()
+            .map(|(scout_id, tiles)| {
+                (
+                    scout_id.clone(),
+                    Value::Array(tiles.iter().map(tile_pos_json).collect()),
+                )
+            })
+            .collect(),
+    )
+    .to_string()
+}
+
+fn parse_provisional_tiles(
+    raw: Option<&str>,
+) -> rusqlite::Result<BTreeMap<String, BTreeSet<TilePos>>> {
+    let Some(raw) = raw else {
+        return Ok(BTreeMap::new());
+    };
+    let value: Value = serde_json::from_str(raw).map_err(from_sql_json)?;
+    let Some(entries) = value.as_object() else {
+        return Ok(BTreeMap::new());
+    };
+    entries
+        .iter()
+        .map(|(scout_id, tiles)| {
+            let items = tiles
+                .as_array()
+                .ok_or_else(|| invalid_json(format!("scout notebook {scout_id} is not a list")))?;
+            let tiles = items
+                .iter()
+                .map(parse_tile_pos_value)
+                .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+            Ok((scout_id.clone(), tiles))
+        })
+        .collect()
+}
+
 fn parse_tile_list(raw: Option<&str>) -> rusqlite::Result<Vec<TilePos>> {
     let Some(raw) = raw else {
         return Ok(Vec::new());
@@ -1274,6 +1325,20 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
             "site": site.as_ref().map(tile_pos_json),
             "accepted": accepted,
         }),
+        JobMetadata::Scout {
+            mission,
+            target,
+            destination,
+            accepted,
+            found,
+        } => json!({
+            "kind": "scout",
+            "mission": scout_mission_str(*mission),
+            "target": target.as_ref().map(tile_pos_json),
+            "destination": destination.as_ref().map(tile_pos_json),
+            "accepted": accepted,
+            "found": found,
+        }),
     }
 }
 
@@ -1354,7 +1419,52 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         }),
+        Some("scout") => Ok(JobMetadata::Scout {
+            mission: parse_scout_mission(
+                value
+                    .get("mission")
+                    .and_then(Value::as_str)
+                    .unwrap_or("explore"),
+            ),
+            target: value
+                .get("target")
+                .filter(|target| !target.is_null())
+                .map(parse_tile_pos_value)
+                .transpose()?,
+            destination: value
+                .get("destination")
+                .filter(|destination| !destination.is_null())
+                .map(parse_tile_pos_value)
+                .transpose()?,
+            accepted: value
+                .get("accepted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            found: value.get("found").and_then(Value::as_bool).unwrap_or(false),
+        }),
         _ => Ok(JobMetadata::None),
+    }
+}
+
+fn scout_mission_str(mission: cat_sim::world_tick::ScoutMission) -> &'static str {
+    use cat_sim::world_tick::{ScoutMission, ScoutResource};
+    match mission {
+        ScoutMission::Explore => "explore",
+        ScoutMission::Resource(ScoutResource::Wood) => "wood",
+        ScoutMission::Resource(ScoutResource::Food) => "food",
+        ScoutMission::Resource(ScoutResource::Water) => "water",
+        ScoutMission::Resource(ScoutResource::Stone) => "stone",
+    }
+}
+
+fn parse_scout_mission(raw: &str) -> cat_sim::world_tick::ScoutMission {
+    use cat_sim::world_tick::{ScoutMission, ScoutResource};
+    match raw {
+        "wood" => ScoutMission::Resource(ScoutResource::Wood),
+        "food" => ScoutMission::Resource(ScoutResource::Food),
+        "water" => ScoutMission::Resource(ScoutResource::Water),
+        "stone" => ScoutMission::Resource(ScoutResource::Stone),
+        _ => ScoutMission::Explore,
     }
 }
 
@@ -1484,10 +1594,116 @@ mod tests {
     use cat_protocol::{ClientAction, JobKind as ProtoJobKind};
     use cat_sim::{
         actions::apply_action,
-        world_tick::{RaidPhase, found_colony, found_colony_at, new_world},
+        world_tick::{
+            RaidPhase, ScoutMission, ScoutResource, found_colony, found_colony_at,
+            founding_revealed_tiles, new_world,
+        },
     };
 
     use super::*;
+
+    #[test]
+    fn permanent_fog_scout_mission_and_provisional_notes_survive_restart() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(4_242);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 4_242);
+        let scout_id = colony.cats[0].id.clone();
+        let far = TilePos { x: 30, y: 31 };
+        colony.revealed_tiles.insert(far);
+        let provisional: BTreeSet<_> = [TilePos { x: 40, y: 41 }].into_iter().collect();
+        colony
+            .provisional_tiles
+            .insert(scout_id.clone(), provisional.clone());
+        colony.jobs.push(JobRuntime {
+            id: "scout-persist".to_owned(),
+            kind: JobKind::Explore,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Player,
+            assigned_cat: Some(scout_id.clone()),
+            duration_ms: 60_000,
+            speed: 1.0,
+            yield_amount: 1.0,
+            click_count: 0,
+            created_at: 11_000,
+            started_at: Some(11_000),
+            ends_at: Some(71_000),
+            completed_at: None,
+            metadata: JobMetadata::Scout {
+                mission: ScoutMission::Resource(ScoutResource::Wood),
+                target: Some(TilePos { x: 22, y: 19 }),
+                destination: Some(TilePos { x: 21, y: 19 }),
+                accepted: true,
+                found: false,
+            },
+        });
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save");
+        let loaded = load_world(&conn).expect("load").expect("world");
+        let loaded = &loaded.colonies[0];
+
+        assert!(loaded.revealed_tiles.contains(&far));
+        assert_eq!(loaded.provisional_tiles.get(&scout_id), Some(&provisional));
+        assert!(matches!(
+            loaded.jobs.last().map(|job| &job.metadata),
+            Some(JobMetadata::Scout {
+                mission: ScoutMission::Resource(ScoutResource::Wood),
+                target: Some(TilePos { x: 22, y: 19 }),
+                destination: Some(TilePos { x: 21, y: 19 }),
+                accepted: true,
+                found: false,
+            })
+        ));
+    }
+
+    #[test]
+    fn legacy_null_revealed_tiles_restores_exact_founding_knowledge() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(4_242);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, 4_242));
+        save_world(&conn, &world).expect("save");
+        conn.execute(
+            "UPDATE colonies SET revealedTiles = NULL WHERE id = 'colony-1'",
+            [],
+        )
+        .expect("simulate legacy row");
+
+        let loaded = load_world(&conn).expect("load").expect("world");
+        let colony = &loaded.colonies[0];
+        assert_eq!(
+            colony.revealed_tiles,
+            founding_revealed_tiles(colony.anchor, &colony.claimed_tiles)
+        );
+        assert!(
+            colony
+                .claimed_tiles
+                .iter()
+                .all(|tile| colony.revealed_tiles.contains(tile))
+        );
+    }
+
+    #[test]
+    fn legacy_null_provisional_tiles_loads_an_empty_scout_notebook() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(4_242);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 4_242);
+        colony.provisional_tiles.insert(
+            colony.cats[0].id.clone(),
+            [TilePos { x: 40, y: 41 }].into_iter().collect(),
+        );
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save");
+        conn.execute(
+            "UPDATE colonies SET provisionalTiles = NULL WHERE id = 'colony-1'",
+            [],
+        )
+        .expect("simulate legacy row");
+
+        let loaded = load_world(&conn).expect("load").expect("world");
+        assert!(loaded.colonies[0].provisional_tiles.is_empty());
+    }
 
     #[test]
     fn init_schema_backfills_post_p12_columns_on_a_legacy_database() {
@@ -1511,6 +1727,7 @@ mod tests {
             ("colonies", "stockpiles"),
             ("colonies", "farms"),
             ("colonies", "stockLedger"),
+            ("colonies", "provisionalTiles"),
             ("colonies", "coin"),
             ("cats", "skills"),
             ("cats", "boosted"),
@@ -1526,6 +1743,7 @@ mod tests {
             ("colonies", "stockpiles"),
             ("colonies", "farms"),
             ("colonies", "stockLedger"),
+            ("colonies", "provisionalTiles"),
             ("colonies", "coin"),
             ("cats", "skills"),
             ("cats", "boosted"),
@@ -1860,12 +2078,12 @@ mod tests {
     /// (either by comparison against a stale expectation, or because the loaded value
     /// stays at its `Default` while the saved value does not).
     ///
-    /// `trader`, `last_trader_departed_at`, and `provisional_tiles` are the three
+    /// `trader` and `last_trader_departed_at` are the two
     /// fields intentionally excluded from the round trip (see the doc comments on
     /// `ColonyRuntime` and in `load_colony`) — a restart is documented to drop an
-    /// in-flight trader visit and any scout's not-yet-delivered fog reveal. This test
-    /// asserts that documented reset explicitly rather than silently ignoring those
-    /// fields, so a change to that contract shows up here too.
+    /// in-flight trader visit. Scout notebooks persist because dropping them can make
+    /// a returning scout deliver no knowledge after a restart. This test asserts that
+    /// documented contract explicitly so a future change shows up here too.
     #[test]
     fn save_world_load_world_round_trips_every_field_in_the_persistence_audit() {
         use cat_sim::{
@@ -1957,6 +2175,12 @@ mod tests {
         // --- fog / claimed tiles ----------------------------------------------------
         colony.claimed_tiles.push(TilePos { x: 40, y: 41 });
         colony.revealed_tiles.insert(TilePos { x: 40, y: 41 });
+        colony.provisional_tiles.insert(
+            colony.cats[0].id.clone(),
+            [TilePos { x: 42, y: 43 }, TilePos { x: 44, y: 45 }]
+                .into_iter()
+                .collect(),
+        );
 
         // --- officers / stockpiles / gather spots / ledger / items ------------------
         colony
@@ -2139,14 +2363,13 @@ mod tests {
         let loaded_colony = &loaded.colonies[0];
         let expected_colony = &expected.colonies[0];
 
-        // Every field except the three documented-transient ones must round-trip
-        // exactly. Compare via a clone with those three fields reset to what
+        // Every field except the two documented-transient ones must round-trip
+        // exactly. Compare via a clone with those two fields reset to what
         // `load_colony` is documented to produce, so any other drift fails the
         // `assert_eq!` on the whole struct.
         let mut expected_after_reload = expected_colony.clone();
         expected_after_reload.trader = None;
         expected_after_reload.last_trader_departed_at = None;
-        expected_after_reload.provisional_tiles = BTreeMap::new();
 
         assert_eq!(loaded_colony, &expected_after_reload);
 
@@ -2174,11 +2397,14 @@ mod tests {
             expected_colony.metal_forge_progress
         );
         assert_eq!(loaded_colony.coin, expected_colony.coin);
+        assert_eq!(
+            loaded_colony.provisional_tiles,
+            expected_colony.provisional_tiles
+        );
 
         // Documented transient fields: confirm the *reset*, not just its absence from
         // the equality check above.
         assert_eq!(loaded_colony.trader, None);
         assert_eq!(loaded_colony.last_trader_departed_at, None);
-        assert!(loaded_colony.provisional_tiles.is_empty());
     }
 }

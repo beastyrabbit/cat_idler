@@ -5,12 +5,12 @@ use std::collections::BTreeSet;
 use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
-    climate::ResourceHint,
     entities::{CatActivity, Resources},
     terrain_gen::{
         DecorationRole, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk, tile_climate_biome,
     },
     types::{BuildingType, TileType},
+    world_gen::tile_to_chunk,
     world_tick::{BuildingRuntime, TilePos, WorldState, found_colony, tile_is_occupied},
 };
 
@@ -84,9 +84,7 @@ fn generated_sites(seed: u32) -> (TilePos, TilePos, TilePos) {
                         farm = Some((left, site));
                     }
                 }
-                if forest.is_none()
-                    && matches!(tile.decoration, Some(DecorationRole::Tree { .. }))
-                    && tile.climate_biome.properties().resource == ResourceHint::Wood
+                if forest.is_none() && matches!(tile.decoration, Some(DecorationRole::Tree { .. }))
                 {
                     forest = Some(TilePos {
                         x: tile.x,
@@ -222,6 +220,35 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     forest_tile.path_wear = 63;
     forest_tile.overlay_feature = None;
     colony.world_tiles.insert(forest_site, forest_tile);
+    colony.revealed_tiles.insert(forest_site);
+    // Keep this guided action deterministic: the explicitly revealed tree is the
+    // only actionable logging decoration, while all unrelated founding trees are
+    // already-felled background. The production predicate still comes from the real
+    // generated decoration rather than a synthetic coarse forest tile.
+    let unrelated_trees = colony
+        .world_tiles
+        .keys()
+        .map(|site| tile_to_chunk(site.x, site.y))
+        .map(|chunk| (chunk.chunk_x, chunk.chunk_y))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .flat_map(|(chunk_x, chunk_y)| {
+            generate_terrain_chunk(chunk_x, chunk_y, i64::from(seed), WORLD_TERRAIN_OPTIONS)
+        })
+        .filter(|tile| matches!(tile.decoration, Some(DecorationRole::Tree { .. })))
+        .map(|tile| TilePos {
+            x: tile.x,
+            y: tile.y,
+        })
+        .filter(|site| *site != forest_site && colony.world_tiles.contains_key(site))
+        .collect::<Vec<_>>();
+    for site in unrelated_trees {
+        colony
+            .world_tiles
+            .get_mut(&site)
+            .expect("tree came from the world tile map")
+            .overlay_feature = Some("stump".to_owned());
+    }
 
     let farmer_id = colony.cats[0].id.clone();
     let miller_id = colony.cats[1].id.clone();

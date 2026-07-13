@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     biomes::MaxResources,
-    climate::{Mining, ResourceHint},
+    climate::Mining,
     depletion::{CHOPPED_FOREST_FOOD_CAP, is_forest_type, regrowth_amount},
     elections::{
         BallotVote, ELECTION_WINDOW_MS, ElectionCandidate, KICK_WINDOW_MS, TERM_MS,
@@ -153,11 +153,10 @@ pub struct ColonyRuntime {
     /// tiles, roads, reveal, raids, movement conversions) is taken relative to *this*
     /// anchor rather than the global constant.
     pub anchor: TilePos,
-    /// Fog-of-war: the set of world tiles the client is allowed to render un-fogged.
-    /// Runtime-only and independent of `world_tiles` (which is lazily/​sparsely
-    /// populated for the live colony) — the founding village reveal seeds it and cats
-    /// walking near a tile add to it (`reveal_and_wear_walked_tiles`). Does not affect
-    /// the sim; a `BTreeSet` keeps the snapshot order deterministic.
+    /// Permanently revealed fog-of-war tiles. The founding village seeds the claimed
+    /// core plus a two-tile halo; later knowledge enters only when a returning scout
+    /// reaches the shrine. This set is persisted independently of the lazily populated
+    /// `world_tiles`, and its deterministic ordering is part of the snapshot contract.
     pub revealed_tiles: BTreeSet<TilePos>,
     /// Fog-of-war P15: tentative reveal for a scout currently out on an `Explore` job
     /// (and still on its way home) — keyed by scout cat id, holding the tiles that
@@ -165,9 +164,8 @@ pub struct ColonyRuntime {
     /// `revealed_tiles` when the scout reaches the shrine
     /// (`commit_scout_provisional_tiles`); dropped without committing if the scout
     /// dies before returning (`phase_25b_prune_dead_scout_provisional_tiles`).
-    /// Transient/runtime-only like `revealed_tiles` — not persisted, and rebuilding
-    /// empty on load simply means an in-flight scout's dim halo restarts (no lost
-    /// permanent knowledge, since nothing here is permanent yet).
+    /// Transient/runtime-only — not persisted. On load, an active/returning scout gets
+    /// an empty notebook and re-reveals its remaining route; nothing permanent is lost.
     pub provisional_tiles: BTreeMap<CatId, BTreeSet<TilePos>>,
     /// Appointed officers (role → cat id). P12.2 additive layer; empty = no effect.
     pub officers: BTreeMap<OfficerRole, String>,
@@ -308,6 +306,41 @@ pub enum JobMetadata {
         site: Option<TilePos>,
         accepted: bool,
     },
+    /// A scout excursion keeps its purpose and resolved route in durable job
+    /// metadata. The per-cat provisional reveal remains transient, but this is
+    /// enough to restore the scout marker after a server restart.
+    Scout {
+        mission: ScoutMission,
+        /// The actual useful terrain feature being sought. For general
+        /// exploration this is the same tile as `destination`.
+        target: Option<TilePos>,
+        /// Passable tile the scout physically walks to. It can differ from a
+        /// water/mountain target so the scout observes it from beside the tile.
+        destination: Option<TilePos>,
+        accepted: bool,
+        /// Set only after the scout physically reaches `destination`.
+        found: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScoutResource {
+    Wood,
+    Food,
+    Water,
+    Stone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScoutMission {
+    Explore,
+    Resource(ScoutResource),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScoutRoute {
+    pub target: TilePos,
+    pub destination: TilePos,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1505,24 +1538,44 @@ fn lattice_ring_candidates(base: TilePos, ring: i32) -> Vec<TilePos> {
     out
 }
 
-/// Lift the fog for the founding village reveal: the whole claimed village ground
-/// starts revealed (players can see their own settlement), plus a `FOUNDING_REVEAL_RADIUS`
-/// halo around the anchor so the immediately-adjacent water source is visible. Nothing
-/// further is revealed at founding — that is the job of the reveal-on-walk pass. The
-/// reveal set is independent of `world_tiles`, so it is correct even when the live
-/// colony's tile map is sparse.
-fn reveal_founding_area(colony: &mut ColonyRuntime) {
-    let anchor = colony.anchor;
-    let claimed = colony.claimed_tiles.clone();
-    colony.revealed_tiles.extend(claimed);
-    for dy in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
-        for dx in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
-            colony.revealed_tiles.insert(TilePos {
-                x: anchor.x + dx,
-                y: anchor.y + dy,
-            });
+/// Exact permanent knowledge granted at founding: every claimed settlement tile
+/// plus a two-tile Chebyshev halo around the *whole claim*. The older implementation
+/// put a 5x5 square around the shrine anchor; that square sat entirely inside the
+/// 13x13 claim and therefore granted no halo at all.
+///
+/// `claimed` may be empty for a legacy SQLite row. In that case reconstruct the
+/// authored founding claim at `anchor`, ensuring an old save never reloads into a
+/// completely black map.
+#[must_use]
+pub fn founding_revealed_tiles(anchor: TilePos, claimed: &[TilePos]) -> BTreeSet<TilePos> {
+    let fallback;
+    let claimed = if claimed.is_empty() {
+        fallback = founding_claimed_tiles(anchor);
+        fallback.as_slice()
+    } else {
+        claimed
+    };
+    let mut revealed = BTreeSet::new();
+    for tile in claimed {
+        for dy in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
+            for dx in -FOUNDING_REVEAL_RADIUS..=FOUNDING_REVEAL_RADIUS {
+                revealed.insert(TilePos {
+                    x: tile.x.saturating_add(dx),
+                    y: tile.y.saturating_add(dy),
+                });
+            }
         }
     }
+    revealed
+}
+
+/// Lift the fog for the exact founding reveal. The reveal set is independent
+/// of `world_tiles`, so it remains correct when the live tile map is sparse.
+fn reveal_founding_area(colony: &mut ColonyRuntime) {
+    colony.revealed_tiles.extend(founding_revealed_tiles(
+        colony.anchor,
+        &colony.claimed_tiles,
+    ));
 }
 
 fn starting_resources() -> Resources {
@@ -1982,9 +2035,10 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_16_active_scaffold_progress(colony, gate);
         phase_17_legacy_emergency_hunt(colony, gate, policy);
         phase_17b_emergency_water_fetch(colony, gate);
+        phase_17c_founding_wood_scout(colony, gate);
         let snapshot = phase_18_leader_snapshot_assembly(colony, gate);
         let plan = phase_19_leader_cancellations(colony, gate, &snapshot);
-        phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan);
+        phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan, world_seed);
         phase_21_leader_capital_decisions_and_tithe(colony, gate, policy, &plan);
         release_research_staff_unless_comfortable(colony, &snapshot);
         manage_research_hut(colony, gate, policy, &snapshot);
@@ -3043,6 +3097,12 @@ fn phase_15_assign_promoted_job_destinations(
             .then_some(index)
         })
         .collect::<Vec<_>>();
+    if active_indices
+        .iter()
+        .any(|&index| colony.jobs[index].kind == JobKind::Explore)
+    {
+        ensure_scout_search_tiles(colony, world_seed);
+    }
     let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
     let food_tiles = food_tiles_near_village(colony);
     let quarry_site = quarry_sites_near_village(colony).into_iter().next();
@@ -3088,31 +3148,23 @@ fn phase_15_assign_promoted_job_destinations(
                 }),
             _ => None,
         };
-        // Scouts random-walk rather than beeline a fixed frontier tile: the first leg
-        // heads outward from wherever the scout is forming up (the anchor at promotion),
-        // and phase 33 re-picks a fresh outward leg each time it arrives. Two extra draws
-        // off the seeded movement chain keep the meander deterministic.
-        let explore_site = if job.kind == JobKind::Explore {
-            let from = job
-                .assigned_cat
-                .as_deref()
-                .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == cat_id))
-                .map_or_else(
-                    || village_anchor_world(colony.anchor),
-                    |cat| position_to_world(colony.anchor, cat.position),
-                );
-            let dir = roll_seeded(f64::from(movement_seed));
-            let len = roll_seeded(f64::from(dir.next_seed));
-            movement_seed = len.next_seed;
-            Some(scout_wander_target(
-                from,
-                village_anchor_world(colony.anchor),
-                dir.value,
-                len.value,
-            ))
-        } else {
-            None
-        };
+        let scout_plan = (job.kind == JobKind::Explore)
+            .then(|| {
+                let requested = match job.metadata {
+                    JobMetadata::Scout { mission, .. } => mission,
+                    _ => ScoutMission::Explore,
+                };
+                select_scout_route(colony, world_seed, requested)
+                    .map(|route| (requested, route))
+                    .or_else(|| {
+                        (requested != ScoutMission::Explore)
+                            .then(|| select_scout_route(colony, world_seed, ScoutMission::Explore))
+                            .flatten()
+                            .map(|route| (ScoutMission::Explore, route))
+                    })
+            })
+            .flatten();
+        let explore_site = scout_plan.map(|(_, route)| tile_pos_to_world(route.destination));
         // Zones steer hunts: a gather rect makes its tiles twice as likely and an avoid
         // rect excludes them (unless nothing else remains), reducing the candidate list to
         // a single zone-weighted pick. With no zones this collapses to the same uniform
@@ -3157,6 +3209,16 @@ fn phase_15_assign_promoted_job_destinations(
                 next_trip_at: None,
                 accepted: false,
             },
+            JobKind::Explore => {
+                let (mission, route) = scout_plan.expect("an explore destination was resolved");
+                JobMetadata::Scout {
+                    mission,
+                    target: Some(route.target),
+                    destination: Some(route.destination),
+                    accepted: false,
+                    found: false,
+                }
+            }
             JobKind::ExpandVillage => match colony.jobs[job_index].metadata.clone() {
                 JobMetadata::Expansion {
                     source_build_job_id,
@@ -3331,6 +3393,46 @@ fn phase_17b_emergency_water_fetch(colony: &mut ColonyRuntime, gate: TickGate) {
         gate.processed_through,
         EventKind::Production,
         "The cats drew an emergency bucket from the village spring.",
+    );
+}
+
+/// A founding leader's first exploration decision is intentionally simple and
+/// fast: send exactly one available high-vision cat to locate nearby wood.
+/// This runs before the broad labor director so survival work sees that cat as
+/// occupied and does not overwrite the assignment. Once any knowledge has
+/// returned, ordinary deficit-driven scout slots take over.
+fn phase_17c_founding_wood_scout(colony: &mut ColonyRuntime, gate: TickGate) {
+    if colony.revealed_tiles != founding_revealed_tiles(colony.anchor, &colony.claimed_tiles)
+        || colony.jobs.iter().any(|job| {
+            job.kind == JobKind::Explore
+                && (matches!(job.status, JobStatus::Active | JobStatus::Queued)
+                    || (job.status == JobStatus::Completed
+                        && job.assigned_cat.as_deref().is_some_and(|cat_id| {
+                            colony.cats.iter().any(|cat| {
+                                cat.id == cat_id
+                                    && cat.death_time.is_none()
+                                    && cat.activity == CatActivity::Returning
+                            })
+                        })))
+        })
+    {
+        return;
+    }
+    let Some(cat_id) = select_best_scout_cat(colony) else {
+        return;
+    };
+    queue_job(
+        colony,
+        gate.processed_through,
+        JobKind::Explore,
+        Some(cat_id),
+        JobMetadata::Scout {
+            mission: ScoutMission::Resource(ScoutResource::Wood),
+            target: None,
+            destination: None,
+            accepted: false,
+            found: false,
+        },
     );
 }
 
@@ -3565,6 +3667,7 @@ fn phase_20_leader_labor_assignments_and_staffing(
     gate: TickGate,
     policy: TickPolicy,
     plan: &DirectorPlan,
+    world_seed: u32,
 ) {
     // Free the raw-material benches before drafting labour so critical hunt/water work
     // always outbids a refinement task for the scarce founding cats. Phase 23 re-fills
@@ -3657,12 +3760,24 @@ fn phase_20_leader_labor_assignments_and_staffing(
                 );
             }
             LaborGoalKind::Scout => {
+                let mission = leader_scout_mission(colony, world_seed);
+                if mission == ScoutMission::Explore
+                    && !leader_general_scout_due(colony, gate.processed_through)
+                {
+                    continue;
+                }
                 queue_job(
                     colony,
                     gate.processed_through,
                     JobKind::Explore,
                     Some(assignment.cat_id),
-                    JobMetadata::None,
+                    JobMetadata::Scout {
+                        mission,
+                        target: None,
+                        destination: None,
+                        accepted: false,
+                        found: false,
+                    },
                 );
             }
             LaborGoalKind::TrainWarrior => {
@@ -3709,6 +3824,70 @@ fn phase_20_leader_labor_assignments_and_staffing(
             }
         }
     }
+}
+
+/// Pick an explicit purpose for leader-dispatched scouts. A pristine founding
+/// map always gets one wood mission first; subsequent simultaneous scouts fan
+/// out generally. Later resource pressure steers new expeditions without
+/// changing the leader director's workforce budgeting.
+fn leader_scout_mission(colony: &ColonyRuntime, world_seed: u32) -> ScoutMission {
+    let wood_already_dispatched = active_or_queued_jobs(colony).iter().any(|job| {
+        matches!(
+            job.metadata,
+            JobMetadata::Scout {
+                mission: ScoutMission::Resource(ScoutResource::Wood),
+                ..
+            }
+        )
+    });
+    let founding = founding_revealed_tiles(colony.anchor, &colony.claimed_tiles);
+    if colony.revealed_tiles == founding && !wood_already_dispatched {
+        return ScoutMission::Resource(ScoutResource::Wood);
+    }
+    if colony.resources.materials < 8.0
+        && !wood_already_dispatched
+        && !has_logging_site(colony, world_seed)
+    {
+        return ScoutMission::Resource(ScoutResource::Wood);
+    }
+    if colony.resources.food < 8.0 && food_tiles_near_village(colony).is_empty() {
+        return ScoutMission::Resource(ScoutResource::Food);
+    }
+    if colony.resources.water < 8.0 && !has_water_site(colony) {
+        return ScoutMission::Resource(ScoutResource::Water);
+    }
+    if colony.resources.refined < 2.0 && !has_quarry_site(colony) {
+        return ScoutMission::Resource(ScoutResource::Stone);
+    }
+    ScoutMission::Explore
+}
+
+/// General leader exploration is strategic background work, not a survival job to
+/// enqueue again every tick. Resource missions remain immediate; player-dispatched
+/// scouts are never throttled.
+const LEADER_GENERAL_SCOUT_COOLDOWN_MS: i64 = 6 * 3_600_000;
+
+fn leader_general_scout_due(colony: &ColonyRuntime, now_ms: i64) -> bool {
+    colony
+        .jobs
+        .iter()
+        .filter(|job| job.kind == JobKind::Explore && job.requested_by == JobRequester::Leader)
+        .filter(|job| {
+            matches!(
+                job.metadata,
+                JobMetadata::Scout {
+                    mission: ScoutMission::Explore,
+                    ..
+                }
+            )
+        })
+        .map(|job| {
+            job.completed_at
+                .or(job.started_at)
+                .unwrap_or(job.created_at)
+        })
+        .max()
+        .is_none_or(|last| now_ms.saturating_sub(last) >= LEADER_GENERAL_SCOUT_COOLDOWN_MS)
 }
 
 /// Whether the colony already has a research hut standing or a build for one under way,
@@ -5140,27 +5319,41 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
     }
 }
 
-/// Additive P15 phase: drop any dead scout's tentative fog reveal. A scout that
-/// dies mid-excursion (survival, old age, or a raid earlier this tick) never
-/// reaches the shrine to commit via `commit_scout_provisional_tiles`, so without
-/// this its `provisional_tiles` entry would sit forever — the spec is explicit
-/// that a dead scout's discoveries must NOT become permanent. Runs right after
-/// every phase this tick that can set `death_time` before movement (phase 6 life
-/// sim, phase 25 above); a death from the later raid director (phase 36) is
-/// swept up on the following tick, which matches "should eventually clear."
+/// Reconcile transient scout notebooks against durable jobs. Dead/cancelled or
+/// otherwise non-returning scouts lose their notes without committing them.
+/// Conversely, an active or shrine-bound scout restored from SQLite gets a new
+/// empty notebook and can resume revealing on the next movement pass.
 fn phase_25b_prune_dead_scout_provisional_tiles(colony: &mut ColonyRuntime, _: TickGate) {
-    if colony.provisional_tiles.is_empty() {
-        return;
-    }
     let alive_ids: HashSet<&str> = colony
         .cats
         .iter()
         .filter(|cat| cat.death_time.is_none())
         .map(|cat| cat.id.as_str())
         .collect();
+    let returning_ids = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none() && cat.activity == CatActivity::Returning)
+        .map(|cat| cat.id.as_str())
+        .collect::<HashSet<_>>();
+    let valid_scouts = colony
+        .jobs
+        .iter()
+        .filter(|job| job.kind == JobKind::Explore)
+        .filter_map(|job| {
+            let cat_id = job.assigned_cat.as_deref()?;
+            (alive_ids.contains(cat_id)
+                && (matches!(job.status, JobStatus::Active | JobStatus::Queued)
+                    || (job.status == JobStatus::Completed && returning_ids.contains(cat_id))))
+            .then_some(cat_id.to_owned())
+        })
+        .collect::<BTreeSet<_>>();
     colony
         .provisional_tiles
-        .retain(|cat_id, _| alive_ids.contains(cat_id.as_str()));
+        .retain(|cat_id, _| valid_scouts.contains(cat_id));
+    for cat_id in valid_scouts {
+        colony.provisional_tiles.entry(cat_id).or_default();
+    }
 }
 
 /// Phase 26: reset empty colonies and short-circuit the remaining phases.
@@ -5288,14 +5481,10 @@ fn phase_29_due_completion_gathering_explore_expansion(
                 CarryingKind::Water,
                 world_seed,
             ),
-            JobKind::Explore => {
-                append_event(
-                    colony,
-                    gate.processed_through,
-                    EventKind::Discovery,
-                    "The scout mapped the lands around the village.",
-                );
-            }
+            // Knowledge is deliberately not narrated or committed here. The
+            // completed scout must still walk home and physically touch the
+            // shrine; phase 34 performs the delivery.
+            JobKind::Explore => {}
             JobKind::ExpandVillage => complete_village_expansion(colony, &job, gate, world_seed),
             _ => {}
         }
@@ -5821,7 +6010,7 @@ fn phase_33_movement_deposits_and_no_destination_wander(
 /// path wear.
 fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
     colony: &mut ColonyRuntime,
-    _: TickGate,
+    gate: TickGate,
     movement: &MovementPassContext,
 ) {
     let area = pathfinding_area(&movement.claimed_area);
@@ -5880,12 +6069,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         let current_task = colony.cats[cat_index].current_task;
         let standing_tile_pos = world_pos_to_tile(world_pos);
         let standing_tile = colony.world_tiles.get(&standing_tile_pos);
-        let explore_slowdown =
-            if current_task == Some(TaskType::Explore) && activity == CatActivity::Traveling {
-                EXPLORE_SPEED_FACTOR
-            } else {
-                1.0
-            };
+        let scout_speed_factor = scout_travel_speed_factor(colony, &cat_id, current_task, activity);
         // Per-cat effective rate: base × terrain surface (the tile the cat is on)
         // × per-cat gait × life-stage gait. This desyncs the herd — cats on slow
         // ground or with a slow gait fall behind instead of stepping in unison.
@@ -5929,7 +6113,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             * road_mult
             * soft_obstacle_mult
             * rail_mult
-            * explore_slowdown
+            * scout_speed_factor
             * effects.move_speed_mult;
 
         let route = find_path(
@@ -5994,6 +6178,14 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             reveal_and_wear_walked_tiles(colony, movement, &walk.tiles, &cat_id, current_task);
         }
 
+        // The accepted outbound scout has reached its selected observation
+        // tile. End its work timer now so phase 30 turns it home on the next
+        // tick instead of making a nearby founding mission wait the legacy
+        // thirty-minute Explore duration.
+        if arrived && activity == CatActivity::Traveling {
+            finish_scout_outbound_leg(colony, &cat_id, gate.processed_through);
+        }
+
         // P15: a scout's discoveries commit to the permanent map only once it is
         // physically back — `return_assigned_cat` (phase 30) is the only place that
         // sets a completed `Explore` job's cat to `Returning` with the shrine anchor
@@ -6001,8 +6193,42 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         // any other returning worker) just walked into the shrine." Non-scouts are a
         // no-op: they never got a `provisional_tiles` entry to commit.
         if arrived && activity == CatActivity::Returning {
-            commit_scout_provisional_tiles(colony, &cat_id);
+            commit_scout_provisional_tiles(colony, &cat_id, gate.processed_through);
         }
+    }
+}
+
+/// The initial wood reconnaissance is a short purposeful dash, not the slow
+/// meandering pace used by general exploration. Its return leg is accelerated
+/// too: knowledge is still committed only by physically touching the shrine,
+/// but an unlucky forest/gate route cannot strand the founding economy for many
+/// real minutes.
+const FOUNDING_WOOD_SCOUT_SPEED_FACTOR: f64 = 4.0;
+
+fn scout_travel_speed_factor(
+    colony: &ColonyRuntime,
+    cat_id: &str,
+    current_task: Option<TaskType>,
+    activity: CatActivity,
+) -> f64 {
+    let is_wood_scout_leg = colony.jobs.iter().any(|job| {
+        job.kind == JobKind::Explore
+            && job.assigned_cat.as_deref() == Some(cat_id)
+            && matches!(
+                job.metadata,
+                JobMetadata::Scout {
+                    mission: ScoutMission::Resource(ScoutResource::Wood),
+                    ..
+                }
+            )
+            && (job.status == JobStatus::Active || activity == CatActivity::Returning)
+    });
+    if is_wood_scout_leg {
+        FOUNDING_WOOD_SCOUT_SPEED_FACTOR
+    } else if current_task == Some(TaskType::Explore) && activity == CatActivity::Traveling {
+        EXPLORE_SPEED_FACTOR
+    } else {
+        1.0
     }
 }
 
@@ -7932,6 +8158,32 @@ fn select_best_cat(
     best.map(|cat| cat.id.clone())
 }
 
+fn select_best_scout_cat(colony: &ColonyRuntime) -> Option<CatId> {
+    let busy_ids = active_or_queued_jobs(colony)
+        .iter()
+        .filter_map(|job| job.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    let assigned_building_ids = colony
+        .buildings
+        .iter()
+        .filter_map(|building| building.assigned_cat.as_deref())
+        .collect::<Vec<_>>();
+    colony
+        .cats
+        .iter()
+        .filter(|cat| {
+            can_take_new_job_with_busy(cat, &busy_ids)
+                && !assigned_building_ids.contains(&cat.id.as_str())
+        })
+        .max_by(|a, b| {
+            a.stats
+                .vision
+                .total_cmp(&b.stats.vision)
+                .then_with(|| b.id.cmp(&a.id))
+        })
+        .map(|cat| cat.id.clone())
+}
+
 /// Offerings outrank the non-sticky raw-material benches: if the director's
 /// employment fill used every idle cat, reclaim one luxury-bench worker rather
 /// than leaving an otherwise reachable shrine action permanently undispatched.
@@ -8192,36 +8444,27 @@ fn has_complete_building(colony: &ColonyRuntime, building_type: BuildingType) ->
 // `total_yield_for_job`'s `Quarry` arm below — a single lookup per job, at the
 // job's one dispatched site, not a per-tick full-map scan.
 fn has_quarry_site(colony: &ColonyRuntime) -> bool {
-    // Must agree with `quarry_sites_near_village` (which gates on `tile_is_explored`),
-    // exactly like the `has_water_site`/`water_sites_near_village` pair below. Keying
-    // the leader director's Quarry veto (`!snapshot.has_quarry_site`) on the strict
-    // `path_wear > 62` while the finder accepts `tile_is_explored` (`path_wear > 62` OR
-    // `cheb_from_anchor <= 6`) is the same veto/finder asymmetry that starved water: a
-    // mountain inside the founding reveal band but off any traffic halo would be a valid
-    // site the veto permanently rejects. Reconciled to `tile_is_explored`.
+    // Keep this predicate identical to `quarry_sites_near_village`: only knowledge
+    // delivered by a scout (or seeded in the founding reveal) can unlock quarry work.
     colony.world_tiles.values().any(|tile| {
         matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
-            && tile_is_explored(colony.anchor, tile)
+            && tile_is_explored(colony, tile)
     })
 }
 
 fn has_water_site(colony: &ColonyRuntime) -> bool {
-    // Must agree with `water_sites_near_village`: any water tile that site-finder can
-    // hand a `FetchWater` job is a valid site here, or the leader director's veto
-    // (`!snapshot.has_water_site`) permanently blocks water fetching even though a
-    // reachable source exists. A tile is a usable site when it is explored — worn into
-    // a known route (`path_wear > 62`) OR already inside the founding reveal band
-    // (`cheb_from_anchor <= 6`, see `tile_is_explored`). Before this was reconciled the
-    // founding pond (carved at cheb 2..=6 with `path_wear == 0`) failed this gate, so a
-    // fresh colony never fetched water and slowly bled its founding reservoir dry.
+    // Keep this predicate identical to `water_sites_near_village`: provisional scout
+    // notes do not become an actionable water source until delivered at the shrine.
     colony
         .world_tiles
         .values()
-        .any(|tile| tile_has_water(Some(tile)) && tile_is_explored(colony.anchor, tile))
+        .any(|tile| tile_has_water(Some(tile)) && tile_is_explored(colony, tile))
 }
 
 fn has_frontier(colony: &ColonyRuntime) -> bool {
-    colony.world_tiles.values().any(|tile| tile.path_wear <= 62)
+    colony.world_tiles.values().any(|tile| {
+        !colony.revealed_tiles.contains(&tile.pos) && tile_is_fog_frontier(colony, tile.pos)
+    })
 }
 
 fn is_open_leadership_election(election: &ElectionRuntime) -> bool {
@@ -8447,6 +8690,289 @@ fn next_scout_leg(
     ))
 }
 
+/// Minimum per-mission scout lookahead. The search grows by one chunk only when
+/// connected permanent knowledge reaches farther out, so every dispatch remains
+/// bounded while repeated successful expeditions can cross the shared world.
+pub const SCOUT_SEARCH_RADIUS: i32 = 24;
+
+fn scout_search_radius(colony: &ColonyRuntime) -> i32 {
+    let origin = scout_search_origin(colony);
+    if !colony.revealed_tiles.contains(&origin) {
+        return SCOUT_SEARCH_RADIUS;
+    }
+
+    // Only the component connected to the village may grow the search. This keeps a
+    // corrupt/legacy isolated coordinate from materialising a gigantic square while
+    // accepting the path-and-halo knowledge real scouts deliver.
+    let mut seen = HashSet::from([origin]);
+    let mut pending = vec![origin];
+    let mut farthest = 0;
+    while let Some(tile) = pending.pop() {
+        farthest = farthest.max(cheb_from_anchor(origin, tile));
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let neighbour = TilePos {
+                    x: tile.x.saturating_add(dx),
+                    y: tile.y.saturating_add(dy),
+                };
+                if colony.revealed_tiles.contains(&neighbour) && seen.insert(neighbour) {
+                    pending.push(neighbour);
+                }
+            }
+        }
+    }
+
+    SCOUT_SEARCH_RADIUS.max(farthest.saturating_add(crate::world_gen::CHUNK_SIZE))
+}
+
+/// Materialise the bounded scout-search square on demand. Founding keeps its
+/// cheap 3x3 chunk footprint; the first actual expedition expands that sparse
+/// runtime map only as far as the finite mission search requires. Existing
+/// depleted/road-modified tiles win over regenerated defaults.
+fn ensure_scout_search_tiles(colony: &mut ColonyRuntime, world_seed: u32) {
+    let origin = scout_search_origin(colony);
+    let radius = scout_search_radius(colony);
+    let min = tile_to_chunk(
+        origin.x.saturating_sub(radius),
+        origin.y.saturating_sub(radius),
+    );
+    let max = tile_to_chunk(
+        origin.x.saturating_add(radius),
+        origin.y.saturating_add(radius),
+    );
+    for chunk_y in min.chunk_y..=max.chunk_y {
+        for chunk_x in min.chunk_x..=max.chunk_x {
+            let chunk_origin = TilePos {
+                x: chunk_x.saturating_mul(crate::world_gen::CHUNK_SIZE),
+                y: chunk_y.saturating_mul(crate::world_gen::CHUNK_SIZE),
+            };
+            if colony.world_tiles.contains_key(&chunk_origin) {
+                continue;
+            }
+            for tile in generate_world_chunk(
+                chunk_x,
+                chunk_y,
+                i64::from(world_seed),
+                colony.anchor.x,
+                colony.anchor.y,
+            ) {
+                let pos = TilePos {
+                    x: tile.x,
+                    y: tile.y,
+                };
+                colony.world_tiles.entry(pos).or_insert(WorldTileRuntime {
+                    pos,
+                    tile_type: tile.tile_type,
+                    resources: tile.resources,
+                    max_resources: tile.max_resources,
+                    danger_level: tile.danger_level,
+                    path_wear: tile.path_wear,
+                    last_depleted: tile.last_depleted,
+                    overlay_feature: tile
+                        .overlay_feature
+                        .map(|feature| feature.as_str().to_owned()),
+                });
+            }
+        }
+    }
+}
+
+/// Select the nearest useful unrevealed target for a scout mission. Ordering is
+/// exact and deterministic: Chebyshev distance from the exterior village gate, then
+/// Manhattan distance, then `(y, x)`. Targets already reserved by another live
+/// scout are skipped, preventing a same-tick dispatch burst from duplicating work.
+#[must_use]
+pub fn select_scout_route(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    mission: ScoutMission,
+) -> Option<ScoutRoute> {
+    let origin = scout_search_origin(colony);
+    let radius = scout_search_radius(colony);
+    let reserved = active_or_queued_jobs(colony)
+        .into_iter()
+        .filter_map(|job| match job.metadata {
+            JobMetadata::Scout {
+                target: Some(target),
+                ..
+            } => Some(target),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let provisional = colony
+        .provisional_tiles
+        .values()
+        .flat_map(|tiles| tiles.iter().copied())
+        .collect::<HashSet<_>>();
+    let wood_targets = matches!(mission, ScoutMission::Resource(ScoutResource::Wood))
+        .then(|| scout_wood_targets(colony, world_seed));
+
+    let mut candidates = colony
+        .world_tiles
+        .values()
+        .filter(|tile| cheb_from_anchor(origin, tile.pos) <= radius)
+        .filter(|tile| !colony.claimed_tiles.contains(&tile.pos))
+        .filter(|tile| !colony.revealed_tiles.contains(&tile.pos))
+        .filter(|tile| !provisional.contains(&tile.pos))
+        .filter(|tile| !reserved.contains(&tile.pos))
+        .filter(|tile| match mission {
+            ScoutMission::Explore => tile_is_fog_frontier(colony, tile.pos),
+            ScoutMission::Resource(ScoutResource::Wood) => wood_targets
+                .as_ref()
+                .is_some_and(|targets| targets.contains(&tile.pos)),
+            ScoutMission::Resource(resource) => {
+                scout_tile_matches_resource(tile, world_seed, resource)
+            }
+        })
+        .map(|tile| tile.pos)
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|target| scout_target_order(origin, *target));
+
+    candidates.into_iter().find_map(|target| {
+        scout_destination_for_target(colony, target).map(|destination| ScoutRoute {
+            target,
+            destination,
+        })
+    })
+}
+
+/// Generate each relevant fine-terrain chunk once and collect its actual tree
+/// decorations. This is both the renderer's source of truth and dramatically
+/// cheaper than calling `tile_has_tree` once per candidate (which would
+/// regenerate the same 12x12 chunk up to 144 times).
+fn scout_wood_targets(colony: &ColonyRuntime, world_seed: u32) -> HashSet<TilePos> {
+    let origin = scout_search_origin(colony);
+    let radius = scout_search_radius(colony);
+    let chunks = colony
+        .world_tiles
+        .keys()
+        .filter(|pos| cheb_from_anchor(origin, **pos) <= radius)
+        .map(|pos| tile_to_chunk(pos.x, pos.y))
+        .map(|chunk| (chunk.chunk_x, chunk.chunk_y))
+        .collect::<BTreeSet<_>>();
+    generated_tree_targets(world_seed, chunks)
+}
+
+/// The renderer, wood scouts, and log gatherers share this exact generated-tree
+/// predicate. Climate hints describe the wider region; the actual decoration is
+/// what players see and what a forester can fell.
+fn generated_tree_targets(
+    world_seed: u32,
+    chunks: impl IntoIterator<Item = (i32, i32)>,
+) -> HashSet<TilePos> {
+    let mut targets = HashSet::new();
+    for (chunk_x, chunk_y) in chunks {
+        targets.extend(
+            crate::terrain_gen::generate_terrain_chunk(
+                chunk_x,
+                chunk_y,
+                i64::from(world_seed),
+                crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+            )
+            .into_iter()
+            .filter(|tile| {
+                matches!(
+                    tile.decoration,
+                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
+                )
+            })
+            .map(|tile| TilePos {
+                x: tile.x,
+                y: tile.y,
+            }),
+        );
+    }
+    targets
+}
+
+fn scout_target_order(origin: TilePos, target: TilePos) -> (i32, i32, i32, i32) {
+    let dx = target.x.abs_diff(origin.x).min(i32::MAX as u32) as i32;
+    let dy = target.y.abs_diff(origin.y).min(i32::MAX as u32) as i32;
+    (dx.max(dy), dx.saturating_add(dy), target.y, target.x)
+}
+
+/// Outside scouts must pass through the settlement's one traffic gate. Use
+/// that exterior gate tile as the distance origin so "nearest" means the
+/// shortest practical outbound route, not a deceptively-close tile behind the
+/// opposite palisade.
+fn scout_search_origin(colony: &ColonyRuntime) -> TilePos {
+    if colony.claimed_tiles.is_empty() {
+        return shrine_center_tile(colony.anchor);
+    }
+    let area = claimed_area(colony);
+    let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+    movement_gate(colony.anchor, gate_placement_default(&area), ring_radius)
+}
+
+fn tile_is_fog_frontier(colony: &ColonyRuntime, target: TilePos) -> bool {
+    (-1..=1).any(|dy| {
+        (-1..=1).any(|dx| {
+            (dx != 0 || dy != 0)
+                && colony.revealed_tiles.contains(&TilePos {
+                    x: target.x.saturating_add(dx),
+                    y: target.y.saturating_add(dy),
+                })
+        })
+    })
+}
+
+fn scout_tile_matches_resource(
+    tile: &WorldTileRuntime,
+    world_seed: u32,
+    resource: ScoutResource,
+) -> bool {
+    match resource {
+        ScoutResource::Wood => {
+            crate::terrain_gen::tile_has_tree(world_seed, tile.pos.x, tile.pos.y)
+        }
+        ScoutResource::Food => tile.resources.food > 0 || tile.resources.herbs > 0,
+        ScoutResource::Water => tile_has_water(Some(tile)),
+        // Coarse mountain/cave sites are the stable, already-materialised source used
+        // by the quarry site finder. Avoid regenerating a 12x12 fine-terrain chunk for
+        // every candidate on every stone expedition.
+        ScoutResource::Stone => {
+            matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
+        }
+    }
+}
+
+/// Scouts observe impassable springs/cliffs from an adjacent passable tile.
+/// Candidate approaches use the same stable distance/coordinate order as the
+/// target search itself.
+fn scout_destination_for_target(colony: &ColonyRuntime, target: TilePos) -> Option<TilePos> {
+    if scout_tile_is_passable(colony, target) {
+        return Some(target);
+    }
+    let origin = scout_search_origin(colony);
+    let mut neighbours = Vec::with_capacity(8);
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            neighbours.push(TilePos {
+                x: target.x.saturating_add(dx),
+                y: target.y.saturating_add(dy),
+            });
+        }
+    }
+    neighbours.sort_by_key(|candidate| scout_target_order(origin, *candidate));
+    neighbours
+        .into_iter()
+        .find(|candidate| scout_tile_is_passable(colony, *candidate))
+}
+
+fn scout_tile_is_passable(colony: &ColonyRuntime, pos: TilePos) -> bool {
+    colony.world_tiles.get(&pos).is_some_and(|tile| {
+        !tile_has_water(Some(tile))
+            && (tile.tile_type != TileType::Mountains
+                || is_owned(&colony.upgrade_tree, MOUNTAINEERING_NODE_ID))
+    })
+}
+
 fn claimed_area(colony: &ColonyRuntime) -> crate::village_area::VillageArea {
     let tiles = colony
         .claimed_tiles
@@ -8593,6 +9119,11 @@ fn unaccepted_active_job_site(colony: &ColonyRuntime, cat_id: &str) -> Option<(u
                 accepted: false,
                 ..
             } => Some((index, site)),
+            JobMetadata::Scout {
+                destination: Some(destination),
+                accepted: false,
+                ..
+            } => Some((index, destination)),
             _ => None,
         }
     })
@@ -8634,6 +9165,19 @@ fn accept_job(colony: &mut ColonyRuntime, job_index: usize) {
             site,
             accepted: true,
         },
+        JobMetadata::Scout {
+            mission,
+            target,
+            destination,
+            found,
+            ..
+        } => JobMetadata::Scout {
+            mission,
+            target,
+            destination,
+            accepted: true,
+            found,
+        },
         other => other,
     };
 }
@@ -8649,11 +9193,10 @@ fn reveal_and_wear_walked_tiles(
         return;
     }
 
-    // P15 two-tier reveal: a cat with a live `provisional_tiles` entry is a scout
-    // currently out on (or walking home from) an `Explore` job — see
-    // `phase_15_assign_promoted_job_destinations`, which is the sole place that
-    // entry gets created. Everyone else (regular cats, village-expansion movers)
-    // keeps committing straight to `revealed_tiles`, unchanged from before P15.
+    // Only a registered scout may lift fog, and even then only into its
+    // transient provisional notebook. Ordinary worker/wander movement still
+    // wears paths, but never teaches the whole village about unseen wilds.
+    // Claimed expansion ground is revealed explicitly when its claim succeeds.
     let is_scout = colony.provisional_tiles.contains_key(cat_id);
 
     let reveal_radius = if current_task == Some(TaskType::Explore) {
@@ -8697,8 +9240,6 @@ fn reveal_and_wear_walked_tiles(
                         .or_default()
                         .insert(pos);
                 }
-            } else {
-                colony.revealed_tiles.insert(pos);
             }
             if let Some(tile) = colony.world_tiles.get_mut(&pos) {
                 if walked_on {
@@ -8716,10 +9257,62 @@ fn reveal_and_wear_walked_tiles(
 /// clears the entry. A no-op for any cat that never had one (everyone but a scout
 /// returning from an `Explore` job). Idempotent: committing twice, or committing an
 /// entry that was never created, does nothing on the second call.
-fn commit_scout_provisional_tiles(colony: &mut ColonyRuntime, cat_id: &str) {
-    if let Some(tiles) = colony.provisional_tiles.remove(cat_id) {
-        colony.revealed_tiles.extend(tiles);
+fn finish_scout_outbound_leg(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
+    let Some(job) = colony.jobs.iter_mut().find(|job| {
+        job.kind == JobKind::Explore
+            && job.status == JobStatus::Active
+            && job.assigned_cat.as_deref() == Some(cat_id)
+            && matches!(
+                job.metadata,
+                JobMetadata::Scout {
+                    accepted: true,
+                    found: false,
+                    ..
+                }
+            )
+    }) else {
+        return;
+    };
+    if let JobMetadata::Scout { found, .. } = &mut job.metadata {
+        *found = true;
     }
+    job.ends_at = Some(now_ms);
+}
+
+fn commit_scout_provisional_tiles(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
+    let Some(tiles) = colony.provisional_tiles.remove(cat_id) else {
+        return;
+    };
+    let discovered_count = tiles
+        .iter()
+        .filter(|tile| !colony.revealed_tiles.contains(tile))
+        .count();
+    colony.revealed_tiles.extend(tiles);
+
+    let mission = colony
+        .jobs
+        .iter()
+        .filter(|job| job.kind == JobKind::Explore && job.assigned_cat.as_deref() == Some(cat_id))
+        .max_by_key(|job| (job.completed_at.unwrap_or(i64::MIN), job.created_at))
+        .and_then(|job| match job.metadata {
+            JobMetadata::Scout { mission, .. } => Some(mission),
+            _ => None,
+        });
+    let detail = match mission {
+        Some(ScoutMission::Resource(ScoutResource::Wood)) => "woodland",
+        Some(ScoutMission::Resource(ScoutResource::Food)) => "forage",
+        Some(ScoutMission::Resource(ScoutResource::Water)) => "water",
+        Some(ScoutMission::Resource(ScoutResource::Stone)) => "workable stone",
+        Some(ScoutMission::Explore) | None => "new lands",
+    };
+    append_event(
+        colony,
+        now_ms,
+        EventKind::Discovery,
+        format!(
+            "A scout returned to the shrine with {discovered_count} newly mapped tiles and news of {detail}."
+        ),
+    );
 }
 
 fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
@@ -9043,6 +9636,10 @@ fn job_has_destination_metadata(job: &JobRuntime) -> bool {
         | JobMetadata::Site { .. }
         | JobMetadata::Expansion { accepted: _, .. } => true,
         JobMetadata::GatherHaul { site: Some(_), .. } => true,
+        JobMetadata::Scout {
+            destination: Some(_),
+            ..
+        } => true,
         JobMetadata::Construction { site: Some(_), .. } => job.kind == JobKind::BuildHouse,
         _ => false,
     }
@@ -9074,7 +9671,7 @@ fn food_tiles_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
         .values()
         .filter(|tile| {
             tile.resources.food >= 25
-                && tile_is_explored(colony.anchor, tile)
+                && tile_is_explored(colony, tile)
                 && cheb_from_anchor(colony.anchor, tile.pos) > 4
         })
         .map(|tile| tile_pos_to_world(tile.pos))
@@ -9087,7 +9684,7 @@ fn quarry_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
         .values()
         .filter(|tile| {
             matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
-                && tile_is_explored(colony.anchor, tile)
+                && tile_is_explored(colony, tile)
         })
         .map(|tile| tile.pos)
         .collect::<Vec<_>>();
@@ -9100,34 +9697,11 @@ fn logging_sites_near_village(colony: &ColonyRuntime, world_seed: u32) -> Vec<Wo
     if candidates.is_empty() {
         return Vec::new();
     }
-    let mut sites = Vec::new();
-    for (chunk_x, chunk_y) in chunks {
-        sites.extend(
-            crate::terrain_gen::generate_terrain_chunk(
-                chunk_x,
-                chunk_y,
-                i64::from(world_seed),
-                crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
-            )
-            .into_iter()
-            .filter(|tile| {
-                candidates.contains(&TilePos {
-                    x: tile.x,
-                    y: tile.y,
-                })
-            })
-            .filter(|tile| {
-                matches!(
-                    tile.decoration,
-                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
-                ) && tile.climate_biome.properties().resource == ResourceHint::Wood
-            })
-            .map(|tile| TilePos {
-                x: tile.x,
-                y: tile.y,
-            }),
-        );
-    }
+    let generated_trees = generated_tree_targets(world_seed, chunks);
+    let mut sites = candidates
+        .into_iter()
+        .filter(|site| generated_trees.contains(site))
+        .collect::<Vec<_>>();
     sites.sort_by_key(|site| (cheb_from_anchor(colony.anchor, *site), site.y, site.x));
     sites.into_iter().map(tile_pos_to_world).collect()
 }
@@ -9137,7 +9711,7 @@ fn logging_scan_inputs(colony: &ColonyRuntime) -> (BTreeSet<TilePos>, BTreeSet<(
         .world_tiles
         .values()
         .filter(|tile| {
-            tile_is_explored(colony.anchor, tile)
+            tile_is_explored(colony, tile)
                 && !inside_village_interior(colony, tile.pos)
                 && tile.overlay_feature.as_deref() != Some("stump")
         })
@@ -9187,15 +9761,15 @@ fn water_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
     let mut sites = colony
         .world_tiles
         .values()
-        .filter(|tile| tile_has_water(Some(tile)) && tile_is_explored(colony.anchor, tile))
+        .filter(|tile| tile_has_water(Some(tile)) && tile_is_explored(colony, tile))
         .map(|tile| tile.pos)
         .collect::<Vec<_>>();
     sites.sort_by_key(|site| cheb_from_anchor(colony.anchor, *site));
     sites.into_iter().map(tile_pos_to_world).collect()
 }
 
-fn tile_is_explored(anchor: TilePos, tile: &WorldTileRuntime) -> bool {
-    tile.path_wear > 62 || cheb_from_anchor(anchor, tile.pos) <= 6
+fn tile_is_explored(colony: &ColonyRuntime, tile: &WorldTileRuntime) -> bool {
+    colony.revealed_tiles.contains(&tile.pos)
 }
 
 fn cheb_from_anchor(anchor: TilePos, pos: TilePos) -> i32 {
@@ -9541,6 +10115,9 @@ fn complete_village_expansion(
         return;
     }
     clear_claimed_forest_tile(colony, target, gate.processed_through);
+    // Settlement claims are always playable knowledge. This is deliberately a
+    // one-tile reveal, not a worker-walk halo into the surrounding wilds.
+    colony.revealed_tiles.insert(target);
     append_event(
         colony,
         gate.processed_through,
@@ -9914,7 +10491,7 @@ fn chop_nearest_explored_forest(colony: &mut ColonyRuntime, now_ms: i64) {
     let nearest = colony
         .world_tiles
         .values()
-        .filter(|tile| is_forest_type(tile.tile_type) && tile_is_explored(colony.anchor, tile))
+        .filter(|tile| is_forest_type(tile.tile_type) && tile_is_explored(colony, tile))
         .map(|tile| tile.pos)
         .min_by_key(|site| cheb_from_anchor(colony.anchor, *site));
     if let Some(site) = nearest {
@@ -10428,6 +11005,7 @@ mod tests {
                         overlay_feature: None,
                     },
                 )]),
+                revealed_tiles: BTreeSet::from([pos(3, 0)]),
                 last_tick: 1_000,
                 test_rng_seed: Some(12_345),
                 ..ColonyRuntime::default()
@@ -10573,6 +11151,7 @@ mod tests {
                         ..tile(12, 6, 63, None)
                     },
                 )]),
+                revealed_tiles: BTreeSet::from([pos(12, 6)]),
                 last_tick: 0,
                 test_rng_seed: Some(12_345),
                 ..ColonyRuntime::default()
@@ -12540,6 +13119,14 @@ mod tests {
         world.colonies[0]
             .officers
             .insert(OfficerRole::Steward, steward_cat);
+        // Isolate gather logistics: keep the synthetic map fully known so the new
+        // founding scout cannot materialise distant resource sites during this test.
+        let seeded_tiles = world.colonies[0]
+            .world_tiles
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        world.colonies[0].revealed_tiles.extend(seeded_tiles);
 
         for step in 1..=40 {
             let now = 1_000 + i64::from(step) * 60_000;
@@ -12984,9 +13571,9 @@ mod tests {
         };
         for y in 0..crate::terrain_gen::TERRAIN_CHUNK_SIZE {
             for x in 0..crate::terrain_gen::TERRAIN_CHUNK_SIZE {
-                colony
-                    .world_tiles
-                    .insert(TilePos { x, y }, tile(x, y, 63, None));
+                let pos = TilePos { x, y };
+                colony.world_tiles.insert(pos, tile(x, y, 63, None));
+                colony.revealed_tiles.insert(pos);
             }
         }
         let (candidates, chunks) = logging_scan_inputs(&colony);
@@ -12997,19 +13584,21 @@ mod tests {
         );
         assert_eq!(chunks, BTreeSet::from([(0, 0)]));
 
+        let next_chunk = TilePos {
+            x: crate::terrain_gen::TERRAIN_CHUNK_SIZE,
+            y: 0,
+        };
         colony.world_tiles.insert(
-            TilePos {
-                x: crate::terrain_gen::TERRAIN_CHUNK_SIZE,
-                y: 0,
-            },
+            next_chunk,
             tile(crate::terrain_gen::TERRAIN_CHUNK_SIZE, 0, 63, None),
         );
+        colony.revealed_tiles.insert(next_chunk);
         let (_, chunks) = logging_scan_inputs(&colony);
         assert_eq!(chunks, BTreeSet::from([(0, 0), (1, 0)]));
     }
 
     #[test]
-    fn logging_selects_generated_wood_only_outside_the_village_interior() {
+    fn logging_selects_visible_generated_trees_only_outside_the_village_interior() {
         let (seed, anchor, interior, exterior) = (0_u32..10)
             .find_map(|seed| {
                 let mut wood_trees = Vec::new();
@@ -13027,7 +13616,7 @@ mod tests {
                                 matches!(
                                     tile.decoration,
                                     Some(crate::terrain_gen::DecorationRole::Tree { .. })
-                                ) && tile.climate_biome.properties().resource == ResourceHint::Wood
+                                )
                             })
                             .map(|tile| pos(tile.x, tile.y)),
                         );
@@ -13052,6 +13641,7 @@ mod tests {
         colony
             .world_tiles
             .insert(exterior, tile(exterior.x, exterior.y, 63, None));
+        colony.revealed_tiles.extend([interior, exterior]);
 
         let sites = logging_sites_near_village(&colony, seed);
         assert_eq!(sites, vec![tile_pos_to_world(exterior)]);
@@ -14483,6 +15073,20 @@ mod tests {
             );
         }
 
+        // The authored 13x13 claim plus an exact 2-tile halo is a 17x17
+        // square. The first tile beyond that exact boundary remains fogged.
+        assert_eq!(colony.claimed_tiles.len(), 13 * 13);
+        assert_eq!(colony.revealed_tiles.len(), 17 * 17);
+        let center = shrine_center_tile(anchor);
+        assert!(colony.revealed_tiles.contains(&TilePos {
+            x: center.x - VILLAGE_START_RADIUS - FOUNDING_REVEAL_RADIUS,
+            y: center.y,
+        }));
+        assert!(!colony.revealed_tiles.contains(&TilePos {
+            x: center.x - VILLAGE_START_RADIUS - FOUNDING_REVEAL_RADIUS - 1,
+            y: center.y,
+        }));
+
         // A far tile (well outside the village) is fogged.
         let far = TilePos {
             x: VILLAGE_ANCHOR.x + 40,
@@ -14492,7 +15096,7 @@ mod tests {
     }
 
     #[test]
-    fn cats_walking_reveals_more_tiles_over_time() {
+    fn leader_scout_deliveries_reveal_more_tiles_over_time() {
         let mut world = new_world(1234);
         world
             .colonies
@@ -14516,47 +15120,45 @@ mod tests {
     }
 
     #[test]
-    fn scouts_random_walk_outward_and_reveal_new_fog_deterministically() {
-        // Drive two identical founded colonies. Confirm (a) the leader dispatches
-        // scouts (explore jobs fire), (b) their outward random walk reveals fog well
-        // beyond the founding ring, and (c) the whole thing is bit-for-bit
-        // deterministic across the twin runs.
+    fn scouts_expand_fog_beyond_the_founding_halo_deterministically() {
+        // Drive two identical founded colonies. Confirm the leader dispatches a
+        // scout, the scout delivers knowledge beyond the exact founding halo,
+        // and the whole thing is byte-identical across twin runs.
         let run = || {
             let mut world = new_world(4242);
             world
                 .colonies
                 .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
+            let founding_len = world.colonies[0].revealed_tiles.len();
             let mut saw_explore = false;
-            let mut max_reveal_cheb = 0;
-            // The founding benches and construction queue legitimately consume the
-            // first work shifts; give the idle colony sixteen game-hours to reach its
-            // first frontier expedition.
-            for step in 1..=1_000 {
+            let mut saw_delivery = false;
+            for step in 1..=30 {
                 let now = 10_000 + i64::from(step) * 60_000;
                 let _ = world_tick(&mut world, now);
                 let colony = &world.colonies[0];
                 if colony.jobs.iter().any(|job| job.kind == JobKind::Explore) {
                     saw_explore = true;
                 }
-                for tile in &colony.revealed_tiles {
-                    max_reveal_cheb =
-                        max_reveal_cheb.max(cheb_from_anchor(VILLAGE_ANCHOR_TILE, *tile));
-                }
+                saw_delivery |= colony
+                    .events
+                    .iter()
+                    .any(|event| event.kind == EventKind::Discovery);
             }
             let revealed = world.colonies[0]
                 .revealed_tiles
                 .iter()
                 .copied()
                 .collect::<Vec<_>>();
-            (saw_explore, max_reveal_cheb, revealed)
+            (saw_explore, saw_delivery, founding_len, revealed)
         };
-        let (saw_explore, max_cheb, left) = run();
-        let (_, _, right) = run();
+        let (saw_explore, saw_delivery, founding_len, left) = run();
+        let (_, _, _, right) = run();
 
         assert!(saw_explore, "the leader should dispatch at least one scout");
+        assert!(saw_delivery, "a scout should return to the shrine");
         assert!(
-            max_cheb > 8,
-            "outward scouting should reveal fog past the founding ring, reached cheb {max_cheb}"
+            left.len() > founding_len,
+            "delivered scouting should reveal fog past the founding halo"
         );
         assert_eq!(
             left, right,
@@ -14587,6 +15189,265 @@ mod tests {
     }
 
     // ---- P15: provisional (scout, in-flight) vs committed (permanent) fog reveal ----
+
+    #[test]
+    fn general_scout_chooses_the_nearest_frontier_with_stable_coordinate_ties() {
+        let origin = pos(1, 1);
+        let mut colony = ColonyRuntime {
+            anchor: pos(0, 0),
+            revealed_tiles: BTreeSet::from([origin]),
+            ..ColonyRuntime::default()
+        };
+        for candidate in [pos(2, 1), pos(1, 2), pos(3, 1)] {
+            colony
+                .world_tiles
+                .insert(candidate, tile(candidate.x, candidate.y, 0, None));
+        }
+
+        assert_eq!(
+            select_scout_route(&colony, 123, ScoutMission::Explore),
+            Some(ScoutRoute {
+                target: pos(2, 1),
+                destination: pos(2, 1),
+            })
+        );
+    }
+
+    #[test]
+    fn delivered_frontier_unlocks_the_next_bounded_scout_ring() {
+        let mut colony = ColonyRuntime {
+            anchor: pos(0, 0),
+            ..ColonyRuntime::default()
+        };
+        let origin = scout_search_origin(&colony);
+        for y in -SCOUT_SEARCH_RADIUS..=SCOUT_SEARCH_RADIUS {
+            for x in -SCOUT_SEARCH_RADIUS..=SCOUT_SEARCH_RADIUS {
+                colony.revealed_tiles.insert(TilePos {
+                    x: origin.x + x,
+                    y: origin.y + y,
+                });
+            }
+        }
+
+        ensure_scout_search_tiles(&mut colony, 123);
+        let route = select_scout_route(&colony, 123, ScoutMission::Explore)
+            .expect("the next ring should contain a reachable frontier");
+
+        assert_eq!(
+            cheb_from_anchor(origin, route.target),
+            SCOUT_SEARCH_RADIUS + 1
+        );
+        assert!(tile_is_fog_frontier(&colony, route.target));
+        assert!(!colony.revealed_tiles.contains(&route.target));
+    }
+
+    #[test]
+    fn resource_scout_chooses_nearest_useful_unrevealed_target_stably() {
+        let mut colony = ColonyRuntime {
+            anchor: pos(0, 0),
+            revealed_tiles: BTreeSet::from([pos(1, 1)]),
+            ..ColonyRuntime::default()
+        };
+        for candidate in [pos(5, 1), pos(1, 5), pos(6, 1)] {
+            let mut target = tile(candidate.x, candidate.y, 0, None);
+            target.resources.food = 5;
+            colony.world_tiles.insert(candidate, target);
+        }
+
+        assert_eq!(
+            select_scout_route(&colony, 123, ScoutMission::Resource(ScoutResource::Food),),
+            Some(ScoutRoute {
+                target: pos(5, 1),
+                destination: pos(5, 1),
+            })
+        );
+    }
+
+    #[test]
+    fn generated_wood_scout_targets_match_the_logging_resource_predicate() {
+        for seed in [7, 42, 2_024, 4_242] {
+            let mut colony = found_colony(seed, "colony-1", 10_000, seed);
+            ensure_scout_search_tiles(&mut colony, seed);
+            let route =
+                select_scout_route(&colony, seed, ScoutMission::Resource(ScoutResource::Wood))
+                    .unwrap_or_else(|| panic!("seed {seed} should have nearby unrevealed wood"));
+            let target = colony
+                .world_tiles
+                .get(&route.target)
+                .expect("target is materialised");
+            assert!(scout_tile_matches_resource(
+                target,
+                seed,
+                ScoutResource::Wood
+            ));
+
+            colony.revealed_tiles.insert(route.target);
+            assert!(
+                logging_sites_near_village(&colony, seed)
+                    .contains(&tile_pos_to_world(route.target)),
+                "seed {seed}: wood delivered at the shrine must become an actionable log site"
+            );
+            colony.resources.materials = 0.0;
+            assert_ne!(
+                leader_scout_mission(&colony, seed),
+                ScoutMission::Resource(ScoutResource::Wood),
+                "seed {seed}: the leader must use the known tree before seeking another"
+            );
+
+            let origin = scout_search_origin(&colony);
+            let wood_targets = scout_wood_targets(&colony, seed);
+            assert!(colony.world_tiles.values().all(|candidate| {
+                colony.revealed_tiles.contains(&candidate.pos)
+                    || !wood_targets.contains(&candidate.pos)
+                    || scout_target_order(origin, candidate.pos)
+                        >= scout_target_order(origin, route.target)
+            }));
+        }
+    }
+
+    #[test]
+    fn leader_general_scouting_has_a_stable_six_hour_cooldown() {
+        let completed_at = 1_000;
+        let colony = ColonyRuntime {
+            jobs: vec![JobRuntime {
+                kind: JobKind::Explore,
+                status: JobStatus::Completed,
+                requested_by: JobRequester::Leader,
+                created_at: 500,
+                started_at: Some(700),
+                completed_at: Some(completed_at),
+                metadata: JobMetadata::Scout {
+                    mission: ScoutMission::Explore,
+                    target: Some(pos(10, 10)),
+                    destination: Some(pos(10, 10)),
+                    accepted: true,
+                    found: true,
+                },
+                ..JobRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+
+        assert!(!leader_general_scout_due(
+            &colony,
+            completed_at + LEADER_GENERAL_SCOUT_COOLDOWN_MS - 1
+        ));
+        assert!(leader_general_scout_due(
+            &colony,
+            completed_at + LEADER_GENERAL_SCOUT_COOLDOWN_MS
+        ));
+    }
+
+    const FOUNDING_WOOD_DELIVERY_BOUND_SECONDS: i64 = 180;
+
+    fn run_founding_wood_delivery(seed: u32) -> (WorldState, i64) {
+        let start = 10_000;
+        let mut world = new_world(seed);
+        world
+            .colonies
+            .push(found_colony(seed, "colony-1", start, seed));
+        let founding = world.colonies[0].revealed_tiles.clone();
+        let mut delivered_at = None;
+        let mut saw_provisional = false;
+        for second in 1..=FOUNDING_WOOD_DELIVERY_BOUND_SECONDS {
+            let now = start + second * 1_000;
+            let _ = world_tick(&mut world, now);
+            let colony = &world.colonies[0];
+            saw_provisional |= !colony.provisional_tiles.is_empty();
+            if colony.events.iter().any(|event| {
+                event.kind == EventKind::Discovery && event.message.contains("woodland")
+            }) {
+                delivered_at = Some(second);
+                break;
+            }
+        }
+        assert!(
+            saw_provisional,
+            "seed {seed} never showed outbound scout haze"
+        );
+        assert!(
+            world.colonies[0].revealed_tiles.len() > founding.len(),
+            "seed {seed} returned no permanent knowledge; provisional={} jobs={:?} scouts={:?}",
+            world.colonies[0]
+                .provisional_tiles
+                .values()
+                .map(BTreeSet::len)
+                .sum::<usize>(),
+            world.colonies[0]
+                .jobs
+                .iter()
+                .filter(|job| job.kind == JobKind::Explore)
+                .map(|job| (&job.status, &job.metadata, &job.assigned_cat, job.ends_at))
+                .collect::<Vec<_>>(),
+            world.colonies[0]
+                .cats
+                .iter()
+                .filter(|cat| {
+                    cat.current_task == Some(TaskType::Explore)
+                        || cat.activity == CatActivity::Returning
+                })
+                .map(|cat| (&cat.id, cat.position, cat.destination, cat.activity))
+                .collect::<Vec<_>>()
+        );
+        (
+            world,
+            delivered_at.expect("wood scout should touch shrine in bound"),
+        )
+    }
+
+    #[test]
+    fn founding_leader_returns_first_wood_knowledge_within_three_live_minutes_across_seed_matrix() {
+        // Include a broad contiguous matrix plus the high production seed that exposed
+        // a forest/gate return taking more than eight real minutes during framebuffer QA.
+        for seed in (0_u32..31).chain(std::iter::once(1_541_891_057)) {
+            let (_, delivered_at) = run_founding_wood_delivery(seed);
+            assert!(delivered_at <= FOUNDING_WOOD_DELIVERY_BOUND_SECONDS);
+        }
+    }
+
+    #[test]
+    fn founding_wood_delivery_is_deterministic_for_representative_seeds() {
+        for seed in [7, 42, 2_024, 1_541_891_057] {
+            let (left, delivered_at) = run_founding_wood_delivery(seed);
+            let (right, right_at) = run_founding_wood_delivery(seed);
+            assert_eq!(delivered_at, right_at);
+            assert_eq!(left, right, "seed {seed} scout run diverged");
+        }
+    }
+
+    #[test]
+    fn loaded_active_scout_rehydrates_transient_notes_and_can_deliver() {
+        let start = 10_000;
+        let seed = 42;
+        let mut world = new_world(seed);
+        world
+            .colonies
+            .push(found_colony(seed, "colony-1", start, seed));
+        for second in 1..=60 {
+            let _ = world_tick(&mut world, start + second * 1_000);
+            if !world.colonies[0].provisional_tiles.is_empty() {
+                break;
+            }
+        }
+        assert!(!world.colonies[0].provisional_tiles.is_empty());
+        let before = world.colonies[0].revealed_tiles.clone();
+
+        // SQLite intentionally drops only this in-flight notebook.
+        world.colonies[0].provisional_tiles.clear();
+        let mut saw_rehydrated = false;
+        for second in 61..=240 {
+            let _ = world_tick(&mut world, start + second * 1_000);
+            saw_rehydrated |= !world.colonies[0].provisional_tiles.is_empty();
+            if world.colonies[0].revealed_tiles.len() > before.len() {
+                break;
+            }
+        }
+        assert!(
+            saw_rehydrated,
+            "durable scout job did not recreate its notebook"
+        );
+        assert!(world.colonies[0].revealed_tiles.len() > before.len());
+    }
 
     /// Shared movement rig for the P15 reveal-tier unit tests below: a single cat
     /// walking a short, unobstructed 2-tile leg on open ground far from the village
@@ -14624,10 +15485,9 @@ mod tests {
     }
 
     #[test]
-    fn regular_cat_reveal_still_commits_directly_to_revealed_tiles() {
-        // A non-scout cat (no `provisional_tiles` entry) must keep revealing straight
-        // into the permanent `revealed_tiles` set, exactly as before P15 — the
-        // two-tier model must not regress ordinary walk-reveal.
+    fn regular_cat_walking_wears_paths_but_never_reveals_wilds() {
+        // A non-scout cat (no `provisional_tiles` entry) can still create a
+        // traffic trail, but must not permanently lift unexplored fog.
         let mut cat = adult_idle_cat("walker", "colony-1");
         cat.position = Position {
             map: MapType::World,
@@ -14666,8 +15526,12 @@ mod tests {
             colony.provisional_tiles.is_empty(),
             "a plain walking cat must never create a provisional entry"
         );
-        assert!(colony.revealed_tiles.contains(&pos(20, 6)));
-        assert!(colony.revealed_tiles.contains(&pos(22, 6)));
+        assert!(
+            colony.revealed_tiles.is_empty(),
+            "ordinary walking must not reveal any wild tile"
+        );
+        assert!(colony.world_tiles[&pos(20, 6)].path_wear >= 64);
+        assert!(colony.world_tiles[&pos(22, 6)].path_wear >= 64);
     }
 
     #[test]
@@ -14723,6 +15587,13 @@ mod tests {
             .expect("the scout's provisional entry must survive the walk");
         assert!(provisional.contains(&pos(20, 6)));
         assert!(provisional.contains(&pos(22, 6)));
+        assert!(
+            colony
+                .events
+                .iter()
+                .all(|event| event.kind != EventKind::Discovery),
+            "discovery must not be announced before shrine delivery"
+        );
         // Still outbound, not heading home — commit only fires on a `Returning`
         // arrival (see `scout_provisional_commits_to_revealed_tiles_on_shrine_return_and_clears`),
         // so nothing should have committed here either way.
@@ -14787,6 +15658,15 @@ mod tests {
             CatActivity::Idle,
             "a Returning cat that reaches its destination goes Idle, same as any other worker"
         );
+        assert_eq!(
+            colony
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::Discovery)
+                .count(),
+            1,
+            "shrine touch announces exactly one delivered discovery"
+        );
     }
 
     #[test]
@@ -14829,6 +15709,31 @@ mod tests {
     }
 
     #[test]
+    fn scout_no_longer_on_a_returning_mission_discards_notes_without_committing() {
+        let scout = adult_idle_cat("scout", "colony-1");
+        let lost = pos(81, 80);
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![scout],
+            provisional_tiles: BTreeMap::from([("scout".to_owned(), BTreeSet::from([lost]))]),
+            ..ColonyRuntime::default()
+        };
+
+        phase_25b_prune_dead_scout_provisional_tiles(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 1,
+                processed_through: 1_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+        );
+
+        assert!(colony.provisional_tiles.is_empty());
+        assert!(!colony.revealed_tiles.contains(&lost));
+    }
+
+    #[test]
     fn provisional_tiles_are_deterministic_across_identical_runs() {
         // Two identical seeded runs must produce byte-identical `provisional_tiles`
         // state at every tick — not just after every scout has come home — so the
@@ -14839,7 +15744,7 @@ mod tests {
                 .colonies
                 .push(found_colony(world.world_seed, "colony-1", 10_000, 4242));
             let mut trace: Vec<BTreeMap<CatId, BTreeSet<TilePos>>> = Vec::new();
-            for step in 1..=1_000 {
+            for step in 1..=30 {
                 let now = 10_000 + i64::from(step) * 60_000;
                 let _ = world_tick(&mut world, now);
                 trace.push(world.colonies[0].provisional_tiles.clone());
@@ -16850,6 +17755,7 @@ mod tests {
                         },
                     ),
                 ]),
+                revealed_tiles: BTreeSet::from([food_a, food_b]),
                 zones,
                 last_tick: 0,
                 test_rng_seed: Some(12_345),
@@ -18170,6 +19076,10 @@ mod tests {
             "the tree is cleared rather than causing an endless expansion rollback"
         );
         assert!(!tile_has_uncleared_tree(&colony, target, seed));
+        assert!(
+            colony.revealed_tiles.contains(&target),
+            "newly claimed settlement ground must be immediately playable/visible"
+        );
         assert!(village_exterior_is_road_connected(&colony, seed));
     }
 

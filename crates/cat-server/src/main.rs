@@ -710,6 +710,9 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         ClientAction::RequestJob {
             session_id, sig, ..
         }
+        | ClientAction::DispatchScout {
+            session_id, sig, ..
+        }
         | ClientAction::Boost {
             session_id, sig, ..
         }
@@ -839,7 +842,8 @@ mod tests {
         },
     };
     use cat_protocol::{
-        AccelerationPreset, ClientAction, CropKind, OfficerRole, ResourceKind, TilePoint,
+        AccelerationPreset, ClientAction, CropKind, OfficerRole, ResourceKind, ScoutMission,
+        TilePoint,
     };
     use std::{fs, path::PathBuf, time::Duration};
     use tower::ServiceExt;
@@ -1299,10 +1303,16 @@ mod tests {
                 kind: ResourceKind::Materials,
             },
             ClientAction::RemoveGatherSpot {
-                session_id: signed.session_id,
+                session_id: signed.session_id.clone(),
                 nickname: "Tester".to_owned(),
                 sig: "invalid".to_owned(),
                 stockpile_id: "gather-1".to_owned(),
+            },
+            ClientAction::DispatchScout {
+                session_id: signed.session_id,
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                mission: ScoutMission::Explore,
             },
         ];
 

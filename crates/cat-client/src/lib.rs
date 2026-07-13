@@ -25,8 +25,9 @@ use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot,
     ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmStage, FootprintSize, GateSide,
     ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus, ResourceAmounts, ResourceCapacities,
-    ResourceKind, RoleXp, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint,
-    TraderBuyOffer, TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
+    ResourceKind, RoleXp, ScoutMission, ScoutResource, Specialization, StockLedgerSnapshot,
+    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderVisitState, WorldSnapshot,
+    ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -1873,6 +1874,11 @@ enum ButtonAction {
     SupplyFood,
     SupplyWater,
     PlanHunt,
+    ScoutWood,
+    ScoutFood,
+    ScoutWater,
+    ScoutStone,
+    Explore,
     FoundVillage,
 }
 
@@ -1882,6 +1888,11 @@ impl ButtonAction {
             Self::SupplyFood => "Supply food",
             Self::SupplyWater => "Supply water",
             Self::PlanHunt => "Plan hunt",
+            Self::ScoutWood => "Find wood",
+            Self::ScoutFood => "Find food",
+            Self::ScoutWater => "Find water",
+            Self::ScoutStone => "Find stone",
+            Self::Explore => "Explore",
             Self::FoundVillage => "Found village",
         }
     }
@@ -2955,6 +2966,31 @@ fn spawn_officers_panel(commands: &mut Commands) {
 /// row, and the player action buttons below — all inside ONE framed strip so the
 /// controls read as a single designed toolbar. Kit buttons; the active tool
 /// stays lit via its [`KitToggle`].
+fn bottom_bar_panel_node() -> Node {
+    Node {
+        width: Val::Percent(96.0),
+        max_width: Val::Px(1180.0),
+        flex_direction: FlexDirection::Column,
+        row_gap: Val::Px(UI_GAP),
+        padding: UiRect::all(Val::Px(UI_GAP)),
+        border: UiRect::all(Val::Px(UI_BORDER_W)),
+        border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
+        align_items: AlignItems::Center,
+        ..default()
+    }
+}
+
+fn bottom_bar_row_node() -> Node {
+    Node {
+        width: Val::Percent(100.0),
+        flex_wrap: FlexWrap::Wrap,
+        justify_content: JustifyContent::Center,
+        column_gap: Val::Px(UI_GAP),
+        row_gap: Val::Px(UI_GAP),
+        ..default()
+    }
+}
+
 fn spawn_bottom_bar(commands: &mut Commands) {
     commands
         .spawn(Node {
@@ -2967,25 +3003,10 @@ fn spawn_bottom_bar(commands: &mut Commands) {
         })
         .with_children(|center| {
             center
-                .spawn((
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(UI_GAP),
-                        padding: UiRect::all(Val::Px(UI_GAP)),
-                        border: UiRect::all(Val::Px(UI_BORDER_W)),
-                        border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    ui_panel_frame(),
-                ))
+                .spawn((bottom_bar_panel_node(), ui_panel_frame()))
                 .with_children(|bar| {
                     // Tool-mode row + accept picker.
-                    bar.spawn(Node {
-                        column_gap: Val::Px(UI_GAP),
-                        ..default()
-                    })
-                    .with_children(|row| {
+                    bar.spawn(bottom_bar_row_node()).with_children(|row| {
                         for mode in [
                             ToolMode::Inspect,
                             ToolMode::AvoidZone,
@@ -3009,15 +3030,16 @@ fn spawn_bottom_bar(commands: &mut Commands) {
                         ));
                     });
                     // Player action row.
-                    bar.spawn(Node {
-                        column_gap: Val::Px(UI_GAP),
-                        ..default()
-                    })
-                    .with_children(|row| {
+                    bar.spawn(bottom_bar_row_node()).with_children(|row| {
                         for action in [
                             ButtonAction::SupplyFood,
                             ButtonAction::SupplyWater,
                             ButtonAction::PlanHunt,
+                            ButtonAction::ScoutWood,
+                            ButtonAction::ScoutFood,
+                            ButtonAction::ScoutWater,
+                            ButtonAction::ScoutStone,
+                            ButtonAction::Explore,
                             ButtonAction::FoundVillage,
                         ] {
                             row.spawn((
@@ -6392,6 +6414,26 @@ fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction>
         ButtonAction::SupplyFood => JobKind::SupplyFood,
         ButtonAction::SupplyWater => JobKind::SupplyWater,
         ButtonAction::PlanHunt => JobKind::LeaderPlanHunt,
+        ButtonAction::ScoutWood
+        | ButtonAction::ScoutFood
+        | ButtonAction::ScoutWater
+        | ButtonAction::ScoutStone
+        | ButtonAction::Explore => {
+            let mission = match action {
+                ButtonAction::ScoutWood => ScoutMission::Resource(ScoutResource::Wood),
+                ButtonAction::ScoutFood => ScoutMission::Resource(ScoutResource::Food),
+                ButtonAction::ScoutWater => ScoutMission::Resource(ScoutResource::Water),
+                ButtonAction::ScoutStone => ScoutMission::Resource(ScoutResource::Stone),
+                ButtonAction::Explore => ScoutMission::Explore,
+                _ => unreachable!("covered scout actions"),
+            };
+            return Some(ClientAction::DispatchScout {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                mission,
+            });
+        }
         ButtonAction::FoundVillage => {
             return Some(ClientAction::FoundVillage {
                 name: "Forest Hollow".to_string(),
@@ -7066,6 +7108,53 @@ mod tests {
                 session_id: "signed-session".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn scout_toolbar_buttons_emit_typed_signed_missions() {
+        let session = signed_session("scout-session");
+        for (button, mission) in [
+            (
+                ButtonAction::ScoutWood,
+                ScoutMission::Resource(ScoutResource::Wood),
+            ),
+            (
+                ButtonAction::ScoutFood,
+                ScoutMission::Resource(ScoutResource::Food),
+            ),
+            (
+                ButtonAction::ScoutWater,
+                ScoutMission::Resource(ScoutResource::Water),
+            ),
+            (
+                ButtonAction::ScoutStone,
+                ScoutMission::Resource(ScoutResource::Stone),
+            ),
+            (ButtonAction::Explore, ScoutMission::Explore),
+        ] {
+            assert_eq!(
+                build_action(button, &session),
+                Some(ClientAction::DispatchScout {
+                    session_id: "scout-session".to_owned(),
+                    nickname: "Desktop Cat".to_owned(),
+                    sig: "signed".to_owned(),
+                    mission,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn bottom_toolbar_rows_wrap_inside_a_viewport_bounded_panel() {
+        let panel = bottom_bar_panel_node();
+        assert_eq!(panel.width, Val::Percent(96.0));
+        assert_eq!(panel.max_width, Val::Px(1180.0));
+
+        let row = bottom_bar_row_node();
+        assert_eq!(row.width, Val::Percent(100.0));
+        assert_eq!(row.flex_wrap, FlexWrap::Wrap);
+        assert_eq!(row.justify_content, JustifyContent::Center);
+        assert_eq!(row.row_gap, Val::Px(UI_GAP));
     }
 
     fn village_colony(id: &str, name: &str, population: u32, status: &str) -> ColonySnapshot {

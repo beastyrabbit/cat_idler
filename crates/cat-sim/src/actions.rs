@@ -27,10 +27,10 @@ use crate::{
     village_layout::{GridPos, village_ring_radius},
     world_tick::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
-        JobMetadata, JobRequester, JobRuntime, RaiderRuntime, TilePos, TradeDirection, VoteRuntime,
-        WorldState, ZoneRuntime, found_colony, found_colony_at, has_logging_site,
-        inside_village_interior, reconcile_colony_stockpiles, select_founding_site,
-        tile_is_occupied, world_tick,
+        JobMetadata, JobRequester, JobRuntime, RaiderRuntime, ScoutMission, ScoutResource, TilePos,
+        TradeDirection, VoteRuntime, WorldState, ZoneRuntime, found_colony, found_colony_at,
+        has_logging_site, inside_village_interior, reconcile_colony_stockpiles,
+        select_founding_site, tile_is_occupied, world_tick,
     },
     zones,
 };
@@ -79,6 +79,10 @@ pub fn apply_action(
             with_colony(world, ctx, |colony| {
                 request_job(colony, kind, world_seed, ctx)
             })
+        }
+        proto::ClientAction::DispatchScout { mission, .. } => {
+            let mission = proto_to_sim_scout_mission(*mission);
+            with_colony(world, ctx, |colony| dispatch_scout(colony, mission, ctx))
         }
         proto::ClientAction::Boost { job_id, .. } => {
             with_colony(world, ctx, |colony| boost_job(colony, job_id, ctx))
@@ -331,6 +335,32 @@ fn request_job(
         assigned_cat,
         JobMetadata::None,
     );
+    ok()
+}
+
+fn dispatch_scout(
+    colony: &mut ColonyRuntime,
+    mission: ScoutMission,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(cat_id) = select_best_scout(colony) else {
+        return fail("No available scout.");
+    };
+    queue_job(
+        colony,
+        ctx.now_ms,
+        JobKind::Explore,
+        JobRequester::Player,
+        Some(cat_id),
+        JobMetadata::Scout {
+            mission,
+            target: None,
+            destination: None,
+            accepted: false,
+            found: false,
+        },
+    );
+    colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
 
@@ -1987,6 +2017,31 @@ fn specialization_stat(cat: &Cat, specialization: Option<CatSpecialization>) -> 
     }
 }
 
+fn select_best_scout(colony: &ColonyRuntime) -> Option<String> {
+    let busy = busy_cat_ids(colony);
+    let assigned = assigned_building_cat_ids(colony);
+    colony
+        .cats
+        .iter()
+        .filter(|cat| {
+            cat.death_time.is_none()
+                && can_work(get_life_stage(cat.age_hours))
+                && !busy.contains(cat.id.as_str())
+                && !assigned.contains(cat.id.as_str())
+                && cat.activity == CatActivity::Idle
+                && cat.current_task.is_none()
+                && cat.carrying.is_none()
+                && cat.destination.is_none()
+        })
+        .max_by(|a, b| {
+            a.stats
+                .vision
+                .total_cmp(&b.stats.vision)
+                .then_with(|| b.id.cmp(&a.id))
+        })
+        .map(|cat| cat.id.clone())
+}
+
 fn cat_can_take_assignment(colony: &ColonyRuntime, cat_index: usize) -> bool {
     let cat = &colony.cats[cat_index];
     let busy = busy_cat_ids(colony);
@@ -2266,6 +2321,18 @@ fn proto_to_sim_officer_role(role: proto::OfficerRole) -> OfficerRole {
         proto::OfficerRole::Farmer => OfficerRole::Farmer,
         proto::OfficerRole::Captain => OfficerRole::Captain,
         proto::OfficerRole::Loremaster => OfficerRole::Loremaster,
+    }
+}
+
+fn proto_to_sim_scout_mission(mission: proto::ScoutMission) -> ScoutMission {
+    match mission {
+        proto::ScoutMission::Explore => ScoutMission::Explore,
+        proto::ScoutMission::Resource(resource) => ScoutMission::Resource(match resource {
+            proto::ScoutResource::Wood => ScoutResource::Wood,
+            proto::ScoutResource::Food => ScoutResource::Food,
+            proto::ScoutResource::Water => ScoutResource::Water,
+            proto::ScoutResource::Stone => ScoutResource::Stone,
+        }),
     }
 }
 
@@ -2558,6 +2625,47 @@ mod tests {
             world_seed: 20_240_703,
             colonies: vec![found_colony(20_240_703, "c1", 1_000_000, 1234)],
         }
+    }
+
+    #[test]
+    fn typed_player_scout_action_dispatches_the_best_available_vision_cat() {
+        let mut world = world_with_one_colony();
+        let expected = world.colonies[0]
+            .cats
+            .iter()
+            .max_by(|a, b| {
+                a.stats
+                    .vision
+                    .total_cmp(&b.stats.vision)
+                    .then_with(|| b.id.cmp(&a.id))
+            })
+            .expect("founding cat")
+            .id
+            .clone();
+        let action = proto::ClientAction::DispatchScout {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "signed".to_owned(),
+            mission: proto::ScoutMission::Resource(proto::ScoutResource::Wood),
+        };
+
+        let result = apply_action(&mut world, &action, &ctx());
+
+        assert!(result.ok, "{result:?}");
+        let job = world.colonies[0].jobs.last().expect("scout job");
+        assert_eq!(job.kind, JobKind::Explore);
+        assert_eq!(job.requested_by, JobRequester::Player);
+        assert_eq!(job.assigned_cat.as_deref(), Some(expected.as_str()));
+        assert!(matches!(
+            job.metadata,
+            JobMetadata::Scout {
+                mission: ScoutMission::Resource(ScoutResource::Wood),
+                target: None,
+                destination: None,
+                accepted: false,
+                found: false,
+            }
+        ));
     }
 
     #[test]
