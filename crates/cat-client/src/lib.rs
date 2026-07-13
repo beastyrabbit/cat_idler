@@ -124,6 +124,9 @@ const FOG_COLOR: Color = Color::srgb(0.02, 0.03, 0.05);
 const PROVISIONAL_FOG_COLOR: Color = Color::srgba(0.02, 0.03, 0.05, 0.55);
 
 const CAMERA_Z: f32 = 1000.0;
+const OFFICERS_SHORTCUT: KeyCode = KeyCode::KeyO;
+const ORDERS_SHORTCUT: KeyCode = KeyCode::KeyP;
+const CAMERA_RESET_SHORTCUT: KeyCode = KeyCode::KeyR;
 
 /// Flat top-down projection: tile `(x, y)` → world space. Y is negated so the
 /// grid reads top-down with north up.
@@ -596,6 +599,14 @@ struct OfficersUi {
     visible: bool,
 }
 
+/// Responsive manual orders sheet. Vacant offices leave these controls as the
+/// player's authoritative path for the same work categories.
+#[derive(Resource, Default)]
+struct OrdersUi {
+    visible: bool,
+    planned_building: usize,
+}
+
 /// Whether the announcements / event-log panel is open (toggled by `L`).
 #[derive(Resource, Default)]
 struct AnnouncementsUi {
@@ -655,22 +666,26 @@ struct TradeUi {
 const TRADE_SELL_ROWS: usize = 6;
 const TRADE_BUY_ROWS: usize = 8;
 
-/// The five appointable officer roles, in display order.
-const ALL_OFFICER_ROLES: [OfficerRole; 5] = [
+/// The appointable officer roles, in display order.
+const ALL_OFFICER_ROLES: [OfficerRole; 7] = [
     OfficerRole::Steward,
+    OfficerRole::Accountant,
     OfficerRole::Forester,
     OfficerRole::Farmer,
     OfficerRole::Captain,
     OfficerRole::Loremaster,
+    OfficerRole::ClothLeader,
 ];
 
 fn officer_role_name(role: OfficerRole) -> &'static str {
     match role {
         OfficerRole::Steward => "Steward",
+        OfficerRole::Accountant => "Accountant",
         OfficerRole::Forester => "Forester",
         OfficerRole::Farmer => "Farmer",
         OfficerRole::Captain => "Captain",
         OfficerRole::Loremaster => "Loremaster",
+        OfficerRole::ClothLeader => "Cloth Leader",
     }
 }
 
@@ -742,6 +757,9 @@ enum ToolMode {
     AvoidZone,
     GatherZone,
     Stockpile,
+    Farm,
+    GatherSpot,
+    Road,
 }
 
 /// What a click-drag paints — a steering zone or a stockpile designation.
@@ -750,6 +768,9 @@ enum PaintKind {
     Avoid,
     Gather,
     Stockpile,
+    Farm,
+    GatherSpot,
+    Road,
 }
 
 impl ToolMode {
@@ -759,6 +780,9 @@ impl ToolMode {
             Self::AvoidZone => "Avoid zone",
             Self::GatherZone => "Gather zone",
             Self::Stockpile => "Stockpile",
+            Self::Farm => "Farm",
+            Self::GatherSpot => "Gather spot",
+            Self::Road => "Road",
         }
     }
 
@@ -769,6 +793,9 @@ impl ToolMode {
             Self::AvoidZone => Some(PaintKind::Avoid),
             Self::GatherZone => Some(PaintKind::Gather),
             Self::Stockpile => Some(PaintKind::Stockpile),
+            Self::Farm => Some(PaintKind::Farm),
+            Self::GatherSpot => Some(PaintKind::GatherSpot),
+            Self::Road => Some(PaintKind::Road),
         }
     }
 }
@@ -1862,6 +1889,18 @@ struct RemoveStockpileButton;
 /// Marker for the officers panel node (toggled with `O`).
 #[derive(Component)]
 struct OfficersPanel;
+/// Manual orders sheet (toggled with `P`).
+#[derive(Component)]
+struct OrdersPanel;
+/// Compact event log hidden while the wide manual-orders sheet owns its lane.
+#[derive(Component)]
+struct DispatchesPanel;
+#[derive(Component, Clone, Copy)]
+struct OrderButton(OrderAction);
+#[derive(Component)]
+struct CycleOrderBuilding;
+#[derive(Component)]
+struct PlannedBuildingText;
 /// One officer role row in the officers panel (its text holder).
 #[derive(Component, Clone, Copy)]
 struct OfficerRow(OfficerRole);
@@ -2334,7 +2373,7 @@ const STOCKPILE_OVERLAY: Color = Color::srgba(0.85, 0.60, 0.25, 0.30);
 
 /// Resource kinds a designated stockpile accepts by default (all storable
 /// goods; blessings are not a physical pile).
-const STORABLE_KINDS: [ResourceKind; 12] = [
+const STORABLE_KINDS: [ResourceKind; 18] = [
     ResourceKind::Food,
     ResourceKind::Water,
     ResourceKind::Herbs,
@@ -2347,6 +2386,12 @@ const STORABLE_KINDS: [ResourceKind; 12] = [
     ResourceKind::Armor,
     ResourceKind::Logs,
     ResourceKind::Lumber,
+    ResourceKind::Fibre,
+    ResourceKind::Hide,
+    ResourceKind::Cloth,
+    ResourceKind::Leather,
+    ResourceKind::Ore,
+    ResourceKind::Metal,
 ];
 
 /// Query filter for the per-tick redraw of building sprite entities.
@@ -2436,6 +2481,111 @@ enum ButtonAction {
     FoundVillage,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OrderAction {
+    Hunt,
+    FetchWater,
+    Quarry,
+    GatherLogs,
+    ForageFibre,
+    ExpandVillage,
+    Ritual,
+    OfferTithe,
+    OfferMaterials,
+    HaulSelected,
+    PlanBuilding,
+    StaffSelected,
+    UnstaffSelected,
+    TrainSelected,
+    DefendRaid,
+}
+
+impl OrderAction {
+    #[cfg(test)]
+    const ALL: [Self; 15] = [
+        Self::Hunt,
+        Self::FetchWater,
+        Self::Quarry,
+        Self::GatherLogs,
+        Self::ForageFibre,
+        Self::ExpandVillage,
+        Self::Ritual,
+        Self::OfferTithe,
+        Self::OfferMaterials,
+        Self::HaulSelected,
+        Self::PlanBuilding,
+        Self::StaffSelected,
+        Self::UnstaffSelected,
+        Self::TrainSelected,
+        Self::DefendRaid,
+    ];
+    const JOBS: [Self; 7] = [
+        Self::Hunt,
+        Self::FetchWater,
+        Self::Quarry,
+        Self::GatherLogs,
+        Self::ForageFibre,
+        Self::ExpandVillage,
+        Self::Ritual,
+    ];
+    const TARGETS: [Self; 7] = [
+        Self::OfferTithe,
+        Self::OfferMaterials,
+        Self::HaulSelected,
+        Self::StaffSelected,
+        Self::UnstaffSelected,
+        Self::TrainSelected,
+        Self::DefendRaid,
+    ];
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Hunt => "Hunt",
+            Self::FetchWater => "Fetch water",
+            Self::Quarry => "Quarry",
+            Self::GatherLogs => "Gather logs",
+            Self::ForageFibre => "Forage fibre",
+            Self::ExpandVillage => "Expand village",
+            Self::Ritual => "Request ritual",
+            Self::OfferTithe => "Offer tithe",
+            Self::OfferMaterials => "Offer materials",
+            Self::HaulSelected => "Haul selected pile",
+            Self::PlanBuilding => "Plan building",
+            Self::StaffSelected => "Staff selected",
+            Self::UnstaffSelected => "Unstaff cat",
+            Self::TrainSelected => "Train selected",
+            Self::DefendRaid => "Defend raid",
+        }
+    }
+}
+
+const PLANNABLE_BUILDINGS: [BuildingType; 24] = [
+    BuildingType::Den,
+    BuildingType::FoodStorage,
+    BuildingType::WaterBowl,
+    BuildingType::Beds,
+    BuildingType::HerbGarden,
+    BuildingType::Nursery,
+    BuildingType::ElderCorner,
+    BuildingType::Walls,
+    BuildingType::MouseFarm,
+    BuildingType::Workshop,
+    BuildingType::AccountingTent,
+    BuildingType::Field,
+    BuildingType::ResearchHut,
+    BuildingType::School,
+    BuildingType::Smithy,
+    BuildingType::Barracks,
+    BuildingType::WoodCutter,
+    BuildingType::StonePrep,
+    BuildingType::Woodworking,
+    BuildingType::Clothier,
+    BuildingType::Tannery,
+    BuildingType::Smelter,
+    BuildingType::Mill,
+    BuildingType::Sawmill,
+];
+
 impl ButtonAction {
     fn label(self) -> &'static str {
         match self {
@@ -2502,7 +2652,8 @@ pub fn run() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Idle Cat Forest".to_string(),
-                        resolution: bevy::window::WindowResolution::new(1280, 800),
+                        resolution: bevy::window::WindowResolution::new(1024, 768)
+                            .with_scale_factor_override(1.0),
                         ..default()
                     }),
                     ..default()
@@ -2521,7 +2672,8 @@ pub fn run() {
         .insert_resource(Selection::default())
         .insert_resource(StockpileSelection::default())
         .insert_resource(BuildingSelection::default())
-        .insert_resource(OfficersUi::default())
+        .insert_resource(OfficersUi { visible: true })
+        .insert_resource(OrdersUi::default())
         .insert_resource(AnnouncementsUi::default())
         .insert_resource(GoodsUi::default())
         .insert_resource(CensusUi::default())
@@ -2600,10 +2752,17 @@ pub fn run() {
                     update_event_log,
                     update_client_feedback,
                     handle_buttons,
-                    toggle_officers,
-                    update_officers_panel,
-                    handle_appoint_buttons,
-                    handle_vacate_buttons,
+                    (
+                        toggle_officers,
+                        toggle_orders,
+                        update_officers_panel,
+                        update_orders_panel,
+                        update_dispatches_panel,
+                        handle_order_buttons,
+                        handle_order_building_cycle,
+                        handle_appoint_buttons,
+                        handle_vacate_buttons,
+                    ),
                     flush_outgoing,
                 ),
                 // announcements / event log + goods + trade + boost + minimap
@@ -2786,6 +2945,10 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
         ResourceKind::Armor => HudRes::Armor,
         ResourceKind::Logs => HudRes::Logs,
         ResourceKind::Lumber => HudRes::Lumber,
+        ResourceKind::Fibre | ResourceKind::Cloth => HudRes::Herbs,
+        ResourceKind::Hide | ResourceKind::Leather => HudRes::Materials,
+        ResourceKind::Ore => HudRes::Materials,
+        ResourceKind::Metal => HudRes::Refined,
         ResourceKind::Blessings => HudRes::Blessings,
     }
 }
@@ -2889,6 +3052,27 @@ fn setup(
         Camera2d,
         Transform::from_xyz(center.x, center.y, CAMERA_Z),
         WorldCamera,
+    ));
+
+    // A deliberate walnut rail backs the fixed right-hand inspector/minimap
+    // lane. At the supported 1024px width the revealed world may end before
+    // this reserved UI column; without a backing surface that unused camera
+    // area reads as an accidental black rectangle whenever no inspector is
+    // open. Spawn it before the interactive panels so they naturally layer on
+    // top, and let the bottom toolbar cover its lower edge.
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(0.0),
+            top: Val::Px(50.0),
+            bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
+            width: Val::Px(204.0),
+            border: UiRect::left(Val::Px(4.0)),
+            ..default()
+        },
+        GlobalZIndex(-100),
+        BackgroundColor(UI_HEADER),
+        BorderColor::all(UI_BUTTON_BROWN),
     ));
 
     // Transport and rejected-action feedback must not disappear into the log.
@@ -3015,6 +3199,7 @@ fn setup(
                 ..ui_panel_node(Val::Px(430.0))
             },
             ui_panel_frame(),
+            DispatchesPanel,
             WorldInputBlocker,
         ))
         .with_children(|panel| {
@@ -3530,13 +3715,15 @@ fn setup(
             });
         });
 
-    // Building inspector (right, below the cat inspector), middle-click a
-    // building; hidden until one is selected.
+    // Building inspector (top-right), right-click a building; hidden until one
+    // is selected. Cat/building selection is mutually exclusive, so both
+    // inspectors can share this lane. Keeping it above y=232 prevents the
+    // 1024px-floor minimap (bottom-right) from obscuring its lower fields.
     commands
         .spawn((
             Node {
                 right: Val::Px(10.0),
-                top: Val::Px(388.0),
+                top: Val::Px(52.0),
                 ..ui_panel_node(Val::Px(300.0))
             },
             ui_panel_frame(),
@@ -3552,6 +3739,7 @@ fn setup(
 
     // Officers panel (left, below the dashboard), toggled with `O`.
     spawn_officers_panel(&mut commands);
+    spawn_orders_panel(&mut commands);
 
     // Bottom command bar (tool modes + player actions, one framed strip).
     spawn_bottom_bar(&mut commands);
@@ -3561,11 +3749,16 @@ fn spawn_officers_panel(commands: &mut Commands) {
     commands
         .spawn((
             Node {
-                left: Val::Px(10.0),
-                // Below the HUD dashboard, which grew taller with the refinement
-                // tier (planks/blocks/tools) rows.
-                top: Val::Px(500.0),
-                ..ui_panel_node(Val::Px(268.0))
+                // Keep the optional roster clear of both left-column panels and
+                // the bottom command bar. At the supported 1024x768 floor this
+                // centre-left sheet has enough vertical room for all seven rows;
+                // wider windows retain the same compact, predictable placement.
+                // At the 1024px floor the Dispatches panel ends at x=440.
+                // Keep this optional sheet in the clear centre lane instead of
+                // letting equal-z UI panels occlude its upper rows.
+                left: Val::Px(450.0),
+                top: Val::Px(128.0),
+                ..ui_panel_node(Val::Px(300.0))
             },
             ui_panel_frame(),
             OfficersPanel,
@@ -3597,6 +3790,63 @@ fn spawn_officers_panel(commands: &mut Commands) {
                         ));
                     });
                 }
+            });
+        });
+}
+
+fn spawn_orders_panel(commands: &mut Commands) {
+    commands
+        .spawn((
+            Node {
+                left: Val::Px(342.0),
+                top: Val::Px(128.0),
+                ..ui_panel_node(Val::Px(660.0))
+            },
+            ui_panel_frame(),
+            OrdersPanel,
+            WorldInputBlocker,
+        ))
+        .with_children(|panel| {
+            panel.spawn(ui_title_bar("Manual Orders  [P]"));
+            panel.spawn(ui_panel_body()).with_children(|body| {
+                body.spawn(ui_text("Field work", FS_SMALL, UI_MUTED));
+                body.spawn(bottom_bar_row_node()).with_children(|row| {
+                    for action in OrderAction::JOBS {
+                        row.spawn((
+                            ui_button_small(),
+                            OrderButton(action),
+                            children![ui_text(action.label(), FS_SMALL, UI_INK)],
+                        ));
+                    }
+                });
+                body.spawn(ui_text("Shrine, stores & cats", FS_SMALL, UI_MUTED));
+                body.spawn(bottom_bar_row_node()).with_children(|row| {
+                    for action in OrderAction::TARGETS {
+                        row.spawn((
+                            ui_button_small(),
+                            OrderButton(action),
+                            children![ui_text(action.label(), FS_SMALL, UI_INK)],
+                        ));
+                    }
+                });
+                body.spawn(ui_text("Construction", FS_SMALL, UI_MUTED));
+                body.spawn(bottom_bar_row_node()).with_children(|row| {
+                    row.spawn((
+                        ui_button_small(),
+                        CycleOrderBuilding,
+                        children![(ui_text("", FS_SMALL, UI_INK), PlannedBuildingText)],
+                    ));
+                    row.spawn((
+                        ui_button_small(),
+                        OrderButton(OrderAction::PlanBuilding),
+                        children![ui_text("Plan selected type", FS_SMALL, UI_INK)],
+                    ));
+                    row.spawn(ui_text(
+                        "Select cat + building/pile on map for target orders",
+                        FS_SMALL,
+                        UI_MUTED,
+                    ));
+                });
             });
         });
 }
@@ -3651,6 +3901,9 @@ fn spawn_bottom_bar(commands: &mut Commands) {
                             ToolMode::AvoidZone,
                             ToolMode::GatherZone,
                             ToolMode::Stockpile,
+                            ToolMode::Farm,
+                            ToolMode::GatherSpot,
+                            ToolMode::Road,
                         ] {
                             row.spawn((
                                 ui_button(),
@@ -5049,9 +5302,29 @@ fn handle_remove_button(
 }
 
 /// Toggle the officers panel with the `O` key.
-fn toggle_officers(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<OfficersUi>) {
-    if keys.just_pressed(KeyCode::KeyO) {
+fn toggle_officers(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut ui: ResMut<OfficersUi>,
+    mut orders: ResMut<OrdersUi>,
+) {
+    if keys.just_pressed(OFFICERS_SHORTCUT) {
         ui.visible = !ui.visible;
+        if ui.visible {
+            orders.visible = false;
+        }
+    }
+}
+
+fn toggle_orders(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut ui: ResMut<OrdersUi>,
+    mut officers: ResMut<OfficersUi>,
+) {
+    if keys.just_pressed(ORDERS_SHORTCUT) {
+        ui.visible = !ui.visible;
+        if ui.visible {
+            officers.visible = false;
+        }
     }
 }
 
@@ -5080,6 +5353,176 @@ fn update_officers_panel(
             officer_role_name(row.0),
             holder.unwrap_or("vacant")
         );
+    }
+}
+
+fn update_orders_panel(
+    ui: Res<OrdersUi>,
+    mut panel: Query<&mut Node, With<OrdersPanel>>,
+    mut planned: Query<&mut Text, With<PlannedBuildingText>>,
+) {
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if ui.visible {
+            Display::Flex
+        } else {
+            Display::None
+        };
+    }
+    if ui.is_changed()
+        && let Ok(mut text) = planned.single_mut()
+    {
+        let building = PLANNABLE_BUILDINGS[ui.planned_building % PLANNABLE_BUILDINGS.len()];
+        text.0 = format!("Type: {}  [cycle]", building_label(building));
+    }
+}
+
+fn update_dispatches_panel(
+    orders: Res<OrdersUi>,
+    mut panel: Query<&mut Node, With<DispatchesPanel>>,
+) {
+    if !orders.is_changed() {
+        return;
+    }
+    if let Ok(mut node) = panel.single_mut() {
+        node.display = if orders.visible {
+            Display::None
+        } else {
+            Display::Flex
+        };
+    }
+}
+
+fn handle_order_building_cycle(
+    mut ui: ResMut<OrdersUi>,
+    buttons: Query<&Interaction, (Changed<Interaction>, With<CycleOrderBuilding>)>,
+) {
+    if buttons
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        ui.planned_building = (ui.planned_building + 1) % PLANNABLE_BUILDINGS.len();
+    }
+}
+
+fn build_order_action(
+    action: OrderAction,
+    session: &Session,
+    selected_cat: Option<&str>,
+    selected_building: Option<&str>,
+    selected_pile: Option<&str>,
+    planned_building: BuildingType,
+) -> Result<ClientAction, &'static str> {
+    if !session.ready {
+        return Err("The server session is not ready.");
+    }
+    let session_id = session.session_id.clone();
+    let sig = session.sig.clone();
+    let nickname = "Desktop Cat".to_owned();
+    let request = |kind| ClientAction::RequestJob {
+        session_id: session_id.clone(),
+        nickname: nickname.clone(),
+        sig: sig.clone(),
+        kind,
+    };
+    Ok(match action {
+        OrderAction::Hunt => request(JobKind::HuntExpedition),
+        OrderAction::FetchWater => request(JobKind::FetchWater),
+        OrderAction::Quarry => request(JobKind::Quarry),
+        OrderAction::GatherLogs => request(JobKind::GatherLogs),
+        OrderAction::ForageFibre => request(JobKind::ForageFibre),
+        OrderAction::ExpandVillage => request(JobKind::ExpandVillage),
+        OrderAction::Ritual => request(JobKind::Ritual),
+        OrderAction::OfferTithe => ClientAction::OfferTithe {
+            session_id,
+            nickname,
+            sig,
+        },
+        OrderAction::OfferMaterials => ClientAction::OfferMaterials {
+            session_id,
+            nickname,
+            sig,
+        },
+        OrderAction::HaulSelected => ClientAction::HaulGatherSpot {
+            session_id,
+            nickname,
+            sig,
+            stockpile_id: selected_pile
+                .ok_or("Select a gather spot first.")?
+                .to_owned(),
+            cat_id: selected_cat.map(str::to_owned),
+        },
+        OrderAction::PlanBuilding => ClientAction::PlanBuilding {
+            session_id,
+            nickname,
+            sig,
+            building_type: planned_building,
+        },
+        OrderAction::StaffSelected => ClientAction::AssignWorker {
+            session_id,
+            nickname,
+            sig,
+            cat_id: selected_cat.ok_or("Select a cat first.")?.to_owned(),
+            building_id: Some(
+                selected_building
+                    .ok_or("Select a building first.")?
+                    .to_owned(),
+            ),
+        },
+        OrderAction::UnstaffSelected => ClientAction::AssignWorker {
+            session_id,
+            nickname,
+            sig,
+            cat_id: selected_cat.ok_or("Select a cat first.")?.to_owned(),
+            building_id: None,
+        },
+        OrderAction::TrainSelected => ClientAction::TrainWarrior {
+            session_id,
+            nickname,
+            sig,
+            cat_id: Some(selected_cat.ok_or("Select a cat first.")?.to_owned()),
+        },
+        OrderAction::DefendRaid => ClientAction::DefendRaid {
+            session_id,
+            nickname,
+            sig,
+        },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_order_buttons(
+    session: Res<Session>,
+    ui: Res<OrdersUi>,
+    cat: Res<Selection>,
+    building: Res<BuildingSelection>,
+    pile: Res<StockpileSelection>,
+    mut outgoing: ResMut<OutgoingActions>,
+    mut feedback: ResMut<ClientFeedback>,
+    buttons: Query<(&Interaction, &OrderButton), Changed<Interaction>>,
+) {
+    if !ui.visible {
+        return;
+    }
+    for (interaction, button) in &buttons {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let planned = PLANNABLE_BUILDINGS[ui.planned_building % PLANNABLE_BUILDINGS.len()];
+        match build_order_action(
+            button.0,
+            &session,
+            cat.selected.as_deref(),
+            building.selected.as_deref(),
+            pile.selected.as_deref(),
+            planned,
+        ) {
+            Ok(action) => outgoing.0.push(action),
+            Err(message) => {
+                feedback.message = Some(message.to_owned());
+                feedback.level = FeedbackLevel::Error;
+                feedback.remaining_secs = 8.0;
+            }
+        }
     }
 }
 
@@ -6144,6 +6587,29 @@ fn zone_paint(
                 b,
                 accepts: accept.kinds(),
             },
+            PaintKind::Farm => ClientAction::DesignateFarm {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                a,
+                b,
+                crop: CropKind::Grain,
+            },
+            PaintKind::GatherSpot => ClientAction::DesignateGatherSpot {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                a,
+                b,
+                kind: ResourceKind::Materials,
+            },
+            PaintKind::Road => ClientAction::BuildRoad {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                a,
+                b,
+            },
         });
     }
 }
@@ -6272,7 +6738,7 @@ fn camera_controls(
         *user_adjusted = true;
         transform.translation.y -= speed;
     }
-    if keys.just_pressed(KeyCode::KeyR) {
+    if keys.just_pressed(CAMERA_RESET_SHORTCUT) {
         *user_adjusted = false;
         let colony = latest
             .0
@@ -6388,7 +6854,7 @@ fn is_discovered_trade_target(
             .any(|village| village.id == target_id)
 }
 
-const VILLAGE_TRADE_KINDS: [ResourceKind; 13] = [
+const VILLAGE_TRADE_KINDS: [ResourceKind; 19] = [
     ResourceKind::Food,
     ResourceKind::Water,
     ResourceKind::Herbs,
@@ -6401,6 +6867,12 @@ const VILLAGE_TRADE_KINDS: [ResourceKind; 13] = [
     ResourceKind::Armor,
     ResourceKind::Logs,
     ResourceKind::Lumber,
+    ResourceKind::Fibre,
+    ResourceKind::Hide,
+    ResourceKind::Cloth,
+    ResourceKind::Leather,
+    ResourceKind::Ore,
+    ResourceKind::Metal,
     ResourceKind::Blessings,
 ];
 const VILLAGE_TRADE_AMOUNTS: [f64; 6] = [1.0, 5.0, 10.0, 25.0, 50.0, 100.0];
@@ -6423,6 +6895,12 @@ fn trade_resource_short_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Armor => "armor",
         ResourceKind::Logs => "logs",
         ResourceKind::Lumber => "lumber",
+        ResourceKind::Fibre => "fibre",
+        ResourceKind::Hide => "hide",
+        ResourceKind::Cloth => "cloth",
+        ResourceKind::Leather => "leather",
+        ResourceKind::Ore => "ore",
+        ResourceKind::Metal => "metal",
         ResourceKind::Blessings => "bless",
     }
 }
@@ -6917,6 +7395,21 @@ fn ledger_hud_text(ledger: &StockLedgerSnapshot) -> String {
     }
 }
 
+/// Reachable Goods-panel summary for the production resources that do not fit
+/// in the compact always-on survival HUD.
+fn production_stores_text(resources: &ResourceAmounts) -> String {
+    format!(
+        "Production stores: fibre {:.0} · hide {:.0} · cloth {:.0} · leather {:.0}\n\
+         Ore & metal: ore {:.0} · metal {:.0}",
+        resources.fibre,
+        resources.hide,
+        resources.cloth,
+        resources.leather,
+        resources.ore,
+        resources.metal,
+    )
+}
+
 /// Toggle the announcements panel via the `L` key or the Log HUD button (closes
 /// the goods panel, which shares the centre slot).
 fn toggle_announcements(
@@ -7039,17 +7532,22 @@ fn update_goods(
     if !ui.visible || (!latest.is_changed() && !ui.is_changed()) {
         return;
     }
-    let mut items = latest
-        .0
-        .as_ref()
-        .and_then(|w| w.colonies.first())
-        .map(|c| c.items.clone())
-        .unwrap_or_default();
+    let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
+    let mut items = colony.map(|c| c.items.clone()).unwrap_or_default();
     // Most valuable stack first.
     items.sort_by_key(|s| std::cmp::Reverse(s.count * s.value));
 
     if let Ok(mut text) = treasury.single_mut() {
-        text.0 = format!("Treasury: {}g", treasury_total(&items));
+        text.0 = colony.map_or_else(
+            || format!("Treasury: {}g", treasury_total(&items)),
+            |colony| {
+                format!(
+                    "Treasury: {}g\n{}",
+                    treasury_total(&items),
+                    production_stores_text(&colony.resources)
+                )
+            },
+        );
     }
     for (line, mut text) in &mut lines {
         text.0 = match (line.0, items.get(line.0)) {
@@ -7638,6 +8136,9 @@ fn paint_preview_color(kind: PaintKind) -> Color {
         PaintKind::Avoid => Color::srgba(0.95, 0.30, 0.30, 0.45),
         PaintKind::Gather => Color::srgba(0.35, 0.90, 0.40, 0.45),
         PaintKind::Stockpile => Color::srgba(0.85, 0.60, 0.25, 0.45),
+        PaintKind::Farm => Color::srgba(0.55, 0.80, 0.25, 0.45),
+        PaintKind::GatherSpot => Color::srgba(0.35, 0.70, 0.85, 0.45),
+        PaintKind::Road => Color::srgba(0.70, 0.68, 0.62, 0.55),
     }
 }
 
@@ -7735,6 +8236,12 @@ fn resource_total(c: &ResourceAmounts) -> f64 {
         + c.armor
         + c.logs
         + c.lumber
+        + c.fibre
+        + c.hide
+        + c.cloth
+        + c.leather
+        + c.ore
+        + c.metal
 }
 
 /// The single largest storable resource in a pile, or `None` when it's empty.
@@ -7752,6 +8259,12 @@ fn dominant_resource(c: &ResourceAmounts) -> Option<ResourceKind> {
         (ResourceKind::Armor, c.armor),
         (ResourceKind::Logs, c.logs),
         (ResourceKind::Lumber, c.lumber),
+        (ResourceKind::Fibre, c.fibre),
+        (ResourceKind::Hide, c.hide),
+        (ResourceKind::Cloth, c.cloth),
+        (ResourceKind::Leather, c.leather),
+        (ResourceKind::Ore, c.ore),
+        (ResourceKind::Metal, c.metal),
     ]
     .into_iter()
     .filter(|(_, v)| *v > 0.0)
@@ -7769,6 +8282,10 @@ fn pile_prop(kind: ResourceKind) -> PropTexture {
         ResourceKind::Materials => PropTexture::StonePile,
         ResourceKind::Refined => PropTexture::GoldPile,
         ResourceKind::Logs | ResourceKind::Lumber => PropTexture::Crate,
+        ResourceKind::Fibre | ResourceKind::Cloth => PropTexture::Haystack,
+        ResourceKind::Hide | ResourceKind::Leather => PropTexture::Sack,
+        ResourceKind::Ore => PropTexture::StonePile,
+        ResourceKind::Metal => PropTexture::GoldPile,
         ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => PropTexture::Crate,
     }
 }
@@ -7794,6 +8311,12 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::Armor => "armor",
         ResourceKind::Logs => "logs",
         ResourceKind::Lumber => "lumber",
+        ResourceKind::Fibre => "fibre",
+        ResourceKind::Hide => "hide",
+        ResourceKind::Cloth => "cloth",
+        ResourceKind::Leather => "leather",
+        ResourceKind::Ore => "ore",
+        ResourceKind::Metal => "metal",
         ResourceKind::Blessings => "blessings",
     }
 }
@@ -8155,6 +8678,7 @@ fn building_label(building: BuildingType) -> &'static str {
         BuildingType::Walls => "walls",
         BuildingType::MouseFarm => "mousefarm",
         BuildingType::Workshop => "workshop",
+        BuildingType::AccountingTent => "accounting",
         BuildingType::Field => "field",
         BuildingType::ResearchHut => "research",
         BuildingType::School => "school",
@@ -8256,6 +8780,237 @@ mod tests {
     use super::*;
     use cat_protocol::{CatStats, MapName, MapPosition, WorldSnapshot};
     use cat_sim::terrain_gen::BiomeRole;
+
+    fn ready_session() -> Session {
+        Session {
+            session_id: "session-1".to_owned(),
+            sig: "signed".to_owned(),
+            presence_sent: true,
+            ready: true,
+        }
+    }
+
+    #[test]
+    fn manual_orders_shortcut_does_not_conflict_with_camera_or_officers() {
+        assert_ne!(ORDERS_SHORTCUT, CAMERA_RESET_SHORTCUT);
+        assert_ne!(ORDERS_SHORTCUT, OFFICERS_SHORTCUT);
+        assert_eq!(ORDERS_SHORTCUT, KeyCode::KeyP);
+    }
+
+    #[test]
+    fn pressed_manual_order_button_queues_a_signed_action() {
+        let mut app = App::new();
+        app.insert_resource(ready_session())
+            .insert_resource(OrdersUi {
+                visible: true,
+                ..OrdersUi::default()
+            })
+            .insert_resource(Selection::default())
+            .insert_resource(BuildingSelection::default())
+            .insert_resource(StockpileSelection::default())
+            .insert_resource(OutgoingActions::default())
+            .insert_resource(ClientFeedback::default())
+            .add_systems(Update, handle_order_buttons);
+        app.world_mut()
+            .spawn((Interaction::Pressed, OrderButton(OrderAction::Quarry)));
+
+        app.update();
+
+        let queued = &app.world().resource::<OutgoingActions>().0;
+        assert!(matches!(
+            queued.as_slice(),
+            [ClientAction::RequestJob {
+                session_id,
+                sig,
+                kind: JobKind::Quarry,
+                ..
+            }] if session_id == "session-1" && sig == "signed"
+        ));
+    }
+
+    #[test]
+    fn manual_order_builder_covers_every_button_and_signs_every_action() {
+        let session = ready_session();
+        let signed = |action| {
+            build_order_action(
+                action,
+                &session,
+                Some("cat-1"),
+                Some("mill-1"),
+                Some("gather-1"),
+                BuildingType::Sawmill,
+            )
+            .unwrap()
+        };
+        let expected = [
+            ClientAction::RequestJob {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                kind: JobKind::HuntExpedition,
+            },
+            ClientAction::RequestJob {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                kind: JobKind::FetchWater,
+            },
+            ClientAction::RequestJob {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                kind: JobKind::Quarry,
+            },
+            ClientAction::RequestJob {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                kind: JobKind::GatherLogs,
+            },
+            ClientAction::RequestJob {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                kind: JobKind::ForageFibre,
+            },
+            ClientAction::RequestJob {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                kind: JobKind::ExpandVillage,
+            },
+            ClientAction::RequestJob {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                kind: JobKind::Ritual,
+            },
+            ClientAction::OfferTithe {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+            },
+            ClientAction::OfferMaterials {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+            },
+            ClientAction::HaulGatherSpot {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                stockpile_id: "gather-1".to_owned(),
+                cat_id: Some("cat-1".to_owned()),
+            },
+            ClientAction::PlanBuilding {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                building_type: BuildingType::Sawmill,
+            },
+            ClientAction::AssignWorker {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: "cat-1".to_owned(),
+                building_id: Some("mill-1".to_owned()),
+            },
+            ClientAction::AssignWorker {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: "cat-1".to_owned(),
+                building_id: None,
+            },
+            ClientAction::TrainWarrior {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: Some("cat-1".to_owned()),
+            },
+            ClientAction::DefendRaid {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+            },
+        ];
+        for (action, expected) in OrderAction::ALL.into_iter().zip(expected) {
+            assert_eq!(signed(action), expected, "{action:?}");
+        }
+
+        let mut unavailable = ready_session();
+        unavailable.ready = false;
+        for action in OrderAction::ALL {
+            assert_eq!(
+                build_order_action(
+                    action,
+                    &unavailable,
+                    Some("cat-1"),
+                    Some("mill-1"),
+                    Some("gather-1"),
+                    BuildingType::Mill,
+                ),
+                Err("The server session is not ready."),
+                "{action:?}"
+            );
+        }
+
+        assert_eq!(
+            build_order_action(
+                OrderAction::HaulSelected,
+                &session,
+                Some("cat-1"),
+                Some("mill-1"),
+                None,
+                BuildingType::Mill,
+            ),
+            Err("Select a gather spot first.")
+        );
+        assert_eq!(
+            build_order_action(
+                OrderAction::StaffSelected,
+                &session,
+                None,
+                Some("mill-1"),
+                Some("gather-1"),
+                BuildingType::Mill,
+            ),
+            Err("Select a cat first.")
+        );
+        assert_eq!(
+            build_order_action(
+                OrderAction::StaffSelected,
+                &session,
+                Some("cat-1"),
+                None,
+                Some("gather-1"),
+                BuildingType::Mill,
+            ),
+            Err("Select a building first.")
+        );
+        assert_eq!(
+            build_order_action(
+                OrderAction::UnstaffSelected,
+                &session,
+                None,
+                Some("mill-1"),
+                Some("gather-1"),
+                BuildingType::Mill,
+            ),
+            Err("Select a cat first.")
+        );
+        assert_eq!(
+            build_order_action(
+                OrderAction::TrainSelected,
+                &session,
+                None,
+                Some("mill-1"),
+                Some("gather-1"),
+                BuildingType::Mill,
+            ),
+            Err("Select a cat first.")
+        );
+    }
 
     #[test]
     fn adventure_buttons_have_distinct_interaction_and_disabled_states() {
@@ -8999,6 +9754,12 @@ mod tests {
         assert_eq!(hud_res_of(ResourceKind::Armor), HudRes::Armor);
         assert_eq!(hud_res_of(ResourceKind::Logs), HudRes::Logs);
         assert_eq!(hud_res_of(ResourceKind::Lumber), HudRes::Lumber);
+        assert_eq!(hud_res_of(ResourceKind::Fibre), HudRes::Herbs);
+        assert_eq!(hud_res_of(ResourceKind::Hide), HudRes::Materials);
+        assert_eq!(hud_res_of(ResourceKind::Cloth), HudRes::Herbs);
+        assert_eq!(hud_res_of(ResourceKind::Leather), HudRes::Materials);
+        assert_eq!(hud_res_of(ResourceKind::Ore), HudRes::Materials);
+        assert_eq!(hud_res_of(ResourceKind::Metal), HudRes::Refined);
         assert_eq!(hud_res_of(ResourceKind::Blessings), HudRes::Blessings);
     }
 
@@ -9450,6 +10211,12 @@ mod tests {
             lumber: 0.0,
             blocks: 0.0,
             tools: 0.0,
+            fibre: 0.0,
+            hide: 0.0,
+            cloth: 0.0,
+            leather: 0.0,
+            ore: 0.0,
+            metal: 0.0,
             blessings: 0.0,
         }
     }
@@ -9486,6 +10253,28 @@ mod tests {
         let mut a = amounts(10.0, 5.0, 2.0);
         a.blessings = 99.0; // excluded
         assert_eq!(resource_total(&a), 17.0);
+    }
+
+    #[test]
+    fn each_new_single_resource_pile_has_a_visible_total_and_dominant_prop() {
+        type ResourceSetter = fn(&mut ResourceAmounts);
+        let cases: [(ResourceKind, ResourceSetter); 6] = [
+            (ResourceKind::Fibre, |a: &mut ResourceAmounts| a.fibre = 3.0),
+            (ResourceKind::Hide, |a: &mut ResourceAmounts| a.hide = 3.0),
+            (ResourceKind::Cloth, |a: &mut ResourceAmounts| a.cloth = 3.0),
+            (ResourceKind::Leather, |a: &mut ResourceAmounts| {
+                a.leather = 3.0
+            }),
+            (ResourceKind::Ore, |a: &mut ResourceAmounts| a.ore = 3.0),
+            (ResourceKind::Metal, |a: &mut ResourceAmounts| a.metal = 3.0),
+        ];
+        for (kind, set) in cases {
+            let mut amounts = amounts(0.0, 0.0, 0.0);
+            set(&mut amounts);
+            assert_eq!(resource_total(&amounts), 3.0, "{kind:?}");
+            assert_eq!(dominant_resource(&amounts), Some(kind));
+            assert!(pile_scale(resource_total(&amounts)) > pile_scale(0.0));
+        }
     }
 
     #[test]
@@ -10139,6 +10928,12 @@ mod tests {
             lumber: 4.0,
             blocks: 7.0,
             tools: 1.0,
+            fibre: 11.0,
+            hide: 12.0,
+            cloth: 5.0,
+            leather: 6.0,
+            ore: 7.0,
+            metal: 8.0,
             blessings: 4.5,
         };
         let cap = ResourceCapacities {
@@ -10157,6 +10952,12 @@ mod tests {
             lumber: 100.0,
             blocks: 100.0,
             tools: 100.0,
+            fibre: 100.0,
+            hide: 100.0,
+            cloth: 100.0,
+            leather: 100.0,
+            ore: 100.0,
+            metal: 100.0,
         };
         assert_eq!(hud_resource_value(HudRes::Food, &r, &cap), "150 / 200");
         assert_eq!(hud_resource_value(HudRes::Grain, &r, &cap), "14 / 100");
@@ -10196,6 +10997,12 @@ mod tests {
                 lumber: 0.0,
                 blocks: 0.0,
                 tools: 0.0,
+                fibre: 0.0,
+                hide: 0.0,
+                cloth: 0.0,
+                leather: 0.0,
+                ore: 0.0,
+                metal: 0.0,
                 blessings: 0.0,
             },
             gather_spot: None,
@@ -10349,6 +11156,12 @@ mod tests {
             lumber: 0.0,
             blocks: 0.0,
             tools: 0.0,
+            fibre: 1.0,
+            hide: 2.0,
+            cloth: 3.0,
+            leather: 4.0,
+            ore: 5.0,
+            metal: 6.0,
             blessings: 0.0,
         };
         let exact = ledger_hud_text(&StockLedgerSnapshot {
@@ -10359,6 +11172,21 @@ mod tests {
         assert!(exact.contains("exact"));
         assert!(exact.contains("F148"));
         assert!(!exact.contains('~'));
+
+        let production = production_stores_text(&reported);
+        for expected in [
+            "fibre 1",
+            "hide 2",
+            "cloth 3",
+            "leather 4",
+            "ore 5",
+            "metal 6",
+        ] {
+            assert!(
+                production.contains(expected),
+                "missing {expected}: {production}"
+            );
+        }
 
         let stale = ledger_hud_text(&StockLedgerSnapshot {
             reported,

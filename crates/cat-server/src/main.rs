@@ -942,6 +942,18 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::UnlockNode {
             session_id, sig, ..
         }
+        | ClientAction::ResearchNode {
+            session_id, sig, ..
+        }
+        | ClientAction::OfferTithe {
+            session_id, sig, ..
+        }
+        | ClientAction::OfferMaterials {
+            session_id, sig, ..
+        }
+        | ClientAction::HaulGatherSpot {
+            session_id, sig, ..
+        }
         | ClientAction::AssignWorker {
             session_id, sig, ..
         }
@@ -1064,7 +1076,7 @@ mod tests {
         AccelerationPreset, ClientAction, CropKind, OfficerRole, ResourceKind, ScoutMission,
         TilePoint,
     };
-    use std::{fs, path::PathBuf, time::Duration};
+    use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
     use tower::ServiceExt;
 
     static NEXT_STATIC_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
@@ -1444,17 +1456,73 @@ mod tests {
         )
     }
 
+    fn establish_campaign_core(colony: &mut cat_sim::world_tick::ColonyRuntime) {
+        for (index, (role, building_type, upgrade)) in [
+            (
+                cat_sim::officers::OfficerRole::Steward,
+                cat_sim::types::BuildingType::Workshop,
+                "basic_tools",
+            ),
+            (
+                cat_sim::officers::OfficerRole::Forester,
+                cat_sim::types::BuildingType::Sawmill,
+                "sawmill",
+            ),
+            (
+                cat_sim::officers::OfficerRole::Farmer,
+                cat_sim::types::BuildingType::Field,
+                "irrigation",
+            ),
+            (
+                cat_sim::officers::OfficerRole::Captain,
+                cat_sim::types::BuildingType::Barracks,
+                "barracks",
+            ),
+            (
+                cat_sim::officers::OfficerRole::Loremaster,
+                cat_sim::types::BuildingType::ResearchHut,
+                "research_hut",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !colony
+                .upgrade_tree
+                .owned_node_ids
+                .iter()
+                .any(|owned| owned == upgrade)
+            {
+                colony.upgrade_tree.owned_node_ids.push(upgrade.to_owned());
+            }
+            colony.buildings.push(cat_sim::world_tick::BuildingRuntime {
+                id: format!("server-campaign-office-{index}"),
+                building_type,
+                position: cat_sim::world_tick::TilePos {
+                    x: colony.anchor.x + 12 + i32::try_from(index).expect("small fixture") * 3,
+                    y: colony.anchor.y + 12,
+                },
+                is_complete: true,
+                construction_progress: 100,
+                ..cat_sim::world_tick::BuildingRuntime::default()
+            });
+            colony.officers.insert(role, colony.cats[index].id.clone());
+        }
+    }
+
     #[tokio::test]
     async fn signed_player_den_retains_migrant_while_unattended_twin_loses_them() {
         const SEED: u32 = 7;
         const TICK_MS: i64 = 15 * 60_000;
-        const HORIZON_HOURS: i64 = 90;
+        const HORIZON_HOURS: i64 = 120;
 
         let started_at = now_ms();
         let mut initial_world = new_world(SEED);
-        initial_world
-            .colonies
-            .push(found_colony(SEED, STARTER_COLONY_ID, started_at, SEED));
+        let mut colony = found_colony(SEED, STARTER_COLONY_ID, started_at, SEED);
+        // The test isolates authenticated housing, so give both unattended twins
+        // the legal established core that owns their survival/prosperity loop.
+        establish_campaign_core(&mut colony);
+        initial_world.colonies.push(colony);
         let guided = build_test_state_from_world(initial_world.clone(), started_at);
         let unattended = build_test_state_from_world(initial_world, started_at);
 
@@ -1697,20 +1765,31 @@ mod tests {
         let state = build_state(1_000_000);
         let (mut connection, signed) = authenticated_connection(&state);
         let cat_id = state.world.lock().await.colonies[0].cats[0].id.clone();
-        let actions = [
-            ClientAction::AssignOfficer {
+        let mut actions = Vec::new();
+        for role in [
+            OfficerRole::Steward,
+            OfficerRole::Accountant,
+            OfficerRole::Forester,
+            OfficerRole::Farmer,
+            OfficerRole::Captain,
+            OfficerRole::Loremaster,
+            OfficerRole::ClothLeader,
+        ] {
+            actions.push(ClientAction::AssignOfficer {
                 session_id: signed.session_id.clone(),
                 nickname: "Tester".to_owned(),
                 sig: "invalid".to_owned(),
-                role: OfficerRole::Farmer,
-                cat_id,
-            },
-            ClientAction::UnassignOfficer {
+                role,
+                cat_id: cat_id.clone(),
+            });
+            actions.push(ClientAction::UnassignOfficer {
                 session_id: signed.session_id.clone(),
                 nickname: "Tester".to_owned(),
                 sig: "invalid".to_owned(),
-                role: OfficerRole::Farmer,
-            },
+                role,
+            });
+        }
+        actions.extend([
             ClientAction::DesignateStockpile {
                 session_id: signed.session_id.clone(),
                 nickname: "Tester".to_owned(),
@@ -1739,13 +1818,36 @@ mod tests {
                 sig: "invalid".to_owned(),
                 stockpile_id: "gather-1".to_owned(),
             },
+            ClientAction::ResearchNode {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                node_id: "research_hut".to_owned(),
+            },
+            ClientAction::OfferTithe {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+            },
+            ClientAction::OfferMaterials {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+            },
+            ClientAction::HaulGatherSpot {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                stockpile_id: "gather-1".to_owned(),
+                cat_id: None,
+            },
             ClientAction::DispatchScout {
                 session_id: signed.session_id,
                 nickname: "Tester".to_owned(),
                 sig: "invalid".to_owned(),
                 mission: ScoutMission::Explore,
             },
-        ];
+        ]);
 
         for action in actions {
             let result = send_action(&state, &mut connection, &action).await;
@@ -1767,6 +1869,238 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authenticated_manual_officer_campaign_mutates_only_the_selected_colony() {
+        use cat_sim::{
+            entities::Resources,
+            stockpiles::{GatherSpot, ResourceKind as SimResourceKind, Stockpile},
+            types::{BuildingType as SimBuildingType, JobKind as SimJobKind},
+            zones::ZoneRect,
+        };
+
+        let mut world = new_world(WORLD_SEED);
+        world.colonies.push(found_colony(
+            WORLD_SEED,
+            STARTER_COLONY_ID,
+            1_000_000,
+            STARTER_COLONY_SEED,
+        ));
+        world
+            .colonies
+            .push(found_colony(WORLD_SEED, "beta", 1_000_000, 22));
+        {
+            let colony = &mut world.colonies[0];
+            colony.resources.food = 500.0;
+            colony.resources.refined = 100.0;
+            colony.resources.materials = 500.0;
+            colony.upgrade_tree.research_points = 100.0;
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .push("basic_tools".to_owned());
+            let anchor = colony.anchor;
+            let accounting = colony
+                .buildings
+                .iter_mut()
+                .filter(|building| building.building_type == SimBuildingType::Den)
+                .min_by_key(|building| {
+                    ((building.position.x - anchor.x).abs(), building.position.y)
+                })
+                .expect("starter top-den footprint");
+            accounting.id = "auth-accounting".to_owned();
+            accounting.building_type = SimBuildingType::AccountingTent;
+            accounting.assigned_cat = None;
+            accounting.automated_by = None;
+            let claimed = colony
+                .claimed_tiles
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>();
+            let mut occupied = BTreeSet::new();
+            for building in &colony.buildings {
+                let (width, height) = cat_sim::world_tick::footprint_for(building.building_type);
+                for dy in 0..height {
+                    for dx in 0..width {
+                        let tile = cat_sim::world_tick::TilePos {
+                            x: building.position.x + dx,
+                            y: building.position.y + dy,
+                        };
+                        assert!(claimed.contains(&tile), "fixture building is off-claim");
+                        assert!(
+                            occupied.insert(tile),
+                            "fixture buildings overlap at {tile:?}"
+                        );
+                    }
+                }
+            }
+            let gather_rect = colony
+                .world_tiles
+                .keys()
+                .copied()
+                .map(|tile| ZoneRect {
+                    x1: tile.x,
+                    y1: tile.y,
+                    x2: tile.x,
+                    y2: tile.y,
+                })
+                .find(|rect| {
+                    cat_sim::world_tick::stockpile_placement_error(colony, *rect, WORLD_SEED, false)
+                        .is_none()
+                        && !colony
+                            .claimed_tiles
+                            .contains(&cat_sim::world_tick::TilePos {
+                                x: rect.x1,
+                                y: rect.y1,
+                            })
+                })
+                .expect("campaign founding reveal has a legal exterior gather tile");
+            colony.stockpiles.push(Stockpile {
+                id: "auth-gather".to_owned(),
+                rect: gather_rect,
+                accepts: BTreeSet::from([SimResourceKind::Food]),
+                contents: Resources {
+                    food: 12.0,
+                    ..Resources::default()
+                },
+            });
+            colony.gather_spots.push(GatherSpot {
+                stockpile_id: "auth-gather".to_owned(),
+                kind: SimResourceKind::Food,
+                expires_at_ms: 2_000_000,
+            });
+        }
+        {
+            let id = "auth-accounting";
+            let colony = &world.colonies[0];
+            let building = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == id)
+                .expect("fixture building remains after access pass");
+            assert!(
+                cat_sim::world_tick::building_is_road_connected_to_shrine(
+                    colony, building, WORLD_SEED
+                ),
+                "{id} disconnected: officers={:?} materials={} events={:?}",
+                colony.officers,
+                colony.resources.materials,
+                colony
+                    .events
+                    .iter()
+                    .rev()
+                    .take(5)
+                    .map(|event| (&event.kind, &event.message))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let beta_before = world.colonies[1].clone();
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        persistence::init_schema(&conn).expect("init in-memory schema");
+        let state = build_state_from_world(
+            world,
+            conn,
+            "test-session-secret".to_owned(),
+            false,
+            1_000_000,
+        );
+        let (mut connection, signed) = authenticated_connection(&state);
+        let cat_ids = state.world.lock().await.colonies[0]
+            .cats
+            .iter()
+            .take(1)
+            .map(|cat| cat.id.clone())
+            .collect::<Vec<_>>();
+
+        let actions = [
+            ClientAction::ResearchNode {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: signed.sig.clone(),
+                node_id: "research_hut".to_owned(),
+            },
+            ClientAction::ResearchNode {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: signed.sig.clone(),
+                node_id: "foraging_lore".to_owned(),
+            },
+            ClientAction::AssignOfficer {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: signed.sig.clone(),
+                role: OfficerRole::Accountant,
+                cat_id: cat_ids[0].clone(),
+            },
+            ClientAction::HaulGatherSpot {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: signed.sig.clone(),
+                stockpile_id: "auth-gather".to_owned(),
+                cat_id: None,
+            },
+            ClientAction::OfferMaterials {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: signed.sig.clone(),
+            },
+            ClientAction::OfferTithe {
+                session_id: signed.session_id,
+                nickname: "Tester".to_owned(),
+                sig: signed.sig,
+            },
+        ];
+
+        for action in actions {
+            let result = send_action(&state, &mut connection, &action).await;
+            assert!(
+                result.result.ok,
+                "authenticated {action:?} failed: {result:?}"
+            );
+        }
+
+        let world = state.world.lock().await;
+        let colony = &world.colonies[0];
+        assert!(
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .iter()
+                .any(|node| node == "research_hut")
+        );
+        assert!(
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .iter()
+                .any(|node| node == "foraging_lore")
+        );
+        assert_eq!(
+            colony
+                .officers
+                .get(&cat_sim::officers::OfficerRole::Accountant),
+            Some(&cat_ids[0])
+        );
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .any(|job| job.kind == SimJobKind::HaulGatherSpot)
+        );
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .any(|job| job.kind == SimJobKind::CarryOffering)
+        );
+        assert!(colony.resources.food < 500.0);
+        assert!(colony.resources.refined < 100.0);
+        assert!(colony.global_upgrade_points > 0.0);
+        assert_eq!(
+            world.colonies[1], beta_before,
+            "beta was mutated by alpha actions"
+        );
+    }
+
+    #[tokio::test]
     async fn authenticated_join_routes_mutations_and_snapshots_to_selected_colony() {
         let state = build_state(1_000_000);
         let (mut connection, signed) = authenticated_connection(&state);
@@ -1778,6 +2112,46 @@ mod tests {
         let found_result = send_action(&state, &mut connection, &found).await;
         assert!(found_result.result.ok, "{found_result:?}");
         let beta_id = found_result.result.colony_id.expect("personal village id");
+        {
+            let mut world = state.world.lock().await;
+            let world_seed = world.world_seed;
+            let beta_index = world
+                .colonies
+                .iter()
+                .position(|colony| colony.id == beta_id)
+                .expect("founded personal village");
+            let beta = &mut world.colonies[beta_index];
+            beta.upgrade_tree
+                .owned_node_ids
+                .push("basic_tools".to_owned());
+            let workshop = beta
+                .buildings
+                .iter_mut()
+                .find(|building| {
+                    building.building_type == cat_sim::types::BuildingType::Woodworking
+                })
+                .expect("starter woodworking footprint");
+            workshop.id = "beta-workshop".to_owned();
+            workshop.building_type = cat_sim::types::BuildingType::Workshop;
+            workshop.assigned_cat = None;
+            workshop.automated_by = None;
+            beta.resources.materials = beta.resources.materials.max(100.0);
+            beta.officers.insert(
+                cat_sim::officers::OfficerRole::Steward,
+                beta.cats[0].id.clone(),
+            );
+            let _ = world_tick(&mut world, 1_060_000);
+            let beta = &mut world.colonies[beta_index];
+            beta.officers.clear();
+            let workshop = beta
+                .buildings
+                .iter()
+                .find(|building| building.id == "beta-workshop")
+                .expect("beta workshop remains after access pass");
+            assert!(cat_sim::world_tick::building_is_road_connected_to_shrine(
+                beta, workshop, world_seed
+            ));
+        }
         connection.colony_id = STARTER_COLONY_ID.to_owned();
         let join = ClientAction::JoinVillage {
             colony_id: beta_id.clone(),
@@ -1792,7 +2166,7 @@ mod tests {
             session_id: signed.session_id,
             nickname: "Tester".to_owned(),
             sig: signed.sig,
-            role: OfficerRole::Farmer,
+            role: OfficerRole::Steward,
             cat_id: beta_cat_id.clone(),
         };
         assert!(
@@ -1807,7 +2181,7 @@ mod tests {
         assert_eq!(
             world.colonies[1]
                 .officers
-                .get(&cat_sim::officers::OfficerRole::Farmer),
+                .get(&cat_sim::officers::OfficerRole::Steward),
             Some(&beta_cat_id)
         );
         drop(world);

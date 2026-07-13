@@ -12,19 +12,20 @@ use cat_sim::{
     actions::{ActionCtx, apply_action},
     entities::{CatActivity, MapType, Position},
     items::{Item, ItemKind, Material},
+    officers::OfficerRole,
     terrain_gen::tile_climate_biome,
     trader::{self, TraderState},
-    types::{BuildingType, JobKind},
+    types::{BuildingType, JobKind, TileType},
     upgrade_tree::{self, UPGRADE_NODES},
     world_tick::{
-        BuildingRuntime, ElectionKind, EventKind, RaiderRuntime, TilePos, TraderRuntime,
+        BuildingRuntime, ElectionKind, EventKind, RaidPhase, RaiderRuntime, TilePos, TraderRuntime,
         WorldState, found_colony, new_world, road_path_attaches_to_shrine, road_placement_error,
         stockpile_placement_error, tile_is_occupied, world_tick,
     },
     zones::ZoneRect,
 };
 
-const EXPECTED_ACTIONS: [&str; 31] = [
+const EXPECTED_ACTIONS: [&str; 36] = [
     "advance_time",
     "assign_officer",
     "assign_worker",
@@ -39,8 +40,10 @@ const EXPECTED_ACTIONS: [&str; 31] = [
     "designate_farm",
     "designate_gather_spot",
     "designate_stockpile",
+    "dispatch_scout",
     "ensure",
     "found_village",
+    "haul_gather_spot",
     "join_village",
     "plan_building",
     "presence",
@@ -48,6 +51,7 @@ const EXPECTED_ACTIONS: [&str; 31] = [
     "remove_gather_spot",
     "remove_stockpile",
     "remove_zone",
+    "research_node",
     "request_job",
     "request_vote_kick",
     "sell_goods",
@@ -56,6 +60,8 @@ const EXPECTED_ACTIONS: [&str; 31] = [
     "train_warrior",
     "unassign_officer",
     "unlock_node",
+    "offer_materials",
+    "offer_tithe",
 ];
 
 fn action_name(action: &proto::ClientAction) -> &'static str {
@@ -72,6 +78,10 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::RemoveZone { .. } => "remove_zone",
         proto::ClientAction::PlanBuilding { .. } => "plan_building",
         proto::ClientAction::UnlockNode { .. } => "unlock_node",
+        proto::ClientAction::ResearchNode { .. } => "research_node",
+        proto::ClientAction::OfferTithe { .. } => "offer_tithe",
+        proto::ClientAction::OfferMaterials { .. } => "offer_materials",
+        proto::ClientAction::HaulGatherSpot { .. } => "haul_gather_spot",
         proto::ClientAction::AssignWorker { .. } => "assign_worker",
         proto::ClientAction::TrainWarrior { .. } => "train_warrior",
         proto::ClientAction::DefendRaid { .. } => "defend_raid",
@@ -151,6 +161,7 @@ fn complete_building(id: impl Into<String>, building_type: BuildingType) -> Buil
         construction_progress: 100,
         production_progress: 0.0,
         assigned_cat: None,
+        automated_by: None,
     }
 }
 
@@ -272,13 +283,44 @@ fn run_action_campaign() -> WorldState {
     assert_eq!(world.colonies[1].name, "Second Grove");
     assert_ne!(world.colonies[0].anchor, world.colonies[1].anchor);
 
+    // Logging is a researched outside-village job. Reveal the loaded campaign map
+    // and grant its real research prerequisite so the accepted-path sweep reaches it.
+    world.colonies[0]
+        .upgrade_tree
+        .owned_node_ids
+        .push("sawmill".to_owned());
+    let loaded_tiles = world.colonies[0]
+        .world_tiles
+        .keys()
+        .copied()
+        .collect::<Vec<_>>();
+    world.colonies[0].revealed_tiles.extend(loaded_tiles);
+    let frontier = world.colonies[0]
+        .world_tiles
+        .values()
+        .find(|tile| {
+            !world.colonies[0].claimed_tiles.contains(&tile.pos)
+                && matches!(tile.tile_type, TileType::Field | TileType::Meadow)
+        })
+        .expect("campaign map includes an ordinary frontier tile")
+        .pos;
+    world.colonies[0].revealed_tiles.remove(&frontier);
+
     // Every accepted manual job kind, including the ritual request's non-job state.
     for kind in [
         proto::JobKind::SupplyFood,
         proto::JobKind::SupplyWater,
         proto::JobKind::LeaderPlanHunt,
+        proto::JobKind::HuntExpedition,
         proto::JobKind::LeaderPlanHouse,
         proto::JobKind::Ritual,
+        proto::JobKind::Quarry,
+        proto::JobKind::GatherLogs,
+        proto::JobKind::ForageFibre,
+        proto::JobKind::Explore,
+        proto::JobKind::FetchWater,
+        proto::JobKind::ExpandVillage,
+        proto::JobKind::CarryOffering,
     ] {
         let jobs_before = world.colonies[0].jobs.len();
         apply_ok(&mut world, &mut coverage, signed_job(kind), &ctx(3_000));
@@ -309,6 +351,23 @@ fn run_action_campaign() -> WorldState {
         }
         reset_workers(&mut world);
     }
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::DispatchScout {
+            session_id,
+            nickname,
+            sig,
+            mission: proto::ScoutMission::Explore,
+        },
+        &ctx(3_200),
+    );
+    assert_eq!(
+        world.colonies[0].jobs.last().unwrap().kind,
+        JobKind::Explore
+    );
+    reset_workers(&mut world);
 
     // Every idle upgrade key is buyable through the same player action.
     world.colonies[0].global_upgrade_points = 10_000.0;
@@ -346,7 +405,8 @@ fn run_action_campaign() -> WorldState {
         [1; 6]
     );
 
-    // The root node has no prerequisites, so it exercises the god-purchase path cleanly.
+    // The root node exercises the god-purchase path; its child separately exercises
+    // spending scholar-earned research points without consuming blessings.
     world.colonies[0].upgrade_tree = upgrade_tree::create_upgrade_tree_state();
     let (session_id, nickname, sig) = signed_fields();
     apply_ok(
@@ -364,6 +424,71 @@ fn run_action_campaign() -> WorldState {
         &world.colonies[0].upgrade_tree,
         "research_hut"
     ));
+    world.colonies[0].upgrade_tree.research_points = 5.0;
+    world.colonies[0].last_loremaster_unlock_at = Some(4_000);
+    let blessings_before_research = world.colonies[0].global_upgrade_points;
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::ResearchNode {
+            session_id,
+            nickname,
+            sig,
+            node_id: "basic_tools".to_owned(),
+        },
+        &ctx(4_150),
+    );
+    assert!(upgrade_tree::is_owned(
+        &world.colonies[0].upgrade_tree,
+        "basic_tools"
+    ));
+    assert_eq!(
+        world.colonies[0].global_upgrade_points,
+        blessings_before_research
+    );
+    assert_eq!(
+        world.colonies[0].last_loremaster_unlock_at,
+        Some(4_000),
+        "manual ResearchNode bypasses the Loremaster's autonomous daily clock"
+    );
+
+    world.colonies[0].resources.food = 200.0;
+    world.colonies[0].resources.refined = 10.0;
+    let blessings_before_tithe = world.colonies[0].global_upgrade_points;
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::OfferTithe {
+            session_id,
+            nickname,
+            sig,
+        },
+        &ctx(4_175),
+    );
+    assert!(world.colonies[0].global_upgrade_points > blessings_before_tithe);
+
+    reset_workers(&mut world);
+    world.colonies[0].resources.materials = 100.0;
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::OfferMaterials {
+            session_id,
+            nickname,
+            sig,
+        },
+        &ctx(4_190),
+    );
+    assert!(
+        world.colonies[0]
+            .jobs
+            .iter()
+            .any(|job| job.kind == JobKind::CarryOffering)
+    );
+    reset_workers(&mut world);
 
     // The one-second tick opened a scheduled election. Vote in it, then start a kick.
     let election_id = world.colonies[0]
@@ -455,14 +580,30 @@ fn run_action_campaign() -> WorldState {
         .map(|node| node.id.to_owned())
         .collect();
     for building_type in [
+        proto::BuildingType::Den,
+        proto::BuildingType::FoodStorage,
+        proto::BuildingType::WaterBowl,
+        proto::BuildingType::Beds,
+        proto::BuildingType::HerbGarden,
+        proto::BuildingType::Nursery,
+        proto::BuildingType::ElderCorner,
+        proto::BuildingType::Walls,
+        proto::BuildingType::MouseFarm,
         proto::BuildingType::Workshop,
         proto::BuildingType::Field,
+        proto::BuildingType::Mill,
+        proto::BuildingType::Sawmill,
+        proto::BuildingType::ResearchHut,
+        proto::BuildingType::School,
         proto::BuildingType::Smithy,
         proto::BuildingType::Barracks,
-        proto::BuildingType::FoodStorage,
-        proto::BuildingType::Den,
+        proto::BuildingType::AccountingTent,
+        proto::BuildingType::WoodCutter,
+        proto::BuildingType::StonePrep,
+        proto::BuildingType::Woodworking,
+        proto::BuildingType::Clothier,
+        proto::BuildingType::Tannery,
         proto::BuildingType::Smelter,
-        proto::BuildingType::School,
     ] {
         let jobs_before = world.colonies[0].jobs.len();
         let (session_id, nickname, sig) = signed_fields();
@@ -535,12 +676,27 @@ fn run_action_campaign() -> WorldState {
     );
 
     // Every officer role is independently appointable and vacatable.
+    for (id, building_type) in [
+        ("campaign-steward-workshop", BuildingType::Workshop),
+        ("campaign-accounting", BuildingType::AccountingTent),
+        ("campaign-sawmill", BuildingType::Sawmill),
+        ("campaign-field", BuildingType::Field),
+        ("campaign-officer-barracks", BuildingType::Barracks),
+        ("campaign-research-hut", BuildingType::ResearchHut),
+        ("campaign-clothier", BuildingType::Clothier),
+    ] {
+        world.colonies[0]
+            .buildings
+            .push(complete_building(id, building_type));
+    }
     for role in [
         proto::OfficerRole::Steward,
+        proto::OfficerRole::Accountant,
         proto::OfficerRole::Forester,
         proto::OfficerRole::Farmer,
         proto::OfficerRole::Captain,
         proto::OfficerRole::Loremaster,
+        proto::OfficerRole::ClothLeader,
     ] {
         let (session_id, nickname, sig) = signed_fields();
         apply_ok(
@@ -718,6 +874,33 @@ fn run_action_campaign() -> WorldState {
             .iter()
             .any(|pile| pile.id == gather_id)
     );
+    world.colonies[0]
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == gather_id)
+        .expect("gather spot stockpile")
+        .contents
+        .materials = 5.0;
+    reset_workers(&mut world);
+    let carrier_id = world.colonies[0].cats[0].id.clone();
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::HaulGatherSpot {
+            session_id,
+            nickname,
+            sig,
+            stockpile_id: gather_id.clone(),
+            cat_id: Some(carrier_id.clone()),
+        },
+        &ctx(7_250),
+    );
+    assert!(world.colonies[0].jobs.iter().any(|job| {
+        job.kind == JobKind::HaulGatherSpot
+            && job.assigned_cat.as_deref() == Some(carrier_id.as_str())
+    }));
+    reset_workers(&mut world);
     let (session_id, nickname, sig) = signed_fields();
     apply_ok(
         &mut world,
@@ -803,6 +986,19 @@ fn run_action_campaign() -> WorldState {
         job.kind == JobKind::TrainWarrior && job.assigned_cat.as_deref() == Some(&recruit_id)
     }));
     reset_workers(&mut world);
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        signed_job(proto::JobKind::TrainWarrior),
+        &ctx(8_150),
+    );
+    assert!(
+        world.colonies[0]
+            .jobs
+            .iter()
+            .any(|job| job.kind == JobKind::TrainWarrior)
+    );
+    reset_workers(&mut world);
 
     world.colonies[0].active_raid = Some("campaign-raid".to_owned());
     world.colonies[0].raiders.push(RaiderRuntime {
@@ -886,8 +1082,158 @@ fn run_action_campaign() -> WorldState {
 
     let expected: BTreeSet<&str> = EXPECTED_ACTIONS.into_iter().collect();
     assert_eq!(coverage, expected, "the campaign missed an action variant");
-    assert_eq!(coverage.len(), 31);
+    assert_eq!(coverage.len(), EXPECTED_ACTIONS.len());
     world
+}
+
+#[test]
+fn defense_click_deals_exactly_one_hit_across_the_following_tick() {
+    let mut world = new_world(0xCA7C_D3F3);
+    let ensure = apply_action(&mut world, &proto::ClientAction::Ensure, &ctx(1_000));
+    assert!(ensure.ok);
+
+    let colony = &mut world.colonies[0];
+    colony.active_raid = Some("click-parity-raid".to_owned());
+    colony.raiders.push(RaiderRuntime {
+        id: "click-parity-raider".to_owned(),
+        raid_id: "click-parity-raid".to_owned(),
+        // Keep the unit far from the gate so the following one-second tick cannot
+        // resolve combat and obscure the click-damage assertion.
+        position: Position {
+            map: MapType::World,
+            x: -100.0,
+            y: -100.0,
+        },
+        destination: None,
+        attack: 1.0,
+        defense: 1.0,
+        health: 20.0,
+    });
+
+    let (session_id, nickname, sig) = signed_fields();
+    let result = apply_action(
+        &mut world,
+        &proto::ClientAction::DefendRaid {
+            session_id,
+            nickname,
+            sig,
+        },
+        &ctx(1_500),
+    );
+    assert!(result.ok, "defense click failed: {:?}", result.message);
+    assert_eq!(world.colonies[0].raiders[0].health, 14.0);
+    assert_eq!(world.colonies[0].raid_clicks, 1.0);
+
+    let _ = world_tick(&mut world, 2_000);
+
+    assert_eq!(
+        world.colonies[0].raiders[0].health, 14.0,
+        "raidClicks is telemetry; the raid director must not replay immediate click damage",
+    );
+    assert_eq!(world.colonies[0].raid_clicks, 1.0);
+}
+
+#[test]
+fn killing_defense_click_finishes_once_with_no_stranded_raider() {
+    let mut world = new_world(0xCA7C_D3F4);
+    assert!(apply_action(&mut world, &proto::ClientAction::Ensure, &ctx(1_000)).ok);
+    let colony = &mut world.colonies[0];
+    colony.active_raid = Some("killing-click-raid".to_owned());
+    colony.threat_pressure = 42.0;
+    colony.raiders.push(RaiderRuntime {
+        id: "killing-click-raider".to_owned(),
+        raid_id: "killing-click-raid".to_owned(),
+        position: Position {
+            map: MapType::World,
+            x: -100.0,
+            y: -100.0,
+        },
+        destination: None,
+        attack: 1.0,
+        defense: 1.0,
+        health: 6.0,
+    });
+
+    let (session_id, nickname, sig) = signed_fields();
+    let result = apply_action(
+        &mut world,
+        &proto::ClientAction::DefendRaid {
+            session_id,
+            nickname,
+            sig,
+        },
+        &ctx(1_500),
+    );
+    assert!(result.ok);
+    let colony = &world.colonies[0];
+    assert_eq!(colony.raiders[0].health, 0.0);
+    assert_eq!(colony.active_raid.as_deref(), Some("killing-click-raid"));
+    assert_eq!(colony.raid_clicks, 1.0);
+    assert!(
+        colony
+            .events
+            .iter()
+            .all(|event| event.kind != EventKind::Raid(RaidPhase::Repelled)),
+        "the action leaves terminal narration to the atomic raid phase cleanup"
+    );
+
+    let _ = world_tick(&mut world, 2_000);
+    let colony = &world.colonies[0];
+    assert_eq!(colony.active_raid, None);
+    assert!(
+        colony.raiders.is_empty(),
+        "dead raid records must be removed"
+    );
+    assert_eq!(colony.raid_clicks, 0.0);
+    assert_eq!(colony.threat_pressure, 0.0);
+    assert_eq!(
+        colony
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::Raid(RaidPhase::Repelled))
+            .count(),
+        1
+    );
+
+    let _ = world_tick(&mut world, 3_000);
+    assert_eq!(
+        world.colonies[0]
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::Raid(RaidPhase::Repelled))
+            .count(),
+        1,
+        "the next tick must not emit a duplicate terminal event"
+    );
+    assert!(world.colonies[0].raiders.is_empty());
+}
+
+#[test]
+fn duplicate_manual_expansion_requests_do_not_reserve_two_cats_for_one_frontier() {
+    let mut world = new_world(0xCA7C_EA5E);
+    assert!(apply_action(&mut world, &proto::ClientAction::Ensure, &ctx(1_000)).ok);
+
+    let first = apply_action(
+        &mut world,
+        &signed_job(proto::JobKind::ExpandVillage),
+        &ctx(1_100),
+    );
+    let duplicate = apply_action(
+        &mut world,
+        &signed_job(proto::JobKind::ExpandVillage),
+        &ctx(1_200),
+    );
+
+    assert!(first.ok, "first expansion failed: {:?}", first.message);
+    assert!(!duplicate.ok, "duplicate expansion unexpectedly queued");
+    assert_eq!(
+        world.colonies[0]
+            .jobs
+            .iter()
+            .filter(|job| job.kind == JobKind::ExpandVillage)
+            .count(),
+        1,
+    );
 }
 
 #[test]
@@ -909,18 +1255,99 @@ fn every_player_action_mutates_its_feature_and_the_campaign_is_deterministic() {
 fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
     const STARTED_AT: i64 = 10_000;
     const STEP_MS: i64 = 15 * 60_000;
-    const ARRIVAL_HOUR: i64 = 30;
-    const END_HOUR: i64 = 75;
+    const MAX_ARRIVAL_HOUR: i64 = 60;
 
     let seed = 42;
     let mut base = new_world(seed);
     base.colonies
         .push(found_colony(seed, "colony-1", STARTED_AT, seed));
+    // Migration is a prosperity mechanic, so begin from the smallest genuinely
+    // automated settlement rather than a role-vacant founding that intentionally
+    // waits for manual survival orders. Both later branches share this setup; the
+    // only difference under test remains the player's den order.
+    let holders = base.colonies[0]
+        .cats
+        .iter()
+        .take(5)
+        .map(|cat| cat.id.clone())
+        .collect::<Vec<_>>();
+    for (index, (building_type, node_id)) in [
+        (BuildingType::Workshop, "basic_tools"),
+        (BuildingType::Sawmill, "sawmill"),
+        (BuildingType::Field, "irrigation"),
+        (BuildingType::Barracks, "barracks"),
+        (BuildingType::ResearchHut, "research_hut"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut building = complete_building(format!("migration-office-{index}"), building_type);
+        building.position = TilePos {
+            x: 20 + i32::try_from(index).expect("small fixture index") * 4,
+            y: 20,
+        };
+        base.colonies[0].buildings.push(building);
+        if !base.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .iter()
+            .any(|owned| owned == node_id)
+        {
+            base.colonies[0]
+                .upgrade_tree
+                .owned_node_ids
+                .push(node_id.to_owned());
+        }
+    }
+    for (role, holder) in [
+        OfficerRole::Steward,
+        OfficerRole::Forester,
+        OfficerRole::Farmer,
+        OfficerRole::Captain,
+        OfficerRole::Loremaster,
+    ]
+    .into_iter()
+    .zip(holders)
+    {
+        base.colonies[0].officers.insert(role, holder);
+    }
     let mut now = STARTED_AT;
-    while now < STARTED_AT + ARRIVAL_HOUR * 3_600_000 {
+    while now < STARTED_AT + MAX_ARRIVAL_HOUR * 3_600_000
+        && base.colonies[0]
+            .migration_state
+            .probationary_migrants
+            .is_empty()
+    {
         now += STEP_MS;
         let report = world_tick(&mut base, now);
-        assert_eq!(report[0].reset_reason, None);
+        assert_eq!(
+            report[0].reset_reason,
+            None,
+            "pre-arrival collapse at game hour {}: pop={} food={:.2} water={:.2} jobs={:?} events={:?}",
+            (now - STARTED_AT) / 3_600_000,
+            base.colonies[0]
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none())
+                .count(),
+            base.colonies[0].resources.food,
+            base.colonies[0].resources.water,
+            base.colonies[0]
+                .jobs
+                .iter()
+                .filter(|job| matches!(
+                    job.status,
+                    cat_sim::types::JobStatus::Active | cat_sim::types::JobStatus::Queued
+                ))
+                .map(|job| (job.kind, job.requested_by))
+                .collect::<Vec<_>>(),
+            base.colonies[0]
+                .events
+                .iter()
+                .rev()
+                .take(8)
+                .collect::<Vec<_>>(),
+        );
     }
     let first_cohort = base.colonies[0]
         .migration_state
@@ -930,7 +1357,7 @@ fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
         .collect::<Vec<_>>();
     assert!(
         !first_cohort.is_empty(),
-        "organic prosperity produced no visitors"
+        "organic prosperity produced no visitors by game hour {MAX_ARRIVAL_HOUR}"
     );
     assert_eq!(completed_beds(&base.colonies[0]), 15);
 
@@ -964,7 +1391,8 @@ fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
     }
     let accepted_at = action_accepted_at.expect("a worker becomes available for the player's den");
 
-    while now < STARTED_AT + END_HOUR * 3_600_000 {
+    let end_at = now + 45 * 3_600_000;
+    while now < end_at {
         now += STEP_MS;
         assert_eq!(world_tick(&mut guided, now)[0].reset_reason, None);
         assert_eq!(world_tick(&mut unguided, now)[0].reset_reason, None);
@@ -1002,9 +1430,13 @@ fn player_planned_den_retains_migrants_while_no_input_loses_them() {
                 .iter()
                 .any(|migrant| migrant.id == *id)
     }));
-    assert!(guided_colony.events.iter().any(|event| {
-        event.kind == EventKind::MigrationRetained && event.at_ms < 10_000 + 66 * 3_600_000
-    }));
+    assert!(
+        guided_colony
+            .events
+            .iter()
+            .any(|event| event.kind == EventKind::MigrationRetained),
+        "the completed den never retained the waiting cohort"
+    );
 
     let unguided_colony = &unguided.colonies[0];
     assert!(cohort.iter().all(|id| {

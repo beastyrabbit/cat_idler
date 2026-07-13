@@ -751,6 +751,36 @@ pub struct AutoUnlockResult {
     pub node_id: Option<String>,
 }
 
+/// Explicit cat-research purchase used by the manual technology action. This is
+/// deliberately separate from [`god_purchase`]: it spends banked research points,
+/// never shrine blessings, and never silently picks a different node.
+#[must_use]
+pub fn cat_purchase(state: &UpgradeTreeState, id: &str) -> AutoUnlockResult {
+    let Some(node) = get_node(id) else {
+        return AutoUnlockResult {
+            ok: false,
+            state: state.clone(),
+            node_id: None,
+        };
+    };
+    if !can_unlock(state, id) || state.research_points < node.cost {
+        return AutoUnlockResult {
+            ok: false,
+            state: state.clone(),
+            node_id: None,
+        };
+    }
+
+    AutoUnlockResult {
+        ok: true,
+        state: UpgradeTreeState {
+            owned_node_ids: with_owned(state, id),
+            research_points: state.research_points - node.cost,
+        },
+        node_id: Some(id.to_owned()),
+    }
+}
+
 #[must_use]
 pub fn cat_auto_unlock(state: &UpgradeTreeState) -> AutoUnlockResult {
     let mut best = None;
@@ -906,8 +936,8 @@ mod tests {
         EffectKey, EffectKind, MOUNTAINEERING_NODE_ID, PurchaseFailureReason, RAIL_NODE_ID,
         RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK, RESEARCH_POINTS_PER_SECOND, SHIPPING_NODE_ID,
         UPGRADE_NODE_BY_ID, UPGRADE_NODES, WEEK_SECONDS, accrue_research, can_unlock,
-        cat_auto_unlock, create_upgrade_tree_state, deserialize_upgrade_tree_state, effect_kind,
-        get_node, god_purchase, is_owned, neutral_effects, next_research_target,
+        cat_auto_unlock, cat_purchase, create_upgrade_tree_state, deserialize_upgrade_tree_state,
+        effect_kind, get_node, god_purchase, is_owned, neutral_effects, next_research_target,
         points_per_tick_for, points_per_tick_for_default, prerequisites_met, resolve_effects,
         serialize_upgrade_tree_state, unlockable_nodes,
     };
@@ -1172,6 +1202,21 @@ mod tests {
         );
         let all_owned = UPGRADE_NODES.iter().map(|node| node.id).collect::<Vec<_>>();
         assert!(next_research_target(&state_with(&all_owned, 0.0)).is_none());
+    }
+
+    #[test]
+    fn manual_cat_purchase_spends_points_only_on_the_requested_node() {
+        let state = state_with(&["research_hut"], 8.0);
+        let bought = cat_purchase(&state, "water_carriers");
+        assert!(bought.ok);
+        assert_eq!(bought.node_id.as_deref(), Some("water_carriers"));
+        assert_eq!(bought.state.research_points, 0.0);
+        assert!(is_owned(&bought.state, "water_carriers"));
+        assert!(!is_owned(&bought.state, "basic_tools"));
+
+        assert!(!cat_purchase(&state, "irrigation").ok, "prerequisites gate");
+        assert!(!cat_purchase(&state, "unknown").ok, "unknown node gate");
+        assert!(!cat_purchase(&state_with(&["research_hut"], 7.99), "water_carriers").ok);
     }
 
     #[test]

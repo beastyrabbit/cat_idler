@@ -41,6 +41,7 @@ fn building(
         construction_progress: 100,
         production_progress: 0.0,
         assigned_cat: None,
+        automated_by: None,
     }
 }
 
@@ -182,10 +183,12 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     colony.resources.lumber = 0.0;
     colony.run_started_at = i64::MAX / 4;
     colony.created_at = i64::MAX / 4;
-    colony
-        .upgrade_tree
-        .owned_node_ids
-        .extend(["sawmill".to_owned(), "milling".to_owned()]);
+    colony.upgrade_tree.owned_node_ids.extend([
+        "basic_tools".to_owned(),
+        "sawmill".to_owned(),
+        "milling".to_owned(),
+        "irrigation".to_owned(),
+    ]);
     colony.buildings.retain(|building| {
         !matches!(
             building.building_type,
@@ -208,10 +211,22 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         building("guided-den", BuildingType::Den, 10, TilePos { x: 4, y: 1 }),
         building("guided-mill", BuildingType::Mill, 1, TilePos { x: 4, y: 4 }),
         building(
+            "guided-field",
+            BuildingType::Field,
+            1,
+            TilePos { x: 7, y: 1 },
+        ),
+        building(
             "guided-sawmill",
             BuildingType::Sawmill,
             1,
             TilePos { x: 7, y: 4 },
+        ),
+        building(
+            "guided-workshop",
+            BuildingType::Workshop,
+            1,
+            TilePos { x: 10, y: 1 },
         ),
     ]);
 
@@ -289,6 +304,7 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     let farmer_id = colony.cats[0].id.clone();
     let miller_id = colony.cats[1].id.clone();
     let sawyer_id = colony.cats[2].id.clone();
+    let steward_id = colony.cats[3].id.clone();
     let crop = choose_crop(&colony.resources);
     assert_eq!(
         crop,
@@ -305,6 +321,18 @@ fn run_guided_campaign(seed: u32) -> WorldState {
             sig,
             role: proto::OfficerRole::Farmer,
             cat_id: farmer_id,
+        },
+        START_MS,
+    );
+    let (session_id, nickname, sig) = signed();
+    apply_ok(
+        &mut world,
+        proto::ClientAction::AssignOfficer {
+            session_id,
+            nickname,
+            sig,
+            role: proto::OfficerRole::Steward,
+            cat_id: steward_id,
         },
         START_MS,
     );

@@ -422,51 +422,17 @@ fn best_fit_index(pool: &[CatBrief], goal: LaborGoalKind, options: MatchOptions)
     best_idx
 }
 
-/// Officer-aware matching (P12.2). Identical to [`match_cats_to_slots`] when
-/// `officers` is empty (it delegates), so it is a strict superset with zero effect
-/// on the empty case. When a slot's governing role ([`officer_role_for`]) is filled
-/// and that officer cat is still in the pool and eligible, the officer takes the slot
-/// FIRST — reliably working its domain — before the greedy best-fit fallback.
+/// Compatibility wrapper for the old officer-aware matcher. Holding office enables
+/// a category's automation; it does not force the office holder to personally take
+/// every job in that category. Worker selection therefore remains pure best-fit.
 #[must_use]
 pub fn match_cats_to_slots_with_officers(
     slots: &[OpenSlots],
     cats: &[CatBrief],
-    officers: &BTreeMap<OfficerRole, String>,
+    _officers: &BTreeMap<OfficerRole, String>,
     options: MatchOptions,
 ) -> Vec<Assignment> {
-    if officers.is_empty() {
-        return match_cats_to_slots(slots, cats, options);
-    }
-
-    let mut flat = Vec::new();
-    for slot in slots {
-        for _ in 0..slot.count {
-            flat.push(slot.goal);
-        }
-    }
-
-    let mut pool = cats.to_vec();
-    let mut assignments = Vec::new();
-    for goal in flat {
-        let officer_idx = officers.get(&officer_role_for(goal)).and_then(|cat_id| {
-            pool.iter().position(|cat| {
-                &cat.id == cat_id
-                    && !(goal == LaborGoalKind::TrainWarrior
-                        && options.exclude_warriors_from_training
-                        && cat.specialization == Some(CatSpecialization::Warrior))
-            })
-        });
-
-        if let Some(idx) = officer_idx.or_else(|| best_fit_index(&pool, goal, options)) {
-            assignments.push(Assignment {
-                cat_id: pool[idx].id.clone(),
-                goal,
-            });
-            pool.remove(idx);
-        }
-    }
-
-    assignments
+    match_cats_to_slots(slots, cats, options)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -487,75 +453,8 @@ pub fn direct_colony(snapshot: &LeaderSnapshot) -> DirectorPlan {
         decisions.push(LeaderDecision::CancelTraining);
     }
 
-    let mut labour_left = snapshot.idle_cats;
     let goals = labor_goals(snapshot);
-    let mut ranked = goals.clone();
-    ranked.sort_by(rank_goals);
-
-    let mut granted: Vec<(LaborGoalKind, u32)> = Vec::new();
-    for goal in &ranked {
-        if labour_left == 0 {
-            break;
-        }
-
-        let want = goal_open_slots(goal);
-        let give = want.min(labour_left);
-        if give > 0 {
-            grant(&mut granted, goal.kind, give);
-            labour_left -= give;
-        }
-    }
-
-    let busy_so_far = snapshot.employed_cats + granted.iter().map(|(_, count)| *count).sum::<u32>();
-    let employ_target = (f64::from(able_cats(snapshot)) * IDLE_EMPLOYMENT_FLOOR).ceil() as u32;
-    let idle_left = snapshot
-        .idle_cats
-        .saturating_sub(busy_so_far.saturating_sub(snapshot.employed_cats));
-    let mut fill_wanted = idle_left.min(employ_target.saturating_sub(busy_so_far));
-
-    let fill_order = [
-        (LaborGoalKind::Hunt, food_r < 1.0),
-        (LaborGoalKind::Scout, snapshot.has_frontier),
-        (LaborGoalKind::Quarry, snapshot.has_quarry_site),
-    ];
-    let mut progress = true;
-    while fill_wanted > 0 && progress {
-        progress = false;
-        for (kind, open) in fill_order {
-            if fill_wanted == 0 {
-                break;
-            }
-            if !open {
-                continue;
-            }
-
-            grant(&mut granted, kind, 1);
-            fill_wanted -= 1;
-            progress = true;
-        }
-    }
-
-    let mut slots = Vec::new();
-    for goal in &ranked {
-        let count = granted_count(&granted, goal.kind);
-        if count > 0 {
-            let original_score = goals
-                .iter()
-                .find(|candidate| candidate.kind == goal.kind)
-                .map_or(0.0, |candidate| candidate.score);
-            slots.push(OpenSlots {
-                goal: goal.kind,
-                count,
-                score: original_score,
-            });
-        }
-    }
-
-    // ADDITIVE officer effect: filled roles each get a small, capped slot bonus in
-    // their category. No-op (byte-identical) when officers is empty.
-    if !snapshot.officers.is_empty() {
-        apply_officer_slot_bonus(snapshot, &goals, &mut slots);
-    }
+    let slots = allocate_labor(snapshot, &goals);
 
     let storehouses_in_play = snapshot.storehouse_count + snapshot.storage_plans_in_flight;
     if food_r > STORAGE_RATIO
@@ -598,17 +497,109 @@ pub fn direct_colony(snapshot: &LeaderSnapshot) -> DirectorPlan {
         });
     }
 
-    // P12.6 shrine offerings: a cat-driven, spatial complement to `Tithe` (which is
-    // an instant, cat-free, food/refined-only conversion). Fires only on a genuine
-    // materials surplus above a fixed construction reserve, and only when no
-    // offering is already in flight, so
-    // the director dispatches at most one `carry_offering` job at a time.
     let materials_surplus =
         snapshot.materials >= OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT);
     if materials_surplus && snapshot.offering_in_flight.unwrap_or(0) == 0 {
         decisions.push(LeaderDecision::Offering);
     }
 
+    DirectorPlan { decisions, slots }
+}
+
+fn allocate_labor(snapshot: &LeaderSnapshot, goals: &[LaborGoal]) -> Vec<OpenSlots> {
+    let food_r = ratio(snapshot.resources.food, snapshot.food_capacity);
+    let mut labour_left = snapshot.idle_cats;
+    let mut ranked = goals.to_vec();
+    ranked.sort_by(rank_goals);
+
+    let mut granted: Vec<(LaborGoalKind, u32)> = Vec::new();
+    for goal in &ranked {
+        if labour_left == 0 {
+            break;
+        }
+
+        let want = goal_open_slots(goal);
+        let give = want.min(labour_left);
+        if give > 0 {
+            grant(&mut granted, goal.kind, give);
+            labour_left -= give;
+        }
+    }
+
+    let busy_so_far = snapshot.employed_cats + granted.iter().map(|(_, count)| *count).sum::<u32>();
+    let employ_target = (f64::from(able_cats(snapshot)) * IDLE_EMPLOYMENT_FLOOR).ceil() as u32;
+    let idle_left = snapshot
+        .idle_cats
+        .saturating_sub(busy_so_far.saturating_sub(snapshot.employed_cats));
+    let mut fill_wanted = idle_left.min(employ_target.saturating_sub(busy_so_far));
+
+    let fill_order = [
+        (LaborGoalKind::Hunt, food_r < 1.0),
+        (LaborGoalKind::Scout, snapshot.has_frontier),
+        (LaborGoalKind::Quarry, snapshot.has_quarry_site),
+    ];
+    let mut progress = true;
+    while fill_wanted > 0 && progress {
+        progress = false;
+        for (kind, open) in fill_order {
+            if fill_wanted == 0 {
+                break;
+            }
+            if !open || !goals.iter().any(|goal| goal.kind == kind) {
+                continue;
+            }
+
+            grant(&mut granted, kind, 1);
+            fill_wanted -= 1;
+            progress = true;
+        }
+    }
+
+    let mut slots = Vec::new();
+    for goal in &ranked {
+        let count = granted_count(&granted, goal.kind);
+        if count > 0 {
+            let original_score = goals
+                .iter()
+                .find(|candidate| candidate.kind == goal.kind)
+                .map_or(0.0, |candidate| candidate.score);
+            slots.push(OpenSlots {
+                goal: goal.kind,
+                count,
+                score: original_score,
+            });
+        }
+    }
+
+    slots
+}
+
+/// Filter the pure utility director into work that the colony may perform
+/// unattended. Each filled office enables exactly its own labor category; vacant
+/// offices never receive a survival/bootstrap exception.
+#[must_use]
+pub fn automated_plan(snapshot: &LeaderSnapshot) -> DirectorPlan {
+    let goals = labor_goals(snapshot)
+        .into_iter()
+        .filter(|goal| snapshot.officers.contains_key(&officer_role_for(goal.kind)))
+        .collect::<Vec<_>>();
+    let slots = allocate_labor(snapshot, &goals);
+    let scored = direct_colony(snapshot);
+    let decisions = scored
+        .decisions
+        .into_iter()
+        .filter(|decision| match decision {
+            LeaderDecision::BuildStorage | LeaderDecision::BuildDen => {
+                snapshot.officers.contains_key(&OfficerRole::Steward)
+            }
+            LeaderDecision::CancelHunts => snapshot.officers.contains_key(&OfficerRole::Farmer),
+            LeaderDecision::CancelTraining => snapshot.officers.contains_key(&OfficerRole::Captain),
+            LeaderDecision::Tithe { .. } | LeaderDecision::Offering => {
+                snapshot.officers.contains_key(&OfficerRole::Loremaster)
+            }
+            _ => false,
+        })
+        .collect();
     DirectorPlan { decisions, slots }
 }
 
@@ -647,46 +638,6 @@ pub fn plan_leader_actions(snapshot: &LeaderSnapshot) -> Vec<LeaderDecision> {
     }
 
     decisions
-}
-
-/// Grant each filled officer role +1 slot in its category's highest-ranked already-open
-/// slot, bounded by (a) idle cats not yet spent and (b) the goal's own hard-cap
-/// headroom. Only boosts categories that already have an open slot — a filled role
-/// never conjures work from nothing — keeping the effect small and no-op when empty.
-fn apply_officer_slot_bonus(
-    snapshot: &LeaderSnapshot,
-    goals: &[LaborGoal],
-    slots: &mut [OpenSlots],
-) {
-    let granted_total: u32 = slots.iter().map(|slot| slot.count).sum();
-    let mut budget = snapshot.idle_cats.saturating_sub(granted_total);
-
-    for role in OfficerRole::ALL {
-        if budget == 0 {
-            break;
-        }
-        if !snapshot.officers.contains_key(role) {
-            continue;
-        }
-        // `slots` is in ranked order, so the first match is the role's top open goal.
-        let Some(slot) = slots
-            .iter_mut()
-            .find(|slot| officer_role_for(slot.goal) == *role)
-        else {
-            continue;
-        };
-        let Some(goal) = goals.iter().find(|goal| goal.kind == slot.goal) else {
-            continue;
-        };
-        let headroom = goal
-            .hard_cap
-            .saturating_sub(goal.in_flight.saturating_add(slot.count));
-        if headroom == 0 {
-            continue;
-        }
-        slot.count += 1;
-        budget -= 1;
-    }
 }
 
 /// Re-scale a store's shortfall within the comfort band and reuse the director's
@@ -1324,7 +1275,7 @@ mod tests {
         );
     }
 
-    // ---- P12.2 officers (additive layer) ----
+    // ---- P12.2 officers (manual-to-automation handoff) ----
 
     fn cat_brief(id: &str, attack: f64, hunting: f64) -> CatBrief {
         CatBrief {
@@ -1458,7 +1409,7 @@ mod tests {
     }
 
     #[test]
-    fn filled_captain_takes_its_military_slot_before_a_better_fit() {
+    fn filled_officer_does_not_override_best_fit_worker_matching() {
         let slots = vec![OpenSlots {
             goal: LaborGoalKind::TrainWarrior,
             count: 1,
@@ -1469,16 +1420,6 @@ mod tests {
             cat_brief("cap", 10.0, 10.0),
         ];
 
-        // Without officers the greedy best-fit (strong) wins.
-        let base = match_cats_to_slots_with_officers(
-            &slots,
-            &cats,
-            &BTreeMap::new(),
-            MatchOptions::default(),
-        );
-        assert_eq!(base[0].cat_id, "strong");
-
-        // Captain officer "cap" works its domain first despite the worse fit.
         let mut officers = BTreeMap::new();
         officers.insert(OfficerRole::Captain, "cap".to_owned());
         let out =
@@ -1486,61 +1427,109 @@ mod tests {
         assert_eq!(
             out,
             vec![Assignment {
-                cat_id: "cap".to_owned(),
+                cat_id: "strong".to_owned(),
                 goal: LaborGoalKind::TrainWarrior,
             }]
         );
     }
 
     #[test]
-    fn filled_officer_adds_one_capped_slot_to_its_open_category() {
-        let mut snapshot = fixture().direct_colony[0].snapshot.clone();
-        snapshot.idle_cats = 5;
+    fn vacant_offices_emit_no_automated_labor_or_capital_recovery() {
+        let mut snapshot = healthy_snapshot(10, 0);
         snapshot.officers.clear();
+        snapshot.housing.capacity = 1;
+        snapshot.resources.food = snapshot.food_capacity;
+        let plan = automated_plan(&snapshot);
+        assert!(plan.slots.is_empty());
+        assert!(plan.decisions.is_empty());
+    }
+
+    #[test]
+    fn each_filled_office_enables_exactly_its_labor_category_without_bonus() {
+        let base = healthy_snapshot(20, 0);
+        for role in OfficerRole::ALL {
+            let mut snapshot = base.clone();
+            snapshot.officers.insert(*role, format!("{role:?}"));
+            let automated = automated_plan(&snapshot);
+            assert!(
+                automated
+                    .slots
+                    .iter()
+                    .all(|slot| officer_role_for(slot.goal) == *role)
+            );
+        }
+
+        let mut all_filled = base.clone();
+        for role in OfficerRole::ALL {
+            all_filled.officers.insert(*role, format!("{role:?}"));
+        }
+        assert_plan_eq(
+            &automated_plan(&all_filled),
+            &direct_colony(&base),
+            "all roles reproduce pure scoring without a bonus",
+        );
+    }
+
+    #[test]
+    fn pure_scoring_is_independent_of_officer_occupancy() {
+        let empty = healthy_snapshot(20, 0);
+        let mut filled = empty.clone();
+        for role in OfficerRole::ALL {
+            filled.officers.insert(*role, format!("{role:?}"));
+        }
+        assert_plan_eq(
+            &direct_colony(&empty),
+            &direct_colony(&filled),
+            "pure scoring",
+        );
+    }
+
+    #[test]
+    fn strategic_automation_decisions_require_their_own_office() {
+        let mut snapshot = healthy_snapshot(12, 0);
+        snapshot.resources.food = 100.0;
+        snapshot.food_capacity = 50.0;
+        snapshot.active_hunts = 1;
+        snapshot.training_in_flight = Some(1);
+        snapshot.starving = Some(true);
+        snapshot.resources.refined = f64::from(TITHE_REFINED_AMOUNT);
+        snapshot.materials = OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT);
+
+        let vacant = automated_plan(&snapshot);
+        assert!(!vacant.decisions.iter().any(|decision| matches!(
+            decision,
+            LeaderDecision::CancelHunts
+                | LeaderDecision::CancelTraining
+                | LeaderDecision::Tithe { .. }
+                | LeaderDecision::Offering
+        )));
+
         snapshot
             .officers
-            .insert(OfficerRole::Captain, "cap".to_owned());
-
-        let goals = vec![LaborGoal {
-            kind: LaborGoalKind::TrainWarrior,
-            score: 0.5,
-            max_slots: 4,
-            in_flight: 0,
-            hard_cap: 4,
-            vetoed: false,
-            mode: LaborGoalMode::Fixed,
-        }];
-        let mut slots = vec![OpenSlots {
-            goal: LaborGoalKind::TrainWarrior,
-            count: 1,
-            score: 0.5,
-        }];
-        apply_officer_slot_bonus(&snapshot, &goals, &mut slots);
-        assert_eq!(slots[0].count, 2, "Captain grants +1 military slot");
-
-        // Idle budget caps the bonus: with no spare idle cats, no boost.
-        snapshot.idle_cats = 1;
-        let mut tight = vec![OpenSlots {
-            goal: LaborGoalKind::TrainWarrior,
-            count: 1,
-            score: 0.5,
-        }];
-        apply_officer_slot_bonus(&snapshot, &goals, &mut tight);
-        assert_eq!(tight[0].count, 1, "no idle budget → no bonus");
-
-        // Hard-cap headroom caps the bonus too.
-        snapshot.idle_cats = 5;
-        let capped_goals = vec![LaborGoal {
-            hard_cap: 1,
-            ..goals[0]
-        }];
-        let mut capped = vec![OpenSlots {
-            goal: LaborGoalKind::TrainWarrior,
-            count: 1,
-            score: 0.5,
-        }];
-        apply_officer_slot_bonus(&snapshot, &capped_goals, &mut capped);
-        assert_eq!(capped[0].count, 1, "no hard-cap headroom → no bonus");
+            .insert(OfficerRole::Farmer, "farmer".to_owned());
+        assert!(
+            automated_plan(&snapshot)
+                .decisions
+                .contains(&LeaderDecision::CancelHunts)
+        );
+        snapshot
+            .officers
+            .insert(OfficerRole::Captain, "captain".to_owned());
+        assert!(
+            automated_plan(&snapshot)
+                .decisions
+                .contains(&LeaderDecision::CancelTraining)
+        );
+        snapshot
+            .officers
+            .insert(OfficerRole::Loremaster, "lore".to_owned());
+        let lore = automated_plan(&snapshot);
+        assert!(
+            lore.decisions
+                .iter()
+                .any(|decision| matches!(decision, LeaderDecision::Tithe { .. }))
+        );
+        assert!(lore.decisions.contains(&LeaderDecision::Offering));
     }
 
     // ---- Job saturation (IDLE_EMPLOYMENT_FLOOR raised 0.8 -> 0.95) ----

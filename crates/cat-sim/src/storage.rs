@@ -37,6 +37,11 @@ pub struct StorageCapacities {
     pub hide: f64,
     pub cloth: f64,
     pub leather: f64,
+    /// Ore/metal chain. Flat base capacity like the clothing intermediates.
+    #[serde(default)]
+    pub ore: f64,
+    #[serde(default)]
+    pub metal: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -91,6 +96,8 @@ pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     hide: 100.0,
     cloth: 100.0,
     leather: 100.0,
+    ore: 100.0,
+    metal: 100.0,
 };
 
 /// Dry goods a single finished granary adds per level.
@@ -248,6 +255,8 @@ mod tests {
             expected.leather,
             &format!("{label} leather"),
         );
+        assert_f64_bits(actual.ore, expected.ore, &format!("{label} ore"));
+        assert_f64_bits(actual.metal, expected.metal, &format!("{label} metal"));
     }
 
     #[test]
@@ -274,6 +283,8 @@ mod tests {
                 hide: 100.0,
                 cloth: 100.0,
                 leather: 100.0,
+                ore: 100.0,
+                metal: 100.0,
             },
             "base capacity",
         );
@@ -309,6 +320,8 @@ mod tests {
         assert_eq!(decoded.flour, 0.0);
         assert_eq!(decoded.logs, 0.0);
         assert_eq!(decoded.lumber, 0.0);
+        assert_eq!(decoded.ore, 0.0);
+        assert_eq!(decoded.metal, 0.0);
     }
 
     #[test]
@@ -346,6 +359,8 @@ mod tests {
                 hide: 100.0,
                 cloth: 100.0,
                 leather: 100.0,
+                ore: 100.0,
+                metal: 100.0,
             },
             "mixed finished buildings",
         );
@@ -392,6 +407,8 @@ mod tests {
                 hide: 100.0,
                 cloth: 100.0,
                 leather: 100.0,
+                ore: 100.0,
+                metal: 100.0,
             },
             "scaled building bonuses",
         );
@@ -434,6 +451,8 @@ mod tests {
                 hide: 100.0,
                 cloth: 100.0,
                 leather: 100.0,
+                ore: 100.0,
+                metal: 100.0,
             },
             "default and minimum level",
         );

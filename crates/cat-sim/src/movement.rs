@@ -411,7 +411,7 @@ pub fn pick_wander_target(anchor: WorldPos, roll1: f64, roll2: f64) -> WorldPos 
 #[must_use]
 pub fn destination_for_job(kind: &str, context: &JobDestinationContext<'_>) -> Option<WorldPos> {
     match kind {
-        "ritual" | "carry_offering" => Some(context.shrine),
+        "ritual" | "carry_offering" | "forage_fibre" => Some(context.shrine),
         "build_house" => Some(context.site.unwrap_or(context.anchor)),
         "expand_village" => context.expansion_site,
         "quarry" | "gather_logs" => context.quarry_site,

@@ -287,6 +287,12 @@ pub enum ResourceKind {
     Armor,
     Logs,
     Lumber,
+    Fibre,
+    Hide,
+    Cloth,
+    Leather,
+    Ore,
+    Metal,
     Blessings,
 }
 
@@ -327,6 +333,18 @@ pub struct ResourceAmounts {
     pub blocks: f64,
     #[serde(default)]
     pub tools: f64,
+    #[serde(default)]
+    pub fibre: f64,
+    #[serde(default)]
+    pub hide: f64,
+    #[serde(default)]
+    pub cloth: f64,
+    #[serde(default)]
+    pub leather: f64,
+    #[serde(default)]
+    pub ore: f64,
+    #[serde(default)]
+    pub metal: f64,
     pub blessings: f64,
 }
 
@@ -368,6 +386,18 @@ pub struct ResourceCapacities {
     pub blocks: f64,
     #[serde(default)]
     pub tools: f64,
+    #[serde(default)]
+    pub fibre: f64,
+    #[serde(default)]
+    pub hide: f64,
+    #[serde(default)]
+    pub cloth: f64,
+    #[serde(default)]
+    pub leather: f64,
+    #[serde(default)]
+    pub ore: f64,
+    #[serde(default)]
+    pub metal: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -536,10 +566,12 @@ pub struct JobSnapshot {
 #[serde(rename_all = "snake_case")]
 pub enum OfficerRole {
     Steward,
+    Accountant,
     Forester,
     Farmer,
     Captain,
     Loremaster,
+    ClothLeader,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -556,6 +588,8 @@ pub enum JobKind {
     /// Forest-site gathering job: fells and carries raw logs. This is the sole
     /// authoritative input source for the sawmill chain.
     GatherLogs,
+    /// Bounded foraging shift that gathers fibre for the textile chain.
+    ForageFibre,
     Explore,
     FetchWater,
     TrainWarrior,
@@ -868,6 +902,8 @@ pub enum BuildingType {
     School,
     Smithy,
     Barracks,
+    /// Accountant office prerequisite and staffed stock-ledger workplace.
+    AccountingTent,
     WoodCutter,
     StonePrep,
     Woodworking,
@@ -1006,6 +1042,35 @@ pub enum ClientAction {
         nickname: String,
         sig: String,
         node_id: String,
+    },
+    /// Spend cat-generated research points on a technology node. Blessing purchases
+    /// remain the separate `UnlockNode` action.
+    ResearchNode {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        node_id: String,
+    },
+    /// Convert a safe food/refined surplus into shrine blessings immediately.
+    OfferTithe {
+        session_id: String,
+        nickname: String,
+        sig: String,
+    },
+    /// Dispatch a cat to carry a material offering to the shrine.
+    OfferMaterials {
+        session_id: String,
+        nickname: String,
+        sig: String,
+    },
+    /// Dispatch one manual gather-spot haul. `cat_id = None` selects the best
+    /// currently available carrier deterministically.
+    HaulGatherSpot {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        stockpile_id: String,
+        cat_id: Option<String>,
     },
     AssignWorker {
         session_id: String,
@@ -1665,6 +1730,12 @@ mod tests {
                     lumber: 0.0,
                     blocks: 0.0,
                     tools: 0.0,
+                    fibre: 0.0,
+                    hide: 0.0,
+                    cloth: 0.0,
+                    leather: 0.0,
+                    ore: 0.0,
+                    metal: 0.0,
                     blessings: 8.0,
                 },
                 storage: StorageSnapshot {
@@ -1684,6 +1755,12 @@ mod tests {
                         lumber: 100.0,
                         blocks: 0.0,
                         tools: 0.0,
+                        fibre: 100.0,
+                        hide: 100.0,
+                        cloth: 100.0,
+                        leather: 100.0,
+                        ore: 100.0,
+                        metal: 100.0,
                     },
                     food_capacity: Some(200.0),
                     tithe_rates: TitheRates {
@@ -1964,6 +2041,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(JobKind::GatherLogs).unwrap(),
             json!("gather_logs")
+        );
+        assert_eq!(
+            serde_json::to_value(JobKind::ForageFibre).unwrap(),
+            json!("forage_fibre")
         );
         assert_eq!(
             serde_json::to_value(BuildingType::Mill).unwrap(),
@@ -2353,6 +2434,45 @@ mod tests {
         assert_eq!(
             back.colonies[0].cats[0].probation_remaining_game_minutes,
             None
+        );
+    }
+
+    #[test]
+    fn manual_officer_domain_actions_round_trip_with_typed_payloads() {
+        let actions = [
+            ClientAction::ResearchNode {
+                session_id: "s".to_owned(),
+                nickname: "n".to_owned(),
+                sig: "x".to_owned(),
+                node_id: "basic_tools".to_owned(),
+            },
+            ClientAction::OfferTithe {
+                session_id: "s".to_owned(),
+                nickname: "n".to_owned(),
+                sig: "x".to_owned(),
+            },
+            ClientAction::OfferMaterials {
+                session_id: "s".to_owned(),
+                nickname: "n".to_owned(),
+                sig: "x".to_owned(),
+            },
+            ClientAction::HaulGatherSpot {
+                session_id: "s".to_owned(),
+                nickname: "n".to_owned(),
+                sig: "x".to_owned(),
+                stockpile_id: "gather-1".to_owned(),
+                cat_id: None,
+            },
+        ];
+
+        for action in actions {
+            let value = serde_json::to_value(&action).expect("serialize");
+            let decoded: ClientAction = serde_json::from_value(value).expect("deserialize");
+            assert_eq!(decoded, action);
+        }
+        assert_eq!(
+            serde_json::to_value(BuildingType::AccountingTent).unwrap(),
+            json!("accounting_tent")
         );
     }
 }

@@ -93,6 +93,12 @@ pub enum ResourceKind {
     Armor,
     Logs,
     Lumber,
+    Fibre,
+    Hide,
+    Cloth,
+    Leather,
+    Ore,
+    Metal,
     Blessings,
 }
 
@@ -111,6 +117,12 @@ impl ResourceKind {
         Self::Armor,
         Self::Logs,
         Self::Lumber,
+        Self::Fibre,
+        Self::Hide,
+        Self::Cloth,
+        Self::Leather,
+        Self::Ore,
+        Self::Metal,
         Self::Blessings,
     ];
 }
@@ -131,6 +143,12 @@ pub fn resource_amount(resources: &Resources, kind: ResourceKind) -> f64 {
         ResourceKind::Armor => resources.armor,
         ResourceKind::Logs => resources.logs,
         ResourceKind::Lumber => resources.lumber,
+        ResourceKind::Fibre => resources.fibre,
+        ResourceKind::Hide => resources.hide,
+        ResourceKind::Cloth => resources.cloth,
+        ResourceKind::Leather => resources.leather,
+        ResourceKind::Ore => resources.ore,
+        ResourceKind::Metal => resources.metal,
         ResourceKind::Blessings => resources.blessings,
     }
 }
@@ -150,6 +168,12 @@ pub fn set_resource(resources: &mut Resources, kind: ResourceKind, value: f64) {
         ResourceKind::Armor => resources.armor = value,
         ResourceKind::Logs => resources.logs = value,
         ResourceKind::Lumber => resources.lumber = value,
+        ResourceKind::Fibre => resources.fibre = value,
+        ResourceKind::Hide => resources.hide = value,
+        ResourceKind::Cloth => resources.cloth = value,
+        ResourceKind::Leather => resources.leather = value,
+        ResourceKind::Ore => resources.ore = value,
+        ResourceKind::Metal => resources.metal = value,
         ResourceKind::Blessings => resources.blessings = value,
     }
 }

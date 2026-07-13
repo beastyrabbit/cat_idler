@@ -184,6 +184,18 @@ const WORKSHOP: StationLayout = StationLayout {
         prop(StationProp::Barrel, 760, 760),
     ],
 };
+const ACCOUNTING_TENT: StationLayout = StationLayout {
+    floor: StationFloor::Wood,
+    props: &[
+        // An open ledger/map table anchors the counting station. The loose
+        // scroll and paired sack/crate make recorded incoming stores legible
+        // from above without relying on a floating text label.
+        prop(StationProp::MapTable, 500, 260),
+        prop(StationProp::Scroll, 190, 710),
+        prop(StationProp::Sack, 500, 760),
+        prop(StationProp::Crate, 810, 710),
+    ],
+};
 const FIELD: StationLayout = StationLayout {
     floor: StationFloor::Soil,
     props: &[
@@ -315,6 +327,7 @@ pub(crate) const fn building_visual(building: BuildingType) -> BuildingVisual {
         BuildingType::MouseFarm => BuildingVisual::Open(&MOUSE_FARM),
         BuildingType::Shrine => BuildingVisual::Open(&SHRINE),
         BuildingType::Workshop => BuildingVisual::Open(&WORKSHOP),
+        BuildingType::AccountingTent => BuildingVisual::Open(&ACCOUNTING_TENT),
         BuildingType::Field => BuildingVisual::Open(&FIELD),
         BuildingType::ResearchHut => BuildingVisual::Open(&RESEARCH_HUT),
         BuildingType::School => BuildingVisual::Open(&SCHOOL),
@@ -335,7 +348,7 @@ pub(crate) const fn building_visual(building: BuildingType) -> BuildingVisual {
 mod tests {
     use super::*;
 
-    const ALL_BUILDINGS: [BuildingType; 24] = [
+    const ALL_BUILDINGS: [BuildingType; 25] = [
         BuildingType::Den,
         BuildingType::FoodStorage,
         BuildingType::WaterBowl,
@@ -347,6 +360,7 @@ mod tests {
         BuildingType::MouseFarm,
         BuildingType::Shrine,
         BuildingType::Workshop,
+        BuildingType::AccountingTent,
         BuildingType::Field,
         BuildingType::ResearchHut,
         BuildingType::School,
@@ -364,7 +378,7 @@ mod tests {
 
     #[test]
     fn every_protocol_building_has_one_explicit_visual_treatment() {
-        assert_eq!(ALL_BUILDINGS.len(), 24);
+        assert_eq!(ALL_BUILDINGS.len(), 25);
         for building in ALL_BUILDINGS {
             match building_visual(building) {
                 BuildingVisual::Open(layout) => {
@@ -404,6 +418,37 @@ mod tests {
             assert!(
                 signatures[index + 1..].iter().all(|right| left != right),
                 "workshop compositions must remain distinct"
+            );
+        }
+    }
+
+    #[test]
+    fn accounting_tent_is_a_distinct_open_ledger_station() {
+        let BuildingVisual::Open(accounting) = building_visual(BuildingType::AccountingTent) else {
+            panic!("accounting tent must be an open station");
+        };
+        let BuildingVisual::Open(workshop) = building_visual(BuildingType::Workshop) else {
+            panic!("workshop must be an open station");
+        };
+        let BuildingVisual::Open(research) = building_visual(BuildingType::ResearchHut) else {
+            panic!("research hut must be an open station");
+        };
+
+        assert_eq!(accounting.floor, StationFloor::Wood);
+        assert_ne!(accounting.props, workshop.props);
+        assert_ne!(accounting.props, research.props);
+        for expected in [
+            StationProp::MapTable,
+            StationProp::Scroll,
+            StationProp::Sack,
+            StationProp::Crate,
+        ] {
+            assert!(
+                accounting
+                    .props
+                    .iter()
+                    .any(|placed| placed.prop == expected),
+                "accounting tent is missing {expected:?}"
             );
         }
     }

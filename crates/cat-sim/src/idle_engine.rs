@@ -12,7 +12,7 @@ pub struct UpgradeLevels {
     pub resilience: f64,
 }
 
-pub const BASE_JOB_SECONDS: [(JobKind, f64); 15] = [
+pub const BASE_JOB_SECONDS: [(JobKind, f64); 16] = [
     (JobKind::SupplyFood, 20.0),
     (JobKind::SupplyWater, 15.0),
     (JobKind::LeaderPlanHunt, 30.0 * 60.0),
@@ -22,6 +22,7 @@ pub const BASE_JOB_SECONDS: [(JobKind, f64); 15] = [
     (JobKind::Ritual, 6.0 * 60.0 * 60.0),
     (JobKind::Quarry, 2.0 * 60.0 * 60.0),
     (JobKind::GatherLogs, 2.0 * 60.0 * 60.0),
+    (JobKind::ForageFibre, 2.0 * 60.0 * 60.0),
     (JobKind::Explore, 30.0 * 60.0),
     (JobKind::FetchWater, 45.0 * 60.0),
     (JobKind::TrainWarrior, 3.0 * 60.0 * 60.0),
@@ -207,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn base_job_seconds_match_typescript_record_for_every_job_kind() {
+    fn base_job_seconds_cover_every_job_kind_with_explicit_durations() {
         let expected = [
             (JobKind::SupplyFood, 20.0),
             (JobKind::SupplyWater, 15.0),
@@ -218,6 +219,7 @@ mod tests {
             (JobKind::Ritual, 21_600.0),
             (JobKind::Quarry, 7_200.0),
             (JobKind::GatherLogs, 7_200.0),
+            (JobKind::ForageFibre, 7_200.0),
             (JobKind::Explore, 1_800.0),
             (JobKind::FetchWater, 2_700.0),
             (JobKind::TrainWarrior, 10_800.0),

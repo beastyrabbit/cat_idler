@@ -345,9 +345,8 @@ pub fn advance_woodworking(
 /// raw-material benches (wood-cutter, stone-prep, woodworking), plus the
 /// leader-directed smithy queue (`smithy_queue` in `phase_20`-era planning).
 /// Every other building type has no worker-slot concept: dens/storage/walls/etc.
-/// never take an `assigned_cat`, and fields produce passively via `field_yield`
-/// with no worker check at all (see `phase_23_production`'s `BuildingType::Field`
-/// arm, which adds yield unconditionally).
+/// never take an `assigned_cat`. Fields take one farmer so they can be operated
+/// manually while the Farmer office is vacant.
 #[must_use]
 pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
     match building_type {
@@ -366,7 +365,9 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         | BuildingType::School
         | BuildingType::Smelter
         | BuildingType::Mill
-        | BuildingType::Sawmill => 1,
+        | BuildingType::Sawmill
+        | BuildingType::AccountingTent
+        | BuildingType::Field => 1,
         BuildingType::Den
         | BuildingType::FoodStorage
         | BuildingType::WaterBowl
@@ -377,9 +378,7 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         | BuildingType::Walls
         | BuildingType::MouseFarm
         | BuildingType::Shrine
-        | BuildingType::Field
-        | BuildingType::Barracks
-        | BuildingType::AccountingTent => 0,
+        | BuildingType::Barracks => 0,
     }
 }
 
@@ -939,6 +938,10 @@ mod tests {
             BuildingType::Clothier,
             BuildingType::Tannery,
             BuildingType::Smelter,
+            BuildingType::ResearchHut,
+            BuildingType::School,
+            BuildingType::AccountingTent,
+            BuildingType::Field,
         ] {
             assert_eq!(
                 super::building_staff_cap(building_type),
@@ -959,9 +962,7 @@ mod tests {
             BuildingType::Walls,
             BuildingType::MouseFarm,
             BuildingType::Shrine,
-            BuildingType::Field,
             BuildingType::Barracks,
-            BuildingType::AccountingTent,
         ] {
             assert_eq!(
                 super::building_staff_cap(building_type),

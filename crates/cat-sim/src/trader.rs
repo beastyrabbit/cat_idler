@@ -95,7 +95,15 @@ pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
         | ResourceKind::Logs
         | ResourceKind::Materials => Some(1),
         ResourceKind::Flour | ResourceKind::Lumber | ResourceKind::Refined => Some(3),
-        ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => None,
+        ResourceKind::Weapons
+        | ResourceKind::Armor
+        | ResourceKind::Fibre
+        | ResourceKind::Hide
+        | ResourceKind::Cloth
+        | ResourceKind::Leather
+        | ResourceKind::Ore
+        | ResourceKind::Metal
+        | ResourceKind::Blessings => None,
     }
 }
 

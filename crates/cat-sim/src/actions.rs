@@ -14,14 +14,19 @@ use crate::{
     housing::{self, HousingBuilding},
     idle_engine, idle_rules,
     items::{Item, ItemKind, Material},
+    leader_director::{
+        OFFERING_MATERIALS_AMOUNT, OFFERING_MATERIALS_RESERVE, TITHE_FOOD_AMOUNT,
+        TITHE_FOOD_RESERVE_FLOOR, TITHE_FOOD_RESERVE_PER_CAT, TITHE_REFINED_AMOUNT,
+    },
     life_sim::{can_work, get_life_stage},
-    officers::OfficerRole,
+    officers::{OfficerRole, prerequisite_for},
     production,
+    productivity::productive_duration_ms,
     skills::Labor,
     stockpiles,
     storage::{self, StorageBuilding},
     threat, trader,
-    types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, UpgradeKey},
+    types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType, UpgradeKey},
     upgrade_tree,
     village_area::{self, gate_placement_default},
     village_layout::{GridPos, village_ring_radius},
@@ -30,8 +35,9 @@ use crate::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, ScoutMission, ScoutResource, TilePos,
         TradeDirection, VillageKind, VillageTradeOffer, VoteRuntime, WorldState, ZoneRuntime,
-        found_colony, found_colony_at, has_logging_site, inside_village_interior,
-        migration_game_minute_at, reconcile_colony_stockpiles, tile_is_occupied, world_tick,
+        found_colony, found_colony_at, has_frontier, has_logging_site, has_quarry_site,
+        has_water_site, inside_village_interior, migration_game_minute_at,
+        reconcile_colony_stockpiles, release_role_automation, tile_is_occupied, world_tick,
     },
     zones,
 };
@@ -127,6 +133,22 @@ pub fn apply_action(
         proto::ClientAction::UnlockNode { node_id, .. } => {
             with_colony(world, ctx, |colony| unlock_node(colony, node_id, ctx))
         }
+        proto::ClientAction::ResearchNode { node_id, .. } => {
+            with_colony(world, ctx, |colony| research_node(colony, node_id, ctx))
+        }
+        proto::ClientAction::OfferTithe { .. } => {
+            with_colony(world, ctx, |colony| offer_tithe(colony, ctx))
+        }
+        proto::ClientAction::OfferMaterials { .. } => {
+            with_colony(world, ctx, |colony| offer_materials(colony, ctx))
+        }
+        proto::ClientAction::HaulGatherSpot {
+            stockpile_id,
+            cat_id,
+            ..
+        } => with_colony(world, ctx, |colony| {
+            haul_gather_spot(colony, stockpile_id, cat_id.as_deref(), ctx)
+        }),
         proto::ClientAction::AssignWorker {
             cat_id,
             building_id,
@@ -333,7 +355,17 @@ fn request_job(
             | JobKind::LeaderPlanHunt
             | JobKind::LeaderPlanHouse
             | JobKind::GatherLogs
+            | JobKind::ForageFibre
             | JobKind::Ritual
+            | JobKind::HuntExpedition
+            | JobKind::Quarry
+            | JobKind::Explore
+            | JobKind::FetchWater
+            | JobKind::TrainWarrior
+            | JobKind::ExpandVillage
+            | JobKind::CarryOffering
+            | JobKind::HaulGatherSpot
+            | JobKind::BuildHouse
     ) {
         return fail("Unknown job kind.");
     }
@@ -343,6 +375,15 @@ fn request_job(
     }
     if kind == JobKind::GatherLogs && !has_logging_site(colony, world_seed) {
         return fail("No explored forest is available for logging.");
+    }
+    if kind == JobKind::Quarry && !has_quarry_site(colony) {
+        return fail("No explored quarry site is available.");
+    }
+    if kind == JobKind::FetchWater && !has_water_site(colony) {
+        return fail("No explored water source is available.");
+    }
+    if kind == JobKind::Explore && !has_frontier(colony) {
+        return fail("No unexplored frontier is available.");
     }
 
     colony.last_player_activity_at = Some(ctx.now_ms);
@@ -371,13 +412,84 @@ fn request_job(
         return ok();
     }
 
-    let assigned_cat = if kind == JobKind::GatherLogs {
-        let Some(cat_id) = select_best_cat(colony, None) else {
-            return fail("No available worker.");
+    if kind == JobKind::TrainWarrior {
+        return train_warrior(colony, None, ctx);
+    }
+    if kind == JobKind::CarryOffering {
+        return offer_materials(colony, ctx);
+    }
+    if kind == JobKind::HaulGatherSpot {
+        return fail("Choose a gather spot to haul.");
+    }
+    if kind == JobKind::BuildHouse {
+        return fail("Choose a building type to construct.");
+    }
+    if kind == JobKind::ExpandVillage
+        && active_or_queued_jobs(colony)
+            .iter()
+            .any(|job| job.kind == JobKind::ExpandVillage)
+    {
+        return fail("That request is already in progress.");
+    }
+
+    let assigned_cat = match kind {
+        JobKind::HuntExpedition => select_best_cat(colony, Some(CatSpecialization::Hunter)),
+        JobKind::Quarry => select_best_cat(colony, Some(CatSpecialization::Architect)),
+        JobKind::GatherLogs
+        | JobKind::ForageFibre
+        | JobKind::Explore
+        | JobKind::FetchWater
+        | JobKind::ExpandVillage => select_best_cat(colony, None),
+        _ => None,
+    };
+    if matches!(
+        kind,
+        JobKind::HuntExpedition
+            | JobKind::Quarry
+            | JobKind::GatherLogs
+            | JobKind::ForageFibre
+            | JobKind::Explore
+            | JobKind::FetchWater
+            | JobKind::ExpandVillage
+    ) && assigned_cat.is_none()
+    {
+        return fail("No available worker.");
+    }
+
+    let metadata = if kind == JobKind::ExpandVillage {
+        let area = claimed_area(colony);
+        let is_water = |position: GridPos| {
+            colony
+                .world_tiles
+                .get(&TilePos {
+                    x: position.x,
+                    y: position.y,
+                })
+                .is_some_and(|tile| {
+                    tile.tile_type == TileType::River
+                        || tile.overlay_feature.as_deref() == Some("river")
+                        || tile.resources.water > 0
+                })
         };
-        Some(cat_id)
+        let Some(target) = village_area::expand_village(
+            &area,
+            village_area::ExpandOptions {
+                is_water: Some(&is_water),
+                rng: None,
+            },
+        ) else {
+            return fail("There is no adjacent land to claim.");
+        };
+        JobMetadata::Expansion {
+            target: TilePos {
+                x: target.x,
+                y: target.y,
+            },
+            accepted: false,
+            source_build_job_id: None,
+        }
     } else {
-        None
+        JobMetadata::None
     };
     queue_job(
         colony,
@@ -385,7 +497,7 @@ fn request_job(
         kind,
         JobRequester::Player,
         assigned_cat,
-        JobMetadata::None,
+        metadata,
     );
     ok()
 }
@@ -601,12 +713,26 @@ fn plan_building(
     };
     if !matches!(
         building_type,
-        BuildingType::Workshop
+        BuildingType::Den
+            | BuildingType::WaterBowl
+            | BuildingType::Beds
+            | BuildingType::HerbGarden
+            | BuildingType::Nursery
+            | BuildingType::ElderCorner
+            | BuildingType::Walls
+            | BuildingType::MouseFarm
+            | BuildingType::Workshop
             | BuildingType::Field
             | BuildingType::Smithy
             | BuildingType::Barracks
             | BuildingType::FoodStorage
-            | BuildingType::Den
+            | BuildingType::AccountingTent
+            | BuildingType::WoodCutter
+            | BuildingType::StonePrep
+            | BuildingType::Woodworking
+            | BuildingType::Clothier
+            | BuildingType::Tannery
+            | BuildingType::ResearchHut
             | BuildingType::Smelter
             | BuildingType::Mill
             | BuildingType::Sawmill
@@ -614,7 +740,6 @@ fn plan_building(
     ) {
         return fail("Unknown building type.");
     }
-
     let village_level = village_level(colony);
     if !production::building_unlocked(building_type, village_level) {
         return fail(match building_type {
@@ -627,6 +752,24 @@ fn plan_building(
         building_type,
         BuildingType::Smithy | BuildingType::Barracks | BuildingType::School
     ) && !upgrade_tree::is_owned(&colony.upgrade_tree, building_type.as_str())
+    {
+        return fail("That building must be researched or granted by the gods first.");
+    }
+    let civic_node = match building_type {
+        BuildingType::AccountingTent => Some("basic_tools"),
+        BuildingType::WoodCutter | BuildingType::StonePrep | BuildingType::Woodworking => {
+            Some("basic_tools")
+        }
+        BuildingType::Field => Some("irrigation"),
+        _ => None,
+    };
+    if civic_node.is_some_and(|node| !upgrade_tree::is_owned(&colony.upgrade_tree, node)) {
+        return fail("That building must be researched or granted by the gods first.");
+    }
+    if matches!(
+        building_type,
+        BuildingType::Clothier | BuildingType::Tannery
+    ) && !upgrade_tree::is_owned(&colony.upgrade_tree, "textiles")
     {
         return fail("That building must be researched or granted by the gods first.");
     }
@@ -693,6 +836,165 @@ fn unlock_node(colony: &mut ColonyRuntime, node_id: &str, ctx: &ActionCtx) -> pr
     ok()
 }
 
+fn research_node(
+    colony: &mut ColonyRuntime,
+    node_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let result = upgrade_tree::cat_purchase(&colony.upgrade_tree, node_id);
+    if !result.ok {
+        return fail("That technology is locked, owned, or lacks research points.");
+    }
+    colony.upgrade_tree = result.state;
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    let node_name = upgrade_tree::get_node(node_id).map_or(node_id, |node| node.name);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::ResearchUnlocked,
+        format!("The scholars completed {node_name}!"),
+    );
+    ok()
+}
+
+fn offer_tithe(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResult {
+    if !has_complete_building(colony, BuildingType::Shrine) {
+        return fail("This village needs a completed shrine.");
+    }
+    let population = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .count() as f64;
+    let food_reserve = (population * TITHE_FOOD_RESERVE_PER_CAT).max(TITHE_FOOD_RESERVE_FLOOR);
+    let food = if population > 0.0
+        && colony.resources.food >= food_reserve + f64::from(TITHE_FOOD_AMOUNT)
+    {
+        TITHE_FOOD_AMOUNT
+    } else {
+        0
+    };
+    let refined = if colony.resources.refined >= f64::from(TITHE_REFINED_AMOUNT) {
+        TITHE_REFINED_AMOUNT
+    } else {
+        0
+    };
+    let blessings = u32::from(food > 0) + u32::from(refined > 0);
+    if blessings == 0 {
+        return fail("No safe food or refined surplus is available.");
+    }
+
+    colony.resources.food -= f64::from(food);
+    colony.resources.refined -= f64::from(refined);
+    colony.global_upgrade_points += f64::from(blessings);
+    colony.last_tithe_at = Some(ctx.now_ms);
+    reconcile_colony_stockpiles(colony);
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::Tithe,
+        format!("The players offered surplus stores (+{blessings} blessings)."),
+    );
+    ok()
+}
+
+fn offer_materials(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResult {
+    if !has_complete_building(colony, BuildingType::Shrine) {
+        return fail("This village needs a completed shrine.");
+    }
+    if colony.resources.materials
+        < OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
+    {
+        return fail("Not enough surplus materials for an offering.");
+    }
+    if active_or_queued_jobs(colony)
+        .iter()
+        .any(|job| job.kind == JobKind::CarryOffering)
+    {
+        return fail("A material offering is already in progress.");
+    }
+    let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Ritualist)) else {
+        return fail("No available ritualist.");
+    };
+    queue_job(
+        colony,
+        ctx.now_ms,
+        JobKind::CarryOffering,
+        JobRequester::Player,
+        Some(cat_id),
+        JobMetadata::None,
+    );
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn haul_gather_spot(
+    colony: &mut ColonyRuntime,
+    stockpile_id: &str,
+    cat_id: Option<&str>,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(spot) = colony
+        .gather_spots
+        .iter()
+        .find(|spot| spot.stockpile_id == stockpile_id)
+    else {
+        return fail("Unknown gather spot.");
+    };
+    let has_contents = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == stockpile_id)
+        .is_some_and(|pile| stockpiles::resource_amount(&pile.contents, spot.kind) > 0.0);
+    if !has_contents {
+        return fail("That gather spot is empty.");
+    }
+    if active_or_queued_jobs(colony).iter().any(|job| {
+        job.kind == JobKind::HaulGatherSpot
+            && matches!(
+                &job.metadata,
+                JobMetadata::GatherHaul { stockpile_id: target, .. } if target == stockpile_id
+            )
+    }) {
+        return fail("That gather spot already has a mover.");
+    }
+
+    let carrier = if let Some(cat_id) = cat_id {
+        let Some(index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
+            return fail("That cat is not available.");
+        };
+        if !cat_can_take_assignment(colony, index) {
+            return fail("That cat is busy.");
+        }
+        cat_id.to_owned()
+    } else {
+        let Some(cat_id) = select_best_cat(colony, None) else {
+            return fail("No available carrier.");
+        };
+        cat_id
+    };
+
+    queue_job(
+        colony,
+        ctx.now_ms,
+        JobKind::HaulGatherSpot,
+        JobRequester::Player,
+        Some(carrier),
+        JobMetadata::GatherHaul {
+            stockpile_id: stockpile_id.to_owned(),
+            site: None,
+            accepted: false,
+        },
+    );
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
 fn assign_worker(
     colony: &mut ColonyRuntime,
     cat_id: &str,
@@ -711,6 +1013,7 @@ fn assign_worker(
         for building in &mut colony.buildings {
             if building.assigned_cat.as_deref() == Some(cat_id) {
                 building.assigned_cat = None;
+                building.automated_by = None;
             }
         }
         colony.last_player_activity_at = Some(ctx.now_ms);
@@ -725,13 +1028,7 @@ fn assign_worker(
     let Some(building_index) = colony.buildings.iter().position(|building| {
         building.id == building_id
             && building.construction_progress >= 100
-            && matches!(
-                building.building_type,
-                BuildingType::Workshop
-                    | BuildingType::Smithy
-                    | BuildingType::Mill
-                    | BuildingType::Sawmill
-            )
+            && production::building_staff_cap(building.building_type) > 0
     }) else {
         return fail("That building cannot take a worker.");
     };
@@ -739,9 +1036,11 @@ fn assign_worker(
     for building in &mut colony.buildings {
         if building.assigned_cat.as_deref() == Some(cat_id) {
             building.assigned_cat = None;
+            building.automated_by = None;
         }
     }
     colony.buildings[building_index].assigned_cat = Some(cat_id.to_owned());
+    colony.buildings[building_index].automated_by = None;
     colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
@@ -755,18 +1054,39 @@ fn assign_officer(
     cat_id: &str,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
-    if !colony
-        .cats
-        .iter()
-        .any(|cat| cat.id == cat_id && cat.death_time.is_none())
-    {
-        return fail("That cat is not available.");
+    if !colony.cats.iter().any(|cat| {
+        cat.id == cat_id && cat.death_time.is_none() && can_work(get_life_stage(cat.age_hours))
+    }) {
+        return fail("That cat is not old enough and available to hold office.");
+    }
+    let prerequisite = prerequisite_for(role);
+    if !has_complete_building(colony, prerequisite.building) {
+        return fail(format!(
+            "A completed {} is required for this office.",
+            prerequisite.building.as_str().replace('_', " ")
+        ));
+    }
+    if !upgrade_tree::is_owned(&colony.upgrade_tree, prerequisite.upgrade_node) {
+        return fail(format!(
+            "The {} technology is required for this office.",
+            prerequisite.upgrade_node.replace('_', " ")
+        ));
     }
 
+    let vacated_roles = colony
+        .officers
+        .iter()
+        .filter_map(|(filled_role, holder)| {
+            (holder == cat_id && *filled_role != role).then_some(*filled_role)
+        })
+        .collect::<Vec<_>>();
     colony
         .officers
         .retain(|_, holder| holder.as_str() != cat_id);
     colony.officers.insert(role, cat_id.to_owned());
+    for vacated in vacated_roles {
+        release_role_automation(colony, vacated, ctx.now_ms);
+    }
     colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
@@ -778,6 +1098,7 @@ fn unassign_officer(
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
     colony.officers.remove(&role);
+    release_role_automation(colony, role, ctx.now_ms);
     colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
@@ -1231,13 +1552,10 @@ fn defend_raid(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::ActionResu
         (colony.raiders[target_index].health - DEFEND_CLICK_DAMAGE).max(0.0);
     colony.raid_clicks += 1.0;
     colony.last_player_activity_at = Some(ctx.now_ms);
-    if !colony
-        .raiders
-        .iter()
-        .any(|raider| raider.raid_id == active_raid && raider.health > 0.0)
-    {
-        colony.active_raid = None;
-    }
+    // Keep the raid active through phase 36 when this was the killing click. That
+    // phase owns the atomic terminal cleanup (corpse removal, telemetry/threat reset)
+    // and the one Repelled event. Clearing only `active_raid` here stranded dead
+    // RaiderRuntime records forever because phase 36 then had no raid id to finish.
     ok()
 }
 
@@ -1596,6 +1914,12 @@ fn trade_would_overflow(
         stockpiles::ResourceKind::Armor => Some(capacities.armor),
         stockpiles::ResourceKind::Logs => Some(capacities.logs),
         stockpiles::ResourceKind::Lumber => Some(capacities.lumber),
+        stockpiles::ResourceKind::Fibre => Some(capacities.fibre),
+        stockpiles::ResourceKind::Hide => Some(capacities.hide),
+        stockpiles::ResourceKind::Cloth => Some(capacities.cloth),
+        stockpiles::ResourceKind::Leather => Some(capacities.leather),
+        stockpiles::ResourceKind::Ore => Some(capacities.ore),
+        stockpiles::ResourceKind::Metal => Some(capacities.metal),
         stockpiles::ResourceKind::Blessings => None,
     };
     capacity.is_some_and(|capacity| {
@@ -1724,6 +2048,12 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 lumber: caps.lumber,
                 blocks: caps.blocks,
                 tools: caps.tools,
+                fibre: caps.fibre,
+                hide: caps.hide,
+                cloth: caps.cloth,
+                leather: caps.leather,
+                ore: caps.ore,
+                metal: caps.metal,
             },
             food_capacity: Some(caps.food),
             tithe_rates: proto::TitheRates {
@@ -2294,15 +2624,20 @@ fn queue_job(
         skill,
         Some(colony.test_time_scale),
     );
-    let duration_ms = (duration_seconds * 1000.0) as i64;
+    let base_duration_ms = (duration_seconds * 1000.0) as i64;
+    let duration_ms = if matches!(
+        kind,
+        JobKind::BuildHouse | JobKind::Quarry | JobKind::GatherLogs | JobKind::HaulGatherSpot
+    ) {
+        productive_duration_ms(base_duration_ms, colony.resources.tools)
+    } else {
+        base_duration_ms
+    };
 
     if let Some(cat_id) = assigned_cat.as_deref() {
         for building in &mut colony.buildings {
             if building.assigned_cat.as_deref() == Some(cat_id)
-                && matches!(
-                    building.building_type,
-                    BuildingType::Workshop | BuildingType::Smithy
-                )
+                && production::building_staff_cap(building.building_type) > 0
             {
                 building.assigned_cat = None;
             }
@@ -2449,7 +2784,9 @@ fn select_best_scout(colony: &ColonyRuntime) -> Option<String> {
 fn cat_can_take_assignment(colony: &ColonyRuntime, cat_index: usize) -> bool {
     let cat = &colony.cats[cat_index];
     let busy = busy_cat_ids(colony);
-    cat.activity == CatActivity::Idle
+    cat.death_time.is_none()
+        && can_work(get_life_stage(cat.age_hours))
+        && cat.activity == CatActivity::Idle
         && cat.current_task.is_none()
         && cat.carrying.is_none()
         && cat.destination.is_none()
@@ -2594,6 +2931,12 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
         lumber: resources.lumber,
         blocks: resources.blocks,
         tools: resources.tools,
+        fibre: resources.fibre,
+        hide: resources.hide,
+        cloth: resources.cloth,
+        leather: resources.leather,
+        ore: resources.ore,
+        metal: resources.metal,
         blessings: resources.blessings,
     }
 }
@@ -2617,6 +2960,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::SupplyWater | JobKind::FetchWater => Some(TaskType::FetchWater),
         JobKind::LeaderPlanHouse | JobKind::BuildHouse | JobKind::Quarry => Some(TaskType::Build),
         JobKind::GatherLogs => Some(TaskType::Build),
+        JobKind::ForageFibre => Some(TaskType::Hunt),
         JobKind::Ritual | JobKind::CarryOffering => Some(TaskType::Guard),
         JobKind::Explore => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Guard),
@@ -2720,10 +3064,12 @@ fn fail(message: impl Into<String>) -> proto::ActionResult {
 fn proto_to_sim_officer_role(role: proto::OfficerRole) -> OfficerRole {
     match role {
         proto::OfficerRole::Steward => OfficerRole::Steward,
+        proto::OfficerRole::Accountant => OfficerRole::Accountant,
         proto::OfficerRole::Forester => OfficerRole::Forester,
         proto::OfficerRole::Farmer => OfficerRole::Farmer,
         proto::OfficerRole::Captain => OfficerRole::Captain,
         proto::OfficerRole::Loremaster => OfficerRole::Loremaster,
+        proto::OfficerRole::ClothLeader => OfficerRole::ClothLeader,
     }
 }
 
@@ -2742,10 +3088,12 @@ fn proto_to_sim_scout_mission(mission: proto::ScoutMission) -> ScoutMission {
 fn sim_to_proto_officer_role(role: OfficerRole) -> proto::OfficerRole {
     match role {
         OfficerRole::Steward => proto::OfficerRole::Steward,
+        OfficerRole::Accountant => proto::OfficerRole::Accountant,
         OfficerRole::Forester => proto::OfficerRole::Forester,
         OfficerRole::Farmer => proto::OfficerRole::Farmer,
         OfficerRole::Captain => proto::OfficerRole::Captain,
         OfficerRole::Loremaster => proto::OfficerRole::Loremaster,
+        OfficerRole::ClothLeader => proto::OfficerRole::ClothLeader,
     }
 }
 
@@ -2790,6 +3138,12 @@ fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::Resource
         proto::ResourceKind::Armor => ResourceKind::Armor,
         proto::ResourceKind::Logs => ResourceKind::Logs,
         proto::ResourceKind::Lumber => ResourceKind::Lumber,
+        proto::ResourceKind::Fibre => ResourceKind::Fibre,
+        proto::ResourceKind::Hide => ResourceKind::Hide,
+        proto::ResourceKind::Cloth => ResourceKind::Cloth,
+        proto::ResourceKind::Leather => ResourceKind::Leather,
+        proto::ResourceKind::Ore => ResourceKind::Ore,
+        proto::ResourceKind::Metal => ResourceKind::Metal,
         proto::ResourceKind::Blessings => ResourceKind::Blessings,
     }
 }
@@ -2809,6 +3163,12 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
         ResourceKind::Armor => proto::ResourceKind::Armor,
         ResourceKind::Logs => proto::ResourceKind::Logs,
         ResourceKind::Lumber => proto::ResourceKind::Lumber,
+        ResourceKind::Fibre => proto::ResourceKind::Fibre,
+        ResourceKind::Hide => proto::ResourceKind::Hide,
+        ResourceKind::Cloth => proto::ResourceKind::Cloth,
+        ResourceKind::Leather => proto::ResourceKind::Leather,
+        ResourceKind::Ore => proto::ResourceKind::Ore,
+        ResourceKind::Metal => proto::ResourceKind::Metal,
         ResourceKind::Blessings => proto::ResourceKind::Blessings,
     }
 }
@@ -2837,6 +3197,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::Ritual => JobKind::Ritual,
         proto::JobKind::Quarry => JobKind::Quarry,
         proto::JobKind::GatherLogs => JobKind::GatherLogs,
+        proto::JobKind::ForageFibre => JobKind::ForageFibre,
         proto::JobKind::Explore => JobKind::Explore,
         proto::JobKind::FetchWater => JobKind::FetchWater,
         proto::JobKind::TrainWarrior => JobKind::TrainWarrior,
@@ -2857,6 +3218,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::Ritual => proto::JobKind::Ritual,
         JobKind::Quarry => proto::JobKind::Quarry,
         JobKind::GatherLogs => proto::JobKind::GatherLogs,
+        JobKind::ForageFibre => proto::JobKind::ForageFibre,
         JobKind::Explore => proto::JobKind::Explore,
         JobKind::FetchWater => proto::JobKind::FetchWater,
         JobKind::TrainWarrior => proto::JobKind::TrainWarrior,
@@ -2916,6 +3278,7 @@ fn proto_to_sim_building_type(building_type: proto::BuildingType) -> Option<Buil
         proto::BuildingType::School => Some(BuildingType::School),
         proto::BuildingType::Smithy => Some(BuildingType::Smithy),
         proto::BuildingType::Barracks => Some(BuildingType::Barracks),
+        proto::BuildingType::AccountingTent => Some(BuildingType::AccountingTent),
         proto::BuildingType::WoodCutter => Some(BuildingType::WoodCutter),
         proto::BuildingType::StonePrep => Some(BuildingType::StonePrep),
         proto::BuildingType::Woodworking => Some(BuildingType::Woodworking),
@@ -2946,9 +3309,7 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         BuildingType::WoodCutter => Some(proto::BuildingType::WoodCutter),
         BuildingType::StonePrep => Some(proto::BuildingType::StonePrep),
         BuildingType::Woodworking => Some(proto::BuildingType::Woodworking),
-        // No protocol/client sprite yet — the Accounting Tent's effect surfaces via the
-        // stock ledger, not a rendered building. Omitted from the buildings snapshot.
-        BuildingType::AccountingTent => None,
+        BuildingType::AccountingTent => Some(proto::BuildingType::AccountingTent),
         BuildingType::Clothier => Some(proto::BuildingType::Clothier),
         BuildingType::Tannery => Some(proto::BuildingType::Tannery),
         BuildingType::ResearchHut => Some(proto::BuildingType::ResearchHut),
@@ -3234,11 +3595,25 @@ mod tests {
         logging_tile.overlay_feature = None;
         world.colonies[0].world_tiles.insert(tree, logging_tile);
 
+        let mut with_tools = world.clone();
+        with_tools.colonies[0].resources.tools = 20.0;
         let accepted = apply_action(&mut world, &action, &ctx());
         assert!(accepted.ok, "{accepted:?}");
         let job = world.colonies[0].jobs.last().expect("logging job queued");
         assert_eq!(job.kind, JobKind::GatherLogs);
         assert!(job.assigned_cat.is_some());
+        let baseline_duration = job.duration_ms;
+        let accepted_with_tools = apply_action(&mut with_tools, &action, &ctx());
+        assert!(accepted_with_tools.ok, "{accepted_with_tools:?}");
+        let tool_job = with_tools.colonies[0]
+            .jobs
+            .last()
+            .expect("tool-assisted logging job queued");
+        assert!(tool_job.duration_ms < baseline_duration);
+        assert_eq!(
+            with_tools.colonies[0].resources.tools, 20.0,
+            "the productivity reserve is reusable equipment, not consumed input"
+        );
 
         let mut no_forest = world_with_one_colony();
         no_forest.colonies[0]
@@ -3254,6 +3629,31 @@ mod tests {
             rejected.message.as_deref(),
             Some("No explored forest is available for logging.")
         );
+    }
+
+    #[test]
+    fn banked_tools_accelerate_player_quarry_without_being_consumed() {
+        let mut baseline = world_with_one_colony();
+        baseline.colonies[0].jobs.clear();
+        let mut equipped = baseline.clone();
+        equipped.colonies[0].resources.tools = 20.0;
+        let action = proto::ClientAction::RequestJob {
+            session_id: "sess_1".to_owned(),
+            nickname: "Tester".to_owned(),
+            sig: "server-verified".to_owned(),
+            kind: proto::JobKind::Quarry,
+        };
+
+        assert!(apply_action(&mut baseline, &action, &ctx()).ok);
+        assert!(apply_action(&mut equipped, &action, &ctx()).ok);
+        let baseline_ms = baseline.colonies[0].jobs.last().unwrap().duration_ms;
+        let equipped_ms = equipped.colonies[0].jobs.last().unwrap().duration_ms;
+        assert_eq!(
+            equipped_ms,
+            productive_duration_ms(baseline_ms, 20.0),
+            "1.20x tool throughput shortens duration to five-sixths"
+        );
+        assert_eq!(equipped.colonies[0].resources.tools, 20.0);
     }
 
     #[test]
@@ -3354,6 +3754,7 @@ mod tests {
         world.colonies[1].kind = VillageKind::Personal;
         world.colonies[1].owner_player_id = Some("player_1".to_owned());
         let cat_id = world.colonies[1].cats[0].id.clone();
+        grant_officer_prerequisite(&mut world.colonies[1], OfficerRole::Farmer);
         let mut selected_ctx = ctx();
         selected_ctx.colony_id = "c2".to_owned();
         let action = proto::ClientAction::AssignOfficer {
@@ -3798,6 +4199,7 @@ mod tests {
             construction_progress: 100,
             production_progress: 300.0,
             assigned_cat: Some(worker_id),
+            automated_by: None,
         });
 
         let snapshot = build_snapshot(&world, 1_000_000, 1);
@@ -4008,10 +4410,35 @@ mod tests {
         }
     }
 
+    fn grant_officer_prerequisite(colony: &mut ColonyRuntime, role: OfficerRole) {
+        let prerequisite = prerequisite_for(role);
+        if !upgrade_tree::is_owned(&colony.upgrade_tree, prerequisite.upgrade_node) {
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .push(prerequisite.upgrade_node.to_owned());
+        }
+        if !has_complete_building(colony, prerequisite.building) {
+            colony.buildings.push(crate::world_tick::BuildingRuntime {
+                id: format!("test-role-{}", prerequisite.building.as_str()),
+                building_type: prerequisite.building,
+                level: 1,
+                position: TilePos { x: 4, y: 4 },
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 0.0,
+                assigned_cat: None,
+                automated_by: None,
+            });
+        }
+    }
+
     #[test]
     fn assign_officer_appoints_and_enforces_one_office_per_cat() {
         let mut world = world_with_one_colony();
         let cat_id = world.colonies[0].cats[0].id.clone();
+        grant_officer_prerequisite(&mut world.colonies[0], OfficerRole::Farmer);
+        grant_officer_prerequisite(&mut world.colonies[0], OfficerRole::Captain);
 
         let res = apply_action(
             &mut world,
@@ -4063,6 +4490,23 @@ mod tests {
             &ctx(),
         );
         assert!(!res.ok, "dead cat should be rejected");
+        assert!(world.colonies[0].officers.is_empty());
+    }
+
+    #[test]
+    fn signed_officer_appointment_rejects_a_living_kitten() {
+        let mut world = world_with_one_colony();
+        grant_officer_prerequisite(&mut world.colonies[0], OfficerRole::Steward);
+        world.colonies[0].cats[0].age_hours = 1.0;
+        let kitten_id = world.colonies[0].cats[0].id.clone();
+
+        let result = apply_action(
+            &mut world,
+            &assign_officer_action(proto::OfficerRole::Steward, &kitten_id),
+            &ctx(),
+        );
+
+        assert!(!result.ok, "a kitten cannot hold an automation office");
         assert!(world.colonies[0].officers.is_empty());
     }
 

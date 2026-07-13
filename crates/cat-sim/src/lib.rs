@@ -50,6 +50,7 @@ pub mod idle_rules;
 pub mod ledger;
 pub mod processing;
 pub mod production;
+pub mod productivity;
 pub mod roads;
 pub mod shrine;
 pub mod skills;

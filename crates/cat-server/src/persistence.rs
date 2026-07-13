@@ -71,6 +71,9 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             runNumber INTEGER,
             runStartedAt INTEGER,
             lastPlayerActivityAt INTEGER,
+            lastLoremasterUnlockAt INTEGER,
+            lastTitheAt INTEGER,
+            lastOfferingAt INTEGER,
             automationTier REAL,
             globalUpgradePoints REAL,
             upgradeTree TEXT,
@@ -166,6 +169,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             productionProgress REAL NOT NULL DEFAULT 0,
             isComplete INTEGER NOT NULL DEFAULT 0,
             assignedCatId TEXT,
+            automatedOfficerRole TEXT,
             -- Buildings are colony-scoped: type-derived ids (e.g. "shrine") are
             -- only unique within a colony, so the key is (colonyId, id).
             PRIMARY KEY (colonyId, id)
@@ -289,14 +293,29 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "ownerPlayerId", "TEXT"),
         ("colonies", "knownVillageIds", "TEXT"),
         ("colonies", "villageTradeOffers", "TEXT"),
+        ("colonies", "lastLoremasterUnlockAt", "INTEGER"),
+        ("colonies", "lastTitheAt", "INTEGER"),
+        ("colonies", "lastOfferingAt", "INTEGER"),
         ("cats", "skills", "TEXT"),
         ("cats", "boosted", "INTEGER NOT NULL DEFAULT 0"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
+        ("buildings", "automatedOfficerRole", "TEXT"),
     ];
     for (table, column, decl) in ADDITIONS {
         if !column_exists(conn, table, column)? {
             // `table`/`column`/`decl` are compile-time constants, not user input.
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+            if *table == "buildings" && *column == "automatedOfficerRole" {
+                // Legacy rows cannot distinguish a player-picked worker from one
+                // installed by the old global automation pass. Strict-manual safety
+                // wins: release every ambiguous persisted assignment once. New rows
+                // have the provenance column from birth, so a genuine manual NULL is
+                // never touched by later idempotent migrations.
+                conn.execute(
+                    "UPDATE buildings SET assignedCatId = NULL WHERE assignedCatId IS NOT NULL",
+                    [],
+                )?;
+            }
         }
     }
     Ok(())
@@ -388,6 +407,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, leaderId, status, resources, createdAt, lastTick,
                 worldSeed, isGlobal, ownerPlayerId, runNumber, runStartedAt, lastPlayerActivityAt,
+                lastLoremasterUnlockAt, lastTitheAt, lastOfferingAt,
                 automationTier, globalUpgradePoints, upgradeTree, upgradeLevels,
                 ritualRequestedAt, criticalSince, claimedTiles, revealedTiles, provisionalTiles,
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
@@ -429,7 +449,8 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
     conn.execute(
         "INSERT INTO colonies (
             id, name, leaderId, status, resources, createdAt, lastTick, worldSeed,
-            runNumber, runStartedAt, lastPlayerActivityAt, automationTier,
+            runNumber, runStartedAt, lastPlayerActivityAt, lastLoremasterUnlockAt, lastTitheAt,
+            lastOfferingAt, automationTier,
             globalUpgradePoints, upgradeTree, upgradeLevels, ritualRequestedAt,
             criticalSince, claimedTiles, revealedTiles, provisionalTiles, threatPressure, lastRaidAt,
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
@@ -442,7 +463,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
             ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
-            ?48, ?49
+            ?48, ?49, ?50, ?51, ?52
         )",
         params![
             colony.id,
@@ -456,6 +477,9 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             i64::from(colony.run_number),
             colony.run_started_at,
             colony.last_player_activity_at,
+            colony.last_loremaster_unlock_at,
+            colony.last_tithe_at,
+            colony.last_offering_at,
             colony.automation_tier,
             colony.global_upgrade_points,
             serde_json::to_string(&colony.upgrade_tree).map_err(to_sql_json)?,
@@ -685,6 +709,9 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         run_started_at: row.get::<_, Option<i64>>("runStartedAt")?.unwrap_or(0),
         created_at: row.get("createdAt")?,
         last_player_activity_at: row.get("lastPlayerActivityAt")?,
+        last_loremaster_unlock_at: row.get("lastLoremasterUnlockAt")?,
+        last_tithe_at: row.get("lastTitheAt")?,
+        last_offering_at: row.get("lastOfferingAt")?,
         last_tick: row.get("lastTick")?,
         test_time_scale: row.get::<_, Option<f64>>("testTimeScale")?.unwrap_or(1.0),
         test_resource_decay_multiplier: row
@@ -907,11 +934,14 @@ fn save_building(
     colony_id: &str,
     building: &BuildingRuntime,
 ) -> rusqlite::Result<()> {
+    let automated_officer_role = building
+        .automated_by
+        .map(|role| serde_json::to_string(&role).expect("officer role serializes"));
     conn.execute(
         "INSERT INTO buildings (
             id, colonyId, type, level, position, constructionProgress,
-            productionProgress, isComplete, assignedCatId
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            productionProgress, isComplete, assignedCatId, automatedOfficerRole
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -922,6 +952,7 @@ fn save_building(
             building.production_progress,
             building.is_complete,
             building.assigned_cat,
+            automated_officer_role,
         ],
     )?;
     Ok(())
@@ -930,7 +961,7 @@ fn save_building(
 fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<BuildingRuntime>> {
     let mut stmt = conn.prepare(
         "SELECT id, type, level, position, constructionProgress, productionProgress,
-                isComplete, assignedCatId
+                isComplete, assignedCatId, automatedOfficerRole
          FROM buildings WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
@@ -945,6 +976,10 @@ fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Bu
             construction_progress: progress.clamp(0.0, 100.0) as u8,
             production_progress: row.get("productionProgress")?,
             assigned_cat: row.get("assignedCatId")?,
+            automated_by: row
+                .get::<_, Option<String>>("automatedOfficerRole")?
+                .map(|raw| serde_json::from_str::<OfficerRole>(&raw).map_err(from_sql_json))
+                .transpose()?,
         })
     })?;
     rows.collect()
@@ -1727,6 +1762,44 @@ mod tests {
 
     use super::*;
 
+    fn establish_persistence_campaign_core(colony: &mut ColonyRuntime) {
+        for (index, (role, building_type, upgrade)) in [
+            (OfficerRole::Steward, BuildingType::Workshop, "basic_tools"),
+            (OfficerRole::Forester, BuildingType::Sawmill, "sawmill"),
+            (OfficerRole::Farmer, BuildingType::Field, "irrigation"),
+            (OfficerRole::Captain, BuildingType::Barracks, "barracks"),
+            (
+                OfficerRole::Loremaster,
+                BuildingType::ResearchHut,
+                "research_hut",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !colony
+                .upgrade_tree
+                .owned_node_ids
+                .iter()
+                .any(|owned| owned == upgrade)
+            {
+                colony.upgrade_tree.owned_node_ids.push(upgrade.to_owned());
+            }
+            colony.buildings.push(BuildingRuntime {
+                id: format!("persistence-campaign-office-{index}"),
+                building_type,
+                position: TilePos {
+                    x: colony.anchor.x + 12 + i32::try_from(index).expect("small fixture") * 3,
+                    y: colony.anchor.y + 12,
+                },
+                is_complete: true,
+                construction_progress: 100,
+                ..BuildingRuntime::default()
+            });
+            colony.officers.insert(role, colony.cats[index].id.clone());
+        }
+    }
+
     #[test]
     fn migration_probation_cursor_and_departure_count_survive_restart_exactly() {
         let conn = open_database(":memory:").expect("database");
@@ -1758,17 +1831,24 @@ mod tests {
     fn restart_at_organic_arrival_preserves_the_exact_deadline_outcome() {
         const STARTED_AT: i64 = 10_000;
         const STEP_MS: i64 = 15 * 60_000;
-        const ARRIVAL_HOUR: i64 = 30;
-        const DEADLINE_HOUR: i64 = 66;
+        const MAX_ARRIVAL_HOUR: i64 = 60;
 
         let conn = open_database(":memory:").expect("database");
         let seed = 42;
         let mut uninterrupted = new_world(seed);
-        uninterrupted
-            .colonies
-            .push(found_colony(seed, "colony-1", STARTED_AT, seed));
+        let mut colony = found_colony(seed, "colony-1", STARTED_AT, seed);
+        // The restart assertion is about migration deadlines, not the strict
+        // manual opening. Give this unattended persistence fixture the real
+        // Farmer prerequisite that owns its food/water loop.
+        establish_persistence_campaign_core(&mut colony);
+        uninterrupted.colonies.push(colony);
         let mut now = STARTED_AT;
-        while now < STARTED_AT + ARRIVAL_HOUR * 3_600_000 {
+        while now < STARTED_AT + MAX_ARRIVAL_HOUR * 3_600_000
+            && uninterrupted.colonies[0]
+                .migration_state
+                .probationary_migrants
+                .is_empty()
+        {
             now += STEP_MS;
             assert_eq!(world_tick(&mut uninterrupted, now)[0].reset_reason, None);
         }
@@ -1782,13 +1862,19 @@ mod tests {
             !arrival_ids.is_empty(),
             "fixture never reached organic migration"
         );
-        assert!(
-            uninterrupted.colonies[0]
-                .migration_state
-                .probationary_migrants
-                .iter()
-                .all(|migrant| migrant.housing_deadline_game_minute == 66 * 60)
+        let arrival = uninterrupted.colonies[0]
+            .migration_state
+            .probationary_migrants
+            .first()
+            .expect("organic migrant");
+        assert_eq!(
+            arrival.housing_deadline_game_minute - arrival.arrived_game_minute,
+            36 * 60
         );
+        let deadline_at = STARTED_AT
+            + i64::try_from(arrival.housing_deadline_game_minute)
+                .expect("bounded campaign deadline")
+                * 60_000;
 
         save_world(&conn, &uninterrupted).expect("save at arrival");
         let mut restarted = load_world(&conn)
@@ -1803,7 +1889,7 @@ mod tests {
             assert!(restarted.colonies[0].cats.iter().any(|cat| cat.id == *id));
         }
 
-        while now < STARTED_AT + DEADLINE_HOUR * 3_600_000 {
+        while now < deadline_at {
             now += STEP_MS;
             // Hold the deliberately poor branch below the materials bar so no later
             // cohort obscures the first cohort's exact deadline comparison.
@@ -1840,6 +1926,64 @@ mod tests {
             }));
             assert_eq!(colony.migration_departures, arrival_ids.len() as u64);
         }
+    }
+
+    #[test]
+    fn low_comfort_restart_preserves_manual_scholar_and_releases_role_owned_scholar() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(77);
+        let mut colony = found_colony(77, "colony-1", 10_000, 77);
+        colony.jobs.clear();
+        colony.resources.food = 1.0;
+        colony.resources.water = 1.0;
+        colony.revealed_tiles.insert(TilePos { x: 99, y: 99 });
+        let automated_scholar = colony.cats[0].id.clone();
+        let manual_scholar = colony.cats[1].id.clone();
+        colony.buildings.push(BuildingRuntime {
+            id: "auto-research".to_owned(),
+            building_type: BuildingType::ResearchHut,
+            position: TilePos { x: 20, y: 20 },
+            is_complete: true,
+            construction_progress: 100,
+            assigned_cat: Some(automated_scholar),
+            automated_by: Some(OfficerRole::Loremaster),
+            ..BuildingRuntime::default()
+        });
+        colony.buildings.push(BuildingRuntime {
+            id: "manual-school".to_owned(),
+            building_type: BuildingType::School,
+            position: TilePos { x: 24, y: 20 },
+            is_complete: true,
+            construction_progress: 100,
+            assigned_cat: Some(manual_scholar.clone()),
+            automated_by: None,
+            ..BuildingRuntime::default()
+        });
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save before restart");
+        let mut restarted = load_world(&conn)
+            .expect("load after restart")
+            .expect("saved world exists");
+
+        let _ = world_tick(&mut restarted, 70_000);
+
+        let automated = restarted.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "auto-research")
+            .expect("role-owned hut persists");
+        assert_eq!(automated.assigned_cat, None);
+        assert_eq!(automated.automated_by, None);
+        let manual = restarted.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "manual-school")
+            .expect("manual school persists");
+        assert_eq!(
+            manual.assigned_cat.as_deref(),
+            Some(manual_scholar.as_str())
+        );
+        assert_eq!(manual.automated_by, None);
     }
 
     #[test]
@@ -1957,7 +2101,9 @@ mod tests {
                  createdAt INTEGER NOT NULL, lastTick INTEGER NOT NULL,
                  lastAttack INTEGER NOT NULL, isPregnant INTEGER);
              CREATE TABLE cats (id TEXT PRIMARY KEY, colonyId TEXT NOT NULL,
-                 name TEXT NOT NULL);",
+                 name TEXT NOT NULL);
+             CREATE TABLE buildings (id TEXT NOT NULL, colonyId TEXT NOT NULL,
+                 assignedCatId TEXT);",
         )
         .expect("legacy tables");
 
@@ -1975,8 +2121,12 @@ mod tests {
             ("colonies", "ownerPlayerId"),
             ("colonies", "knownVillageIds"),
             ("colonies", "villageTradeOffers"),
+            ("colonies", "lastLoremasterUnlockAt"),
+            ("colonies", "lastTitheAt"),
+            ("colonies", "lastOfferingAt"),
             ("cats", "skills"),
             ("cats", "boosted"),
+            ("buildings", "automatedOfficerRole"),
         ] {
             assert!(!column_exists(&conn, table, column).unwrap());
         }
@@ -1997,8 +2147,12 @@ mod tests {
             ("colonies", "ownerPlayerId"),
             ("colonies", "knownVillageIds"),
             ("colonies", "villageTradeOffers"),
+            ("colonies", "lastLoremasterUnlockAt"),
+            ("colonies", "lastTitheAt"),
+            ("colonies", "lastOfferingAt"),
             ("cats", "skills"),
             ("cats", "boosted"),
+            ("buildings", "automatedOfficerRole"),
         ] {
             assert!(
                 column_exists(&conn, table, column).unwrap(),
@@ -2028,6 +2182,42 @@ mod tests {
             .expect("load migrated world")
             .expect("saved world exists");
         assert_eq!(loaded, world);
+    }
+
+    #[test]
+    fn legacy_building_assignments_are_released_once_when_provenance_is_added() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("create current schema");
+        let mut world = new_world(42);
+        let mut colony = found_colony(42, "legacy-workers", 1_000_000, 42);
+        let worker = colony.cats[0].id.clone();
+        colony.buildings[0].assigned_cat = Some(worker.clone());
+        colony.buildings[0].automated_by = None;
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save pre-provenance world");
+
+        conn.execute_batch("ALTER TABLE buildings DROP COLUMN automatedOfficerRole;")
+            .expect("simulate legacy buildings table");
+        init_schema(&conn).expect("add worker provenance");
+        let mut migrated = load_world(&conn)
+            .expect("load migrated world")
+            .expect("saved world exists");
+        assert_eq!(migrated.colonies[0].buildings[0].assigned_cat, None);
+
+        // Once the column exists, NULL is a real manual assignment and the
+        // idempotent migration must never clear it on subsequent restarts.
+        migrated.colonies[0].buildings[0].assigned_cat = Some(worker.clone());
+        migrated.colonies[0].buildings[0].automated_by = None;
+        save_world(&conn, &migrated).expect("save explicit manual assignment");
+        init_schema(&conn).expect("idempotent schema init");
+        let restarted = load_world(&conn)
+            .expect("reload manual assignment")
+            .expect("saved world exists");
+        assert_eq!(
+            restarted.colonies[0].buildings[0].assigned_cat.as_deref(),
+            Some(worker.as_str())
+        );
+        assert_eq!(restarted.colonies[0].buildings[0].automated_by, None);
     }
 
     #[test]
@@ -2687,6 +2877,9 @@ mod tests {
         colony.run_started_at = 4_900_000;
         colony.created_at = 4_800_000;
         colony.last_player_activity_at = Some(5_400_000);
+        colony.last_loremaster_unlock_at = Some(5_350_000);
+        colony.last_tithe_at = Some(5_360_000);
+        colony.last_offering_at = Some(5_370_000);
         colony.last_tick = 5_500_000;
         colony.test_time_scale = 2.5;
         colony.test_resource_decay_multiplier = 1.75;
@@ -2798,6 +2991,7 @@ mod tests {
             construction_progress: 100,
             production_progress: 5.5,
             assigned_cat: Some(colony.cats[3].id.clone()),
+            automated_by: Some(OfficerRole::Captain),
         });
         colony.events.push(EventLog {
             id: "event-audit".to_owned(),
@@ -2940,6 +3134,15 @@ mod tests {
             expected_colony.metal_forge_progress
         );
         assert_eq!(loaded_colony.coin, expected_colony.coin);
+        assert_eq!(
+            loaded_colony.last_loremaster_unlock_at,
+            expected_colony.last_loremaster_unlock_at
+        );
+        assert_eq!(loaded_colony.last_tithe_at, expected_colony.last_tithe_at);
+        assert_eq!(
+            loaded_colony.last_offering_at,
+            expected_colony.last_offering_at
+        );
         assert_eq!(
             loaded_colony.provisional_tiles,
             expected_colony.provisional_tiles
