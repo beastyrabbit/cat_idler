@@ -12,9 +12,10 @@ separate target).
 ## Reproduce
 
 - Build: `scripts/build-web.sh` (or `cd crates/cat-web && trunk build --release`).
-  Bakes `CAT_SERVER_URL` via `option_env!` — default `ws://127.0.0.1:8787/ws`;
-  omit it for a same-origin deploy that derives `ws(s)://<host>/ws` from the page
-  location.
+  A release build leaves `CAT_SERVER_URL` unset by default and derives
+  `ws(s)://<host>/ws` from the page location. Set the variable only to bake an
+  intentionally separate server origin. `scripts/build-web.sh --serve` defaults to the
+  local development server at `ws://127.0.0.1:8787/ws` because Trunk uses port 8080.
 - Serve: `scripts/build-web.sh --serve` (trunk serve on `:8080`), or any static
   host over `dist/` — no COOP/COEP needed (single-threaded wasm, no
   SharedArrayBuffer). Run `cargo run -p cat-server` on `:8787` for a live colony.
@@ -98,10 +99,16 @@ WebSocket backend, so the SSE-less WS transport works unchanged in the browser.
 - **Assets** — the `copy-dir` link resolves `public/images/...` at the served
   paths; 0 asset 404s in the smoke test.
 
-## Remaining for a *production* deploy (not blocking P10)
+## Production hosting
 
-- **Hosting** — a real static host + a reachable `cat-server` (the smoke test
-  uses `trunk serve` + a local server). Not committed as infra.
+The repository now includes a non-root multi-stage `Dockerfile` that builds the optimized
+Trunk bundle and native server, serves the SPA and `/images` from `cat-server`, persists
+SQLite on `/data`, and exposes `/health` plus the stateful `/ready` probe. Static responses
+use Brotli/gzip, correct MIME types, cache policy, and `nosniff`; WebSocket origins can be
+restricted exactly. See `docs/DEPLOYMENT.md` for the build/run/reverse-proxy recipe.
+
+## Remaining optional optimization
+
 - **Transfer weight** — 8 MB gzipped is heavy for a game; atlasing or an asset
   manifest would cut the ~40-PNG fetch count. Optional optimization, not a
   blocker.
