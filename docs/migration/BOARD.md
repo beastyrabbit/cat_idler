@@ -41,7 +41,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster and resource/general shrine-return scouting are verified, including restart-safe in-flight notebooks and responsive controls; the richer manual inspector/control surface remains partial |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — farms/legacy fields and logging are now excluded from the core; the five-cat blueprint is superseded by the 15-cat/three-house model and exact authored/traffic road rules remain |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fine-biome movement is unused, rail/shipping are global multipliers rather than built routes/vehicles, and fishing is absent |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current protocol variants have framebuffer-verified residential/open-station compositions, including Mill/Sawmill and crop stages; Accounting Tent is not snapshot-reachable and the specified 9-patch/button/cursor skin is absent |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current protocol variants have framebuffer-verified residential/open-station compositions, including Mill/Sawmill and crop stages; the Adventure sliced-panel/button/progress/cursor skin is exact-size native-framebuffer verified and the release WASM bundle builds; Accounting Tent is not snapshot-reachable and WASM visual interaction remains |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — base item/trade slices shipped; recipe/resource breadth and guided reachability remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
@@ -626,8 +626,11 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   without routes/vessels, and maintained fishing paths are absent.
 
 ### P18 — Visual polish (spec: `docs/migration/specs/p18-visual-polish.md`)
-- DF-Steam-inspired solid-color/border panels plus HUD resource icons and hover tooltips. The
-  specified Adventure 9-patch panels/buttons/progress assets and cursor states are not live.
+- The maintained Adventure art is live through Bevy sliced images: parchment, dark, and ornate
+  panels; button interaction/disabled states; progress bars; resource medallions; the minimap
+  ring; and pointer/interact/pressed/target/disabled custom cursors. Native own-framebuffer
+  captures are verified at exact 1024×768, 1280×800, and 1920×1080 sizes, and the release WASM
+  bundle builds; WASM visual interaction remains in the final campaign.
 - Persistent map-name plaques are removed. All 24 current protocol building variants have an
   explicit residential/open/infrastructure treatment; Mill/Sawmill and crop stages are
   framebuffer-verified. Accounting Tent is not snapshot-reachable, so this is not an

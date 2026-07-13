@@ -89,8 +89,10 @@ stages (sprout → tall → mature → flowering) + scarecrow.
 for fox/badger/bear/rival-beast; rival-cat raiders keep the wired `raider-sheet.png`.
 
 **Icons / UI — `public/images/game/icons/`:** per `items_ui.md`. The resource icons are
-tracked PNGs used by the Bevy HUD. The maintained Adventure panel/button/cursor assets have not
-yet been integrated; that gap is tracked in `docs/IMPLEMENTATION_AUDIT.md`.
+tracked PNGs used by the Bevy HUD. Semantic Adventure panel, button, progress, minimap, and
+32px cursor PNGs are tracked under `public/images/game/ui/` and integrated through Bevy sliced
+images and custom cursors. Native framebuffers are verified; the remaining WASM visual campaign
+is tracked in `docs/IMPLEMENTATION_AUDIT.md`.
 
 ## Source mapping
 

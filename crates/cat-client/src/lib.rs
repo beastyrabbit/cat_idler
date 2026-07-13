@@ -20,7 +20,9 @@ use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
-use bevy::ui::RelativeCursorPosition;
+use bevy::sprite::{BorderRect, SliceScaleMode, TextureSlicer};
+use bevy::ui::{InteractionDisabled, RelativeCursorPosition, VisualBox, widget::NodeImageMode};
+use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage, PrimaryWindow};
 use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot,
     ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmStage, FootprintSize, GateSide,
@@ -934,41 +936,41 @@ fn road_sprite_kind(n: bool, s: bool, e: bool, w: bool) -> RoadSprite {
 // UI kit — one cohesive visual language for every panel, button and label.
 //
 // The UI grew panel-by-panel with ad-hoc sizes, spacing and frames, so it read
-// like a debug overlay. This kit replaces that with a small, disciplined system
-// (a warm "cozy ledger" palette, a fixed type scale, a 4px spacing grid, and
-// reusable panel/button/text builders) so every surface composes from the SAME
-// primitives. Panels are Bevy-native solid frames (background + wood border +
-// rounded corners + a real title bar) instead of stretched 9-patch sprites, so
-// cohesion never depends on art quality and text never touches the frame.
+// like a debug overlay. This kit uses the maintained Adventure pack as an
+// actual render system: sliced parchment/wood panels, image-backed buttons,
+// framed resource glyphs, image progress bars and stateful cursors. The fixed
+// type scale and 4px spacing grid keep that expressive skin product-normal and
+// readable instead of turning every surface into decoration.
 // ============================================================================
 
-// -- Palette: small, disciplined, warm + high-contrast ----------------------
-/// Panel body — warm brown, near-opaque so text stays legible over the map.
-/// A touch lighter/warmer than a flat black so panels read as crafted wood.
-const UI_BG: Color = Color::srgba(0.16, 0.115, 0.08, 0.96);
-/// Title-bar strip at the top of every panel.
-const UI_HEADER: Color = Color::srgba(0.26, 0.19, 0.115, 1.0);
-/// Wood edge around panels and buttons — brighter than the fill so the frame
-/// reads with a bit more weight (crafted, not flat).
-const UI_BORDER: Color = Color::srgb(0.60, 0.44, 0.26);
+// -- Palette: parchment ink + restrained state colours ----------------------
+/// Parchment fallback while the image asset is loading.
+const UI_BG: Color = Color::srgba(0.93, 0.84, 0.65, 0.98);
+/// Dark-walnut fallback behind panel headings.
+const UI_HEADER: Color = Color::srgb(0.26, 0.15, 0.07);
 /// Faint divider inside a panel body.
-const UI_DIVIDER: Color = Color::srgba(0.52, 0.38, 0.23, 0.5);
-/// Primary text — warm cream.
-const UI_INK: Color = Color::srgb(0.94, 0.90, 0.82);
+const UI_DIVIDER: Color = Color::srgba(0.35, 0.20, 0.09, 0.55);
+/// Primary ink on parchment.
+const UI_INK: Color = Color::srgb(0.16, 0.095, 0.045);
+/// Cream ink reserved for dark title bars and resource wells.
+const UI_TITLE_INK: Color = Color::srgb(0.98, 0.91, 0.74);
 /// Secondary / de-emphasised text.
-const UI_MUTED: Color = Color::srgb(0.70, 0.62, 0.52);
-/// Gold — titles, values worth the eye, the active accent.
-const UI_ACCENT: Color = Color::srgb(0.95, 0.77, 0.41);
+const UI_MUTED: Color = Color::srgb(0.39, 0.31, 0.22);
+/// Brick-red accent used for values and active affordances.
+const UI_ACCENT: Color = Color::srgb(0.56, 0.16, 0.10);
 /// Good news (births, gains) — saturated so it pops in the dispatch feed.
-const UI_POSITIVE: Color = Color::srgb(0.45, 0.87, 0.40);
+const UI_POSITIVE: Color = Color::srgb(0.20, 0.47, 0.18);
 /// Trouble (deaths, crises, raids) — saturated red-orange.
-const UI_WARNING: Color = Color::srgb(0.98, 0.40, 0.28);
+const UI_WARNING: Color = Color::srgb(0.69, 0.12, 0.08);
+const UI_BUTTON_BROWN: Color = Color::srgb(0.43, 0.26, 0.12);
+const UI_BUTTON_BROWN_HOVER: Color = Color::srgb(0.58, 0.36, 0.17);
+const UI_BUTTON_RED: Color = Color::srgb(0.50, 0.16, 0.10);
+const UI_BUTTON_GREY: Color = Color::srgb(0.34, 0.32, 0.29);
 
-// Button backgrounds by state (solid fills, not sprite tints).
-const UI_BTN: Color = Color::srgba(0.23, 0.17, 0.11, 1.0);
-const UI_BTN_HOVER: Color = Color::srgba(0.32, 0.24, 0.15, 1.0);
-const UI_BTN_PRESS: Color = Color::srgba(0.15, 0.11, 0.07, 1.0);
-const UI_BTN_ACTIVE: Color = Color::srgba(0.52, 0.38, 0.17, 1.0);
+const PANEL_SLICE_PX: f32 = 18.0;
+const BUTTON_SLICE_X_PX: f32 = 16.0;
+const BUTTON_SLICE_Y_PX: f32 = 12.0;
+const PROGRESS_SLICE_PX: f32 = 12.0;
 
 // -- Type scale (integer px keeps the pixel font crisp) ---------------------
 const FS_TITLE: f32 = 16.0;
@@ -983,6 +985,120 @@ const UI_GAP_TIGHT: f32 = 3.0;
 const UI_RADIUS: f32 = 6.0;
 const UI_BORDER_W: f32 = 2.5;
 const UI_BTN_H: f32 = 30.0;
+/// Three button lines (tools + two wrapped action lines), their row gaps,
+/// panel padding/frame, and the bar's 10px screen margin at 1024px.
+const NARROW_BOTTOM_BAR_FOOTPRINT: f32 = 3.0 * UI_BTN_H + 4.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
+/// Bottom-corner overlays clear the whole narrow toolbar plus breathing room,
+/// not only its first row of controls.
+const BOTTOM_OVERLAY_CLEARANCE: f32 = NARROW_BOTTOM_BAR_FOOTPRINT + UI_GAP;
+/// Eight two-column resource rows remain readable at this compact height and
+/// leave room for Dispatches above the narrow wrapped toolbar.
+const HUD_RESOURCE_PILL_HEIGHT: f32 = 20.0;
+
+/// Tracked Adventure-pack textures. Runtime never reaches into the ignored
+/// source bundle; these semantic copies are the stable client asset contract.
+#[derive(Resource, Clone, Default)]
+struct AdventureUiArt {
+    panel: Handle<Image>,
+    panel_dark: Handle<Image>,
+    panel_ornate: Handle<Image>,
+    button: Handle<Image>,
+    button_active: Handle<Image>,
+    button_disabled: Handle<Image>,
+    progress_track: Handle<Image>,
+    progress_good: Handle<Image>,
+    progress_mid: Handle<Image>,
+    progress_low: Handle<Image>,
+    banner: Handle<Image>,
+    icon_frame: Handle<Image>,
+    minimap_ring: Handle<Image>,
+    cursor_pointer: Handle<Image>,
+    cursor_interact: Handle<Image>,
+    cursor_pressed: Handle<Image>,
+    cursor_target: Handle<Image>,
+    cursor_disabled: Handle<Image>,
+}
+
+impl AdventureUiArt {
+    fn load(assets: &AssetServer) -> Self {
+        Self {
+            panel: assets.load("public/images/game/ui/panel.png"),
+            panel_dark: assets.load("public/images/game/ui/panel-dark.png"),
+            panel_ornate: assets.load("public/images/game/ui/panel-ornate.png"),
+            button: assets.load("public/images/game/ui/button.png"),
+            button_active: assets.load("public/images/game/ui/button-active.png"),
+            button_disabled: assets.load("public/images/game/ui/button-disabled.png"),
+            progress_track: assets.load("public/images/game/ui/progress-track.png"),
+            progress_good: assets.load("public/images/game/ui/progress-good.png"),
+            progress_mid: assets.load("public/images/game/ui/progress-mid.png"),
+            progress_low: assets.load("public/images/game/ui/progress-low.png"),
+            banner: assets.load("public/images/game/ui/banner.png"),
+            icon_frame: assets.load("public/images/game/ui/icon-frame.png"),
+            minimap_ring: assets.load("public/images/game/ui/minimap-ring.png"),
+            cursor_pointer: assets.load("public/images/game/ui/cursor/pointer.png"),
+            cursor_interact: assets.load("public/images/game/ui/cursor/interact.png"),
+            cursor_pressed: assets.load("public/images/game/ui/cursor/pressed.png"),
+            cursor_target: assets.load("public/images/game/ui/cursor/target.png"),
+            cursor_disabled: assets.load("public/images/game/ui/cursor/disabled.png"),
+        }
+    }
+}
+
+fn sliced_image(image: Handle<Image>, border: BorderRect, max_corner_scale: f32) -> ImageNode {
+    ImageNode {
+        image,
+        image_mode: NodeImageMode::Sliced(TextureSlicer {
+            border,
+            center_scale_mode: SliceScaleMode::Stretch,
+            sides_scale_mode: SliceScaleMode::Stretch,
+            max_corner_scale,
+        }),
+        visual_box: VisualBox::BorderBox,
+        ..default()
+    }
+}
+
+fn panel_slicer() -> TextureSlicer {
+    TextureSlicer {
+        border: BorderRect::all(PANEL_SLICE_PX),
+        center_scale_mode: SliceScaleMode::Stretch,
+        sides_scale_mode: SliceScaleMode::Stretch,
+        max_corner_scale: 1.0,
+    }
+}
+
+fn button_slicer() -> TextureSlicer {
+    TextureSlicer {
+        border: BorderRect::axes(BUTTON_SLICE_X_PX, BUTTON_SLICE_Y_PX),
+        center_scale_mode: SliceScaleMode::Stretch,
+        sides_scale_mode: SliceScaleMode::Stretch,
+        max_corner_scale: 1.0,
+    }
+}
+
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+enum AdventurePanel {
+    Paper,
+    Dark,
+    Ornate,
+}
+
+/// Assign image handles after spawn so common UI builders stay usable by
+/// snapshot-driven child creation (not only by the startup system).
+fn skin_adventure_panels(
+    art: Res<AdventureUiArt>,
+    mut panels: Query<(&AdventurePanel, &mut ImageNode), Added<AdventurePanel>>,
+) {
+    for (style, mut image) in &mut panels {
+        image.image = match style {
+            AdventurePanel::Paper => art.panel.clone(),
+            AdventurePanel::Dark => art.panel_dark.clone(),
+            AdventurePanel::Ornate => art.panel_ornate.clone(),
+        };
+        image.image_mode = NodeImageMode::Sliced(panel_slicer());
+        image.visual_box = VisualBox::BorderBox;
+    }
+}
 
 /// A text bundle at a kit size + colour (one font everywhere, via the default).
 fn ui_text(s: impl Into<String>, size: f32, color: Color) -> impl Bundle {
@@ -1007,38 +1123,37 @@ fn ui_panel_node(width: Val) -> Node {
         position_type: PositionType::Absolute,
         width,
         border: UiRect::all(Val::Px(UI_BORDER_W)),
-        border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
         flex_direction: FlexDirection::Column,
         overflow: Overflow::clip(),
         ..default()
     }
 }
 
-/// The visual layer of a panel: solid warm body + wood border. Pair with
-/// [`ui_panel_node`] (which carries the rounded corners on its `Node`).
+/// The visual layer of a panel: a real sliced Adventure parchment frame. The
+/// solid fallback is visible only while the texture is loading.
 fn ui_panel_frame() -> impl Bundle {
-    (BackgroundColor(UI_BG), BorderColor::all(UI_BORDER))
+    (
+        BackgroundColor(UI_BG),
+        BorderColor::all(Color::NONE),
+        ImageNode::default(),
+        AdventurePanel::Paper,
+    )
 }
 
-/// A panel title bar (first child of [`ui_panel`]): a full-width header strip
-/// with the title in gold. Rounded only on the top corners to sit flush in the
-/// frame.
+/// A panel title bar (first child of [`ui_panel`]): a sliced dark-walnut well
+/// with cream lettering. It is a real image-backed surface, not a color strip.
 fn ui_title_bar(title: &str) -> impl Bundle {
     (
         Node {
             width: Val::Percent(100.0),
             padding: UiRect::axes(Val::Px(UI_PAD), Val::Px(7.0)),
             align_items: AlignItems::Center,
-            border_radius: BorderRadius::new(
-                Val::Px(UI_RADIUS - UI_BORDER_W),
-                Val::Px(UI_RADIUS - UI_BORDER_W),
-                Val::Px(0.0),
-                Val::Px(0.0),
-            ),
             ..default()
         },
         BackgroundColor(UI_HEADER),
-        children![ui_text(title, FS_TITLE, UI_ACCENT)],
+        ImageNode::default(),
+        AdventurePanel::Dark,
+        children![ui_text(title, FS_TITLE, UI_TITLE_INK)],
     )
 }
 
@@ -1063,15 +1178,16 @@ fn ui_button() -> impl Bundle {
         Button,
         Node {
             height: Val::Px(UI_BTN_H),
+            flex_shrink: 0.0,
             padding: UiRect::axes(Val::Px(UI_PAD), Val::Px(0.0)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
             border: UiRect::all(Val::Px(1.0)),
-            border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 2.0)),
             ..default()
         },
-        BackgroundColor(UI_BTN),
-        BorderColor::all(UI_BORDER),
+        BackgroundColor(UI_BUTTON_BROWN),
+        BorderColor::all(Color::NONE),
+        ImageNode::default(),
         KitButton,
     )
 }
@@ -1084,15 +1200,16 @@ fn ui_button_small() -> impl Bundle {
         Node {
             height: Val::Px(22.0),
             min_width: Val::Px(22.0),
+            flex_shrink: 0.0,
             padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(0.0)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
             border: UiRect::all(Val::Px(1.0)),
-            border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 3.0)),
             ..default()
         },
-        BackgroundColor(UI_BTN),
-        BorderColor::all(UI_BORDER),
+        BackgroundColor(UI_BUTTON_BROWN),
+        BorderColor::all(Color::NONE),
+        ImageNode::default(),
         KitButton,
     )
 }
@@ -1100,6 +1217,63 @@ fn ui_button_small() -> impl Bundle {
 /// Marks a button styled by the kit so [`update_kit_buttons`] owns its fill.
 #[derive(Component)]
 struct KitButton;
+
+/// Buttons remain present and legible while unavailable; the grey Adventure
+/// frame and disabled cursor make that state explicit without hiding context.
+#[derive(Component, Default)]
+pub(crate) struct KitDisabled {
+    disabled: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AdventureButtonTexture {
+    Brown,
+    Red,
+    Grey,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct AdventureButtonAppearance {
+    texture: AdventureButtonTexture,
+    tint: Color,
+    fallback: Color,
+}
+
+fn adventure_button_appearance(
+    interaction: Interaction,
+    active: bool,
+    disabled: bool,
+) -> AdventureButtonAppearance {
+    if disabled {
+        return AdventureButtonAppearance {
+            texture: AdventureButtonTexture::Grey,
+            tint: Color::srgb(0.72, 0.72, 0.72),
+            fallback: UI_BUTTON_GREY,
+        };
+    }
+    match (interaction, active) {
+        (Interaction::Pressed, _) => AdventureButtonAppearance {
+            texture: AdventureButtonTexture::Red,
+            tint: Color::srgb(0.82, 0.72, 0.62),
+            fallback: UI_BUTTON_RED,
+        },
+        (Interaction::Hovered, true) | (Interaction::None, true) => AdventureButtonAppearance {
+            texture: AdventureButtonTexture::Red,
+            tint: Color::WHITE,
+            fallback: UI_BUTTON_RED,
+        },
+        (Interaction::Hovered, false) => AdventureButtonAppearance {
+            texture: AdventureButtonTexture::Brown,
+            tint: Color::srgb(1.0, 0.88, 0.72),
+            fallback: UI_BUTTON_BROWN_HOVER,
+        },
+        (Interaction::None, false) => AdventureButtonAppearance {
+            texture: AdventureButtonTexture::Brown,
+            tint: Color::WHITE,
+            fallback: UI_BUTTON_BROWN,
+        },
+    }
+}
 
 /// A kit button that stays lit while `active` (tabs, tool modes). The owning
 /// system sets this each frame; [`update_kit_buttons`] paints the active fill.
@@ -1137,19 +1311,160 @@ fn sync_tab_toggles(
 
 /// Paint every [`KitButton`] from its interaction + optional toggle state. One
 /// system for all kit buttons so hover/press/active look identical everywhere.
+type KitButtonQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static Interaction,
+        &'static mut BackgroundColor,
+        &'static mut ImageNode,
+        Option<&'static KitToggle>,
+        Option<&'static KitDisabled>,
+        Option<&'static InteractionDisabled>,
+    ),
+    With<KitButton>,
+>;
+
 fn update_kit_buttons(
-    mut buttons: Query<(&Interaction, &mut BackgroundColor, Option<&KitToggle>), With<KitButton>>,
+    mut commands: Commands,
+    art: Res<AdventureUiArt>,
+    mut buttons: KitButtonQuery,
 ) {
-    for (interaction, mut bg, toggle) in &mut buttons {
+    for (entity, interaction, mut bg, mut image, toggle, disabled, interaction_disabled) in
+        &mut buttons
+    {
         let active = toggle.is_some_and(|t| t.active);
-        bg.0 = match (interaction, active) {
-            (Interaction::Pressed, _) => UI_BTN_PRESS,
-            (Interaction::Hovered, false) => UI_BTN_HOVER,
-            (Interaction::Hovered, true) => UI_BTN_ACTIVE,
-            (Interaction::None, true) => UI_BTN_ACTIVE,
-            (Interaction::None, false) => UI_BTN,
+        let disabled = disabled.is_some_and(|state| state.disabled);
+        let appearance = adventure_button_appearance(*interaction, active, disabled);
+        bg.0 = appearance.fallback;
+        match (disabled, interaction_disabled.is_some()) {
+            (true, false) => {
+                commands.entity(entity).insert(InteractionDisabled);
+            }
+            (false, true) => {
+                commands.entity(entity).remove::<InteractionDisabled>();
+            }
+            _ => {}
+        }
+        image.image = match appearance.texture {
+            AdventureButtonTexture::Brown => art.button.clone(),
+            AdventureButtonTexture::Red => art.button_active.clone(),
+            AdventureButtonTexture::Grey => art.button_disabled.clone(),
         };
+        image.image_mode = NodeImageMode::Sliced(button_slicer());
+        image.visual_box = VisualBox::BorderBox;
+        image.color = appearance.tint;
     }
+}
+
+fn sync_action_button_availability(
+    session: Res<Session>,
+    mut buttons: Query<&mut KitDisabled, With<ActionButton>>,
+) {
+    if !session.is_changed() {
+        return;
+    }
+    for mut disabled in &mut buttons {
+        disabled.disabled = !session.ready;
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AdventureCursorKind {
+    Pointer,
+    Interact,
+    Pressed,
+    Target,
+    Disabled,
+}
+
+#[derive(Resource, Default)]
+struct AdventureCursorState(Option<AdventureCursorKind>);
+
+fn adventure_cursor_kind(
+    interactions: impl IntoIterator<Item = (Interaction, bool)>,
+    targeting: bool,
+    over_world_input_blocker: bool,
+) -> AdventureCursorKind {
+    let mut hovered = false;
+    let mut hovered_disabled = false;
+    for (interaction, disabled) in interactions {
+        match interaction {
+            Interaction::Pressed if !disabled => return AdventureCursorKind::Pressed,
+            Interaction::Pressed | Interaction::Hovered if disabled => hovered_disabled = true,
+            Interaction::Hovered => hovered = true,
+            Interaction::Pressed | Interaction::None => {}
+        }
+    }
+    if hovered_disabled {
+        AdventureCursorKind::Disabled
+    } else if hovered {
+        AdventureCursorKind::Interact
+    } else if targeting && !over_world_input_blocker {
+        AdventureCursorKind::Target
+    } else {
+        AdventureCursorKind::Pointer
+    }
+}
+
+fn adventure_cursor_hotspot(kind: AdventureCursorKind) -> (u16, u16) {
+    match kind {
+        // The pointer PNG has transparent padding; its first visible tip pixel
+        // is at (8, 6), not at the image origin.
+        AdventureCursorKind::Pointer => (8, 6),
+        AdventureCursorKind::Interact => (7, 2),
+        AdventureCursorKind::Pressed => (8, 8),
+        AdventureCursorKind::Target | AdventureCursorKind::Disabled => (16, 16),
+    }
+}
+
+fn adventure_cursor_icon(kind: AdventureCursorKind, art: &AdventureUiArt) -> CursorIcon {
+    let handle = match kind {
+        AdventureCursorKind::Pointer => art.cursor_pointer.clone(),
+        AdventureCursorKind::Interact => art.cursor_interact.clone(),
+        AdventureCursorKind::Pressed => art.cursor_pressed.clone(),
+        AdventureCursorKind::Target => art.cursor_target.clone(),
+        AdventureCursorKind::Disabled => art.cursor_disabled.clone(),
+    };
+    CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {
+        handle,
+        hotspot: adventure_cursor_hotspot(kind),
+        ..default()
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_adventure_cursor(
+    mut commands: Commands,
+    art: Res<AdventureUiArt>,
+    tools: Res<Tools>,
+    research: Res<UpgradeTreeUi>,
+    buttons: Query<(&Interaction, Option<&KitDisabled>), With<Button>>,
+    blockers: WorldInputBlockerQuery,
+    window: Query<(Entity, &Window), With<PrimaryWindow>>,
+    mut state: ResMut<AdventureCursorState>,
+) {
+    let interactions = buttons.iter().map(|(interaction, disabled)| {
+        (*interaction, disabled.is_some_and(|state| state.disabled))
+    });
+    let Ok((window_entity, window)) = window.single() else {
+        return;
+    };
+    let over_world_input_blocker =
+        research.visible || cursor_over_world_input_blocker(window.cursor_position(), &blockers);
+    let kind = adventure_cursor_kind(
+        interactions,
+        tools.mode.paint_kind().is_some(),
+        over_world_input_blocker,
+    );
+    if state.0 == Some(kind) {
+        return;
+    }
+    commands
+        .entity(window_entity)
+        .insert(adventure_cursor_icon(kind, &art));
+    state.0 = Some(kind);
 }
 
 /// Animated character sheets (cats + raiders) and specialization hats. The
@@ -1217,6 +1532,11 @@ struct WsConn {
 /// marker prevents future UI/minimap cameras from being panned accidentally.
 #[derive(Component)]
 struct WorldCamera;
+
+/// An opaque or framed UI surface that deliberately owns pointer input inside
+/// its computed rectangle. Transparent alignment wrappers are never marked.
+#[derive(Component)]
+struct WorldInputBlocker;
 
 /// A persistent cat body sprite, keyed by cat id so it survives snapshots and
 /// glides toward its target tile.
@@ -1868,6 +2188,40 @@ type UiRootQuery<'w, 's> = Query<
     ),
     (Without<ChildOf>, Without<TooltipPanel>),
 >;
+/// Deliberately marked panel rectangles that own pointer input over the world.
+type WorldInputBlockerQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static ComputedNode,
+        &'static UiGlobalTransform,
+        &'static Node,
+    ),
+    With<WorldInputBlocker>,
+>;
+
+fn ui_surface_blocks_world(display: Display, contains_cursor: bool) -> bool {
+    display != Display::None && contains_cursor
+}
+
+fn cursor_over_world_input_blocker(
+    cursor: Option<Vec2>,
+    blockers: &WorldInputBlockerQuery<'_, '_>,
+) -> bool {
+    cursor.is_some_and(|cursor| {
+        blockers.iter().any(|(computed, transform, style)| {
+            ui_surface_blocks_world(style.display, computed.contains_point(*transform, cursor))
+        })
+    })
+}
+
+fn world_pointer_input_allowed(
+    research_visible: bool,
+    over_world_input_blocker: bool,
+    has_cursor: bool,
+) -> bool {
+    !research_visible && !over_world_input_blocker && has_cursor
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ButtonAction {
@@ -1976,6 +2330,7 @@ pub fn run() {
         .insert_resource(CatBodies::default())
         .insert_resource(RaiderBodies::default())
         .insert_resource(Tools::default())
+        .insert_resource(AdventureCursorState::default())
         // Match the unloaded world to full fog so zooming out never exposes a
         // hard rectangle around the bounded chunk cache.
         .insert_resource(ClearColor(FOG_COLOR))
@@ -2011,7 +2366,7 @@ pub fn run() {
                 ),
                 // input, tools + HUD
                 (
-                    camera_controls,
+                    camera_controls.after(research_ui::toggle_upgrade_tree),
                     select_cat,
                     select_building,
                     close_inspectors_on_esc,
@@ -2022,8 +2377,16 @@ pub fn run() {
                     (
                         handle_tool_buttons,
                         handle_accept_button,
-                        update_kit_buttons,
+                        sync_action_button_availability,
+                        update_kit_buttons
+                            .after(sync_action_button_availability)
+                            .after(handle_tool_buttons)
+                            .after(sync_tab_toggles)
+                            .after(research_ui::update_research_filter)
+                            .after(research_ui::update_research_inspector),
                         sync_tab_toggles,
+                        skin_adventure_panels,
+                        update_adventure_cursor.after(update_kit_buttons),
                     ),
                     zone_paint,
                     render_zone_preview,
@@ -2292,6 +2655,8 @@ fn setup(
     commands.insert_resource(PropArt::load(&asset_server));
     commands.insert_resource(InfraArt::load(&asset_server));
     commands.insert_resource(SpriteSheets::load(&asset_server, &mut atlas_layouts));
+    let ui_art = AdventureUiArt::load(&asset_server);
+    commands.insert_resource(ui_art.clone());
 
     // Dynamic minimap texture (rewritten each snapshot by update_minimap).
     let minimap_image = Image::new_fill(
@@ -2339,6 +2704,7 @@ fn setup(
             GlobalZIndex(100),
             ui_panel_frame(),
             ClientFeedbackPanel,
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn((
@@ -2358,6 +2724,7 @@ fn setup(
                 ..ui_panel_node(Val::Px(322.0))
             },
             ui_panel_frame(),
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Colony"));
@@ -2381,24 +2748,39 @@ fn setup(
                         grid.spawn((
                             Node {
                                 width: Val::Px(138.0),
+                                height: Val::Px(HUD_RESOURCE_PILL_HEIGHT),
+                                padding: UiRect::horizontal(Val::Px(4.0)),
                                 align_items: AlignItems::Center,
                                 column_gap: Val::Px(UI_GAP),
                                 ..default()
                             },
+                            BackgroundColor(Color::NONE),
+                            ImageNode::default(),
+                            AdventurePanel::Dark,
                             children![
                                 (
                                     Node {
-                                        width: Val::Px(16.0),
-                                        height: Val::Px(16.0),
+                                        width: Val::Px(18.0),
+                                        height: Val::Px(18.0),
+                                        align_items: AlignItems::Center,
+                                        justify_content: JustifyContent::Center,
                                         ..default()
                                     },
-                                    ImageNode {
-                                        image: icons.get(kind),
-                                        color: resource_icon_tint(kind),
-                                        ..default()
-                                    },
+                                    ImageNode::new(ui_art.icon_frame.clone()),
+                                    children![(
+                                        Node {
+                                            width: Val::Px(11.0),
+                                            height: Val::Px(11.0),
+                                            ..default()
+                                        },
+                                        ImageNode {
+                                            image: icons.get(kind),
+                                            color: resource_icon_tint(kind),
+                                            ..default()
+                                        },
+                                    )],
                                 ),
-                                (ui_text("-", FS_BODY, UI_INK), HudResource(kind)),
+                                (ui_text("-", FS_BODY, UI_TITLE_INK), HudResource(kind)),
                             ],
                         ));
                     }
@@ -2423,10 +2805,11 @@ fn setup(
             Node {
                 left: Val::Px(10.0),
                 // Clear the two-row command bar at 768px-high windows.
-                bottom: Val::Px(100.0),
+                bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
                 ..ui_panel_node(Val::Px(430.0))
             },
             ui_panel_frame(),
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Dispatches"));
@@ -2442,12 +2825,13 @@ fn setup(
             Node {
                 right: Val::Px(10.0),
                 // Clear the two-row command bar at 768px-high windows.
-                bottom: Val::Px(100.0),
+                bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
                 ..ui_panel_node(Val::Px(168.0 + 2.0 * UI_GAP + 2.0 * UI_BORDER_W))
             },
             GlobalZIndex(70),
             ui_panel_frame(),
             MinimapPanel,
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Map"));
@@ -2470,15 +2854,32 @@ fn setup(
                         RelativeCursorPosition::default(),
                         MinimapImageNode,
                         // Camera-viewport outline, positioned each frame.
-                        children![(
-                            Node {
-                                position_type: PositionType::Absolute,
-                                border: UiRect::all(Val::Px(1.0)),
-                                ..default()
-                            },
-                            BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
-                            MinimapViewportRect,
-                        )],
+                        children![
+                            (
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    border: UiRect::all(Val::Px(1.0)),
+                                    ..default()
+                                },
+                                BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.85)),
+                                MinimapViewportRect,
+                            ),
+                            (
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(0.0),
+                                    top: Val::Px(0.0),
+                                    width: Val::Px(168.0),
+                                    height: Val::Px(168.0),
+                                    ..default()
+                                },
+                                ImageNode {
+                                    image: ui_art.minimap_ring.clone(),
+                                    image_mode: NodeImageMode::Stretch,
+                                    ..default()
+                                },
+                            )
+                        ],
                     ));
                 });
         });
@@ -2504,17 +2905,31 @@ fn setup(
             },
             GlobalZIndex(60),
             BackgroundColor(UI_BG),
-            BorderColor::all(UI_BORDER),
+            BorderColor::all(Color::NONE),
+            ImageNode::default(),
+            AdventurePanel::Paper,
+            WorldInputBlocker,
         ))
         .with_children(|bar| {
             bar.spawn((
                 Node {
-                    margin: UiRect::right(Val::Px(UI_PAD)),
+                    width: Val::Px(168.0),
+                    height: Val::Px(34.0),
+                    margin: UiRect::right(Val::Px(UI_GAP)),
                     flex_shrink: 0.0,
+                    align_items: AlignItems::Center,
+                    justify_content: JustifyContent::Center,
                     ..default()
                 },
-                ui_text("Idle Cat Forest", FS_TITLE, UI_ACCENT),
-                TextLayout::no_wrap(),
+                ImageNode {
+                    image: ui_art.banner.clone(),
+                    image_mode: NodeImageMode::Stretch,
+                    ..default()
+                },
+                children![(
+                    ui_text("Idle Cat Forest", FS_TITLE, UI_TITLE_INK),
+                    TextLayout::no_wrap(),
+                )],
             ));
             bar.spawn((
                 ui_button(),
@@ -2571,7 +2986,7 @@ fn setup(
                 top: Val::Px(54.0),
                 left: Val::Px(340.0),
                 right: Val::Px(310.0),
-                min_height: Val::Px(54.0),
+                min_height: Val::Px(62.0),
                 padding: UiRect::all(Val::Px(UI_GAP)),
                 align_items: AlignItems::Center,
                 column_gap: Val::Px(UI_GAP),
@@ -2581,6 +2996,7 @@ fn setup(
             },
             GlobalZIndex(65),
             ui_panel_frame(),
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn((
@@ -2618,6 +3034,7 @@ fn setup(
             GlobalZIndex(80),
             ui_panel_frame(),
             AnnouncementsPanel,
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Announcements"));
@@ -2640,6 +3057,7 @@ fn setup(
             GlobalZIndex(82),
             ui_panel_frame(),
             CensusPanel,
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Census"));
@@ -2668,6 +3086,7 @@ fn setup(
             GlobalZIndex(82),
             ui_panel_frame(),
             GoodsPanel,
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Goods"));
@@ -2720,6 +3139,7 @@ fn setup(
             GlobalZIndex(90),
             ui_panel_frame(),
             TradeMenuPanel,
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Trader"));
@@ -2798,6 +3218,7 @@ fn setup(
             },
             ui_panel_frame(),
             InspectorPanel,
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Cat"));
@@ -2823,19 +3244,28 @@ fn setup(
                         row.spawn((
                             Node {
                                 flex_grow: 1.0,
-                                height: Val::Px(11.0),
-                                border_radius: BorderRadius::all(Val::Px(2.0)),
+                                height: Val::Px(13.0),
                                 overflow: Overflow::clip(),
                                 ..default()
                             },
-                            BackgroundColor(Color::srgba(0.05, 0.04, 0.03, 0.7)),
+                            BackgroundColor(Color::NONE),
+                            sliced_image(
+                                ui_art.progress_track.clone(),
+                                BorderRect::all(PROGRESS_SLICE_PX),
+                                1.0,
+                            ),
                             children![(
                                 Node {
                                     width: Val::Percent(0.0),
                                     height: Val::Percent(100.0),
                                     ..default()
                                 },
-                                BackgroundColor(need_bar_color(0.0)),
+                                BackgroundColor(Color::NONE),
+                                sliced_image(
+                                    ui_art.progress_low.clone(),
+                                    BorderRect::all(PROGRESS_SLICE_PX),
+                                    1.0,
+                                ),
                                 NeedBar(kind),
                             )],
                         ));
@@ -2880,6 +3310,7 @@ fn setup(
             },
             RemovePanel,
             ui_panel_frame(),
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Stockpile"));
@@ -2904,6 +3335,7 @@ fn setup(
             },
             ui_panel_frame(),
             BuildingInspectorPanel,
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Building"));
@@ -2931,6 +3363,7 @@ fn spawn_officers_panel(commands: &mut Commands) {
             },
             ui_panel_frame(),
             OfficersPanel,
+            WorldInputBlocker,
         ))
         .with_children(|panel| {
             panel.spawn(ui_title_bar("Officers  [O]"));
@@ -3003,7 +3436,7 @@ fn spawn_bottom_bar(commands: &mut Commands) {
         })
         .with_children(|center| {
             center
-                .spawn((bottom_bar_panel_node(), ui_panel_frame()))
+                .spawn((bottom_bar_panel_node(), ui_panel_frame(), WorldInputBlocker))
                 .with_children(|bar| {
                     // Tool-mode row + accept picker.
                     bar.spawn(bottom_bar_row_node()).with_children(|row| {
@@ -3045,6 +3478,7 @@ fn spawn_bottom_bar(commands: &mut Commands) {
                             row.spawn((
                                 ui_button(),
                                 ActionButton(action),
+                                KitDisabled { disabled: true },
                                 children![ui_text(action.label(), FS_BODY, UI_INK)],
                             ));
                         }
@@ -4819,7 +5253,8 @@ fn select_cat(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
-    ui: Query<&Interaction, With<Button>>,
+    blockers: WorldInputBlockerQuery,
+    research: Res<UpgradeTreeUi>,
     tools: Res<Tools>,
     latest: Res<LatestSnapshot>,
     mut selection: ResMut<Selection>,
@@ -4832,8 +5267,12 @@ fn select_cat(
     if !buttons.just_pressed(MouseButton::Left) {
         return;
     }
-    // Ignore clicks that land on a toolbar button.
-    if ui.iter().any(|i| !matches!(i, Interaction::None)) {
+    let cursor = windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position());
+    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         return;
     }
     let Some(world) = cursor_world(&windows, &camera) else {
@@ -4871,12 +5310,14 @@ fn select_cat(
 /// Right-click a building to inspect it; right-click empty ground or the same
 /// building again to deselect. Shift+right-click is handled by
 /// `cycle_stacked_selection` instead, so bail when shift is held.
+#[allow(clippy::too_many_arguments)]
 fn select_building(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
-    ui: Query<&Interaction, With<Button>>,
+    blockers: WorldInputBlockerQuery,
+    research: Res<UpgradeTreeUi>,
     latest: Res<LatestSnapshot>,
     mut selection: ResMut<BuildingSelection>,
 ) {
@@ -4888,7 +5329,12 @@ fn select_building(
     {
         return;
     }
-    if ui.iter().any(|i| !matches!(i, Interaction::None)) {
+    let cursor = windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position());
+    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         return;
     }
     let Some(world) = cursor_world(&windows, &camera) else {
@@ -4923,7 +5369,8 @@ fn cycle_stacked_selection(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
-    ui: Query<&Interaction, With<Button>>,
+    blockers: WorldInputBlockerQuery,
+    research: Res<UpgradeTreeUi>,
     latest: Res<LatestSnapshot>,
     mut cat_sel: ResMut<Selection>,
     mut building_sel: ResMut<BuildingSelection>,
@@ -4933,7 +5380,12 @@ fn cycle_stacked_selection(
     if !shift || !buttons.just_pressed(MouseButton::Right) {
         return;
     }
-    if ui.iter().any(|i| !matches!(i, Interaction::None)) {
+    let cursor = windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position());
+    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
         return;
     }
     let Some(world) = cursor_world(&windows, &camera) else {
@@ -5039,10 +5491,11 @@ fn update_building_inspector(
 /// hide it (and clear the selection) when the cat is gone or dead.
 fn update_inspector(
     latest: Res<LatestSnapshot>,
+    art: Res<AdventureUiArt>,
     mut selection: ResMut<Selection>,
     mut panel: Query<&mut Node, (With<InspectorPanel>, Without<NeedBar>)>,
     mut text: Query<&mut Text, With<InspectorText>>,
-    mut bars: Query<(&mut Node, &mut BackgroundColor, &NeedBar), Without<InspectorPanel>>,
+    mut bars: Query<(&mut Node, &mut ImageNode, &NeedBar), Without<InspectorPanel>>,
 ) {
     if !latest.is_changed() && !selection.is_changed() {
         return;
@@ -5061,10 +5514,14 @@ fn update_inspector(
         Some(cat) => {
             node.display = Display::Flex;
             text.0 = inspector_text(cat);
-            for (mut bar, mut color, need) in &mut bars {
+            for (mut bar, mut image, need) in &mut bars {
                 let value = cat_need_value(&cat.needs, need.0);
                 bar.width = Val::Percent(value.clamp(0.0, 100.0) as f32);
-                color.0 = need_bar_color(value);
+                image.image = match need_bar_band(value) {
+                    NeedBarBand::Comfortable => art.progress_good.clone(),
+                    NeedBarBand::Low => art.progress_mid.clone(),
+                    NeedBarBand::Critical => art.progress_low.clone(),
+                };
             }
         }
         None => {
@@ -5354,7 +5811,8 @@ fn zone_paint(
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
-    ui: Query<&Interaction, With<Button>>,
+    blockers: WorldInputBlockerQuery,
+    research: Res<UpgradeTreeUi>,
     session: Res<Session>,
     mut tools: ResMut<Tools>,
     mut outgoing: ResMut<OutgoingActions>,
@@ -5368,11 +5826,22 @@ fn zone_paint(
         tools.drag = None;
         return;
     }
-    let over_ui = ui.iter().any(|i| !matches!(i, Interaction::None));
+    let cursor = windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position());
+    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    if !world_pointer_input_allowed(research.visible, over_world_input_blocker, cursor.is_some()) {
+        // A drag that ends over a panel is cancelled instead of committing a
+        // rectangle to the obscured world beneath it.
+        if buttons.just_pressed(MouseButton::Left) || buttons.just_released(MouseButton::Left) {
+            tools.drag = None;
+        }
+        return;
+    }
     let tile = cursor_world(&windows, &camera).map(world_to_tile);
 
     if buttons.just_pressed(MouseButton::Left)
-        && !over_ui
         && let Some(tile) = tile
     {
         tools.drag = Some((tile, tile));
@@ -5449,7 +5918,9 @@ fn camera_controls(
     mut wheel: MessageReader<MouseWheel>,
     time: Res<Time>,
     latest: Res<LatestSnapshot>,
+    research: Res<UpgradeTreeUi>,
     windows: Query<&Window>,
+    blockers: WorldInputBlockerQuery,
     mut inited: Local<bool>,
     mut last_auto_radius: Local<u32>,
     mut last_colony_id: Local<Option<String>>,
@@ -5457,6 +5928,13 @@ fn camera_controls(
     mut user_adjusted: Local<bool>,
     mut camera: Query<(&mut Transform, &mut Projection), With<WorldCamera>>,
 ) {
+    if research.visible {
+        // The ledger owns WASD/arrows and wheel while open. Consume pointer
+        // deltas so closing it cannot replay stale map-camera input.
+        motion.clear();
+        wheel.clear();
+        return;
+    }
     let Ok((mut transform, mut projection)) = camera.single_mut() else {
         return;
     };
@@ -5472,6 +5950,15 @@ fn camera_controls(
         .single()
         .map(|window| Vec2::new(window.width(), window.height()))
         .unwrap_or(Vec2::new(1280.0, 800.0));
+    let cursor = windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position());
+    let pointer_allowed = world_pointer_input_allowed(
+        false,
+        cursor_over_world_input_blocker(cursor, &blockers),
+        cursor.is_some(),
+    );
     if let Some(colony) = latest
         .0
         .as_ref()
@@ -5540,7 +6027,7 @@ fn camera_controls(
     }
     // Middle-button drag pans the map (left = select cat, right = select
     // building).
-    if buttons.pressed(MouseButton::Middle) {
+    if buttons.pressed(MouseButton::Middle) && pointer_allowed {
         *user_adjusted = true;
         for ev in motion.read() {
             transform.translation.x -= ev.delta.x * projection.scale;
@@ -5550,9 +6037,11 @@ fn camera_controls(
         motion.clear();
     }
     for ev in wheel.read() {
-        *user_adjusted = true;
-        projection.scale =
-            (projection.scale * if ev.y > 0.0 { 0.9 } else { 1.1 }).clamp(MIN_ZOOM, MAX_ZOOM);
+        if pointer_allowed {
+            *user_adjusted = true;
+            projection.scale =
+                (projection.scale * if ev.y > 0.0 { 0.9 } else { 1.1 }).clamp(MIN_ZOOM, MAX_ZOOM);
+        }
     }
 }
 
@@ -5673,8 +6162,8 @@ fn update_village_selector(
                 row.spawn((
                     Button,
                     Node {
-                        width: Val::Px(132.0),
-                        height: Val::Px(40.0),
+                        width: Val::Px(210.0),
+                        height: Val::Px(48.0),
                         padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
                         justify_content: JustifyContent::Center,
                         align_items: AlignItems::Center,
@@ -5682,8 +6171,9 @@ fn update_village_selector(
                         border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 2.0)),
                         ..default()
                     },
-                    BackgroundColor(if active { UI_BTN_ACTIVE } else { UI_BTN }),
-                    BorderColor::all(UI_BORDER),
+                    BackgroundColor(UI_BUTTON_BROWN),
+                    BorderColor::all(Color::NONE),
+                    ImageNode::default(),
                     KitButton,
                     KitToggle { active },
                     VillageButton(colony.id.clone()),
@@ -6297,12 +6787,17 @@ fn update_client_feedback(
     time: Res<Time>,
     mut feedback: ResMut<ClientFeedback>,
     mut panel: Query<
-        (&mut Node, &mut BackgroundColor, &mut BorderColor),
+        (
+            &mut Node,
+            &mut BackgroundColor,
+            &mut BorderColor,
+            &mut ImageNode,
+        ),
         With<ClientFeedbackPanel>,
     >,
     mut label: FeedbackLabelQuery,
 ) {
-    let (Ok((mut node, mut background, mut border)), Ok((mut text, mut color))) =
+    let (Ok((mut node, mut background, mut border, mut image)), Ok((mut text, mut color))) =
         (panel.single_mut(), label.single_mut())
     else {
         return;
@@ -6315,14 +6810,16 @@ fn update_client_feedback(
     text.0.clone_from(message);
     match feedback.level {
         FeedbackLevel::Info => {
-            *background = BackgroundColor(Color::srgba(0.12, 0.25, 0.16, 0.97));
+            *background = BackgroundColor(UI_BG);
             *border = BorderColor::all(UI_POSITIVE);
+            image.color = Color::srgb(0.76, 0.96, 0.72);
             color.0 = UI_INK;
         }
         FeedbackLevel::Error => {
-            *background = BackgroundColor(Color::srgba(0.32, 0.08, 0.06, 0.98));
+            *background = BackgroundColor(UI_BG);
             *border = BorderColor::all(UI_WARNING);
-            color.0 = Color::WHITE;
+            image.color = Color::srgb(1.0, 0.72, 0.68);
+            color.0 = UI_INK;
         }
     }
     feedback.remaining_secs = (feedback.remaining_secs - time.delta_secs()).max(0.0);
@@ -6809,15 +7306,22 @@ fn cat_need_value(needs: &CatNeeds, kind: NeedKind) -> f64 {
     }
 }
 
-/// Bar colour for a need level: green when comfortable, amber when low, red when
-/// critical.
-fn need_bar_color(value: f64) -> Color {
+/// Adventure progress-art band for a need level: green when comfortable,
+/// parchment when low, and red when critical.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NeedBarBand {
+    Comfortable,
+    Low,
+    Critical,
+}
+
+fn need_bar_band(value: f64) -> NeedBarBand {
     if value >= 60.0 {
-        Color::srgb(0.42, 0.72, 0.36)
+        NeedBarBand::Comfortable
     } else if value >= 30.0 {
-        Color::srgb(0.88, 0.72, 0.30)
+        NeedBarBand::Low
     } else {
-        Color::srgb(0.84, 0.34, 0.28)
+        NeedBarBand::Critical
     }
 }
 
@@ -7092,6 +7596,147 @@ mod tests {
     use cat_sim::terrain_gen::BiomeRole;
 
     #[test]
+    fn adventure_buttons_have_distinct_interaction_and_disabled_states() {
+        assert_eq!(
+            adventure_button_appearance(Interaction::None, false, false).texture,
+            AdventureButtonTexture::Brown
+        );
+        assert_ne!(
+            adventure_button_appearance(Interaction::Hovered, false, false).tint,
+            adventure_button_appearance(Interaction::None, false, false).tint
+        );
+        assert_ne!(
+            adventure_button_appearance(Interaction::Hovered, false, false).fallback,
+            adventure_button_appearance(Interaction::None, false, false).fallback
+        );
+        assert_eq!(
+            adventure_button_appearance(Interaction::Pressed, false, false).texture,
+            AdventureButtonTexture::Red
+        );
+        assert_eq!(
+            adventure_button_appearance(Interaction::None, true, false).texture,
+            AdventureButtonTexture::Red
+        );
+        assert_eq!(
+            adventure_button_appearance(Interaction::Pressed, true, true).texture,
+            AdventureButtonTexture::Grey
+        );
+    }
+
+    #[test]
+    fn visual_disabled_state_is_mirrored_to_bevy_interaction_state() {
+        let mut app = App::new();
+        app.insert_resource(AdventureUiArt::default())
+            .add_systems(Update, update_kit_buttons);
+        let button = app
+            .world_mut()
+            .spawn((ui_button(), KitDisabled { disabled: true }))
+            .id();
+
+        app.update();
+        assert!(app.world().entity(button).contains::<InteractionDisabled>());
+
+        app.world_mut()
+            .entity_mut(button)
+            .get_mut::<KitDisabled>()
+            .unwrap()
+            .disabled = false;
+        app.update();
+        assert!(!app.world().entity(button).contains::<InteractionDisabled>());
+    }
+
+    #[test]
+    fn adventure_cursor_prioritises_pressed_disabled_hover_and_map_tools() {
+        assert_eq!(
+            adventure_cursor_kind([(Interaction::None, false)], false, false),
+            AdventureCursorKind::Pointer
+        );
+        assert_eq!(
+            adventure_cursor_kind([(Interaction::None, false)], true, false),
+            AdventureCursorKind::Target
+        );
+        assert_eq!(
+            adventure_cursor_kind([(Interaction::None, false)], true, true),
+            AdventureCursorKind::Pointer
+        );
+        assert_eq!(
+            adventure_cursor_kind([(Interaction::Hovered, false)], true, true),
+            AdventureCursorKind::Interact
+        );
+        assert_eq!(
+            adventure_cursor_kind([(Interaction::Hovered, true)], true, true),
+            AdventureCursorKind::Disabled
+        );
+        assert_eq!(
+            adventure_cursor_kind([(Interaction::Pressed, true)], true, true),
+            AdventureCursorKind::Disabled
+        );
+        assert_eq!(
+            adventure_cursor_kind(
+                [(Interaction::Hovered, true), (Interaction::Pressed, false),],
+                true,
+                true,
+            ),
+            AdventureCursorKind::Pressed
+        );
+        assert_eq!(
+            adventure_cursor_hotspot(AdventureCursorKind::Pointer),
+            (8, 6)
+        );
+    }
+
+    #[test]
+    fn marked_visible_ui_blocks_every_world_pointer_path() {
+        assert!(ui_surface_blocks_world(Display::Flex, true));
+        assert!(!ui_surface_blocks_world(Display::None, true));
+        assert!(!ui_surface_blocks_world(Display::Flex, false));
+        assert!(world_pointer_input_allowed(false, false, true));
+        assert!(!world_pointer_input_allowed(false, true, true));
+        assert!(!world_pointer_input_allowed(true, false, true));
+        assert!(!world_pointer_input_allowed(false, false, false));
+    }
+
+    #[test]
+    fn adventure_slicers_preserve_authored_corners() {
+        assert_eq!(panel_slicer().border, BorderRect::all(PANEL_SLICE_PX));
+        assert_eq!(
+            button_slicer().border,
+            BorderRect::axes(BUTTON_SLICE_X_PX, BUTTON_SLICE_Y_PX)
+        );
+        assert_eq!(panel_slicer().max_corner_scale, 1.0);
+        assert_eq!(button_slicer().max_corner_scale, 1.0);
+    }
+
+    #[test]
+    fn every_runtime_adventure_skin_asset_is_a_tracked_png() {
+        let images: [&[u8]; 18] = [
+            include_bytes!("../../../public/images/game/ui/panel.png"),
+            include_bytes!("../../../public/images/game/ui/panel-dark.png"),
+            include_bytes!("../../../public/images/game/ui/panel-ornate.png"),
+            include_bytes!("../../../public/images/game/ui/button.png"),
+            include_bytes!("../../../public/images/game/ui/button-active.png"),
+            include_bytes!("../../../public/images/game/ui/button-disabled.png"),
+            include_bytes!("../../../public/images/game/ui/progress-track.png"),
+            include_bytes!("../../../public/images/game/ui/progress-good.png"),
+            include_bytes!("../../../public/images/game/ui/progress-mid.png"),
+            include_bytes!("../../../public/images/game/ui/progress-low.png"),
+            include_bytes!("../../../public/images/game/ui/banner.png"),
+            include_bytes!("../../../public/images/game/ui/icon-frame.png"),
+            include_bytes!("../../../public/images/game/ui/minimap-ring.png"),
+            include_bytes!("../../../public/images/game/ui/cursor/pointer.png"),
+            include_bytes!("../../../public/images/game/ui/cursor/interact.png"),
+            include_bytes!("../../../public/images/game/ui/cursor/pressed.png"),
+            include_bytes!("../../../public/images/game/ui/cursor/target.png"),
+            include_bytes!("../../../public/images/game/ui/cursor/disabled.png"),
+        ];
+        assert!(
+            images
+                .iter()
+                .all(|image| image.starts_with(b"\x89PNG\r\n\x1a\n"))
+        );
+    }
+
+    #[test]
     fn founding_a_village_waits_for_and_uses_the_signed_session() {
         assert!(build_action(ButtonAction::FoundVillage, &Session::default()).is_none());
 
@@ -7155,6 +7800,10 @@ mod tests {
         assert_eq!(row.flex_wrap, FlexWrap::Wrap);
         assert_eq!(row.justify_content, JustifyContent::Center);
         assert_eq!(row.row_gap, Val::Px(UI_GAP));
+        assert_eq!(NARROW_BOTTOM_BAR_FOOTPRINT, 129.0);
+        assert_eq!(BOTTOM_OVERLAY_CLEARANCE, 135.0);
+        const { assert!(BOTTOM_OVERLAY_CLEARANCE > NARROW_BOTTOM_BAR_FOOTPRINT) };
+        const { assert!(HUD_RESOURCE_PILL_HEIGHT <= 20.0) };
     }
 
     fn village_colony(id: &str, name: &str, population: u32, status: &str) -> ColonySnapshot {
@@ -8871,10 +9520,9 @@ mod tests {
             health: 95.0,
         };
         assert_eq!(cat_need_value(&needs, NeedKind::Thirst), 25.0);
-        // Colour bands: comfortable -> green, low -> amber, critical -> red.
-        assert_eq!(need_bar_color(80.0), Color::srgb(0.42, 0.72, 0.36));
-        assert_eq!(need_bar_color(45.0), Color::srgb(0.88, 0.72, 0.30));
-        assert_eq!(need_bar_color(10.0), Color::srgb(0.84, 0.34, 0.28));
+        assert_eq!(need_bar_band(80.0), NeedBarBand::Comfortable);
+        assert_eq!(need_bar_band(45.0), NeedBarBand::Low);
+        assert_eq!(need_bar_band(10.0), NeedBarBand::Critical);
 
         let xp = RoleXp {
             hunter: 12.0,

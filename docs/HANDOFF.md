@@ -57,8 +57,9 @@ playtest harness:
    ownership, discovery, and direct trade.
 4. **Close world and presentation gaps.** Finish full tree/rock occupancy and staged wall growth,
    clear actual interior deposits/resources, expose traffic dirt roads, replace rail/shipping
-   multipliers with built routes/vehicles, restore fishing, and implement the maintained
-   9-patch/cursor UI skin plus Accounting Tent reachability.
+   multipliers with built routes/vehicles, restore fishing, make Accounting Tent snapshot-
+   reachable, and complete the remaining WASM visual/interaction validation for the maintained
+   Adventure skin.
 5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

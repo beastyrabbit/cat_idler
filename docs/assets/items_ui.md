@@ -132,7 +132,7 @@ don't mix both broadly.
 
 ## Cursors — Cursor Pack
 
-Source dir: `public/Kenney Game Assets All-in-1 3.5.0/UI assets/Cursor Pack/PNG/Outline/Double/`
+Source dir: `public/Kenney Game Assets All-in-1 3.5.0/UI assets/Cursor Pack/PNG/Outline/Default/`
 White fill + dark outline (readable over any map tile).
 
 | Cursor | Source file | Use |
@@ -146,13 +146,19 @@ White fill + dark outline (readable over any map tile).
 
 ---
 
-## Copy plan (when picks are approved)
+## Tracked runtime copies
 
 ```
 public/images/game/icons/     # Board Game Icons 128px + a few Fish Pack fish
-public/images/game/ui/         # UI Pack - Adventure Double PNGs
-public/images/game/ui/cursor/  # Cursor Pack Outline/Double
+public/images/game/ui/         # Semantic UI Pack - Adventure Double PNGs
+public/images/game/ui/cursor/  # Semantic Cursor Pack Outline/Default 32px PNGs
 ```
+
+The Bevy client uses `panel.png`, `panel-dark.png`, and `panel-ornate.png` as sliced panels;
+`button.png`, `button-active.png`, and `button-disabled.png` for interaction states;
+`progress-track.png`, `progress-good.png`, `progress-mid.png`, and `progress-low.png` for need
+bars; plus `banner.png`, `icon-frame.png`, and `minimap-ring.png`. The cursor directory tracks
+`pointer.png`, `interact.png`, `pressed.png`, `target.png`, and `disabled.png`.
 
 Suggested destination renames (semantic, drop Kenney prefixes):
 `resource_apple.png → food.png`, `resource_wheat.png → grain.png`,

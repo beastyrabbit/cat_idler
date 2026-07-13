@@ -28,8 +28,6 @@ const MAX_SCALE: f32 = 1.35;
 // A dry research ledger: dark walnut framing, sun-faded paper and restrained
 // category inks. These are intentionally opaque so the world never competes
 // with a screen containing five hundred pieces of information.
-const LEDGER_WOOD: Color = Color::srgb(0.115, 0.075, 0.042);
-const LEDGER_WOOD_LIGHT: Color = Color::srgb(0.22, 0.145, 0.075);
 const LEDGER_PAPER: Color = Color::srgb(0.76, 0.70, 0.56);
 const LEDGER_PAPER_DARK: Color = Color::srgb(0.58, 0.50, 0.37);
 const LEDGER_INK: Color = Color::srgb(0.15, 0.105, 0.065);
@@ -402,8 +400,10 @@ fn ledger_button(label: impl Into<String>) -> impl Bundle {
             border: UiRect::all(Val::Px(1.0)),
             ..default()
         },
-        BackgroundColor(LEDGER_WOOD_LIGHT),
-        BorderColor::all(LEDGER_PAPER_DARK),
+        BackgroundColor(UI_BUTTON_BROWN),
+        BorderColor::all(Color::NONE),
+        ImageNode::default(),
+        KitButton,
         children![ui_text(label, FS_SMALL, UI_INK)],
     )
 }
@@ -423,9 +423,12 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                 flex_direction: FlexDirection::Column,
                 ..default()
             },
-            BackgroundColor(LEDGER_WOOD),
+            BackgroundColor(Color::NONE),
+            ImageNode::default(),
+            AdventurePanel::Dark,
             GlobalZIndex(300),
             ResearchRoot,
+            WorldInputBlocker,
         ))
         .with_children(|root| {
             root.spawn((
@@ -439,8 +442,10 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                     border: UiRect::bottom(Val::Px(2.0)),
                     ..default()
                 },
-                BackgroundColor(LEDGER_WOOD),
-                BorderColor::all(LEDGER_PAPER_DARK),
+                BackgroundColor(UI_HEADER),
+                BorderColor::all(Color::NONE),
+                ImageNode::default(),
+                AdventurePanel::Dark,
             ))
             .with_children(|header| {
                 header
@@ -451,14 +456,14 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                         ..default()
                     })
                     .with_children(|row| {
-                        row.spawn(ui_text("Research Ledger", 20.0, UI_ACCENT));
-                        row.spawn((ui_text("", FS_BODY, UI_INK), ResearchCurrency));
+                        row.spawn(ui_text("Research Ledger", 20.0, UI_TITLE_INK));
+                        row.spawn((ui_text("", FS_BODY, UI_TITLE_INK), ResearchCurrency));
                         row.spawn((
                             Node {
                                 flex_grow: 1.0,
                                 ..default()
                             },
-                            ui_text("", FS_SMALL, UI_MUTED),
+                            ui_text("", FS_SMALL, UI_TITLE_INK),
                             ResearchNext,
                         ));
                         row.spawn((ledger_button("-"), LedgerAction::ZoomOut));
@@ -485,8 +490,10 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                                 border: UiRect::all(Val::Px(1.0)),
                                 ..default()
                             },
-                            BackgroundColor(LEDGER_WOOD_LIGHT),
-                            BorderColor::all(LEDGER_PAPER_DARK),
+                            BackgroundColor(UI_BUTTON_BROWN),
+                            BorderColor::all(Color::NONE),
+                            ImageNode::default(),
+                            KitButton,
                             SearchButton,
                         ))
                         .with_children(|button| {
@@ -496,14 +503,20 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                             ));
                         });
                         for filter in ResearchFilter::ALL {
-                            row.spawn((ledger_button(filter.label()), FilterButton(filter)));
+                            row.spawn((
+                                ledger_button(filter.label()),
+                                FilterButton(filter),
+                                KitToggle {
+                                    active: filter == ResearchFilter::All,
+                                },
+                            ));
                         }
                         row.spawn((
                             Node {
                                 margin: UiRect::left(Val::Px(8.0)),
                                 ..default()
                             },
-                            ui_text("500 nodes", FS_SMALL, UI_MUTED),
+                            ui_text("500 nodes", FS_SMALL, UI_TITLE_INK),
                             MatchCountText,
                         ));
                         row.spawn((
@@ -514,7 +527,7 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                             ui_text(
                                 "Pan: arrows / WASD / wheel    Zoom: + / − / Ctrl+wheel",
                                 FS_SMALL,
-                                UI_MUTED,
+                                UI_TITLE_INK,
                             ),
                         ));
                     });
@@ -648,8 +661,10 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                         row_gap: Val::Px(10.0),
                         ..default()
                     },
-                    BackgroundColor(Color::srgb(0.68, 0.60, 0.45)),
-                    BorderColor::all(LEDGER_WOOD_LIGHT),
+                    BackgroundColor(UI_BG),
+                    BorderColor::all(Color::NONE),
+                    ImageNode::default(),
+                    AdventurePanel::Ornate,
                     ResearchInspector,
                 ))
                 .with_children(|inspector| {
@@ -680,8 +695,11 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                                 border: UiRect::all(Val::Px(1.0)),
                                 ..default()
                             },
-                            BackgroundColor(LEDGER_WOOD_LIGHT),
-                            BorderColor::all(LEDGER_PAPER_DARK),
+                            BackgroundColor(UI_BUTTON_GREY),
+                            BorderColor::all(Color::NONE),
+                            ImageNode::default(),
+                            KitButton,
+                            KitDisabled { disabled: true },
                             PurchaseButton,
                         ))
                         .with_children(|button| {
@@ -985,7 +1003,7 @@ pub(super) fn update_research_filter(
     mut ui: ResMut<UpgradeTreeUi>,
     mut cards: Query<(&ResearchCard, &mut Node, &mut BorderColor)>,
     mut connectors: Query<(&ResearchConnector, &mut Node), Without<ResearchCard>>,
-    mut filters: Query<(&FilterButton, &mut BackgroundColor)>,
+    mut filters: Query<(&FilterButton, &mut KitToggle)>,
     mut search: Query<&mut Text, (With<SearchText>, Without<MatchCountText>)>,
     mut count: Query<&mut Text, (With<MatchCountText>, Without<SearchText>)>,
 ) {
@@ -1021,12 +1039,8 @@ pub(super) fn update_research_filter(
             Display::None
         };
     }
-    for (button, mut background) in &mut filters {
-        background.0 = if button.0 == ui.filter {
-            UI_BTN_ACTIVE
-        } else {
-            LEDGER_WOOD_LIGHT
-        };
+    for (button, mut toggle) in &mut filters {
+        toggle.active = button.0 == ui.filter;
     }
     if let Ok(mut text) = search.single_mut() {
         text.0 = if ui.query.is_empty() {
@@ -1137,7 +1151,9 @@ fn payload_line(payload: &ResearchPayload) -> String {
 pub(super) fn update_research_inspector(
     latest: Res<LatestSnapshot>,
     model: Res<ResearchUiModel>,
+    session: Res<Session>,
     mut ui: ResMut<UpgradeTreeUi>,
+    mut purchase_button: Query<&mut KitDisabled, With<PurchaseButton>>,
     mut texts: Query<
         (
             &mut Text,
@@ -1158,7 +1174,7 @@ pub(super) fn update_research_inspector(
         )>,
     >,
 ) {
-    if !ui.visible || !ui.inspector_dirty {
+    if !ui.visible || (!ui.inspector_dirty && !session.is_changed()) {
         return;
     }
     let node = &research_catalog().nodes()[ui.selected];
@@ -1187,9 +1203,11 @@ pub(super) fn update_research_inspector(
         .map(payload_line)
         .collect::<Vec<_>>()
         .join("\n");
-    let purchase = current_research(&latest).map_or_else(
+    let purchase_state =
+        current_research(&latest).map(|research| model.purchase_state(&node.id, research));
+    let purchase = purchase_state.map_or_else(
         || "Awaiting colony".to_owned(),
-        |research| match model.purchase_state(&node.id, research) {
+        |state| match state {
             PurchaseState::Owned => "Study owned".to_owned(),
             PurchaseState::Locked => "Prerequisites required".to_owned(),
             PurchaseState::LegacyReady => format!("Commission for {:.0} blessings", node.cost),
@@ -1197,6 +1215,9 @@ pub(super) fn update_research_inspector(
             PurchaseState::IntegrationPending => "Runtime integration pending".to_owned(),
         },
     );
+    if let Ok(mut disabled) = purchase_button.single_mut() {
+        disabled.disabled = research_purchase_disabled(session.ready, purchase_state);
+    }
     for (mut text, title, meta_marker, description, prereq_marker, payload_marker, buy) in
         &mut texts
     {
@@ -1215,6 +1236,10 @@ pub(super) fn update_research_inspector(
         }
     }
     ui.inspector_dirty = false;
+}
+
+fn research_purchase_disabled(session_ready: bool, purchase_state: Option<PurchaseState>) -> bool {
+    !session_ready || purchase_state != Some(PurchaseState::LegacyReady)
 }
 
 /// Dispatch is guarded by catalog support, prerequisite state and affordability
@@ -1357,6 +1382,23 @@ mod tests {
         );
         assert!(model.dispatchable_legacy_node("basic_tools", &research));
         assert!(!model.dispatchable_legacy_node(&generated.id, &research));
+    }
+
+    #[test]
+    fn purchase_button_stays_disabled_until_the_signed_session_is_ready() {
+        assert!(research_purchase_disabled(
+            false,
+            Some(PurchaseState::LegacyReady)
+        ));
+        assert!(!research_purchase_disabled(
+            true,
+            Some(PurchaseState::LegacyReady)
+        ));
+        assert!(research_purchase_disabled(
+            true,
+            Some(PurchaseState::LegacyUnaffordable)
+        ));
+        assert!(research_purchase_disabled(true, None));
     }
 
     #[test]
