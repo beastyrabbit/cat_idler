@@ -248,6 +248,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 /// ADD COLUMN` is not idempotent, so we only add the ones that are missing.
 fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
     const ADDITIONS: &[(&str, &str, &str)] = &[
+        ("colonies", "upgradeLevels", "TEXT"),
         ("colonies", "officers", "TEXT"),
         ("colonies", "stockpiles", "TEXT"),
         ("colonies", "farms", "TEXT"),
@@ -1505,6 +1506,7 @@ mod tests {
         .expect("legacy tables");
 
         for (table, column) in [
+            ("colonies", "upgradeLevels"),
             ("colonies", "officers"),
             ("colonies", "stockpiles"),
             ("colonies", "farms"),
@@ -1519,6 +1521,7 @@ mod tests {
         init_schema(&conn).expect("init schema migrates the legacy tables");
 
         for (table, column) in [
+            ("colonies", "upgradeLevels"),
             ("colonies", "officers"),
             ("colonies", "stockpiles"),
             ("colonies", "farms"),
@@ -1535,6 +1538,26 @@ mod tests {
 
         // Idempotent: running again does not error (columns already present).
         init_schema(&conn).expect("re-running init_schema is a no-op");
+    }
+
+    #[test]
+    fn legacy_database_without_upgrade_levels_migrates_and_round_trips_world() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("create current schema");
+        conn.execute_batch("ALTER TABLE colonies DROP COLUMN upgradeLevels;")
+            .expect("simulate the pre-upgradeLevels schema");
+        assert!(!column_exists(&conn, "colonies", "upgradeLevels").unwrap());
+
+        init_schema(&conn).expect("backfill upgradeLevels");
+        let mut world = new_world(42);
+        let mut colony = found_colony(42, "legacy", 1_000_000, 9);
+        colony.upgrade_levels.click_power = 3;
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save migrated world");
+        let loaded = load_world(&conn)
+            .expect("load migrated world")
+            .expect("saved world exists");
+        assert_eq!(loaded, world);
     }
 
     #[test]

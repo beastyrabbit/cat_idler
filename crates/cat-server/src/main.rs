@@ -7,7 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicU32, AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -35,7 +35,7 @@ use identity::{SignedSession, issue_session, signed_session, verify_session};
 use persistence::{load_world, open_database_from_env, save_world};
 use rate_limit::RateLimiter;
 use rusqlite::Connection;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -62,6 +62,12 @@ static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 struct AppState {
     world: Arc<Mutex<WorldState>>,
     db: Arc<Mutex<Connection>>,
+    /// Last snapshot produced by a fully completed tick (or the startup world).
+    ///
+    /// WebSocket handshakes read this cache instead of waiting behind the simulation's
+    /// world lock. A slow tick can therefore never turn a new connection into a blank
+    /// client, and each socket still applies its own selected-colony ordering.
+    completed_snapshot: Arc<RwLock<WorldSnapshot>>,
     snapshots: broadcast::Sender<WorldSnapshot>,
     online_count: Arc<AtomicU32>,
     rate_limiter: Arc<Mutex<RateLimiter>>,
@@ -232,6 +238,7 @@ fn build_state_from_connection(
         conn,
         session_secret,
         test_actions_enabled(),
+        now_ms,
     ))
 }
 
@@ -240,12 +247,15 @@ fn build_state_from_world(
     conn: Connection,
     session_secret: String,
     allow_test_actions: bool,
+    now_ms: i64,
 ) -> AppState {
     let (snapshots, _) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
+    let completed_snapshot = build_snapshot(&world, now_ms, 0);
 
     AppState {
         world: Arc::new(Mutex::new(world)),
         db: Arc::new(Mutex::new(conn)),
+        completed_snapshot: Arc::new(RwLock::new(completed_snapshot)),
         snapshots,
         online_count: Arc::new(AtomicU32::new(0)),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(
@@ -280,36 +290,95 @@ fn build_state(now_ms: i64) -> AppState {
         conn,
         "test-session-secret".to_owned(),
         false,
+        now_ms,
     )
 }
 
 fn spawn_tick_task(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut ticks = 0_u64;
 
         loop {
             interval.tick().await;
             ticks = ticks.saturating_add(1);
             let now = now_ms();
-            let online_count = state.online_count.load(Ordering::SeqCst);
-            let snapshot = {
-                let mut world = state.world.lock().await;
-                let _reports = world_tick(&mut world, now);
-                if ticks.is_multiple_of(SAVE_EVERY_TICKS) {
-                    let db = state.db.lock().await;
-                    if let Err(err) = save_world(&db, &world) {
-                        error!(%err, "periodic world save failed");
-                    }
-                }
-                build_snapshot(&world, now, online_count)
-            };
-
-            if state.snapshots.send(snapshot).is_err() {
-                debug!("no websocket snapshot receivers");
+            if let Err(err) = run_tick_once(state.clone(), ticks, now, |world, tick_now| {
+                let _reports = world_tick(world, tick_now);
+            })
+            .await
+            {
+                error!(%err, "simulation tick worker failed");
             }
         }
     });
+}
+
+#[derive(Debug)]
+struct CompletedTick {
+    snapshot: WorldSnapshot,
+    simulation_ms: u128,
+    snapshot_ms: u128,
+    persistence_ms: u128,
+}
+
+/// Run CPU-heavy simulation and synchronous SQLite work outside Tokio's async workers.
+///
+/// The world mutex still serializes authoritative mutations, preserving the action/tick
+/// ordering that the server had before this worker boundary. Snapshot construction happens
+/// before the cache is published, while persistence uses a clone so slow disk I/O does not
+/// extend the authoritative-world lock.
+async fn run_tick_once(
+    state: AppState,
+    ticks: u64,
+    now: i64,
+    tick_world: impl FnOnce(&mut WorldState, i64) + Send + 'static,
+) -> Result<(), tokio::task::JoinError> {
+    let worker_state = state.clone();
+    let completed = tokio::task::spawn_blocking(move || {
+        let online_count = worker_state.online_count.load(Ordering::SeqCst);
+        let simulation_started = Instant::now();
+        let mut world = worker_state.world.blocking_lock();
+        tick_world(&mut world, now);
+        let simulation_ms = simulation_started.elapsed().as_millis();
+
+        let snapshot_started = Instant::now();
+        let snapshot = build_snapshot(&world, now, online_count);
+        let snapshot_ms = snapshot_started.elapsed().as_millis();
+        let persistence_started = Instant::now();
+        let world_to_save = ticks
+            .is_multiple_of(SAVE_EVERY_TICKS)
+            .then(|| world.clone());
+        drop(world);
+
+        if let Some(world) = world_to_save {
+            let db = worker_state.db.blocking_lock();
+            if let Err(err) = save_world(&db, &world) {
+                error!(%err, "periodic world save failed");
+            }
+        }
+
+        CompletedTick {
+            snapshot,
+            simulation_ms,
+            snapshot_ms,
+            persistence_ms: persistence_started.elapsed().as_millis(),
+        }
+    })
+    .await?;
+
+    debug!(
+        simulation_ms = completed.simulation_ms,
+        snapshot_ms = completed.snapshot_ms,
+        persistence_ms = completed.persistence_ms,
+        "simulation tick completed"
+    );
+    *state.completed_snapshot.write().await = completed.snapshot.clone();
+    if state.snapshots.send(completed.snapshot).is_err() {
+        debug!("no websocket snapshot receivers");
+    }
+    Ok(())
 }
 
 async fn shutdown_signal(state: AppState) {
@@ -415,12 +484,14 @@ async fn send_current_snapshot(
     online_count: u32,
     colony_id: &str,
 ) -> Result<(), axum::Error> {
-    let now = now_ms();
-    let snapshot = {
-        let world = state.world.lock().await;
-        prioritize_colony(build_snapshot(&world, now, online_count), colony_id)
-    };
+    let snapshot = current_snapshot(state, online_count, colony_id).await;
     send_snapshot(socket, &snapshot).await
+}
+
+async fn current_snapshot(state: &AppState, online_count: u32, colony_id: &str) -> WorldSnapshot {
+    let mut snapshot = state.completed_snapshot.read().await.clone();
+    snapshot.online_count = online_count;
+    prioritize_colony(snapshot, colony_id)
 }
 
 /// Keep the socket-selected colony first because the current client renders the
@@ -770,7 +841,7 @@ mod tests {
     use cat_protocol::{
         AccelerationPreset, ClientAction, CropKind, OfficerRole, ResourceKind, TilePoint,
     };
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, time::Duration};
     use tower::ServiceExt;
 
     static NEXT_STATIC_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
@@ -858,6 +929,85 @@ mod tests {
             .await
             .expect("not-ready response");
         assert_eq!(not_ready_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn slow_tick_keeps_liveness_and_initial_snapshot_responsive_on_one_worker() {
+        let state = build_state(1_000_000);
+        let startup_snapshot = state.completed_snapshot.read().await.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let tick_state = state.clone();
+        let slow_tick = tokio::spawn(async move {
+            run_tick_once(tick_state, 1, 1_001_000, move |world, tick_now| {
+                let _ = started_tx.send(());
+                std::thread::sleep(Duration::from_millis(250));
+                let _reports = world_tick(world, tick_now);
+            })
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_millis(100), started_rx)
+            .await
+            .expect("blocking tick starts without occupying the sole async worker")
+            .expect("tick start signal");
+        assert!(
+            state.world.try_lock().is_err(),
+            "injected tick should hold the authoritative world lock"
+        );
+
+        let health_response = tokio::time::timeout(
+            Duration::from_millis(50),
+            app(state.clone(), &local_config()).oneshot(request("/health")),
+        )
+        .await
+        .expect("liveness stays responsive during slow simulation")
+        .expect("health response");
+        assert_eq!(health_response.status(), StatusCode::OK);
+
+        let initial = tokio::time::timeout(
+            Duration::from_millis(50),
+            current_snapshot(&state, 7, STARTER_COLONY_ID),
+        )
+        .await
+        .expect("websocket initial snapshot reads the completed cache");
+        assert_eq!(initial.now, startup_snapshot.now);
+        assert_eq!(initial.online_count, 7);
+        assert_eq!(initial.colonies, startup_snapshot.colonies);
+
+        slow_tick
+            .await
+            .expect("slow tick task")
+            .expect("blocking tick worker");
+        assert_eq!(state.completed_snapshot.read().await.now, 1_001_000);
+    }
+
+    #[tokio::test]
+    async fn cached_initial_snapshot_prioritizes_each_socket_without_global_reordering() {
+        let mut world = new_world(WORLD_SEED);
+        world.colonies.push(found_colony(
+            WORLD_SEED,
+            STARTER_COLONY_ID,
+            1_000_000,
+            STARTER_COLONY_SEED,
+        ));
+        world
+            .colonies
+            .push(found_colony(WORLD_SEED, "beta", 1_000_000, 2));
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        persistence::init_schema(&conn).expect("init in-memory schema");
+        let state = build_state_from_world(
+            world,
+            conn,
+            "test-session-secret".to_owned(),
+            false,
+            1_000_000,
+        );
+
+        let beta = current_snapshot(&state, 1, "beta").await;
+        assert_eq!(beta.colonies[0].id, "beta");
+        let canonical = state.completed_snapshot.read().await;
+        assert_eq!(canonical.colonies[0].id, STARTER_COLONY_ID);
+        assert_eq!(canonical.online_count, 0);
     }
 
     #[tokio::test]
