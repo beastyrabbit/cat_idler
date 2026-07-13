@@ -17,10 +17,18 @@
    - **Loremaster/Ritualist** — research + shrine/rituals.
    Each unlocked role hands its slice of decisions to the AI; unfilled roles stay manual.
 3. **A living, visible workplace (DF readability).**
-   - **More workshops** placed around the forest; cats walk to them to work.
+   - **More workshops** placed around the forest; cats walk to them to work. Houses may
+     retain roofs, but workshops are open-top/cutaway stations whose function reads from
+     the art itself, without persistent map-name plaques.
    - **Cats visibly haul items** between workshops and stockpiles (not just to the shrine).
    - **Stockpiles are real places in the world** — visible piles of wood / food / stone /
      refined goods that grow and shrink, that the player designates.
+4. **A shared world with private footholds.** One large global village is available to
+   everyone. A player may also found a personal village at a distant deterministic
+   location on the same world map. Villages can eventually discover one another and trade.
+5. **Knowledge must come home.** A founding village knows only its viable interior and a
+   roughly two-tile halo. Resource-targeted and general scouts tentatively lift fog while
+   away; discoveries become permanent only when the scout returns to and touches the shrine.
 
 ## What already exists in the sim (reuse, don't rebuild)
 - Utility-AI **leader director** (one overseer that automates) — the seed of the role system.
@@ -31,8 +39,8 @@
 
 ## What this vision adds (roadmap deltas)
 - **Client: top-down renderer** (replaces the iso plan) — flat tile grid, cats + carried
-  items, labelled workshops/buildings, **visible stockpiles**, camera, dashboard, manual
-  action tools first.
+  items, readable open workshops/buildings without map plaques, **visible stockpiles**,
+  camera, dashboard, and manual action tools.
 - **Sim: role/officer system** — split the monolithic leader director into assignable roles,
   each gating a category of automation; a "manual" default when a role is unfilled.
 - **Sim: spatial stockpiles** — designate stockpile zones that physically hold items; hauling
@@ -65,8 +73,9 @@ Unlocking a role hands its slice of decisions to the AI (the existing leader dir
 specialized per role); unfilled roles stay manual.
 
 ### Production chains + farming (lots to do, always slightly cat)
-- **Farms are in the overworld**: designate farm plots and **see the tiles being farmed** (DF
-  farm plots). Grow **catnip**, **grain**, herbs, etc.
+- **Farms are in the overworld outside the walled settlement interior**: designate farm
+  plots and **see the tiles being farmed** (DF farm plots). Grow **catnip**, **grain**,
+  herbs, etc. Trees, stone/deposits, and fields do not occupy the village interior.
 - **Processing chains**: grain → **Mill** → flour → food; fibre → **Clothier** → cloth → armour;
   ore → **Smithy** → tools/weapons; wood → **Sawmill** → lumber → construction. Each step is a
   workshop cats walk to and haul between.
@@ -81,11 +90,22 @@ their contents are reported.
 - **Role-buildings** and **workshops** are gated behind the **upgrade tree** and cost
   **escalating resources**, so expansion is the long-game economy: build → unlock a role →
   automate → free paws → build the next thing.
+- Research uses a full-page dependency tree with about **500 data-driven nodes**: at least
+  one third building-related unlocks and one third recipes/new resources, with the rest
+  covering movement, labor, storage, defense, and similar upgrades. A player may buy any
+  affordable nodes. The leader may autonomously choose at most one node per real-life day.
 
-## Build order for this vision (phases after the visible world)
-- **P9 (now):** top-down renderer of the current world (terrain, cats+carrying, workshops,
-  visible storage, camera, dashboard, manual action tools). Foundation for all of the above.
-- **P12 — Idle Cat Forest sim expansion (Rust `cat-sim`):**
+### Founding, housing, breeding, and migration
+- A new village starts with **15 cats and three early houses**; each house holds five cats.
+- Breeding is slow and occurs only when permanent housing is available.
+- A prosperous village attracts migrants. Arrivals may temporarily exceed housing capacity,
+  but unhoused cats leave again unless the player builds enough homes in time.
+
+## Post-cutover completion order
+The Rust/Bevy cutover and the original P9–P19 migration phases are complete. Remaining
+product gaps are tracked in `docs/IMPLEMENTATION_AUDIT.md`; the intended dependency order is:
+
+- **Simulation foundations:**
   1. **Skills**: general per-labor skill/xp curve; skill affects speed/yield.
   2. **Role/officer system**: split the leader director into assignable roles, each gating a
      category of automation, each tied to a role-building + upgrade-tree unlock + escalating cost.
@@ -94,8 +114,12 @@ their contents are reported.
   4. **More workshops + production chains**: mill, clothier, sawmill, accounting tent, catnip/
      grain farms; the craft/haul graph between them.
   5. **Visible farm plots** in the overworld.
-- **P13 — client:** designation tools (place stockpiles/farms/workshops), role assignment UI,
-  manual-workshop controls, then the automation toggles as roles unlock.
+- **Player paths:** designation tools (place stockpiles/farms/workshops), role assignment UI,
+  manual-workshop controls, then automation as roles unlock.
+- **World progression:** shrine-return scouting/fog, exact authored/traffic road rules,
+  global and personal villages, meeting, and trade.
+- **Long game:** the full research graph, migration/housing pressure, deeper production,
+  and native/WASM interaction and framebuffer campaigns.
 
 ## Fidelity note
 The Rust sim is a "same idea" port of the TS game; this vision *extends* it, so new systems
