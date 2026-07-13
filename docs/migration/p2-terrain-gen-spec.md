@@ -1,5 +1,9 @@
 # P2.4 Terrain Generator Port Spec
 
+> **Historical parity spec.** This is the frozen P2 port contract. Later P17 climate-biome work
+> extends it; current behavior and remaining product gaps are tracked in
+> [`docs/IMPLEMENTATION_AUDIT.md`](../IMPLEMENTATION_AUDIT.md).
+
 Source read: `lib/game/terrainGen.ts` and `tests/unit/game/terrainGen.test.ts`.
 
 ## Purpose

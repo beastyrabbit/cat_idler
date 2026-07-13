@@ -1,5 +1,10 @@
 # P16 — Default village blueprint, tile recalibration, roads & movement (user, 2026-07-10)
 
+> **Living target spec.** The original five-cat start was superseded by the 2026-07-13
+> playtest direction: every ordinary personal village starts with **15 adult cats in three
+> five-cat houses**. Housing, migration, and exact dirt/stone roads remain in progress; see
+> [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 Detailed founding/economy/spatial design from playtest. Numbers are the spec.
 
 ## Tile recalibration (foundation — everything sizes off this)
@@ -22,7 +27,7 @@ A fixed starting blueprint:
 - **Shrine** 3×3 dead center, reserving 5×5 (road ring).
 - **Roads from the shrine out to the wall in N/S/E/W** (stone roads by default). The wall has a
   **single gate in the SOUTH** (the one opening).
-- **3 early houses** (2×3 each), **5 cats** total.
+- **3 early houses** (2×3 each), **15 adult cats** total; each early house holds **5**.
 - **Wood-cutting workshop** (3×3): logs → **planks**.
 - **Stone-prep workshop** (3×3): raw stone → **prepped stone / blocks**.
 - **Woodworking workshop** (3×3): planks + stone → **tools** (axe, shovel, fishing rod, …) + weapons.
@@ -70,7 +75,7 @@ New resource types + chains:
 1. **Tile recalibration + footprints** (render TILE shrink + footprint sizes; recal P14.1). Client
    render + sim footprint constants. Do with the footprint-render/y-sort card (P14.5).
 2. **Default village blueprint** (sim founding): fixed shrine+roads+gate-south+3 houses+3 workshops
-   +pre-filled general stockpile+5 cats. Replaces organic founding. (After keep-cats-busy lands —
+   +pre-filled general stockpile+15 cats. Replaces organic founding. (After keep-cats-busy lands —
    both touch world_tick founding/director.)
 3. **Resource chains** (P12.4b): logs→planks, stone→blocks, →tools/weapons; house cost = planks+stone.
    Big Resources-struct expansion — the focused card I deferred.

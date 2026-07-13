@@ -1,5 +1,10 @@
 # P7 World Tick Port Spec
 
+> **Historical parity spec.** The 37-phase table records the frozen TypeScript tick used for the
+> initial Rust port. Post-cutover systems—including persisted shrine-return scout notebooks,
+> officer ownership, new resources, and the maintained extinction-recovery contract—are governed
+> by the current code and [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 Sources read:
 - `server/game.ts`, especially `workerTick` lines 2677-5058 and its local helpers.
 - `server/elections.ts`, `server/raids.ts`, `server/zones.ts`, `server/worldMap.ts` call sites.

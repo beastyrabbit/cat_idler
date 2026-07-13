@@ -152,9 +152,10 @@ split; most labor allocation still runs through the single director.
 - **World model and transport:** selected-village routing works, while global/personal ownership,
   discovery, direct inter-village trade, visible traffic dirt roads, and real rail/ship/fishing
   routes remain.
-- **Visual breadth:** the 24 protocol building variants have explicit roofed/open treatments,
-  but Accounting Tent is not snapshot-reachable and the maintained 9-patch/cursor UI skin is
-  absent.
+- **Visual breadth:** the 24 protocol building variants have explicit roofed/open treatments and
+  the maintained Adventure panel/button/progress/minimap/cursor foundation is native-framebuffer
+  verified. Accounting Tent is not snapshot-reachable, and remaining menus/WASM interactions
+  still need the same visual gate.
 
 Verified infrastructure includes Research Hut/School faucets, exterior farms and logging,
 distinct Mill/Sawmill production, selected-village routing, responsive tick/persistence
@@ -328,6 +329,6 @@ authoritative server, selected-village routing, combined browser/server image, b
 streaming, label-free open stations, the full-page 500-study ledger, and exterior
 farming/logging/Mill/Sawmill production. The maintained product is not feature-complete: manual
 officer ownership, physical local logistics, generated-study effects, global/personal villages,
-founding housing/migration, exact roads/transport, recipe breadth, UI skinning, and exhaustive
-guided play remain. A Forgejo quality workflow is committed; its first pushed run is still
-unverified. Treat `docs/IMPLEMENTATION_AUDIT.md` as the detailed status source.
+founding housing/migration, exact roads/transport, recipe breadth, remaining UI states, and
+exhaustive guided play remain. A Forgejo quality workflow is committed; its first pushed run is
+still unverified. Treat `docs/IMPLEMENTATION_AUDIT.md` as the detailed status source.

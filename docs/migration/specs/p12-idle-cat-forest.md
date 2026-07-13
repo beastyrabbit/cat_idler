@@ -1,5 +1,10 @@
 # P12 — Idle Cat Forest sim expansion (cat-sim)
 
+> **Living target spec.** Exterior farms/logging and Mill/Sawmill production are verified, but
+> strict manual-to-officer ownership, all-labor skills, seeded spatial storehouses, physical
+> station inventories/routes, and broader recipes remain partial. Current evidence and exact
+> follow-ups live in [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 The DF-texture depth from `docs/GAME_VISION.md`, decomposed into concrete, TDD-able Rust
 cards grounded in the *current* `cat-sim` code. Each card is pure sim logic (no I/O),
 unit-tested in `tests/`, and folds into `world_tick` as an ordered phase or an extension of

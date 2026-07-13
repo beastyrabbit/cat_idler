@@ -1,5 +1,10 @@
 # P19 — DF-scale item economy (cat-themed): materials, material-variant crafting, traders
 
+> **Living target spec.** The item/material model, a small recipe subset, visiting traders, and
+> basic buy/sell actions exist. Full source/crafting breadth, local physical inventories,
+> quality/UI coverage, fishing, transport, and direct inter-village trade remain open in
+> [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 User (2026-07-10): give the game a DF-like breadth of resources/items, but **cat-themed**
 ("humanoid cats", "warrior cats") — similar amount. Like DF, **craft an item from multiple
 materials** (a wooden mug OR a stone mug). And add **traders that come by and let you trade**.

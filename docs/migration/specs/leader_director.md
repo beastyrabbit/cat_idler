@@ -1,5 +1,9 @@
 # P3.2 Leader Director Port Spec
 
+> **Historical parity spec.** This records the frozen TypeScript behavior used for the Rust port;
+> it is not a claim about the maintained officer/manual-control product model. Current behavior
+> and open role work are tracked in [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 Sources read:
 - `lib/game/leaderDirector.ts`
 - `lib/game/leaderAI.ts`

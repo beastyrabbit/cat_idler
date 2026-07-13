@@ -1,5 +1,10 @@
 # P18 — Visual polish: DF-Steam UI overhaul + workshop craft-station sprites
 
+> **Living target spec.** Label-free roofed homes, distinct open stations, and the maintained
+> Adventure 9-patch/button/progress/minimap/cursor skin are native-framebuffer verified at
+> 1024×768, 1280×800, and 1920×1080. Remaining menu states and WASM visual interactions stay open
+> in [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 User (2026-07-10): (1) workshops should look like DF-Steam craft-stations — find a good asset or
 compose one; (2) the whole UI needs an overhaul, big inspiration from how DF Steam looks now.
 

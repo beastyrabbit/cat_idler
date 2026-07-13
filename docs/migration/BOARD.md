@@ -607,7 +607,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   constant-speed walking.
 
 ### P16 — Founding village blueprint (spec: `docs/migration/specs/p16-village-blueprint.md`)
-- Fixed founding blueprint (5-cat small start) + a fog-reveal fix.
+- Fixed founding blueprint shipped with the older five-cat start; the maintained target is now
+  15 adult cats in three five-cat houses with slow breeding plus prosperity migration/unhoused
+  departure, tracked as in progress in `docs/IMPLEMENTATION_AUDIT.md`.
 - Gather spots (temporary drop points) + a gatherer/mover work split, with resource-typed
   markers rendered on the map.
 - Farms and legacy fields stay beyond the permanent settlement core; logging ignores hidden

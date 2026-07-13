@@ -129,8 +129,9 @@ maintained product behavior rather than migration:
   live founding still uses the old five-cat housing model, and most typed protocol actions have
   no usable exact client tool.
 - **Spatial, transport, and visual completeness.** Full tree/rock occupancy, staged wall growth,
-  visible traffic dirt roads, real rail/ship/fishing routes, the Adventure-style UI skin, and
-  Accounting Tent reachability remain incomplete.
+  visible traffic dirt roads, real rail/ship/fishing routes, remaining menu/WASM skin states, and
+  Accounting Tent reachability remain incomplete. The maintained Adventure panel, button,
+  progress, minimap, and cursor foundation is native-framebuffer verified.
 
 The evidence and completion tests for each gap live in `docs/IMPLEMENTATION_AUDIT.md`.
 
@@ -211,7 +212,9 @@ stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The 
 resources with caps, colony census, event log, trade, officers, village selection, and
 cat/building inspectors. Its full-page research screen renders the 500-study catalog with
 filter/search/pan/zoom; generated studies explicitly remain read-only until runtime integration.
-The maintained P18 9-patch/cursor skin is not yet implemented.
+The maintained P18 Adventure 9-patch/button/progress/minimap/cursor foundation is implemented and
+native-framebuffer verified at 1024×768, 1280×800, and 1920×1080. New menus still require the same
+responsive native and WASM interaction checks before they are called complete.
 
 Art: curated pixel sprites under `public/images/game/{terrain,nature,buildings,interior,infra,
 props,farm,enemies}/`, with accepted cat/raider sheets under `public/images/cats/` — see

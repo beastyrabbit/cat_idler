@@ -1,5 +1,10 @@
 # P15 — Playtest feedback backlog (user, 2026-07-10)
 
+> **Living feedback spec.** Movement smoothing, the booster, infinite-map streaming, and
+> shrine-return scouting are verified. Exact player controls, global/personal villages, richer
+> inspectors, and complete visible roads remain open in
+> [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 Captured from live `cargo dev` playtesting. Triaged; "already there" notes from a code survey.
 
 ## Bugs / feel (do first)
@@ -72,6 +77,8 @@ Two-tier inspector, driven by the cursor:
 - **Cleaner top-down 2D cat?** Current `cat-sheet` is near-top-down P&W. A future art-polish
   pass may evaluate alternatives, but P&W remains the selected runtime sheet.
 
-## Already-there (verify, don't rebuild)
-- Cat movement, chunked-infinite terrain, multi-colony founding, fog reveal, term elections all
-  exist in the sim. Much of this backlog is exposure/rendering + tuning, not new systems.
+## Existing foundations (verify before extending)
+- Cat movement, chunked-infinite terrain, authoritative multi-colony state, and term elections
+  exist in the sim. Shrine-return fog/scouting is now verified. Usable global/personal founding
+  and ownership, election controls, and several richer inspection/road paths remain product work;
+  authoritative data structures alone are not completion.

@@ -1,5 +1,9 @@
 # P17 — 2D biome generator (Minecraft-style, ~25 biomes)
 
+> **Living target spec.** The deterministic 26-biome climate generator and rendering exist.
+> Fine-biome movement factors, complete biome-specific resource logistics, fishing, and physical
+> rail/ship transport remain open in [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 User (2026-07-10): trees should be sparse on grass biomes and dense in forest biomes, etc. —
 we need a proper **biome generator, like Minecraft but 2D**, targeting **~25 biomes**.
 

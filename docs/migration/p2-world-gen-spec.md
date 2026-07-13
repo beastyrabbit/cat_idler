@@ -1,5 +1,9 @@
 # P2.5 World Generation Port Spec
 
+> **Historical parity spec.** This is the frozen P2 port contract. The maintained effectively
+> infinite shared-world and global/personal village requirements supersede its bounded-world
+> assumptions; current status lives in [`docs/IMPLEMENTATION_AUDIT.md`](../IMPLEMENTATION_AUDIT.md).
+
 Sources read:
 - `lib/game/worldGen.ts`
 - `lib/game/terrainWorld.ts`

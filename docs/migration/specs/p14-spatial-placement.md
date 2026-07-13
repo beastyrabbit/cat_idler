@@ -1,5 +1,10 @@
 # P14 — Spatial placement, walls & road accessibility
 
+> **Living target spec.** The migration card shipped only part of this model. Atomic building
+> placement and reservations are verified; full tree/rock occupancy, staged wall replacement,
+> and the exact visible dirt/stone-road model remain open in
+> [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 User direction (2026-07-10): the world must obey proper tile-based spatial rules. Today
 buildings render overlapping and placement/pathfinding don't enforce occupancy or
 accessibility. This spec is the target model; cards are grounded by the `spatial-survey`
@@ -14,9 +19,11 @@ roads paving, stockpile footprints) vs what's missing.
    has a tree, water, another building, or a wall. (Clearing a tree first frees the tile.)
 3. **Multi-tile footprints.** Buildings occupy an NxM footprint (e.g. 2x3, 3x3), not a
    point. Stockpiles already have rect footprints — buildings need the same.
-4. **Buildings, walls, and trees block movement.** Cats cannot walk through a building, a
-   wall, a tree, or water. Pathfinding routes around them. The **shrine is passable**
-   (you can walk through it) and is the road/path anchor.
+4. **Walls and water block; structures and trees are soft obstacles.** Cats cannot cross a
+   wall or water. Buildings, workshops, and trees remain slow-passable at roughly 25% speed so
+   pathfinding strongly routes around them but cannot strand a cat in a legacy/corrupt layout.
+   The **shrine is passable** and is the road/path anchor. This is the revised P14.2 rule below,
+   which supersedes the earlier hard-obstacle wording.
 5. **Always-closed perimeter wall with exactly one gate.** The village is enclosed by a
    wall; there is a single gate. Growth rule: when the village expands, **build the new
    outer wall first, then remove the now-interior old wall**, so the perimeter is never

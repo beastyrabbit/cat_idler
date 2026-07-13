@@ -1,5 +1,9 @@
 # P3.1 Pathfinding Port Spec
 
+> **Historical parity spec.** This records the frozen TypeScript behavior used for the Rust port.
+> Later P14/P16 soft-obstacle, footprint, and road requirements supersede it where they differ;
+> current gaps are tracked in [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+
 Sources read:
 - `lib/game/pathfinding.ts`
 - `tests/unit/game/pathfinding.test.ts`
