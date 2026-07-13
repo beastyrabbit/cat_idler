@@ -33,16 +33,16 @@ codex, plus a Claude review for high-value slices) signs off.
 | P7 | Master loop (`world_tick`, multi-colony) | done |
 | P8 | Protocol + server (+ multi-village founding) | done |
 | P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
-| P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh` and runs end-to-end in Chromium (WebGL2, new UI kit, live WS stream, 0 console errors — re-verified after the UI redesign); native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Hosting infra + transfer-weight optimization are deploy-time follow-ups, not blockers. See `docs/migration/WASM.md` |
+| P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh`; a same-origin combined server/WASM image, compression, health/readiness probes, exact Origin checks, and deployment instructions are verified. Native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Transfer-weight optimization remains optional. See `docs/migration/WASM.md` |
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
-| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | done — officer roles are an additive automation layer (assignable, not a full director split; the single leader director still runs most allocation, see `docs/ARCHITECTURE.md` "Known gaps") |
-| P13 | Client UI for P12: stockpile designation, officer assignment | done (see below) |
-| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done (see below) |
-| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | done (see below) |
-| P16 | Founding village blueprint, gather spots, tile recalibration | done (see below) |
-| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | done (see below) |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done (see below) |
-| P19 | Item/material economy: crafting chains, traders, coin | done (see below) |
+| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — shipped additive officers and initial chains; true vacant-role manual play, farming/logging/mill/sawmill breadth, and guided campaigns are active fixes |
+| P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment shipped; complete manual work controls and the expanded chains still need usable player paths |
+| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — shipped footprint/path slices; collision-free stockpiles/buildings and atomic road connectivity are being hardened |
+| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/control slices shipped; scouting must become resource-targeted and commit knowledge only at shrine return, including loaded-village behavior |
+| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the shipped five-cat blueprint is superseded by the 15-cat/three-house model and exact authored/traffic road rules remain |
+| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — generator/mining/transport shipped; outside-settlement farms and complete visible production paths remain |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — the UI shipped; roofed facades and map plaques are superseded by approved label-free open stations |
+| P19 | Item/material economy: crafting chains, traders, coin | in progress — base item/trade slices shipped; recipe/resource breadth and guided reachability remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
 format fell out of active use for day-to-day tracking — the per-slice specs live in
@@ -533,6 +533,8 @@ snapshot top-down: terrain grid, cats (+carried item), labelled workshops/buildi
 visible storage/stockpiles, camera, dashboard, manual action tools first. Deeper sim
 (role/officer system, spatial stockpiles, more workshops + hauling chains) = new
 phase P12 after the visible world is up.
+The labelled-marker wording records the original P9 slice and is superseded by the current
+label-free/open-workshop direction in `docs/GAME_VISION.md` and `docs/IMPLEMENTATION_AUDIT.md`.
 ### P9.1 cat-client foundation (Bevy app + WS + cats)   [status: done]
 scope: cat-client run() Bevy app; ewebsock WS client -> WorldSnapshot resource; iso projection + camera + cat atlas lifted from reference/spike-bevy-0.19.rs; render cats from the snapshot. cat-desktop main -> cat_client::run().
 ### P9.2 terrain/buildings/raiders/zones render (TOP-DOWN)   [status: done]
