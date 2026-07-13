@@ -36,6 +36,19 @@ Architecture, module map, persistence, and testing contract live in `CLAUDE.md` 
    Run the harness on several seeds (true 1s cadence), watch for anomalies (extinction,
    resets, starvation windows, idle stalls, unfought raids), and fix in `cat-sim` with a
    guardrail test + determinism twin per the pattern in `CLAUDE.md` "Testing Contract".
+   **Findings so far (2026-07-13 sweep, first two fixed in `4f0cde8`):** research was
+   dormant in all real play (capacity-ratio comfort bar vs the per-capita breeding
+   homeostat — fixed with a per-capita bar + establishment window + non-sticky scholars);
+   extinction left a permanently dead, reset-storming world (TS respawned starter cats —
+   fixed). **Still open, same disease:** the shrine **tithe** (`TITHE_FOOD_RATIO` 0.6 of
+   food capacity) and **offering** (`OFFERING_MATERIALS_RATIO` 0.6 of materials capacity)
+   faucets never fire in unattended play — the breeding homeostat pins food at ~0.1–0.3
+   of capacity, and the quarry deficit curve pins materials at ~0.3 — so on-map
+   `blessings` stay 0 for whole 48h runs (god-currency has a separate reachable path via
+   shrine devotion). Consider per-capita/per-flow bars like `is_research_comfortable`.
+   Also: tool crafting is near-zero at live cadence (0–1 tools per 48h), and at the
+   harsher 5-min proxy cadence seed 7 now takes one `UnattendedCollapse` at gh~182
+   (pre-fix it took none over 200gh; the trough guardrail's 150gh window stays green).
 2. **Finish the officer/role split** (the one tracked gameplay gap — `docs/ARCHITECTURE.md`
    "Known gaps", `docs/GAME_VISION.md` pillar 2). Officer roles exist as an *additive*
    assignable layer (`officers.rs`, `AssignOfficer`/`UnassignOfficer`), but the single
