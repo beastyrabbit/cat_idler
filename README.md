@@ -22,9 +22,10 @@ _A self-running cat colony you nudge, not micromanage — now a native Rust + Be
 **"An idle version of Dwarf Fortress, played by cats, in a forest."** Idle Cat Forest is a
 top-down, single-level god-sim: a cat colony lives, works, breeds, ages, researches, and
 fights entirely on its own, driven by an authoritative server that ticks the simulation once
-a second whether or not anyone is watching. You don't control individual cats — you're a god
-who shapes the world: found villages, paint zones, boost jobs, assign leadership roles, vote,
-and spend a slow tech tree while the colony runs its own life.
+a second whether or not anyone is watching. Early play lets you direct exact jobs, placements,
+workers, and priorities; assigning leadership roles progressively hands those categories back
+to the colony. You also found villages, paint zones, vote, and spend a slow tech tree while the
+cats continue living their own lives.
 
 A **utility-AI leader director** currently keeps almost every cat employed across a shared labor budget
 (hunting, hauling, building, research, defense, farming…), so the colony reads as intentional
@@ -89,7 +90,7 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   player-founded villages (`found_colony`) as a first-class primitive.
 - **`cat-protocol`** — `serde` wire types shared by client and server: `WorldSnapshot` /
   `ColonySnapshot` (resources, cats, jobs, buildings, upgrades, threat, raiders, zones, items,
-  officers, gather spots, road tiles…) and a 30-variant `ClientAction` enum (found/join
+  officers, gather spots, road tiles…) and a typed `ClientAction` enum (found/join
   village, request job, boost, purchase upgrade, vote, zones, plan building, unlock node,
   assign worker/officer, train warrior, defend raid, build road, designate/clear farms,
   designate stockpile/gather spot, sell/buy goods, boost cat, test-acceleration controls).

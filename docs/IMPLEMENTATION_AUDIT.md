@@ -74,7 +74,7 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 | `p18-visual-polish.md` | partial | Open stations and label-free map are verified; the specified 9-patch panel/button skin, cursors, and every snapshot-reachable building remain |
 | `p19-items-materials-trade.md` | partial | Complete per-material items/recipes, physical inventories, fishing, transport, and expose every chain to play |
 | `docs/migration/WASM.md` | development and production packaging work | Optional transfer/performance campaign remains |
-| `README.md`, `CLAUDE.md`, and `docs/assets/*.md` | stale in places | Reconcile cutover/CI/labels/WASM claims and current top-down Mill/Sawmill/cat-sheet selections without reintroducing asset-license commentary |
+| `README.md`, `CLAUDE.md`, and `docs/assets/*.md` | reconciled | Keep cutover/CI/labels/WASM claims and current top-down Mill/Sawmill/cat-sheet selections synchronized with verified behavior |
 
 The following are explicitly historical/superseded and do not create open features:
 `ENGINE_FRONTEND.md`, `ENGINE_PLATFORM.md`, `LEADER_AI_DESIGN.md`, `ROADMAP.md`, `TASKS.md`,

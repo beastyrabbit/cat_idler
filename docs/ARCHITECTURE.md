@@ -144,7 +144,7 @@ over the WebSocket:
   jobs, buildings, upgrade-tree progress, research, election/vote-kick state, zones, threat +
   raiders, claimed tiles/fence/gate, village radius/anchor, officers, stockpiles, gather spots,
   item store, road tiles, online count.
-- **`ClientAction`** — a 30-variant typed server contract: `Presence` (handshake),
+- **`ClientAction`** — a typed server contract: `Presence` (handshake),
   `RequestJob`, `Boost`, `PurchaseUpgrade`, `CastVote`,
   `RequestVoteKick`, `CreateZone`/`RemoveZone`, `PlanBuilding`, `UnlockNode`, `AssignWorker`,
   `TrainWarrior`, `DefendRaid`, `BuildRoad`, `FoundVillage`/`JoinVillage`,
