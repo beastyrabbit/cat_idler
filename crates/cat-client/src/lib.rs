@@ -9,7 +9,7 @@
 //!
 //! - static terrain regenerated from `snapshot.world_seed` via `cat_sim`,
 //! - cats (coloured by specialization, with a carried-item glyph),
-//! - labelled buildings/workshops,
+//! - footprint buildings/workshops,
 //! - a stockpile indicator near the shrine,
 //! - avoid/gather zones,
 //! - a HUD dashboard + event log, and clickable manual-action buttons that
@@ -56,9 +56,13 @@ const CLIENT_ALERT_CAP: usize = 8;
 /// Starting (and R-reset) camera zoom, tuned to frame the village at the small
 /// tile — a little zoomed in since there's now more world per screen.
 const DEFAULT_ZOOM: f32 = 0.25;
-/// Founding radius already fits comfortably at DEFAULT_ZOOM. Larger villages
-/// auto-fit once, until the player deliberately pans or zooms.
-const STARTER_CAMERA_RADIUS: u32 = 6;
+/// Fixed Chebyshev radius of the founding settlement's permanent wall core.
+/// This mirrors `cat_sim`'s `VILLAGE_START_RADIUS`; `snapshot.village_radius`
+/// describes dynamic building-ring framing and can be smaller than this core.
+const VILLAGE_INTERIOR_RADIUS: u32 = 6;
+/// The permanent wall core already fits comfortably at DEFAULT_ZOOM. Larger
+/// villages auto-fit once, until the player deliberately pans or zooms.
+const STARTER_CAMERA_RADIUS: u32 = VILLAGE_INTERIOR_RADIUS;
 /// Top command strip + bottom toolbar space kept clear by mature-village fitting.
 const CAMERA_VERTICAL_UI_RESERVE: f32 = 160.0;
 /// The mature view centres in the unobscured map rectangle: 332px of persistent
@@ -706,7 +710,7 @@ enum GroundTexture {
 }
 
 /// Pixel-art building sprite handles, loaded once at startup.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Default)]
 struct BuildingArt {
     shrine: Handle<Image>,
     den: Handle<Image>,
@@ -1313,6 +1317,14 @@ struct HudFooterText;
 /// Marker for one deterministic terrain/decor visual, used to unload a chunk.
 #[derive(Component, Clone, Copy)]
 struct TerrainVisual(ChunkKey);
+/// A procedural nature/resource decoration keyed by its terrain tile. Unlike
+/// the ground sprite, this is hidden inside the selected village's permanent
+/// founding wall core.
+#[derive(Component, Clone, Copy)]
+struct TerrainDecoration {
+    x: i32,
+    y: i32,
+}
 /// A fog-of-war tile sprite, keyed by tile for incremental updates.
 #[derive(Component, Clone, Copy)]
 struct FogTile {
@@ -2000,6 +2012,7 @@ pub fn run() {
                         .after(poll_ws)
                         .after(ensure_presence),
                     spawn_terrain.after(camera_controls),
+                    sync_terrain_decoration_visibility.after(spawn_terrain),
                     render_roads,
                     render_fog.after(spawn_terrain),
                     render_buildings,
@@ -3425,6 +3438,8 @@ fn spawn_terrain(
         return;
     };
     let seed = world.world_seed;
+    // `reconcile_village_selection` keeps the actively viewed village first.
+    let village_anchor = world.colonies.first().map(|colony| colony.anchor);
     let Ok(camera) = camera.single() else {
         return;
     };
@@ -3521,6 +3536,17 @@ fn spawn_terrain(
                     Anchor::CENTER,
                     Transform::from_xyz(p.x, p.y, ysort_z(p.y)),
                     TerrainVisual(chunk),
+                    TerrainDecoration {
+                        x: tile.x,
+                        y: tile.y,
+                    },
+                    if village_anchor
+                        .is_none_or(|anchor| procedural_decoration_visible(anchor, tile.x, tile.y))
+                    {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    },
                 ));
             }
             Some(DecorationRole::Rock { size, .. }) => {
@@ -3535,6 +3561,17 @@ fn spawn_terrain(
                     Anchor::BOTTOM_CENTER,
                     Transform::from_xyz(p.x, base_y, ysort_z(base_y)),
                     TerrainVisual(chunk),
+                    TerrainDecoration {
+                        x: tile.x,
+                        y: tile.y,
+                    },
+                    if village_anchor
+                        .is_none_or(|anchor| procedural_decoration_visible(anchor, tile.x, tile.y))
+                    {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    },
                 ));
             }
             None => {}
@@ -3546,6 +3583,35 @@ fn spawn_terrain(
         "terrain streamed (seed {seed}, {loaded} chunks, {} tiles)",
         tiles.len()
     );
+}
+
+/// Re-evaluate already-streamed decorations whenever the snapshot changes.
+/// This matters both when a claim expands and when the village selector swaps a
+/// reordered shared-world snapshot's active colony into slot zero.
+fn sync_terrain_decoration_visibility(
+    latest: Res<LatestSnapshot>,
+    mut decorations: Query<(&TerrainDecoration, &mut Visibility)>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    let Some(colony) = latest.0.as_ref().and_then(|world| world.colonies.first()) else {
+        return;
+    };
+    for (tile, mut visibility) in &mut decorations {
+        *visibility = if procedural_decoration_visible(colony.anchor, tile.x, tile.y) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// Ground remains visible everywhere. Procedural nature/resource props clear
+/// only inside the fixed founding wall core; expanded claimed farm/resource
+/// territory beyond that core deliberately retains its wilderness props.
+fn procedural_decoration_visible(anchor: TilePoint, x: i32, y: i32) -> bool {
+    x.abs_diff(anchor.x).max(y.abs_diff(anchor.y)) > VILLAGE_INTERIOR_RADIUS
 }
 
 fn chunk_for_tile(x: i32, y: i32) -> ChunkKey {
@@ -3849,9 +3915,9 @@ fn render_buildings(
     };
     for building in &colony.buildings {
         // Walls are rendered by render_village_boundary; every point building
-        // gets a footprint floor, its dedicated facade (where one exists), and a
-        // short identity plaque. The facade was previously loaded but never used,
-        // leaving every workshop as the same generic floor/prop combination.
+        // gets a footprint floor and its dedicated facade (where one exists).
+        // Names remain available through hover/click inspectors without covering
+        // the settlement in persistent world-space text.
         let Some(texture) = building_texture(building.building_type) else {
             continue;
         };
@@ -3890,40 +3956,6 @@ fn render_buildings(
                 layout.facade_base.y,
                 ysort_z(layout.facade_base.y) + 0.2,
             ),
-            BuildingSprite,
-        ));
-
-        let label = building_map_label(building.building_type);
-        let plaque_size = Vec2::new(label.chars().count() as f32 * 3.1 + 3.0, 6.4);
-        commands.spawn((
-            Sprite::from_color(Color::srgba(0.26, 0.19, 0.115, 0.88), plaque_size),
-            Transform::from_xyz(
-                layout.label_position.x,
-                layout.label_position.y,
-                ysort_z(layout.facade_base.y) + 0.45,
-            ),
-            BuildingSprite,
-        ));
-        commands.spawn((
-            Text2d::new(label),
-            TextFont {
-                // Rasterise the narrow pixel face at a legible size, then scale
-                // it down in world space. Direct 5px rasterisation turns each
-                // word into an unreadable row of stems.
-                font_size: FontSize::Px(10.0),
-                ..default()
-            },
-            TextColor(if building.construction_progress >= 100.0 {
-                Color::srgb(1.0, 0.90, 0.68)
-            } else {
-                Color::srgb(0.82, 0.82, 0.80)
-            }),
-            Transform::from_xyz(
-                layout.label_position.x,
-                layout.label_position.y,
-                ysort_z(layout.facade_base.y) + 0.5,
-            )
-            .with_scale(Vec3::splat(0.5)),
             BuildingSprite,
         ));
     }
@@ -6866,7 +6898,6 @@ struct BuildingRenderLayout {
     floor_size: Vec2,
     facade_base: Vec2,
     facade_size: Vec2,
-    label_position: Vec2,
 }
 
 fn building_render_layout(
@@ -6898,13 +6929,11 @@ fn building_render_layout(
         floor_size,
         facade_base,
         facade_size,
-        label_position: Vec2::new(facade_base.x, facade_base.y - TILE * 0.46),
     }
 }
 
-/// Aliased facades get restrained functional tints. Labels still carry the
-/// exact identity; tint prevents adjacent den/storehouse variants reading as
-/// accidental duplicates before the player has read them.
+/// Aliased facades get restrained functional tints so adjacent den/storehouse
+/// variants do not read as accidental duplicates before inspection.
 fn building_sprite_color(building: BuildingType, complete: bool) -> Color {
     if !complete {
         return Color::srgba(0.72, 0.72, 0.70, 0.72);
@@ -6918,35 +6947,6 @@ fn building_sprite_color(building: BuildingType, complete: bool) -> Color {
         BuildingType::Field => Color::srgb(0.78, 0.96, 0.66),
         BuildingType::Smelter => Color::srgb(1.0, 0.72, 0.52),
         _ => Color::WHITE,
-    }
-}
-
-/// A short title-case plaque for the map. These intentionally differ from the
-/// longer lowercase inspector labels and remain unique across all wire types.
-fn building_map_label(building: BuildingType) -> &'static str {
-    match building {
-        BuildingType::Den => "Den",
-        BuildingType::FoodStorage => "Food",
-        BuildingType::WaterBowl => "Water",
-        BuildingType::Beds => "Beds",
-        BuildingType::HerbGarden => "Herbs",
-        BuildingType::Nursery => "Nurse",
-        BuildingType::ElderCorner => "Elder",
-        BuildingType::Walls => "Walls",
-        BuildingType::MouseFarm => "Mice",
-        BuildingType::Shrine => "Altar",
-        BuildingType::Workshop => "Work",
-        BuildingType::Field => "Field",
-        BuildingType::ResearchHut => "Rsch",
-        BuildingType::School => "Tutor",
-        BuildingType::Smithy => "Smith",
-        BuildingType::Barracks => "Guard",
-        BuildingType::WoodCutter => "Logs",
-        BuildingType::StonePrep => "Stone",
-        BuildingType::Woodworking => "Wood",
-        BuildingType::Clothier => "Cloth",
-        BuildingType::Tannery => "Tan",
-        BuildingType::Smelter => "Melt",
     }
 }
 
@@ -7168,6 +7168,30 @@ mod tests {
         assert!(reconcile_village_selection(&mut reordered, &mut selection).is_none());
         assert_eq!(reordered.colonies[0].id, "beta");
         assert_eq!(selection.selected_id.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn procedural_decor_is_hidden_only_inside_the_selected_village_walls() {
+        let mut snapshot = village_world(&["alpha", "beta"]);
+        snapshot.colonies[0].anchor = TilePoint { x: 50, y: 50 };
+        snapshot.colonies[0].claimed_tiles = vec![TilePoint { x: 50, y: 50 }];
+        snapshot.colonies[1].anchor = TilePoint { x: -20, y: -20 };
+        // The second tile is expanded claimed territory outside the permanent
+        // wall core: a farm/work site there must keep its wilderness decor.
+        snapshot.colonies[1].claimed_tiles =
+            vec![TilePoint { x: -14, y: -20 }, TilePoint { x: -13, y: -20 }];
+        let mut selection = VillageSelection {
+            selected_id: Some("beta".to_owned()),
+            join_required: false,
+        };
+
+        reconcile_village_selection(&mut snapshot, &mut selection);
+        let anchor = snapshot.colonies[0].anchor;
+
+        assert!(!procedural_decoration_visible(anchor, -20, -20));
+        assert!(!procedural_decoration_visible(anchor, -14, -20));
+        assert!(procedural_decoration_visible(anchor, -13, -20));
+        assert!(procedural_decoration_visible(anchor, 50, 50));
     }
 
     #[test]
@@ -7984,42 +8008,7 @@ mod tests {
     }
 
     #[test]
-    fn every_protocol_building_has_a_unique_concise_map_label() {
-        let variants = [
-            BuildingType::Den,
-            BuildingType::FoodStorage,
-            BuildingType::WaterBowl,
-            BuildingType::Beds,
-            BuildingType::HerbGarden,
-            BuildingType::Nursery,
-            BuildingType::ElderCorner,
-            BuildingType::Walls,
-            BuildingType::MouseFarm,
-            BuildingType::Shrine,
-            BuildingType::Workshop,
-            BuildingType::Field,
-            BuildingType::ResearchHut,
-            BuildingType::School,
-            BuildingType::Smithy,
-            BuildingType::Barracks,
-            BuildingType::WoodCutter,
-            BuildingType::StonePrep,
-            BuildingType::Woodworking,
-            BuildingType::Clothier,
-            BuildingType::Tannery,
-            BuildingType::Smelter,
-        ];
-        let mut labels = HashSet::new();
-        for building in variants {
-            let label = building_map_label(building);
-            assert!(!label.is_empty(), "empty label for {building:?}");
-            assert!(label.chars().count() <= 5, "map label is noisy: {label}");
-            assert!(labels.insert(label), "duplicate map label: {label}");
-        }
-    }
-
-    #[test]
-    fn building_render_layout_fits_footprint_and_keeps_label_below_facade() {
+    fn building_render_layout_fits_footprint_without_world_text_geometry() {
         let layout = building_render_layout(
             TilePoint { x: 6, y: 6 },
             FootprintSize {
@@ -8032,7 +8021,6 @@ mod tests {
         assert_eq!(layout.floor_center, Vec2::new(7.0 * TILE, -6.5 * TILE));
         assert!(layout.facade_size.x <= layout.floor_size.x);
         assert!(layout.facade_size.y <= layout.floor_size.y + TILE);
-        assert!(layout.label_position.y < layout.facade_base.y);
 
         let tiny = building_render_layout(
             TilePoint { x: -2, y: 4 },
@@ -8044,6 +8032,36 @@ mod tests {
         );
         assert_eq!(tiny.floor_size, Vec2::splat(TILE));
         assert!(tiny.facade_size.x <= TILE);
+    }
+
+    #[test]
+    fn building_renderer_spawns_facades_without_persistent_name_text() {
+        let mut snapshot = village_world(&["alpha"]);
+        snapshot.colonies[0].buildings.push(BuildingSnapshot {
+            id: "shrine".to_owned(),
+            building_type: BuildingType::Shrine,
+            level: 1,
+            construction_progress: 100.0,
+            world_position: TilePoint { x: 6, y: 6 },
+            position: TilePoint { x: 6, y: 6 },
+            footprint: FootprintSize {
+                width: 3,
+                height: 3,
+            },
+            ..default()
+        });
+
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(Some(snapshot)))
+            .insert_resource(BuildingArt::default())
+            .add_systems(Update, render_buildings);
+        app.update();
+
+        let world = app.world_mut();
+        let mut visuals = world.query_filtered::<Entity, With<BuildingSprite>>();
+        assert_eq!(visuals.iter(world).count(), 2, "floor plus facade");
+        let mut labels = world.query_filtered::<Entity, (With<BuildingSprite>, With<Text2d>)>();
+        assert_eq!(labels.iter(world).count(), 0);
     }
 
     #[test]
