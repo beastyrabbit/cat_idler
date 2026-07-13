@@ -11,7 +11,7 @@ _A self-running cat colony you nudge, not micromanage — now a native Rust + Be
 ![Tokio](https://img.shields.io/badge/tokio_+_axum-WebSocket-informational?style=flat-square)
 ![SQLite](https://img.shields.io/badge/SQLite_(rusqlite)-persistence-003b57?style=flat-square&logo=sqlite&logoColor=white)
 ![Tests](https://img.shields.io/badge/cat--sim_tests-650%2B_passing-brightgreen?style=flat-square)
-![Status](https://img.shields.io/badge/status-pre--release%2C_migration_in_progress-yellow?style=flat-square)
+![Status](https://img.shields.io/badge/status-pre--release%2C_migration_complete-yellow?style=flat-square)
 
 </div>
 
@@ -36,11 +36,9 @@ your success. See [`docs/GAME_VISION.md`](docs/GAME_VISION.md) for the full desi
 
 > **This is a rebuild.** The game shipped originally as a Next.js/TypeScript web app (a
 > Victorian-newspaper-themed single shared colony). That version is frozen — reference only —
-> on branch `archive/web-game` (tag `web-final`); it is being
-> ported "same idea, not bit-identical" into this Rust + Bevy workspace. The TypeScript source
-> files (`app/`, `lib/game/`, `server/`, `db/`, `types/`, `worker/`) still sit in this tree as
-> the porting reference — they are not the running game and should not be edited or run as
-> part of this project anymore. Full context in [`docs/HANDOFF.md`](docs/HANDOFF.md) and
+> on branch `archive/web-game` (tag `web-final`). The "same idea, not bit-identical" Rust +
+> Bevy migration is complete, and the TypeScript source was removed from `main` at the P11
+> cutover. Full context is in [`docs/HANDOFF.md`](docs/HANDOFF.md) and
 > [`docs/migration/BOARD.md`](docs/migration/BOARD.md).
 
 ## Screenshots
@@ -51,7 +49,7 @@ and the isometric renderer were both dropped in the rebuild (see `AGENTS.md`: "t
 Examiner and its flavor generators are DROPPED"). They're kept for historical reference only
 and are **not representative of the current top-down Bevy client**. No committed screenshot of
 the Rust client exists yet; the standard way to see it is to build and run it yourself (below),
-or see `docs/migration/HANDOFF.md`'s framebuffer-verification method for how the migration team
+or see `docs/HANDOFF.md`'s framebuffer-verification method for how the migration team
 captures Bevy screenshots without a display.
 
 ## Architecture
@@ -61,7 +59,7 @@ One Cargo workspace under `crates/`:
 ```
 cat-client (Bevy 0.19 renderer/UI, native + wasm-targetable)
   ├── cat-desktop   thin native launcher bin
-  └── cat-web       thin wasm launcher bin (compiles; browser bundle not wired end-to-end yet)
+  └── cat-web       thin wasm launcher bin (Trunk bundle live-verified in Chromium)
         ↕ WebSocket (ewebsock), snapshot in / action out, JSON over cat-protocol
 cat-server (tokio + axum, authoritative)
   ├── runs cat-sim's world_tick() once a second for every colony
@@ -108,15 +106,15 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   glyphs, labelled buildings with craft-station sprites, visible stockpiles/gather spots,
   fog of war, roads, raiders, a DF-Steam-styled HUD (resources, census, event log, upgrade
   tree, trade menu, cat inspector), and action buttons that round-trip over the WebSocket.
-- **`cat-desktop`** / **`cat-web`** — thin binaries over `cat-client`. `cat-web` builds cleanly
-  to `wasm32-unknown-unknown`; a running in-browser build (trunk bundling, asset serving,
-  location-derived WS URL) is scouted but not fully wired — see
-  [`docs/migration/WASM.md`](docs/migration/WASM.md) for exact status and next steps.
+- **`cat-desktop`** / **`cat-web`** — thin binaries over `cat-client`. `cat-web` builds with
+  Trunk, serves the selected assets, derives a same-origin WebSocket URL for deployment, and
+  has been exercised end-to-end in Chromium. See [`docs/migration/WASM.md`](docs/migration/WASM.md)
+  for the build recipe and remaining transfer-weight/hosting work.
 
 For the full phase-by-phase build history and current in-flight work, see
-[`docs/migration/BOARD.md`](docs/migration/BOARD.md) (kept current through P9; later phases —
-P12 sim expansion, P14–P19 spatial/biome/visual/economy work — are tracked in
-[`docs/migration/specs/`](docs/migration/specs/) and the git log rather than the board).
+[`docs/migration/BOARD.md`](docs/migration/BOARD.md). The post-cutover correctness pass and
+partial P12–P19 design promises are tracked in
+[`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md).
 
 ## How to run it
 
@@ -153,11 +151,10 @@ The world ticks once a second (fixed; not currently configurable via env var).
 
 ### Browser / WASM build
 
-`cargo build -p cat-web --target wasm32-unknown-unknown` compiles clean today, but there is no
-committed `trunk` bundle or in-browser smoke test yet. See
-[`docs/migration/WASM.md`](docs/migration/WASM.md) for the concrete remaining steps (bundle,
-asset serving, location-derived WS URL, canvas sizing) and known risks (bundle size, WebGL2
-parity, non-localhost WS).
+The reproducible entry point is `scripts/build-web.sh` (or `scripts/build-web.sh --serve`). It
+creates the Trunk release bundle under `crates/cat-web/dist/`; the browser client has been
+live-verified in Chromium. See [`docs/migration/WASM.md`](docs/migration/WASM.md) for the smoke
+test and remaining hosting, caching, and transfer-weight work.
 
 ## Testing & determinism
 
@@ -211,6 +208,7 @@ runnable, on branch `archive/web-game` (tag `web-final`).
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The Rust workspace: crates, the tick loop, protocol, persistence, client rendering |
 | [`docs/GAME_VISION.md`](docs/GAME_VISION.md) | Design pillars for "Idle Cat Forest" (manual → role-automation, visible workplaces) |
 | [`docs/HANDOFF.md`](docs/HANDOFF.md) | Migration status, architecture, hard-won Bevy/codex lessons |
+| [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) | Current design-to-code gaps, active fixes, and full playtest matrix |
 | [`docs/migration/BOARD.md`](docs/migration/BOARD.md) | Phase-by-phase task board (P0–P9 tracked in detail) |
 | [`docs/migration/specs/`](docs/migration/specs/) | Design specs for pathfinding, leader director, world_tick, and P12–P19 (skills/roles, spatial placement, biomes, visual polish, item economy) |
 | [`docs/migration/WASM.md`](docs/migration/WASM.md) | Browser/WASM build feasibility + remaining steps |
@@ -232,7 +230,7 @@ economy, ore/metal mining, research/School buildings — all wired). The browser
 end-to-end in Chromium, and the P11 cutover is done: `main` is now the Rust game and the old
 TypeScript tree lives on `archive/web-game`. The one deliberately-partial area is the
 officer/role split (assignable roles exist; the single leader director still does most labor
-allocation). See `docs/HANDOFF.md` for the living status.
+allocation). See `docs/IMPLEMENTATION_AUDIT.md` for the living, evidence-backed status.
 
 ---
 

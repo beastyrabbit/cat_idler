@@ -1,3 +1,8 @@
+> **Historical / superseded (P11 cutover, 2026-07-11).** This records the engine-selection
+> spike that chose Bevy. It is not a current implementation plan. The shipped architecture is
+> documented in `docs/ARCHITECTURE.md`; live gaps are tracked in
+> `docs/IMPLEMENTATION_AUDIT.md`.
+
 # Engine + MCP evaluation (2026-07-09)
 
 Comparing the three engine spikes (`engine/bevy-port`, `engine/godot-port`,

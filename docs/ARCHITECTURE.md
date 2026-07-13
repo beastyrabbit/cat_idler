@@ -109,21 +109,21 @@ Each module's doc comment cites the original TypeScript file it was ported from 
 `leader_director.rs` ← `lib/game/leaderDirector.ts`), per `AGENTS.md`'s commenting convention —
 that's the fastest way to find the ported behavior's original spec and tests.
 
-### Known gaps (intentionally deferred, not bugs)
+### Known product gaps
 
-- **Ore/metal mining.** `docs/migration/specs/p17-biome-generator.md` specs mining rules
-  (mountain biomes only, stone + ore) and `items::Material` already has `Metal` and `Gem`
-  variants, but no job or production phase actually produces them yet — `Material::Metal` only
-  appears in tests and a test-seeded trader item today. Weapons/armor/tools are currently
-  wood/stone/bone/leather-material only.
-- **Officer/role system.** `docs/GAME_VISION.md`'s "manual → role-automation" pillar (Steward,
-  Forester, Farmer, Captain, Loremaster) is designed and partially scaffolded (`officers.rs`,
-  `AssignOfficer`/`UnassignOfficer` actions), but the leader director is not yet fully split
-  into per-role automation — most labor allocation still runs through the single director.
-- **`BuildingType::ResearchHut` / `School`** — flagged as a `P7.followup` in
-  `docs/migration/BOARD.md`: the DB schema and upgrade tree reference these building types by
-  string, but the strict Rust `BuildingType` enum doesn't have variants for them yet, so
-  research-hut/school staffing is inert. Low priority (secondary research economy).
+The core migration is complete, including ore/metal extraction and staffed Research Hut and
+School buildings. The remaining work is correctness and product exposure rather than porting:
+
+- **Officer/manual split.** Assignable roles exist, but the leader director still automates
+  categories whose office is vacant, contrary to `GAME_VISION.md`.
+- **Multi-village player path.** The world and persistence are multi-colony, but routing,
+  selection, and client rendering have not yet made additional villages fully usable.
+- **Protocol/UI breadth.** Several simulated resources, buildings, jobs, and production chains
+  are not reachable or visible through ordinary client controls.
+- **Spatial/visual completeness.** Stockpile collision invariants and several read-at-a-glance
+  building/production promises need implementation and framebuffer verification.
+
+The evidence and completion tests for each gap live in `docs/IMPLEMENTATION_AUDIT.md`.
 
 ## cat-protocol — the wire contract
 
@@ -203,12 +203,10 @@ documented in `docs/HANDOFF.md` — read that before touching client rendering c
 
 - **Native** (`cat-desktop`): `cargo run -p cat-desktop`, or `cargo dev` to launch server +
   client together. Uses `bevy`'s `multi_threaded`, `x11`, `wayland` features.
-- **Browser** (`cat-web`): compiles cleanly to `wasm32-unknown-unknown` today (verified: both
-  `cat-web` and `cat-client` build with zero errors, `ewebsock` provides the browser WS
-  transport, no `tokio`/`rusqlite` leak into the client's dependency tree). A running in-browser
-  build is **not** wired end-to-end yet — trunk bundling, asset serving, and deriving the WS
-  URL from `window.location` in the browser remain. Full status, risks (bundle size, WebGL2
-  parity), and the proposed slice-by-slice plan: `docs/migration/WASM.md`.
+- **Browser** (`cat-web`): builds through Trunk for `wasm32-unknown-unknown`, serves the same
+  tracked assets, uses `ewebsock`, and derives its production WebSocket URL from
+  `window.location`. The bundle has been exercised end-to-end in Chromium. Remaining hosting,
+  caching, and transfer-weight work is tracked in `docs/migration/WASM.md`.
 
 ## cat-dev — the local dev launcher
 
@@ -241,10 +239,7 @@ hooks that used to gate the TypeScript game are no longer relevant to this works
 
 ## What's not here yet
 
-- **Cutover** (`docs/migration/BOARD.md` P11): the TypeScript tree (`app/`, `lib/game/`,
-  `server/`, `db/`, `types/`, `worker/`, `tests/`) still physically exists in this repo as the
-  porting reference. It is frozen (never edited during the migration) and is not part of the
-  running game. Retiring it — deleting or fully archiving it out of the main tree — is a
-  pending, deliberate "big-bang" step, not yet done.
-- **WASM/browser deploy** — see above; compiles, doesn't run in-browser yet.
-- **Ore/metal economy, full officer/role automation** — see "Known gaps" above.
+The P11 cutover is complete: the TypeScript implementation lives only on `archive/web-game`
+(`web-final`), and the browser bundle runs end-to-end. Remaining work is the gameplay,
+client-exposure, production-hosting, and exhaustive QA backlog in
+`docs/IMPLEMENTATION_AUDIT.md`; it is not unfinished migration work.
