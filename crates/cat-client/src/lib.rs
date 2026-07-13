@@ -39,7 +39,12 @@ use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 mod research_ui;
+mod station_layout;
 use research_ui::UpgradeTreeUi;
+use station_layout::{
+    BuildingVisual, PropPlacement, ResidentialFacade, StationFloor, StationLayout, StationProp,
+    building_visual,
+};
 
 /// Side length (world units) of one flat tile. Shrunk to ~1/3 of the original 28
 /// so buildings read at a sensible size and more of the world fits on screen;
@@ -705,100 +710,136 @@ enum GroundTexture {
     FlowersBlue,
 }
 
-/// Pixel-art building sprite handles, loaded once at startup.
+/// Pixel-art building and open-station handles, loaded once at startup.
 #[derive(Resource, Clone, Default)]
 struct BuildingArt {
-    shrine: Handle<Image>,
     den: Handle<Image>,
-    workshop: Handle<Image>,
-    smithy: Handle<Image>,
-    research_hut: Handle<Image>,
-    school: Handle<Image>,
-    barracks: Handle<Image>,
-    storehouse: Handle<Image>,
-    market: Handle<Image>,
     well: Handle<Image>,
-    wood_cutter: Handle<Image>,
-    stone_prep: Handle<Image>,
-    woodworking: Handle<Image>,
-    clothier: Handle<Image>,
-    tannery: Handle<Image>,
-    // A subtle footprint floor keeps occupancy legible underneath the dedicated
-    // building facade. All art is from the tracked Kenney selection.
     floor_wood: Handle<Image>,
     floor_stone: Handle<Image>,
+    floor_soil: Handle<Image>,
+    altar: Handle<Image>,
+    barrel: Handle<Image>,
+    bed: Handle<Image>,
+    bed_green: Handle<Image>,
+    bed_orange: Handle<Image>,
+    bookcase: Handle<Image>,
+    brazier: Handle<Image>,
+    candelabra: Handle<Image>,
+    crate_box: Handle<Image>,
+    crop_flowering: Handle<Image>,
+    crop_growing: Handle<Image>,
+    crop_mature: Handle<Image>,
+    crop_sprout: Handle<Image>,
+    display_table: Handle<Image>,
+    forge_fire: Handle<Image>,
+    haystack: Handle<Image>,
+    log_pile: Handle<Image>,
+    map_table: Handle<Image>,
+    metal_basin: Handle<Image>,
+    ore_pile: Handle<Image>,
+    reliquary_gold: Handle<Image>,
+    sack: Handle<Image>,
+    scarecrow: Handle<Image>,
+    stone_pile: Handle<Image>,
+    stove: Handle<Image>,
+    stool: Handle<Image>,
+    scroll: Handle<Image>,
+    sword_block: Handle<Image>,
+    weapon_stand: Handle<Image>,
+    workbench: Handle<Image>,
 }
 
 impl BuildingArt {
     fn load(assets: &AssetServer) -> Self {
         Self {
-            shrine: assets.load("public/images/game/buildings/shrine.png"),
             den: assets.load("public/images/game/buildings/den.png"),
-            workshop: assets.load("public/images/game/buildings/workshop.png"),
-            smithy: assets.load("public/images/game/buildings/smithy.png"),
-            research_hut: assets.load("public/images/game/buildings/research_hut.png"),
-            school: assets.load("public/images/game/buildings/school.png"),
-            barracks: assets.load("public/images/game/buildings/barracks.png"),
-            storehouse: assets.load("public/images/game/buildings/storehouse.png"),
-            market: assets.load("public/images/game/buildings/market.png"),
             well: assets.load("public/images/game/props/well.png"),
-            wood_cutter: assets.load("public/images/game/buildings/wood_cutter.png"),
-            stone_prep: assets.load("public/images/game/buildings/stone_prep.png"),
-            woodworking: assets.load("public/images/game/buildings/woodworking.png"),
-            clothier: assets.load("public/images/game/buildings/clothier.png"),
-            tannery: assets.load("public/images/game/buildings/tannery.png"),
             floor_wood: assets.load("public/images/game/interior/floor_wood.png"),
             floor_stone: assets.load("public/images/game/interior/floor_stone.png"),
+            floor_soil: assets.load("public/images/game/farm/soil.png"),
+            altar: assets.load("public/images/game/interior/altar.png"),
+            barrel: assets.load("public/images/game/props/barrel.png"),
+            bed: assets.load("public/images/game/interior/bed.png"),
+            bed_green: assets.load("public/images/game/interior/bed-green.png"),
+            bed_orange: assets.load("public/images/game/interior/bed-orange.png"),
+            bookcase: assets.load("public/images/game/interior/bookcase.png"),
+            brazier: assets.load("public/images/game/interior/brazier.png"),
+            candelabra: assets.load("public/images/game/interior/candelabra.png"),
+            crate_box: assets.load("public/images/game/props/crate.png"),
+            crop_flowering: assets.load("public/images/game/farm/crop_flowering.png"),
+            crop_growing: assets.load("public/images/game/farm/crop_growing.png"),
+            crop_mature: assets.load("public/images/game/farm/crop_mature.png"),
+            crop_sprout: assets.load("public/images/game/farm/crop_sprout.png"),
+            display_table: assets.load("public/images/game/interior/display-table.png"),
+            forge_fire: assets.load("public/images/game/interior/forge-fire.png"),
+            haystack: assets.load("public/images/game/props/haystack.png"),
+            log_pile: assets.load("public/images/game/props/log_pile.png"),
+            map_table: assets.load("public/images/game/interior/map-table.png"),
+            metal_basin: assets.load("public/images/game/interior/metal-basin.png"),
+            ore_pile: assets.load("public/images/game/props/ore_pile.png"),
+            reliquary_gold: assets.load("public/images/game/interior/reliquary-gold.png"),
+            sack: assets.load("public/images/game/props/sack.png"),
+            scarecrow: assets.load("public/images/game/farm/scarecrow.png"),
+            stone_pile: assets.load("public/images/game/props/stone_pile.png"),
+            stove: assets.load("public/images/game/interior/stove.png"),
+            stool: assets.load("public/images/game/interior/stool-square.png"),
+            scroll: assets.load("public/images/game/interior/scroll.png"),
+            sword_block: assets.load("public/images/game/interior/sword-block.png"),
+            weapon_stand: assets.load("public/images/game/interior/weapon-stand.png"),
+            workbench: assets.load("public/images/game/interior/workbench.png"),
         }
     }
 
-    fn floor(&self, kind: FloorKind) -> Handle<Image> {
+    fn floor(&self, kind: StationFloor) -> Handle<Image> {
         match kind {
-            FloorKind::Wood => self.floor_wood.clone(),
-            FloorKind::Stone => self.floor_stone.clone(),
+            StationFloor::Wood => self.floor_wood.clone(),
+            StationFloor::Stone => self.floor_stone.clone(),
+            StationFloor::Soil => self.floor_soil.clone(),
         }
     }
 
-    fn handle(&self, texture: BuildingTexture) -> Handle<Image> {
-        match texture {
-            BuildingTexture::Shrine => self.shrine.clone(),
-            BuildingTexture::Den => self.den.clone(),
-            BuildingTexture::Workshop => self.workshop.clone(),
-            BuildingTexture::Smithy => self.smithy.clone(),
-            BuildingTexture::ResearchHut => self.research_hut.clone(),
-            BuildingTexture::School => self.school.clone(),
-            BuildingTexture::Barracks => self.barracks.clone(),
-            BuildingTexture::Storehouse => self.storehouse.clone(),
-            BuildingTexture::Market => self.market.clone(),
-            BuildingTexture::Well => self.well.clone(),
-            BuildingTexture::WoodCutter => self.wood_cutter.clone(),
-            BuildingTexture::StonePrep => self.stone_prep.clone(),
-            BuildingTexture::Woodworking => self.woodworking.clone(),
-            BuildingTexture::Clothier => self.clothier.clone(),
-            BuildingTexture::Tannery => self.tannery.clone(),
+    fn facade(&self, facade: ResidentialFacade) -> Handle<Image> {
+        match facade {
+            ResidentialFacade::Cottage => self.den.clone(),
         }
     }
-}
 
-/// The building sprite a [`BuildingType`] renders as. Sprites `mill`, `monument`,
-/// `tent`, `town_hall` are reserved for future building types.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum BuildingTexture {
-    Shrine,
-    Den,
-    Workshop,
-    Smithy,
-    ResearchHut,
-    School,
-    Barracks,
-    Storehouse,
-    Market,
-    Well,
-    WoodCutter,
-    StonePrep,
-    Woodworking,
-    Clothier,
-    Tannery,
+    fn prop(&self, prop: StationProp) -> Handle<Image> {
+        match prop {
+            StationProp::Altar => self.altar.clone(),
+            StationProp::Barrel => self.barrel.clone(),
+            StationProp::Bed => self.bed.clone(),
+            StationProp::BedGreen => self.bed_green.clone(),
+            StationProp::BedOrange => self.bed_orange.clone(),
+            StationProp::Bookcase => self.bookcase.clone(),
+            StationProp::Brazier => self.brazier.clone(),
+            StationProp::Candelabra => self.candelabra.clone(),
+            StationProp::Crate => self.crate_box.clone(),
+            StationProp::CropFlowering => self.crop_flowering.clone(),
+            StationProp::CropGrowing => self.crop_growing.clone(),
+            StationProp::CropMature => self.crop_mature.clone(),
+            StationProp::CropSprout => self.crop_sprout.clone(),
+            StationProp::DisplayTable => self.display_table.clone(),
+            StationProp::ForgeFire => self.forge_fire.clone(),
+            StationProp::Haystack => self.haystack.clone(),
+            StationProp::LogPile => self.log_pile.clone(),
+            StationProp::MapTable => self.map_table.clone(),
+            StationProp::MetalBasin => self.metal_basin.clone(),
+            StationProp::OrePile => self.ore_pile.clone(),
+            StationProp::ReliquaryGold => self.reliquary_gold.clone(),
+            StationProp::Sack => self.sack.clone(),
+            StationProp::Scarecrow => self.scarecrow.clone(),
+            StationProp::StonePile => self.stone_pile.clone(),
+            StationProp::Stove => self.stove.clone(),
+            StationProp::Stool => self.stool.clone(),
+            StationProp::Scroll => self.scroll.clone(),
+            StationProp::SwordBlock => self.sword_block.clone(),
+            StationProp::WeaponStand => self.weapon_stand.clone(),
+            StationProp::Well => self.well.clone(),
+            StationProp::Workbench => self.workbench.clone(),
+        }
+    }
 }
 
 /// Pixel-art prop sprites used for stockpile piles, loaded once at startup.
@@ -1253,6 +1294,15 @@ struct VillageButton(String);
 /// Marker for a building marker sprite.
 #[derive(Component)]
 struct BuildingSprite;
+/// One repeated footprint tile beneath a building or open station.
+#[derive(Component)]
+struct StationFloorSprite;
+/// One function-readable prop in an open station.
+#[derive(Component)]
+struct StationPropSprite;
+/// A roofed facade, reserved for residential buildings.
+#[derive(Component)]
+struct RoofedBuildingSprite;
 /// Marker for a zone overlay tile.
 #[derive(Component)]
 struct ZoneSprite;
@@ -3787,49 +3837,106 @@ fn render_buildings(
         return;
     };
     for building in &colony.buildings {
-        // Walls are rendered by render_village_boundary; every point building
-        // gets a footprint floor and its dedicated facade (where one exists).
+        // Walls are rendered by render_village_boundary. True residences retain
+        // a roof; every workplace/civic/supply destination exposes a tiled floor
+        // and depth-sorted props instead of pretending to be a house facade.
         // Names remain available through hover/click inspectors without covering
         // the settlement in persistent world-space text.
-        let Some(texture) = building_texture(building.building_type) else {
-            continue;
-        };
-        let layout = building_render_layout(
-            building.world_position,
-            building.footprint,
-            building_aspect(texture),
-        );
+        let complete = building.construction_progress >= 100.0;
+        match building_visual(building.building_type) {
+            BuildingVisual::Infrastructure => {}
+            BuildingVisual::Roofed(facade) => {
+                spawn_station_floor(
+                    &mut commands,
+                    &art,
+                    building.world_position,
+                    building.footprint,
+                    StationFloor::Wood,
+                    complete,
+                );
+                let layout = building_render_layout(building.world_position, building.footprint);
+                commands.spawn((
+                    Sprite {
+                        image: art.facade(facade),
+                        color: building_sprite_color(building.building_type, complete),
+                        custom_size: Some(layout.facade_size),
+                        ..default()
+                    },
+                    Anchor::BOTTOM_CENTER,
+                    Transform::from_xyz(
+                        layout.facade_base.x,
+                        layout.facade_base.y,
+                        ysort_z(layout.facade_base.y) + 0.2,
+                    ),
+                    BuildingSprite,
+                    RoofedBuildingSprite,
+                ));
+            }
+            BuildingVisual::Open(station) => spawn_open_station(
+                &mut commands,
+                &art,
+                building.world_position,
+                building.footprint,
+                station,
+                complete,
+            ),
+        }
+    }
+}
+
+fn spawn_station_floor(
+    commands: &mut Commands,
+    art: &BuildingArt,
+    nw: TilePoint,
+    footprint: FootprintSize,
+    floor: StationFloor,
+    complete: bool,
+) {
+    let tint = construction_tint(complete);
+    for dy in 0..footprint.height.max(1) {
+        for dx in 0..footprint.width.max(1) {
+            let center = grid_to_world(nw.x + dx, nw.y + dy);
+            commands.spawn((
+                Sprite {
+                    image: art.floor(floor),
+                    color: tint,
+                    custom_size: Some(Vec2::splat(TILE)),
+                    ..default()
+                },
+                Transform::from_xyz(center.x, center.y, Z_BUILDING_FLOOR),
+                BuildingSprite,
+                StationFloorSprite,
+            ));
+        }
+    }
+}
+
+fn spawn_open_station(
+    commands: &mut Commands,
+    art: &BuildingArt,
+    nw: TilePoint,
+    footprint: FootprintSize,
+    station: &StationLayout,
+    complete: bool,
+) {
+    spawn_station_floor(commands, art, nw, footprint, station.floor, complete);
+    let tint = construction_tint(complete);
+    for placement in station.props {
+        let geometry = station_prop_geometry(nw, footprint, *placement);
         commands.spawn((
             Sprite {
-                image: art.floor(building_floor(building.building_type)),
-                custom_size: Some(layout.floor_size),
+                image: art.prop(placement.prop),
+                color: tint,
+                custom_size: Some(geometry.size),
                 ..default()
             },
-            Anchor::CENTER,
             Transform::from_xyz(
-                layout.floor_center.x,
-                layout.floor_center.y,
-                Z_BUILDING_FLOOR,
+                geometry.center.x,
+                geometry.center.y,
+                ysort_z(geometry.base_y) + 0.2,
             ),
             BuildingSprite,
-        ));
-        commands.spawn((
-            Sprite {
-                image: art.handle(texture),
-                color: building_sprite_color(
-                    building.building_type,
-                    building.construction_progress >= 100.0,
-                ),
-                custom_size: Some(layout.facade_size),
-                ..default()
-            },
-            Anchor::BOTTOM_CENTER,
-            Transform::from_xyz(
-                layout.facade_base.x,
-                layout.facade_base.y,
-                ysort_z(layout.facade_base.y) + 0.2,
-            ),
-            BuildingSprite,
+            StationPropSprite,
         ));
     }
 }
@@ -4659,7 +4766,7 @@ fn select_building(
     let buildings: Vec<(String, Vec2)> = colony
         .buildings
         .iter()
-        .filter(|b| building_texture(b.building_type).is_some())
+        .filter(|b| building_visual(b.building_type).is_map_building())
         .map(|b| {
             (
                 b.id.clone(),
@@ -4716,7 +4823,7 @@ fn cycle_stacked_selection(
     for b in colony
         .buildings
         .iter()
-        .filter(|b| building_texture(b.building_type).is_some())
+        .filter(|b| building_visual(b.building_type).is_map_building())
     {
         let p = grid_to_world(b.world_position.x, b.world_position.y);
         if p.distance_squared(world) <= (TILE * 0.9).powi(2) {
@@ -4940,7 +5047,7 @@ fn hover_text(colony: &ColonySnapshot, world_seed: i64, world: Vec2) -> Option<S
     let buildings: Vec<(String, Vec2)> = colony
         .buildings
         .iter()
-        .filter(|b| building_texture(b.building_type).is_some())
+        .filter(|b| building_visual(b.building_type).is_map_building())
         .map(|b| {
             (
                 b.id.clone(),
@@ -5928,7 +6035,7 @@ fn update_minimap(
     }
     // Buildings: shrine gold, others pale (2x2 so they read over terrain).
     for b in &colony.buildings {
-        if building_texture(b.building_type).is_none() {
+        if !building_visual(b.building_type).is_map_building() {
             continue;
         }
         if let Some((px, py)) = world_to_minimap(view, b.world_position.x, b.world_position.y) {
@@ -6592,87 +6699,15 @@ fn cat_skills_line(xp: &RoleXp) -> String {
 
 // ---- pure building sprite / label helpers (unit-tested) ----
 
-/// The sprite a building renders as, or `None` for `Walls` (drawn as infra, not
-/// a point marker). Unmapped/utility variants fall back to the generic den.
-fn building_texture(building: BuildingType) -> Option<BuildingTexture> {
-    Some(match building {
-        BuildingType::Shrine => BuildingTexture::Shrine,
-        BuildingType::Workshop => BuildingTexture::Workshop,
-        BuildingType::Smithy => BuildingTexture::Smithy,
-        BuildingType::ResearchHut => BuildingTexture::ResearchHut,
-        BuildingType::School => BuildingTexture::School,
-        BuildingType::Barracks => BuildingTexture::Barracks,
-        BuildingType::FoodStorage | BuildingType::MouseFarm => BuildingTexture::Storehouse,
-        BuildingType::Field => BuildingTexture::Market,
-        BuildingType::WaterBowl => BuildingTexture::Well,
-        BuildingType::Den
-        | BuildingType::Beds
-        | BuildingType::Nursery
-        | BuildingType::HerbGarden
-        | BuildingType::ElderCorner => BuildingTexture::Den,
-        // P16 craft-station workshops render as their dedicated sprites so the
-        // function reads at a glance.
-        BuildingType::WoodCutter => BuildingTexture::WoodCutter,
-        BuildingType::StonePrep => BuildingTexture::StonePrep,
-        BuildingType::Woodworking => BuildingTexture::Woodworking,
-        // P18 clothing chain craft stations.
-        BuildingType::Clothier => BuildingTexture::Clothier,
-        BuildingType::Tannery => BuildingTexture::Tannery,
-        // Ore/metal chain: the smelter is a forge/furnace — reuse the smithy sprite.
-        BuildingType::Smelter => BuildingTexture::Smithy,
-        BuildingType::Walls => return None,
-    })
-}
-
-/// Interior floor material for a building's cutaway top-down render.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum FloorKind {
-    Wood,
-    Stone,
-}
-
-/// Floor underlay for the footprint. It communicates workshop/dwelling material
-/// while the dedicated facade above it carries the building's identity.
-fn building_floor(building: BuildingType) -> FloorKind {
-    use BuildingType as B;
-    match building {
-        B::Workshop | B::Woodworking | B::WoodCutter | B::StonePrep | B::Clothier | B::Tannery => {
-            FloorKind::Wood
-        }
-        B::Smithy | B::Smelter => FloorKind::Stone,
-        B::Den | B::Beds | B::Nursery | B::ElderCorner | B::HerbGarden => FloorKind::Wood,
-        B::FoodStorage | B::WaterBowl | B::MouseFarm => FloorKind::Wood,
-        B::Shrine | B::ResearchHut | B::School | B::Barracks | B::Field | B::Walls => {
-            FloorKind::Stone
-        }
-    }
-}
-
-/// Native width/height aspect of a building sprite (48x48 square = 1.0; market
-/// 48x32 wide = 1.5; well 16x32 tall = 0.5).
-fn building_aspect(texture: BuildingTexture) -> f32 {
-    match texture {
-        BuildingTexture::Market => 48.0 / 32.0,
-        BuildingTexture::Well => 16.0 / 32.0,
-        _ => 1.0,
-    }
-}
-
 /// Pure geometry used by the renderer. Keeping this independent of ECS makes
 /// footprint placement and screen-clipping guardrails cheap to test.
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct BuildingRenderLayout {
-    floor_center: Vec2,
-    floor_size: Vec2,
     facade_base: Vec2,
     facade_size: Vec2,
 }
 
-fn building_render_layout(
-    nw: TilePoint,
-    footprint: FootprintSize,
-    aspect: f32,
-) -> BuildingRenderLayout {
+fn building_render_layout(nw: TilePoint, footprint: FootprintSize) -> BuildingRenderLayout {
     let w = footprint.width.max(1) as f32;
     let h = footprint.height.max(1) as f32;
     let floor_size = Vec2::new(w * TILE, h * TILE);
@@ -6682,10 +6717,9 @@ fn building_render_layout(
     );
     let facade_base = Vec2::new(floor_center.x, -(nw.y as f32 + h - 1.0) * TILE - TILE / 2.0);
 
-    // Use the footprint width, but cap tall art at one tile of north-side roof
-    // overhang. This keeps the well's 1:2 image and square 3x2 facades visible
-    // without covering the next village row.
-    let mut facade_size = Vec2::new(floor_size.x, floor_size.x / aspect.max(0.01));
+    // Residential cottage art is square. Cap it at one tile of north-side roof
+    // overhang so a roof remains readable without covering the next block.
+    let mut facade_size = Vec2::splat(floor_size.x);
     let max_height = floor_size.y + TILE;
     if facade_size.y > max_height {
         let scale = max_height / facade_size.y;
@@ -6693,27 +6727,73 @@ fn building_render_layout(
     }
 
     BuildingRenderLayout {
-        floor_center,
-        floor_size,
         facade_base,
         facade_size,
     }
 }
 
-/// Aliased facades get restrained functional tints so adjacent den/storehouse
-/// variants do not read as accidental duplicates before inspection.
+/// Pure sprite geometry for one normalized open-station prop.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct StationPropGeometry {
+    center: Vec2,
+    size: Vec2,
+    base_y: f32,
+}
+
+fn station_prop_geometry(
+    nw: TilePoint,
+    footprint: FootprintSize,
+    placement: PropPlacement,
+) -> StationPropGeometry {
+    let w = footprint.width.max(1) as f32;
+    let h = footprint.height.max(1) as f32;
+    let floor_size = Vec2::new(w * TILE, h * TILE);
+    let (native_w, native_h) = placement.prop.native_px();
+    let mut size = Vec2::new(native_w as f32 / 16.0 * TILE, native_h as f32 / 16.0 * TILE);
+    let fit = (floor_size.x * 0.88 / size.x)
+        .min(floor_size.y * 0.88 / size.y)
+        .min(1.0);
+    size *= fit;
+
+    let left = (nw.x as f32 - 0.5) * TILE;
+    let top = (-nw.y as f32 + 0.5) * TILE;
+    let bottom = top - floor_size.y;
+    let authored = Vec2::new(
+        left + floor_size.x * placement.x as f32 / 1000.0,
+        top - floor_size.y * placement.y as f32 / 1000.0,
+    );
+    let center = Vec2::new(
+        authored
+            .x
+            .clamp(left + size.x / 2.0, left + floor_size.x - size.x / 2.0),
+        authored.y.clamp(bottom + size.y / 2.0, top - size.y / 2.0),
+    );
+
+    StationPropGeometry {
+        center,
+        size,
+        base_y: center.y - size.y / 2.0,
+    }
+}
+
+fn construction_tint(complete: bool) -> Color {
+    if complete {
+        Color::WHITE
+    } else {
+        Color::srgba(0.72, 0.72, 0.70, 0.72)
+    }
+}
+
+/// Residential aliases get restrained tints so their roles remain distinct at
+/// a glance while hover/click inspection keeps the exact names available.
 fn building_sprite_color(building: BuildingType, complete: bool) -> Color {
     if !complete {
-        return Color::srgba(0.72, 0.72, 0.70, 0.72);
+        return construction_tint(false);
     }
     match building {
         BuildingType::Beds => Color::srgb(0.78, 0.88, 1.0),
-        BuildingType::HerbGarden => Color::srgb(0.73, 1.0, 0.72),
         BuildingType::Nursery => Color::srgb(1.0, 0.83, 0.86),
         BuildingType::ElderCorner => Color::srgb(0.82, 0.78, 0.72),
-        BuildingType::MouseFarm => Color::srgb(0.90, 0.78, 0.60),
-        BuildingType::Field => Color::srgb(0.78, 0.96, 0.66),
-        BuildingType::Smelter => Color::srgb(1.0, 0.72, 0.52),
         _ => Color::WHITE,
     }
 }
@@ -7633,74 +7713,6 @@ mod tests {
     }
 
     #[test]
-    fn building_texture_mapping_and_sizes() {
-        // Direct 1:1 mappings.
-        assert_eq!(
-            building_texture(BuildingType::Shrine),
-            Some(BuildingTexture::Shrine)
-        );
-        assert_eq!(
-            building_texture(BuildingType::Smithy),
-            Some(BuildingTexture::Smithy)
-        );
-        // Aliased mappings.
-        assert_eq!(
-            building_texture(BuildingType::FoodStorage),
-            Some(BuildingTexture::Storehouse)
-        );
-        assert_eq!(
-            building_texture(BuildingType::MouseFarm),
-            Some(BuildingTexture::Storehouse)
-        );
-        assert_eq!(
-            building_texture(BuildingType::Field),
-            Some(BuildingTexture::Market)
-        );
-        assert_eq!(
-            building_texture(BuildingType::WaterBowl),
-            Some(BuildingTexture::Well)
-        );
-        assert_eq!(
-            building_texture(BuildingType::Nursery),
-            Some(BuildingTexture::Den)
-        );
-        // P16 craft-station workshops each map to their dedicated sprite.
-        assert_eq!(
-            building_texture(BuildingType::WoodCutter),
-            Some(BuildingTexture::WoodCutter)
-        );
-        assert_eq!(
-            building_texture(BuildingType::StonePrep),
-            Some(BuildingTexture::StonePrep)
-        );
-        assert_eq!(
-            building_texture(BuildingType::Woodworking),
-            Some(BuildingTexture::Woodworking)
-        );
-        // P18 clothing-chain craft stations get their own sprites.
-        assert_eq!(
-            building_texture(BuildingType::Clothier),
-            Some(BuildingTexture::Clothier)
-        );
-        assert_eq!(
-            building_texture(BuildingType::Tannery),
-            Some(BuildingTexture::Tannery)
-        );
-        // The smelter reuses the smithy forge sprite.
-        assert_eq!(
-            building_texture(BuildingType::Smelter),
-            Some(BuildingTexture::Smithy)
-        );
-        // Walls render as infra, not a point marker.
-        assert_eq!(building_texture(BuildingType::Walls), None);
-
-        // Square sprites keep aspect 1; the two non-square ones don't.
-        assert_eq!(building_aspect(BuildingTexture::Shrine), 1.0);
-        assert!(building_aspect(BuildingTexture::Market) > 1.0); // wide
-        assert!(building_aspect(BuildingTexture::Well) < 1.0); // tall
-    }
-
-    #[test]
     fn building_render_layout_fits_footprint_without_world_text_geometry() {
         let layout = building_render_layout(
             TilePoint { x: 6, y: 6 },
@@ -7708,12 +7720,9 @@ mod tests {
                 width: 3,
                 height: 2,
             },
-            1.0,
         );
-        assert_eq!(layout.floor_size, Vec2::new(3.0 * TILE, 2.0 * TILE));
-        assert_eq!(layout.floor_center, Vec2::new(7.0 * TILE, -6.5 * TILE));
-        assert!(layout.facade_size.x <= layout.floor_size.x);
-        assert!(layout.facade_size.y <= layout.floor_size.y + TILE);
+        assert!(layout.facade_size.x <= 3.0 * TILE);
+        assert!(layout.facade_size.y <= 3.0 * TILE);
 
         let tiny = building_render_layout(
             TilePoint { x: -2, y: 4 },
@@ -7721,14 +7730,39 @@ mod tests {
                 width: 0,
                 height: 0,
             },
-            building_aspect(BuildingTexture::Well),
         );
-        assert_eq!(tiny.floor_size, Vec2::splat(TILE));
         assert!(tiny.facade_size.x <= TILE);
     }
 
     #[test]
-    fn building_renderer_spawns_facades_without_persistent_name_text() {
+    fn open_station_prop_geometry_preserves_aspect_and_stays_in_footprint() {
+        let placement = PropPlacement {
+            prop: StationProp::Workbench,
+            x: 1000,
+            y: 0,
+        };
+        let geometry = station_prop_geometry(
+            TilePoint { x: 6, y: 6 },
+            FootprintSize {
+                width: 3,
+                height: 3,
+            },
+            placement,
+        );
+        assert_eq!(geometry.size, Vec2::new(34.0 / 16.0 * TILE, TILE));
+        assert_eq!(geometry.size.x / geometry.size.y, 34.0 / 16.0);
+        let left = 5.5 * TILE;
+        let right = 8.5 * TILE;
+        let top = -5.5 * TILE;
+        let bottom = -8.5 * TILE;
+        assert!(geometry.center.x - geometry.size.x / 2.0 >= left);
+        assert!(geometry.center.x + geometry.size.x / 2.0 <= right);
+        assert!(geometry.center.y + geometry.size.y / 2.0 <= top);
+        assert!(geometry.center.y - geometry.size.y / 2.0 >= bottom);
+    }
+
+    #[test]
+    fn building_renderer_composes_open_shrine_without_persistent_name_text() {
         let mut snapshot = village_world(&["alpha"]);
         snapshot.colonies[0].buildings.push(BuildingSnapshot {
             id: "shrine".to_owned(),
@@ -7751,8 +7785,24 @@ mod tests {
         app.update();
 
         let world = app.world_mut();
-        let mut visuals = world.query_filtered::<Entity, With<BuildingSprite>>();
-        assert_eq!(visuals.iter(world).count(), 2, "floor plus facade");
+        let mut floors = world.query_filtered::<Entity, With<StationFloorSprite>>();
+        assert_eq!(
+            floors.iter(world).count(),
+            9,
+            "one repeated tile per footprint cell"
+        );
+        let mut props = world.query_filtered::<Entity, With<StationPropSprite>>();
+        assert_eq!(
+            props.iter(world).count(),
+            4,
+            "altar, relic, candles, and brazier"
+        );
+        let mut roofs = world.query_filtered::<Entity, With<RoofedBuildingSprite>>();
+        assert_eq!(
+            roofs.iter(world).count(),
+            0,
+            "shrines are open return destinations"
+        );
         let mut labels = world.query_filtered::<Entity, (With<BuildingSprite>, With<Text2d>)>();
         assert_eq!(labels.iter(world).count(), 0);
     }

@@ -35,9 +35,25 @@ window `84`. Verified by montage.
 | `monument.png` | TT grey peak `63` + wall `109`×2 | Grey stone obelisk. 16×48. |
 | `shrine.png` | **RTS** `Structure_04` → 48px | Cross chapel — reads sacred. |
 
-### Workshops — DF-Steam craft-stations (see `docs/migration/specs/p18-visual-polish.md`)
+### Open stations — current runtime treatment
 
-Each workshop is a **TT hut base + a distinct craft indicator** so its craft reads at a glance
+The Bevy client now composes non-residential buildings at runtime instead of drawing these
+exterior facades. A repeated wood, stone, or soil floor fills the authoritative footprint;
+individual top-down props sit on it with their own y-sorted depth. This keeps cats visible while
+working, makes Field a real crop plot, and leaves the Shrine open on every side for scout returns.
+Only Den, Beds, Nursery, and Elder Corner retain the roofed `den.png` silhouette.
+
+The runtime compositions are exhaustive in `crates/cat-client/src/station_layout.rs`. In addition
+to the existing `interior/`, `props/`, and `farm/` sprites, the review bench promoted these
+individual pieces into `public/images/game/interior/`: colored beds, bookcase, brazier,
+candelabra, display table, forge fire, map table, metal basin, gold reliquary, scroll, stool,
+stove, sword block, and weapon stand. They remain separate images; no station is flattened into a
+new building texture. Mill and Sawmill can extend the same typed mapping when their protocol
+variants land.
+
+### Retained workshop facades — review/fallback alternatives
+
+Each retained facade is a **TT hut base + a distinct craft indicator** so its craft reads at a glance
 (DF-Steam style). Indicators are TT/Roguelike props where the library has one, else a small
 hand-drawn pixel primitive built to match the family (anvil, windmill sails, cut-stone blocks,
 cloth bolts, workbench, plank stack, hand-saw, log-end bundle). Roguelike Base cell `(col,row)` =
@@ -53,12 +69,10 @@ cloth bolts, workbench, plank stack, hand-saw, log-end bundle). Roguelike Base c
 | `clothier.png` | TT wood hut + TT striped awning `104` storefront + drawn cloth bolts (red/teal/gold) | Striped awning + folded cloth → **weaver/textiles**. |
 | `workshop.png` | TT wood hut + TT hammer `128` wall emblem + Roguelike barrel/crate props | Generic craft/tool shed — the fallback. |
 
-**Notes:** the seven workshops are all pixel Tiny Town composites (no RTS flat-vector), so they sit in the
-same visual family and 48×48 footprint as the homes. The forge-fire `(54,8)` is Roguelike Base (same 16px
-pixel style) placed as the smithy's door so the forge glows from inside. The hand-drawn primitives are
-plain ImageMagick pixel shapes tuned to the pack palette — good enough to read at glance and at in-game
-scale; swap for bespoke sprites if a truer loom/anvil is ever wanted (a real top-down **loom** is the one
-prop the library genuinely lacks — clothier leans on the striped awning + cloth bolts instead).
+**Notes:** these seven 48×48 facades remain available to the sprite review page and as fallbacks, but
+the map renderer no longer uses them for craft stations. The current clothier communicates textile
+work with an open display table and colored fabric/bedroll pieces; its typed layout can accept a more
+specific loom prop without changing rendering architecture.
 
 ---
 
@@ -128,4 +142,5 @@ forest animals — these are the closest cohesive fantasy-creature stand-ins, no
 
 ## Files written / current in each dir
 
-- **buildings: 17** · **props: 11** · **farm: 6** · **enemies: 4**  (infra: 10 from an earlier pass)
+- **buildings: 17** · **interior: 21** · **props: 11** · **farm: 6** · **enemies: 4**
+  (infra: 10 from an earlier pass)
