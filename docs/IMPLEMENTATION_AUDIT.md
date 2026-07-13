@@ -45,7 +45,7 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 | Clear village interior | Procedural tree/rock props are hidden in the selected village's fixed radius-six settlement core while radius-seven and expanded territory stay decorated. Natural sim resources, deposits, and farms must still be excluded from the same core. | in progress | Rendering boundary tests and native captures are verified; founding/expansion sim property campaigns across biomes remain |
 | Global and personal villages | Player-keyed personal-site allocation is now pure, deterministic, order-stable, grass/lowland buildable, overflow-safe, and separated by at least 48 tiles. The canonical global village, durable ownership/access, discovery, and inter-village trade are not wired yet. | in progress | Site properties are verified; ownership/access/routing/persistence, distant discovery, and two-player join/found/trade campaign remain |
 | Sprite review tool | [`docs/sprite-review.html`](sprite-review.html) compares current art with three persisted/exportable proposals for all 22 current buildings plus Accounting Tent, Mill, Sawmill, and a global hall/market concept. | verified | Desktop/mobile browser runs: 26 rows, filters, favorites, reload persistence, path copying, JSON export, zero page/image errors |
-| Research tree scale and UX | A pure 500-node catalog now provides 167 building, 167 recipe/resource, and 166 upgrade nodes across named families, with stable IDs, typed payloads, AND prerequisites, layout coordinates, and exhaustive topology/content validation. Runtime consumers, the once-per-real-day leader choice, and full-page UI remain. | in progress | Catalog 708-test/strict-Clippy gate is verified; integrate purchasing/effects/persistence, daily leader boundary, full-page Bevy/WASM framebuffer and interaction campaign |
+| Research tree scale and UX | A pure 500-node catalog provides 167 building, 167 recipe/resource, and 166 upgrade nodes across named families, with stable IDs, typed payloads, AND prerequisites, and layout coordinates. The full-page client ledger renders the complete graph with search, category filters, inspection, pan, and zoom; generated nodes honestly remain read-only until their runtime effects are integrated. | in progress | Catalog validation and the exact-size native UI campaign are verified; integrate purchasing/effects/persistence and the once-per-real-day leader choice, then repeat the interaction campaign through the live action path |
 | Founding population and housing | A pure migration policy now enforces 30-hour establishment, per-cat prosperity, domain-separated deterministic cohorts, over-capacity probation, deterministic vacancy allocation, and 36-hour unhoused departure. Live founding still starts five cats and old housing/breeding rules remain. | in progress | Migration policy/full-sim gate is verified; exact 15-cat/three-house snapshot, five-per-house housing, slow breeding, tick/persistence integration and live campaigns remain |
 | Roads | Enforce the written P16 road model: authored stone roads, traffic-formed dirt roads, exact movement speeds/surface restrictions, connected shrine/gate/exterior routes, and the single south founding gate. | in progress | Exact speed boundaries, traffic threshold, no stone auto-dirt, connectivity properties, and framebuffer inspection |
 
@@ -139,6 +139,18 @@ resolutions. All six images were inspected: no building-name text or plaque enti
 inspector labels are retained, the permanent radius-six core contains no procedural tree/rock
 props, and outside vegetation remains visible. The temporary screenshot/window-size systems
 were removed before the 73-test client gate, strict Clippy, and formatting checks.
+
+### Full-page research catalog native framebuffers — 2026-07-13
+
+The client rendered the 500-study ledger through its own primary-window screenshot path at
+exact 1024×768, 1280×800, and 1920×1080 physical resolutions. The opening legacy graph,
+filtered/panned generated building branch, and filtered/panned generated upgrade branch were
+all inspected. Search/category controls, responsive header and inspector, dependency edges,
+and the explicit generated-node `Runtime integration pending` state remained readable at the
+required sizes. A first capture with an empty canvas was rejected; its centre-origin scaling
+bug was corrected and covered by a transform test before the three accepted captures. All
+temporary capture/window systems and compositor processes were removed before the 80-test
+client gate, strict Clippy, and formatting checks.
 
 ## Completion rule
 
