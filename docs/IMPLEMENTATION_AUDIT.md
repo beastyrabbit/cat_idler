@@ -26,9 +26,9 @@ Status key: `open`, `in progress`, `verified`, `deferred`.
 | Officers/manual play | Officers add capacity but vacant roles do not make categories manual; assignments are not gated by the corresponding unlocked and built role-station. Accountant and Cloth Leader roles are absent. | open | Role-by-role automated/manual scenarios, building/unlock gates, complete role roster, and framebuffer playtest |
 | Manual controls | Most protocol actions lack usable client paths. `PlanBuilding` has no coordinate, so even that action auto-selects a site. Missing tools include exact building placement, farms, gather spots, roads, staffing, job categories, military, rituals/offerings, elections/votes, and production queues. | open | Script every signed action through server and exercise every visible control at all target resolutions |
 | Manual raid defense | `DefendRaid` applies damage immediately and the next tick replays the banked telemetry counter, so each player click currently damages twice. | open | One action across the following tick deals exactly one `DEFEND_CLICK_DAMAGE`; guided raid twin |
-| Multi-village routing slice | Socket-selected routing and a persistent client village selector survive reorder/reconnect/founding and missing-village fallback. This proves routing only, not the open global/personal ownership model below. | verified | 72 client tests, authenticated server routing test, and opposite-target 1024×768/1920×1080 framebuffers |
 | Spatial placement | Player and leader placement validates and commits atomically across terrain, claims, buildings, roads, stockpiles, gather spots, queued footprints, rendered 2×3 tree canopies, and 1×1 rocks. Buildings and trees are exact soft obstacles; water, mountains, and walls remain hard obstacles. | verified | Atomic placement/reservation campaigns, climate-decoration source parity, multi-cell footprint collision tests, soft-obstacle path tests, and clear-interior framebuffer |
 | Staged wall growth | Expansion still replaces the derived perimeter immediately rather than constructing a closed outer wall before removing the old inner wall. | open | Interrupted and resumed construction, every intermediate state closed, exactly one south gate, persistence, and before/during/after framebuffers |
+| Multi-village model | One canonical global village remains viewable by anonymous sockets and controllable by every authenticated player. Each stable signed identity can found exactly one deterministic distant personal village; ownership, selected routing, and foreign denial survive reconnect/restart. Explicit scout-delivery provenance creates mutual summary-only contact, after which owners can configure, propose, accept, or cancel bounded atomic resource barter without exposing or mutating a foreign private simulation. | verified | Deterministic site/collision properties, signed two-player found/join/denial/discovery/trade campaign, transactional SQLite rollback/restart/offer round trip, exact client controls, strict four-crate gates, and selected-village framebuffer |
 | Physical workshop logistics | Staffing currently stores a worker id but does not route the cat to the station; workshop inputs/outputs still use colony-global resources rather than local workshop/stockpile inventories. | open | Every chain must visibly move worker and item stacks workshop↔stockpile↔workshop, persist local queues/storage, and expose them in the inspector |
 | Workshop inspector | The P15 inspector cannot show a real job queue or station-local input/output storage because neither is modeled in the snapshot. | open | Hover/click/cycle through every station; verify queue, worker, local inputs/outputs, blocked reasons, and persistence against real logistics state |
 | Skills breadth | Role XP is exposed for only four legacy labors; Mill, Farm, Research, and other maintained production roles have no complete gain/effect path. | open | Per-labor XP gain, speed/yield effect, persistence/protocol/UI, and determinism campaigns for every labor |
@@ -54,7 +54,7 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 | Open workshops | Houses retain roofs, while all current workshops and non-residential stations use explicit top-down floors and function-readable props. The shrine uses an altar, reliquary, candelabra, and brazier; fields use soil/crops rather than a market facade. Mill and Sawmill are distinct open stations. | verified | Normal+dense own-framebuffer captures at exact 1024×768, 1280×800, and 1920×1080; exhaustive 24-building visual grammar and distinct-workshop tests |
 | Building labels | Persistent map-name plaques are gone; hover/click inspector names remain available. | verified | Label-free normal and dense client framebuffers at 1024×768, 1280×800, and 1920×1080 |
 | Clear village interior | Founding clears every claimed tile in authoritative simulation state: meadow ground, zero deposits/forage/ore/water/danger/wear, and no tree/rock overlay. Water is guaranteed outside the south wall, and ordinary expansion atomically clears each newly claimed cell. Farms and legacy Fields are kept beyond the fixed founding core, but the longer-term distinction between expanded walled settlement and agricultural territory still needs an explicit boundary model. | in progress | Multi-seed founding and expansion clearing plus renderer evidence are verified; add agricultural territory that can remain claimed and worked without becoming an interior wall parcel |
-| Global and personal villages | Player-keyed personal-site allocation is now pure, deterministic, order-stable, grass/lowland buildable, overflow-safe, and separated by at least 48 tiles. The canonical global village, durable ownership/access, discovery, and inter-village trade are not wired yet. | in progress | Site properties are verified; ownership/access/routing/persistence, distant discovery, and two-player join/found/trade campaign remain |
+| Global and personal villages | The complete maintained model is live: one canonical communal village; one owner-only personal village per stable signed identity at a deterministic viable site at least 48 tiles away; secure restart-persistent per-socket selection; discovery only from explicit scout shrine-delivery provenance; summary-only foreign contact; and signed, consensual, bounded atomic direct barter. | verified | Order-stable site allocation and overflow tests; anonymous/authenticated/owner/intruder projections; reconnect/restart; generic-reveal-vs-delivery discovery; two-player signed barter; resource/storage invariants; configurable client controls and framebuffer |
 | Sprite review tool | [`docs/sprite-review.html`](sprite-review.html) compares current art with three persisted/exportable proposals for all 22 current buildings plus Accounting Tent, Mill, Sawmill, and a global hall/market concept. | verified | Desktop/mobile browser runs: 26 rows, filters, favorites, reload persistence, path copying, JSON export, zero page/image errors |
 | Research tree scale and UX | A pure 500-node catalog provides 167 building, 167 recipe/resource, and 166 upgrade nodes across named families, with stable IDs, typed payloads, AND prerequisites, and layout coordinates. The live Mill study is reconciled without changing those totals. The full-page client ledger renders the complete graph; generated nodes honestly remain read-only until runtime integration. | in progress | Catalog validation and exact-size UI campaign are verified; integrate purchasing/effects/persistence and the once-per-real-day leader choice, then repeat the live interaction campaign |
 | Founding population and housing | Founding creates exactly 15 adult cats and three complete five-bed Dens. Slow pregnancy starts after establishment and reserves a permanent bed through 18 game-hours of gestation. Prosperity migration begins after 30 game-hours, checks every 12 hours, and gives a real unhoused arrival 36 game-hours to obtain a bed before departure. Once breeding is established, permanent migration leaves the last real vacancy for a family unless a pregnancy already owns it. Extinction atomically restores the founding state with run-scoped identities. | verified | Five-seed 300h twins, signed guided Den campaign, family-vacancy/migration tests, persistence/restart, exact 15/15 and selected-probation framebuffers, independent review, and four-crate gates |
@@ -64,13 +64,13 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 
 | Document | Implementation status | Follow-up |
 | --- | --- | --- |
-| `docs/GAME_VISION.md` | current intent, partially implemented | Finish manual-to-officer automation, physical workshop/farm labor, usable multi-village, and complete visible production controls; preserve the verified housing lifecycle |
+| `docs/GAME_VISION.md` | current intent, partially implemented | Finish manual-to-officer automation, physical workshop/farm labor, and complete visible production controls; preserve the verified housing and multi-village lifecycles |
 | `docs/ARCHITECTURE.md` | reconciled | Keep the maintained founding/life-pacing contract and known-gap section synchronized with real runtime state |
 | `docs/HANDOFF.md` | reconciled | Keep NEXT STEPS and verified evidence synchronized here |
 | `docs/migration/BOARD.md` | core migration complete, expansion rollup reconciled | Close partial P12–P19 slices only after their feature campaigns |
 | `p12-idle-cat-forest.md` | partial | Officers, manual work, all-labor skills, physical workshop/farm logistics, local inventories, role-building gates, shrine reachability |
 | `p14-spatial-placement.md` | partial | Atomic placement/reservations/scaffold recovery, full 2×3 tree/1×1 rock occupancy, soft obstacles, and exact road surfaces are verified; staged outer-wall growth remains |
-| `p15-playtest-feedback.md` | partial | Dynamic infinite map is fixed; multi-village UX and richer actions remain |
+| `p15-playtest-feedback.md` | partial | Dynamic infinite map and secure global/personal village play are fixed; richer exact actions remain |
 | `p16-village-blueprint.md` | partial | The 15-adult/three-five-bed-Den lifecycle, founding clearing, exterior water, and exact road surfaces/gate are verified; fishing/gather controls, agricultural territory, and reachable physical production chains remain |
 | `p17-biome-generator.md` | simulation-heavy, product partial | Apply fine-biome movement, expose resources/logistics, and replace placeholder rail/shipping with real transport |
 | `p18-visual-polish.md` | partial | Open stations, the label-free map, and the Adventure panel/button/progress/cursor skin are native-framebuffer verified; Accounting Tent reachability and WASM visual interaction remain |
@@ -96,7 +96,7 @@ checked by requirement group so “historical” does not conceal a dropped curr
 | Fog, expeditions, path wear, terrain travel cost, walls, and gates | Carried forward; shrine-return resource/general scouting and the current dirt/stone road model are verified above, while staged closed-perimeter expansion remains open |
 | Click-to-feed/heal/assign/fight and a browser task queue | Superseded by typed management actions and the manual-to-officer loop; missing usable Bevy controls remain open above |
 | Blessings, buildings, and the original ~18-node research tree | Carried forward; faucet reachability is in progress and the current direction expands the tree to about 500 nodes |
-| Multiple colonies and inter-colony trade | Partially carried forward; authoritative multi-colony state and traders exist, while global/personal ownership, meeting, and direct trade remain open |
+| Multiple colonies and inter-colony trade | Carried forward and extended: the global/personal ownership model, shrine-knowledge meeting, and direct consensual resource barter are live alongside visiting traders |
 | External sprite-render service, DOM/Pixi rendering, isometric/elevation experiments, and newspaper UI | Superseded or explicitly dropped by the Rust/Bevy top-down direction |
 | Seasonal events, achievements, accessories, sound/music, and a mobile app | Listed only as non-MVP future ideas in the original document; not current commitments unless promoted into `GAME_VISION.md` |
 | Historical roadmap stretch items such as traveler interception and elevation-aware zones | Not current commitments. Fishing and real rail/ship transport were later promoted by P16/P17/P19 and are open above. |
@@ -206,6 +206,49 @@ server tests plus strict Clippy and formatting. It includes the organic seed-7 r
 the finite-civic-before-open-field expansion regression, and a cold-reload assertion for the
 derived decoration cache. The remaining world-layout item is staged outer-wall construction; the
 longer-term farm-territory boundary is tracked separately above.
+
+### Secure shared-world villages and direct barter — 2026-07-14
+
+The shared world now enforces one canonical global village and at most one personal village for
+each stable HMAC-backed player identity. Personal site choice is keyed by world seed and player
+identity, scans deterministic viable grass/lowland candidates, remains order-stable and
+overflow-safe, and keeps every village at least 48 tiles apart. Replaying Found is idempotent.
+Anonymous sockets can inspect the global village but cannot mutate it; authenticated players can
+control the global village, owners additionally receive their personal simulation, and every
+foreign private simulation is removed server-side rather than merely hidden by the client.
+Reconnects and SQLite restarts restore the same bearer, ownership, village, and selection.
+Native bearer updates use a private same-directory temporary file, `sync_all`, and atomic rename;
+a forced temporary-write failure proves the previous bearer and selected village survive intact.
+
+Village contact uses explicit shrine-delivery provenance: neither a provisional notebook nor a
+generic permanent reveal from expansion, recovery, or a legacy save can count. Only tiles carried
+home by a living scout during that tick can reach another shrine and create mutual contact.
+Contact exposes a name/kind/anchor summary, never the other owner's cats,
+resources, jobs, owner id, or mutation capability. Once contact exists, a source owner can make a
+signed resource-for-resource proposal; only the target village's controller can accept it.
+Acceptance rechecks both inventories and receiving storage, swaps both sides atomically,
+reconciles physical stockpile totals, and removes the offer. The source may cancel; invalid,
+unknown, foreign, self, non-finite, same-resource, underfunded, and over-capacity trades fail
+without mutation. Each source village is capped at 32 open offers, preventing unbounded persisted
+state without pretending offered stock is reserved; acceptance always performs the authoritative
+stock recheck.
+
+The server campaign uses two independent signed players to found separated villages, create
+mutual contact, verify summary-only projection, propose a barter, and accept it through the real
+action handler. Separate intruder, reconnect, database-restart, collision-exhaustion, and
+generic-reveal-versus-shrine-delivery discovery tests cover the boundaries. Full world saves use
+one SQLite transaction, with forced-insert rollback proving the prior complete save survives.
+Colony-local cat/job/building/event/election/vote/raider ids are namespaced only in SQLite storage,
+so two villages queuing the same timestamp-derived runtime id cannot collide. A simultaneous
+two-village tick/save/reload test guards the exact failure found during the live framebuffer run,
+and a shipped-schema regression proves old global-primary-key building tables also remain usable.
+The compact selector persists its selected village across process restart and exposes
+known-village coordinates plus configurable give/ask resource and amount controls alongside
+offer/accept/cancel. The exact gate lists 845
+`cat-sim`, 29 `cat-protocol`, 44 `cat-server`, and 105 `cat-client` tests (1,023 total) with strict four-crate
+Clippy and formatting. A booted-server 1920×1080 own-framebuffer capture visibly proves the
+communal and owned-personal selector rows; the known/contact actions are covered by the signed
+campaign and exact client-action tests. All temporary capture code and processes were removed.
 
 ### Unattended live cadence — 2026-07-13
 

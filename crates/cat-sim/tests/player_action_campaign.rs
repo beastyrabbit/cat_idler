@@ -81,6 +81,9 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::SetTestRngSeed { .. } => "set_test_rng_seed",
         proto::ClientAction::FoundVillage { .. } => "found_village",
         proto::ClientAction::JoinVillage { .. } => "join_village",
+        proto::ClientAction::OfferVillageTrade { .. } => "offer_village_trade",
+        proto::ClientAction::AcceptVillageTrade { .. } => "accept_village_trade",
+        proto::ClientAction::CancelVillageTrade { .. } => "cancel_village_trade",
         proto::ClientAction::AssignOfficer { .. } => "assign_officer",
         proto::ClientAction::UnassignOfficer { .. } => "unassign_officer",
         proto::ClientAction::DesignateFarm { .. } => "designate_farm",
@@ -250,6 +253,7 @@ fn run_action_campaign() -> WorldState {
         proto::ClientAction::JoinVillage {
             colony_id: "colony-1".to_owned(),
             session_id: "campaign-session".to_owned(),
+            sig: None,
         },
         &ctx(2_000),
     );
@@ -260,6 +264,7 @@ fn run_action_campaign() -> WorldState {
         proto::ClientAction::FoundVillage {
             name: "Second Grove".to_owned(),
             session_id: "campaign-session".to_owned(),
+            sig: None,
         },
         &ctx(2_000),
     );

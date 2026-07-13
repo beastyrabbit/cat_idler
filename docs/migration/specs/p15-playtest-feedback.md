@@ -1,8 +1,8 @@
 # P15 — Playtest feedback backlog (user, 2026-07-10)
 
 > **Living feedback spec.** Movement smoothing, the booster, infinite-map streaming, and
-> shrine-return scouting are verified. Exact player controls, global/personal villages, richer
-> inspectors, and complete visible roads remain open in
+> shrine-return scouting and secure global/personal villages are verified. Exact player controls,
+> richer inspectors, and complete visible roads remain open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Captured from live `cargo dev` playtesting. Triaged; "already there" notes from a code survey.
@@ -68,8 +68,11 @@ Two-tier inspector, driven by the cursor:
   matchCatsToSlots fit scoring.
 - **Elections auto-run.** Term elections exist (`elections.rs`); verify `runElectionLifecycle`
   fires each tick and resolves terms without player action; surface the schedule in the HUD.
-- **Unlimited map / multiple settlements.** Terrain already infinite (per-chunk) + multi-colony
-  supported. Verify the client can roam/render arbitrary chunks and found new villages anywhere.
+- **Unlimited map / multiple settlements.** Terrain is infinite and authoritative multi-colony
+  play is live. Each stable signed identity can found one deterministic distant personal village,
+  retain ownership and selection across restart, discover another village only through explicit
+  returned-scout delivery provenance, and configure barter through signed capped atomic
+  propose/accept actions while foreign state stays summary-only.
 
 ## Assets
 - **Better wall asset** — the palisade could read better; source a nicer fence/wall (Roguelike/
@@ -79,6 +82,6 @@ Two-tier inspector, driven by the cursor:
 
 ## Existing foundations (verify before extending)
 - Cat movement, chunked-infinite terrain, authoritative multi-colony state, and term elections
-  exist in the sim. Shrine-return fog/scouting is now verified. Usable global/personal founding
-  and ownership, election controls, and several richer inspection/road paths remain product work;
-  authoritative data structures alone are not completion.
+  exist in the sim. Shrine-return fog/scouting plus usable global/personal founding, ownership,
+  discovery, and barter are verified. Election controls and several richer inspection/road paths
+  remain product work; authoritative data structures alone are not completion.

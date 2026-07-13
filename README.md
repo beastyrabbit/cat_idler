@@ -242,9 +242,9 @@ include the responsive authoritative server, selected-village routing, a product
 image, bounded world streaming, label-free roofed homes/open stations, the full-page 500-study
 ledger, and exterior farming/logging with distinct Mill/Sawmill production. Those foundations
 do not mean every P12–P19 design promise is complete: manual/officer ownership, physical local
-workshop logistics, generated-study effects, the global/personal village model, founding
-housing/migration final verification, exact roads/transport, recipe breadth, and exhaustive
-guided play remain. The accepted founding contract is 15 adults in three five-bed Dens, slow
+workshop logistics, generated-study effects, exact roads/transport, recipe breadth, and exhaustive
+guided play remain. The global/personal village model and founding housing/migration lifecycle
+are verified. The accepted founding contract is 15 adults in three five-bed Dens, slow
 reserved-bed pregnancy, prosperity migration with 36 game-hours to house each arrival,
 deterministic reset, physical emergency water hauling, and 240/288-game-hour ordinary versus
 leader/healer old-age thresholds.

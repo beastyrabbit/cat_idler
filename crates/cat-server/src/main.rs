@@ -2,7 +2,7 @@
 //! `server/game.ts:workerTick` and `app/api/game/actions/route.ts`.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc,
         atomic::{AtomicU32, AtomicU64, Ordering},
@@ -25,10 +25,13 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use cat_protocol::{ActionResult, ClientAction, WorldSnapshot};
+use cat_protocol::{
+    ActionResult, ClientAction, VillageCapabilities, VillageKind as ProtocolVillageKind,
+    WorldSnapshot,
+};
 use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
-    world_tick::{WorldState, found_colony, new_world, world_tick},
+    world_tick::{TilePos, VillageKind, WorldState, found_colony, new_world, world_tick},
 };
 use hosting::ServerConfig;
 use identity::{SignedSession, issue_session, signed_session, verify_session};
@@ -69,10 +72,49 @@ struct AppState {
     /// client, and each socket still applies its own selected-colony ordering.
     completed_snapshot: Arc<RwLock<WorldSnapshot>>,
     snapshots: broadcast::Sender<WorldSnapshot>,
+    /// Non-wire ownership directory used to project the shared tick snapshot for
+    /// each socket. Keeping this separate makes it impossible for serialization
+    /// to accidentally expose stable owner identifiers.
+    village_directory: Arc<RwLock<BTreeMap<String, VillageDirectoryEntry>>>,
     online_count: Arc<AtomicU32>,
     rate_limiter: Arc<Mutex<RateLimiter>>,
     session_secret: Arc<String>,
     allow_test_actions: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VillageDirectoryEntry {
+    name: String,
+    anchor: TilePos,
+    kind: VillageKind,
+    owner_player_id: Option<String>,
+    known_village_ids: BTreeSet<String>,
+}
+
+fn village_directory(world: &WorldState) -> BTreeMap<String, VillageDirectoryEntry> {
+    world
+        .colonies
+        .iter()
+        .map(|colony| {
+            (
+                colony.id.clone(),
+                VillageDirectoryEntry {
+                    name: colony.name.clone(),
+                    anchor: colony.anchor,
+                    kind: colony.kind,
+                    owner_player_id: colony.owner_player_id.clone(),
+                    known_village_ids: colony.known_village_ids.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn global_village_id(directory: &BTreeMap<String, VillageDirectoryEntry>) -> String {
+    directory
+        .iter()
+        .find_map(|(id, entry)| (entry.kind == VillageKind::Global).then(|| id.clone()))
+        .unwrap_or_else(|| STARTER_COLONY_ID.to_owned())
 }
 
 #[tokio::main]
@@ -232,7 +274,21 @@ fn build_state_from_connection(
     conn: Connection,
     session_secret: String,
 ) -> rusqlite::Result<AppState> {
-    let world = load_world(&conn)?.unwrap_or_else(|| starter_world(now_ms));
+    let mut world = load_world(&conn)?.unwrap_or_else(|| starter_world(now_ms));
+    if world.colonies.is_empty() {
+        world = starter_world(now_ms);
+    }
+    if world
+        .colonies
+        .iter()
+        .filter(|colony| colony.kind == VillageKind::Global)
+        .count()
+        != 1
+    {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "loaded world must contain exactly one global village".to_owned(),
+        ));
+    }
     Ok(build_state_from_world(
         world,
         conn,
@@ -251,12 +307,14 @@ fn build_state_from_world(
 ) -> AppState {
     let (snapshots, _) = broadcast::channel(SNAPSHOT_CHANNEL_CAPACITY);
     let completed_snapshot = build_snapshot(&world, now_ms, 0);
+    let village_directory = village_directory(&world);
 
     AppState {
         world: Arc::new(Mutex::new(world)),
         db: Arc::new(Mutex::new(conn)),
         completed_snapshot: Arc::new(RwLock::new(completed_snapshot)),
         snapshots,
+        village_directory: Arc::new(RwLock::new(village_directory)),
         online_count: Arc::new(AtomicU32::new(0)),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(
             ACTION_LIMIT_MAX,
@@ -318,6 +376,7 @@ fn spawn_tick_task(state: AppState) {
 #[derive(Debug)]
 struct CompletedTick {
     snapshot: WorldSnapshot,
+    village_directory: BTreeMap<String, VillageDirectoryEntry>,
     simulation_ms: u128,
     snapshot_ms: u128,
     persistence_ms: u128,
@@ -345,6 +404,7 @@ async fn run_tick_once(
 
         let snapshot_started = Instant::now();
         let snapshot = build_snapshot(&world, now, online_count);
+        let village_directory = village_directory(&world);
         let snapshot_ms = snapshot_started.elapsed().as_millis();
         let persistence_started = Instant::now();
         let world_to_save = ticks
@@ -361,6 +421,7 @@ async fn run_tick_once(
 
         CompletedTick {
             snapshot,
+            village_directory,
             simulation_ms,
             snapshot_ms,
             persistence_ms: persistence_started.elapsed().as_millis(),
@@ -375,6 +436,7 @@ async fn run_tick_once(
         "simulation tick completed"
     );
     *state.completed_snapshot.write().await = completed.snapshot.clone();
+    *state.village_directory.write().await = completed.village_directory;
     if state.snapshots.send(completed.snapshot).is_err() {
         debug!("no websocket snapshot receivers");
     }
@@ -423,11 +485,14 @@ async fn save_current_world(state: &AppState) -> rusqlite::Result<()> {
 
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::SeqCst);
-    let mut connection = ConnectionContext::new(format!("ws-{connection_id}"));
+    let directory = state.village_directory.read().await;
+    let global_id = global_village_id(&directory);
+    drop(directory);
+    let mut connection = ConnectionContext::new(format!("ws-{connection_id}"), global_id);
     let online_count = state.online_count.fetch_add(1, Ordering::SeqCst) + 1;
     let mut snapshots = state.snapshots.subscribe();
 
-    if send_current_snapshot(&mut socket, &state, online_count, &connection.colony_id)
+    if send_current_snapshot(&mut socket, &state, online_count, &connection)
         .await
         .is_err()
     {
@@ -440,7 +505,14 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             snapshot = snapshots.recv() => {
                 match snapshot {
                     Ok(snapshot) => {
-                        let snapshot = prioritize_colony(snapshot, &connection.colony_id);
+                        let directory = state.village_directory.read().await;
+                        let snapshot = project_snapshot(
+                            snapshot,
+                            &directory,
+                            connection.identity.as_ref(),
+                            &connection.colony_id,
+                        );
+                        drop(directory);
                         if send_snapshot(&mut socket, &snapshot).await.is_err() {
                             break;
                         }
@@ -482,16 +554,127 @@ async fn send_current_snapshot(
     socket: &mut WebSocket,
     state: &AppState,
     online_count: u32,
-    colony_id: &str,
+    connection: &ConnectionContext,
 ) -> Result<(), axum::Error> {
-    let snapshot = current_snapshot(state, online_count, colony_id).await;
+    let snapshot = current_snapshot(state, online_count, connection).await;
     send_snapshot(socket, &snapshot).await
 }
 
-async fn current_snapshot(state: &AppState, online_count: u32, colony_id: &str) -> WorldSnapshot {
+async fn current_snapshot(
+    state: &AppState,
+    online_count: u32,
+    connection: &ConnectionContext,
+) -> WorldSnapshot {
     let mut snapshot = state.completed_snapshot.read().await.clone();
     snapshot.online_count = online_count;
-    prioritize_colony(snapshot, colony_id)
+    let directory = state.village_directory.read().await;
+    project_snapshot(
+        snapshot,
+        &directory,
+        connection.identity.as_ref(),
+        &connection.colony_id,
+    )
+}
+
+/// Produce the only snapshot shape that may cross a socket. Undiscovered
+/// personal villages are removed server-side, so hiding selector rows in the
+/// client can never become a privacy boundary.
+fn project_snapshot(
+    mut snapshot: WorldSnapshot,
+    directory: &BTreeMap<String, VillageDirectoryEntry>,
+    identity: Option<&SignedSession>,
+    requested_colony_id: &str,
+) -> WorldSnapshot {
+    snapshot.known_villages.clear();
+    snapshot.colonies.retain(|colony| {
+        directory.get(&colony.id).is_some_and(|entry| {
+            entry.kind == VillageKind::Global
+                || identity.is_some_and(|identity| {
+                    entry.owner_player_id.as_deref() == Some(identity.player_id.as_str())
+                })
+        })
+    });
+    for colony in &mut snapshot.colonies {
+        let Some(entry) = directory.get(&colony.id) else {
+            continue;
+        };
+        let is_owner = identity.is_some_and(|identity| {
+            entry.owner_player_id.as_deref() == Some(identity.player_id.as_str())
+        });
+        colony.kind = match entry.kind {
+            VillageKind::Global => ProtocolVillageKind::Global,
+            VillageKind::Personal => ProtocolVillageKind::Personal,
+        };
+        colony.capabilities = VillageCapabilities {
+            can_view: true,
+            can_control: identity.is_some() && (entry.kind == VillageKind::Global || is_owner),
+            is_owner,
+        };
+    }
+
+    let controlled_ids = snapshot
+        .colonies
+        .iter()
+        .filter(|colony| colony.capabilities.can_control)
+        .map(|colony| colony.id.clone())
+        .collect::<BTreeSet<_>>();
+    snapshot.village_trade_offers.retain(|offer| {
+        identity.is_some()
+            && (controlled_ids.contains(&offer.from_colony_id)
+                || controlled_ids.contains(&offer.to_colony_id))
+    });
+
+    let selected = snapshot
+        .colonies
+        .iter()
+        .any(|colony| colony.id == requested_colony_id)
+        .then(|| requested_colony_id.to_owned())
+        .or_else(|| {
+            snapshot
+                .colonies
+                .iter()
+                .find(|colony| colony.kind == ProtocolVillageKind::Global)
+                .map(|colony| colony.id.clone())
+        })
+        .or_else(|| snapshot.colonies.first().map(|colony| colony.id.clone()));
+    snapshot.selected_colony_id.clone_from(&selected);
+    if let Some(selected_id) = selected.as_deref()
+        && let Some(selected_entry) = directory.get(selected_id)
+    {
+        snapshot.known_villages = selected_entry
+            .known_village_ids
+            .iter()
+            .filter_map(|village_id| {
+                let entry = directory.get(village_id)?;
+                let is_owner = identity.is_some_and(|identity| {
+                    entry.owner_player_id.as_deref() == Some(identity.player_id.as_str())
+                });
+                Some(cat_protocol::VillageSummary {
+                    id: village_id.clone(),
+                    name: entry.name.clone(),
+                    kind: match entry.kind {
+                        VillageKind::Global => ProtocolVillageKind::Global,
+                        VillageKind::Personal => ProtocolVillageKind::Personal,
+                    },
+                    anchor: cat_protocol::TilePoint {
+                        x: entry.anchor.x,
+                        y: entry.anchor.y,
+                    },
+                    capabilities: VillageCapabilities {
+                        can_view: entry.kind == VillageKind::Global || is_owner,
+                        can_control: identity.is_some()
+                            && (entry.kind == VillageKind::Global || is_owner),
+                        is_owner,
+                    },
+                })
+            })
+            .collect();
+    }
+    if let Some(selected) = selected {
+        prioritize_colony(snapshot, &selected)
+    } else {
+        snapshot
+    }
 }
 
 /// Keep the socket-selected colony first because the current client renders the
@@ -516,11 +699,11 @@ struct ConnectionContext {
 }
 
 impl ConnectionContext {
-    fn new(limiter_fallback: String) -> Self {
+    fn new(limiter_fallback: String, global_colony_id: String) -> Self {
         Self {
             limiter_fallback,
             identity: None,
-            colony_id: STARTER_COLONY_ID.to_owned(),
+            colony_id: global_colony_id,
         }
     }
 
@@ -550,6 +733,7 @@ impl ServerActionResult {
         Self::from_result(ActionResult {
             ok: true,
             message: None,
+            colony_id: None,
         })
     }
 
@@ -557,6 +741,7 @@ impl ServerActionResult {
         Self::from_result(ActionResult {
             ok: false,
             message: Some(message.into()),
+            colony_id: None,
         })
     }
 
@@ -574,6 +759,12 @@ impl ServerActionResult {
             object.insert(
                 "message".to_owned(),
                 serde_json::Value::String(message.clone()),
+            );
+        }
+        if let Some(colony_id) = &self.result.colony_id {
+            object.insert(
+                "colonyId".to_owned(),
+                serde_json::Value::String(colony_id.clone()),
             );
         }
         for (key, value) in &self.fields {
@@ -614,7 +805,8 @@ async fn handle_client_text(
             .as_ref()
             .is_some_and(|identity| identity.session_id != signed.session_id)
         {
-            connection.colony_id = STARTER_COLONY_ID.to_owned();
+            let directory = state.village_directory.read().await;
+            connection.colony_id = global_village_id(&directory);
         }
         connection.identity = Some(signed.clone());
         return ServerActionResult::ok().with_signed_session(signed);
@@ -666,8 +858,8 @@ async fn handle_client_text(
     if result.ok {
         match &action {
             ClientAction::FoundVillage { .. } => {
-                if let Some(colony) = world.colonies.last() {
-                    connection.colony_id.clone_from(&colony.id);
+                if let Some(colony_id) = &result.colony_id {
+                    connection.colony_id.clone_from(colony_id);
                 }
             }
             ClientAction::JoinVillage { colony_id, .. } => {
@@ -675,6 +867,19 @@ async fn handle_client_text(
             }
             _ => {}
         }
+    }
+    let refreshed_directory =
+        matches!(action, ClientAction::FoundVillage { .. }).then(|| village_directory(&world));
+    let refreshed_snapshot = result
+        .ok
+        .then(|| build_snapshot(&world, now, state.online_count.load(Ordering::SeqCst)));
+    drop(world);
+    if let Some(directory) = refreshed_directory {
+        *state.village_directory.write().await = directory;
+    }
+    if let Some(snapshot) = refreshed_snapshot {
+        *state.completed_snapshot.write().await = snapshot.clone();
+        let _ = state.snapshots.send(snapshot);
     }
     ServerActionResult::from_result(result)
 }
@@ -781,11 +986,25 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         }
         | ClientAction::RemoveGatherSpot {
             session_id, sig, ..
-        } => ActionAuthentication::Signed { session_id, sig },
-        ClientAction::FoundVillage { session_id, .. }
-        | ClientAction::JoinVillage { session_id, .. } => {
-            ActionAuthentication::SessionBound { session_id }
         }
+        | ClientAction::OfferVillageTrade {
+            session_id, sig, ..
+        }
+        | ClientAction::AcceptVillageTrade {
+            session_id, sig, ..
+        }
+        | ClientAction::CancelVillageTrade {
+            session_id, sig, ..
+        } => ActionAuthentication::Signed { session_id, sig },
+        ClientAction::FoundVillage {
+            session_id, sig, ..
+        }
+        | ClientAction::JoinVillage {
+            session_id, sig, ..
+        } => match sig {
+            Some(sig) => ActionAuthentication::Signed { session_id, sig },
+            None => ActionAuthentication::SessionBound { session_id },
+        },
         ClientAction::Ensure
         | ClientAction::SetTestAcceleration { .. }
         | ClientAction::AdvanceTime { .. }
@@ -849,6 +1068,7 @@ mod tests {
     use tower::ServiceExt;
 
     static NEXT_STATIC_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
+    static NEXT_DATABASE_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
 
     struct StaticFixture {
         root: PathBuf,
@@ -970,13 +1190,18 @@ mod tests {
 
         let initial = tokio::time::timeout(
             Duration::from_millis(50),
-            current_snapshot(&state, 7, STARTER_COLONY_ID),
+            current_snapshot(
+                &state,
+                7,
+                &ConnectionContext::new("slow-tick-test".to_owned(), STARTER_COLONY_ID.to_owned()),
+            ),
         )
         .await
         .expect("websocket initial snapshot reads the completed cache");
         assert_eq!(initial.now, startup_snapshot.now);
         assert_eq!(initial.online_count, 7);
-        assert_eq!(initial.colonies, startup_snapshot.colonies);
+        assert_eq!(initial.colonies[0].id, startup_snapshot.colonies[0].id);
+        assert!(!initial.colonies[0].capabilities.can_control);
 
         slow_tick
             .await
@@ -994,9 +1219,11 @@ mod tests {
             1_000_000,
             STARTER_COLONY_SEED,
         ));
-        world
-            .colonies
-            .push(found_colony(WORLD_SEED, "beta", 1_000_000, 2));
+        let owner = signed_session("owner-session".to_owned(), "test-session-secret");
+        let mut beta_colony = found_colony(WORLD_SEED, "beta", 1_000_000, 2);
+        beta_colony.kind = VillageKind::Personal;
+        beta_colony.owner_player_id = Some(owner.player_id.clone());
+        world.colonies.push(beta_colony);
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         persistence::init_schema(&conn).expect("init in-memory schema");
         let state = build_state_from_world(
@@ -1007,7 +1234,11 @@ mod tests {
             1_000_000,
         );
 
-        let beta = current_snapshot(&state, 1, "beta").await;
+        let mut owner_connection =
+            ConnectionContext::new("owner".to_owned(), STARTER_COLONY_ID.to_owned());
+        owner_connection.identity = Some(owner);
+        owner_connection.colony_id = "beta".to_owned();
+        let beta = current_snapshot(&state, 1, &owner_connection).await;
         assert_eq!(beta.colonies[0].id, "beta");
         let canonical = state.completed_snapshot.read().await;
         assert_eq!(canonical.colonies[0].id, STARTER_COLONY_ID);
@@ -1159,7 +1390,8 @@ mod tests {
 
     fn authenticated_connection(state: &AppState) -> (ConnectionContext, SignedSession) {
         let signed = signed_session("session-1".to_owned(), state.session_secret.as_str());
-        let mut connection = ConnectionContext::new("test-connection".to_owned());
+        let mut connection =
+            ConnectionContext::new("test-connection".to_owned(), STARTER_COLONY_ID.to_owned());
         connection.identity = Some(signed.clone());
         (connection, signed)
     }
@@ -1229,7 +1461,8 @@ mod tests {
         // Exercise the real production handshake: the server issues the signed
         // session, binds it to this connection, and the following build action is
         // authenticated through the same HMAC path as a websocket client.
-        let mut connection = ConnectionContext::new("guided-player".to_owned());
+        let mut connection =
+            ConnectionContext::new("guided-player".to_owned(), STARTER_COLONY_ID.to_owned());
         let presence = send_action(
             &guided,
             &mut connection,
@@ -1376,6 +1609,7 @@ mod tests {
         let action = ClientAction::FoundVillage {
             name: "Newford".to_owned(),
             session_id: "session-1".to_owned(),
+            sig: None,
         };
         let ctx = ActionCtx {
             session_id: "session-1".to_owned(),
@@ -1405,6 +1639,7 @@ mod tests {
         let action = ClientAction::FoundVillage {
             name: "Newford".to_owned(),
             session_id: "session-1".to_owned(),
+            sig: None,
         };
 
         let encoded = serde_json::to_string(&action).expect("serialize action");
@@ -1416,7 +1651,8 @@ mod tests {
     #[tokio::test]
     async fn actions_require_a_socket_bound_presence_identity() {
         let state = build_state(1_000_000);
-        let mut connection = ConnectionContext::new("connection-a".to_owned());
+        let mut connection =
+            ConnectionContext::new("connection-a".to_owned(), STARTER_COLONY_ID.to_owned());
         let signed = signed_session("session-1".to_owned(), state.session_secret.as_str());
         let cat_id = state.world.lock().await.colonies[0].cats[0].id.clone();
         let action = ClientAction::AssignOfficer {
@@ -1447,6 +1683,7 @@ mod tests {
         let action = ClientAction::FoundVillage {
             name: "Intruder Hollow".to_owned(),
             session_id: "different-session".to_owned(),
+            sig: None,
         };
 
         let result = send_action(&state, &mut connection, &action).await;
@@ -1532,20 +1769,23 @@ mod tests {
     #[tokio::test]
     async fn authenticated_join_routes_mutations_and_snapshots_to_selected_colony() {
         let state = build_state(1_000_000);
-        {
-            let mut world = state.world.lock().await;
-            let world_seed = world.world_seed;
-            world
-                .colonies
-                .push(found_colony(world_seed, "beta", 1_000_000, 22));
-        }
         let (mut connection, signed) = authenticated_connection(&state);
-        let join = ClientAction::JoinVillage {
-            colony_id: "beta".to_owned(),
+        let found = ClientAction::FoundVillage {
+            name: "Beta".to_owned(),
             session_id: signed.session_id.clone(),
+            sig: Some(signed.sig.clone()),
+        };
+        let found_result = send_action(&state, &mut connection, &found).await;
+        assert!(found_result.result.ok, "{found_result:?}");
+        let beta_id = found_result.result.colony_id.expect("personal village id");
+        connection.colony_id = STARTER_COLONY_ID.to_owned();
+        let join = ClientAction::JoinVillage {
+            colony_id: beta_id.clone(),
+            session_id: signed.session_id.clone(),
+            sig: Some(signed.sig.clone()),
         };
         assert!(send_action(&state, &mut connection, &join).await.result.ok);
-        assert_eq!(connection.colony_id, "beta");
+        assert_eq!(connection.colony_id, beta_id);
 
         let beta_cat_id = state.world.lock().await.colonies[1].cats[0].id.clone();
         let assign = ClientAction::AssignOfficer {
@@ -1570,8 +1810,344 @@ mod tests {
                 .get(&cat_sim::officers::OfficerRole::Farmer),
             Some(&beta_cat_id)
         );
-        let snapshot = prioritize_colony(build_snapshot(&world, 1_000_000, 1), "beta");
-        assert_eq!(snapshot.colonies[0].id, "beta");
+        drop(world);
+        let snapshot = current_snapshot(&state, 1, &connection).await;
+        assert_eq!(snapshot.colonies[0].id, beta_id);
+        assert!(snapshot.colonies[0].capabilities.is_owner);
+    }
+
+    #[tokio::test]
+    async fn strangers_never_receive_or_control_a_private_village() {
+        let state = build_state(1_000_000);
+        let (mut owner_connection, owner) = authenticated_connection(&state);
+        let found = ClientAction::FoundVillage {
+            name: "Secret Fern".to_owned(),
+            session_id: owner.session_id.clone(),
+            sig: Some(owner.sig.clone()),
+        };
+        let result = send_action(&state, &mut owner_connection, &found).await;
+        let private_id = result.result.colony_id.expect("founded id");
+        let anonymous =
+            ConnectionContext::new("anonymous".to_owned(), STARTER_COLONY_ID.to_owned());
+        let anonymous_snapshot = current_snapshot(&state, 1, &anonymous).await;
+        let anonymous_json = serde_json::to_string(&anonymous_snapshot).expect("snapshot json");
+        assert_eq!(anonymous_snapshot.colonies.len(), 1);
+        assert!(!anonymous_json.contains("Secret Fern"));
+        assert!(!anonymous_json.contains(&private_id));
+        assert!(!anonymous_json.contains("ownerPlayerId"));
+
+        let intruder = signed_session("intruder-session".to_owned(), state.session_secret.as_str());
+        let mut intruder_connection =
+            ConnectionContext::new("intruder".to_owned(), STARTER_COLONY_ID.to_owned());
+        intruder_connection.identity = Some(intruder.clone());
+        let intruder_snapshot = current_snapshot(&state, 1, &intruder_connection).await;
+        assert_eq!(intruder_snapshot.colonies.len(), 1);
+        let join = ClientAction::JoinVillage {
+            colony_id: private_id,
+            session_id: intruder.session_id,
+            sig: Some(intruder.sig),
+        };
+        let denied = send_action(&state, &mut intruder_connection, &join).await;
+        assert!(!denied.result.ok);
+        assert_eq!(intruder_connection.colony_id, STARTER_COLONY_ID);
+
+        let owner_snapshot = current_snapshot(&state, 1, &owner_connection).await;
+        assert_eq!(owner_snapshot.colonies.len(), 2);
+        assert!(owner_snapshot.colonies[0].capabilities.is_owner);
+        assert!(owner_snapshot.colonies[0].capabilities.can_control);
+    }
+
+    #[tokio::test]
+    async fn two_signed_players_found_discover_and_atomically_trade_between_villages() {
+        let state = build_state(1_000_000);
+        let first_identity =
+            signed_session("first-player".to_owned(), state.session_secret.as_str());
+        let second_identity =
+            signed_session("second-player".to_owned(), state.session_secret.as_str());
+        let mut first = ConnectionContext::new("first".to_owned(), STARTER_COLONY_ID.to_owned());
+        first.identity = Some(first_identity.clone());
+        let mut second = ConnectionContext::new("second".to_owned(), STARTER_COLONY_ID.to_owned());
+        second.identity = Some(second_identity.clone());
+
+        let first_found = send_action(
+            &state,
+            &mut first,
+            &ClientAction::FoundVillage {
+                name: "Moss Rest".to_owned(),
+                session_id: first_identity.session_id.clone(),
+                sig: Some(first_identity.sig.clone()),
+            },
+        )
+        .await;
+        let first_id = first_found.result.colony_id.expect("first village");
+        let second_found = send_action(
+            &state,
+            &mut second,
+            &ClientAction::FoundVillage {
+                name: "Reed Rest".to_owned(),
+                session_id: second_identity.session_id.clone(),
+                sig: Some(second_identity.sig.clone()),
+            },
+        )
+        .await;
+        let second_id = second_found.result.colony_id.expect("second village");
+        assert_ne!(first_id, second_id);
+
+        // Model completed shrine-return exploration without bypassing any action
+        // authorization: contact itself is simulation state, while both trade
+        // mutations below traverse the real signed server handler.
+        {
+            let mut world = state.world.lock().await;
+            let first_index = world
+                .colonies
+                .iter()
+                .position(|colony| colony.id == first_id)
+                .expect("first runtime");
+            let second_index = world
+                .colonies
+                .iter()
+                .position(|colony| colony.id == second_id)
+                .expect("second runtime");
+            let second_anchor = world.colonies[second_index].anchor;
+            world.colonies[first_index]
+                .pending_scout_delivery_tiles
+                .insert(TilePos {
+                    x: second_anchor.x + 1,
+                    y: second_anchor.y + 1,
+                });
+            cat_sim::world_tick::reconcile_village_discoveries(&mut world);
+            assert!(
+                world.colonies[first_index]
+                    .known_village_ids
+                    .contains(&second_id)
+            );
+            assert!(
+                world.colonies[second_index]
+                    .known_village_ids
+                    .contains(&first_id)
+            );
+            world.colonies[first_index].resources.food = 80.0;
+            world.colonies[second_index].resources.materials = 80.0;
+            let directory = village_directory(&world);
+            let snapshot = build_snapshot(&world, 1_000_000, 2);
+            drop(world);
+            *state.village_directory.write().await = directory;
+            *state.completed_snapshot.write().await = snapshot;
+        }
+        let first_snapshot = current_snapshot(&state, 2, &first).await;
+        assert!(
+            first_snapshot
+                .known_villages
+                .iter()
+                .any(|village| village.id == second_id && !village.capabilities.can_view)
+        );
+        assert!(
+            first_snapshot
+                .colonies
+                .iter()
+                .all(|colony| colony.id != second_id),
+            "discovery shares a map summary, never a foreign private simulation"
+        );
+
+        let proposed = send_action(
+            &state,
+            &mut first,
+            &ClientAction::OfferVillageTrade {
+                session_id: first_identity.session_id,
+                nickname: "Moss Cat".to_owned(),
+                sig: first_identity.sig,
+                target_colony_id: second_id.clone(),
+                offered_kind: cat_protocol::ResourceKind::Food,
+                offered_amount: 12.0,
+                requested_kind: cat_protocol::ResourceKind::Materials,
+                requested_amount: 7.0,
+            },
+        )
+        .await;
+        assert!(proposed.result.ok, "{proposed:?}");
+        let offer_id = state
+            .world
+            .lock()
+            .await
+            .colonies
+            .iter()
+            .find(|colony| colony.id == first_id)
+            .and_then(|colony| colony.village_trade_offers.keys().next())
+            .expect("signed trade offer")
+            .clone();
+        let accepted = send_action(
+            &state,
+            &mut second,
+            &ClientAction::AcceptVillageTrade {
+                session_id: second_identity.session_id,
+                nickname: "Reed Cat".to_owned(),
+                sig: second_identity.sig,
+                offer_id,
+            },
+        )
+        .await;
+        assert!(accepted.result.ok, "{accepted:?}");
+
+        let world = state.world.lock().await;
+        let first_colony = world
+            .colonies
+            .iter()
+            .find(|colony| colony.id == first_id)
+            .expect("first colony");
+        let second_colony = world
+            .colonies
+            .iter()
+            .find(|colony| colony.id == second_id)
+            .expect("second colony");
+        assert_eq!(first_colony.resources.food, 68.0);
+        assert_eq!(second_colony.resources.materials, 73.0);
+        assert!(first_colony.resources.materials >= 67.0);
+        assert!(second_colony.resources.food >= 62.0);
+        assert!(first_colony.village_trade_offers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn restored_bearer_owns_the_same_village_across_connections() {
+        let state = build_state(1_000_000);
+        let mut first =
+            ConnectionContext::new("first-socket".to_owned(), STARTER_COLONY_ID.to_owned());
+        let issued = send_action(
+            &state,
+            &mut first,
+            &ClientAction::Presence {
+                session_id: "desktop".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: None,
+            },
+        )
+        .await;
+        let session_id = issued.fields.get("sessionId").expect("session id").clone();
+        let sig = issued.fields.get("sig").expect("signature").clone();
+        let player_id = issued.fields.get("playerId").expect("player id").clone();
+        let found = send_action(
+            &state,
+            &mut first,
+            &ClientAction::FoundVillage {
+                name: "Persistent Fern".to_owned(),
+                session_id: session_id.clone(),
+                sig: Some(sig.clone()),
+            },
+        )
+        .await;
+        let village_id = found.result.colony_id.expect("personal village");
+
+        let mut restored =
+            ConnectionContext::new("second-socket".to_owned(), STARTER_COLONY_ID.to_owned());
+        let restored_presence = send_action(
+            &state,
+            &mut restored,
+            &ClientAction::Presence {
+                session_id: session_id.clone(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: Some(sig.clone()),
+            },
+        )
+        .await;
+        assert_eq!(restored_presence.fields.get("playerId"), Some(&player_id));
+        let join = send_action(
+            &state,
+            &mut restored,
+            &ClientAction::JoinVillage {
+                colony_id: village_id.clone(),
+                session_id,
+                sig: Some(sig),
+            },
+        )
+        .await;
+
+        assert!(join.result.ok, "{join:?}");
+        assert_eq!(restored.colony_id, village_id);
+        let snapshot = current_snapshot(&state, 1, &restored).await;
+        assert_eq!(snapshot.colonies[0].name, "Persistent Fern");
+        assert!(snapshot.colonies[0].capabilities.is_owner);
+    }
+
+    #[tokio::test]
+    async fn restored_bearer_owns_the_same_village_after_database_reload() {
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-village-restart-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let secret = "restart-session-secret";
+        let conn = Connection::open(&path).expect("open village database");
+        persistence::init_schema(&conn).expect("init village database");
+        let state = build_state_from_world(
+            starter_world(1_000_000),
+            conn,
+            secret.to_owned(),
+            false,
+            1_000_000,
+        );
+        let mut first =
+            ConnectionContext::new("first-socket".to_owned(), STARTER_COLONY_ID.to_owned());
+        let issued = send_action(
+            &state,
+            &mut first,
+            &ClientAction::Presence {
+                session_id: "desktop".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: None,
+            },
+        )
+        .await;
+        let session_id = issued.fields.get("sessionId").expect("session id").clone();
+        let sig = issued.fields.get("sig").expect("signature").clone();
+        let found = send_action(
+            &state,
+            &mut first,
+            &ClientAction::FoundVillage {
+                name: "Restart Fern".to_owned(),
+                session_id: session_id.clone(),
+                sig: Some(sig.clone()),
+            },
+        )
+        .await;
+        let village_id = found.result.colony_id.expect("personal village");
+        save_current_world(&state).await.expect("persist world");
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen village database");
+        persistence::init_schema(&conn).expect("migrate reopened database");
+        let restarted =
+            build_state_from_connection(2_000_000, conn, secret.to_owned()).expect("restore world");
+        let mut restored =
+            ConnectionContext::new("restored-socket".to_owned(), STARTER_COLONY_ID.to_owned());
+        let presence = send_action(
+            &restarted,
+            &mut restored,
+            &ClientAction::Presence {
+                session_id: session_id.clone(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: Some(sig.clone()),
+            },
+        )
+        .await;
+        assert!(presence.result.ok, "{presence:?}");
+        let join = send_action(
+            &restarted,
+            &mut restored,
+            &ClientAction::JoinVillage {
+                colony_id: village_id.clone(),
+                session_id,
+                sig: Some(sig),
+            },
+        )
+        .await;
+        assert!(join.result.ok, "{join:?}");
+        assert_eq!(restored.colony_id, village_id);
+        let snapshot = current_snapshot(&restarted, 1, &restored).await;
+        assert_eq!(snapshot.colonies[0].name, "Restart Fern");
+        assert!(snapshot.colonies[0].capabilities.is_owner);
+
+        drop(restarted);
+        fs::remove_file(path).expect("remove village database");
     }
 
     #[tokio::test]

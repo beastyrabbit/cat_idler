@@ -662,7 +662,11 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   physical local inventories, fishing, and reachable client controls for every chain.
 
 ### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)
-- **Multi-village founding**: per-colony anchors, distinct village sites (`a8a5503`).
+- **Multi-village founding and contact**: one communal global village; deterministic distant
+  owner-only personal sites; restart-persistent secure socket routing; explicit returned-scout
+  discovery provenance; summary-only foreign contact; configurable signed direct barter capped at
+  32 open source offers; transactional whole-world persistence; and storage-scoped child ids for
+  simultaneous villages.
 - **Top-down building interiors**: cutaway (no-roof) interiors, then a second slice adding
   textured floors + furnace/altar props (`546d852`, `4b6a375`).
 - **Life-sim breeding wired into the tick loop** — population is a loop, not a fixed roster

@@ -14,6 +14,73 @@ pub struct WorldSnapshot {
     pub world_seed: i64,
     pub colonies: Vec<ColonySnapshot>,
     pub online_count: u32,
+    /// The full village currently selected for this socket. Additive for legacy
+    /// snapshots, whose selected village remains the first colony.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_colony_id: Option<String>,
+    /// Public summaries learned through inter-village contact. The secure
+    /// village-foundation slice keeps this empty until discovery is implemented.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_villages: Vec<VillageSummary>,
+    /// Open atomic barter proposals visible to this socket. The server projects
+    /// this list to villages the authenticated player may control.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub village_trade_offers: Vec<VillageTradeOfferSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VillageKind {
+    /// The shared founding village. Every authenticated player may control it.
+    #[default]
+    Global,
+    /// A private, player-founded village.
+    Personal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VillageCapabilities {
+    pub can_view: bool,
+    pub can_control: bool,
+    pub is_owner: bool,
+}
+
+impl Default for VillageCapabilities {
+    fn default() -> Self {
+        // Legacy snapshots predate personalized projection and contained the
+        // one shared global village, so retaining control is the compatible
+        // client-side interpretation.
+        Self {
+            can_view: true,
+            can_control: true,
+            is_owner: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VillageSummary {
+    pub id: String,
+    pub name: String,
+    pub kind: VillageKind,
+    pub anchor: TilePoint,
+    #[serde(default)]
+    pub capabilities: VillageCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VillageTradeOfferSnapshot {
+    pub id: String,
+    pub from_colony_id: String,
+    pub to_colony_id: String,
+    pub offered_kind: ResourceKind,
+    pub offered_amount: f64,
+    pub requested_kind: ResourceKind,
+    pub requested_amount: f64,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,6 +89,14 @@ pub struct ColonySnapshot {
     #[serde(alias = "_id")]
     pub id: String,
     pub name: String,
+    /// Global/personal classification. Missing on legacy snapshots, which only
+    /// carried the shared global village.
+    #[serde(default)]
+    pub kind: VillageKind,
+    /// Audience-specific permissions. The server overwrites this while
+    /// projecting a snapshot and never serializes ownership identifiers.
+    #[serde(default)]
+    pub capabilities: VillageCapabilities,
     pub status: ColonyStatus,
     pub resources: ResourceAmounts,
     pub storage: StorageSnapshot,
@@ -969,10 +1044,39 @@ pub enum ClientAction {
     FoundVillage {
         name: String,
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sig: Option<String>,
     },
     JoinVillage {
         colony_id: String,
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sig: Option<String>,
+    },
+    /// Propose an atomic resource barter to a mutually discovered village.
+    OfferVillageTrade {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        target_colony_id: String,
+        offered_kind: ResourceKind,
+        offered_amount: f64,
+        requested_kind: ResourceKind,
+        requested_amount: f64,
+    },
+    /// Accept an offer addressed to the currently selected village.
+    AcceptVillageTrade {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        offer_id: String,
+    },
+    /// Withdraw an offer authored by the currently selected village.
+    CancelVillageTrade {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        offer_id: String,
     },
     AssignOfficer {
         session_id: String,
@@ -1086,6 +1190,9 @@ pub struct ActionResult {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Village created or selected by an idempotent village action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colony_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -1154,6 +1261,41 @@ mod tests {
             assert_eq!(encoded, expected);
             assert_eq!(
                 serde_json::from_value::<ClientAction>(encoded).expect("deserialize scout action"),
+                action
+            );
+        }
+    }
+
+    #[test]
+    fn village_trade_actions_round_trip_with_exact_signed_fields() {
+        let actions = [
+            ClientAction::OfferVillageTrade {
+                session_id: "session_1".to_owned(),
+                nickname: "Guest Cat".to_owned(),
+                sig: "signed".to_owned(),
+                target_colony_id: "reed-rest".to_owned(),
+                offered_kind: ResourceKind::Food,
+                offered_amount: 8.0,
+                requested_kind: ResourceKind::Materials,
+                requested_amount: 4.0,
+            },
+            ClientAction::AcceptVillageTrade {
+                session_id: "session_1".to_owned(),
+                nickname: "Guest Cat".to_owned(),
+                sig: "signed".to_owned(),
+                offer_id: "trade-1".to_owned(),
+            },
+            ClientAction::CancelVillageTrade {
+                session_id: "session_1".to_owned(),
+                nickname: "Guest Cat".to_owned(),
+                sig: "signed".to_owned(),
+                offer_id: "trade-1".to_owned(),
+            },
+        ];
+        for action in actions {
+            let encoded = serde_json::to_value(&action).expect("serialize village trade");
+            assert_eq!(
+                serde_json::from_value::<ClientAction>(encoded).expect("deserialize village trade"),
                 action
             );
         }
@@ -1382,6 +1524,34 @@ mod tests {
     }
 
     #[test]
+    fn legacy_world_snapshot_defaults_secure_village_metadata() {
+        let mut value = serde_json::to_value(sample_world_snapshot()).expect("snapshot value");
+        let object = value.as_object_mut().expect("world object");
+        object.remove("selectedColonyId");
+        object.remove("knownVillages");
+        let colony = object
+            .get_mut("colonies")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|colonies| colonies.first_mut())
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("colony object");
+        colony.remove("kind");
+        colony.remove("capabilities");
+
+        let decoded: WorldSnapshot =
+            serde_json::from_value(value).expect("legacy snapshot remains compatible");
+
+        assert_eq!(decoded.selected_colony_id, None);
+        assert!(decoded.known_villages.is_empty());
+        assert!(decoded.village_trade_offers.is_empty());
+        assert_eq!(decoded.colonies[0].kind, VillageKind::Global);
+        assert_eq!(
+            decoded.colonies[0].capabilities,
+            VillageCapabilities::default()
+        );
+    }
+
+    #[test]
     fn ts_dashboard_id_aliases_deserialize() {
         let mut encoded =
             serde_json::to_value(sample_world_snapshot()).expect("serialize snapshot");
@@ -1444,6 +1614,7 @@ mod tests {
         let ok = ActionResult {
             ok: true,
             message: None,
+            colony_id: None,
         };
         assert_eq!(
             serde_json::to_value(&ok).expect("serialize action result"),
@@ -1453,6 +1624,7 @@ mod tests {
         let failed = ActionResult {
             ok: false,
             message: Some("Unknown action.".to_string()),
+            colony_id: None,
         };
         assert_eq!(
             serde_json::to_value(&failed).expect("serialize action result"),
@@ -1468,9 +1640,14 @@ mod tests {
             now: 1_700_000_000_000,
             world_seed: 123456,
             online_count: 2,
+            selected_colony_id: Some("colony_1".to_owned()),
+            known_villages: Vec::new(),
+            village_trade_offers: Vec::new(),
             colonies: vec![ColonySnapshot {
                 id: "colony_1".to_string(),
                 name: "Global Colony".to_string(),
+                kind: VillageKind::Global,
+                capabilities: VillageCapabilities::default(),
                 status: ColonyStatus::Thriving,
                 resources: ResourceAmounts {
                     food: 50.0,

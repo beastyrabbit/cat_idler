@@ -29,7 +29,7 @@ use cat_protocol::{
     FootprintSize, GateSide, ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus,
     ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp, ScoutMission, ScoutResource,
     Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
+    TraderSellOffer, TraderVisitState, VillageKind, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -41,6 +41,13 @@ use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(all(not(target_arch = "wasm32"), unix))]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 mod research_ui;
 mod station_layout;
@@ -64,6 +71,8 @@ const TERRAIN_RETAIN_RADIUS: i32 = TERRAIN_CHUNK_RADIUS + 1;
 /// client recovers without hammering a missing server.
 const MAX_RECONNECT_DELAY_SECS: f32 = 30.0;
 const CLIENT_ALERT_CAP: usize = 8;
+#[cfg(target_arch = "wasm32")]
+const SESSION_STORAGE_KEY: &str = "idle-cat-forest/session/v1";
 /// Starting (and R-reset) camera zoom, tuned to frame the village at the small
 /// tile — a little zoomed in since there's now more world per screen.
 const DEFAULT_ZOOM: f32 = 0.25;
@@ -299,6 +308,159 @@ struct Session {
     sig: String,
     presence_sent: bool,
     ready: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoredSession {
+    session_id: String,
+    sig: String,
+    selected_colony_id: Option<String>,
+}
+
+fn stored_session_json(session: &Session, selection: &VillageSelection) -> Option<String> {
+    (!session.session_id.is_empty() && !session.sig.is_empty()).then(|| {
+        serde_json::json!({
+            "sessionId": session.session_id,
+            "sig": session.sig,
+            "selectedColonyId": selection.selected_id,
+        })
+        .to_string()
+    })
+}
+
+fn parse_stored_session(raw: &str) -> Option<StoredSession> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let session_id = value.get("sessionId")?.as_str()?.trim();
+    let sig = value.get("sig")?.as_str()?.trim();
+    if session_id.is_empty() || sig.is_empty() {
+        return None;
+    }
+    let selected_colony_id = value
+        .get("selectedColonyId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control))
+        .map(str::to_owned);
+    Some(StoredSession {
+        session_id: session_id.to_owned(),
+        sig: sig.to_owned(),
+        selected_colony_id,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_session_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CAT_CLIENT_SESSION_PATH").filter(|path| !path.is_empty())
+    {
+        return Some(PathBuf::from(path));
+    }
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|root| !root.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|home| !home.is_empty())
+                .map(|home| PathBuf::from(home).join(".config"))
+        })
+        .map(|root| root.join("idle-cat-forest/session.json"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_session_from_path(path: &Path) -> Option<StoredSession> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| parse_stored_session(&raw))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn native_session_temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("session.json");
+    path.with_file_name(format!(".{file_name}.tmp-{}", std::process::id()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_session_to_path(path: &Path, raw: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let temp_path = native_session_temp_path(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let result = (|| {
+        let mut file = options.open(&temp_path).map_err(|err| err.to_string())?;
+        #[cfg(unix)]
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|err| err.to_string())?;
+        file.write_all(raw.as_bytes())
+            .map_err(|err| err.to_string())?;
+        file.sync_all().map_err(|err| err.to_string())?;
+        std::fs::rename(&temp_path, path).map_err(|err| err.to_string())?;
+        #[cfg(unix)]
+        if let Some(parent) = path.parent() {
+            std::fs::File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp_path);
+    }
+    result
+}
+
+fn load_persisted_session(mut session: ResMut<Session>, mut selection: ResMut<VillageSelection>) {
+    #[cfg(target_arch = "wasm32")]
+    let stored = web_sys::window()
+        .and_then(|window| window.local_storage().ok().flatten())
+        .and_then(|storage| storage.get_item(SESSION_STORAGE_KEY).ok().flatten())
+        .and_then(|raw| parse_stored_session(&raw));
+    #[cfg(not(target_arch = "wasm32"))]
+    let stored = native_session_path().and_then(|path| load_session_from_path(&path));
+
+    restore_stored_session(stored, &mut session, &mut selection);
+}
+
+fn restore_stored_session(
+    stored: Option<StoredSession>,
+    session: &mut Session,
+    selection: &mut VillageSelection,
+) {
+    let Some(stored) = stored else {
+        return;
+    };
+    session.session_id = stored.session_id;
+    session.sig = stored.sig;
+    selection.selected_id = stored.selected_colony_id;
+    selection.join_required = selection.selected_id.is_some();
+}
+
+fn persist_session(session: &Session, selection: &VillageSelection) -> Result<(), String> {
+    let Some(raw) = stored_session_json(session, selection) else {
+        return Err("refusing to persist an incomplete session".to_owned());
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        let storage = web_sys::window()
+            .ok_or_else(|| "browser window unavailable".to_owned())?
+            .local_storage()
+            .map_err(|_| "browser storage unavailable".to_owned())?
+            .ok_or_else(|| "browser storage unavailable".to_owned())?;
+        storage
+            .set_item(SESSION_STORAGE_KEY, &raw)
+            .map_err(|_| "failed to persist browser session".to_owned())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let path =
+            native_session_path().ok_or_else(|| "config directory unavailable".to_owned())?;
+        save_session_to_path(&path, &raw)
+    }
 }
 
 /// The village this client is looking at and sending colony-scoped actions to.
@@ -1613,6 +1775,42 @@ struct VillageSelectorRows;
 /// One village selector button, keyed by stable colony id.
 #[derive(Component, Clone)]
 struct VillageButton(String);
+/// Offer the currently configured barter to a discovered village.
+#[derive(Component, Clone)]
+struct VillageTradeProposalButton(String);
+#[derive(Component, Clone, Copy)]
+struct VillageTradeDraftButton(VillageTradeDraftField);
+#[derive(Component, Clone)]
+struct AcceptVillageTradeButton(String);
+#[derive(Component, Clone)]
+struct CancelVillageTradeButton(String);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VillageTradeDraftField {
+    OfferedKind,
+    OfferedAmount,
+    RequestedKind,
+    RequestedAmount,
+}
+
+#[derive(Resource, Debug, Clone, PartialEq)]
+struct VillageTradeDraft {
+    offered_kind: ResourceKind,
+    offered_amount: f64,
+    requested_kind: ResourceKind,
+    requested_amount: f64,
+}
+
+impl Default for VillageTradeDraft {
+    fn default() -> Self {
+        Self {
+            offered_kind: ResourceKind::Food,
+            offered_amount: 5.0,
+            requested_kind: ResourceKind::Materials,
+            requested_amount: 5.0,
+        }
+    }
+}
 /// Marker for a building marker sprite.
 #[derive(Component)]
 struct BuildingSprite;
@@ -2314,6 +2512,7 @@ pub fn run() {
         .insert_resource(LatestSnapshot::default())
         .insert_resource(Session::default())
         .insert_resource(VillageSelection::default())
+        .insert_resource(VillageTradeDraft::default())
         .insert_resource(ConnectionState::default())
         .insert_resource(ClientFeedback::default())
         .insert_resource(ClientAlerts::default())
@@ -2336,7 +2535,7 @@ pub fn run() {
         // Match the unloaded world to full fog so zooming out never exposes a
         // hard rectangle around the bounded chunk cache.
         .insert_resource(ClearColor(FOG_COLOR))
-        .add_systems(Startup, (setup, connect_ws))
+        .add_systems(Startup, (load_persisted_session, setup, connect_ws).chain())
         // Grouped into sub-tuples to stay within Bevy's 20-per-tuple system arity.
         .add_systems(
             Update,
@@ -2392,7 +2591,12 @@ pub fn run() {
                     ),
                     zone_paint,
                     render_zone_preview,
-                    (update_hud, update_village_selector, handle_village_buttons),
+                    (
+                        update_hud,
+                        update_village_selector,
+                        handle_village_buttons,
+                        handle_village_trade_buttons,
+                    ),
                     update_event_log,
                     update_client_feedback,
                     handle_buttons,
@@ -3574,12 +3778,25 @@ fn poll_ws(world: &mut World) {
             }
             WsEvent::Message(WsMessage::Text(text)) => match parse_server_message(&text) {
                 Ok(ServerPayload::Snapshot(mut snapshot)) => {
+                    let allow_missing_fallback = world.resource::<Session>().ready;
                     let fallback = {
                         let mut selection = world.resource_mut::<VillageSelection>();
-                        reconcile_village_selection(&mut snapshot, &mut selection)
+                        reconcile_village_selection(
+                            &mut snapshot,
+                            &mut selection,
+                            allow_missing_fallback,
+                        )
                     };
                     world.resource_mut::<LatestSnapshot>().0 = Some(snapshot);
                     if let Some((missing, fallback)) = fallback {
+                        let persist_error = {
+                            let session = world.resource::<Session>();
+                            let selection = world.resource::<VillageSelection>();
+                            persist_session(session, selection).err()
+                        };
+                        if let Some(err) = persist_error {
+                            warn!("could not persist fallback village: {err}");
+                        }
                         let message = format!(
                             "Village {missing} is no longer available; showing {fallback}."
                         );
@@ -3592,10 +3809,18 @@ fn poll_ws(world: &mut World) {
                     signed_session,
                 }) => {
                     if let Some((session_id, sig)) = signed_session {
-                        let mut session = world.resource_mut::<Session>();
-                        session.session_id = session_id;
-                        session.sig = sig;
-                        session.ready = true;
+                        {
+                            let mut session = world.resource_mut::<Session>();
+                            session.session_id = session_id;
+                            session.sig = sig;
+                            session.ready = true;
+                        }
+                        let session = world.resource::<Session>();
+                        let selection = world.resource::<VillageSelection>();
+                        let persist_error = persist_session(session, selection).err();
+                        if let Some(err) = persist_error {
+                            warn!("could not persist player session: {err}");
+                        }
                     }
                     if !result.ok {
                         let message = result
@@ -3663,6 +3888,7 @@ fn parse_server_message(text: &str) -> Result<ServerPayload, String> {
 fn reconcile_village_selection(
     snapshot: &mut WorldSnapshot,
     selection: &mut VillageSelection,
+    allow_missing_fallback: bool,
 ) -> Option<(String, String)> {
     let Some(first) = snapshot.colonies.first() else {
         selection.selected_id = None;
@@ -3684,6 +3910,13 @@ fn reconcile_village_selection(
         return None;
     }
 
+    // The server intentionally sends a public/global-only snapshot before
+    // Presence. Preserve an in-memory personal selection until the durable
+    // identity has been restored and the personalized snapshot arrives.
+    if !allow_missing_fallback {
+        return None;
+    }
+
     selection.selected_id = Some(fallback_id.clone());
     selection.join_required = false;
     Some((selected_id, fallback_id))
@@ -3693,6 +3926,7 @@ fn join_village_action(colony_id: &str, session: &Session) -> Option<ClientActio
     session.ready.then(|| ClientAction::JoinVillage {
         colony_id: colony_id.to_owned(),
         session_id: session.session_id.clone(),
+        sig: Some(session.sig.clone()),
     })
 }
 
@@ -3724,8 +3958,6 @@ fn schedule_reconnect(world: &mut World, reason: String) {
     world.remove_non_send::<WsConn>();
     {
         let mut session = world.resource_mut::<Session>();
-        session.session_id.clear();
-        session.sig.clear();
         session.presence_sent = false;
         session.ready = false;
     }
@@ -3789,14 +4021,22 @@ fn ensure_presence(
     if state.phase != ConnectionPhase::Connected || session.presence_sent {
         return;
     }
-    let action = ClientAction::Presence {
-        session_id: "desktop".to_string(),
-        nickname: "Desktop Cat".to_string(),
-        sig: None,
-    };
+    let action = presence_action(&session);
     if let Ok(json) = serde_json::to_string(&action) {
         conn.sender.send(WsMessage::Text(json));
         session.presence_sent = true;
+    }
+}
+
+fn presence_action(session: &Session) -> ClientAction {
+    ClientAction::Presence {
+        session_id: if session.session_id.is_empty() {
+            "desktop".to_owned()
+        } else {
+            session.session_id.clone()
+        },
+        nickname: "Desktop Cat".to_string(),
+        sig: (!session.sig.is_empty()).then(|| session.sig.clone()),
     }
 }
 
@@ -6136,30 +6376,168 @@ fn update_hud(
 
 /// Rebuild the compact selector only when village identity/summary/selection
 /// changes (not on every one-second resource update).
+fn is_discovered_trade_target(
+    snapshot: &WorldSnapshot,
+    selected_id: Option<&str>,
+    target_id: &str,
+) -> bool {
+    selected_id.is_some_and(|selected_id| selected_id != target_id)
+        && snapshot
+            .known_villages
+            .iter()
+            .any(|village| village.id == target_id)
+}
+
+const VILLAGE_TRADE_KINDS: [ResourceKind; 13] = [
+    ResourceKind::Food,
+    ResourceKind::Water,
+    ResourceKind::Herbs,
+    ResourceKind::Catnip,
+    ResourceKind::Grain,
+    ResourceKind::Flour,
+    ResourceKind::Materials,
+    ResourceKind::Refined,
+    ResourceKind::Weapons,
+    ResourceKind::Armor,
+    ResourceKind::Logs,
+    ResourceKind::Lumber,
+    ResourceKind::Blessings,
+];
+const VILLAGE_TRADE_AMOUNTS: [f64; 6] = [1.0, 5.0, 10.0, 25.0, 50.0, 100.0];
+
+fn trade_resource_label(kind: ResourceKind) -> String {
+    format!("{kind:?}").to_lowercase()
+}
+
+fn trade_resource_short_label(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Food => "food",
+        ResourceKind::Water => "water",
+        ResourceKind::Herbs => "herbs",
+        ResourceKind::Catnip => "nip",
+        ResourceKind::Grain => "grain",
+        ResourceKind::Flour => "flour",
+        ResourceKind::Materials => "mats",
+        ResourceKind::Refined => "refined",
+        ResourceKind::Weapons => "weapons",
+        ResourceKind::Armor => "armor",
+        ResourceKind::Logs => "logs",
+        ResourceKind::Lumber => "lumber",
+        ResourceKind::Blessings => "bless",
+    }
+}
+
+fn cycle_village_trade_draft(draft: &mut VillageTradeDraft, field: VillageTradeDraftField) {
+    let next_kind = |current: ResourceKind, excluded: ResourceKind| {
+        let index = VILLAGE_TRADE_KINDS
+            .iter()
+            .position(|kind| *kind == current)
+            .unwrap_or(0);
+        (1..=VILLAGE_TRADE_KINDS.len())
+            .map(|step| VILLAGE_TRADE_KINDS[(index + step) % VILLAGE_TRADE_KINDS.len()])
+            .find(|kind| *kind != excluded)
+            .unwrap_or(current)
+    };
+    let next_amount = |current: f64| {
+        let index = VILLAGE_TRADE_AMOUNTS
+            .iter()
+            .position(|amount| *amount == current)
+            .unwrap_or(0);
+        VILLAGE_TRADE_AMOUNTS[(index + 1) % VILLAGE_TRADE_AMOUNTS.len()]
+    };
+    match field {
+        VillageTradeDraftField::OfferedKind => {
+            draft.offered_kind = next_kind(draft.offered_kind, draft.requested_kind);
+        }
+        VillageTradeDraftField::OfferedAmount => {
+            draft.offered_amount = next_amount(draft.offered_amount);
+        }
+        VillageTradeDraftField::RequestedKind => {
+            draft.requested_kind = next_kind(draft.requested_kind, draft.offered_kind);
+        }
+        VillageTradeDraftField::RequestedAmount => {
+            draft.requested_amount = next_amount(draft.requested_amount);
+        }
+    }
+}
+
+fn village_trade_draft_label(draft: &VillageTradeDraft, field: VillageTradeDraftField) -> String {
+    match field {
+        VillageTradeDraftField::OfferedKind => {
+            format!(
+                "Give resource: {}",
+                trade_resource_label(draft.offered_kind)
+            )
+        }
+        VillageTradeDraftField::OfferedAmount => {
+            format!("Give amount: {:.0}", draft.offered_amount)
+        }
+        VillageTradeDraftField::RequestedKind => format!(
+            "Ask resource: {}",
+            trade_resource_label(draft.requested_kind)
+        ),
+        VillageTradeDraftField::RequestedAmount => {
+            format!("Ask amount: {:.0}", draft.requested_amount)
+        }
+    }
+}
+
+fn village_trade_target_label(name: &str, draft: &VillageTradeDraft) -> String {
+    format!(
+        "Offer to {name}\n{:.0} {} ↔ {:.0} {}",
+        draft.offered_amount,
+        trade_resource_short_label(draft.offered_kind),
+        draft.requested_amount,
+        trade_resource_short_label(draft.requested_kind),
+    )
+}
+
 fn update_village_selector(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
     selection: Res<VillageSelection>,
+    trade_draft: Res<VillageTradeDraft>,
     rows: Query<Entity, With<VillageSelectorRows>>,
     mut last_signature: Local<Vec<String>>,
 ) {
     let Some(snapshot) = latest.0.as_ref() else {
         return;
     };
-    let signature: Vec<String> = snapshot
+    let mut signature: Vec<String> = snapshot
         .colonies
         .iter()
         .map(|colony| {
             format!(
-                "{}|{}|{}|{:?}|{}",
+                "{}|{}|{}|{:?}|{:?}|{:?}|{}",
                 colony.id,
                 colony.name,
                 colony.housing.population,
                 colony.status,
+                colony.kind,
+                colony.capabilities,
                 selection.selected_id.as_deref() == Some(colony.id.as_str())
             )
         })
         .collect();
+    signature.extend(snapshot.known_villages.iter().map(|village| {
+        format!(
+            "known|{}|{}|{:?}|{:?}",
+            village.id, village.name, village.kind, village.capabilities
+        )
+    }));
+    signature.extend(snapshot.village_trade_offers.iter().map(|offer| {
+        format!(
+            "offer|{}|{}|{}|{:?}|{}|{:?}|{}",
+            offer.id,
+            offer.from_colony_id,
+            offer.to_colony_id,
+            offer.offered_kind,
+            offer.offered_amount,
+            offer.requested_kind,
+            offer.requested_amount,
+        )
+    }));
+    signature.push(format!("draft|{trade_draft:?}"));
     if *last_signature == signature {
         return;
     }
@@ -6172,20 +6550,55 @@ fn update_village_selector(
         .entity(rows)
         .despawn_children()
         .with_children(|row| {
+            if !snapshot.known_villages.is_empty() {
+                for field in [
+                    VillageTradeDraftField::OfferedKind,
+                    VillageTradeDraftField::OfferedAmount,
+                    VillageTradeDraftField::RequestedKind,
+                    VillageTradeDraftField::RequestedAmount,
+                ] {
+                    row.spawn((
+                        Button,
+                        Node {
+                            width: Val::Px(150.0),
+                            height: Val::Px(30.0),
+                            padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(UI_BUTTON_GREY),
+                        BorderColor::all(Color::NONE),
+                        ImageNode::default(),
+                        KitButton,
+                        VillageTradeDraftButton(field),
+                        children![(
+                            ui_text(
+                                village_trade_draft_label(&trade_draft, field),
+                                FS_SMALL,
+                                UI_INK
+                            ),
+                            TextLayout::justify(Justify::Center),
+                        )],
+                    ));
+                }
+            }
             for colony in &snapshot.colonies {
                 let active = selection.selected_id.as_deref() == Some(colony.id.as_str());
                 let status = format!("{:?}", colony.status).to_lowercase();
                 let marker = if active { "●" } else { "○" };
+                let group = village_group_label(colony.kind, colony.capabilities.is_owner);
                 let label = format!(
-                    "{marker} {name}\n#{id} · {pop} cats · {status}",
+                    "{marker} {group} · {name}\n{pop} cats · {status}",
                     name = colony.name,
-                    id = colony.id,
                     pop = colony.housing.population,
                 );
                 row.spawn((
                     Button,
                     Node {
-                        width: Val::Px(210.0),
+                        width: Val::Px(240.0),
                         height: Val::Px(48.0),
                         padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
                         justify_content: JustifyContent::Center,
@@ -6205,8 +6618,129 @@ fn update_village_selector(
                         TextLayout::justify(Justify::Center),
                     )],
                 ));
+                if is_discovered_trade_target(
+                    snapshot,
+                    selection.selected_id.as_deref(),
+                    &colony.id,
+                ) {
+                    let label = village_trade_target_label(&colony.name, &trade_draft);
+                    row.spawn((
+                        Button,
+                        Node {
+                            width: Val::Px(240.0),
+                            height: Val::Px(38.0),
+                            padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(UI_BUTTON_BROWN),
+                        BorderColor::all(Color::NONE),
+                        ImageNode::default(),
+                        KitButton,
+                        VillageTradeProposalButton(colony.id.clone()),
+                        children![(
+                            ui_text(label, FS_SMALL, UI_INK),
+                            TextLayout::justify(Justify::Center),
+                        )],
+                    ));
+                }
+            }
+            for village in snapshot.known_villages.iter().filter(|village| {
+                !snapshot
+                    .colonies
+                    .iter()
+                    .any(|colony| colony.id == village.id)
+            }) {
+                let label = format!(
+                    "◇ {} @ {},{}\nOffer {:.0} {} ↔ {:.0} {}",
+                    village.name,
+                    village.anchor.x,
+                    village.anchor.y,
+                    trade_draft.offered_amount,
+                    trade_resource_short_label(trade_draft.offered_kind),
+                    trade_draft.requested_amount,
+                    trade_resource_short_label(trade_draft.requested_kind),
+                );
+                row.spawn((
+                    Button,
+                    Node {
+                        width: Val::Px(240.0),
+                        height: Val::Px(48.0),
+                        padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(UI_BUTTON_BROWN),
+                    BorderColor::all(Color::NONE),
+                    ImageNode::default(),
+                    KitButton,
+                    VillageTradeProposalButton(village.id.clone()),
+                    children![(
+                        ui_text(label, FS_SMALL, UI_INK),
+                        TextLayout::justify(Justify::Center),
+                    )],
+                ));
+            }
+            if let Some(selected_id) = selection.selected_id.as_deref() {
+                for offer in snapshot.village_trade_offers.iter().filter(|offer| {
+                    offer.from_colony_id == selected_id || offer.to_colony_id == selected_id
+                }) {
+                    let incoming = offer.to_colony_id == selected_id;
+                    let label = format!(
+                        "{} {:.0} {} for {:.0} {}",
+                        if incoming { "Accept" } else { "Cancel offer:" },
+                        offer.offered_amount,
+                        format!("{:?}", offer.offered_kind).to_lowercase(),
+                        offer.requested_amount,
+                        format!("{:?}", offer.requested_kind).to_lowercase(),
+                    );
+                    let mut entity = row.spawn((
+                        Button,
+                        Node {
+                            width: Val::Px(210.0),
+                            height: Val::Px(38.0),
+                            padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
+                            justify_content: JustifyContent::Center,
+                            align_items: AlignItems::Center,
+                            border: UiRect::all(Val::Px(1.0)),
+                            border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 2.0)),
+                            ..default()
+                        },
+                        BackgroundColor(if incoming {
+                            UI_BUTTON_BROWN
+                        } else {
+                            UI_BUTTON_GREY
+                        }),
+                        BorderColor::all(Color::NONE),
+                        ImageNode::default(),
+                        KitButton,
+                        children![(
+                            ui_text(label, FS_SMALL, UI_INK),
+                            TextLayout::justify(Justify::Center),
+                        )],
+                    ));
+                    if incoming {
+                        entity.insert(AcceptVillageTradeButton(offer.id.clone()));
+                    } else {
+                        entity.insert(CancelVillageTradeButton(offer.id.clone()));
+                    }
+                }
             }
         });
+}
+
+fn village_group_label(kind: VillageKind, is_owner: bool) -> &'static str {
+    match (kind, is_owner) {
+        (VillageKind::Global, _) => "Global",
+        (VillageKind::Personal, true) => "My Village",
+        (VillageKind::Personal, false) => "Known",
+    }
 }
 
 fn handle_village_buttons(
@@ -6223,8 +6757,91 @@ fn handle_village_buttons(
         let Some(snapshot) = latest.0.as_mut() else {
             continue;
         };
-        if let Some(action) = choose_village(&button.0, snapshot, &mut selection, &session) {
+        let previous = selection.selected_id.clone();
+        let action = choose_village(&button.0, snapshot, &mut selection, &session);
+        if selection.selected_id != previous
+            && session.ready
+            && let Err(err) = persist_session(&session, &selection)
+        {
+            warn!("could not persist selected village: {err}");
+        }
+        if let Some(action) = action {
             outgoing.0.push(action);
+        }
+    }
+}
+
+fn handle_village_trade_buttons(
+    draft_buttons: Query<(&Interaction, &VillageTradeDraftButton), Changed<Interaction>>,
+    proposals: Query<(&Interaction, &VillageTradeProposalButton), Changed<Interaction>>,
+    accepts: Query<(&Interaction, &AcceptVillageTradeButton), Changed<Interaction>>,
+    cancels: Query<(&Interaction, &CancelVillageTradeButton), Changed<Interaction>>,
+    session: Res<Session>,
+    mut draft: ResMut<VillageTradeDraft>,
+    mut outgoing: ResMut<OutgoingActions>,
+) {
+    for (interaction, button) in &draft_buttons {
+        if *interaction == Interaction::Pressed {
+            cycle_village_trade_draft(&mut draft, button.0);
+        }
+    }
+    if !session.ready {
+        return;
+    }
+    for (interaction, button) in &proposals {
+        if *interaction == Interaction::Pressed
+            && let Some(action) = village_trade_proposal_action(&button.0, &draft, &session)
+        {
+            outgoing.0.push(action);
+        }
+    }
+    for (interaction, button) in &accepts {
+        if *interaction == Interaction::Pressed {
+            outgoing
+                .0
+                .push(village_trade_reply_action(&button.0, true, &session));
+        }
+    }
+    for (interaction, button) in &cancels {
+        if *interaction == Interaction::Pressed {
+            outgoing
+                .0
+                .push(village_trade_reply_action(&button.0, false, &session));
+        }
+    }
+}
+
+fn village_trade_proposal_action(
+    target: &str,
+    draft: &VillageTradeDraft,
+    session: &Session,
+) -> Option<ClientAction> {
+    session.ready.then(|| ClientAction::OfferVillageTrade {
+        session_id: session.session_id.clone(),
+        nickname: "Desktop Cat".to_owned(),
+        sig: session.sig.clone(),
+        target_colony_id: target.to_owned(),
+        offered_kind: draft.offered_kind,
+        offered_amount: draft.offered_amount,
+        requested_kind: draft.requested_kind,
+        requested_amount: draft.requested_amount,
+    })
+}
+
+fn village_trade_reply_action(offer_id: &str, accept: bool, session: &Session) -> ClientAction {
+    if accept {
+        ClientAction::AcceptVillageTrade {
+            session_id: session.session_id.clone(),
+            nickname: "Desktop Cat".to_owned(),
+            sig: session.sig.clone(),
+            offer_id: offer_id.to_owned(),
+        }
+    } else {
+        ClientAction::CancelVillageTrade {
+            session_id: session.session_id.clone(),
+            nickname: "Desktop Cat".to_owned(),
+            sig: session.sig.clone(),
+            offer_id: offer_id.to_owned(),
         }
     }
 }
@@ -6963,6 +7580,7 @@ fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction>
             return Some(ClientAction::FoundVillage {
                 name: "Forest Hollow".to_string(),
                 session_id: session.session_id.clone(),
+                sig: Some(session.sig.clone()),
             });
         }
     };
@@ -7795,6 +8413,7 @@ mod tests {
             Some(ClientAction::FoundVillage {
                 name: "Forest Hollow".to_owned(),
                 session_id: "signed-session".to_owned(),
+                sig: Some("signed".to_owned()),
             })
         );
     }
@@ -7911,6 +8530,9 @@ mod tests {
             world_seed: 7,
             colonies,
             online_count: 1,
+            selected_colony_id: order.first().map(|id| (*id).to_owned()),
+            known_villages: Vec::new(),
+            village_trade_offers: Vec::new(),
         }
     }
 
@@ -7924,19 +8546,262 @@ mod tests {
     }
 
     #[test]
+    fn durable_session_json_round_trips_and_presence_reuses_it() {
+        let session = signed_session("stable-player-session");
+        let selection = VillageSelection {
+            selected_id: Some("my-village".to_owned()),
+            join_required: false,
+        };
+        let raw = stored_session_json(&session, &selection).expect("complete session serializes");
+        assert_eq!(
+            parse_stored_session(&raw),
+            Some(StoredSession {
+                session_id: "stable-player-session".to_owned(),
+                sig: "signed".to_owned(),
+                selected_colony_id: Some("my-village".to_owned()),
+            })
+        );
+        assert_eq!(
+            presence_action(&session),
+            ClientAction::Presence {
+                session_id: "stable-player-session".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: Some("signed".to_owned()),
+            }
+        );
+        assert_eq!(
+            presence_action(&Session::default()),
+            ClientAction::Presence {
+                session_id: "desktop".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: None,
+            }
+        );
+
+        assert_eq!(
+            parse_stored_session(r#"{"sessionId":"legacy","sig":"signed"}"#),
+            Some(StoredSession {
+                session_id: "legacy".to_owned(),
+                sig: "signed".to_owned(),
+                selected_colony_id: None,
+            }),
+            "pre-selector bearer files remain valid"
+        );
+    }
+
+    #[test]
+    fn startup_restore_marks_the_persisted_village_for_authenticated_rejoin() {
+        let mut session = Session::default();
+        let mut selection = VillageSelection::default();
+        restore_stored_session(
+            Some(StoredSession {
+                session_id: "restored-session".to_owned(),
+                sig: "restored-signature".to_owned(),
+                selected_colony_id: Some("restored-village".to_owned()),
+            }),
+            &mut session,
+            &mut selection,
+        );
+
+        assert_eq!(session.session_id, "restored-session");
+        assert_eq!(session.sig, "restored-signature");
+        assert_eq!(selection.selected_id.as_deref(), Some("restored-village"));
+        assert!(selection.join_required);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_session_file_round_trips_without_losing_the_bearer() {
+        let path = std::env::temp_dir().join(format!(
+            "idle-cat-forest-session-test-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let selection = VillageSelection {
+            selected_id: Some("remembered-village".to_owned()),
+            join_required: false,
+        };
+        let raw = stored_session_json(&signed_session("native-session"), &selection)
+            .expect("session json");
+
+        save_session_to_path(&path, &raw).expect("save session");
+        let restored = load_session_from_path(&path);
+        #[cfg(unix)]
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("session metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "native bearer file must remain private"
+        );
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            restored,
+            Some(StoredSession {
+                session_id: "native-session".to_owned(),
+                sig: "signed".to_owned(),
+                selected_colony_id: Some("remembered-village".to_owned()),
+            })
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn failed_native_session_replacement_preserves_the_previous_bearer() {
+        let path = std::env::temp_dir().join(format!(
+            "idle-cat-forest-session-failure-test-{}.json",
+            std::process::id()
+        ));
+        let temp_path = native_session_temp_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&temp_path);
+        let _ = std::fs::remove_dir(&temp_path);
+        let original = StoredSession {
+            session_id: "original-session".to_owned(),
+            sig: "original-signature".to_owned(),
+            selected_colony_id: Some("original-village".to_owned()),
+        };
+        let raw = serde_json::json!({
+            "sessionId": original.session_id.clone(),
+            "sig": original.sig.clone(),
+            "selectedColonyId": original.selected_colony_id.clone(),
+        })
+        .to_string();
+        save_session_to_path(&path, &raw).expect("save original bearer");
+
+        std::fs::create_dir(&temp_path).expect("block temporary-file creation");
+        assert!(save_session_to_path(&path, r#"{"sessionId":"replacement","sig":"new"}"#).is_err());
+        assert_eq!(load_session_from_path(&path), Some(original));
+
+        std::fs::remove_dir(&temp_path).expect("remove blocker");
+        std::fs::remove_file(&path).expect("remove bearer fixture");
+    }
+
+    #[test]
+    fn village_selector_labels_global_owned_and_known_villages() {
+        assert_eq!(village_group_label(VillageKind::Global, false), "Global");
+        assert_eq!(
+            village_group_label(VillageKind::Personal, true),
+            "My Village"
+        );
+        assert_eq!(village_group_label(VillageKind::Personal, false), "Known");
+    }
+
+    #[test]
+    fn discovered_village_trade_controls_emit_exact_signed_actions() {
+        let session = signed_session("trade-session");
+        let draft = VillageTradeDraft {
+            offered_kind: ResourceKind::Water,
+            offered_amount: 25.0,
+            requested_kind: ResourceKind::Lumber,
+            requested_amount: 10.0,
+        };
+        assert_eq!(
+            village_trade_proposal_action("reed-rest", &draft, &session),
+            Some(ClientAction::OfferVillageTrade {
+                session_id: "trade-session".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                target_colony_id: "reed-rest".to_owned(),
+                offered_kind: ResourceKind::Water,
+                offered_amount: 25.0,
+                requested_kind: ResourceKind::Lumber,
+                requested_amount: 10.0,
+            })
+        );
+        assert_eq!(
+            village_trade_reply_action("offer-1", true, &session),
+            ClientAction::AcceptVillageTrade {
+                session_id: "trade-session".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                offer_id: "offer-1".to_owned(),
+            }
+        );
+        assert!(matches!(
+            village_trade_reply_action("offer-1", false, &session),
+            ClientAction::CancelVillageTrade { offer_id, .. } if offer_id == "offer-1"
+        ));
+        assert!(village_trade_proposal_action("reed-rest", &draft, &Session::default()).is_none());
+    }
+
+    #[test]
+    fn village_trade_draft_cycles_resources_and_amounts_without_same_kind() {
+        let mut draft = VillageTradeDraft::default();
+        cycle_village_trade_draft(&mut draft, VillageTradeDraftField::OfferedKind);
+        cycle_village_trade_draft(&mut draft, VillageTradeDraftField::OfferedAmount);
+        cycle_village_trade_draft(&mut draft, VillageTradeDraftField::RequestedKind);
+        cycle_village_trade_draft(&mut draft, VillageTradeDraftField::RequestedAmount);
+
+        assert_eq!(draft.offered_kind, ResourceKind::Water);
+        assert_eq!(draft.offered_amount, 10.0);
+        assert_eq!(draft.requested_kind, ResourceKind::Refined);
+        assert_eq!(draft.requested_amount, 10.0);
+        assert_ne!(draft.offered_kind, draft.requested_kind);
+    }
+
+    #[test]
+    fn discovered_full_colonies_are_available_as_trade_targets() {
+        let mut snapshot = village_world(&["alpha", "beta"]);
+        snapshot.known_villages.push(cat_protocol::VillageSummary {
+            id: "beta".to_owned(),
+            name: "River Paws".to_owned(),
+            kind: VillageKind::Personal,
+            anchor: TilePoint { x: 100, y: 6 },
+            capabilities: Default::default(),
+        });
+
+        assert!(is_discovered_trade_target(&snapshot, Some("alpha"), "beta"));
+        assert!(!is_discovered_trade_target(
+            &snapshot,
+            Some("alpha"),
+            "alpha"
+        ));
+        assert!(!is_discovered_trade_target(
+            &snapshot,
+            Some("beta"),
+            "alpha"
+        ));
+        assert!(!is_discovered_trade_target(&snapshot, None, "beta"));
+    }
+
+    #[test]
     fn village_selection_survives_snapshot_reordering() {
         let mut selection = VillageSelection {
             selected_id: Some("beta".to_owned()),
             join_required: false,
         };
         let mut first = village_world(&["alpha", "beta"]);
-        assert!(reconcile_village_selection(&mut first, &mut selection).is_none());
+        assert!(reconcile_village_selection(&mut first, &mut selection, true).is_none());
         assert_eq!(first.colonies[0].id, "beta");
 
         let mut reordered = village_world(&["beta", "alpha"]);
-        assert!(reconcile_village_selection(&mut reordered, &mut selection).is_none());
+        assert!(reconcile_village_selection(&mut reordered, &mut selection, true).is_none());
         assert_eq!(reordered.colonies[0].id, "beta");
         assert_eq!(selection.selected_id.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn pre_presence_public_snapshot_does_not_forget_a_private_selection() {
+        let mut selection = VillageSelection {
+            selected_id: Some("my-private-village".to_owned()),
+            join_required: true,
+        };
+        let mut public = village_world(&["alpha"]);
+
+        assert!(
+            reconcile_village_selection(&mut public, &mut selection, false).is_none(),
+            "pre-auth redaction is not a missing-village deletion"
+        );
+        assert_eq!(selection.selected_id.as_deref(), Some("my-private-village"));
+        assert!(selection.join_required);
+
+        let mut personalized = village_world(&["alpha", "my-private-village"]);
+        assert!(reconcile_village_selection(&mut personalized, &mut selection, true).is_none());
+        assert_eq!(personalized.colonies[0].id, "my-private-village");
     }
 
     #[test]
@@ -7954,7 +8819,7 @@ mod tests {
             join_required: false,
         };
 
-        reconcile_village_selection(&mut snapshot, &mut selection);
+        reconcile_village_selection(&mut snapshot, &mut selection, true);
         let anchor = snapshot.colonies[0].anchor;
         let rock = DecorationRole::Rock {
             size: RockSize::Small,
@@ -7977,7 +8842,7 @@ mod tests {
     fn selecting_a_village_switches_render_order_and_builds_join_action() {
         let mut snapshot = village_world(&["alpha", "beta"]);
         let mut selection = VillageSelection::default();
-        reconcile_village_selection(&mut snapshot, &mut selection);
+        reconcile_village_selection(&mut snapshot, &mut selection, true);
         let action = choose_village(
             "beta",
             &mut snapshot,
@@ -7993,6 +8858,7 @@ mod tests {
             Some(ClientAction::JoinVillage {
                 colony_id: "beta".to_owned(),
                 session_id: "fresh-session".to_owned(),
+                sig: Some("signed".to_owned()),
             })
         );
     }
@@ -8005,7 +8871,7 @@ mod tests {
             join_required: true,
         };
         assert_eq!(
-            reconcile_village_selection(&mut snapshot, &mut selection),
+            reconcile_village_selection(&mut snapshot, &mut selection, true),
             Some(("gone".to_owned(), "alpha".to_owned()))
         );
         assert_eq!(selection.selected_id.as_deref(), Some("alpha"));
@@ -8029,6 +8895,7 @@ mod tests {
             Some(ClientAction::JoinVillage {
                 colony_id: "beta".to_owned(),
                 session_id: "replacement-session".to_owned(),
+                sig: Some("signed".to_owned()),
             })
         );
         assert!(!selection.join_required, "rejoin is emitted only once");
@@ -8056,6 +8923,7 @@ mod tests {
             ClientAction::JoinVillage {
                 colony_id: "beta".to_owned(),
                 session_id: "signed-session".to_owned(),
+                sig: Some("signed".to_owned()),
             }
         );
     }

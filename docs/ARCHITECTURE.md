@@ -122,9 +122,16 @@ maintained product behavior rather than migration:
 - **Physical work and production breadth.** Workshop staffing is an id assignment rather than
   station travel; inputs/outputs still draw on colony-global resources, skills cover only four
   legacy labors, and many recipes/material variants are absent.
-- **Multi-village product model.** Socket-selected routing and the persistent selector work, but
-  the canonical global village, personal ownership/access, discovery, and direct inter-village
-  trade are not modeled.
+- **Multi-village product model.** One canonical communal village and one personal village per
+  stable signed identity are live. Ownership and selection persist; foreign private state stays
+  server-filtered; explicit returned-scout delivery (never generic reveal state) creates mutual
+  summary contact; configurable signed propose/accept/cancel actions perform capped atomic direct
+  barter. Whole-world SQLite replacement is transactional, and colony-local runtime ids receive a
+  storage-only colony namespace so simultaneous settlements cannot collide in legacy global-key
+  tables.
+- **Durable native identity.** The native client keeps its HMAC bearer and selected village in a
+  mode-0600 file replaced through a synced same-directory temporary file and atomic rename; WASM
+  uses the corresponding local-storage record.
 - **Research and manual controls.** The generated 500-node catalog/ledger is read-only, and most
   typed protocol actions have no usable exact client tool. The 15-adult/three-Den founding,
   reserved-bed pregnancy, prosperity migration/probation, aging, extinction recovery, and
@@ -199,8 +206,10 @@ via `#[serde(rename_all = "camelCase")]`-style annotations; most actions carry `
   an insecure dev secret otherwise) — the hardening the old TS game's `docs/plan.md` flagged as
   a "forgeable sessionId, HMAC hardening is a flagged follow-up" is now implemented here.
 - **Routing and security** bind signed identity and selected-colony state to each socket. A join
-  reorders that socket's complete shared-world snapshot so the selected colony is first while
-  mutation context targets the same colony. This is verified routing, not yet an ownership model.
+  reorders that socket's authorized shared-world projection so the selected colony is first while
+  mutation context targets the same colony. Anonymous sockets see the global village read-only;
+  authenticated sockets control it, owners additionally receive their personal village, and
+  discovered foreign villages remain summary-only. Owner identity never enters the wire DTO.
 - **Rate limiting** (`rate_limit.rs`) caps actions at 30 per 10-second window per session.
 - **Production host** can serve the Trunk SPA and tracked images from the same process, with
   Brotli/gzip, cache headers, exact WebSocket Origin checks, and SPA fallback. The repository

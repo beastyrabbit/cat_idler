@@ -25,12 +25,13 @@ use crate::{
     upgrade_tree,
     village_area::{self, gate_placement_default},
     village_layout::{GridPos, village_ring_radius},
+    village_sites::select_personal_village_site,
     world_tick::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, ScoutMission, ScoutResource, TilePos,
-        TradeDirection, VoteRuntime, WorldState, ZoneRuntime, found_colony, found_colony_at,
-        has_logging_site, inside_village_interior, migration_game_minute_at,
-        reconcile_colony_stockpiles, select_founding_site, tile_is_occupied, world_tick,
+        TradeDirection, VillageKind, VillageTradeOffer, VoteRuntime, WorldState, ZoneRuntime,
+        found_colony, found_colony_at, has_logging_site, inside_village_interior,
+        migration_game_minute_at, reconcile_colony_stockpiles, tile_is_occupied, world_tick,
     },
     zones,
 };
@@ -39,6 +40,11 @@ const DEFEND_CLICK_DAMAGE: f64 = 6.0;
 const EVENT_KEEP_SNAPSHOT: usize = 30;
 const KICK_THRESHOLD: u32 = 5;
 const MAX_ADVANCE_SECONDS: u64 = 86_400;
+const MAX_PERSONAL_VILLAGE_ID_COLLISIONS: u32 = 1_024;
+const MAX_VILLAGE_NAME_CHARS: usize = 48;
+const MAX_VILLAGE_TRADE_AMOUNT: f64 = 1_000_000.0;
+const MAX_VILLAGE_TRADE_ID_COLLISIONS: u32 = 1_024;
+const MAX_OPEN_VILLAGE_TRADE_OFFERS: usize = 32;
 
 const UPGRADE_DEFAULTS: [(UpgradeKey, u32, u32); 6] = [
     (UpgradeKey::ClickPower, 20, 2),
@@ -159,15 +165,39 @@ pub fn apply_action(
             }
             ok()
         }
-        proto::ClientAction::FoundVillage { name, session_id } => {
-            found_village(world, name, session_id, ctx)
-        }
+        proto::ClientAction::FoundVillage {
+            name, session_id, ..
+        } => found_village(world, name, session_id, ctx),
         proto::ClientAction::JoinVillage { colony_id, .. } => {
-            if world.colonies.iter().any(|colony| colony.id == *colony_id) {
-                ok()
-            } else {
-                fail("Village not found.")
+            let Some(colony) = world.colonies.iter().find(|colony| colony.id == *colony_id) else {
+                return fail("Village is not available.");
+            };
+            if !can_control_village(colony, &ctx.player_id) {
+                return fail("Village is not available.");
             }
+            ok_for_colony(&colony.id)
+        }
+        proto::ClientAction::OfferVillageTrade {
+            target_colony_id,
+            offered_kind,
+            offered_amount,
+            requested_kind,
+            requested_amount,
+            ..
+        } => offer_village_trade(
+            world,
+            target_colony_id,
+            *offered_kind,
+            *offered_amount,
+            *requested_kind,
+            *requested_amount,
+            ctx,
+        ),
+        proto::ClientAction::AcceptVillageTrade { offer_id, .. } => {
+            accept_village_trade(world, offer_id, ctx)
+        }
+        proto::ClientAction::CancelVillageTrade { offer_id, .. } => {
+            cancel_village_trade(world, offer_id, ctx)
         }
         proto::ClientAction::AssignOfficer { role, cat_id, .. } => {
             with_colony(world, ctx, |colony| {
@@ -242,6 +272,14 @@ pub fn build_snapshot(world: &WorldState, now_ms: i64, online_count: u32) -> pro
             .iter()
             .map(|colony| colony_snapshot(colony, now_ms))
             .collect(),
+        selected_colony_id: None,
+        known_villages: Vec::new(),
+        village_trade_offers: world
+            .colonies
+            .iter()
+            .flat_map(|colony| colony.village_trade_offers.values())
+            .map(village_trade_offer_snapshot)
+            .collect(),
     }
 }
 
@@ -257,7 +295,21 @@ fn with_colony(
     else {
         return fail("Village not found.");
     };
+    if !can_control_village(colony, &ctx.player_id) {
+        return fail("Village is not available.");
+    }
     f(colony)
+}
+
+/// Defense-in-depth authorization used by every colony-scoped mutation. The
+/// shared global village preserves the original communal play model; a personal
+/// village is controllable only by its stable owner.
+#[must_use]
+pub fn can_control_village(colony: &ColonyRuntime, player_id: &str) -> bool {
+    match colony.kind {
+        VillageKind::Global => true,
+        VillageKind::Personal => colony.owner_player_id.as_deref() == Some(player_id),
+    }
 }
 
 fn ensure_colony(world: &mut WorldState, now_ms: i64) {
@@ -1270,30 +1322,318 @@ fn build_road(
 fn found_village(
     world: &mut WorldState,
     name: &str,
-    session_id: &str,
+    _session_id: &str,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
     let name = name.trim();
     if name.is_empty() {
         return fail("Village name is required.");
     }
-    let id = next_colony_id(world);
-    let seed = stable_seed(&[session_id, name, &id]);
+    if name.chars().count() > MAX_VILLAGE_NAME_CHARS || name.chars().any(char::is_control) {
+        return fail("Village names must be 48 visible characters or fewer.");
+    }
+    if let Some(existing) = world.colonies.iter().find(|colony| {
+        colony.kind == VillageKind::Personal
+            && colony.owner_player_id.as_deref() == Some(ctx.player_id.as_str())
+    }) {
+        return ok_for_colony(&existing.id);
+    }
+    if !world
+        .colonies
+        .iter()
+        .any(|colony| colony.kind == VillageKind::Global)
+    {
+        return fail("The global village is unavailable.");
+    }
+
+    let Some(id) = personal_village_id(world, &ctx.player_id) else {
+        return fail("No unique personal-village identity is available.");
+    };
+    let seed = stable_seed(&[
+        "idle-cat-forest/personal-village/v1",
+        &world.world_seed.to_string(),
+        &ctx.player_id,
+    ]);
     // Place the new village at a distinct, valid site far from every existing colony so two
     // settlements never stack on the same anchor. Deterministic (RNG-free) site search.
     let existing_anchors: Vec<TilePos> =
         world.colonies.iter().map(|colony| colony.anchor).collect();
-    let anchor = select_founding_site(world.world_seed, &existing_anchors);
+    let Some(site) =
+        select_personal_village_site(world.world_seed, &ctx.player_id, &existing_anchors)
+    else {
+        return fail("No safe personal-village site is available.");
+    };
+    let anchor = site.anchor;
     let mut colony = found_colony_at(world.world_seed, id, ctx.now_ms, seed, anchor);
     colony.name = name.to_owned();
+    colony.kind = VillageKind::Personal;
+    colony.owner_player_id = Some(ctx.player_id.clone());
     append_event(
         &mut colony,
         ctx.now_ms,
         EventKind::VillageFounded,
         format!("{name} was founded."),
     );
+    let colony_id = colony.id.clone();
     world.colonies.push(colony);
+    ok_for_colony(&colony_id)
+}
+
+fn personal_village_id(world: &WorldState, player_id: &str) -> Option<String> {
+    let base = stable_seed(&[
+        "idle-cat-forest/personal-village-id/v1",
+        &world.world_seed.to_string(),
+        player_id,
+    ]);
+    for suffix in 0..=MAX_PERSONAL_VILLAGE_ID_COLLISIONS {
+        let id = if suffix == 0 {
+            format!("village-{base:08x}")
+        } else {
+            format!("village-{base:08x}-{suffix}")
+        };
+        if !world.colonies.iter().any(|colony| colony.id == id) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn valid_trade_amount(amount: f64) -> bool {
+    amount.is_finite() && amount > 0.0 && amount <= MAX_VILLAGE_TRADE_AMOUNT
+}
+
+fn offer_village_trade(
+    world: &mut WorldState,
+    target_colony_id: &str,
+    offered_kind: proto::ResourceKind,
+    offered_amount: f64,
+    requested_kind: proto::ResourceKind,
+    requested_amount: f64,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if !valid_trade_amount(offered_amount) || !valid_trade_amount(requested_amount) {
+        return fail("Trade amounts must be finite and positive.");
+    }
+    if offered_kind == requested_kind {
+        return fail("A village trade must exchange different resources.");
+    }
+    let Some(source_index) = world
+        .colonies
+        .iter()
+        .position(|colony| colony.id == ctx.colony_id)
+    else {
+        return fail("Village not found.");
+    };
+    let Some(target_index) = world
+        .colonies
+        .iter()
+        .position(|colony| colony.id == target_colony_id)
+    else {
+        return fail("Village is not available.");
+    };
+    if source_index == target_index {
+        return fail("Choose another village to trade with.");
+    }
+    let source = &world.colonies[source_index];
+    if !can_control_village(source, &ctx.player_id) {
+        return fail("Village is not available.");
+    }
+    let target = &world.colonies[target_index];
+    if !source.known_village_ids.contains(&target.id)
+        || !target.known_village_ids.contains(&source.id)
+    {
+        return fail("The villages have not discovered one another.");
+    }
+    if source.village_trade_offers.len() >= MAX_OPEN_VILLAGE_TRADE_OFFERS {
+        return fail("This village already has too many open trade offers.");
+    }
+    let offered_kind = proto_to_sim_resource_kind(offered_kind);
+    if stockpiles::resource_amount(&source.resources, offered_kind) + f64::EPSILON < offered_amount
+    {
+        return fail("The offering village lacks those resources.");
+    }
+    let requested_kind = proto_to_sim_resource_kind(requested_kind);
+    let base = stable_seed(&[
+        "idle-cat-forest/village-trade/v1",
+        &source.id,
+        &target.id,
+        &ctx.now_ms.to_string(),
+        &ctx.player_id,
+    ]);
+    let offer_id = (0..=MAX_VILLAGE_TRADE_ID_COLLISIONS).find_map(|suffix| {
+        let candidate = if suffix == 0 {
+            format!("trade-{base:08x}")
+        } else {
+            format!("trade-{base:08x}-{suffix}")
+        };
+        (!world
+            .colonies
+            .iter()
+            .any(|colony| colony.village_trade_offers.contains_key(&candidate)))
+        .then_some(candidate)
+    });
+    let Some(offer_id) = offer_id else {
+        return fail("No unique trade identity is available.");
+    };
+    let source = &mut world.colonies[source_index];
+    source.village_trade_offers.insert(
+        offer_id.clone(),
+        VillageTradeOffer {
+            id: offer_id,
+            from_colony_id: source.id.clone(),
+            to_colony_id: target_colony_id.to_owned(),
+            offered_kind,
+            offered_amount,
+            requested_kind,
+            requested_amount,
+            created_at: ctx.now_ms,
+        },
+    );
+    source.last_player_activity_at = Some(ctx.now_ms);
     ok()
+}
+
+fn accept_village_trade(
+    world: &mut WorldState,
+    offer_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(offer) = world
+        .colonies
+        .iter()
+        .find_map(|colony| colony.village_trade_offers.get(offer_id).cloned())
+    else {
+        return fail("Trade offer is not available.");
+    };
+    if offer.to_colony_id != ctx.colony_id {
+        return fail("Trade offer is not available.");
+    }
+    let Some(source_index) = world
+        .colonies
+        .iter()
+        .position(|colony| colony.id == offer.from_colony_id)
+    else {
+        return fail("Trade offer is not available.");
+    };
+    let Some(target_index) = world
+        .colonies
+        .iter()
+        .position(|colony| colony.id == offer.to_colony_id)
+    else {
+        return fail("Trade offer is not available.");
+    };
+    let (source, target) = two_colonies_mut(&mut world.colonies, source_index, target_index);
+    if !can_control_village(target, &ctx.player_id) {
+        return fail("Trade offer is not available.");
+    }
+    if !source.known_village_ids.contains(&target.id)
+        || !target.known_village_ids.contains(&source.id)
+    {
+        return fail("The villages have not discovered one another.");
+    }
+    if stockpiles::resource_amount(&source.resources, offer.offered_kind) + f64::EPSILON
+        < offer.offered_amount
+    {
+        return fail("The offering village no longer has enough resources.");
+    }
+    if stockpiles::resource_amount(&target.resources, offer.requested_kind) + f64::EPSILON
+        < offer.requested_amount
+    {
+        return fail("This village does not have enough requested resources.");
+    }
+    if trade_would_overflow(target, offer.offered_kind, offer.offered_amount)
+        || trade_would_overflow(source, offer.requested_kind, offer.requested_amount)
+    {
+        return fail("A receiving village lacks storage for this trade.");
+    }
+
+    stockpiles::add_resource(
+        &mut source.resources,
+        offer.offered_kind,
+        -offer.offered_amount,
+    );
+    stockpiles::add_resource(
+        &mut target.resources,
+        offer.offered_kind,
+        offer.offered_amount,
+    );
+    stockpiles::add_resource(
+        &mut target.resources,
+        offer.requested_kind,
+        -offer.requested_amount,
+    );
+    stockpiles::add_resource(
+        &mut source.resources,
+        offer.requested_kind,
+        offer.requested_amount,
+    );
+    source.village_trade_offers.remove(offer_id);
+    source.last_player_activity_at = Some(ctx.now_ms);
+    target.last_player_activity_at = Some(ctx.now_ms);
+    reconcile_colony_stockpiles(source);
+    reconcile_colony_stockpiles(target);
+    ok()
+}
+
+fn trade_would_overflow(
+    colony: &ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    incoming: f64,
+) -> bool {
+    let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let capacities =
+        storage::storage_capacities(&storage_buildings(colony), effects.storage_per_level_mult);
+    let capacity = match kind {
+        stockpiles::ResourceKind::Food => Some(capacities.food),
+        stockpiles::ResourceKind::Water => Some(capacities.water),
+        stockpiles::ResourceKind::Herbs => Some(capacities.herbs),
+        stockpiles::ResourceKind::Catnip => Some(capacities.catnip),
+        stockpiles::ResourceKind::Grain => Some(capacities.grain),
+        stockpiles::ResourceKind::Flour => Some(capacities.flour),
+        stockpiles::ResourceKind::Materials => Some(capacities.materials),
+        stockpiles::ResourceKind::Refined => Some(capacities.refined),
+        stockpiles::ResourceKind::Weapons => Some(capacities.weapons),
+        stockpiles::ResourceKind::Armor => Some(capacities.armor),
+        stockpiles::ResourceKind::Logs => Some(capacities.logs),
+        stockpiles::ResourceKind::Lumber => Some(capacities.lumber),
+        stockpiles::ResourceKind::Blessings => None,
+    };
+    capacity.is_some_and(|capacity| {
+        stockpiles::resource_amount(&colony.resources, kind) + incoming > capacity + f64::EPSILON
+    })
+}
+
+fn cancel_village_trade(
+    world: &mut WorldState,
+    offer_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(source) = world.colonies.iter_mut().find(|colony| {
+        colony.id == ctx.colony_id && colony.village_trade_offers.contains_key(offer_id)
+    }) else {
+        return fail("Trade offer is not available.");
+    };
+    if !can_control_village(source, &ctx.player_id) {
+        return fail("Trade offer is not available.");
+    }
+    source.village_trade_offers.remove(offer_id);
+    source.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn two_colonies_mut(
+    colonies: &mut [ColonyRuntime],
+    left: usize,
+    right: usize,
+) -> (&mut ColonyRuntime, &mut ColonyRuntime) {
+    debug_assert_ne!(left, right);
+    if left < right {
+        let (head, tail) = colonies.split_at_mut(right);
+        (&mut head[left], &mut tail[0])
+    } else {
+        let (head, tail) = colonies.split_at_mut(left);
+        (&mut tail[0], &mut head[right])
+    }
 }
 
 fn set_test_acceleration(world: &mut WorldState, preset: proto::AccelerationPreset) {
@@ -1360,6 +1700,11 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
     proto::ColonySnapshot {
         id: colony.id.clone(),
         name: colony.name.clone(),
+        kind: match colony.kind {
+            VillageKind::Global => proto::VillageKind::Global,
+            VillageKind::Personal => proto::VillageKind::Personal,
+        },
+        capabilities: proto::VillageCapabilities::default(),
         status: sim_to_proto_colony_status(colony.status),
         resources: resources_snapshot(&colony.resources),
         storage: proto::StorageSnapshot {
@@ -2337,17 +2682,6 @@ fn stable_hash(bytes: &[u8]) -> u64 {
     hash
 }
 
-fn next_colony_id(world: &WorldState) -> String {
-    let mut next = world.colonies.len() + 1;
-    loop {
-        let id = format!("colony-{next}");
-        if !world.colonies.iter().any(|colony| colony.id == id) {
-            return id;
-        }
-        next += 1;
-    }
-}
-
 fn set_upgrade_level(upgrades: &mut crate::world_tick::UpgradeLevels, key: UpgradeKey, level: u32) {
     match key {
         UpgradeKey::ClickPower => upgrades.click_power = level,
@@ -2363,6 +2697,15 @@ fn ok() -> proto::ActionResult {
     proto::ActionResult {
         ok: true,
         message: None,
+        colony_id: None,
+    }
+}
+
+fn ok_for_colony(colony_id: &str) -> proto::ActionResult {
+    proto::ActionResult {
+        ok: true,
+        message: None,
+        colony_id: Some(colony_id.to_owned()),
     }
 }
 
@@ -2370,6 +2713,7 @@ fn fail(message: impl Into<String>) -> proto::ActionResult {
     proto::ActionResult {
         ok: false,
         message: Some(message.into()),
+        colony_id: None,
     }
 }
 
@@ -2466,6 +2810,19 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
         ResourceKind::Logs => proto::ResourceKind::Logs,
         ResourceKind::Lumber => proto::ResourceKind::Lumber,
         ResourceKind::Blessings => proto::ResourceKind::Blessings,
+    }
+}
+
+fn village_trade_offer_snapshot(offer: &VillageTradeOffer) -> proto::VillageTradeOfferSnapshot {
+    proto::VillageTradeOfferSnapshot {
+        id: offer.id.clone(),
+        from_colony_id: offer.from_colony_id.clone(),
+        to_colony_id: offer.to_colony_id.clone(),
+        offered_kind: sim_to_proto_resource_kind(offer.offered_kind),
+        offered_amount: offer.offered_amount,
+        requested_kind: sim_to_proto_resource_kind(offer.requested_kind),
+        requested_amount: offer.requested_amount,
+        created_at: offer.created_at,
     }
 }
 
@@ -2901,24 +3258,90 @@ mod tests {
 
     #[test]
     fn found_village_adds_a_colony_with_starter_cats() {
-        let mut world = WorldState {
-            world_seed: 20_240_703,
-            colonies: Vec::new(),
-        };
+        let mut world = world_with_one_colony();
         let res = apply_action(
             &mut world,
             &proto::ClientAction::FoundVillage {
                 name: "Newford".to_string(),
                 session_id: "sess_1".to_string(),
+                sig: None,
             },
             &ctx(),
         );
         assert!(res.ok, "{res:?}");
-        assert_eq!(world.colonies.len(), 1);
+        assert_eq!(world.colonies.len(), 2);
+        let personal = &world.colonies[1];
+        assert_eq!(personal.kind, VillageKind::Personal);
+        assert_eq!(personal.owner_player_id.as_deref(), Some("player_1"));
+        assert_ne!(personal.anchor, world.colonies[0].anchor);
         assert!(
-            !world.colonies[0].cats.is_empty(),
+            !personal.cats.is_empty(),
             "founded colony should have starter cats"
         );
+        assert_eq!(res.colony_id.as_deref(), Some(personal.id.as_str()));
+    }
+
+    #[test]
+    fn founding_is_idempotent_and_stable_for_one_player() {
+        let mut world = world_with_one_colony();
+        let action = proto::ClientAction::FoundVillage {
+            name: "Newford".to_owned(),
+            session_id: "sess_1".to_owned(),
+            sig: None,
+        };
+
+        let first = apply_action(&mut world, &action, &ctx());
+        let first_personal = world.colonies[1].clone();
+        let second = apply_action(&mut world, &action, &ctx());
+
+        assert!(first.ok && second.ok);
+        assert_eq!(world.colonies.len(), 2);
+        assert_eq!(world.colonies[1], first_personal);
+        assert_eq!(first.colony_id, second.colony_id);
+    }
+
+    #[test]
+    fn village_names_are_bounded_and_reject_control_characters() {
+        let action = |name: String| proto::ClientAction::FoundVillage {
+            name,
+            session_id: "sess_1".to_owned(),
+            sig: None,
+        };
+        for name in [
+            "".to_owned(),
+            "x".repeat(MAX_VILLAGE_NAME_CHARS + 1),
+            "Moss\nHollow".to_owned(),
+        ] {
+            let mut world = world_with_one_colony();
+            let before = world.clone();
+            assert!(!apply_action(&mut world, &action(name), &ctx()).ok);
+            assert_eq!(world, before);
+        }
+
+        let mut world = world_with_one_colony();
+        let boundary = "x".repeat(MAX_VILLAGE_NAME_CHARS);
+        assert!(apply_action(&mut world, &action(boundary.clone()), &ctx()).ok);
+        assert_eq!(world.colonies[1].name, boundary);
+    }
+
+    #[test]
+    fn personal_village_id_collision_search_is_bounded() {
+        let mut world = world_with_one_colony();
+        let player_id = "collision-player";
+        let base_id = personal_village_id(&world, player_id).expect("initial id");
+        for suffix in 0..=MAX_PERSONAL_VILLAGE_ID_COLLISIONS {
+            let id = if suffix == 0 {
+                base_id.clone()
+            } else {
+                format!("{base_id}-{suffix}")
+            };
+            world.colonies.push(ColonyRuntime {
+                id,
+                ..ColonyRuntime::default()
+            });
+        }
+
+        assert_eq!(personal_village_id(&world, player_id), None);
     }
 
     #[test]
@@ -2928,6 +3351,8 @@ mod tests {
         world
             .colonies
             .push(found_colony(world_seed, "c2", 1_000_000, 5678));
+        world.colonies[1].kind = VillageKind::Personal;
+        world.colonies[1].owner_player_id = Some("player_1".to_owned());
         let cat_id = world.colonies[1].cats[0].id.clone();
         let mut selected_ctx = ctx();
         selected_ctx.colony_id = "c2".to_owned();
@@ -2947,6 +3372,345 @@ mod tests {
             world.colonies[1].officers.get(&OfficerRole::Farmer),
             Some(&cat_id)
         );
+    }
+
+    #[test]
+    fn foreign_player_cannot_join_or_mutate_a_personal_village() {
+        let mut world = world_with_one_colony();
+        let world_seed = world.world_seed;
+        let mut private = found_colony(world_seed, "private", 1_000_000, 5678);
+        private.kind = VillageKind::Personal;
+        private.owner_player_id = Some("owner".to_owned());
+        let cat_id = private.cats[0].id.clone();
+        world.colonies.push(private);
+        let mut intruder = ctx();
+        intruder.player_id = "intruder".to_owned();
+        intruder.colony_id = "private".to_owned();
+
+        let join = apply_action(
+            &mut world,
+            &proto::ClientAction::JoinVillage {
+                colony_id: "private".to_owned(),
+                session_id: intruder.session_id.clone(),
+                sig: None,
+            },
+            &intruder,
+        );
+        let before = world.colonies[1].clone();
+        let mutation = apply_action(
+            &mut world,
+            &proto::ClientAction::AssignOfficer {
+                session_id: intruder.session_id.clone(),
+                nickname: "Intruder".to_owned(),
+                sig: "server-verified".to_owned(),
+                role: proto::OfficerRole::Farmer,
+                cat_id,
+            },
+            &intruder,
+        );
+
+        assert!(!join.ok);
+        assert!(!mutation.ok);
+        assert_eq!(world.colonies[1], before);
+        assert_eq!(join.message, mutation.message);
+    }
+
+    #[test]
+    fn only_shrine_delivered_scout_knowledge_creates_mutual_contact() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony_at(
+            world.world_seed,
+            "personal",
+            1_000_000,
+            55,
+            TilePos { x: 102, y: 6 },
+        );
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("player_2".to_owned());
+        let personal_shrine = TilePos {
+            x: personal.anchor.x + 1,
+            y: personal.anchor.y + 1,
+        };
+        world.colonies[0]
+            .provisional_tiles
+            .entry("scout".to_owned())
+            .or_default()
+            .insert(personal_shrine);
+        world.colonies.push(personal);
+
+        crate::world_tick::reconcile_village_discoveries(&mut world);
+        assert!(world.colonies[0].known_village_ids.is_empty());
+        assert!(world.colonies[1].known_village_ids.is_empty());
+
+        // Expansion, recovery, and legacy saves can all permanently reveal a
+        // tile. That generic map state must not impersonate a returned scout.
+        world.colonies[0].revealed_tiles.insert(personal_shrine);
+        crate::world_tick::reconcile_village_discoveries(&mut world);
+        assert!(world.colonies[0].known_village_ids.is_empty());
+        assert!(world.colonies[1].known_village_ids.is_empty());
+
+        world.colonies[0]
+            .pending_scout_delivery_tiles
+            .insert(personal_shrine);
+        crate::world_tick::reconcile_village_discoveries(&mut world);
+        assert!(world.colonies[0].known_village_ids.contains("personal"));
+        assert!(world.colonies[1].known_village_ids.contains("c1"));
+        assert!(world.colonies[0].pending_scout_delivery_tiles.is_empty());
+    }
+
+    #[test]
+    fn discovered_villages_exchange_resources_only_after_target_acceptance() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("player_2".to_owned());
+        world.colonies[0]
+            .known_village_ids
+            .insert("personal".to_owned());
+        personal.known_village_ids.insert("c1".to_owned());
+        world.colonies.push(personal);
+        world.colonies[0].resources.food = 100.0;
+        world.colonies[1].resources.materials = 100.0;
+        let before = (
+            world.colonies[0].resources.clone(),
+            world.colonies[1].resources.clone(),
+        );
+
+        let offered = apply_action(
+            &mut world,
+            &proto::ClientAction::OfferVillageTrade {
+                session_id: "sess_1".to_owned(),
+                nickname: "Global Cat".to_owned(),
+                sig: "signed".to_owned(),
+                target_colony_id: "personal".to_owned(),
+                offered_kind: proto::ResourceKind::Food,
+                offered_amount: 10.0,
+                requested_kind: proto::ResourceKind::Materials,
+                requested_amount: 5.0,
+            },
+            &ctx(),
+        );
+        assert!(offered.ok, "{offered:?}");
+        assert_eq!(world.colonies[0].resources, before.0);
+        assert_eq!(world.colonies[1].resources, before.1);
+        let offer_id = world.colonies[0]
+            .village_trade_offers
+            .keys()
+            .next()
+            .expect("offer")
+            .clone();
+        let mut target_ctx = ctx();
+        target_ctx.player_id = "player_2".to_owned();
+        target_ctx.colony_id = "personal".to_owned();
+        let accepted = apply_action(
+            &mut world,
+            &proto::ClientAction::AcceptVillageTrade {
+                session_id: target_ctx.session_id.clone(),
+                nickname: "Personal Cat".to_owned(),
+                sig: "signed".to_owned(),
+                offer_id,
+            },
+            &target_ctx,
+        );
+
+        assert!(accepted.ok, "{accepted:?}");
+        assert_eq!(world.colonies[0].resources.food, 90.0);
+        assert_eq!(
+            world.colonies[0].resources.materials,
+            before.0.materials + 5.0
+        );
+        assert_eq!(world.colonies[1].resources.food, before.1.food + 10.0);
+        assert_eq!(world.colonies[1].resources.materials, 95.0);
+        assert!(world.colonies[0].village_trade_offers.is_empty());
+    }
+
+    #[test]
+    fn unknown_or_foreign_villages_cannot_create_or_accept_trade() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+        world.colonies.push(personal);
+        let action = proto::ClientAction::OfferVillageTrade {
+            session_id: "sess_1".to_owned(),
+            nickname: "Global Cat".to_owned(),
+            sig: "signed".to_owned(),
+            target_colony_id: "personal".to_owned(),
+            offered_kind: proto::ResourceKind::Food,
+            offered_amount: 1.0,
+            requested_kind: proto::ResourceKind::Materials,
+            requested_amount: 1.0,
+        };
+        assert!(!apply_action(&mut world, &action, &ctx()).ok);
+        assert!(world.colonies[0].village_trade_offers.is_empty());
+    }
+
+    #[test]
+    fn trade_offer_identity_collision_search_is_bounded() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+        world.colonies[0]
+            .known_village_ids
+            .insert("personal".to_owned());
+        personal.known_village_ids.insert("c1".to_owned());
+        world.colonies.push(personal);
+        let context = ctx();
+        let base = stable_seed(&[
+            "idle-cat-forest/village-trade/v1",
+            "c1",
+            "personal",
+            &context.now_ms.to_string(),
+            &context.player_id,
+        ]);
+        for suffix in 0..=MAX_VILLAGE_TRADE_ID_COLLISIONS {
+            let id = if suffix == 0 {
+                format!("trade-{base:08x}")
+            } else {
+                format!("trade-{base:08x}-{suffix}")
+            };
+            world.colonies[1].village_trade_offers.insert(
+                id.clone(),
+                VillageTradeOffer {
+                    id,
+                    from_colony_id: "personal".to_owned(),
+                    to_colony_id: "c1".to_owned(),
+                    offered_kind: stockpiles::ResourceKind::Food,
+                    offered_amount: 1.0,
+                    requested_kind: stockpiles::ResourceKind::Materials,
+                    requested_amount: 1.0,
+                    created_at: context.now_ms,
+                },
+            );
+        }
+        let count = world.colonies[1].village_trade_offers.len();
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::OfferVillageTrade {
+                session_id: context.session_id.clone(),
+                nickname: "Global Cat".to_owned(),
+                sig: "signed".to_owned(),
+                target_colony_id: "personal".to_owned(),
+                offered_kind: proto::ResourceKind::Food,
+                offered_amount: 1.0,
+                requested_kind: proto::ResourceKind::Materials,
+                requested_amount: 1.0,
+            },
+            &context,
+        );
+
+        assert!(!result.ok);
+        assert_eq!(world.colonies[1].village_trade_offers.len(), count);
+        assert!(world.colonies[0].village_trade_offers.is_empty());
+    }
+
+    #[test]
+    fn a_village_cannot_accumulate_unbounded_open_trade_offers() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+        world.colonies[0]
+            .known_village_ids
+            .insert("personal".to_owned());
+        personal.known_village_ids.insert("c1".to_owned());
+        world.colonies.push(personal);
+        for index in 0..MAX_OPEN_VILLAGE_TRADE_OFFERS {
+            let id = format!("existing-{index}");
+            world.colonies[0].village_trade_offers.insert(
+                id.clone(),
+                VillageTradeOffer {
+                    id,
+                    from_colony_id: "c1".to_owned(),
+                    to_colony_id: "personal".to_owned(),
+                    offered_kind: stockpiles::ResourceKind::Food,
+                    offered_amount: 1.0,
+                    requested_kind: stockpiles::ResourceKind::Materials,
+                    requested_amount: 1.0,
+                    created_at: 1_000_000,
+                },
+            );
+        }
+        let before = world.clone();
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::OfferVillageTrade {
+                session_id: "sess_1".to_owned(),
+                nickname: "Global Cat".to_owned(),
+                sig: "signed".to_owned(),
+                target_colony_id: "personal".to_owned(),
+                offered_kind: proto::ResourceKind::Food,
+                offered_amount: 1.0,
+                requested_kind: proto::ResourceKind::Materials,
+                requested_amount: 1.0,
+            },
+            &ctx(),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(
+            result.message.as_deref(),
+            Some("This village already has too many open trade offers.")
+        );
+        assert_eq!(world, before);
+    }
+
+    #[test]
+    fn trade_acceptance_is_atomic_when_recipient_storage_is_full() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+        personal.resources.food = storage::BASE_CAPACITY.food - 1.0;
+        personal.known_village_ids.insert("c1".to_owned());
+        world.colonies[0]
+            .known_village_ids
+            .insert("personal".to_owned());
+        world.colonies.push(personal);
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::OfferVillageTrade {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Global Cat".to_owned(),
+                    sig: "signed".to_owned(),
+                    target_colony_id: "personal".to_owned(),
+                    offered_kind: proto::ResourceKind::Food,
+                    offered_amount: 5.0,
+                    requested_kind: proto::ResourceKind::Materials,
+                    requested_amount: 1.0,
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        let offer_id = world.colonies[0]
+            .village_trade_offers
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let before = world.clone();
+        let mut owner = ctx();
+        owner.player_id = "owner".to_owned();
+        owner.colony_id = "personal".to_owned();
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::AcceptVillageTrade {
+                session_id: owner.session_id.clone(),
+                nickname: "Owner".to_owned(),
+                sig: "signed".to_owned(),
+                offer_id,
+            },
+            &owner,
+        );
+
+        assert!(!result.ok);
+        assert_eq!(world, before);
     }
 
     #[test]

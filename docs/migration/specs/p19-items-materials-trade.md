@@ -2,7 +2,9 @@
 
 > **Living target spec.** The item/material model, a small recipe subset, visiting traders, and
 > basic buy/sell actions exist. Full source/crafting breadth, local physical inventories,
-> quality/UI coverage, fishing, transport, and direct inter-village trade remain open in
+> quality/UI coverage, fishing, and transport remain open. Configurable, consensual inter-village
+> resource barter is verified with a 32-open-offer cap and atomic inventory/storage rechecks;
+> deeper item-stack/route/relationship trade remains open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User (2026-07-10): give the game a DF-like breadth of resources/items, but **cat-themed**

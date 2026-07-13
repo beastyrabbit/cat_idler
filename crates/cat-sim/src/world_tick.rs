@@ -8,6 +8,8 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     biomes::MaxResources,
     climate::Mining,
@@ -121,16 +123,53 @@ pub type RaiderId = String;
 pub type RaidId = String;
 pub type PlayerId = String;
 
+/// Access class for a village in the shared world. Ownership is deliberately
+/// simulation state so every action can enforce it independently of server
+/// routing and UI visibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VillageKind {
+    #[default]
+    Global,
+    Personal,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WorldState {
     pub world_seed: u32,
     pub colonies: Vec<ColonyRuntime>,
 }
 
+/// One atomic barter proposal between villages that have met in the shared
+/// world. Resources are checked when the receiving village accepts; proposals
+/// do not reserve stock and therefore cannot strand survival supplies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VillageTradeOffer {
+    pub id: String,
+    pub from_colony_id: ColonyId,
+    pub to_colony_id: ColonyId,
+    pub offered_kind: ResourceKind,
+    pub offered_amount: f64,
+    pub requested_kind: ResourceKind,
+    pub requested_amount: f64,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColonyRuntime {
     pub id: ColonyId,
     pub name: String,
+    pub kind: VillageKind,
+    /// Stable player identity controlling a personal village. `None` is valid
+    /// for the global village and for quarantined legacy personal rows only.
+    pub owner_player_id: Option<PlayerId>,
+    /// Villages physically found by this colony's committed exploration. A
+    /// contact is recorded mutually only after permanent shrine-delivered fog
+    /// knowledge reaches the other village's shrine.
+    pub known_village_ids: BTreeSet<ColonyId>,
+    /// Open barter proposals authored by this village. Keeping offers on their
+    /// source colony makes ownership and persistence explicit.
+    pub village_trade_offers: BTreeMap<String, VillageTradeOffer>,
     pub leader_id: Option<CatId>,
     pub status: ColonyStatus,
     pub resources: Resources,
@@ -172,6 +211,11 @@ pub struct ColonyRuntime {
     /// Transient/runtime-only — not persisted. On load, an active/returning scout gets
     /// an empty notebook and re-reveals its remaining route; nothing permanent is lost.
     pub provisional_tiles: BTreeMap<CatId, BTreeSet<TilePos>>,
+    /// Tiles delivered to the shrine by scouts during the current world tick.
+    /// Discovery reconciliation consumes and clears this transient set at the end
+    /// of the tick. Keeping provenance separate from `revealed_tiles` prevents
+    /// expansion, recovery, or legacy map data from fabricating village contact.
+    pub pending_scout_delivery_tiles: BTreeSet<TilePos>,
     /// Appointed officers (role → cat id). P12.2 additive layer; empty = no effect.
     pub officers: BTreeMap<OfficerRole, String>,
     /// On-map stockpiles (P12.3). Always includes the shrine reservoir after a tick;
@@ -1506,6 +1550,10 @@ impl Default for ColonyRuntime {
         Self {
             id: String::new(),
             name: String::new(),
+            kind: VillageKind::Global,
+            owner_player_id: None,
+            known_village_ids: BTreeSet::new(),
+            village_trade_offers: BTreeMap::new(),
             leader_id: None,
             status: ColonyStatus::default(),
             resources: Resources::default(),
@@ -1528,6 +1576,7 @@ impl Default for ColonyRuntime {
             anchor: VILLAGE_ANCHOR_TILE,
             revealed_tiles: BTreeSet::new(),
             provisional_tiles: BTreeMap::new(),
+            pending_scout_delivery_tiles: BTreeSet::new(),
             officers: BTreeMap::new(),
             stockpiles: Vec::new(),
             farms: Vec::new(),
@@ -2361,7 +2410,56 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         });
     }
 
+    reconcile_village_discoveries(state);
+
     reports
+}
+
+/// Commit mutual village contact from knowledge delivered to a shrine during
+/// this tick. Generic permanent reveal deliberately does not count: expansion,
+/// recovery, and legacy maps also write `revealed_tiles`, so only the explicit
+/// scout-delivery provenance can create contact.
+pub fn reconcile_village_discoveries(state: &mut WorldState) {
+    let observations = state
+        .colonies
+        .iter()
+        .map(|colony| {
+            (
+                colony.id.clone(),
+                shrine_center_tile(colony.anchor),
+                colony.pending_scout_delivery_tiles.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut contacts = BTreeSet::new();
+    for left in 0..observations.len() {
+        for right in (left + 1)..observations.len() {
+            let (left_id, left_shrine, left_revealed) = &observations[left];
+            let (right_id, right_shrine, right_revealed) = &observations[right];
+            if left_revealed.contains(right_shrine) || right_revealed.contains(left_shrine) {
+                contacts.insert((left_id.clone(), right_id.clone()));
+            }
+        }
+    }
+    for (left_id, right_id) in contacts {
+        if let Some(left) = state
+            .colonies
+            .iter_mut()
+            .find(|colony| colony.id == left_id)
+        {
+            left.known_village_ids.insert(right_id.clone());
+        }
+        if let Some(right) = state
+            .colonies
+            .iter_mut()
+            .find(|colony| colony.id == right_id)
+        {
+            right.known_village_ids.insert(left_id);
+        }
+    }
+    for colony in &mut state.colonies {
+        colony.pending_scout_delivery_tiles.clear();
+    }
 }
 
 /// Phase 1: select the colony, compute elapsed seconds, and skip sub-second ticks
@@ -8388,6 +8486,8 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     // automation pointing at dead or prior-run cats.
     colony.officers.clear();
     colony.provisional_tiles.clear();
+    colony.pending_scout_delivery_tiles.clear();
+    colony.village_trade_offers.clear();
     for building in &mut colony.buildings {
         building.assigned_cat = None;
     }
@@ -10657,6 +10757,9 @@ fn commit_scout_provisional_tiles(colony: &mut ColonyRuntime, cat_id: &str, now_
         .iter()
         .filter(|tile| !colony.revealed_tiles.contains(tile))
         .count();
+    colony
+        .pending_scout_delivery_tiles
+        .extend(tiles.iter().copied());
     colony.revealed_tiles.extend(tiles);
 
     let mission = colony
@@ -17696,6 +17799,11 @@ mod tests {
             colony.revealed_tiles.contains(&pos(50, 50))
                 && colony.revealed_tiles.contains(&pos(51, 50)),
             "discoveries banked earlier in the excursion must commit on shrine arrival"
+        );
+        assert_eq!(
+            colony.pending_scout_delivery_tiles,
+            BTreeSet::from([pos(50, 50), pos(51, 50)]),
+            "village contact must retain explicit shrine-delivery provenance until end-of-tick reconciliation"
         );
         assert_eq!(
             colony.cats[0].activity,

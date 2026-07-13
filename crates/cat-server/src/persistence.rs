@@ -22,7 +22,8 @@ use cat_sim::{
     world_tick::{
         BuildingRuntime, ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime,
         EventKind, EventLog, JobMetadata, JobRequester, JobRuntime, RaiderRuntime, TilePos,
-        VoteRuntime, WorldState, WorldTileRuntime, ZoneRuntime, founding_revealed_tiles,
+        VillageKind, VoteRuntime, WorldState, WorldTileRuntime, ZoneRuntime,
+        founding_revealed_tiles,
     },
     zones::{ZoneKind, ZoneRect},
 };
@@ -103,7 +104,10 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             anchorX INTEGER,
             anchorY INTEGER,
             migrationState TEXT,
-            migrationDepartures INTEGER
+            migrationDepartures INTEGER,
+            ownerPlayerId TEXT,
+            knownVillageIds TEXT,
+            villageTradeOffers TEXT
         );
 
         CREATE TABLE IF NOT EXISTS cats (
@@ -246,7 +250,14 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
         );
         "#,
     )?;
-    migrate_add_missing_columns(conn)
+    migrate_add_missing_columns(conn)?;
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS colonies_one_global
+            ON colonies(isGlobal) WHERE isGlobal = 1;
+         CREATE UNIQUE INDEX IF NOT EXISTS colonies_one_personal_owner
+            ON colonies(ownerPlayerId)
+            WHERE isGlobal = 0 AND ownerPlayerId IS NOT NULL;",
+    )
 }
 
 /// Add columns introduced after a database was first created. `CREATE TABLE IF NOT
@@ -255,6 +266,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 /// ADD COLUMN` is not idempotent, so we only add the ones that are missing.
 fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
     const ADDITIONS: &[(&str, &str, &str)] = &[
+        ("colonies", "isGlobal", "INTEGER"),
         ("colonies", "upgradeLevels", "TEXT"),
         ("colonies", "officers", "TEXT"),
         ("colonies", "stockpiles", "TEXT"),
@@ -274,6 +286,9 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "anchorY", "INTEGER"),
         ("colonies", "migrationState", "TEXT"),
         ("colonies", "migrationDepartures", "INTEGER"),
+        ("colonies", "ownerPlayerId", "TEXT"),
+        ("colonies", "knownVillageIds", "TEXT"),
+        ("colonies", "villageTradeOffers", "TEXT"),
         ("cats", "skills", "TEXT"),
         ("cats", "boosted", "INTEGER NOT NULL DEFAULT 0"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
@@ -300,7 +315,41 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Resu
 }
 
 pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()> {
-    conn.execute_batch(
+    let global_count = world
+        .colonies
+        .iter()
+        .filter(|colony| colony.kind == VillageKind::Global)
+        .count();
+    if global_count != 1 {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "world must contain exactly one global village, found {global_count}"
+        )));
+    }
+    let mut personal_owners = BTreeSet::new();
+    for colony in &world.colonies {
+        match colony.kind {
+            VillageKind::Global if colony.owner_player_id.is_some() => {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "the global village cannot have a private owner".to_owned(),
+                ));
+            }
+            VillageKind::Personal => {
+                if let Some(owner) = &colony.owner_player_id
+                    && !personal_owners.insert(owner.as_str())
+                {
+                    return Err(rusqlite::Error::InvalidParameterName(
+                        "one player cannot own multiple personal villages".to_owned(),
+                    ));
+                }
+            }
+            VillageKind::Global => {}
+        }
+    }
+    // Replacing a world touches every persistence table. Keep the destructive
+    // deletes and the complete replacement in one transaction so a failed row
+    // can never strand the live database empty or partially written.
+    let transaction = conn.unchecked_transaction()?;
+    transaction.execute_batch(
         "DELETE FROM raiders;
          DELETE FROM votes;
          DELETE FROM elections;
@@ -313,16 +362,16 @@ pub fn save_world(conn: &Connection, world: &WorldState) -> rusqlite::Result<()>
          DELETE FROM colonies;
          DELETE FROM world;",
     )?;
-    conn.execute(
+    transaction.execute(
         "INSERT INTO world (id, worldSeed) VALUES (1, ?1)",
         params![i64::from(world.world_seed)],
     )?;
 
     for colony in &world.colonies {
-        save_colony(conn, world.world_seed, colony)?;
+        save_colony(&transaction, world.world_seed, colony)?;
     }
 
-    Ok(())
+    transaction.commit()
 }
 
 pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
@@ -338,7 +387,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
 
     let mut stmt = conn.prepare(
         "SELECT id, name, leaderId, status, resources, createdAt, lastTick,
-                worldSeed, runNumber, runStartedAt, lastPlayerActivityAt,
+                worldSeed, isGlobal, ownerPlayerId, runNumber, runStartedAt, lastPlayerActivityAt,
                 automationTier, globalUpgradePoints, upgradeTree, upgradeLevels,
                 ritualRequestedAt, criticalSince, claimedTiles, revealedTiles, provisionalTiles,
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
@@ -346,7 +395,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, farms, gatherSpots,
                 stockLedger, coin, items, woodCraftProgress, stoneCraftProgress,
                 clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY,
-                migrationState, migrationDepartures
+                migrationState, migrationDepartures, knownVillageIds, villageTradeOffers
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -354,6 +403,20 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
     let mut colonies = Vec::new();
     while let Some(row) = rows.next()? {
         colonies.push(load_colony(conn, row)?);
+    }
+
+    if !colonies
+        .iter()
+        .any(|colony| colony.kind == VillageKind::Global)
+    {
+        let legacy_global = colonies
+            .iter()
+            .position(|colony| colony.id == "colony-1")
+            .or_else(|| (colonies.len() == 1).then_some(0));
+        if let Some(index) = legacy_global {
+            colonies[index].kind = VillageKind::Global;
+            colonies[index].owner_player_id = None;
+        }
     }
 
     Ok(Some(WorldState {
@@ -373,11 +436,13 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
             stockpiles, farms, gatherSpots, stockLedger, coin, items, woodCraftProgress,
             stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
-            anchorX, anchorY, migrationState, migrationDepartures
+            anchorX, anchorY, migrationState, migrationDepartures, isGlobal, ownerPlayerId,
+            knownVillageIds, villageTradeOffers
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45
+            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
+            ?48, ?49
         )",
         params![
             colony.id,
@@ -425,6 +490,10 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.anchor.y,
             serde_json::to_string(&colony.migration_state).map_err(to_sql_json)?,
             i64::try_from(colony.migration_departures).unwrap_or(i64::MAX),
+            (colony.kind == VillageKind::Global),
+            colony.owner_player_id,
+            serde_json::to_string(&colony.known_village_ids).map_err(to_sql_json)?,
+            serde_json::to_string(&colony.village_trade_offers).map_err(to_sql_json)?,
         ],
     )?;
 
@@ -474,6 +543,8 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let stock_ledger_json: Option<String> = row.get("stockLedger")?;
     let items_json: Option<String> = row.get("items")?;
     let migration_state_json: Option<String> = row.get("migrationState")?;
+    let known_village_ids_json: Option<String> = row.get("knownVillageIds")?;
+    let village_trade_offers_json: Option<String> = row.get("villageTradeOffers")?;
     let anchor = TilePos {
         x: row.get::<_, Option<i32>>("anchorX")?.unwrap_or(6),
         y: row.get::<_, Option<i32>>("anchorY")?.unwrap_or(6),
@@ -490,6 +561,24 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     Ok(ColonyRuntime {
         id: id.clone(),
         name: row.get("name")?,
+        kind: if row.get::<_, Option<bool>>("isGlobal")?.unwrap_or(false) {
+            VillageKind::Global
+        } else {
+            VillageKind::Personal
+        },
+        owner_player_id: row.get("ownerPlayerId")?,
+        known_village_ids: known_village_ids_json
+            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+            .transpose()?
+            .unwrap_or_default(),
+        village_trade_offers: village_trade_offers_json
+            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+            .transpose()?
+            .unwrap_or_default(),
+        // A complete world tick consumes shrine-delivery provenance before the
+        // server persists. Reconstructing it from generic revealed tiles would
+        // let expansion or legacy saves fabricate village contact.
+        pending_scout_delivery_tiles: BTreeSet::new(),
         leader_id: row.get("leaderId")?,
         status: parse_colony_status(&row.get::<_, String>("status")?)?,
         resources: serde_json::from_str::<Resources>(&resources_json).map_err(from_sql_json)?,
@@ -613,6 +702,20 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     })
 }
 
+const SCOPED_ID_SEPARATOR: char = '\u{1f}';
+
+fn scoped_storage_id(colony_id: &str, runtime_id: &str) -> String {
+    format!("{colony_id}{SCOPED_ID_SEPARATOR}{runtime_id}")
+}
+
+fn runtime_id_from_storage(colony_id: &str, stored_id: String) -> String {
+    let prefix = format!("{colony_id}{SCOPED_ID_SEPARATOR}");
+    stored_id
+        .strip_prefix(&prefix)
+        .unwrap_or(&stored_id)
+        .to_owned()
+}
+
 fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<()> {
     let current_task = cat.current_task.map(TaskType::as_str);
     let specialization = cat.specialization.map(CatSpecialization::as_str);
@@ -627,7 +730,7 @@ fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<(
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
         )",
         params![
-            cat.id,
+            scoped_storage_id(colony_id, &cat.id),
             colony_id,
             cat.name,
             serde_json::to_string(&cat.parent_ids).map_err(to_sql_json)?,
@@ -683,7 +786,7 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
         let role_xp_json: Option<String> = row.get("roleXp")?;
         let skills_json: Option<String> = row.get("skills")?;
         Ok(Cat {
-            id: row.get("id")?,
+            id: runtime_id_from_storage(colony_id, row.get("id")?),
             colony_id: colony_id.to_owned(),
             name: row.get("name")?,
             parent_ids: serde_json::from_str(&parent_ids_json).map_err(from_sql_json)?,
@@ -749,7 +852,7 @@ fn save_job(conn: &Connection, colony_id: &str, job: &JobRuntime) -> rusqlite::R
             ?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
         )",
         params![
-            job.id,
+            scoped_storage_id(colony_id, &job.id),
             colony_id,
             job.kind.as_str(),
             job.status.as_str(),
@@ -780,7 +883,7 @@ fn load_jobs(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<JobRunt
         let duration_sec: f64 = row.get("baseDurationSec")?;
         let click_count: f64 = row.get("clickTimeReducedSec")?;
         Ok(JobRuntime {
-            id: row.get("id")?,
+            id: runtime_id_from_storage(colony_id, row.get("id")?),
             kind: parse_wire_enum::<JobKind>(&row.get::<_, String>("kind")?)?,
             status: parse_wire_enum::<JobStatus>(&row.get::<_, String>("status")?)?,
             requested_by: parse_job_requester(&row.get::<_, String>("requestedByType")?),
@@ -810,7 +913,7 @@ fn save_building(
             productionProgress, isComplete, assignedCatId
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
-            building.id,
+            scoped_storage_id(colony_id, &building.id),
             colony_id,
             building.building_type.as_str(),
             i64::from(building.level),
@@ -834,7 +937,7 @@ fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Bu
         let position_json: String = row.get("position")?;
         let progress: f64 = row.get("constructionProgress")?;
         Ok(BuildingRuntime {
-            id: row.get("id")?,
+            id: runtime_id_from_storage(colony_id, row.get("id")?),
             building_type: parse_wire_enum::<BuildingType>(&row.get::<_, String>("type")?)?,
             level: row.get("level")?,
             position: parse_tile_pos_str(&position_json)?,
@@ -920,7 +1023,7 @@ fn save_event(conn: &Connection, colony_id: &str, event: &EventLog) -> rusqlite:
             id, colonyId, timestamp, type, message, involvedCatIds, metadata
         ) VALUES (?1, ?2, ?3, ?4, ?5, '[]', '{}')",
         params![
-            event.id,
+            scoped_storage_id(colony_id, &event.id),
             colony_id,
             event.at_ms,
             event_kind_str(&event.kind),
@@ -937,7 +1040,7 @@ fn load_events(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Event
     )?;
     let rows = stmt.query_map([colony_id], |row| {
         Ok(EventLog {
-            id: row.get("id")?,
+            id: runtime_id_from_storage(colony_id, row.get("id")?),
             at_ms: row.get("timestamp")?,
             kind: parse_event_kind(&row.get::<_, String>("type")?),
             message: row.get("message")?,
@@ -957,7 +1060,7 @@ fn save_zone(
             id, colonyId, kind, x1, y1, x2, y2, playerId, createdAt, expiresAt
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
-            format!("zone-{}", index + 1),
+            scoped_storage_id(colony_id, &format!("zone-{}", index + 1)),
             colony_id,
             zone_kind_str(zone.kind),
             zone.rect.x1,
@@ -1007,7 +1110,7 @@ fn save_election(
             endsAt, winnerCatId, resolvedAt, runNumber
         ) VALUES (?1, ?2, ?3, ?4, ?5, '[]', ?6, ?7, ?8, ?9, ?10)",
         params![
-            election.id,
+            scoped_storage_id(colony_id, &election.id),
             colony_id,
             election_schema_kind(election.kind),
             election_kind_str(election.kind),
@@ -1033,7 +1136,7 @@ fn load_elections(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<El
     )?;
     let rows = stmt.query_map([colony_id], |row| {
         Ok(ElectionRuntime {
-            id: row.get("id")?,
+            id: runtime_id_from_storage(colony_id, row.get("id")?),
             opened_at: row.get("startedAt")?,
             closes_at: row.get("endsAt")?,
             resolved_at: row.get("resolvedAt")?,
@@ -1050,7 +1153,7 @@ fn save_vote(conn: &Connection, colony_id: &str, vote: &VoteRuntime) -> rusqlite
             id, colonyId, electionId, playerId, catId, weight
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
-            vote.id,
+            scoped_storage_id(colony_id, &vote.id),
             colony_id,
             vote.election_id,
             vote.voter_id,
@@ -1068,7 +1171,7 @@ fn load_votes(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<VoteRu
     )?;
     let rows = stmt.query_map([colony_id], |row| {
         Ok(VoteRuntime {
-            id: row.get("id")?,
+            id: runtime_id_from_storage(colony_id, row.get("id")?),
             election_id: row.get("electionId")?,
             voter_id: row.get("playerId")?,
             cat_id: row.get("catId")?,
@@ -1090,7 +1193,7 @@ fn save_raider(conn: &Connection, colony_id: &str, raider: &RaiderRuntime) -> ru
             id, colonyId, raidId, position, target, strength, defense, hp, spawnedAt
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
         params![
-            raider.id,
+            scoped_storage_id(colony_id, &raider.id),
             colony_id,
             raider.raid_id,
             serde_json::to_string(&raider.position).map_err(to_sql_json)?,
@@ -1112,7 +1215,7 @@ fn load_raiders(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Raid
         let position_json: String = row.get("position")?;
         let target_json: String = row.get("target")?;
         Ok(RaiderRuntime {
-            id: row.get("id")?,
+            id: runtime_id_from_storage(colony_id, row.get("id")?),
             raid_id: row.get("raidId")?,
             position: serde_json::from_str(&position_json).map_err(from_sql_json)?,
             destination: Some(serde_json::from_str(&target_json).map_err(from_sql_json)?),
@@ -1868,6 +1971,10 @@ mod tests {
             ("colonies", "coin"),
             ("colonies", "migrationState"),
             ("colonies", "migrationDepartures"),
+            ("colonies", "isGlobal"),
+            ("colonies", "ownerPlayerId"),
+            ("colonies", "knownVillageIds"),
+            ("colonies", "villageTradeOffers"),
             ("cats", "skills"),
             ("cats", "boosted"),
         ] {
@@ -1886,6 +1993,10 @@ mod tests {
             ("colonies", "coin"),
             ("colonies", "migrationState"),
             ("colonies", "migrationDepartures"),
+            ("colonies", "isGlobal"),
+            ("colonies", "ownerPlayerId"),
+            ("colonies", "knownVillageIds"),
+            ("colonies", "villageTradeOffers"),
             ("cats", "skills"),
             ("cats", "boosted"),
         ] {
@@ -2139,11 +2250,10 @@ mod tests {
             .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
         save_world(&conn, &world).expect("save world");
 
-        // Simulate a pre-P12.2/P12.3/P12.4a/P16 row: officers + stockpiles + gatherSpots
-        // + stockLedger NULL.
+        // Simulate a pre-P12/P16/multi-village row: additive JSON columns are NULL.
         conn.execute(
             "UPDATE colonies SET officers = NULL, stockpiles = NULL, gatherSpots = NULL,
-                stockLedger = NULL",
+                stockLedger = NULL, knownVillageIds = NULL, villageTradeOffers = NULL",
             [],
         )
         .expect("null columns");
@@ -2153,6 +2263,8 @@ mod tests {
         assert!(loaded.colonies[0].officers.is_empty());
         assert!(loaded.colonies[0].stockpiles.is_empty());
         assert!(loaded.colonies[0].gather_spots.is_empty());
+        assert!(loaded.colonies[0].known_village_ids.is_empty());
+        assert!(loaded.colonies[0].village_trade_offers.is_empty());
         // A NULL ledger loads as the default (empty reported totals, never counted).
         assert_eq!(
             loaded.colonies[0].stock_ledger,
@@ -2171,13 +2283,27 @@ mod tests {
             .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
         // A second village founded at a deliberately distinct anchor.
         let beta_anchor = TilePos { x: 60, y: 66 };
-        world.colonies.push(found_colony_at(
-            world.world_seed,
-            "beta",
-            1_000_000,
-            4321,
-            beta_anchor,
-        ));
+        let mut beta = found_colony_at(world.world_seed, "beta", 1_000_000, 4321, beta_anchor);
+        beta.kind = VillageKind::Personal;
+        beta.owner_player_id = Some("player-beta".to_owned());
+        beta.known_village_ids.insert("colony-1".to_owned());
+        world.colonies[0]
+            .known_village_ids
+            .insert("beta".to_owned());
+        world.colonies[0].village_trade_offers.insert(
+            "trade-one".to_owned(),
+            cat_sim::world_tick::VillageTradeOffer {
+                id: "trade-one".to_owned(),
+                from_colony_id: "colony-1".to_owned(),
+                to_colony_id: "beta".to_owned(),
+                offered_kind: cat_sim::stockpiles::ResourceKind::Food,
+                offered_amount: 4.0,
+                requested_kind: cat_sim::stockpiles::ResourceKind::Materials,
+                requested_amount: 2.0,
+                created_at: 1_100_000,
+            },
+        );
+        world.colonies.push(beta);
 
         save_world(&conn, &world).expect("save world");
         let loaded = load_world(&conn)
@@ -2189,6 +2315,273 @@ mod tests {
         assert_eq!(zero.anchor, TilePos { x: 6, y: 6 });
         assert_eq!(beta.anchor, beta_anchor);
         assert_ne!(zero.anchor, beta.anchor);
+        assert_eq!(zero.kind, VillageKind::Global);
+        assert_eq!(zero.owner_player_id, None);
+        assert_eq!(beta.kind, VillageKind::Personal);
+        assert_eq!(beta.owner_player_id.as_deref(), Some("player-beta"));
+        assert_eq!(zero.known_village_ids, world.colonies[0].known_village_ids);
+        assert_eq!(beta.known_village_ids, world.colonies[1].known_village_ids);
+        assert_eq!(
+            zero.village_trade_offers,
+            world.colonies[0].village_trade_offers
+        );
+    }
+
+    #[test]
+    fn simultaneous_villages_round_trip_colony_local_runtime_ids() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(20_240_703);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
+        let mut personal = found_colony_at(
+            world.world_seed,
+            "personal",
+            1_000_000,
+            4_321,
+            TilePos { x: 102, y: 6 },
+        );
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("player-personal".to_owned());
+        world.colonies.push(personal);
+
+        let _ = world_tick(&mut world, 1_001_000);
+        let global_job_ids = world.colonies[0]
+            .jobs
+            .iter()
+            .map(|job| job.id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            world.colonies[1]
+                .jobs
+                .iter()
+                .any(|job| global_job_ids.contains(job.id.as_str())),
+            "simultaneous colony-local queues intentionally reuse runtime ids"
+        );
+        save_world(&conn, &world).expect("colony-scoped ids must not collide in SQLite");
+        let loaded = load_world(&conn).expect("load world").expect("world");
+        for expected_colony in &world.colonies {
+            let loaded_colony = loaded
+                .colonies
+                .iter()
+                .find(|colony| colony.id == expected_colony.id)
+                .expect("saved colony");
+            assert_eq!(
+                loaded_colony
+                    .cats
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected_colony
+                    .cats
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                loaded_colony
+                    .jobs
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected_colony
+                    .jobs
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                loaded_colony
+                    .buildings
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected_colony
+                    .buildings
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(loaded_colony.events, expected_colony.events);
+            assert_eq!(loaded_colony.zones, expected_colony.zones);
+            assert_eq!(loaded_colony.elections, expected_colony.elections);
+            assert_eq!(loaded_colony.votes, expected_colony.votes);
+            assert_eq!(loaded_colony.raiders, expected_colony.raiders);
+        }
+    }
+
+    #[test]
+    fn legacy_global_building_primary_key_accepts_two_colony_local_blueprints() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch(
+            "CREATE TABLE buildings (
+                id TEXT PRIMARY KEY,
+                colonyId TEXT NOT NULL,
+                type TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                position TEXT NOT NULL,
+                constructionProgress REAL NOT NULL,
+                productionProgress REAL NOT NULL DEFAULT 0,
+                isComplete INTEGER NOT NULL DEFAULT 0,
+                assignedCatId TEXT
+            );",
+        )
+        .expect("install shipped global-key buildings table");
+        init_schema(&conn).expect("migrate remaining schema");
+
+        let mut world = new_world(20_240_703);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
+        let mut personal = found_colony_at(
+            world.world_seed,
+            "personal",
+            1_000_000,
+            4_321,
+            TilePos { x: 102, y: 6 },
+        );
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("player-personal".to_owned());
+        assert_eq!(
+            world.colonies[0].buildings[0].id, personal.buildings[0].id,
+            "founding building ids are intentionally colony-local"
+        );
+        world.colonies.push(personal);
+
+        save_world(&conn, &world).expect("storage-scoped building ids must fit the legacy key");
+        let loaded = load_world(&conn).expect("load world").expect("world");
+        for expected_colony in &world.colonies {
+            let loaded_colony = loaded
+                .colonies
+                .iter()
+                .find(|colony| colony.id == expected_colony.id)
+                .expect("saved colony");
+            assert_eq!(
+                loaded_colony
+                    .buildings
+                    .iter()
+                    .map(|building| building.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected_colony
+                    .buildings
+                    .iter()
+                    .map(|building| building.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_null_global_flags_backfill_only_the_canonical_colony() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(20_240_703);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
+        let mut old_personal = found_colony_at(
+            world.world_seed,
+            "legacy-personal",
+            1_000_000,
+            43,
+            TilePos { x: 60, y: 60 },
+        );
+        old_personal.kind = VillageKind::Personal;
+        world.colonies.push(old_personal);
+        save_world(&conn, &world).expect("save world");
+        conn.execute(
+            "UPDATE colonies SET isGlobal = NULL, ownerPlayerId = NULL",
+            [],
+        )
+        .expect("erase new metadata");
+
+        let loaded = load_world(&conn).expect("load").expect("world");
+
+        let global = loaded
+            .colonies
+            .iter()
+            .find(|colony| colony.id == "colony-1")
+            .expect("canonical global");
+        let legacy = loaded
+            .colonies
+            .iter()
+            .find(|colony| colony.id == "legacy-personal")
+            .expect("legacy personal");
+        assert_eq!(global.kind, VillageKind::Global);
+        assert_eq!(legacy.kind, VillageKind::Personal);
+        assert_eq!(
+            legacy.owner_player_id, None,
+            "legacy personal stays quarantined"
+        );
+    }
+
+    #[test]
+    fn persistence_rejects_invalid_global_and_personal_ownership_invariants() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let empty = new_world(7);
+        assert!(save_world(&conn, &empty).is_err());
+
+        let mut duplicate = new_world(7);
+        duplicate
+            .colonies
+            .push(found_colony(7, "global-a", 1_000, 1));
+        duplicate
+            .colonies
+            .push(found_colony(7, "global-b", 1_000, 2));
+        assert!(save_world(&conn, &duplicate).is_err());
+
+        let mut duplicate_owner = new_world(7);
+        duplicate_owner
+            .colonies
+            .push(found_colony(7, "global", 1_000, 1));
+        for id in ["personal-a", "personal-b"] {
+            let mut personal = found_colony(7, id, 1_000, 2);
+            personal.kind = VillageKind::Personal;
+            personal.owner_player_id = Some("same-player".to_owned());
+            duplicate_owner.colonies.push(personal);
+        }
+        assert!(save_world(&conn, &duplicate_owner).is_err());
+
+        let mut owned_global = new_world(7);
+        let mut global = found_colony(7, "global", 1_000, 1);
+        global.owner_player_id = Some("impossible-owner".to_owned());
+        owned_global.colonies.push(global);
+        assert!(save_world(&conn, &owned_global).is_err());
+    }
+
+    #[test]
+    fn failed_world_replacement_rolls_back_to_the_previous_complete_save() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut baseline = new_world(7);
+        baseline.colonies.push(found_colony(7, "global", 1_000, 1));
+        save_world(&conn, &baseline).expect("save baseline");
+        let expected = load_world(&conn).expect("load baseline").expect("world");
+
+        conn.execute_batch(
+            "CREATE TRIGGER reject_forced_failure
+             BEFORE INSERT ON colonies
+             WHEN NEW.id = 'forced-failure'
+             BEGIN
+               SELECT RAISE(ABORT, 'forced save failure');
+             END;",
+        )
+        .expect("install failure trigger");
+
+        let mut replacement = baseline;
+        let mut personal = found_colony(7, "forced-failure", 2_000, 2);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("player-two".to_owned());
+        replacement.colonies.push(personal);
+
+        assert!(save_world(&conn, &replacement).is_err());
+        assert_eq!(
+            load_world(&conn).expect("load after rollback"),
+            Some(expected),
+            "a failed replacement must preserve every row from the prior save"
+        );
     }
 
     #[test]
@@ -2219,12 +2612,13 @@ mod tests {
     /// (either by comparison against a stale expectation, or because the loaded value
     /// stays at its `Default` while the saved value does not).
     ///
-    /// `trader` and `last_trader_departed_at` are the two
-    /// fields intentionally excluded from the round trip (see the doc comments on
-    /// `ColonyRuntime` and in `load_colony`) — a restart is documented to drop an
-    /// in-flight trader visit. Scout notebooks persist because dropping them can make
-    /// a returning scout deliver no knowledge after a restart. This test asserts that
-    /// documented contract explicitly so a future change shows up here too.
+    /// `trader`, `last_trader_departed_at`, and the end-of-tick-only
+    /// `pending_scout_delivery_tiles` are intentionally excluded from the round trip
+    /// (see the doc comments on `ColonyRuntime` and in `load_colony`). A restart is
+    /// documented to drop an in-flight trader visit. Scout notebooks persist because
+    /// dropping them can make a returning scout deliver no knowledge after a restart.
+    /// This test asserts that documented contract explicitly so a future change shows
+    /// up here too.
     #[test]
     fn save_world_load_world_round_trips_every_field_in_the_persistence_audit() {
         use cat_sim::{
@@ -2322,6 +2716,9 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
+        colony
+            .pending_scout_delivery_tiles
+            .insert(TilePos { x: 46, y: 47 });
 
         // --- officers / stockpiles / gather spots / ledger / items ------------------
         colony
@@ -2504,13 +2901,14 @@ mod tests {
         let loaded_colony = &loaded.colonies[0];
         let expected_colony = &expected.colonies[0];
 
-        // Every field except the two documented-transient ones must round-trip
-        // exactly. Compare via a clone with those two fields reset to what
+        // Every field except the three documented-transient ones must round-trip
+        // exactly. Compare via a clone with those fields reset to what
         // `load_colony` is documented to produce, so any other drift fails the
         // `assert_eq!` on the whole struct.
         let mut expected_after_reload = expected_colony.clone();
         expected_after_reload.trader = None;
         expected_after_reload.last_trader_departed_at = None;
+        expected_after_reload.pending_scout_delivery_tiles.clear();
 
         assert_eq!(loaded_colony, &expected_after_reload);
         assert!(
@@ -2551,5 +2949,6 @@ mod tests {
         // the equality check above.
         assert_eq!(loaded_colony.trader, None);
         assert_eq!(loaded_colony.last_trader_departed_at, None);
+        assert!(loaded_colony.pending_scout_delivery_tiles.is_empty());
     }
 }

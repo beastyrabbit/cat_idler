@@ -33,8 +33,11 @@ Verified foundations include:
   controls at 1024×768 through 1920×1080;
 - a pure 500-node research catalog and full-page searchable/filterable/pannable client ledger.
   Generated studies honestly remain read-only until their live effects are implemented;
-- a persistent village selector and secure selected-village routing. This is not yet the
-  canonical-global/personal-ownership/discovery/trade model.
+- one canonical communal village plus one owner-only personal village per stable signed identity,
+  with deterministic distant viable sites, secure selected-village routing, restart-safe
+  ownership and selection, explicit returned-scout discovery, summary-only foreign contact,
+  configurable capped atomic direct barter, transactional world saves, and collision-safe
+  colony-local SQLite child identities; native bearer/selection rewrites are atomic;
 - the complete founding lifecycle: exactly 15 adult cats in three five-bed Dens, slow
   reserved-bed breeding, prosperity migration with a 36-game-hour unhoused probation,
   240/288-game-hour old-age thresholds, atomic extinction recovery, and physical emergency
@@ -60,9 +63,8 @@ playtest harness:
    and add upgrade-gated escalating building costs. Keep tithe/offering reachability and
    research pacing in the same balance campaigns.
 3. **Integrate the larger product models.** Wire purchases/effects/persistence and the daily
-   leader choice for the 500-study catalog; complete global/personal village ownership,
-   discovery, and direct trade. Preserve the now-verified founding, housing, migration, aging,
-   reset, and physical emergency-water contracts while doing so.
+   leader choice for the 500-study catalog. Preserve the now-verified multi-village, founding,
+   housing, migration, aging, reset, and physical emergency-water contracts while doing so.
 4. **Close world and presentation gaps.** Finish staged closed-perimeter wall growth and an
    explicit outside-the-wall agricultural territory model, replace rail/shipping multipliers
    with built routes/vehicles, restore fishing, make Accounting Tent snapshot-reachable, and
