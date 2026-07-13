@@ -4,7 +4,6 @@ Curated asset picks for the **item / resource / goods icons** (stockpiles + dash
 the **UI kit** (panels, buttons, bars, cursors) for *Idle Cat Forest*.
 
 All sources live under the gitignored pack `public/Kenney Game Assets All-in-1 3.5.0/`.
-Everything here is **Kenney CC0 1.0** — free for commercial use, credit optional.
 Chosen files get **copied** into tracked folders:
 
 - Icons  → `public/images/game/icons/`
@@ -166,13 +165,3 @@ Recoloring: the Board Game Icons are pure white — either (a) recolor the SVGs 
 `Icons/Board Game Icons/Vector/Icons/` and re-export per resource, or (b) keep white PNGs and
 apply a per-resource CSS `filter`/`mask` tint at render time (less disk, one source of truth).
 Option (b) is recommended.
-
----
-
-## CC0 / licensing
-
-Every pack referenced is **Kenney CC0 1.0** (per each pack's `Preview.png`/`Readme`): free for
-commercial + personal use, attribution optional but appreciated. The full pack directory
-`public/Kenney Game Assets All-in-1 3.5.0/` is **gitignored** — only the specific chosen files
-get copied into the tracked `public/images/game/` tree, matching the existing convention noted
-in `CLAUDE.md` (curated Kenney sprites in `public/images/iso/`).

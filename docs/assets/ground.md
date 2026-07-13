@@ -152,14 +152,6 @@ Trees (2-tile-tall, crop 16×32) at `cols 13–18, rows 9–10`; round bushes/ca
 - **Foliage Pack / Foliage Sprites** — side-view / white-silhouette vector foliage; not top-down colored
   tiles. Skip for terrain; only useful if you need decorative overlays and will recolor them.
 
----
-
-## License / attribution
-
-**CC0 1.0 (public domain)** for every pack here — confirmed in each `License.txt` ("free to use in
-personal, educational and commercial projects; written permission not required"). No attribution required;
-crediting Kenney (kenney.nl) is appreciated, not mandatory.
-
 The full pack lives in the **gitignored** `public/Kenney Game Assets All-in-1 3.5.0/`. Per repo convention,
 **copy the chosen tiles into tracked `public/images/game/terrain/`** (and `public/images/game/nature/` for
 props) rather than depend on the ignored source tree.
