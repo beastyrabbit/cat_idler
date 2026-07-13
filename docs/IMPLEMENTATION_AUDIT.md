@@ -47,7 +47,7 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 | Sprite review tool | [`docs/sprite-review.html`](sprite-review.html) compares current art with three persisted/exportable proposals for all 22 current buildings plus Accounting Tent, Mill, Sawmill, and a global hall/market concept. | verified | Desktop/mobile browser runs: 26 rows, filters, favorites, reload persistence, path copying, JSON export, zero page/image errors |
 | Research tree scale and UX | A pure 500-node catalog provides 167 building, 167 recipe/resource, and 166 upgrade nodes across named families, with stable IDs, typed payloads, AND prerequisites, and layout coordinates. The full-page client ledger renders the complete graph with search, category filters, inspection, pan, and zoom; generated nodes honestly remain read-only until their runtime effects are integrated. | in progress | Catalog validation and the exact-size native UI campaign are verified; integrate purchasing/effects/persistence and the once-per-real-day leader choice, then repeat the interaction campaign through the live action path |
 | Founding population and housing | A pure migration policy now enforces 30-hour establishment, per-cat prosperity, domain-separated deterministic cohorts, over-capacity probation, deterministic vacancy allocation, and 36-hour unhoused departure. Live founding still starts five cats and old housing/breeding rules remain. | in progress | Migration policy/full-sim gate is verified; exact 15-cat/three-house snapshot, five-per-house housing, slow breeding, tick/persistence integration and live campaigns remain |
-| Roads | Enforce the written P16 road model: authored stone roads, traffic-formed dirt roads, exact movement speeds/surface restrictions, connected shrine/gate/exterior routes, and the single south founding gate. | in progress | Exact speed boundaries, traffic threshold, no stone auto-dirt, connectivity properties, and framebuffer inspection |
+| Roads | Authored stone-road connectivity and movement multipliers exist, but the snapshot exposes only paved tiles, so traffic-formed dirt paths are invisible to the player. Enforce the complete P16 model: authored stone roads, traffic-formed dirt roads, exact surface restrictions, connected shrine/gate/exterior routes, and the single south founding gate. | in progress | Real traffic crosses the wear threshold; stone ground never auto-forms dirt; both surfaces persist and reach the protocol; exact movement boundaries, connectivity properties, and before/after framebuffers |
 
 ## Current design-document traceability
 
@@ -58,11 +58,11 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 | `docs/HANDOFF.md` | current | Replace NEXT STEPS with verified outcomes from this tracker |
 | `docs/migration/BOARD.md` | core migration complete, expansion rows overclaim | Reopen partial P12–P19 slices and close them only after feature campaigns |
 | `p12-idle-cat-forest.md` | partial | Officers, manual work, farming/production exposure, shrine reachability |
-| `p14-spatial-placement.md` | partial | Stockpile collision/claim rules and hard connectivity invariants |
+| `p14-spatial-placement.md` | verified | Atomic occupancy, future reservations, road connectivity, and scaffold recovery are covered by the spatial campaign recorded below |
 | `p15-playtest-feedback.md` | partial | Dynamic infinite map is fixed; multi-village UX and richer actions remain |
 | `p16-village-blueprint.md` | partial | Player-facing gather controls and reachable production chain |
 | `p17-biome-generator.md` | simulation-heavy, product partial | Expose resources/logistics and render arbitrary chunks |
-| `p18-visual-polish.md` | partial; earlier facade pass is superseded by player feedback | Replace roofed workshops and labels with approved open-top visual stations; retain the verified inspectors and mature-village fit |
+| `p18-visual-polish.md` | partial | The open craft-station and label-free map slices are verified; continue the broader framed-panel/icon UI pass only where current screens remain visually unfinished |
 | `p19-items-materials-trade.md` | partial | Complete material/recipe breadth and expose all chains to play |
 | `docs/migration/WASM.md` | development and production packaging work | Optional transfer/performance campaign remains |
 
