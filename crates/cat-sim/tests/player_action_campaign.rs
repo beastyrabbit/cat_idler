@@ -16,8 +16,10 @@ use cat_sim::{
     types::{BuildingType, JobKind},
     upgrade_tree::{self, UPGRADE_NODES},
     world_tick::{
-        BuildingRuntime, ElectionKind, RaiderRuntime, TilePos, TraderRuntime, WorldState, new_world,
+        BuildingRuntime, ElectionKind, RaiderRuntime, TilePos, TraderRuntime, WorldState,
+        new_world, road_path_attaches_to_shrine, road_placement_error, stockpile_placement_error,
     },
+    zones::ZoneRect,
 };
 
 const EXPECTED_ACTIONS: [&str; 29] = [
@@ -148,6 +150,28 @@ fn signed_fields() -> (String, String, String) {
         "Playtester".to_owned(),
         "ignored-by-pure-sim".to_owned(),
     )
+}
+
+fn open_stockpile_rect(world: &WorldState, require_claimed: bool, edge: i32) -> ZoneRect {
+    let colony = &world.colonies[0];
+    let mut anchors: Vec<TilePos> = if require_claimed {
+        colony.claimed_tiles.clone()
+    } else {
+        colony.world_tiles.keys().copied().collect()
+    };
+    anchors.sort_by_key(|tile| (tile.y, tile.x));
+    anchors
+        .into_iter()
+        .map(|anchor| ZoneRect {
+            x1: anchor.x,
+            y1: anchor.y,
+            x2: anchor.x + edge - 1,
+            y2: anchor.y + edge - 1,
+        })
+        .find(|rect| {
+            stockpile_placement_error(colony, *rect, world.world_seed, require_claimed).is_none()
+        })
+        .expect("campaign map has a valid stockpile footprint")
 }
 
 fn run_action_campaign() -> WorldState {
@@ -560,6 +584,7 @@ fn run_action_campaign() -> WorldState {
 
     // Designated piles and P16 gather spots have separate create/remove lifecycles.
     let stockpiles_before = world.colonies[0].stockpiles.len();
+    let stockpile_rect = open_stockpile_rect(&world, true, 2);
     let (session_id, nickname, sig) = signed_fields();
     apply_ok(
         &mut world,
@@ -568,14 +593,21 @@ fn run_action_campaign() -> WorldState {
             session_id,
             nickname,
             sig,
-            a: proto::TilePoint { x: 15, y: 15 },
-            b: proto::TilePoint { x: 16, y: 16 },
+            a: proto::TilePoint {
+                x: stockpile_rect.x1,
+                y: stockpile_rect.y1,
+            },
+            b: proto::TilePoint {
+                x: stockpile_rect.x2,
+                y: stockpile_rect.y2,
+            },
             accepts: vec![proto::ResourceKind::Food, proto::ResourceKind::Materials],
         },
         &ctx(7_000),
     );
     assert_eq!(world.colonies[0].stockpiles.len(), stockpiles_before + 1);
     let stockpile_id = world.colonies[0].stockpiles.last().unwrap().id.clone();
+    let gather_rect = open_stockpile_rect(&world, false, 2);
     let (session_id, nickname, sig) = signed_fields();
     apply_ok(
         &mut world,
@@ -603,8 +635,14 @@ fn run_action_campaign() -> WorldState {
             session_id,
             nickname,
             sig,
-            a: proto::TilePoint { x: 30, y: 30 },
-            b: proto::TilePoint { x: 31, y: 31 },
+            a: proto::TilePoint {
+                x: gather_rect.x1,
+                y: gather_rect.y1,
+            },
+            b: proto::TilePoint {
+                x: gather_rect.x2,
+                y: gather_rect.y2,
+            },
             kind: proto::ResourceKind::Materials,
         },
         &ctx(7_200),
@@ -640,9 +678,11 @@ fn run_action_campaign() -> WorldState {
     let road_pos = world.colonies[0]
         .world_tiles
         .iter()
-        .find(|(_, tile)| {
+        .find(|(pos, tile)| {
             tile.overlay_feature.as_deref() != Some("road_built")
                 && tile.overlay_feature.as_deref() != Some("river")
+                && road_placement_error(&world.colonies[0], **pos, world.world_seed).is_none()
+                && road_path_attaches_to_shrine(&world.colonies[0], &[**pos])
         })
         .map(|(pos, _)| *pos)
         .expect("found an unpaved solid tile");

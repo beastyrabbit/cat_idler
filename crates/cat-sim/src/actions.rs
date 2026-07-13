@@ -20,7 +20,7 @@ use crate::{
     stockpiles,
     storage::{self, StorageBuilding},
     threat, trader,
-    types::{self, BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, UpgradeKey},
+    types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, UpgradeKey},
     upgrade_tree,
     village_area::{self, gate_placement_default},
     village_layout::{GridPos, village_ring_radius},
@@ -126,7 +126,10 @@ pub fn apply_action(
             with_colony(world, ctx, |colony| defend_raid(colony, ctx))
         }
         proto::ClientAction::BuildRoad { a, b, .. } => {
-            with_colony(world, ctx, |colony| build_road(colony, *a, *b, ctx))
+            let world_seed = world.world_seed;
+            with_colony(world, ctx, |colony| {
+                build_road(colony, *a, *b, world_seed, ctx)
+            })
         }
         proto::ClientAction::SetTestAcceleration { preset } => {
             set_test_acceleration(world, *preset);
@@ -166,8 +169,9 @@ pub fn apply_action(
             unassign_officer(colony, proto_to_sim_officer_role(*role), ctx)
         }),
         proto::ClientAction::DesignateStockpile { a, b, accepts, .. } => {
+            let world_seed = world.world_seed;
             with_colony(world, ctx, |colony| {
-                designate_stockpile(colony, *a, *b, accepts, ctx)
+                designate_stockpile(colony, *a, *b, accepts, world_seed, ctx)
             })
         }
         proto::ClientAction::RemoveStockpile { stockpile_id, .. } => {
@@ -176,8 +180,9 @@ pub fn apply_action(
             })
         }
         proto::ClientAction::DesignateGatherSpot { a, b, kind, .. } => {
+            let world_seed = world.world_seed;
             with_colony(world, ctx, |colony| {
-                designate_gather_spot(colony, *a, *b, *kind, ctx)
+                designate_gather_spot(colony, *a, *b, *kind, world_seed, ctx)
             })
         }
         proto::ClientAction::RemoveGatherSpot { stockpile_id, .. } => {
@@ -520,7 +525,6 @@ fn plan_building(
     {
         return fail("That request is already in progress.");
     }
-
     let Some(architect) = select_best_cat(colony, Some(CatSpecialization::Architect)) else {
         return fail("No available worker.");
     };
@@ -675,6 +679,7 @@ fn designate_stockpile(
     a: proto::TilePoint,
     b: proto::TilePoint,
     accepts: &[proto::ResourceKind],
+    world_seed: u32,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
     if accepts.is_empty() {
@@ -686,8 +691,11 @@ fn designate_stockpile(
         f64::from(b.x),
         f64::from(b.y),
     );
-    if rect.x2 - rect.x1 + 1 > stockpiles::STOCKPILE_MAX_EDGE
-        || rect.y2 - rect.y1 + 1 > stockpiles::STOCKPILE_MAX_EDGE
+    let Some((width, height)) = stockpiles::rect_dimensions(rect) else {
+        return fail("The stockpile rectangle is invalid.");
+    };
+    if width > i64::from(stockpiles::STOCKPILE_MAX_EDGE)
+        || height > i64::from(stockpiles::STOCKPILE_MAX_EDGE)
     {
         return fail(format!(
             "Stockpiles are limited to {}x{} tiles.",
@@ -705,6 +713,11 @@ fn designate_stockpile(
             "You already have {} stockpiles.",
             stockpiles::MAX_DESIGNATED_STOCKPILES
         ));
+    }
+    if let Some(error) =
+        crate::world_tick::stockpile_placement_error(colony, rect, world_seed, true)
+    {
+        return fail(error.message());
     }
 
     let id = format!("stockpile-{}-{}", ctx.now_ms, colony.stockpiles.len() + 1);
@@ -743,16 +756,17 @@ fn remove_stockpile(
 /// Designate a **gather spot** (P16): a temporary, single-resource pile, deliberately
 /// smaller than a general stockpile (`GATHER_SPOT_MAX_EDGE`) and capped by its own
 /// budget (`MAX_GATHER_SPOTS`, separate from the general designated-pile pool). May be
-/// placed anywhere — including outside the claimed village, unlike a general
-/// `DesignateStockpile`'s intent — since it reuses the same `Stockpile` machinery
-/// unchanged: deposit routing/reconcile/capacity all apply exactly as for any other
-/// pile. Only food/water/materials are accepted: the only resources a gatherer job can
-/// currently carry (`entities::CarryingKind`).
+/// placed on mapped, revealed ground — including outside the claimed village once a
+/// scout has revealed it, unlike a general `DesignateStockpile`'s intent — since it
+/// reuses the same `Stockpile` machinery unchanged: deposit routing/reconcile/capacity
+/// all apply exactly as for any other pile. Only food/water/materials are accepted: the
+/// only resources a gatherer job can currently carry (`entities::CarryingKind`).
 fn designate_gather_spot(
     colony: &mut ColonyRuntime,
     a: proto::TilePoint,
     b: proto::TilePoint,
     kind: proto::ResourceKind,
+    world_seed: u32,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
     if !matches!(
@@ -767,8 +781,11 @@ fn designate_gather_spot(
         f64::from(b.x),
         f64::from(b.y),
     );
-    if rect.x2 - rect.x1 + 1 > stockpiles::GATHER_SPOT_MAX_EDGE
-        || rect.y2 - rect.y1 + 1 > stockpiles::GATHER_SPOT_MAX_EDGE
+    let Some((width, height)) = stockpiles::rect_dimensions(rect) else {
+        return fail("The gather-spot rectangle is invalid.");
+    };
+    if width > i64::from(stockpiles::GATHER_SPOT_MAX_EDGE)
+        || height > i64::from(stockpiles::GATHER_SPOT_MAX_EDGE)
     {
         return fail(format!(
             "Gather spots are limited to {}x{} tiles.",
@@ -781,6 +798,11 @@ fn designate_gather_spot(
             "You already have {} gather spots.",
             stockpiles::MAX_GATHER_SPOTS
         ));
+    }
+    if let Some(error) =
+        crate::world_tick::stockpile_placement_error(colony, rect, world_seed, false)
+    {
+        return fail(error.message());
     }
 
     let sim_kind = proto_to_sim_resource_kind(kind);
@@ -1003,12 +1025,17 @@ fn build_road(
     colony: &mut ColonyRuntime,
     a: proto::TilePoint,
     b: proto::TilePoint,
+    world_seed: u32,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
-    if [a.x, a.y, b.x, b.y].iter().any(|coord| coord.abs() > 1_000) {
+    if [a.x, a.y, b.x, b.y]
+        .iter()
+        .any(|&coord| i64::from(coord).abs() > 1_000)
+    {
         return fail("Invalid road endpoints.");
     }
-    let distance = (b.x - a.x).abs() + (b.y - a.y).abs();
+    let distance =
+        (i64::from(b.x) - i64::from(a.x)).abs() + (i64::from(b.y) - i64::from(a.y)).abs();
     if distance > 24 {
         return fail("Roads are limited to 24 tiles per build.");
     }
@@ -1017,21 +1044,44 @@ fn build_road(
     if path.len() > 24 {
         return fail("Roads are limited to 24 tiles per build.");
     }
-    if colony.resources.materials < path.len() as f64 {
+    if !crate::world_tick::road_path_attaches_to_shrine(colony, &path) {
+        return fail("A new road must attach to the shrine-connected road network.");
+    }
+    for &pos in &path {
+        if !colony.world_tiles.contains_key(&pos) {
+            return fail("Roads can only be built on mapped terrain.");
+        }
+        if let Some(error) = crate::world_tick::road_placement_error(colony, pos, world_seed) {
+            return fail(error.message());
+        }
+    }
+    let new_tiles = path
+        .iter()
+        .filter(|&&pos| {
+            colony
+                .world_tiles
+                .get(&pos)
+                .is_some_and(|tile| tile.overlay_feature.as_deref() != Some("road_built"))
+                && !crate::world_tick::tile_is_shrine_footprint(colony, pos)
+        })
+        .count();
+    if colony.resources.materials < new_tiles as f64 {
         return fail(format!(
             "Not enough materials ({} needed, one per tile).",
-            path.len()
+            new_tiles
         ));
     }
 
     let mut paved = 0u32;
     for pos in path {
-        let Some(tile) = colony.world_tiles.get_mut(&pos) else {
+        if crate::world_tick::tile_is_shrine_footprint(colony, pos) {
             continue;
-        };
-        if tile.tile_type == types::TileType::River
-            || tile.overlay_feature.as_deref() == Some("river")
-        {
+        }
+        let tile = colony
+            .world_tiles
+            .get_mut(&pos)
+            .expect("road path was prevalidated as mapped");
+        if tile.overlay_feature.as_deref() == Some("road_built") {
             continue;
         }
         tile.overlay_feature = Some("road_built".to_owned());
@@ -2738,6 +2788,37 @@ mod tests {
         }
     }
 
+    fn open_stockpile_points(
+        world: &WorldState,
+        width: i32,
+        height: i32,
+    ) -> (proto::TilePoint, proto::TilePoint) {
+        let colony = &world.colonies[0];
+        let mut anchors = colony.claimed_tiles.clone();
+        anchors.sort_by_key(|tile| (tile.y, tile.x));
+        let anchor = anchors
+            .into_iter()
+            .find(|anchor| {
+                crate::world_tick::stockpile_placement_error(
+                    colony,
+                    zones::ZoneRect {
+                        x1: anchor.x,
+                        y1: anchor.y,
+                        x2: anchor.x + width - 1,
+                        y2: anchor.y + height - 1,
+                    },
+                    world.world_seed,
+                    true,
+                )
+                .is_none()
+            })
+            .expect("founding claim has a valid stockpile rectangle");
+        (
+            tp(anchor.x, anchor.y),
+            tp(anchor.x + width - 1, anchor.y + height - 1),
+        )
+    }
+
     fn assert_stockpile_invariant(colony: &ColonyRuntime) {
         for &kind in stockpiles::ResourceKind::ALL {
             let sum: f64 = colony
@@ -2757,9 +2838,10 @@ mod tests {
     fn designate_stockpile_adds_a_pile_and_keeps_the_invariant() {
         let mut world = world_with_one_colony();
         let before = world.colonies[0].stockpiles.len();
+        let (a, b) = open_stockpile_points(&world, 2, 2);
         let res = apply_action(
             &mut world,
-            &designate_action(tp(8, 8), tp(9, 9), vec![proto::ResourceKind::Food]),
+            &designate_action(a, b, vec![proto::ResourceKind::Food]),
             &ctx(),
         );
         assert!(res.ok, "{res:?}");
@@ -2789,6 +2871,96 @@ mod tests {
     }
 
     #[test]
+    fn designate_stockpile_rejects_spatial_collisions_atomically() {
+        let mut world = world_with_one_colony();
+
+        let cases = [
+            (
+                tp(30, 30),
+                "claimed village land",
+                "wild ground is outside the claim",
+            ),
+            (
+                tp(6, 6),
+                "building footprint",
+                "the shrine occupies this tile",
+            ),
+            (
+                tp(7, 1),
+                "paved road",
+                "the founding road occupies this tile",
+            ),
+        ];
+        for (point, expected, reason) in cases {
+            let before = world.colonies[0].clone();
+            let result = apply_action(
+                &mut world,
+                &designate_action(point, point, vec![proto::ResourceKind::Food]),
+                &ctx(),
+            );
+            assert!(!result.ok, "{reason}: {result:?}");
+            assert!(
+                result
+                    .message
+                    .as_deref()
+                    .is_some_and(|message| message.contains(expected)),
+                "{reason}: {result:?}"
+            );
+            assert_eq!(world.colonies[0], before, "{reason} mutated the colony");
+        }
+
+        let (a, b) = open_stockpile_points(&world, 1, 1);
+        let placed = apply_action(
+            &mut world,
+            &designate_action(a, b, vec![proto::ResourceKind::Food]),
+            &ctx(),
+        );
+        assert!(placed.ok, "{placed:?}");
+        let before_overlap = world.colonies[0].clone();
+        let overlap = apply_action(
+            &mut world,
+            &designate_action(a, b, vec![proto::ResourceKind::Water]),
+            &ctx(),
+        );
+        assert!(!overlap.ok, "overlapping pile accepted: {overlap:?}");
+        assert!(
+            overlap
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("another stockpile"))
+        );
+        assert_eq!(world.colonies[0], before_overlap);
+
+        let water = world.colonies[0]
+            .world_tiles
+            .values()
+            .find(|tile| {
+                world.colonies[0].claimed_tiles.contains(&tile.pos)
+                    && matches!(tile.tile_type, crate::types::TileType::River)
+            })
+            .expect("founding pond exists")
+            .pos;
+        let before_water = world.colonies[0].clone();
+        let on_water = apply_action(
+            &mut world,
+            &designate_action(
+                tp(water.x, water.y),
+                tp(water.x, water.y),
+                vec![proto::ResourceKind::Food],
+            ),
+            &ctx(),
+        );
+        assert!(!on_water.ok, "water pile accepted: {on_water:?}");
+        assert!(
+            on_water
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("water"))
+        );
+        assert_eq!(world.colonies[0], before_water);
+    }
+
+    #[test]
     fn remove_stockpile_refuses_shrine_and_folds_designated_back() {
         let mut world = world_with_one_colony();
         let refuse = apply_action(
@@ -2803,9 +2975,10 @@ mod tests {
         );
         assert!(!refuse.ok, "shrine reservoir cannot be removed");
 
+        let (a, b) = open_stockpile_points(&world, 1, 1);
         let _ = apply_action(
             &mut world,
-            &designate_action(tp(8, 8), tp(8, 8), vec![proto::ResourceKind::Food]),
+            &designate_action(a, b, vec![proto::ResourceKind::Food]),
             &ctx(),
         );
         let pile_id = world.colonies[0]
@@ -2865,12 +3038,38 @@ mod tests {
         }
     }
 
+    fn open_gather_point(world: &WorldState) -> proto::TilePoint {
+        let colony = &world.colonies[0];
+        colony
+            .world_tiles
+            .keys()
+            .copied()
+            .find(|tile| {
+                colony.revealed_tiles.contains(tile)
+                    && crate::world_tick::stockpile_placement_error(
+                        colony,
+                        zones::ZoneRect {
+                            x1: tile.x,
+                            y1: tile.y,
+                            x2: tile.x,
+                            y2: tile.y,
+                        },
+                        world.world_seed,
+                        false,
+                    )
+                    .is_none()
+            })
+            .map(|tile| tp(tile.x, tile.y))
+            .expect("generated wilds have an open gather-spot tile")
+    }
+
     #[test]
     fn designate_gather_spot_adds_a_pile_and_bookkeeping_record() {
         let mut world = world_with_one_colony();
+        let point = open_gather_point(&world);
         let res = apply_action(
             &mut world,
-            &designate_gather_action(tp(30, 30), tp(30, 30), proto::ResourceKind::Food),
+            &designate_gather_action(point, point, proto::ResourceKind::Food),
             &ctx(),
         );
         assert!(res.ok, "{res:?}");
@@ -2913,13 +3112,43 @@ mod tests {
     }
 
     #[test]
+    fn authored_spatial_actions_reject_extreme_or_unrevealed_coordinates_atomically() {
+        let mut world = world_with_one_colony();
+        for point in [tp(i32::MIN, i32::MIN), tp(i32::MAX, i32::MAX), tp(30, 30)] {
+            let before = world.colonies[0].clone();
+            let result = apply_action(
+                &mut world,
+                &designate_gather_action(point, point, proto::ResourceKind::Food),
+                &ctx(),
+            );
+            assert!(!result.ok, "unsafe/unrevealed gather coordinate accepted");
+            assert_eq!(
+                world.colonies[0], before,
+                "rejected gather spot mutated state"
+            );
+        }
+
+        let before = world.colonies[0].clone();
+        let road = proto::ClientAction::BuildRoad {
+            session_id: "sess_1".to_owned(),
+            nickname: "Guest".to_owned(),
+            sig: "sig".to_owned(),
+            a: tp(i32::MIN, 0),
+            b: tp(i32::MAX, 0),
+        };
+        let result = apply_action(&mut world, &road, &ctx());
+        assert!(!result.ok, "extreme road endpoints accepted");
+        assert_eq!(world.colonies[0], before, "rejected road mutated state");
+    }
+
+    #[test]
     fn designate_gather_spot_enforces_its_own_budget() {
         let mut world = world_with_one_colony();
         for i in 0..stockpiles::MAX_GATHER_SPOTS {
-            let x = 30 + i as i32;
+            let point = open_gather_point(&world);
             let res = apply_action(
                 &mut world,
-                &designate_gather_action(tp(x, 30), tp(x, 30), proto::ResourceKind::Food),
+                &designate_gather_action(point, point, proto::ResourceKind::Food),
                 &ctx(),
             );
             assert!(res.ok, "spot {i}: {res:?}");
@@ -2942,9 +3171,10 @@ mod tests {
     #[test]
     fn remove_gather_spot_folds_contents_back_and_cancels_its_mover() {
         let mut world = world_with_one_colony();
+        let point = open_gather_point(&world);
         let _ = apply_action(
             &mut world,
-            &designate_gather_action(tp(30, 30), tp(30, 30), proto::ResourceKind::Food),
+            &designate_gather_action(point, point, proto::ResourceKind::Food),
             &ctx(),
         );
         let spot_id = world.colonies[0].gather_spots[0].stockpile_id.clone();
@@ -2966,7 +3196,10 @@ mod tests {
                 assigned_cat: Some(cat_id.clone()),
                 metadata: JobMetadata::GatherHaul {
                     stockpile_id: spot_id.clone(),
-                    site: Some(TilePos { x: 30, y: 30 }),
+                    site: Some(TilePos {
+                        x: point.x,
+                        y: point.y,
+                    }),
                     accepted: true,
                 },
                 ..JobRuntime::default()
@@ -3019,9 +3252,10 @@ mod tests {
     #[test]
     fn build_snapshot_exposes_stockpiles() {
         let mut world = world_with_one_colony();
+        let (a, b) = open_stockpile_points(&world, 2, 2);
         let _ = apply_action(
             &mut world,
-            &designate_action(tp(8, 8), tp(9, 9), vec![proto::ResourceKind::Food]),
+            &designate_action(a, b, vec![proto::ResourceKind::Food]),
             &ctx(),
         );
         let snap = build_snapshot(&world, 1_000_000, 1);
@@ -3041,9 +3275,10 @@ mod tests {
     #[test]
     fn build_snapshot_flags_gather_spots_on_their_stockpile_snapshot() {
         let mut world = world_with_one_colony();
+        let point = open_gather_point(&world);
         let _ = apply_action(
             &mut world,
-            &designate_gather_action(tp(30, 30), tp(30, 30), proto::ResourceKind::Water),
+            &designate_gather_action(point, point, proto::ResourceKind::Water),
             &ctx(),
         );
         let spot_id = world.colonies[0].gather_spots[0].stockpile_id.clone();

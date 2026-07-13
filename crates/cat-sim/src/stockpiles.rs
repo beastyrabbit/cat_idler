@@ -191,6 +191,30 @@ impl Stockpile {
     }
 }
 
+/// Safely return an inclusive rectangle's `(width, height)`.
+///
+/// `ZoneRect` normally comes from `zones::normalize_rect`, but persisted legacy
+/// rows and untrusted action coordinates still deserve a total validator.  The
+/// `i64` arithmetic avoids debug-build overflow for the full `i32` range.
+#[must_use]
+pub fn rect_dimensions(rect: ZoneRect) -> Option<(i64, i64)> {
+    let width = i64::from(rect.x2) - i64::from(rect.x1) + 1;
+    let height = i64::from(rect.y2) - i64::from(rect.y1) + 1;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+/// Whether two inclusive rectangles share at least one tile.
+#[must_use]
+pub const fn rects_overlap(left: ZoneRect, right: ZoneRect) -> bool {
+    left.x1 <= right.x2 && left.x2 >= right.x1 && left.y1 <= right.y2 && left.y2 >= right.y1
+}
+
+/// Whether an inclusive rectangle contains `(x, y)`.
+#[must_use]
+pub const fn rect_contains(rect: ZoneRect, x: i32, y: i32) -> bool {
+    x >= rect.x1 && x <= rect.x2 && y >= rect.y1 && y <= rect.y2
+}
+
 /// The shrine reservoir's footprint, centered on the village anchor tile.
 #[must_use]
 pub fn shrine_rect(anchor_x: i32, anchor_y: i32) -> ZoneRect {

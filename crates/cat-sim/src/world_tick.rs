@@ -3,7 +3,10 @@
 //! This P7.1 module owns the in-memory runtime shapes and phase ordering. Later
 //! P7 cards fill in the no-op phase bodies with the pure module calls.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
+};
 
 use crate::{
     biomes::MaxResources,
@@ -89,10 +92,7 @@ use crate::{
         ExpandOptions, GatePlacement as AreaGatePlacement, Side, expand_village, from_tiles,
         gate_placement_default, is_inside_village, should_expand, side_delta,
     },
-    village_layout::{
-        DEFAULT_MAX_RING, GridPos, VILLAGE_ANCHOR, colony_to_world,
-        next_building_site_with_blocked, ring_cells, village_ring_radius,
-    },
+    village_layout::{DEFAULT_MAX_RING, GridPos, VILLAGE_ANCHOR, ring_cells, village_ring_radius},
     warriors::{
         CombatModifiers, DefenseStock, MusterCombatant, WARRIOR_XP_PER_RAID, can_fight,
         muster_defense,
@@ -275,6 +275,9 @@ pub enum JobMetadata {
     Expansion {
         target: TilePos,
         accepted: bool,
+        /// Exact site-less construction whose builder was temporarily borrowed for
+        /// this prerequisite expansion. `None` for ordinary crowding expansions.
+        source_build_job_id: Option<JobId>,
     },
     Hauling {
         site: Option<TilePos>,
@@ -388,6 +391,351 @@ fn occupied_building_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
         .collect()
 }
 
+/// Why a new spatial footprint cannot be committed. Existing persisted rows are
+/// deliberately not retroactively rejected; this enum is only consulted at new
+/// mutation boundaries (building break-ground and stockpile designation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpatialPlacementError {
+    InvalidRectangle,
+    UnmappedTerrain,
+    OutsideClaim,
+    Building,
+    Stockpile,
+    Water,
+    Tree,
+    Mountain,
+    PerimeterWall,
+    Road,
+}
+
+impl SpatialPlacementError {
+    /// Stable player-facing explanation for rejected placement actions.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::InvalidRectangle => "The placement rectangle is invalid.",
+            Self::UnmappedTerrain => "The placement must lie on mapped, revealed terrain.",
+            Self::OutsideClaim => "The placement must lie entirely on claimed village land.",
+            Self::Building => "The placement overlaps a building footprint.",
+            Self::Stockpile => "The placement overlaps another stockpile.",
+            Self::Water => "The placement overlaps water.",
+            Self::Tree => "The placement overlaps a tree.",
+            Self::Mountain => "The placement overlaps impassable mountain terrain.",
+            Self::PerimeterWall => "The placement overlaps the village perimeter wall.",
+            Self::Road => "The placement overlaps a paved road.",
+        }
+    }
+}
+
+fn tile_has_paved_road(colony: &ColonyRuntime, tile: TilePos) -> bool {
+    colony
+        .world_tiles
+        .get(&tile)
+        .is_some_and(|tile| tile.overlay_feature.as_deref() == Some("road_built"))
+}
+
+/// Deterministic tree decorations are physical blockers until a forest tile is
+/// explicitly cleared. Expansion records that clearing as `TileType::Field`;
+/// merely belonging to the founding claim does not erase a tree decoration.
+fn tile_has_uncleared_tree(colony: &ColonyRuntime, tile: TilePos, world_seed: u32) -> bool {
+    !tile_coordinates_supported(tile)
+        || (!colony
+            .world_tiles
+            .get(&tile)
+            .is_some_and(|runtime| runtime.tile_type == TileType::Field)
+            && crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y))
+}
+
+/// Immutable spatial indexes shared by one placement/access-route search.
+///
+/// A route may inspect thousands of tiles. Rebuilding the claimed/building sets and
+/// regenerating a complete 12x12 terrain chunk for every inspected tile made a single
+/// crowded-colony placement take seconds. This context preserves the exact predicates
+/// while building the static indexes once and lazily generating each terrain chunk once.
+struct SpatialOccupancyContext {
+    world_seed: u32,
+    claimed: HashSet<TilePos>,
+    building_tiles: HashSet<TilePos>,
+    stockpile_rects: Vec<ZoneRect>,
+    water_tiles: HashSet<TilePos>,
+    cleared_tree_tiles: HashSet<TilePos>,
+    mountain_tiles: HashSet<TilePos>,
+    paved_road_tiles: HashSet<TilePos>,
+    mapped_tiles: HashSet<TilePos>,
+    shrine_tiles: HashSet<TilePos>,
+    gate: Option<TilePos>,
+    tree_chunks: RefCell<BTreeMap<(i32, i32), HashSet<TilePos>>>,
+}
+
+impl SpatialOccupancyContext {
+    fn new(colony: &ColonyRuntime, world_seed: u32) -> Self {
+        let claimed: HashSet<TilePos> = colony.claimed_tiles.iter().copied().collect();
+        let building_tiles = occupied_building_tiles(colony);
+        let stockpile_rects = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| !pile.is_shrine())
+            .map(|pile| pile.rect)
+            .collect();
+        let water_tiles = colony
+            .world_tiles
+            .iter()
+            .filter_map(|(&pos, tile)| tile_has_water(Some(tile)).then_some(pos))
+            .collect();
+        let cleared_tree_tiles = colony
+            .world_tiles
+            .iter()
+            .filter_map(|(&pos, tile)| (tile.tile_type == TileType::Field).then_some(pos))
+            .collect();
+        let mountain_tiles = if is_owned(&colony.upgrade_tree, MOUNTAINEERING_NODE_ID) {
+            HashSet::new()
+        } else {
+            colony
+                .world_tiles
+                .iter()
+                .filter_map(|(&pos, tile)| (tile.tile_type == TileType::Mountains).then_some(pos))
+                .collect()
+        };
+        let paved_road_tiles = colony
+            .world_tiles
+            .iter()
+            .filter_map(|(&pos, tile)| {
+                (tile.overlay_feature.as_deref() == Some("road_built")).then_some(pos)
+            })
+            .collect();
+        let mapped_tiles = colony.world_tiles.keys().copied().collect();
+        let shrine_tiles = shrine_footprint_tiles(colony);
+        let gate = gate_placement_default(&claimed_area(colony)).map(|gate| TilePos {
+            x: gate.x,
+            y: gate.y,
+        });
+
+        Self {
+            world_seed,
+            claimed,
+            building_tiles,
+            stockpile_rects,
+            water_tiles,
+            cleared_tree_tiles,
+            mountain_tiles,
+            paved_road_tiles,
+            mapped_tiles,
+            shrine_tiles,
+            gate,
+            tree_chunks: RefCell::new(BTreeMap::new()),
+        }
+    }
+
+    fn has_stockpile(&self, tile: TilePos) -> bool {
+        self.stockpile_rects
+            .iter()
+            .any(|&rect| stockpiles::rect_contains(rect, tile.x, tile.y))
+    }
+
+    fn has_uncleared_tree(&self, tile: TilePos) -> bool {
+        if self.cleared_tree_tiles.contains(&tile) {
+            return false;
+        }
+
+        let chunk = (
+            tile.x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+            tile.y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+        );
+        let mut chunks = self.tree_chunks.borrow_mut();
+        let trees = chunks.entry(chunk).or_insert_with(|| {
+            crate::terrain_gen::generate_terrain_chunk(
+                chunk.0,
+                chunk.1,
+                i64::from(self.world_seed),
+                crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+            )
+            .into_iter()
+            .filter_map(|terrain| {
+                matches!(
+                    terrain.decoration,
+                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
+                )
+                .then_some(TilePos {
+                    x: terrain.x,
+                    y: terrain.y,
+                })
+            })
+            .collect()
+        });
+        trees.contains(&tile)
+    }
+
+    fn is_perimeter(&self, tile: TilePos) -> bool {
+        tile_is_on_fence_perimeter(&self.claimed, tile)
+    }
+
+    fn tile_is_occupied(&self, tile: TilePos) -> bool {
+        !tile_coordinates_supported(tile)
+            || !self.mapped_tiles.contains(&tile)
+            || self.building_tiles.contains(&tile)
+            || self.has_stockpile(tile)
+            || self.water_tiles.contains(&tile)
+            || self.has_uncleared_tree(tile)
+            || self.mountain_tiles.contains(&tile)
+            || self.is_perimeter(tile)
+            || self.paved_road_tiles.contains(&tile)
+    }
+
+    fn placement_error_for_tiles(
+        &self,
+        tiles: &[TilePos],
+        require_claimed: bool,
+    ) -> Option<SpatialPlacementError> {
+        if require_claimed && tiles.iter().any(|tile| !self.claimed.contains(tile)) {
+            return Some(SpatialPlacementError::OutsideClaim);
+        }
+        if tiles
+            .iter()
+            .any(|tile| !tile_coordinates_supported(*tile) || !self.mapped_tiles.contains(tile))
+        {
+            return Some(SpatialPlacementError::UnmappedTerrain);
+        }
+        if tiles.iter().any(|tile| self.building_tiles.contains(tile)) {
+            return Some(SpatialPlacementError::Building);
+        }
+        if tiles.iter().any(|&tile| self.has_stockpile(tile)) {
+            return Some(SpatialPlacementError::Stockpile);
+        }
+        if tiles.iter().any(|tile| self.water_tiles.contains(tile)) {
+            return Some(SpatialPlacementError::Water);
+        }
+        if tiles.iter().any(|&tile| self.has_uncleared_tree(tile)) {
+            return Some(SpatialPlacementError::Tree);
+        }
+        if tiles.iter().any(|tile| self.mountain_tiles.contains(tile)) {
+            return Some(SpatialPlacementError::Mountain);
+        }
+        if tiles.iter().any(|&tile| self.is_perimeter(tile)) {
+            return Some(SpatialPlacementError::PerimeterWall);
+        }
+        if tiles
+            .iter()
+            .any(|tile| self.paved_road_tiles.contains(tile))
+        {
+            return Some(SpatialPlacementError::Road);
+        }
+        None
+    }
+
+    fn road_placement_error(&self, tile: TilePos) -> Option<SpatialPlacementError> {
+        if !tile_coordinates_supported(tile) || !self.mapped_tiles.contains(&tile) {
+            return Some(SpatialPlacementError::UnmappedTerrain);
+        }
+        if self.shrine_tiles.contains(&tile) || self.paved_road_tiles.contains(&tile) {
+            return None;
+        }
+        if self.building_tiles.contains(&tile) {
+            return Some(SpatialPlacementError::Building);
+        }
+        if self.has_stockpile(tile) {
+            return Some(SpatialPlacementError::Stockpile);
+        }
+        if self.water_tiles.contains(&tile) {
+            return Some(SpatialPlacementError::Water);
+        }
+        if self.has_uncleared_tree(tile) {
+            return Some(SpatialPlacementError::Tree);
+        }
+        if self.mountain_tiles.contains(&tile) {
+            return Some(SpatialPlacementError::Mountain);
+        }
+        self.is_perimeter(tile)
+            .then_some(SpatialPlacementError::PerimeterWall)
+    }
+
+    fn shrine_connected_road_tiles_excluding(
+        &self,
+        excluded: &HashSet<TilePos>,
+    ) -> HashSet<TilePos> {
+        if self.shrine_tiles.is_empty() {
+            return HashSet::new();
+        }
+
+        let mut connected = self.shrine_tiles.clone();
+        let mut queue: VecDeque<TilePos> = self.shrine_tiles.iter().copied().collect();
+        while let Some(current) = queue.pop_front() {
+            for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+                let next = TilePos {
+                    x: current.x + dx,
+                    y: current.y + dy,
+                };
+                if connected.contains(&next)
+                    || excluded.contains(&next)
+                    || !self.paved_road_tiles.contains(&next)
+                {
+                    continue;
+                }
+                connected.insert(next);
+                queue.push_back(next);
+            }
+        }
+        connected
+    }
+}
+
+/// Hard safety envelope for player-authored/world-routed coordinates. The live map is
+/// many orders of magnitude smaller; this bound prevents hostile legacy/action values
+/// from overflowing terrain chunk origins before the mapped-terrain check rejects them.
+const SPATIAL_COORD_LIMIT: i32 = 1_000_000;
+
+fn tile_coordinates_supported(tile: TilePos) -> bool {
+    i64::from(tile.x).abs() <= i64::from(SPATIAL_COORD_LIMIT)
+        && i64::from(tile.y).abs() <= i64::from(SPATIAL_COORD_LIMIT)
+}
+
+fn placement_error_for_tiles(
+    colony: &ColonyRuntime,
+    tiles: &[TilePos],
+    world_seed: u32,
+    require_claimed: bool,
+) -> Option<SpatialPlacementError> {
+    SpatialOccupancyContext::new(colony, world_seed)
+        .placement_error_for_tiles(tiles, require_claimed)
+}
+
+/// Validate a new stockpile/gather-spot rectangle without mutating the colony.
+/// General stockpiles pass `require_claimed = true`; temporary P16 gather spots
+/// remain legal outside the village but obey every collision/terrain rule.
+#[must_use]
+pub fn stockpile_placement_error(
+    colony: &ColonyRuntime,
+    rect: ZoneRect,
+    world_seed: u32,
+    require_claimed: bool,
+) -> Option<SpatialPlacementError> {
+    let Some((width, height)) = stockpiles::rect_dimensions(rect) else {
+        return Some(SpatialPlacementError::InvalidRectangle);
+    };
+    let Ok(width) = i32::try_from(width) else {
+        return Some(SpatialPlacementError::InvalidRectangle);
+    };
+    let Ok(height) = i32::try_from(height) else {
+        return Some(SpatialPlacementError::InvalidRectangle);
+    };
+    let tiles = footprint_tiles(
+        TilePos {
+            x: rect.x1,
+            y: rect.y1,
+        },
+        width,
+        height,
+    );
+    if tiles.iter().any(|tile| {
+        !tile_coordinates_supported(*tile)
+            || (!require_claimed
+                && (!colony.world_tiles.contains_key(tile)
+                    || !colony.revealed_tiles.contains(tile)))
+    }) {
+        return Some(SpatialPlacementError::UnmappedTerrain);
+    }
+    placement_error_for_tiles(colony, &tiles, world_seed, require_claimed)
+}
+
 /// Building-footprint tiles that act as P14.2 soft obstacles for pathfinding
 /// cost and movement speed: every building EXCEPT the shrine, which the spec
 /// calls out as "fully passable (the hub)" — it's the road/haul anchor every
@@ -427,11 +775,7 @@ fn tile_is_on_fence_perimeter(claimed: &HashSet<TilePos>, tile: TilePos) -> bool
 /// renderer uses (see [`crate::terrain_gen::tile_has_tree`]).
 #[must_use]
 pub fn tile_is_occupied(colony: &ColonyRuntime, tile: TilePos, world_seed: u32) -> bool {
-    let claimed: HashSet<TilePos> = colony.claimed_tiles.iter().copied().collect();
-    occupied_building_tiles(colony).contains(&tile)
-        || tile_has_water(colony.world_tiles.get(&tile))
-        || crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y)
-        || tile_is_on_fence_perimeter(&claimed, tile)
+    SpatialOccupancyContext::new(colony, world_seed).tile_is_occupied(tile)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1051,6 +1395,8 @@ pub fn found_colony_at(
     // Pave the shrine-to-wall stone road cross and clear/guarantee the village's water
     // source so the fixed blueprint sits on solid, drinkable ground.
     stamp_founding_roads_and_water(&mut colony);
+    connect_all_buildings_to_shrine(&mut colony, world_seed);
+    debug_assert!(connect_current_gate_to_shrine(&mut colony, world_seed));
     // The world starts tiny: fog covers everything except the founding village reveal.
     // Cats uncover the rest as they walk.
     reveal_founding_area(&mut colony);
@@ -1407,7 +1753,8 @@ fn starter_buildings(anchor: TilePos, _world_seed: u32) -> Vec<BuildingRuntime> 
 }
 
 /// The stone-road tiles of the founding cross: the shrine's centre row/column extended
-/// out to each wall (N/S/E/W), skipping the shrine's own footprint.
+/// out to each wall (N/S/E/W), skipping the shrine's own footprint. New construction
+/// treats these authored roads as reserved infrastructure and never reclaims them.
 fn founding_road_tiles(anchor: TilePos) -> Vec<TilePos> {
     let center = shrine_center_tile(anchor);
     let (shrine_w, shrine_h) = footprint_for(BuildingType::Shrine);
@@ -1643,7 +1990,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy, world_seed);
         phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
-        phase_p16_gather_spot_logistics(colony, gate);
+        phase_p16_gather_spot_logistics(colony, gate, world_seed);
         phase_35_deliberate_roads(colony, gate);
         phase_35b_road_accessibility(colony, gate, world_seed);
         if let Some(reset_reason) = phase_36_threat_and_raid_director(colony, gate) {
@@ -2355,10 +2702,73 @@ fn phase_14_promote_queued_jobs_and_break_ground(
         .enumerate()
         .filter_map(|(index, job)| (job.status == JobStatus::Queued).then_some(index))
         .collect::<Vec<_>>();
+    let expansion_in_flight = active_or_queued_jobs(colony)
+        .iter()
+        .any(|job| job.kind == JobKind::ExpandVillage);
     let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
 
     for job_index in queued_indices {
         let mut next_metadata = colony.jobs[job_index].metadata.clone();
+        let mut broke_ground = false;
+
+        // A construction timer may mature after its builder dies. Phase 30 preserves
+        // that paid-for scaffold and requeues the job instead of completing a ghost.
+        // Resume the existing scaffold with a living replacement; do not search for a
+        // second site or charge the refined-material break-ground cost twice.
+        let existing_scaffold_progress = match &next_metadata {
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_id: Some(building_id),
+                site: Some(_),
+                ..
+            } => colony
+                .buildings
+                .iter()
+                .find(|building| building.id == *building_id && !building.is_complete)
+                .map(|building| building.construction_progress),
+            _ => None,
+        };
+        if colony.jobs[job_index].kind == JobKind::BuildHouse
+            && let Some(scaffold_progress) = existing_scaffold_progress
+        {
+            let assigned_is_alive =
+                colony.jobs[job_index]
+                    .assigned_cat
+                    .as_deref()
+                    .is_some_and(|cat_id| {
+                        colony
+                            .cats
+                            .iter()
+                            .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+                    });
+            let replacement = if assigned_is_alive {
+                colony.jobs[job_index].assigned_cat.clone()
+            } else {
+                select_best_cat(colony, Some(CatSpecialization::Architect))
+            };
+            let Some(cat_id) = replacement else {
+                continue;
+            };
+            let full_duration_ms = colony.jobs[job_index].duration_ms.max(1_000);
+            let remaining_percent = i64::from(100_u8.saturating_sub(scaffold_progress.min(99)));
+            let remaining_duration_ms = full_duration_ms
+                .saturating_mul(remaining_percent)
+                .saturating_add(99)
+                / 100;
+            let remaining_duration_ms = remaining_duration_ms.max(1_000);
+            let job = &mut colony.jobs[job_index];
+            job.assigned_cat = Some(cat_id.clone());
+            job.status = JobStatus::Active;
+            job.started_at = Some(gate.processed_through);
+            job.ends_at = Some(gate.processed_through.saturating_add(remaining_duration_ms));
+            job.completed_at = None;
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                cat.current_task = task_for_job(JobKind::BuildHouse);
+                cat.activity = CatActivity::Traveling;
+                cat.destination = Some(position_from_world(village_anchor_world(colony.anchor)));
+            }
+            continue;
+        }
 
         if colony.jobs[job_index].kind == JobKind::BuildHouse
             && matches!(
@@ -2377,6 +2787,12 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 }
             )
         {
+            // A site-less build whose worker was transferred to an expansion cannot gain
+            // a legal site until that expansion completes. Avoid repeating the full
+            // footprint/accessibility search every tick while the claim is unchanged.
+            if expansion_in_flight && colony.jobs[job_index].assigned_cat.is_none() {
+                continue;
+            }
             // P19 slice 1b build cost: breaking ground draws refined build materials
             // (planks + blocks) from the stores. If the wood-cutter/stone-prep benches
             // have not banked enough yet, the job stays Queued and retries on a later
@@ -2393,58 +2809,140 @@ fn phase_14_promote_queued_jobs_and_break_ground(
 
             // The footprint depends on the scaffold's type, so resolve it before
             // searching for a free site.
-            let scaffold_type = match next_metadata {
-                JobMetadata::Construction { building_type, .. } => {
-                    scaffold_building_type(building_type)
-                }
-                _ => BuildingType::Den,
+            let (scaffold_type, reserved_site) = match &next_metadata {
+                JobMetadata::Construction {
+                    building_type,
+                    site,
+                    ..
+                } => (scaffold_building_type(*building_type), *site),
+                _ => (BuildingType::Den, None),
             };
 
-            if let Some(site_local) =
-                next_claimed_building_site(colony, roll.value, world_seed, scaffold_type)
-            {
-                // Spend the build materials only once a real site is committed.
-                colony.resources.planks = (colony.resources.planks - SCAFFOLD_PLANK_COST).max(0.0);
-                colony.resources.blocks = (colony.resources.blocks - SCAFFOLD_BLOCK_COST).max(0.0);
-                let building_id = format!(
-                    "building-{}-{}",
-                    gate.processed_through,
-                    colony.buildings.len() + 1
-                );
-
-                colony.buildings.push(BuildingRuntime {
-                    id: building_id.clone(),
-                    building_type: scaffold_type,
-                    level: 1,
-                    position: site_local,
-                    is_complete: false,
-                    construction_progress: 0,
-                    production_progress: 0.0,
-                    assigned_cat: None,
-                });
-
-                if let JobMetadata::Construction {
-                    phase,
-                    building_type: _,
-                    ..
-                } = next_metadata
+            let site_local = match reserved_site {
+                Some(site)
+                    if claimed_building_site_is_ready(colony, site, world_seed, scaffold_type) =>
                 {
-                    next_metadata = JobMetadata::Construction {
-                        phase,
-                        building_type: scaffold_type,
-                        building_id: Some(building_id),
-                        site: Some(site_local),
-                    };
+                    Some(site)
                 }
+                Some(_) => None,
+                None => next_claimed_building_site(colony, roll.value, world_seed, scaffold_type),
+            };
+            let Some(site_local) = site_local else {
+                // No valid claimed/access-connected site exists yet. Keep the
+                // job queued and reserve one deterministic future footprint for
+                // repeated, visibly completed village expansion work.
+                if reserved_site.is_none()
+                    && let Some(site) =
+                        next_expansion_building_site(colony, world_seed, scaffold_type)
+                    && let JobMetadata::Construction { site: slot, .. } =
+                        &mut colony.jobs[job_index].metadata
+                {
+                    *slot = Some(site);
+                }
+                continue;
+            };
+            let Some(access_route) =
+                candidate_building_road_route(colony, site_local, scaffold_type, world_seed)
+            else {
+                continue;
+            };
+
+            // Expansion may outlive its original builder. Revalidate the reservation
+            // immediately before committing any spatial/resource mutation and recruit a
+            // living replacement when needed.
+            let assigned_builder =
+                colony.jobs[job_index]
+                    .assigned_cat
+                    .as_ref()
+                    .and_then(|cat_id| {
+                        colony
+                            .cats
+                            .iter()
+                            .find(|cat| {
+                                cat.id == *cat_id
+                                    && cat.death_time.is_none()
+                                    && can_work(get_life_stage(cat.age_hours))
+                            })
+                            .map(|cat| cat.id.clone())
+                    });
+            let builder = if let Some(builder) = assigned_builder {
+                Some(builder)
+            } else {
+                colony.jobs[job_index].assigned_cat = None;
+                select_best_cat(colony, Some(CatSpecialization::Architect))
+            };
+            let Some(builder) = builder else {
+                continue;
+            };
+            colony.jobs[job_index].assigned_cat = Some(builder);
+
+            // Commit scaffold + its complete shrine access spur atomically. The
+            // refined scaffold cost covers access works; a newly completed
+            // building is therefore never left waiting on the later optional
+            // road-repair phase or a raw-material surplus.
+            colony.resources.planks = (colony.resources.planks - SCAFFOLD_PLANK_COST).max(0.0);
+            colony.resources.blocks = (colony.resources.blocks - SCAFFOLD_BLOCK_COST).max(0.0);
+            let building_id = format!(
+                "building-{}-{}",
+                gate.processed_through,
+                colony.buildings.len() + 1
+            );
+
+            colony.buildings.push(BuildingRuntime {
+                id: building_id.clone(),
+                building_type: scaffold_type,
+                level: 1,
+                position: site_local,
+                is_complete: false,
+                construction_progress: 0,
+                production_progress: 0.0,
+                assigned_cat: None,
+            });
+            pave_access_route(colony, &access_route);
+            debug_assert!(building_is_road_connected_to_shrine(
+                colony,
+                colony.buildings.last().expect("scaffold was just pushed"),
+                world_seed,
+            ));
+            debug_assert!(village_exterior_is_road_connected(colony, world_seed));
+            broke_ground = true;
+
+            if let JobMetadata::Construction {
+                phase,
+                building_type: _,
+                ..
+            } = next_metadata
+            {
+                next_metadata = JobMetadata::Construction {
+                    phase,
+                    building_type: scaffold_type,
+                    building_id: Some(building_id),
+                    site: Some(site_local),
+                };
             }
         }
 
-        let job = &mut colony.jobs[job_index];
-        job.status = JobStatus::Active;
-        if job.started_at.is_none() {
-            job.started_at = Some(gate.processed_through);
+        let assigned_cat = colony.jobs[job_index].assigned_cat.clone();
+        {
+            let job = &mut colony.jobs[job_index];
+            job.status = JobStatus::Active;
+            if broke_ground {
+                job.started_at = Some(gate.processed_through);
+                job.ends_at = Some(gate.processed_through + job.duration_ms.max(1_000));
+                job.completed_at = None;
+            } else if job.started_at.is_none() {
+                job.started_at = Some(gate.processed_through);
+            }
+            job.metadata = next_metadata;
         }
-        job.metadata = next_metadata;
+        if broke_ground
+            && let Some(cat_id) = assigned_cat
+            && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+        {
+            cat.current_task = task_for_job(JobKind::BuildHouse);
+            cat.activity = CatActivity::Traveling;
+            cat.destination = Some(position_from_world(village_anchor_world(colony.anchor)));
+        }
     }
 }
 
@@ -2618,9 +3116,20 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
                     accepted: false,
                 }
             }
-            JobKind::ExpandVillage => JobMetadata::Expansion {
-                target: site,
-                accepted: false,
+            JobKind::ExpandVillage => match colony.jobs[job_index].metadata.clone() {
+                JobMetadata::Expansion {
+                    source_build_job_id,
+                    ..
+                } => JobMetadata::Expansion {
+                    target: site,
+                    accepted: false,
+                    source_build_job_id,
+                },
+                _ => JobMetadata::Expansion {
+                    target: site,
+                    accepted: false,
+                    source_build_job_id: None,
+                },
             },
             JobKind::HaulGatherSpot => match colony.jobs[job_index].metadata.clone() {
                 JobMetadata::GatherHaul { stockpile_id, .. } => JobMetadata::GatherHaul {
@@ -2710,10 +3219,12 @@ fn phase_16_active_scaffold_progress(colony: &mut ColonyRuntime, gate: TickGate)
         else {
             continue;
         };
-        let started_at = job.started_at.unwrap_or(gate.processed_through);
-        let ends_at = job.ends_at.unwrap_or(started_at);
-        let duration = ends_at.saturating_sub(started_at).max(1);
-        let progress = (((gate.processed_through - started_at) as f64 / duration as f64) * 100.0)
+        let full_duration = job.duration_ms.max(1);
+        let ends_at = job.ends_at.unwrap_or(gate.processed_through);
+        let remaining = ends_at
+            .saturating_sub(gate.processed_through)
+            .clamp(0, full_duration);
+        let progress = (((full_duration - remaining) as f64 / full_duration as f64) * 100.0)
             .round()
             .clamp(0.0, 99.0) as u8;
 
@@ -2722,7 +3233,7 @@ fn phase_16_active_scaffold_progress(colony: &mut ColonyRuntime, gate: TickGate)
             .iter_mut()
             .find(|building| building.id == *building_id)
         {
-            building.construction_progress = progress;
+            building.construction_progress = building.construction_progress.max(progress);
             building.is_complete = false;
         }
     }
@@ -3015,7 +3526,6 @@ fn phase_20_leader_labor_assignments_and_staffing(
     // always outbids a refinement task for the scarce founding cats. Phase 23 re-fills
     // whichever benches still have a genuinely idle cat left over.
     release_raw_material_workshop_workers(colony);
-
     let busy_ids = active_or_queued_jobs(colony)
         .iter()
         .filter_map(|job| job.assigned_cat.as_deref())
@@ -4538,7 +5048,7 @@ fn phase_29_due_completion_gathering_explore_expansion(
                     "The scout mapped the lands around the village.",
                 );
             }
-            JobKind::ExpandVillage => complete_village_expansion(colony, &job, gate),
+            JobKind::ExpandVillage => complete_village_expansion(colony, &job, gate, world_seed),
             _ => {}
         }
     }
@@ -4551,8 +5061,24 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
     gate: TickGate,
 ) {
     let due_jobs = due_active_jobs(colony, gate);
+    let mut interrupted_construction = HashSet::new();
 
     for job in &due_jobs {
+        if job.kind == JobKind::BuildHouse && assigned_alive_cat_index(colony, job).is_none() {
+            if let Some(stored) = colony
+                .jobs
+                .iter_mut()
+                .find(|candidate| candidate.id == job.id)
+            {
+                stored.status = JobStatus::Queued;
+                stored.assigned_cat = None;
+                stored.started_at = None;
+                stored.ends_at = None;
+                stored.completed_at = None;
+            }
+            interrupted_construction.insert(job.id.clone());
+            continue;
+        }
         match job.kind {
             JobKind::BuildHouse => complete_build(colony, job, gate),
             JobKind::Ritual => complete_ritual(colony, job, gate),
@@ -4577,6 +5103,9 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
     }
 
     for job in due_jobs {
+        if interrupted_construction.contains(&job.id) {
+            continue;
+        }
         if let Some(stored) = colony
             .jobs
             .iter_mut()
@@ -4705,17 +5234,82 @@ fn phase_32_movement_setup_and_village_expansion_queue(
     let wander_chance = (0.02 * gate.elapsed_sec as f64).min(0.08);
     let ring_radius = village_ring_radius(colony.buildings.len() as i32);
     let claimed_area = claimed_area(colony);
+    let linked_expansion_in_flight = colony.jobs.iter().any(|job| {
+        matches!(job.status, JobStatus::Active | JobStatus::Queued)
+            && matches!(
+                job.metadata,
+                JobMetadata::Expansion {
+                    source_build_job_id: Some(_),
+                    ..
+                }
+            )
+    });
+    // A linked expansion already owns the blocked construction's builder and
+    // frontier. Avoid re-running the comparatively expensive site/readiness
+    // search until that expansion completes or is cancelled.
+    let blocked_construction_index = (!linked_expansion_in_flight)
+        .then(|| {
+            colony.jobs.iter().position(|job| {
+                if job.kind != JobKind::BuildHouse
+                    || job.status != JobStatus::Queued
+                    || colony.resources.planks < SCAFFOLD_PLANK_COST
+                    || colony.resources.blocks < SCAFFOLD_BLOCK_COST
+                {
+                    return false;
+                }
+                let JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    building_type,
+                    building_id: None,
+                    site,
+                } = job.metadata
+                else {
+                    return false;
+                };
+                let building_type = scaffold_building_type(building_type);
+                site.map_or_else(
+                    || !can_plan_building(colony, world_seed, building_type),
+                    |site| !claimed_building_site_is_ready(colony, site, world_seed, building_type),
+                )
+            })
+        })
+        .flatten();
+    // Phase 14 runs before due expansions complete. When a linked expansion
+    // finishes later in this same tick, a newly viable future footprint would
+    // otherwise be missed and phase 32 would immediately launch another generic
+    // expansion, repeating forever without giving phase 14 a reservation window.
+    // Reserve that footprint at the handoff boundary so the next expansion is
+    // directed at its exact claim margin.
+    let future_site = blocked_construction_index.and_then(|index| {
+        let JobMetadata::Construction {
+            building_type,
+            building_id: None,
+            site: None,
+            ..
+        } = colony.jobs[index].metadata
+        else {
+            return None;
+        };
+        next_expansion_building_site(colony, world_seed, scaffold_building_type(building_type))
+    });
+    if let (Some(index), Some(future_site)) = (blocked_construction_index, future_site)
+        && let JobMetadata::Construction { site, .. } = &mut colony.jobs[index].metadata
+    {
+        *site = Some(future_site);
+    }
+    let construction_needs_land = blocked_construction_index.is_some();
 
+    let ordinary_expansion_pressure = should_expand(
+        alive_cats(&colony.cats).count() as i32,
+        claimed_area.len() as i32,
+        colony.buildings.len() as i32,
+    );
     if !claimed_area.is_empty()
-        && should_expand(
-            alive_cats(&colony.cats).count() as i32,
-            claimed_area.len() as i32,
-            colony.buildings.len() as i32,
-        )
+        && (construction_needs_land
+            || (ordinary_expansion_pressure && can_take_policy_action(colony, policy)))
         && !active_or_queued_jobs(colony)
             .iter()
             .any(|job| job.kind == JobKind::ExpandVillage)
-        && can_take_policy_action(colony, policy)
     {
         let water_tiles = colony
             .world_tiles
@@ -4728,24 +5322,87 @@ fn phase_32_movement_setup_and_village_expansion_queue(
         let mut next_roll = Some(roll.value);
         let mut rng = || next_roll.take().unwrap_or(0.0);
         let is_water = |pos: GridPos| water_tiles.contains(&TilePos { x: pos.x, y: pos.y });
-        if let Some(target) = expand_village(
-            &claimed_area,
-            ExpandOptions {
-                is_water: Some(&is_water),
-                rng: Some(&mut rng),
-            },
+        let forced_target = blocked_construction_index.and_then(|index| {
+            let JobMetadata::Construction {
+                building_type,
+                site: Some(site),
+                ..
+            } = colony.jobs[index].metadata
+            else {
+                return None;
+            };
+            next_claim_toward_building_site(
+                colony,
+                site,
+                scaffold_building_type(building_type),
+                world_seed,
+            )
+            .map(|target| GridPos {
+                x: target.x,
+                y: target.y,
+            })
+        });
+        let blocked_has_reserved_site = blocked_construction_index.is_some_and(|index| {
+            matches!(
+                colony.jobs[index].metadata,
+                JobMetadata::Construction { site: Some(_), .. }
+            )
+        });
+        let stalled_reservation = blocked_has_reserved_site && forced_target.is_none();
+        let target = if blocked_has_reserved_site {
+            forced_target
+        } else {
+            expand_village(
+                &claimed_area,
+                ExpandOptions {
+                    is_water: Some(&is_water),
+                    rng: Some(&mut rng),
+                },
+            )
+        };
+        if stalled_reservation
+            && let Some(index) = blocked_construction_index
+            && let JobMetadata::Construction { site, .. } = &mut colony.jobs[index].metadata
+        {
+            // A raced/persisted reservation can become permanently occupied by another
+            // scaffold. Drop it instead of spraying generic expansion forever; phase 14
+            // deterministically reserves a fresh non-overlapping future site next tick.
+            *site = None;
+        }
+        let blocked_builder = blocked_construction_index.and_then(|index| {
+            colony.jobs[index].assigned_cat.as_ref().and_then(|cat_id| {
+                colony
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == *cat_id && cat.death_time.is_none())
+                    .then(|| cat_id.clone())
+            })
+        });
+        if let (Some(target), Some(cat_id)) = (
+            target,
+            blocked_builder
+                .clone()
+                .or_else(|| select_best_cat(colony, Some(CatSpecialization::Architect))),
         ) {
+            // A builder reserved by a site-less construction is idle by definition.
+            // Transfer that reservation to the expansion instead of waiting for a second
+            // idle cat; completion returns the same cat to the queued construction.
+            let source_build_job_id = blocked_construction_index.map(|index| {
+                colony.jobs[index].assigned_cat = None;
+                colony.jobs[index].id.clone()
+            });
             queue_job(
                 colony,
                 gate.processed_through,
                 JobKind::ExpandVillage,
-                select_best_cat(colony, Some(CatSpecialization::Architect)),
+                Some(cat_id),
                 JobMetadata::Expansion {
                     target: TilePos {
                         x: target.x,
                         y: target.y,
                     },
                     accepted: false,
+                    source_build_job_id,
                 },
             );
         }
@@ -5092,11 +5749,11 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
 /// additive/inert: a colony with no gather spots and no Steward takes none of these
 /// branches, so this is a no-op byte-identical to pre-P16 behavior until a gather spot
 /// is designated (manually, or automatically once a Steward is appointed).
-fn phase_p16_gather_spot_logistics(colony: &mut ColonyRuntime, gate: TickGate) {
+fn phase_p16_gather_spot_logistics(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
     expire_gather_spots(colony, gate.processed_through);
     complete_arrived_gather_haul_movers(colony, gate.processed_through);
     if colony.officers.contains_key(&OfficerRole::Steward) {
-        auto_designate_gather_spots(colony, gate.processed_through);
+        auto_designate_gather_spots(colony, gate.processed_through, world_seed);
         dispatch_gather_haul_movers(colony, gate.processed_through);
     }
 }
@@ -5349,18 +6006,6 @@ fn tile_cheb_distance(a: TilePos, b: TilePos) -> i32 {
 /// sit on open ground beside the site, not on it. Biasing toward the anchor also shortens the
 /// mover's long-haul leg. Ties broken by a fixed compass order (north, east, south, west) —
 /// no RNG, so this is fully deterministic.
-fn gather_spot_tile_adjacent_to(anchor: TilePos, site: TilePos) -> TilePos {
-    const OFFSETS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
-    OFFSETS
-        .iter()
-        .map(|&(dx, dy)| TilePos {
-            x: site.x + dx,
-            y: site.y + dy,
-        })
-        .min_by_key(|&tile| (cheb_from_anchor(anchor, tile), tile.x, tile.y))
-        .expect("OFFSETS is non-empty")
-}
-
 /// Steward automation (P12.6/P16 follow-up): auto-designate a gather spot beside a distant,
 /// heavily-worked resource site, exactly as if a player had run `DesignateGatherSpot` there.
 /// Reuses every downstream P16/P12.3 mechanism unchanged — deposit routing already favours
@@ -5384,7 +6029,7 @@ fn gather_spot_tile_adjacent_to(anchor: TilePos, site: TilePos) -> TilePos {
 /// with several qualifying sites still produces a fully reproducible result. A no-op — byte
 /// identical to pre-this-feature behavior — whenever no site qualifies (including every
 /// colony with no Steward, since the caller only invokes this once one is appointed).
-fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64) {
+fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64, world_seed: u32) {
     if colony.gather_spots.len() >= MAX_GATHER_SPOTS {
         return;
     }
@@ -5450,7 +6095,41 @@ fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64) {
         if colony.gather_spots.len() >= MAX_GATHER_SPOTS {
             break;
         }
-        let spot_tile = gather_spot_tile_adjacent_to(anchor, site);
+        let mut spot_tiles = [
+            TilePos {
+                x: site.x,
+                y: site.y - 1,
+            },
+            TilePos {
+                x: site.x + 1,
+                y: site.y,
+            },
+            TilePos {
+                x: site.x,
+                y: site.y + 1,
+            },
+            TilePos {
+                x: site.x - 1,
+                y: site.y,
+            },
+        ];
+        spot_tiles.sort_by_key(|&tile| (cheb_from_anchor(anchor, tile), tile.x, tile.y));
+        let Some(spot_tile) = spot_tiles.into_iter().find(|tile| {
+            stockpile_placement_error(
+                colony,
+                ZoneRect {
+                    x1: tile.x,
+                    y1: tile.y,
+                    x2: tile.x,
+                    y2: tile.y,
+                },
+                world_seed,
+                false,
+            )
+            .is_none()
+        }) else {
+            continue;
+        };
         let id = format!("gather-auto-{now_ms}-{}", colony.stockpiles.len() + 1);
         colony.stockpiles.push(Stockpile {
             id: id.clone(),
@@ -5633,12 +6312,80 @@ fn shrine_footprint_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
         .unwrap_or_default()
 }
 
-/// A freshly-generated ground tile for a position `colony.world_tiles` hasn't
-/// recorded yet. The accessibility spur can path outside the initial
-/// chunk-populated area (the claimed-site fallback spiral in
-/// `next_claimed_building_site` already does the same) — meadow, no
-/// resources, no danger, matching the sparse-population convention `tile_cost`
-/// already assumes elsewhere (`None` reads as open ground).
+/// Whether `tile` belongs to the passable shrine footprint.
+#[must_use]
+pub fn tile_is_shrine_footprint(colony: &ColonyRuntime, tile: TilePos) -> bool {
+    shrine_footprint_tiles(colony).contains(&tile)
+}
+
+/// The paved component that actually reaches the shrine. A disconnected road
+/// overlay is intentionally absent: merely being paved must not let it satisfy
+/// a building's accessibility invariant.
+fn shrine_connected_road_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
+    shrine_connected_road_tiles_excluding(colony, &HashSet::new())
+}
+
+fn shrine_connected_road_tiles_excluding(
+    colony: &ColonyRuntime,
+    excluded: &HashSet<TilePos>,
+) -> HashSet<TilePos> {
+    let shrine = shrine_footprint_tiles(colony);
+    if shrine.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut connected = shrine.clone();
+    let mut queue: VecDeque<TilePos> = shrine.into_iter().collect();
+    while let Some(current) = queue.pop_front() {
+        for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+            let next = TilePos {
+                x: current.x + dx,
+                y: current.y + dy,
+            };
+            if connected.contains(&next)
+                || excluded.contains(&next)
+                || !tile_has_paved_road(colony, next)
+            {
+                continue;
+            }
+            connected.insert(next);
+            queue.push_back(next);
+        }
+    }
+    connected
+}
+
+/// Whether at least one tile in a proposed road path is on or cardinally
+/// adjacent to the component already connected to the shrine.
+#[must_use]
+pub fn road_path_attaches_to_shrine(colony: &ColonyRuntime, path: &[TilePos]) -> bool {
+    let connected = shrine_connected_road_tiles(colony);
+    path.iter().any(|tile| {
+        connected.contains(tile)
+            || [(0, -1), (1, 0), (0, 1), (-1, 0)].iter().any(|(dx, dy)| {
+                connected.contains(&TilePos {
+                    x: tile.x + dx,
+                    y: tile.y + dy,
+                })
+            })
+    })
+}
+
+/// Validate a tile a new player/access road would occupy. Existing road tiles
+/// and the passable shrine footprint are legal; every other spatial occupant or
+/// hard terrain feature rejects the whole atomic road mutation.
+#[must_use]
+pub fn road_placement_error(
+    colony: &ColonyRuntime,
+    tile: TilePos,
+    world_seed: u32,
+) -> Option<SpatialPlacementError> {
+    SpatialOccupancyContext::new(colony, world_seed).road_placement_error(tile)
+}
+
+/// A freshly-generated ground tile for a newly claimed or otherwise explicitly
+/// materialized position. Accessibility routing only traverses mapped terrain;
+/// this helper commits the selected expansion/road tile after that validation.
 fn fresh_ground_tile(pos: TilePos) -> WorldTileRuntime {
     WorldTileRuntime {
         pos,
@@ -5672,18 +6419,34 @@ fn building_road_route_to_shrine(
     building: &BuildingRuntime,
     world_seed: u32,
 ) -> Option<Vec<TilePos>> {
+    building_road_route_to_shrine_with_extra(colony, building, world_seed, &HashSet::new())
+}
+
+fn building_road_route_to_shrine_with_extra(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+    world_seed: u32,
+    extra_blocked: &HashSet<TilePos>,
+) -> Option<Vec<TilePos>> {
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    building_road_route_to_shrine_with_context(building, extra_blocked, &occupancy)
+}
+
+fn building_road_route_to_shrine_with_context(
+    building: &BuildingRuntime,
+    extra_blocked: &HashSet<TilePos>,
+    occupancy: &SpatialOccupancyContext,
+) -> Option<Vec<TilePos>> {
     let entrances = building_entrance_candidates(building);
-    let shrine_footprint = shrine_footprint_tiles(colony);
+    let connected_network = occupancy.shrine_connected_road_tiles_excluding(extra_blocked);
     let is_network = |pos: roads::RoadPos| {
         let tile = TilePos { x: pos.x, y: pos.y };
-        shrine_footprint.contains(&tile)
-            || colony
-                .world_tiles
-                .get(&tile)
-                .is_some_and(|t| t.overlay_feature.as_deref() == Some("road_built"))
+        connected_network.contains(&tile)
     };
-    let is_blocked =
-        |pos: roads::RoadPos| tile_is_occupied(colony, TilePos { x: pos.x, y: pos.y }, world_seed);
+    let is_blocked = |pos: roads::RoadPos| {
+        let tile = TilePos { x: pos.x, y: pos.y };
+        extra_blocked.contains(&tile) || occupancy.tile_is_occupied(tile)
+    };
     let road_entrances: Vec<roads::RoadPos> = entrances
         .iter()
         .map(|tile| roads::RoadPos {
@@ -5704,6 +6467,142 @@ fn building_road_route_to_shrine(
             .map(|pos| TilePos { x: pos.x, y: pos.y })
             .collect()
     })
+}
+
+fn candidate_building_road_route(
+    colony: &ColonyRuntime,
+    position: TilePos,
+    building_type: BuildingType,
+    world_seed: u32,
+) -> Option<Vec<TilePos>> {
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    candidate_building_road_route_with_context(position, building_type, &occupancy)
+}
+
+fn candidate_building_road_route_with_context(
+    position: TilePos,
+    building_type: BuildingType,
+    occupancy: &SpatialOccupancyContext,
+) -> Option<Vec<TilePos>> {
+    // Synthetic/legacy states without a shrine cannot have a shrine-connected
+    // network. Preserve their load/test compatibility; every normally founded
+    // colony takes the strict branch below.
+    if occupancy.shrine_tiles.is_empty() {
+        return Some(Vec::new());
+    }
+    let building = BuildingRuntime {
+        id: String::new(),
+        building_type,
+        level: 1,
+        position,
+        is_complete: false,
+        construction_progress: 0,
+        production_progress: 0.0,
+        assigned_cat: None,
+    };
+    let (width, height) = footprint_for(building_type);
+    let extra_blocked: HashSet<TilePos> = footprint_tiles(position, width, height)
+        .into_iter()
+        .collect();
+    let gate = occupancy.gate?;
+    if !occupancy
+        .shrine_connected_road_tiles_excluding(&extra_blocked)
+        .contains(&gate)
+    {
+        return None;
+    }
+    building_road_route_to_shrine_with_context(&building, &extra_blocked, occupancy)
+}
+
+fn pave_access_route(colony: &mut ColonyRuntime, route: &[TilePos]) {
+    for &tile_pos in route {
+        let tile = colony
+            .world_tiles
+            .entry(tile_pos)
+            .or_insert_with(|| fresh_ground_tile(tile_pos));
+        tile.overlay_feature = Some("road_built".to_owned());
+        tile.path_wear = 100;
+    }
+}
+
+fn gate_road_route_to_shrine(colony: &ColonyRuntime, world_seed: u32) -> Option<Vec<TilePos>> {
+    gate_road_route_to_shrine_avoiding(colony, world_seed, &HashSet::new())
+}
+
+fn gate_road_route_to_shrine_avoiding(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    extra_blocked: &HashSet<TilePos>,
+) -> Option<Vec<TilePos>> {
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    let gate = occupancy.gate?;
+    let entrance = roads::RoadPos {
+        x: gate.x,
+        y: gate.y,
+    };
+    let connected_network = occupancy.shrine_connected_road_tiles_excluding(extra_blocked);
+    let is_network =
+        |pos: roads::RoadPos| connected_network.contains(&TilePos { x: pos.x, y: pos.y });
+    let is_blocked = |pos: roads::RoadPos| {
+        let tile = TilePos { x: pos.x, y: pos.y };
+        extra_blocked.contains(&tile) || occupancy.road_placement_error(tile).is_some()
+    };
+    roads::road_route_to_network(
+        &[entrance],
+        is_blocked,
+        is_network,
+        ACCESS_ROAD_MAX_EXPANSIONS,
+    )
+    .map(|route| {
+        route
+            .into_iter()
+            .map(|pos| TilePos { x: pos.x, y: pos.y })
+            .collect()
+    })
+}
+
+/// Whether the current single gate's interior tile belongs to the road
+/// component that reaches the shrine. Crossing that gate edge reaches map
+/// exterior because every other perimeter edge remains closed.
+#[must_use]
+pub fn village_exterior_is_road_connected(colony: &ColonyRuntime, world_seed: u32) -> bool {
+    gate_road_route_to_shrine(colony, world_seed).is_some_and(|route| route.is_empty())
+}
+
+fn connect_current_gate_to_shrine(colony: &mut ColonyRuntime, world_seed: u32) -> bool {
+    connect_current_gate_to_shrine_avoiding(colony, world_seed, &HashSet::new())
+}
+
+fn connect_current_gate_to_shrine_avoiding(
+    colony: &mut ColonyRuntime,
+    world_seed: u32,
+    extra_blocked: &HashSet<TilePos>,
+) -> bool {
+    let Some(route) = gate_road_route_to_shrine_avoiding(colony, world_seed, extra_blocked) else {
+        return false;
+    };
+    pave_access_route(colony, &route);
+    true
+}
+
+fn connect_all_buildings_to_shrine(colony: &mut ColonyRuntime, world_seed: u32) {
+    let mut candidates: Vec<BuildingRuntime> = colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            !matches!(
+                building.building_type,
+                BuildingType::Shrine | BuildingType::Walls
+            )
+        })
+        .cloned()
+        .collect();
+    candidates.sort_by(|left, right| left.id.cmp(&right.id));
+    for building in candidates {
+        if let Some(route) = building_road_route_to_shrine(colony, &building, world_seed) {
+            pave_access_route(colony, &route);
+        }
+    }
 }
 
 /// P14.4 accessibility invariant: does `building`'s footprint already touch a
@@ -5762,17 +6661,35 @@ fn phase_35b_road_accessibility(colony: &mut ColonyRuntime, gate: TickGate, worl
     // Stable sweep order independent of incidental Vec ordering noise.
     candidates.sort_by(|&left, &right| colony.buildings[left].id.cmp(&colony.buildings[right].id));
 
+    // Atomic placement and expansion completion connect every new scaffold as
+    // it appears. In the normal case all entrances therefore already touch the
+    // shrine's paved component, and terrain occupancy/routing would be pure
+    // repeated work on every minute tick. Legacy or externally-loaded
+    // disconnected states still take the full repair path below.
+    let connected_network = shrine_connected_road_tiles(colony);
+    candidates.retain(|&index| {
+        !building_entrance_candidates(&colony.buildings[index])
+            .iter()
+            .any(|entrance| connected_network.contains(entrance))
+    });
+    if candidates.is_empty() {
+        return;
+    }
+
     let mut paved_tiles = 0_usize;
     let mut connected_buildings = 0_usize;
+    let mut occupancy = SpatialOccupancyContext::new(colony, world_seed);
 
     for index in candidates {
         if budget <= 0.0 {
             break;
         }
 
-        let Some(route) =
-            building_road_route_to_shrine(colony, &colony.buildings[index], world_seed)
-        else {
+        let Some(route) = building_road_route_to_shrine_with_context(
+            &colony.buildings[index],
+            &HashSet::new(),
+            &occupancy,
+        ) else {
             continue;
         };
         if route.is_empty() || route.len() as f64 > budget {
@@ -5786,6 +6703,7 @@ fn phase_35b_road_accessibility(colony: &mut ColonyRuntime, gate: TickGate, worl
                 .or_insert_with(|| fresh_ground_tile(*tile_pos));
             tile.overlay_feature = Some("road_built".to_owned());
             tile.path_wear = 100;
+            occupancy.paved_road_tiles.insert(*tile_pos);
         }
         colony.resources.materials -= route.len() as f64;
         budget -= route.len() as f64;
@@ -6413,14 +7331,7 @@ fn random_alive_cat(colony: &ColonyRuntime, roll: f64) -> Option<CatId> {
 }
 
 fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
-    for job in &mut colony.jobs {
-        if job.assigned_cat.as_deref() == Some(cat_id)
-            && matches!(job.status, JobStatus::Active | JobStatus::Queued)
-        {
-            job.status = JobStatus::Cancelled;
-            job.completed_at = Some(now_ms);
-        }
-    }
+    cancel_cat_jobs(colony, cat_id, now_ms);
     for building in &mut colony.buildings {
         if building.assigned_cat.as_deref() == Some(cat_id) {
             building.assigned_cat = None;
@@ -6904,7 +7815,10 @@ fn buildings_needing_workers(
         .filter(|building| {
             building.building_type == building_type
                 && building.construction_progress >= 100
-                && building.assigned_cat.is_none()
+                // A persisted worker id is not an occupied station after that cat dies or
+                // disappears from the roster. Treat stale assignments as open so the
+                // normal idle-worker mop-up can replace them deterministically.
+                && assigned_worker(colony, &building.id).is_none()
         })
         .map(|building| building.id.clone())
         .collect()
@@ -7384,6 +8298,7 @@ fn unaccepted_active_job_site(colony: &ColonyRuntime, cat_id: &str) -> Option<(u
             JobMetadata::Expansion {
                 target,
                 accepted: false,
+                ..
             } => Some((index, target)),
             JobMetadata::GatherHaul {
                 site: Some(site),
@@ -7415,9 +8330,14 @@ fn accept_job(colony: &mut ColonyRuntime, job_index: usize) {
             site,
             accepted: true,
         },
-        JobMetadata::Expansion { target, .. } => JobMetadata::Expansion {
+        JobMetadata::Expansion {
+            target,
+            source_build_job_id,
+            ..
+        } => JobMetadata::Expansion {
             target,
             accepted: true,
+            source_build_job_id,
         },
         JobMetadata::GatherHaul {
             stockpile_id, site, ..
@@ -7531,13 +8451,10 @@ fn scaffold_building_type(building_type: BuildingType) -> BuildingType {
     }
 }
 
-/// Pick a free anchor for a `building_type` footprint. Deterministic: same colony
-/// state + roll + seed → same site. A site fits when its whole `w x h` footprint lies
-/// inside `claimed_tiles` and every covered tile is free (no building, water, or tree;
-/// footprint-within-claimed also keeps it off the fence perimeter). `roll` indexes
-/// among all fitting anchors, scanned in `(y, x)` order, matching the legacy roll
-/// semantics. When nothing fits inside the village, spiral outward past the fence
-/// (still footprint-aware) so a build can defer gracefully rather than crash.
+/// Pick a valid claimed anchor for a `building_type` footprint. Deterministic:
+/// same colony state + roll + seed → same site. Every candidate is collision-free,
+/// stays inside the claim, and (for a founded colony with a shrine) has a route that
+/// can be paved atomically into the shrine-connected road component.
 fn next_claimed_building_site(
     colony: &ColonyRuntime,
     roll: f64,
@@ -7545,53 +8462,251 @@ fn next_claimed_building_site(
     building_type: BuildingType,
 ) -> Option<TilePos> {
     let (w, h) = footprint_for(building_type);
-    let claimed: HashSet<TilePos> = colony.claimed_tiles.iter().copied().collect();
-    let occupied = occupied_building_tiles(colony);
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    let reserved_tiles = reserved_construction_tiles(colony);
     // Fields/farms only take on fertile ground (grass/meadow/marsh). Rock, sand,
     // tundra, forest, and water are barren, so a field site must be farmable.
     let require_farmable = building_type == BuildingType::Field;
-
-    let footprint_free_at = |anchor: TilePos, require_claimed: bool| -> bool {
-        footprint_tiles(anchor, w, h).into_iter().all(|tile| {
-            (!require_claimed || claimed.contains(&tile))
-                && !occupied.contains(&tile)
-                && !tile_has_water(colony.world_tiles.get(&tile))
-                && !crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y)
-                && (!require_farmable
-                    || tile_is_farmable(world_seed, tile, colony.world_tiles.get(&tile)))
-        })
-    };
 
     let mut free = colony
         .claimed_tiles
         .iter()
         .copied()
-        .filter(|anchor| footprint_free_at(*anchor, true))
+        .filter(|anchor| {
+            let tiles = footprint_tiles(*anchor, w, h);
+            occupancy.placement_error_for_tiles(&tiles, true).is_none()
+                && tiles.iter().all(|tile| !reserved_tiles.contains(tile))
+                && building_footprint_has_claim_margin(&tiles, &occupancy.claimed)
+                && (!require_farmable
+                    || tiles.iter().all(|tile| {
+                        tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
+                    }))
+                && candidate_building_road_route_with_context(*anchor, building_type, &occupancy)
+                    .is_some()
+        })
         .collect::<Vec<_>>();
     free.sort_by_key(|site| (site.y, site.x));
     free.dedup();
 
-    if !free.is_empty() {
-        let clamped = roll.clamp(0.0, 0.999_999);
-        return Some(free[(clamped * free.len() as f64).floor() as usize]);
+    if free.is_empty() {
+        return None;
+    }
+    let clamped = roll.clamp(0.0, 0.999_999);
+    Some(free[(clamped * free.len() as f64).floor() as usize])
+}
+
+fn reserved_construction_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
+    active_or_queued_jobs(colony)
+        .into_iter()
+        .filter_map(|job| match job.metadata {
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type,
+                building_id: None,
+                site: Some(site),
+            } => Some((site, scaffold_building_type(building_type))),
+            _ => None,
+        })
+        .flat_map(|(site, building_type)| {
+            let (width, height) = footprint_for(building_type);
+            footprint_tiles(site, width, height)
+        })
+        .collect()
+}
+
+fn building_footprint_has_claim_margin(footprint: &[TilePos], claimed: &HashSet<TilePos>) -> bool {
+    footprint.iter().all(|tile| {
+        [(0, -1), (1, 0), (0, 1), (-1, 0)].iter().all(|(dx, dy)| {
+            claimed.contains(&TilePos {
+                x: tile.x + dx,
+                y: tile.y + dy,
+            })
+        })
+    })
+}
+
+fn building_claim_region(site: TilePos, building_type: BuildingType) -> Option<Vec<TilePos>> {
+    let (width, height) = footprint_for(building_type);
+    let footprint = footprint_tiles(site, width, height);
+    let mut region = footprint.clone();
+    for tile in footprint {
+        region.extend([
+            TilePos {
+                x: tile.x,
+                y: tile.y.checked_sub(1)?,
+            },
+            TilePos {
+                x: tile.x.checked_add(1)?,
+                y: tile.y,
+            },
+            TilePos {
+                x: tile.x,
+                y: tile.y.checked_add(1)?,
+            },
+            TilePos {
+                x: tile.x.checked_sub(1)?,
+                y: tile.y,
+            },
+        ]);
+    }
+    region.sort_by_key(|tile| (tile.y, tile.x));
+    region.dedup();
+    Some(region)
+}
+
+fn claimed_building_site_is_ready(
+    colony: &ColonyRuntime,
+    site: TilePos,
+    world_seed: u32,
+    building_type: BuildingType,
+) -> bool {
+    let (width, height) = footprint_for(building_type);
+    let tiles = footprint_tiles(site, width, height);
+    let claimed = colony.claimed_tiles.iter().copied().collect();
+    placement_error_for_tiles(colony, &tiles, world_seed, true).is_none()
+        && building_footprint_has_claim_margin(&tiles, &claimed)
+        && (building_type != BuildingType::Field
+            || tiles
+                .iter()
+                .all(|tile| tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))))
+        && candidate_building_road_route(colony, site, building_type, world_seed).is_some()
+}
+
+/// Choose a deterministic future footprint for a site-less construction. The candidate's
+/// claim margin either overlaps or directly borders the current claim and can therefore be
+/// filled one adjacent tile at a time; after all missing tiles are claimed it is
+/// collision-free and can reach both the shrine road and the single exterior gate without
+/// paving through its reserved footprint.
+fn next_expansion_building_site(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    building_type: BuildingType,
+) -> Option<TilePos> {
+    let (width, height) = footprint_for(building_type);
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    let reserved_tiles = reserved_construction_tiles(colony);
+    let mut candidates = Vec::new();
+
+    for &anchor in colony.world_tiles.keys() {
+        let tiles = footprint_tiles(anchor, width, height);
+        let Some(claim_region) = building_claim_region(anchor, building_type) else {
+            continue;
+        };
+        if claim_region.iter().any(|tile| {
+            !tile_coordinates_supported(*tile) || !occupancy.mapped_tiles.contains(tile)
+        }) {
+            continue;
+        }
+        let missing = claim_region
+            .iter()
+            .copied()
+            .filter(|tile| !occupancy.claimed.contains(tile))
+            .collect::<Vec<_>>();
+        if missing.is_empty()
+            || missing
+                .iter()
+                .any(|tile| occupancy.water_tiles.contains(tile))
+            || !missing
+                .iter()
+                .any(|tile| is_adjacent_to_claimed(colony, *tile))
+        {
+            continue;
+        }
+        if tiles.iter().any(|tile| {
+            occupancy.building_tiles.contains(tile)
+                || reserved_tiles.contains(tile)
+                || occupancy.has_stockpile(*tile)
+                || occupancy.water_tiles.contains(tile)
+                || occupancy.mountain_tiles.contains(tile)
+                || occupancy.paved_road_tiles.contains(tile)
+                || (occupancy.claimed.contains(tile) && occupancy.has_uncleared_tree(*tile))
+        }) {
+            continue;
+        }
+        if building_type == BuildingType::Field
+            && tiles.iter().any(|tile| {
+                !(tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
+                    || missing.contains(tile) && occupancy.has_uncleared_tree(*tile))
+            })
+        {
+            continue;
+        }
+        candidates.push((
+            missing.len(),
+            cheb_from_anchor(colony.anchor, anchor),
+            anchor.y,
+            anchor.x,
+            anchor,
+            missing,
+            tiles,
+            claim_region,
+        ));
     }
 
-    // No room left inside the fence: spiral outward, still refusing occupied ground.
-    next_building_site_with_blocked(&[], roll, DEFAULT_MAX_RING, |local| {
-        let anchor = colony_to_world(local);
-        !footprint_free_at(
-            TilePos {
-                x: anchor.x,
-                y: anchor.y,
-            },
-            false,
-        )
+    candidates.sort_by_key(|candidate| (candidate.0, candidate.1, candidate.2, candidate.3));
+    for (_, _, _, _, anchor, missing, tiles, _) in candidates {
+        let mut projected = colony.clone();
+        for tile in missing {
+            projected.claimed_tiles.push(tile);
+            if occupancy.has_uncleared_tree(tile) {
+                let mut cleared = fresh_ground_tile(tile);
+                cleared.tile_type = TileType::Field;
+                projected.world_tiles.insert(tile, cleared);
+            }
+        }
+        let mut reserved = tiles.iter().copied().collect::<HashSet<_>>();
+        reserved.extend(reserved_tiles.iter().copied());
+        if !connect_current_gate_to_shrine_avoiding(&mut projected, world_seed, &reserved) {
+            continue;
+        }
+        if claimed_building_site_is_ready(&projected, anchor, world_seed, building_type) {
+            return Some(anchor);
+        }
+    }
+    None
+}
+
+fn next_claim_toward_building_site(
+    colony: &ColonyRuntime,
+    site: TilePos,
+    building_type: BuildingType,
+    world_seed: u32,
+) -> Option<TilePos> {
+    let (width, height) = footprint_for(building_type);
+    let footprint = footprint_tiles(site, width, height);
+    let mut reserved = footprint.iter().copied().collect::<HashSet<_>>();
+    reserved.extend(reserved_construction_tiles(colony));
+    let mut frontier = building_claim_region(site, building_type)?
+        .into_iter()
+        .filter(|tile| {
+            !colony.claimed_tiles.contains(tile)
+                && !tile_has_water(colony.world_tiles.get(tile))
+                && is_adjacent_to_claimed(colony, *tile)
+        })
+        .collect::<Vec<_>>();
+    frontier.sort_by_key(|tile| (tile.y, tile.x));
+    frontier.into_iter().find(|target| {
+        let mut projected = colony.clone();
+        if tile_has_uncleared_tree(&projected, *target, world_seed) {
+            let mut cleared = fresh_ground_tile(*target);
+            cleared.tile_type = TileType::Field;
+            projected.world_tiles.insert(*target, cleared);
+        }
+        projected.claimed_tiles.push(*target);
+        connect_current_gate_to_shrine_avoiding(&mut projected, world_seed, &reserved)
     })
-    .map(colony_to_world)
-    .map(|site| TilePos {
-        x: site.x,
-        y: site.y,
-    })
+}
+
+/// Whether a player/system plan can currently reserve some valid site. This is
+/// a mutation-free preflight; the real break-ground pass repeats the validation
+/// because another queued construction may consume the last site first.
+#[must_use]
+pub fn can_plan_building(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    building_type: BuildingType,
+) -> bool {
+    next_claimed_building_site(colony, 0.0, world_seed, building_type).is_some()
 }
 
 fn tile_has_water(tile: Option<&WorldTileRuntime>) -> bool {
@@ -7956,18 +9071,81 @@ fn credit_quarry_ore(
     }
 }
 
-fn complete_village_expansion(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
+fn complete_village_expansion(
+    colony: &mut ColonyRuntime,
+    job: &JobRuntime,
+    gate: TickGate,
+    world_seed: u32,
+) {
+    let reserved_footprint = match &job.metadata {
+        JobMetadata::Expansion {
+            source_build_job_id: Some(source_build_job_id),
+            ..
+        } => colony
+            .jobs
+            .iter()
+            .find(|candidate| candidate.id == *source_build_job_id)
+            .and_then(|construction| match construction.metadata {
+                JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    building_type,
+                    building_id: None,
+                    site: Some(site),
+                } => {
+                    let (width, height) = footprint_for(scaffold_building_type(building_type));
+                    Some(
+                        footprint_tiles(site, width, height)
+                            .into_iter()
+                            .collect::<HashSet<_>>(),
+                    )
+                }
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => HashSet::new(),
+    };
     let target = match job.metadata {
         JobMetadata::Expansion { target, .. } | JobMetadata::Site { site: target, .. } => target,
-        _ => return,
+        _ => {
+            restore_expansion_worker_to_construction(colony, job);
+            return;
+        }
     };
-    if colony.claimed_tiles.contains(&target)
+    if !tile_coordinates_supported(target)
+        || colony.claimed_tiles.contains(&target)
         || !is_adjacent_to_claimed(colony, target)
         || tile_has_water(colony.world_tiles.get(&target))
     {
+        restore_expansion_worker_to_construction(colony, job);
         return;
     }
+    let previous_tile = colony.world_tiles.get(&target).cloned();
+    if tile_has_uncleared_tree(colony, target, world_seed) {
+        let tile = colony
+            .world_tiles
+            .entry(target)
+            .or_insert_with(|| fresh_ground_tile(target));
+        tile.tile_type = TileType::Field;
+        tile.resources.food = 0;
+        tile.resources.herbs = 0;
+        tile.max_resources.food = CHOPPED_FOREST_FOOD_CAP as u32;
+        tile.last_depleted = gate.processed_through;
+    }
     colony.claimed_tiles.push(target);
+    if !connect_current_gate_to_shrine_avoiding(colony, world_seed, &reserved_footprint) {
+        // The prospective perimeter would put its sole gate somewhere that
+        // cannot reach the shrine without crossing a hard occupant. Roll the
+        // claim back completely; a later expansion plan can choose another
+        // frontier tile. Existing persisted shapes remain untouched.
+        colony.claimed_tiles.pop();
+        if let Some(previous_tile) = previous_tile {
+            colony.world_tiles.insert(target, previous_tile);
+        } else {
+            colony.world_tiles.remove(&target);
+        }
+        restore_expansion_worker_to_construction(colony, job);
+        return;
+    }
     clear_claimed_forest_tile(colony, target, gate.processed_through);
     append_event(
         colony,
@@ -7978,6 +9156,47 @@ fn complete_village_expansion(colony: &mut ColonyRuntime, job: &JobRuntime, gate
             target.x, target.y
         ),
     );
+    restore_expansion_worker_to_construction(colony, job);
+}
+
+/// Return a cat temporarily transferred from a site-less construction to the expansion
+/// that creates room for it. This happens before phase 30 completes the expansion job, so
+/// the next tick sees exactly one active reservation: the original queued build.
+fn restore_expansion_worker_to_construction(colony: &mut ColonyRuntime, expansion: &JobRuntime) {
+    let Some(cat_id) = expansion.assigned_cat.clone() else {
+        return;
+    };
+    if !colony
+        .cats
+        .iter()
+        .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+    {
+        return;
+    }
+    let JobMetadata::Expansion {
+        source_build_job_id: Some(source_build_job_id),
+        ..
+    } = &expansion.metadata
+    else {
+        return;
+    };
+    let Some(construction) = colony.jobs.iter_mut().find(|job| {
+        job.id == *source_build_job_id
+            && job.kind == JobKind::BuildHouse
+            && job.status == JobStatus::Queued
+            && job.assigned_cat.is_none()
+            && matches!(
+                job.metadata,
+                JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    building_id: None,
+                    ..
+                }
+            )
+    }) else {
+        return;
+    };
+    construction.assigned_cat = Some(cat_id);
 }
 
 fn complete_build(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
@@ -8464,10 +9683,41 @@ pub fn building_inbound_haul(colony: &ColonyRuntime, building: &BuildingRuntime)
 /// assigned cat that no longer exists (mirrors TS `retireCat`). Shared by every
 /// death path — old-age (phase 6 pass 1) and survival (phase 25).
 fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
-    for job in &mut colony.jobs {
-        if job.assigned_cat.as_deref() == Some(cat_id)
-            && matches!(job.status, JobStatus::Active | JobStatus::Queued)
+    for index in 0..colony.jobs.len() {
+        if colony.jobs[index].assigned_cat.as_deref() != Some(cat_id)
+            || !matches!(
+                colony.jobs[index].status,
+                JobStatus::Active | JobStatus::Queued
+            )
         {
+            continue;
+        }
+        let paid_scaffold_survives = if colony.jobs[index].kind == JobKind::BuildHouse {
+            match &colony.jobs[index].metadata {
+                JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    building_id: Some(building_id),
+                    ..
+                } => colony
+                    .buildings
+                    .iter()
+                    .any(|building| building.id == *building_id && !building.is_complete),
+                _ => false,
+            }
+        } else {
+            false
+        };
+        let job = &mut colony.jobs[index];
+        if paid_scaffold_survives {
+            // The refined materials and completed work belong to the scaffold,
+            // not its builder. Release the dead cat and let phase 14 recruit a
+            // replacement for only the unfinished portion.
+            job.status = JobStatus::Queued;
+            job.assigned_cat = None;
+            job.started_at = None;
+            job.ends_at = None;
+            job.completed_at = None;
+        } else {
             job.status = JobStatus::Cancelled;
             job.completed_at = Some(now_ms);
         }
@@ -8566,10 +9816,12 @@ fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str, now_ms: i64) ->
 mod tests {
     use super::*;
     use crate::{
+        actions::{ActionCtx, apply_action},
         entities::{CatActivity, CatNeeds, CatStats, MapType},
         items::{ItemKind, MAX_QUALITY, Material},
         storage::BASE_CAPACITY,
     };
+    use cat_protocol as proto;
 
     #[test]
     fn colony_runtime_items_default_to_an_empty_store() {
@@ -9343,6 +10595,17 @@ mod tests {
         assert_eq!(colony.world_tiles[&pos(12, 6)].path_wear, 64);
         assert_eq!(colony.world_tiles[&pos(11, 5)].path_wear, 63);
         assert_eq!(colony.world_tiles[&pos(11, 7)].path_wear, 63);
+
+        // A second traversal raises the unpaved centerline above the dirt-road
+        // threshold automatically. Paving that same trafficked tile still wins:
+        // stone remains 1.75x rather than being misclassified as 1.05x dirt.
+        let walked_again = [WorldPos { x: 11.0, y: 6.0 }];
+        reveal_and_wear_walked_tiles(&mut colony, &movement, &walked_again, "walker", None);
+        let trafficked = &mut colony.world_tiles.get_mut(&pos(11, 6)).unwrap();
+        assert_eq!(trafficked.path_wear, 72);
+        assert_eq!(road_surface_multiplier(false, trafficked.path_wear), 1.05);
+        trafficked.overlay_feature = Some("road_built".to_owned());
+        assert_eq!(road_surface_multiplier(true, trafficked.path_wear), 1.75);
     }
 
     #[test]
@@ -10510,7 +11773,7 @@ mod tests {
         });
 
         // Not yet expired.
-        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 9_999));
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 9_999), 42);
         assert_eq!(colony.gather_spots.len(), 1, "TTL not yet elapsed");
         assert_eq!(
             colony
@@ -10523,7 +11786,7 @@ mod tests {
         );
 
         // Past the TTL.
-        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 10_000));
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 10_000), 42);
         assert!(colony.gather_spots.is_empty(), "expired spot cleared");
         assert!(!colony.stockpiles.iter().any(|p| p.id == "gather-1"));
         let shrine = colony.stockpiles.iter().find(|p| p.is_shrine()).unwrap();
@@ -10576,6 +11839,34 @@ mod tests {
         colony
     }
 
+    fn reveal_open_cardinal_neighbors(colony: &mut ColonyRuntime, site: TilePos) {
+        for tile in [
+            TilePos {
+                x: site.x,
+                y: site.y - 1,
+            },
+            TilePos {
+                x: site.x + 1,
+                y: site.y,
+            },
+            TilePos {
+                x: site.x,
+                y: site.y + 1,
+            },
+            TilePos {
+                x: site.x - 1,
+                y: site.y,
+            },
+        ] {
+            let mut ground = fresh_ground_tile(tile);
+            // Field is the runtime marker that any generated tree has already
+            // been cleared, making this synthetic fixture unambiguously open.
+            ground.tile_type = TileType::Field;
+            colony.world_tiles.insert(tile, ground);
+            colony.revealed_tiles.insert(tile);
+        }
+    }
+
     #[test]
     fn steward_auto_designates_a_gather_spot_beside_a_distant_heavily_worked_site() {
         let mut colony = steward_colony();
@@ -10583,9 +11874,10 @@ mod tests {
             x: VILLAGE_ANCHOR.x + AUTO_GATHER_SPOT_MIN_DISTANCE + 2,
             y: VILLAGE_ANCHOR.y,
         };
+        reveal_open_cardinal_neighbors(&mut colony, site);
         colony.jobs.extend(quarry_pair_at(site));
 
-        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000), 42);
 
         assert_eq!(colony.gather_spots.len(), 1, "one spot auto-designated");
         let spot = &colony.gather_spots[0];
@@ -10624,7 +11916,7 @@ mod tests {
         colony.jobs.extend(quarry_pair_at(site));
         let before = colony.clone();
 
-        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000), 42);
 
         assert!(colony.gather_spots.is_empty(), "no Steward, no placement");
         assert_eq!(
@@ -10643,7 +11935,7 @@ mod tests {
         };
         colony.jobs.extend(quarry_pair_at(near_site));
 
-        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000), 42);
 
         assert!(
             colony.gather_spots.is_empty(),
@@ -10661,7 +11953,7 @@ mod tests {
         // Only one concurrent worker — below AUTO_GATHER_SPOT_MIN_WORKERS.
         colony.jobs.push(quarry_pair_at(site).remove(0));
 
-        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000), 42);
 
         assert!(
             colony.gather_spots.is_empty(),
@@ -10694,7 +11986,7 @@ mod tests {
         };
         colony.jobs.extend(quarry_pair_at(site));
 
-        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000), 42);
 
         assert_eq!(
             colony.gather_spots.len(),
@@ -10723,7 +12015,7 @@ mod tests {
         });
         colony.jobs.extend(quarry_pair_at(site));
 
-        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000));
+        phase_p16_gather_spot_logistics(&mut colony, production_gate(1, 5_000), 42);
 
         assert_eq!(
             colony.gather_spots.len(),
@@ -10735,7 +12027,6 @@ mod tests {
     #[test]
     fn steward_auto_placement_is_deterministic_for_identical_inputs() {
         let mut left = steward_colony();
-        let mut right = left.clone();
 
         // Several simultaneous candidates across kinds/sites so ordering actually matters.
         let quarry_site = TilePos {
@@ -10750,6 +12041,10 @@ mod tests {
             x: VILLAGE_ANCHOR.x - AUTO_GATHER_SPOT_MIN_DISTANCE - 6,
             y: VILLAGE_ANCHOR.y,
         };
+        for site in [quarry_site, hunt_site, water_site] {
+            reveal_open_cardinal_neighbors(&mut left, site);
+        }
+        let mut right = left.clone();
         let mut jobs = quarry_pair_at(quarry_site);
         jobs.extend((0..AUTO_GATHER_SPOT_MIN_WORKERS).map(|i| JobRuntime {
             id: format!("job-hunt-{i}"),
@@ -10782,8 +12077,8 @@ mod tests {
         left.jobs.clone_from(&jobs);
         right.jobs = jobs;
 
-        phase_p16_gather_spot_logistics(&mut left, production_gate(1, 5_000));
-        phase_p16_gather_spot_logistics(&mut right, production_gate(1, 5_000));
+        phase_p16_gather_spot_logistics(&mut left, production_gate(1, 5_000), 42);
+        phase_p16_gather_spot_logistics(&mut right, production_gate(1, 5_000), 42);
 
         assert!(
             !left.gather_spots.is_empty(),
@@ -12073,6 +13368,26 @@ mod tests {
         colony.resources.planks = 10.0;
         colony.resources.blocks = 10.0;
         let cat_id = colony.cats[0].id.clone();
+        let site = next_expansion_building_site(&colony, 4242, BuildingType::Den)
+            .expect("a deterministic future den site exists");
+        for tile in building_claim_region(site, BuildingType::Den)
+            .expect("the future site's claim margin is representable")
+        {
+            if !colony.claimed_tiles.contains(&tile) {
+                colony.claimed_tiles.push(tile);
+            }
+            if tile_has_uncleared_tree(&colony, tile, 4242) {
+                let mut cleared = fresh_ground_tile(tile);
+                cleared.tile_type = TileType::Field;
+                colony.world_tiles.insert(tile, cleared);
+            }
+        }
+        let reserved = footprint_tiles(site, 2, 3).into_iter().collect();
+        assert!(connect_current_gate_to_shrine_avoiding(
+            &mut colony,
+            4242,
+            &reserved
+        ));
         let scaffolds_before = colony
             .buildings
             .iter()
@@ -12087,10 +13402,9 @@ mod tests {
                 phase: ConstructionPhase::ConstructHouse,
                 building_type: BuildingType::Den,
                 building_id: None,
-                site: None,
+                site: Some(site),
             },
         );
-
         phase_14_promote_queued_jobs_and_break_ground(
             &mut colony,
             production_gate(60, 70_000),
@@ -12108,6 +13422,20 @@ mod tests {
             scaffolds_after,
             scaffolds_before + 1,
             "exactly one scaffold should have broken ground"
+        );
+        let scaffold = colony
+            .buildings
+            .iter()
+            .find(|building| !building.is_complete)
+            .expect("new scaffold exists");
+        assert!(
+            building_is_road_connected_to_shrine(&colony, scaffold, 4242),
+            "break-ground commits the complete shrine access route atomically"
+        );
+        assert!(
+            building_footprint_tiles(scaffold)
+                .iter()
+                .all(|tile| colony.claimed_tiles.contains(tile))
         );
     }
 
@@ -12948,47 +14276,110 @@ mod tests {
     /// separate, tracked survival-pacing concern) would otherwise dominate this test. We
     /// therefore give the tree a head start of prior study (research points persist across
     /// run resets by design), so the run proves the autonomous **build → staff → accrue →
-    /// cross-threshold → own** path within a bounded, population-safe horizon. Multi-seed;
-    /// every colony must end owning at least one researched node without a single player action.
-    #[test]
-    fn an_unattended_comfortable_colony_advances_the_research_tree() {
-        for seed in [7u32, 4242, 1234] {
-            let mut world = new_world(seed);
-            let mut colony = found_colony(world.world_seed, "colony-1", 10_000, seed);
-            // Prior study already banked most of the cost-5 root (persists across resets).
-            colony.upgrade_tree.research_points = 4.5;
-            assert!(
-                colony.upgrade_tree.owned_node_ids.is_empty(),
-                "seed {seed}: the colony must start with no researched nodes"
-            );
-            world.colonies.push(colony);
+    /// cross-threshold → own** path within a bounded, population-safe horizon. The three
+    /// wrappers below preserve multi-seed coverage while keeping each case below the test
+    /// runner's slow timeout under full-suite contention.
+    fn assert_unattended_comfortable_colony_advances_research(seed: u32) {
+        let mut world = new_world(seed);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, seed);
+        // Prior study already banked most of the cost-5 root (persists across resets).
+        colony.upgrade_tree.research_points = 4.5;
+        assert!(
+            colony.upgrade_tree.owned_node_ids.is_empty(),
+            "seed {seed}: the colony must start with no researched nodes"
+        );
+        world.colonies.push(colony);
 
-            let mut built_and_staffed = false;
-            // 4000 one-minute steps ≈ 67 game-hours: the first 30 are the research
-            // establishment window (no hut is commissioned before it), the rest cover
-            // build + staff + the final accrual to the head-started root node.
-            for step in 1..=4_000i64 {
-                keep_comfortable(&mut world.colonies[0]);
-                let now = 10_000 + step * 60_000;
-                let _ = world_tick(&mut world, now);
-                if research_workforce(&world.colonies[0]) > 0.0 {
-                    built_and_staffed = true;
-                }
-                if !world.colonies[0].upgrade_tree.owned_node_ids.is_empty() {
-                    break;
-                }
+        let mut built_and_staffed = false;
+        // 2250 two-minute steps = 75 game-hours: the first 30 are the research
+        // establishment window (no hut is commissioned before it), the rest cover
+        // explicit claim expansion, build + staff, and the final accrual to the
+        // head-started root node. The organic guardrails below retain the stricter
+        // one-minute cadence; two minutes keeps this isolated comfort fixture bounded.
+        for step in 1..=2_250i64 {
+            keep_comfortable(&mut world.colonies[0]);
+            let now = 10_000 + step * 120_000;
+            let _ = world_tick(&mut world, now);
+            if research_workforce(&world.colonies[0]) > 0.0 {
+                built_and_staffed = true;
             }
-
-            let colony = &world.colonies[0];
-            assert!(
-                built_and_staffed,
-                "seed {seed}: the colony never autonomously built and staffed a research hut"
-            );
-            assert!(
-                !colony.upgrade_tree.owned_node_ids.is_empty(),
-                "seed {seed}: the research tree never advanced to an owned node — the cat path is dormant"
-            );
+            if !world.colonies[0].upgrade_tree.owned_node_ids.is_empty() {
+                break;
+            }
         }
+
+        let colony = &world.colonies[0];
+        assert!(
+            built_and_staffed,
+            "seed {seed}: the colony never autonomously built and staffed a research hut; \
+                 points={}, resources={:?}, claimed={}, mapped={}, next_future={:?}, huts={:?}, \
+                 builds={:?}, expansions={:?}",
+            colony.upgrade_tree.research_points,
+            colony.resources,
+            colony.claimed_tiles.len(),
+            colony.world_tiles.len(),
+            next_expansion_building_site(colony, seed, BuildingType::ResearchHut),
+            colony
+                .buildings
+                .iter()
+                .filter(|building| building.building_type == BuildingType::ResearchHut)
+                .map(|building| (
+                    building.position,
+                    building.construction_progress,
+                    building.assigned_cat.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            active_or_queued_jobs(colony)
+                .into_iter()
+                .filter(|job| job.kind == JobKind::BuildHouse)
+                .map(|job| (
+                    &job.id,
+                    job.status,
+                    &job.metadata,
+                    job.assigned_cat.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            active_or_queued_jobs(colony)
+                .into_iter()
+                .filter(|job| job.kind == JobKind::ExpandVillage)
+                .map(|job| (
+                    &job.id,
+                    job.status,
+                    &job.metadata,
+                    job.assigned_cat.as_deref()
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !colony.upgrade_tree.owned_node_ids.is_empty(),
+            "seed {seed}: the research tree never advanced to an owned node — the cat path is dormant; points={}, huts={:?}",
+            colony.upgrade_tree.research_points,
+            colony
+                .buildings
+                .iter()
+                .filter(|building| building.building_type == BuildingType::ResearchHut)
+                .map(|building| (
+                    building.position,
+                    building.construction_progress,
+                    building.assigned_cat.as_deref()
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn unattended_comfortable_colony_advances_research_seed_7() {
+        assert_unattended_comfortable_colony_advances_research(7);
+    }
+
+    #[test]
+    fn unattended_comfortable_colony_advances_research_seed_4242() {
+        assert_unattended_comfortable_colony_advances_research(4242);
+    }
+
+    #[test]
+    fn unattended_comfortable_colony_advances_research_seed_1234() {
+        assert_unattended_comfortable_colony_advances_research(1234);
     }
 
     /// ORGANIC research-engagement guardrail (playtest 2026-07-13): the research-comfort
@@ -13001,37 +14392,45 @@ mod tests {
     /// unattended game-hours ended with 0.0 research points and 0 owned nodes at every
     /// cadence — research was dormant in real play). With the per-capita bar
     /// ([`is_research_comfortable`]) the same unattended economy must commission, build,
-    /// and staff a research hut and bank research points, with no player action.
-    #[test]
-    fn an_unattended_colony_organically_engages_research() {
-        for seed in [7u32, 2024] {
-            let mut world = new_world(seed);
-            world
-                .colonies
-                .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
+    /// and staff a research hut and bank research points, with no player action. Separate
+    /// wrappers keep each seed below the runner's slow timeout under full-suite contention.
+    fn assert_unattended_colony_organically_engages_research(seed: u32) {
+        let mut world = new_world(seed);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
 
-            let mut ever_staffed = false;
-            // 4500 one-minute steps ≈ 75 game-hours: 30 of establishment window, then
-            // organic comfort → commission → build → staff → accrue.
-            for step in 1..=4_500i64 {
-                let now = 10_000 + step * 60_000;
-                let _ = world_tick(&mut world, now);
-                if research_workforce(&world.colonies[0]) > 0.0 {
-                    ever_staffed = true;
-                }
+        let mut ever_staffed = false;
+        // 4500 one-minute steps ≈ 75 game-hours: 30 of establishment window, then
+        // organic comfort → commission → build → staff → accrue.
+        for step in 1..=4_500i64 {
+            let now = 10_000 + step * 60_000;
+            let _ = world_tick(&mut world, now);
+            if research_workforce(&world.colonies[0]) > 0.0 {
+                ever_staffed = true;
             }
-
-            assert!(
-                ever_staffed,
-                "seed {seed}: the colony's own economy never staffed a research hut — the \
-                 comfort bar is unreachable in unattended play"
-            );
-            assert!(
-                world.colonies[0].upgrade_tree.research_points > 0.0,
-                "seed {seed}: no research points banked over 75 unattended game-hours — \
-                 research is dormant in real play"
-            );
         }
+
+        assert!(
+            ever_staffed,
+            "seed {seed}: the colony's own economy never staffed a research hut — the \
+                 comfort bar is unreachable in unattended play"
+        );
+        assert!(
+            world.colonies[0].upgrade_tree.research_points > 0.0,
+            "seed {seed}: no research points banked over 75 unattended game-hours — \
+                 research is dormant in real play"
+        );
+    }
+
+    #[test]
+    fn unattended_colony_organically_engages_research_seed_7() {
+        assert_unattended_colony_organically_engages_research(7);
+    }
+
+    #[test]
+    fn unattended_colony_organically_engages_research_seed_2024() {
+        assert_unattended_colony_organically_engages_research(2024);
     }
 
     /// Determinism twin for the autonomous tree-advance: two byte-identical runs must reach
@@ -13246,6 +14645,243 @@ mod tests {
             assigned_cat: Some(scholar.to_owned()),
             ..BuildingRuntime::default()
         });
+    }
+
+    /// A station is not truly occupied once its persisted worker id is dead or no longer
+    /// exists in the roster. The autonomous staffing mop-up must replace either kind of
+    /// stale assignment; otherwise a research hut can remain permanently dormant after its
+    /// first scholar dies.
+    #[test]
+    fn auto_staff_replaces_dead_and_missing_building_assignees() {
+        let mut colony = found_colony(7, "colony-1", 10_000, 7);
+        colony.jobs.clear();
+        let dead_scholar = colony.cats[0].id.clone();
+        colony.cats[0].death_time = Some(10_001);
+        attach_staffed_research_hut(&mut colony, &dead_scholar);
+
+        auto_staff_idle_buildings(&mut colony, BuildingType::ResearchHut, 20_000, false);
+        let replacement = assigned_worker(&colony, "research-hut-test")
+            .expect("a living idle cat must replace a dead scholar")
+            .id
+            .clone();
+        assert_ne!(replacement, dead_scholar);
+
+        colony
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "research-hut-test")
+            .expect("research hut exists")
+            .assigned_cat = Some("missing-cat".to_owned());
+        auto_staff_idle_buildings(&mut colony, BuildingType::ResearchHut, 30_000, false);
+        assert!(
+            assigned_worker(&colony, "research-hut-test").is_some(),
+            "a living idle cat must replace an assignee missing from the roster"
+        );
+    }
+
+    #[test]
+    fn interrupted_construction_keeps_its_scaffold_and_recruits_a_new_builder() {
+        let seed = 7;
+        let mut colony = found_colony(seed, "colony-1", 1_000, seed);
+        colony.jobs.clear();
+        let dead_builder = colony.cats[0].id.clone();
+        colony.cats[0].needs = CatNeeds {
+            hunger: 100.0,
+            thirst: 0.0,
+            rest: 100.0,
+            health: 5.0,
+        };
+        colony.resources.water = 0.0;
+        colony.buildings.push(BuildingRuntime {
+            id: "paid-scaffold".to_owned(),
+            building_type: BuildingType::ResearchHut,
+            level: 1,
+            position: TilePos { x: 0, y: 4 },
+            is_complete: false,
+            construction_progress: 73,
+            production_progress: 0.0,
+            assigned_cat: None,
+        });
+        colony.jobs.push(JobRuntime {
+            id: "interrupted-build".to_owned(),
+            kind: JobKind::BuildHouse,
+            status: JobStatus::Active,
+            assigned_cat: Some(dead_builder.clone()),
+            duration_ms: 60_000,
+            started_at: Some(1_000),
+            ends_at: Some(2_000),
+            metadata: JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::ResearchHut,
+                building_id: Some("paid-scaffold".to_owned()),
+                site: Some(TilePos { x: 0, y: 4 }),
+            },
+            ..JobRuntime::default()
+        });
+        let death_gate = production_gate(1_200, 2_000);
+        let building_count = colony.buildings.len();
+        let planks = colony.resources.planks;
+        let blocks = colony.resources.blocks;
+
+        // Exercise the real survival-death cleanup. Ordinary work is cancelled
+        // here, but paid construction must instead become resumable.
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            death_gate,
+            normal_policy(),
+        );
+        assert_eq!(
+            colony.cats[0].death_time,
+            Some(death_gate.processed_through)
+        );
+        let interrupted = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == "interrupted-build")
+            .expect("the interrupted construction remains queued");
+        assert_eq!(interrupted.status, JobStatus::Queued);
+        assert!(interrupted.assigned_cat.is_none());
+        assert_eq!(interrupted.started_at, None);
+        assert_eq!(interrupted.ends_at, None);
+        let scaffold = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "paid-scaffold")
+            .expect("the paid scaffold remains");
+        assert!(!scaffold.is_complete);
+        assert_eq!(scaffold.construction_progress, 73);
+        assert_eq!(colony.buildings.len(), building_count);
+        assert_eq!(colony.resources.planks.to_bits(), planks.to_bits());
+        assert_eq!(colony.resources.blocks.to_bits(), blocks.to_bits());
+
+        let resume_gate = production_gate(1, 3_000);
+        phase_14_promote_queued_jobs_and_break_ground(&mut colony, resume_gate, seed);
+
+        let restarted = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == "interrupted-build")
+            .expect("the interrupted construction restarts");
+        assert_eq!(restarted.status, JobStatus::Active);
+        assert!(restarted.assigned_cat.as_deref().is_some_and(|cat_id| {
+            cat_id != dead_builder
+                && colony
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+        }));
+        assert_eq!(restarted.started_at, Some(resume_gate.processed_through));
+        assert_eq!(
+            restarted.ends_at,
+            Some(resume_gate.processed_through + 16_200),
+            "73% complete means exactly 27% of the original timer remains"
+        );
+        assert_eq!(colony.buildings.len(), building_count);
+        assert_eq!(colony.resources.planks.to_bits(), planks.to_bits());
+        assert_eq!(colony.resources.blocks.to_bits(), blocks.to_bits());
+
+        // Resuming cannot overwrite 73% with a fresh timer's 0%, and progress
+        // continues from the stored baseline rather than restarting.
+        phase_16_active_scaffold_progress(&mut colony, resume_gate);
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == "paid-scaffold")
+                .expect("the scaffold remains while work resumes")
+                .construction_progress,
+            73
+        );
+        phase_16_active_scaffold_progress(&mut colony, production_gate(1, 11_100));
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == "paid-scaffold")
+                .expect("the scaffold advances")
+                .construction_progress,
+            87
+        );
+
+        let completion_gate = production_gate(1, 19_200);
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            &mut colony,
+            completion_gate,
+        );
+        let completed = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "paid-scaffold")
+            .expect("the recovered scaffold completes");
+        assert!(completed.is_complete);
+        assert_eq!(completed.construction_progress, 100);
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.id == "interrupted-build")
+                .expect("the recovered build job completes")
+                .status,
+            JobStatus::Completed
+        );
+    }
+
+    #[test]
+    fn raid_death_requeues_a_paid_scaffold_instead_of_orphaning_it() {
+        let mut colony = found_colony(7, "colony-1", 1_000, 7);
+        colony.jobs.clear();
+        let builder = colony.cats[0].id.clone();
+        colony.buildings.push(BuildingRuntime {
+            id: "raid-interrupted-scaffold".to_owned(),
+            building_type: BuildingType::Workshop,
+            level: 1,
+            position: TilePos { x: 0, y: 4 },
+            is_complete: false,
+            construction_progress: 41,
+            production_progress: 0.0,
+            assigned_cat: None,
+        });
+        colony.jobs.push(JobRuntime {
+            id: "raid-interrupted-build".to_owned(),
+            kind: JobKind::BuildHouse,
+            status: JobStatus::Active,
+            assigned_cat: Some(builder.clone()),
+            duration_ms: 60_000,
+            started_at: Some(1_000),
+            ends_at: Some(61_000),
+            metadata: JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Workshop,
+                building_id: Some("raid-interrupted-scaffold".to_owned()),
+                site: Some(TilePos { x: 0, y: 4 }),
+            },
+            ..JobRuntime::default()
+        });
+        let planks = colony.resources.planks;
+        let blocks = colony.resources.blocks;
+
+        mark_cat_dead(&mut colony, &builder, 2_000);
+
+        assert_eq!(colony.cats[0].death_time, Some(2_000));
+        let job = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == "raid-interrupted-build")
+            .expect("the paid build job survives its builder");
+        assert_eq!(job.status, JobStatus::Queued);
+        assert_eq!(job.assigned_cat, None);
+        assert_eq!(job.started_at, None);
+        assert_eq!(job.ends_at, None);
+        assert_eq!(job.completed_at, None);
+        let scaffold = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "raid-interrupted-scaffold")
+            .expect("the raid does not delete the paid scaffold");
+        assert!(!scaffold.is_complete);
+        assert_eq!(scaffold.construction_progress, 41);
+        assert_eq!(colony.resources.planks.to_bits(), planks.to_bits());
+        assert_eq!(colony.resources.blocks.to_bits(), blocks.to_bits());
     }
 
     /// Cat-research accrual wiring ([`research_workforce`] + [`phase_24_research`]). Before
@@ -15068,12 +16704,34 @@ mod tests {
         // Perimeter: a tile just outside the claimed area but bordering it (the wall).
         assert!(tile_is_occupied(&colony, TilePos { x: 0, y: 7 }, seed));
 
-        // A terrain-generated tree tile inside the founding area is occupied.
-        let tree = (3..=9)
-            .flat_map(|y| (3..=9).map(move |x| TilePos { x, y }))
+        // A deterministic decoration remains physical until runtime state records a
+        // clearing. Use a known wild tile and materialize it as ordinary meadow so this
+        // assertion does not depend on the unrelated coarse world-gen tile type.
+        let wild_tree = (20..=40)
+            .flat_map(|y| (20..=40).map(move |x| TilePos { x, y }))
             .find(|tile| crate::terrain_gen::tile_has_tree(seed, tile.x, tile.y))
-            .expect("founding area has a tree for seed 42");
-        assert!(tile_is_occupied(&colony, tree, seed));
+            .expect("nearby wilds have a tree for seed 42");
+        colony
+            .world_tiles
+            .insert(wild_tree, fresh_ground_tile(wild_tree));
+        assert!(tile_has_uncleared_tree(&colony, wild_tree, seed));
+        colony
+            .world_tiles
+            .get_mut(&wild_tree)
+            .expect("the materialized wild tile exists")
+            .tile_type = TileType::Field;
+        assert!(
+            !tile_has_uncleared_tree(&colony, wild_tree, seed),
+            "an explicitly cleared forest tile no longer blocks placement"
+        );
+
+        // Resetting the runtime clearing marker makes the same wild decoration physical.
+        colony
+            .world_tiles
+            .get_mut(&wild_tree)
+            .expect("the materialized wild tile exists")
+            .tile_type = TileType::Meadow;
+        assert!(tile_is_occupied(&colony, wild_tree, seed));
 
         // Open claimed ground (no building, tree, water, or perimeter) is free.
         let open = colony
@@ -15168,7 +16826,6 @@ mod tests {
                 !shrine_tiles.contains(&tile),
                 "den avoids the shrine at {tile:?}"
             );
-            assert!(!crate::terrain_gen::tile_has_tree(seed, tile.x, tile.y));
             assert!(
                 !tile_is_occupied(&colony, tile, seed),
                 "den tile {tile:?} is free"
@@ -15195,6 +16852,630 @@ mod tests {
         assert_eq!(
             next_claimed_building_site(&full, 0.7, seed, BuildingType::Den),
             next_claimed_building_site(&full, 0.7, seed, BuildingType::Den)
+        );
+    }
+
+    #[test]
+    fn footprint_exhaustion_transfers_the_blocked_builder_to_one_expansion() {
+        let seed = 42;
+        let mut colony = found_colony(seed, "colony-1", 1_000, seed);
+        let area = claimed_area(&colony);
+        assert!(
+            !should_expand(
+                alive_cats(&colony.cats).count() as i32,
+                area.len() as i32,
+                colony.buildings.len() as i32,
+            ),
+            "the legacy count heuristic must not be what triggers this regression"
+        );
+
+        let min_x = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.x)
+            .min()
+            .unwrap();
+        let max_x = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.x)
+            .max()
+            .unwrap();
+        let min_y = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.y)
+            .min()
+            .unwrap();
+        let max_y = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.y)
+            .max()
+            .unwrap();
+        colony.stockpiles.push(Stockpile {
+            id: "spatial-pressure-fixture".to_owned(),
+            rect: ZoneRect {
+                x1: min_x,
+                y1: min_y,
+                x2: max_x,
+                y2: max_y,
+            },
+            accepts: [ResourceKind::Food].into_iter().collect(),
+            contents: Resources::default(),
+        });
+        assert!(!can_plan_building(&colony, seed, BuildingType::Den));
+        colony.resources.planks = SCAFFOLD_PLANK_COST;
+        colony.resources.blocks = SCAFFOLD_BLOCK_COST;
+
+        let builder = colony.cats[0].id.clone();
+        queue_job(
+            &mut colony,
+            2_000,
+            JobKind::BuildHouse,
+            Some(builder.clone()),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Den,
+                building_id: None,
+                site: None,
+            },
+        );
+        let donor_job_id = colony
+            .jobs
+            .iter()
+            .find(|job| job.assigned_cat.as_deref() == Some(builder.as_str()))
+            .expect("donor construction exists")
+            .id
+            .clone();
+        let other_builder = colony.cats[1].id.clone();
+        queue_job(
+            &mut colony,
+            2_001,
+            JobKind::BuildHouse,
+            Some(other_builder.clone()),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Den,
+                building_id: None,
+                site: None,
+            },
+        );
+        let other_job_id = colony
+            .jobs
+            .iter()
+            .find(|job| job.assigned_cat.as_deref() == Some(other_builder.as_str()))
+            .expect("second construction exists")
+            .id
+            .clone();
+
+        let gate = production_gate(60, 3_000);
+        let _ = phase_32_movement_setup_and_village_expansion_queue(
+            &mut colony,
+            gate,
+            reliable_policy(),
+            seed,
+        );
+        let expansions = active_or_queued_jobs(&colony)
+            .into_iter()
+            .filter(|job| job.kind == JobKind::ExpandVillage)
+            .collect::<Vec<_>>();
+        assert_eq!(expansions.len(), 1, "spatial pressure queues one expansion");
+        assert_eq!(
+            expansions[0].assigned_cat.as_deref(),
+            Some(builder.as_str()),
+            "the site-less builder is transferred to the prerequisite expansion"
+        );
+        assert!(matches!(
+            &expansions[0].metadata,
+            JobMetadata::Expansion {
+                source_build_job_id: Some(source),
+                ..
+            } if source == &donor_job_id
+        ));
+        assert!(expansions[0].assigned_cat.is_some());
+        assert!(matches!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.id == donor_job_id)
+                .expect("the exact donor remains recorded")
+                .metadata,
+            JobMetadata::Construction {
+                building_id: None,
+                site: Some(_),
+                ..
+            }
+        ));
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.kind == JobKind::BuildHouse)
+                .expect("queued construction exists")
+                .assigned_cat
+                .is_none(),
+            "the builder cannot be assigned to both jobs at once"
+        );
+
+        let _ = phase_32_movement_setup_and_village_expansion_queue(
+            &mut colony,
+            gate,
+            reliable_policy(),
+            seed,
+        );
+        assert_eq!(
+            active_or_queued_jobs(&colony)
+                .into_iter()
+                .filter(|job| job.kind == JobKind::ExpandVillage)
+                .count(),
+            1,
+            "an active/queued expansion suppresses duplicates"
+        );
+
+        let expansion = colony
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::ExpandVillage)
+            .expect("expansion exists")
+            .clone();
+        restore_expansion_worker_to_construction(&mut colony, &expansion);
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.id == donor_job_id)
+                .expect("queued construction exists")
+                .assigned_cat
+                .as_deref(),
+            Some(builder.as_str()),
+            "expansion completion returns the worker to construction"
+        );
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.id == other_job_id)
+                .expect("unrelated construction exists")
+                .assigned_cat
+                .as_deref(),
+            Some(other_builder.as_str()),
+            "the expansion cannot restore its worker into a different queued build"
+        );
+
+        // The fresh-timer/exact-charge behavior after all required frontier work is
+        // covered end-to-end by `player_plan_expands_until_a_connected_scaffold_then_charges_and_times_once`.
+    }
+
+    #[test]
+    fn player_plan_expands_until_a_connected_scaffold_then_charges_and_times_once() {
+        let seed = 42;
+        let mut world = new_world(seed);
+        world
+            .colonies
+            .push(found_colony(seed, "colony-1", 1_000, seed));
+        let founding_claim = world.colonies[0].claimed_tiles.clone();
+        assert_eq!(
+            founding_claim.len(),
+            13 * 13,
+            "founding stays the exact P16 square"
+        );
+        let center = shrine_center_tile(world.colonies[0].anchor);
+        assert!(founding_claim.iter().all(|tile| {
+            (tile.x - center.x).abs() <= VILLAGE_START_RADIUS
+                && (tile.y - center.y).abs() <= VILLAGE_START_RADIUS
+        }));
+        assert!(!can_plan_building(
+            &world.colonies[0],
+            seed,
+            BuildingType::Workshop
+        ));
+
+        let action = proto::ClientAction::PlanBuilding {
+            session_id: "session".to_owned(),
+            nickname: "Builder".to_owned(),
+            sig: "pure-sim".to_owned(),
+            building_type: proto::BuildingType::Workshop,
+        };
+        let action_ctx = ActionCtx {
+            session_id: "session".to_owned(),
+            player_id: "player".to_owned(),
+            colony_id: "colony-1".to_owned(),
+            now_ms: 2_000,
+        };
+        let result = apply_action(&mut world, &action, &action_ctx);
+        assert!(
+            result.ok,
+            "site-less player plan is accepted: {:?}",
+            result.message
+        );
+
+        let colony = &mut world.colonies[0];
+        let build_id = colony
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::BuildHouse)
+            .expect("player construction queued")
+            .id
+            .clone();
+        let provisional_end = 2_500;
+        let provisional_job = colony
+            .jobs
+            .iter_mut()
+            .find(|job| job.id == build_id)
+            .expect("queue-time timer exists but cannot complete a ghost");
+        provisional_job.started_at = Some(2_000);
+        provisional_job.ends_at = Some(provisional_end);
+        assert!(matches!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.id == build_id)
+                .unwrap()
+                .metadata,
+            JobMetadata::Construction {
+                building_id: None,
+                site: None,
+                ..
+            }
+        ));
+        let buildings_before = colony.buildings.len();
+        colony.resources.planks = 20.0;
+        colony.resources.blocks = 20.0;
+        let planks_before = colony.resources.planks;
+        let blocks_before = colony.resources.blocks;
+
+        let mut now = 3_000;
+        phase_14_promote_queued_jobs_and_break_ground(colony, production_gate(1, now), seed);
+        let reserved_site = match colony
+            .jobs
+            .iter()
+            .find(|job| job.id == build_id)
+            .expect("construction survives reservation")
+            .metadata
+        {
+            JobMetadata::Construction {
+                building_id: None,
+                site: Some(site),
+                ..
+            } => site,
+            ref metadata => panic!("future footprint was not reserved: {metadata:?}"),
+        };
+        assert_eq!(colony.buildings.len(), buildings_before);
+        assert_eq!(colony.resources.planks, planks_before);
+        assert_eq!(colony.resources.blocks, blocks_before);
+
+        let mut policy = reliable_policy();
+        policy.config.action_reliability = 0.0;
+        let mut completed_expansions = 0;
+        loop {
+            let _ = phase_32_movement_setup_and_village_expansion_queue(
+                colony,
+                production_gate(60, now),
+                policy,
+                seed,
+            );
+            let expansion = colony
+                .jobs
+                .iter()
+                .rev()
+                .find(|job| {
+                    job.kind == JobKind::ExpandVillage
+                        && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                })
+                .expect("blocked player build forces expansion despite zero policy reliability")
+                .clone();
+            assert!(matches!(
+                &expansion.metadata,
+                JobMetadata::Expansion {
+                    source_build_job_id: Some(source),
+                    ..
+                } if source == &build_id
+            ));
+            now += expansion.duration_ms.max(1_000);
+            complete_village_expansion(colony, &expansion, production_gate(60, now), seed);
+            let completed = colony
+                .jobs
+                .iter_mut()
+                .find(|job| job.id == expansion.id)
+                .expect("expansion job remains recorded");
+            completed.status = JobStatus::Completed;
+            completed.completed_at = Some(now);
+            completed_expansions += 1;
+
+            assert_eq!(colony.buildings.len(), buildings_before);
+            assert_eq!(colony.resources.planks, planks_before);
+            assert_eq!(colony.resources.blocks, blocks_before);
+            assert!(
+                completed_expansions <= 32,
+                "reserved margin should fill in a bounded number of expansions"
+            );
+
+            now += 1_000;
+            phase_14_promote_queued_jobs_and_break_ground(colony, production_gate(1, now), seed);
+            if colony.buildings.len() > buildings_before {
+                break;
+            }
+        }
+
+        assert!(
+            completed_expansions > 0,
+            "visible expansion precedes the scaffold"
+        );
+        assert_eq!(
+            colony.claimed_tiles.len(),
+            founding_claim.len() + completed_expansions
+        );
+        assert_eq!(
+            colony
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::VillageExpanded)
+                .count(),
+            completed_expansions
+        );
+        assert_eq!(colony.resources.planks, planks_before - SCAFFOLD_PLANK_COST);
+        assert_eq!(colony.resources.blocks, blocks_before - SCAFFOLD_BLOCK_COST);
+
+        let scaffold = colony
+            .buildings
+            .iter()
+            .find(|building| building.position == reserved_site)
+            .expect("reserved footprint becomes the one scaffold");
+        assert_eq!(scaffold.building_type, BuildingType::Workshop);
+        assert!(building_is_road_connected_to_shrine(colony, scaffold, seed));
+        assert!(village_exterior_is_road_connected(colony, seed));
+        let area = claimed_area(colony);
+        for tile in building_footprint_tiles(scaffold) {
+            assert_eq!(
+                crate::village_area::fence_mask_at(
+                    GridPos {
+                        x: tile.x,
+                        y: tile.y
+                    },
+                    &area
+                ),
+                0,
+                "the completed expansion leaves a closed one-tile claim margin"
+            );
+        }
+
+        let build = colony
+            .jobs
+            .iter()
+            .find(|job| job.id == build_id)
+            .expect("construction job remains recorded");
+        let started_at = build.started_at.expect("fresh break-ground start");
+        let ends_at = build.ends_at.expect("fresh break-ground end");
+        assert!(started_at > provisional_end);
+        assert_eq!(ends_at - started_at, build.duration_ms.max(1_000));
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            colony,
+            production_gate(1, started_at),
+        );
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.id == build_id)
+                .unwrap()
+                .status,
+            JobStatus::Active
+        );
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            colony,
+            production_gate(1, ends_at),
+        );
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.id == build_id)
+                .unwrap()
+                .status,
+            JobStatus::Completed
+        );
+        assert!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.position == reserved_site)
+                .unwrap()
+                .is_complete
+        );
+    }
+
+    #[test]
+    fn linked_expansion_recruits_a_replacement_when_its_builder_dies() {
+        let seed = 42;
+        let mut colony = found_colony(seed, "colony-1", 1_000, seed);
+        colony.resources.planks = 20.0;
+        colony.resources.blocks = 20.0;
+        let original_builder = colony.cats[0].id.clone();
+        queue_job(
+            &mut colony,
+            2_000,
+            JobKind::BuildHouse,
+            Some(original_builder.clone()),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Workshop,
+                building_id: None,
+                site: None,
+            },
+        );
+        let build_id = colony.jobs.last().unwrap().id.clone();
+        phase_14_promote_queued_jobs_and_break_ground(&mut colony, production_gate(1, 3_000), seed);
+        let mut policy = reliable_policy();
+        policy.config.action_reliability = 0.0;
+        let _ = phase_32_movement_setup_and_village_expansion_queue(
+            &mut colony,
+            production_gate(60, 4_000),
+            policy,
+            seed,
+        );
+        let first_expansion_index = colony
+            .jobs
+            .iter()
+            .position(|job| job.kind == JobKind::ExpandVillage)
+            .expect("first linked expansion queued");
+        assert_eq!(
+            colony.jobs[first_expansion_index].assigned_cat.as_deref(),
+            Some(original_builder.as_str())
+        );
+
+        colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == original_builder)
+            .expect("original builder exists")
+            .death_time = Some(5_000);
+        colony.jobs[first_expansion_index].status = JobStatus::Cancelled;
+        let first_target = match colony.jobs[first_expansion_index].metadata {
+            JobMetadata::Expansion { target, .. } => target,
+            _ => unreachable!(),
+        };
+
+        let _ = phase_32_movement_setup_and_village_expansion_queue(
+            &mut colony,
+            production_gate(60, 6_000),
+            policy,
+            seed,
+        );
+        let replacement_expansion = colony
+            .jobs
+            .iter()
+            .rev()
+            .find(|job| job.kind == JobKind::ExpandVillage && job.status == JobStatus::Queued)
+            .expect("cancelled linked expansion is retried with another cat");
+        assert_eq!(
+            match replacement_expansion.metadata {
+                JobMetadata::Expansion { target, .. } => target,
+                _ => unreachable!(),
+            },
+            first_target,
+            "the reserved footprint frontier is stable across builder replacement"
+        );
+        assert_ne!(
+            replacement_expansion.assigned_cat.as_deref(),
+            Some(original_builder.as_str())
+        );
+        assert!(matches!(
+            &replacement_expansion.metadata,
+            JobMetadata::Expansion {
+                source_build_job_id: Some(source),
+                ..
+            } if source == &build_id
+        ));
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.id == build_id)
+                .unwrap()
+                .assigned_cat
+                .is_none(),
+            "replacement is reserved only by the expansion until it completes"
+        );
+    }
+
+    #[test]
+    fn expansion_clears_a_tree_before_connecting_the_new_gate() {
+        let target = pos(7, 14);
+        let seed = (0u32..10_000)
+            .find(|&seed| crate::terrain_gen::tile_has_tree(seed, target.x, target.y))
+            .expect("a deterministic seed decorates the south expansion tile with a tree");
+        let mut colony = found_colony(seed, "colony-1", 1_000, seed);
+        assert!(!colony.claimed_tiles.contains(&target));
+        assert!(tile_has_uncleared_tree(&colony, target, seed));
+        let worker = colony.cats[0].id.clone();
+        let expansion = JobRuntime {
+            kind: JobKind::ExpandVillage,
+            status: JobStatus::Active,
+            assigned_cat: Some(worker),
+            metadata: JobMetadata::Expansion {
+                target,
+                accepted: true,
+                source_build_job_id: None,
+            },
+            ..JobRuntime::default()
+        };
+
+        complete_village_expansion(&mut colony, &expansion, production_gate(60, 61_000), seed);
+
+        assert!(
+            colony.claimed_tiles.contains(&target),
+            "the tree is cleared rather than causing an endless expansion rollback"
+        );
+        assert!(!tile_has_uncleared_tree(&colony, target, seed));
+        assert!(village_exterior_is_road_connected(&colony, seed));
+    }
+
+    #[test]
+    fn building_footprint_validation_rejects_every_hard_spatial_conflict() {
+        let seed = 42;
+        let mut colony = ColonyRuntime::default();
+        typed_block(&mut colony, pos(40, 40), 4, 4, TileType::Meadow);
+        let footprint = footprint_tiles(pos(40, 40), 2, 2);
+
+        colony.stockpiles.push(Stockpile {
+            id: "pile".to_owned(),
+            rect: ZoneRect {
+                x1: 40,
+                y1: 40,
+                x2: 40,
+                y2: 40,
+            },
+            accepts: BTreeSet::new(),
+            contents: Resources::default(),
+        });
+        assert_eq!(
+            placement_error_for_tiles(&colony, &footprint, seed, true),
+            Some(SpatialPlacementError::Stockpile)
+        );
+        colony.stockpiles.clear();
+
+        colony.buildings.push(BuildingRuntime {
+            id: "den".to_owned(),
+            building_type: BuildingType::Den,
+            position: pos(40, 40),
+            ..BuildingRuntime::default()
+        });
+        assert_eq!(
+            placement_error_for_tiles(&colony, &footprint, seed, true),
+            Some(SpatialPlacementError::Building)
+        );
+        colony.buildings.clear();
+
+        colony
+            .world_tiles
+            .get_mut(&pos(40, 40))
+            .expect("typed tile")
+            .overlay_feature = Some("road_built".to_owned());
+        assert_eq!(
+            placement_error_for_tiles(&colony, &footprint, seed, true),
+            Some(SpatialPlacementError::Road)
+        );
+        colony
+            .world_tiles
+            .get_mut(&pos(40, 40))
+            .expect("typed tile")
+            .overlay_feature = None;
+
+        let outside = footprint_tiles(pos(43, 43), 2, 2);
+        assert_eq!(
+            placement_error_for_tiles(&colony, &outside, seed, true),
+            Some(SpatialPlacementError::OutsideClaim)
+        );
+
+        colony
+            .world_tiles
+            .get_mut(&pos(40, 40))
+            .expect("typed tile")
+            .tile_type = TileType::Mountains;
+        assert_eq!(
+            placement_error_for_tiles(&colony, &footprint, seed, true),
+            Some(SpatialPlacementError::Mountain)
         );
     }
 
@@ -15312,8 +17593,11 @@ mod tests {
             id: "rock".to_owned(),
             ..ColonyRuntime::default()
         };
-        typed_block(&mut rock, rock_origin, 6, 7, TileType::Mountains);
-        for tile in footprint_tiles(rock_origin, 6, 7) {
+        // Keep the patch broad enough to contain at least one decoration-free 2x3
+        // footprint after mountaineering, while remaining inside the same barren
+        // climate region.
+        typed_block(&mut rock, rock_origin, 12, 12, TileType::Mountains);
+        for tile in footprint_tiles(rock_origin, 12, 12) {
             assert!(
                 !crate::terrain_gen::tile_climate_biome(seed, tile.x, tile.y)
                     .properties()
@@ -15326,9 +17610,17 @@ mod tests {
             None,
             "a field cannot be sown on barren rock"
         );
+        assert_eq!(
+            next_claimed_building_site(&rock, 0.0, seed, BuildingType::Den),
+            None,
+            "impassable mountains reject every building before mountaineering"
+        );
+        rock.upgrade_tree
+            .owned_node_ids
+            .push(MOUNTAINEERING_NODE_ID.to_owned());
         assert!(
             next_claimed_building_site(&rock, 0.0, seed, BuildingType::Den).is_some(),
-            "a den still fits on the rock claim (farmability is field-only)"
+            "a den fits on decoration-free claimed rock after mountaineering makes it passable"
         );
     }
 
@@ -15626,6 +17918,12 @@ mod tests {
         let area = claimed_area(&colony);
         let gate = gate_placement_default(&area).expect("the village has a gate");
         assert_eq!(gate.side, Side::S, "the single gate opens to the south");
+        let openings = crate::village_area::fence_perimeter(&area, Some(gate))
+            .into_iter()
+            .filter(|segment| segment.gate)
+            .collect::<Vec<_>>();
+        assert_eq!(openings.len(), 1, "exactly one perimeter edge is passable");
+        assert_eq!(openings[0].side, Side::S);
     }
 
     #[test]
@@ -16191,6 +18489,51 @@ mod tests {
         assert!(
             !building_is_road_connected_to_shrine(&colony, &den, seed),
             "a den three tiles from the shrine with no road yet is not connected"
+        );
+    }
+
+    #[test]
+    fn a_disconnected_paved_tile_does_not_satisfy_shrine_access() {
+        let seed = 42;
+        let mut colony = accessibility_test_colony(100.0);
+        colony
+            .world_tiles
+            .get_mut(&pos(53, 41))
+            .expect("tile beside den exists")
+            .overlay_feature = Some("road_built".to_owned());
+
+        let den = test_den(&colony);
+        assert!(
+            !building_is_road_connected_to_shrine(&colony, &den, seed),
+            "a lone paved tile beside the den is not a shrine-connected road"
+        );
+        assert!(
+            !shrine_connected_road_tiles(&colony).contains(&pos(53, 41)),
+            "the disconnected overlay is absent from the connected component"
+        );
+    }
+
+    #[test]
+    fn accessibility_router_never_paves_through_unmapped_terrain() {
+        let seed = 42;
+        let mut colony = accessibility_test_colony(100.0);
+        for y in 40..=46 {
+            colony.world_tiles.remove(&pos(52, y));
+        }
+        let mapped_before = colony.world_tiles.len();
+        let den = test_den(&colony);
+        assert!(
+            building_road_route_to_shrine(&colony, &den, seed).is_none(),
+            "an unmapped barrier is not synthesized as safe meadow"
+        );
+
+        phase_35b_road_accessibility(&mut colony, minute_gate(60_000), seed);
+        assert_eq!(colony.world_tiles.len(), mapped_before);
+        assert!(
+            colony
+                .world_tiles
+                .values()
+                .all(|tile| tile.overlay_feature.as_deref() != Some("road_built"))
         );
     }
 

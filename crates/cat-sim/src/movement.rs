@@ -880,6 +880,10 @@ mod tests {
 
     #[test]
     fn terrain_surface_factor_orders_biomes_rock_fastest_forest_slowest() {
+        assert_eq!(SURFACE_FACTOR_ROCKY, 1.0);
+        assert_eq!(SURFACE_FACTOR_GRASSLAND, 0.75);
+        assert_eq!(SURFACE_FACTOR_LOWLAND, 0.75);
+        assert_eq!(SURFACE_FACTOR_SAND, 0.5);
         assert_eq!(
             terrain_surface_factor(BiomeRole::Rocky),
             SURFACE_FACTOR_ROCKY
@@ -1014,12 +1018,19 @@ mod tests {
         let stone = road_surface_multiplier(true, 0);
         let dirt = road_surface_multiplier(false, WORN_ROAD_WEAR);
         let grass = road_surface_multiplier(false, 0);
+        assert_eq!(ROAD_BUILT_SPEED_MULT, 1.75);
+        assert_eq!(DIRT_ROAD_SPEED_MULT, 1.05);
         assert_eq!(stone, ROAD_BUILT_SPEED_MULT);
         assert_eq!(dirt, DIRT_ROAD_SPEED_MULT);
         assert_eq!(grass, 1.0);
         assert!(stone > dirt && dirt > grass);
         // Just-below-threshold wear is still plain ground.
         assert_eq!(road_surface_multiplier(false, WORN_ROAD_WEAR - 1), 1.0);
+        assert_eq!(
+            road_surface_multiplier(true, WORN_ROAD_WEAR),
+            ROAD_BUILT_SPEED_MULT,
+            "traffic wear cannot downgrade a built stone road into a dirt road"
+        );
     }
 
     #[test]

@@ -1225,10 +1225,15 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
             "buildingId": building_id,
             "site": site.as_ref().map(tile_pos_json),
         }),
-        JobMetadata::Expansion { target, accepted } => json!({
+        JobMetadata::Expansion {
+            target,
+            accepted,
+            source_build_job_id,
+        } => json!({
             "kind": "expansion",
             "target": tile_pos_json(target),
             "accepted": accepted,
+            "sourceBuildJobId": source_build_job_id,
         }),
         JobMetadata::Hauling {
             site,
@@ -1297,6 +1302,10 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
                 .get("accepted")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            source_build_job_id: value
+                .get("sourceBuildJobId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         }),
         Some("hauling") => Ok(JobMetadata::Hauling {
             site: value
@@ -1640,6 +1649,73 @@ mod tests {
         assert_eq!(
             loaded.colonies[0].stock_ledger,
             world.colonies[0].stock_ledger
+        );
+    }
+
+    #[test]
+    fn linked_expansion_source_build_job_id_round_trips_through_sqlite() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(42);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000, 42));
+        let builder = world.colonies[0].cats[0].id.clone();
+        world.colonies[0].jobs = vec![
+            JobRuntime {
+                id: "job-build-blocked".to_owned(),
+                kind: JobKind::BuildHouse,
+                status: JobStatus::Queued,
+                assigned_cat: None,
+                metadata: JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    building_type: BuildingType::Den,
+                    building_id: None,
+                    site: None,
+                },
+                ..JobRuntime::default()
+            },
+            JobRuntime {
+                id: "job-expand-for-build".to_owned(),
+                kind: JobKind::ExpandVillage,
+                status: JobStatus::Active,
+                assigned_cat: Some(builder),
+                metadata: JobMetadata::Expansion {
+                    target: TilePos { x: 13, y: 7 },
+                    accepted: true,
+                    source_build_job_id: Some("job-build-blocked".to_owned()),
+                },
+                ..JobRuntime::default()
+            },
+        ];
+
+        save_world(&conn, &world).expect("save linked jobs");
+        let loaded = load_world(&conn)
+            .expect("load linked jobs")
+            .expect("world exists");
+        assert_eq!(loaded.colonies[0].jobs, world.colonies[0].jobs);
+        assert!(matches!(
+            &loaded.colonies[0].jobs[1].metadata,
+            JobMetadata::Expansion {
+                source_build_job_id: Some(source),
+                ..
+            } if source == "job-build-blocked"
+        ));
+    }
+
+    #[test]
+    fn legacy_expansion_metadata_without_source_build_job_id_loads_none() {
+        let metadata = parse_job_metadata(Some(
+            r#"{"kind":"expansion","target":{"x":13,"y":7},"accepted":false}"#.to_owned(),
+        ))
+        .expect("legacy expansion metadata parses");
+        assert_eq!(
+            metadata,
+            JobMetadata::Expansion {
+                target: TilePos { x: 13, y: 7 },
+                accepted: false,
+                source_build_job_id: None,
+            }
         );
     }
 
