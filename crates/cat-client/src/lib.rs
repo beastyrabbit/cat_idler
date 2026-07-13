@@ -24,20 +24,22 @@ use bevy::ui::RelativeCursorPosition;
 use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot,
     ClientAction, ColonySnapshot, EventSnapshot, FootprintSize, GateSide, ItemStackSnapshot,
-    JobKind, OfficerRole, RaiderStatus, ResearchSnapshot, ResourceAmounts, ResourceCapacities,
-    ResourceKind, RoleXp, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint,
-    TraderBuyOffer, TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
+    JobKind, OfficerRole, RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp,
+    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
+    TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
     DecorationRole, RockSize, TERRAIN_CHUNK_SIZE, TerrainTile, WORLD_TERRAIN_OPTIONS,
     derive_biome_decoration, generate_terrain_chunk, tile_climate_biome,
 };
-use cat_sim::upgrade_tree::{UPGRADE_NODES, UpgradeNode};
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use std::collections::{HashMap, HashSet, VecDeque};
+
+mod research_ui;
+use research_ui::UpgradeTreeUi;
 
 /// Side length (world units) of one flat tile. Shrunk to ~1/3 of the original 28
 /// so buildings read at a sensible size and more of the world fits on screen;
@@ -469,12 +471,6 @@ struct CensusUi {
 
 /// Number of text lines the census panel renders (see `census_report_lines`).
 const CENSUS_LINES: usize = 18;
-
-/// Whether the upgrade-tree panel is open (toggled by `U`).
-#[derive(Resource, Default)]
-struct UpgradeTreeUi {
-    visible: bool,
-}
 
 /// Trade menu (open while a trader is at the gate). `closed` lets the player
 /// dismiss it during a visit; it resets when the trader leaves so the next visit
@@ -1384,21 +1380,6 @@ struct CensusLine(usize);
 /// The HUD button that toggles the census panel.
 #[derive(Component)]
 struct CensusButton;
-/// Marker for the upgrade-tree panel node.
-#[derive(Component)]
-struct TreePanel;
-/// The tree header line showing both currency balances.
-#[derive(Component)]
-struct TreeCurrencyText;
-/// The tree header line showing the next auto-unlock target.
-#[derive(Component)]
-struct TreeNextText;
-/// A tech node's label text, carrying its node id (coloured by state).
-#[derive(Component, Clone, Copy)]
-struct TreeNodeText(&'static str);
-/// A tech node's god-purchase button, carrying its node id.
-#[derive(Component, Clone, Copy)]
-struct TreeBuyButton(&'static str);
 /// The HUD button that toggles the upgrade-tree panel.
 #[derive(Component)]
 struct TreeButton;
@@ -1749,76 +1730,6 @@ fn coin_line(coin: f64) -> String {
     format!("Coin: {coin:.0}g")
 }
 
-// ---- Upgrade tree (structure from cat_sim::UPGRADE_NODES, state from the
-// snapshot's ResearchSnapshot). Pure helpers unit-tested. ----
-
-/// A tech node's progression state for the colony, derived from the owned set.
-/// Mirrors the sim's `can_unlock`: a node is available once every prerequisite is
-/// owned; affordability (blessings vs cost) is a further gate on the god-purchase.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum NodeState {
-    Owned,
-    Available,
-    Locked,
-}
-
-const NODE_OWNED_COLOR: Color = Color::srgb(0.46, 0.76, 0.42);
-const NODE_READY_COLOR: Color = Color::srgb(0.96, 0.82, 0.36);
-const NODE_UNAFFORDABLE_COLOR: Color = Color::srgb(0.66, 0.60, 0.40);
-const NODE_LOCKED_COLOR: Color = Color::srgb(0.50, 0.45, 0.40);
-
-/// Classify a node against the owned-node set (owned / prereqs-met / locked).
-fn node_state(node: &UpgradeNode, owned: &HashSet<&str>) -> NodeState {
-    if owned.contains(node.id) {
-        NodeState::Owned
-    } else if node.prerequisites.iter().all(|p| owned.contains(p)) {
-        NodeState::Available
-    } else {
-        NodeState::Locked
-    }
-}
-
-/// One node's display: its colour-coded label and whether the god-purchase
-/// button should show (only for an available node the colony can afford).
-fn node_line(node: &UpgradeNode, research: &ResearchSnapshot, owned: &HashSet<&str>) -> NodeLine {
-    let (marker, color, show_buy) = match node_state(node, owned) {
-        NodeState::Owned => ("[x]", NODE_OWNED_COLOR, false),
-        NodeState::Available if can_afford(research.blessings, node.cost) => {
-            ("[>]", NODE_READY_COLOR, true)
-        }
-        NodeState::Available => ("[ ]", NODE_UNAFFORDABLE_COLOR, false),
-        NodeState::Locked => ("[-]", NODE_LOCKED_COLOR, false),
-    };
-    NodeLine {
-        label: format!("{marker} {} ({:.0}b)", node.name, node.cost),
-        color,
-        show_buy,
-    }
-}
-
-/// A node row's computed display (label + colour + whether to show its buy button).
-struct NodeLine {
-    label: String,
-    color: Color,
-    show_buy: bool,
-}
-
-/// The upgrade-tree header line: both currencies + who's researching.
-fn tree_currency_line(research: &ResearchSnapshot) -> String {
-    format!(
-        "Blessings: {:.0}    Research: {:.0} pts ({} on it)",
-        research.blessings, research.research_points, research.researcher_count
-    )
-}
-
-/// The "next auto-unlock" header line (what the accruing research points target).
-fn tree_next_line(research: &ResearchSnapshot) -> String {
-    research.next_target.as_ref().map_or_else(
-        || "Next auto-unlock: none".to_string(),
-        |t| format!("Next auto-unlock: {} ({:.0} pts)", t.name, t.cost),
-    )
-}
-
 /// A manual-action button and the action it enqueues when clicked.
 #[derive(Component, Clone, Copy)]
 struct ActionButton(ButtonAction);
@@ -2069,9 +1980,18 @@ pub fn run() {
                     handle_boost_button,
                     toggle_census,
                     update_census,
-                    toggle_upgrade_tree,
-                    update_upgrade_tree,
-                    handle_tree_buy,
+                    (
+                        research_ui::toggle_upgrade_tree,
+                        research_ui::update_research_shell,
+                        research_ui::handle_research_controls,
+                        research_ui::research_keyboard_input,
+                        research_ui::navigate_research_canvas,
+                        research_ui::update_research_transform,
+                        research_ui::update_research_filter,
+                        research_ui::update_research_snapshot,
+                        research_ui::update_research_inspector,
+                        research_ui::handle_research_purchase,
+                    ),
                     toggle_minimap,
                     update_minimap,
                     update_minimap_viewport,
@@ -2634,56 +2554,9 @@ fn setup(
 
     // (Log/Goods/Census/Tree toggles now live in the top command bar above.)
 
-    // Upgrade-tree panel (centre, shares the slot with goods/announcements/census
-    // — all mutually exclusive), hidden until toggled.
-    commands
-        .spawn((
-            Node {
-                left: Val::Px(456.0),
-                top: Val::Px(60.0),
-                ..ui_panel_node(Val::Px(400.0))
-            },
-            GlobalZIndex(82),
-            ui_panel_frame(),
-            TreePanel,
-        ))
-        .with_children(|panel| {
-            panel.spawn(ui_title_bar("Upgrade Tree"));
-            panel.spawn(ui_panel_body()).with_children(|body| {
-                body.spawn((ui_text("", FS_BODY, UI_MUTED), TreeCurrencyText));
-                body.spawn((ui_text("", FS_BODY, UI_MUTED), TreeNextText));
-                // One era section per era, each with its nodes. Static structure
-                // from UPGRADE_NODES (ordered by era); rows carry the node id so
-                // the update system can colour them + wire each buy button.
-                let max_era = UPGRADE_NODES.iter().map(|n| n.era).max().unwrap_or(0);
-                for era in 1..=max_era {
-                    body.spawn((
-                        Node {
-                            margin: UiRect::top(Val::Px(UI_GAP_TIGHT)),
-                            ..default()
-                        },
-                        ui_text(format!("- Era {era} -"), FS_BODY, UI_ACCENT),
-                    ));
-                    for node in UPGRADE_NODES.iter().filter(|n| n.era == era) {
-                        body.spawn(Node {
-                            width: Val::Percent(100.0),
-                            align_items: AlignItems::Center,
-                            justify_content: JustifyContent::SpaceBetween,
-                            column_gap: Val::Px(UI_GAP),
-                            ..default()
-                        })
-                        .with_children(|row| {
-                            row.spawn((ui_text("", FS_BODY, UI_INK), TreeNodeText(node.id)));
-                            row.spawn((
-                                ui_button_small(),
-                                TreeBuyButton(node.id),
-                                children![ui_text("Buy", FS_SMALL, UI_INK)],
-                            ));
-                        });
-                    }
-                }
-            });
-        });
+    // Research is a full-page ledger, not another cramped centre popover. Its
+    // 500 cards and dependency connectors are spawned once and updated in place.
+    research_ui::spawn_research_ui(&mut commands);
 
     // Goods / inventory panel (centre, shares the slot with announcements — the
     // two are mutually exclusive), hidden until toggled.
@@ -5767,111 +5640,6 @@ fn update_census(
     }
 }
 
-/// Toggle the upgrade-tree panel via `U` or its HUD button (closes the other
-/// centre panels it shares the slot with).
-fn toggle_upgrade_tree(
-    keys: Res<ButtonInput<KeyCode>>,
-    button: Query<&Interaction, (Changed<Interaction>, With<TreeButton>)>,
-    mut ui: ResMut<UpgradeTreeUi>,
-    mut goods: ResMut<GoodsUi>,
-    mut announce: ResMut<AnnouncementsUi>,
-    mut census: ResMut<CensusUi>,
-) {
-    let clicked = button.iter().any(|i| *i == Interaction::Pressed);
-    if keys.just_pressed(KeyCode::KeyU) || clicked {
-        ui.visible = !ui.visible;
-        if ui.visible {
-            goods.visible = false;
-            announce.visible = false;
-            census.visible = false;
-        }
-    }
-}
-
-/// Show/hide the upgrade-tree panel and repaint it from the live research state:
-/// the header currencies, each node's coloured label, and each node's buy button
-/// visibility (shown only for an available, affordable node).
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn update_upgrade_tree(
-    latest: Res<LatestSnapshot>,
-    ui: Res<UpgradeTreeUi>,
-    mut panel: Query<&mut Node, (With<TreePanel>, Without<TreeBuyButton>)>,
-    mut currency: Query<&mut Text, (With<TreeCurrencyText>, Without<TreeNextText>)>,
-    mut next: Query<&mut Text, (With<TreeNextText>, Without<TreeCurrencyText>)>,
-    mut nodes: Query<
-        (&TreeNodeText, &mut Text),
-        (Without<TreeCurrencyText>, Without<TreeNextText>),
-    >,
-    mut buys: Query<(&TreeBuyButton, &mut Node), Without<TreePanel>>,
-    mut node_colors: Query<(&TreeNodeText, &mut TextColor)>,
-) {
-    if let Ok(mut node) = panel.single_mut() {
-        node.display = if ui.visible {
-            Display::Flex
-        } else {
-            Display::None
-        };
-    }
-    if !ui.visible || (!latest.is_changed() && !ui.is_changed()) {
-        return;
-    }
-    let Some(research) = latest
-        .0
-        .as_ref()
-        .and_then(|w| w.colonies.first())
-        .map(|c| &c.research)
-    else {
-        return;
-    };
-    if let Ok(mut t) = currency.single_mut() {
-        t.0 = tree_currency_line(research);
-    }
-    if let Ok(mut t) = next.single_mut() {
-        t.0 = tree_next_line(research);
-    }
-    let owned: HashSet<&str> = research.owned_node_ids.iter().map(String::as_str).collect();
-    // Text label per node.
-    for (marker, mut text) in &mut nodes {
-        if let Some(node) = UPGRADE_NODES.iter().find(|n| n.id == marker.0) {
-            text.0 = node_line(node, research, &owned).label;
-        }
-    }
-    // Colour per node (separate query to avoid a conflicting Text borrow above).
-    for (marker, mut color) in &mut node_colors {
-        if let Some(node) = UPGRADE_NODES.iter().find(|n| n.id == marker.0) {
-            color.0 = node_line(node, research, &owned).color;
-        }
-    }
-    // Buy button shows only for an available + affordable node.
-    for (buy, mut node) in &mut buys {
-        let show = UPGRADE_NODES
-            .iter()
-            .find(|n| n.id == buy.0)
-            .is_some_and(|n| node_line(n, research, &owned).show_buy);
-        node.display = if show { Display::Flex } else { Display::None };
-    }
-}
-
-/// God-purchase a node when its Buy button is clicked: dispatch a session-signed
-/// `UnlockNode`. Blessings drop and the node flips to owned once the stream echoes.
-#[allow(clippy::type_complexity)]
-fn handle_tree_buy(
-    session: Res<Session>,
-    mut outgoing: ResMut<OutgoingActions>,
-    buttons: Query<(&Interaction, &TreeBuyButton), Changed<Interaction>>,
-) {
-    for (interaction, buy) in &buttons {
-        if *interaction == Interaction::Pressed && session.ready {
-            outgoing.0.push(ClientAction::UnlockNode {
-                session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
-                sig: session.sig.clone(),
-                node_id: buy.0.to_string(),
-            });
-        }
-    }
-}
-
 /// Show/hide the goods panel and repaint its treasury total + item lines (most
 /// valuable stack first), with a tidy empty state when there are no goods yet.
 #[allow(clippy::type_complexity)]
@@ -7329,81 +7097,6 @@ mod tests {
         assert_eq!(hud_res_of(ResourceKind::Weapons), HudRes::Weapons);
         assert_eq!(hud_res_of(ResourceKind::Armor), HudRes::Armor);
         assert_eq!(hud_res_of(ResourceKind::Blessings), HudRes::Blessings);
-    }
-
-    fn research(owned: &[&str], blessings: f64) -> ResearchSnapshot {
-        ResearchSnapshot {
-            owned_node_ids: owned.iter().map(|s| (*s).to_string()).collect(),
-            research_points: 0.0,
-            researcher_count: 0,
-            blessings,
-            next_target: None,
-        }
-    }
-
-    #[test]
-    fn node_state_owned_available_locked() {
-        // "research_hut" (no prereqs) and "basic_tools" (prereq research_hut).
-        let hut = UPGRADE_NODES
-            .iter()
-            .find(|n| n.id == "research_hut")
-            .unwrap();
-        let tools = UPGRADE_NODES
-            .iter()
-            .find(|n| n.id == "basic_tools")
-            .unwrap();
-
-        // Nothing owned: the root is available, its child is locked.
-        let none: HashSet<&str> = HashSet::new();
-        assert_eq!(node_state(hut, &none), NodeState::Available);
-        assert_eq!(node_state(tools, &none), NodeState::Locked);
-
-        // Root owned: root reads owned, child becomes available.
-        let owned: HashSet<&str> = ["research_hut"].into_iter().collect();
-        assert_eq!(node_state(hut, &owned), NodeState::Owned);
-        assert_eq!(node_state(tools, &owned), NodeState::Available);
-    }
-
-    #[test]
-    fn node_line_classifies_colours_and_gates_the_buy_button() {
-        let node_by = |id: &str| UPGRADE_NODES.iter().find(|n| n.id == id).unwrap();
-        let owned_set = |ids: &[&'static str]| ids.iter().copied().collect::<HashSet<&str>>();
-
-        // Own the root, 5 blessings (covers the 5b children but not an 8b one).
-        let r = research(&["research_hut"], 5.0);
-        let owned = owned_set(&["research_hut"]);
-
-        // Owned root: green [x], no buy button.
-        let hut = node_line(node_by("research_hut"), &r, &owned);
-        assert!(hut.label.contains("[x]") && hut.label.contains("Research Hut"));
-        assert_eq!(hut.color, NODE_OWNED_COLOR);
-        assert!(!hut.show_buy);
-
-        // Available + affordable (5b <= 5): gold [>], buy button shows.
-        let tools = node_line(node_by("basic_tools"), &r, &owned);
-        assert!(tools.label.contains("[>]"));
-        assert_eq!(tools.color, NODE_READY_COLOR);
-        assert!(tools.show_buy);
-
-        // Available but unaffordable (water_carriers is 8b > 5): dim [ ], no buy.
-        let water = node_line(node_by("water_carriers"), &r, &owned);
-        assert!(water.label.contains("[ ]"));
-        assert_eq!(water.color, NODE_UNAFFORDABLE_COLOR);
-        assert!(!water.show_buy);
-
-        // Locked (a node whose prereqs aren't owned): grey [-], no buy.
-        let locked = UPGRADE_NODES
-            .iter()
-            .find(|n| !n.prerequisites.is_empty() && !owned.contains(n.prerequisites[0]))
-            .unwrap();
-        let line = node_line(locked, &r, &owned);
-        assert!(line.label.contains("[-]"));
-        assert_eq!(line.color, NODE_LOCKED_COLOR);
-        assert!(!line.show_buy);
-
-        // Header lines carry the balances + a next-target string.
-        assert!(tree_currency_line(&r).contains("Blessings: 5"));
-        assert!(tree_next_line(&r).starts_with("Next auto-unlock:"));
     }
 
     #[test]
