@@ -48,7 +48,7 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 
 | Feedback | Required behavior | Status | Verification required |
 | --- | --- | --- | --- |
-| Fog of war and scouting | A new village reveals only its viable core plus roughly two tiles. Scouts choose a resource target or general exploration; their discoveries remain provisional until they return and touch the shrine. Nearby founding wood should be a very short scout trip. | in progress | Fresh-village and resource/general scout campaigns; outbound/return/shrine boundary tests; before/after framebuffers |
+| Fog of war and scouting | A new village reveals its exact 13×13 claim plus a two-tile halo. Only purposeful scouts lift provisional fog; wood/food/water/stone and general missions commit knowledge only after a living scout physically returns to the shrine. The first wood mission is a bounded fast round trip. In-flight notebooks persist across SQLite restarts. | verified | 32-seed founding-wood bound, four determinism twins, death/cancel/restart campaigns, five signed client controls, and fresh/provisional/committed own-framebuffer captures at 1280×800 and 1920×1080 plus a responsive 1024×768 toolbar capture |
 | Open workshops | Houses retain roofs, while all current workshops and non-residential stations use explicit top-down floors and function-readable props. The shrine uses an altar, reliquary, candelabra, and brazier; fields use soil/crops rather than a market facade. Mill and Sawmill are distinct open stations. | verified | Normal+dense own-framebuffer captures at exact 1024×768, 1280×800, and 1920×1080; exhaustive 24-building visual grammar and distinct-workshop tests |
 | Building labels | Persistent map-name plaques are gone; hover/click inspector names remain available. | verified | Label-free normal and dense client framebuffers at 1024×768, 1280×800, and 1920×1080 |
 | Clear village interior | Procedural tree/rock props are hidden in the radius-six core; designated farms and legacy Field construction are forced outside it, and logging cannot target hidden interior trees. Natural sim resources/deposits remain, and founding may carve its water pond inside the claimed core. | in progress | Rendering and farm/logging boundaries are verified; every founding/expanded interior tile across biomes must be free of water, tree/rock occupancy, deposits, forage, ore, and fields |
@@ -91,7 +91,7 @@ checked by requirement group so “historical” does not conceal a dropped curr
 | --- | --- |
 | Needs, autonomous survival, aging, genetics, breeding, skills, specialization, leaders, elections, raids, death, and extinction recovery | Carried at the world-tick level into deterministic `cat-sim`; shared colony food/water currently restore cats abstractly, rather than cats physically seeking food/drink/sleep. Physical need behavior is not implied unless promoted into the current vision. Balance and role-aware guided campaigns remain part of this audit. |
 | Dynamic colony grid plus a fixed 16×16 world map | Superseded by one flat, streamed, effectively infinite world containing multiple villages |
-| Fog, expeditions, path wear, terrain travel cost, walls, and gates | Carried forward; shrine-return scouting and the exact current road model are open above |
+| Fog, expeditions, path wear, terrain travel cost, walls, and gates | Carried forward; shrine-return resource/general scouting is verified above, while the exact current road model remains open |
 | Click-to-feed/heal/assign/fight and a browser task queue | Superseded by typed management actions and the manual-to-officer loop; missing usable Bevy controls remain open above |
 | Blessings, buildings, and the original ~18-node research tree | Carried forward; faucet reachability is in progress and the current direction expands the tree to about 500 nodes |
 | Multiple colonies and inter-colony trade | Partially carried forward; authoritative multi-colony state and traders exist, while global/personal ownership, meeting, and direct trade remain open |
@@ -124,6 +124,30 @@ This section is required completion coverage, not a claim that every listed camp
 - Invalid authentication, malformed actions, rate limiting, restart equality, and test-control denial.
 
 ## Playtest evidence
+
+### Shrine-return fog and resource scouting — 2026-07-13
+
+Founding knowledge is exactly the 13×13 claimed village plus a two-tile Chebyshev halo
+(17×17, 289 permanent tiles). Ordinary cats still wear paths but never reveal the wilderness.
+Signed player actions and the leader can dispatch general, wood, food, water, or stone scouts;
+their per-cat notebooks remain provisional until the living cat physically reaches the shrine,
+and are discarded on death/cancellation. The notebooks, mission, destination, and permanent map
+round-trip through SQLite, with a legacy empty default.
+
+The founding-wood guardrail covers 31 contiguous seeds plus the production seed that originally
+took more than eight real minutes; every scout returns within 180 live seconds, with four
+byte-identical determinism twins. The focused gate passed 26 scout tests and 119 server/client
+tests with strict four-crate Clippy and formatting. The full 922-test gate reached every touched
+test; its sole failure was the independently reproduced, pre-existing seed-2024 population
+guardrail tracked above.
+
+The Bevy client captured its own fresh/provisional/committed frames at exact 1280×800 and
+1920×1080. Both sequences measured 289/0 → 289/5 → 331/0 permanent/provisional tiles; the
+committed event records the scout touching the shrine with 42 newly mapped tiles. Raw images are
+opaque sRGB and were inspected in lossless regions because the image viewer intermittently hid
+valid PNG tiles. A separate exact 1024×768 framebuffer verified the responsive wrapped toolbar:
+all five scout commands and all existing controls remain visible. All temporary capture code and
+processes were removed.
 
 ### Unattended live cadence — 2026-07-13
 

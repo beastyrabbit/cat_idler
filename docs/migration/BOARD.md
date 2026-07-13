@@ -38,7 +38,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — farming/logging/Mill/Sawmill and spatial container actions are verified; skills cover only four legacy labors, officers remain additive, the shrine is still the all-resource fallback, and physical local workshop logistics/broader recipes/escalating costs remain |
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, the full-page 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; complete manual work controls and live generated-study purchases remain |
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, linked expansion, and scaffold recovery are verified; trees occupy only their anchor, rocks are not occupants, and wall expansion is not staged outer-before-inner |
-| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/control slices shipped; scouting must become resource-targeted and commit knowledge only at shrine return, including loaded-village behavior |
+| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster and resource/general shrine-return scouting are verified, including restart-safe in-flight notebooks and responsive controls; the richer manual inspector/control surface remains partial |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — farms/legacy fields and logging are now excluded from the core; the five-cat blueprint is superseded by the 15-cat/three-house model and exact authored/traffic road rules remain |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fine-biome movement is unused, rail/shipping are global multipliers rather than built routes/vehicles, and fishing is absent |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current protocol variants have framebuffer-verified residential/open-station compositions, including Mill/Sawmill and crop stages; Accounting Tent is not snapshot-reachable and the specified 9-patch/button/cursor skin is absent |
@@ -596,8 +596,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   immediately instead of building the outer wall before removing the inner wall.
 
 ### P15 — Playtest-feedback backlog (spec: `docs/migration/specs/p15-playtest-feedback.md`)
-- Fog of war: first slice (tiny start + revealed-tile state), then provisional → committed
-  scout fog reveal, rendered as a dim half-lifted haze.
+- Fog of war is verified: the exact 13×13 founding claim plus two-tile halo starts visible;
+  ordinary walkers never reveal; signed resource/general scouts carry dim provisional knowledge
+  and commit it only on physical shrine return. Death/cancellation drops notes, SQLite restarts
+  preserve them, and the first wood scout has a deterministic three-live-minute bound.
 - Cat booster: a per-cat priority flag that biases the leader's job/role matcher, plus an
   inspector toggle and on-map priority marker.
 - Control rebind + building inspector (real inbound-haul readout); smooth cat/raider movement

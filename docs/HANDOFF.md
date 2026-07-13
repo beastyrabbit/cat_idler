@@ -28,6 +28,9 @@ Verified foundations include:
 - atomic placement/reservations/scaffold recovery; label-free roofed homes and explicit open
   compositions for the 24 current protocol building variants; exterior crop/logging production
   with distinct Mill and Sawmill stations;
+- exact founding fog plus signed resource/general scouting whose provisional knowledge commits
+  only on physical shrine return, including restart-safe in-flight notebooks and responsive
+  controls at 1024×768 through 1920×1080;
 - a pure 500-node research catalog and full-page searchable/filterable/pannable client ledger.
   Generated studies honestly remain read-only until their live effects are implemented;
 - a persistent village selector and secure selected-village routing. This is not yet the
