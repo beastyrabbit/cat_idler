@@ -90,8 +90,11 @@ pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
         ResourceKind::Food
         | ResourceKind::Water
         | ResourceKind::Herbs
+        | ResourceKind::Catnip
+        | ResourceKind::Grain
+        | ResourceKind::Logs
         | ResourceKind::Materials => Some(1),
-        ResourceKind::Refined => Some(3),
+        ResourceKind::Flour | ResourceKind::Lumber | ResourceKind::Refined => Some(3),
         ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => None,
     }
 }

@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     biomes::MaxResources,
-    climate::Mining,
+    climate::{Mining, ResourceHint},
     depletion::{CHOPPED_FOREST_FOOD_CAP, is_forest_type, regrowth_amount},
     elections::{
         BallotVote, ELECTION_WINDOW_MS, ElectionCandidate, KICK_WINDOW_MS, TERM_MS,
@@ -20,6 +20,7 @@ use crate::{
         Carrying, CarryingKind, Cat, CatActivity, CatNeeds, CatStats, ColonyStatus, MapType,
         Position, Resources, RoleXp,
     },
+    farming::{self, CropKind, FarmPlot},
     genetics::{
         CatSpriteParams, RollSource, SeededRollSource, extract_genetic_traits, inherit_traits,
         traits_to_sprite_params,
@@ -52,6 +53,9 @@ use crate::{
         build_colony_walk_grid, find_path,
     },
     policy::PolicyConfig,
+    processing::{
+        MillOptions, SawmillOptions, advance_mill, advance_sawmill, allocate_construction_timber,
+    },
     production::{
         FIELD_BUILD_MIN_RATIO, FIELD_CATS_PER_FIELD, FIELD_MATERIAL_BUFFER, FIELD_MIN_COUNT,
         FIELD_STOCK_TARGET_RATIO, WoodworkingOptions, WorkshopOptions, advance_woodworking,
@@ -170,6 +174,8 @@ pub struct ColonyRuntime {
     /// On-map stockpiles (P12.3). Always includes the shrine reservoir after a tick;
     /// their contents sum to `resources` per the balancing-reservoir invariant.
     pub stockpiles: Vec<Stockpile>,
+    /// Player-designated visible crop plots (P12.5). Empty for legacy colonies.
+    pub farms: Vec<FarmPlot>,
     /// P16 gather spots: bookkeeping (resource kind + TTL) for whichever `stockpiles`
     /// entries are currently gather spots. Empty/inert for every colony that never
     /// designates one — the gatherer/mover split only activates once a spot exists.
@@ -342,7 +348,9 @@ pub const fn footprint_for(building_type: BuildingType) -> (i32, i32) {
         | BuildingType::Woodworking
         | BuildingType::Clothier
         | BuildingType::Tannery
-        | BuildingType::Smelter => (3, 3),
+        | BuildingType::Smelter
+        | BuildingType::Mill
+        | BuildingType::Sawmill => (3, 3),
         // Dwellings, gardens and the mid buildings take a 2x3 plot (P16).
         BuildingType::Den
         | BuildingType::Beds
@@ -1163,6 +1171,7 @@ struct TickPolicy {
 const EVENT_KEEP: usize = 2_000;
 const MAX_PATH_DECAY_PER_TICK: u32 = 2;
 const QUARRY_TOTAL_YIELD: f64 = 15.0;
+const LOGGING_TOTAL_YIELD: f64 = 15.0;
 const ROAD_MATERIALS_RESERVE: f64 = 30.0;
 const ROAD_MAX_PAVE_PER_BATCH: i32 = 6;
 /// P14.4: bounds the accessibility router's BFS so a pathological map (or a
@@ -1194,6 +1203,14 @@ const STARTER_AGE_MAX_HOURS: f64 = 42.0;
 /// square. Sized so the fixed blueprint — shrine + 3 dens + 3 workshops — fits with a
 /// one-tile margin to the wall for the ring road out to each gate/edge.
 const VILLAGE_START_RADIUS: i32 = 6;
+
+/// Whether `tile` lies inside the founding settlement's permanent wall ring. Farms
+/// and wild resource decorations belong to claimed territory beyond this core, never
+/// among the shrine, dens, workshops, and streets.
+#[must_use]
+pub fn inside_village_interior(colony: &ColonyRuntime, tile: TilePos) -> bool {
+    cheb_from_anchor(colony.anchor, tile) <= VILLAGE_START_RADIUS
+}
 /// Fog-of-war founding reveal: the whole claimed village starts revealed, plus a halo
 /// of this Chebyshev radius around the anchor (covers the adjacent water source).
 /// Everything beyond starts fogged and is uncovered by `reveal_and_wear_walked_tiles`.
@@ -1248,6 +1265,7 @@ impl Default for ColonyRuntime {
             provisional_tiles: BTreeMap::new(),
             officers: BTreeMap::new(),
             stockpiles: Vec::new(),
+            farms: Vec::new(),
             gather_spots: Vec::new(),
             stock_ledger: StockLedger::default(),
             items: BTreeMap::new(),
@@ -1515,6 +1533,9 @@ fn starting_resources() -> Resources {
         food: 50.0,
         water: 100.0,
         herbs: 16.0,
+        catnip: 0.0,
+        grain: 0.0,
+        flour: 0.0,
         materials: 60.0,
         refined: 0.0,
         weapons: 0.0,
@@ -1523,6 +1544,8 @@ fn starting_resources() -> Resources {
         // can complete before construction consumes its 4/4 reserve. Later output
         // still comes from the raw benches.
         planks: 6.0,
+        logs: 0.0,
+        lumber: 0.0,
         blocks: 6.0,
         tools: 0.0,
         // Clothing chain (P16/P19 slice) — also empty at founding; fibre trickles in
@@ -1955,7 +1978,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_12_resource_regrowth(colony, gate);
         phase_13_tick_local_target_caches(colony, gate);
         phase_14_promote_queued_jobs_and_break_ground(colony, gate, world_seed);
-        phase_15_assign_promoted_job_destinations(colony, gate);
+        phase_15_assign_promoted_job_destinations(colony, gate, world_seed);
         phase_16_active_scaffold_progress(colony, gate);
         phase_17_legacy_emergency_hunt(colony, gate, policy);
         phase_17b_emergency_water_fetch(colony, gate);
@@ -2798,9 +2821,12 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             // have not banked enough yet, the job stays Queued and retries on a later
             // tick — construction is gated on refined-material supply, not free. The cost
             // keys only off pile-invariant resource totals, so this stays deterministic.
-            if colony.resources.planks < SCAFFOLD_PLANK_COST
-                || colony.resources.blocks < SCAFFOLD_BLOCK_COST
-            {
+            let timber = allocate_construction_timber(
+                SCAFFOLD_PLANK_COST,
+                colony.resources.lumber,
+                colony.resources.planks,
+            );
+            if !timber.covered || colony.resources.blocks < SCAFFOLD_BLOCK_COST {
                 continue;
             }
 
@@ -2880,7 +2906,9 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             // refined scaffold cost covers access works; a newly completed
             // building is therefore never left waiting on the later optional
             // road-repair phase or a raw-material surplus.
-            colony.resources.planks = (colony.resources.planks - SCAFFOLD_PLANK_COST).max(0.0);
+            colony.resources.lumber = (colony.resources.lumber - timber.lumber_used).max(0.0);
+            colony.resources.planks =
+                (colony.resources.planks - timber.legacy_planks_used).max(0.0);
             colony.resources.blocks = (colony.resources.blocks - SCAFFOLD_BLOCK_COST).max(0.0);
             let building_id = format!(
                 "building-{}-{}",
@@ -2996,7 +3024,11 @@ fn queue_orphaned_scaffold_recovery(colony: &mut ColonyRuntime, now_ms: i64) {
 
 /// Phase 15: assign destinations for promoted jobs, including zoned hunt picks,
 /// quarry/water/frontier targets, expansion targets, and shrine travel.
-fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: TickGate) {
+fn phase_15_assign_promoted_job_destinations(
+    colony: &mut ColonyRuntime,
+    _: TickGate,
+    world_seed: u32,
+) {
     let active_indices = colony
         .jobs
         .iter()
@@ -3011,6 +3043,7 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
     let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
     let food_tiles = food_tiles_near_village(colony);
     let quarry_site = quarry_sites_near_village(colony).into_iter().next();
+    let logging_site = first_logging_site_if_needed(colony, &active_indices, world_seed);
     let water_site = water_sites_near_village(colony).into_iter().next();
     // Snapshot the active player zones (phase 10 already dropped expired ones) so hunt
     // targeting can be steered toward gather rects and away from avoid rects.
@@ -3095,7 +3128,11 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
             roll: roll.value,
             site: construction_site,
             expansion_site,
-            quarry_site,
+            quarry_site: if job.kind == JobKind::GatherLogs {
+                logging_site
+            } else {
+                quarry_site
+            },
             water_site,
             explore_site,
             gather_spot_site,
@@ -3107,15 +3144,16 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
         let site = world_pos_to_tile(destination);
 
         colony.jobs[job_index].metadata = match colony.jobs[job_index].kind {
-            JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater => {
-                JobMetadata::Hauling {
-                    site: Some(site),
-                    total_yield: None,
-                    trips_done: 0,
-                    next_trip_at: None,
-                    accepted: false,
-                }
-            }
+            JobKind::HuntExpedition
+            | JobKind::Quarry
+            | JobKind::GatherLogs
+            | JobKind::FetchWater => JobMetadata::Hauling {
+                site: Some(site),
+                total_yield: None,
+                trips_done: 0,
+                next_trip_at: None,
+                accepted: false,
+            },
             JobKind::ExpandVillage => match colony.jobs[job_index].metadata.clone() {
                 JobMetadata::Expansion {
                     source_build_job_id,
@@ -3174,7 +3212,10 @@ fn phase_15_assign_promoted_job_destinations(colony: &mut ColonyRuntime, _: Tick
             // pre-haul-fill.
             let dest = if matches!(
                 job.kind,
-                JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
+                JobKind::HuntExpedition
+                    | JobKind::Quarry
+                    | JobKind::GatherLogs
+                    | JobKind::FetchWater
             ) && let Some(cat_pos) = colony
                 .cats
                 .iter()
@@ -4062,6 +4103,111 @@ fn phase_21_leader_capital_decisions_and_tithe(
 /// allow.
 fn phase_22_ritual_approval(_: &mut ColonyRuntime, _: TickGate) {}
 
+/// Advance every player-painted farm through the same deterministic game-time path.
+/// A living Farmer officer supplies the colony-wide tending work; without one, plots
+/// remain visible at their current stage and no harvest is invented. Each harvested
+/// crop is routed from the plot centre to the nearest accepting stockpile.
+fn advance_designated_farms(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    world_seed: u32,
+    production_elapsed: f64,
+) {
+    let has_farmer_work = colony
+        .officers
+        .get(&OfficerRole::Farmer)
+        .is_some_and(|cat_id| {
+            colony
+                .cats
+                .iter()
+                .any(|cat| cat.id == *cat_id && cat.death_time.is_none())
+        });
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let caps = storage_caps(colony);
+
+    for index in 0..colony.farms.len() {
+        let plot = colony.farms[index].clone();
+        let crop_kind = match plot.crop {
+            CropKind::Catnip => ResourceKind::Catnip,
+            CropKind::Grain => ResourceKind::Grain,
+            CropKind::Herb => ResourceKind::Herbs,
+        };
+        let resource_cap = match plot.crop {
+            CropKind::Catnip => caps.catnip,
+            CropKind::Grain => caps.grain,
+            CropKind::Herb => caps.herbs,
+        };
+        let current = stockpiles::resource_amount(&colony.resources, crop_kind);
+        let fertility = mean_farm_fertility(world_seed, plot.rect);
+        let step = farming::advance_farm(
+            &plot,
+            production_elapsed,
+            fertility,
+            has_farmer_work,
+            effects.farm_yield_mult,
+            (resource_cap - current).max(0.0),
+        );
+        colony.farms[index].growth_hours = step.next_growth_hours;
+        colony.farms[index].stage = step.next_stage;
+        if step.amount_produced <= 0.0 {
+            continue;
+        }
+
+        colony.farms[index].planted_at = gate.processed_through;
+        stockpiles::add_resource(&mut colony.resources, crop_kind, step.amount_produced);
+        let site = TilePos {
+            x: (plot.rect.x1 + plot.rect.x2) / 2,
+            y: (plot.rect.y1 + plot.rect.y2) / 2,
+        };
+        route_output_to_nearest_pile(colony, crop_kind, step.amount_produced, site);
+        append_event(
+            colony,
+            gate.processed_through,
+            EventKind::Production,
+            format!(
+                "The farmers harvested {} {} from {}.",
+                step.amount_produced,
+                match plot.crop {
+                    CropKind::Catnip => "catnip",
+                    CropKind::Grain => "grain",
+                    CropKind::Herb => "herbs",
+                },
+                plot.id,
+            ),
+        );
+    }
+}
+
+/// Mean fine-biome fertility for a farm rectangle, regenerating each touched terrain
+/// chunk only once. Calling `tile_climate_biome` per tile would regenerate the same
+/// 12×12 chunk up to 64 times per plot on every tick.
+fn mean_farm_fertility(world_seed: u32, rect: ZoneRect) -> f64 {
+    let chunks = farming::rect_tiles(rect)
+        .map(|tile| tile_to_chunk(tile.x, tile.y))
+        .map(|chunk| (chunk.chunk_x, chunk.chunk_y))
+        .collect::<BTreeSet<_>>();
+    let mut total = 0.0;
+    let mut count = 0_u32;
+    for (chunk_x, chunk_y) in chunks {
+        for tile in crate::terrain_gen::generate_terrain_chunk(
+            chunk_x,
+            chunk_y,
+            i64::from(world_seed),
+            crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+        ) {
+            if tile.x >= rect.x1 && tile.x <= rect.x2 && tile.y >= rect.y1 && tile.y <= rect.y2 {
+                total += tile.climate_biome.properties().fertility;
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        total / f64::from(count)
+    }
+}
+
 /// Phase 23: run fields, workshops, and smithies against patched resources and
 /// building progress.
 fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
@@ -4120,6 +4266,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     auto_staff_idle_buildings(colony, BuildingType::Smelter, gate.processed_through, true);
 
     let production_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
+    advance_designated_farms(colony, gate, world_seed, production_elapsed);
     let building_ids = colony
         .buildings
         .iter()
@@ -4145,6 +4292,93 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 .properties()
                 .fertility;
                 colony.resources.food += field_yield(production_elapsed) * fertility;
+            }
+            BuildingType::Mill => {
+                let worker = assigned_worker(colony, &building_id);
+                let caps = storage_caps(colony);
+                let step = advance_mill(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    MillOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_architect: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        grain_available: colony.resources.grain,
+                        flour_available: colony.resources.flour,
+                        flour_headroom: (caps.flour - colony.resources.flour).max(0.0),
+                        food_headroom: (caps.food - colony.resources.food).max(0.0),
+                    },
+                );
+                colony.buildings[building_index].production_progress = step.next_progress;
+                if step.grain_used > 0.0 || step.flour_used > 0.0 {
+                    colony.resources.grain = (colony.resources.grain - step.grain_used).max(0.0);
+                    colony.resources.flour =
+                        (colony.resources.flour + step.flour_produced - step.flour_used).max(0.0);
+                    colony.resources.food += step.food_produced;
+                    let site = colony.buildings[building_index].position;
+                    route_output_to_nearest_pile(
+                        colony,
+                        ResourceKind::Flour,
+                        (step.flour_produced - step.flour_used).max(0.0),
+                        site,
+                    );
+                    route_output_to_nearest_pile(
+                        colony,
+                        ResourceKind::Food,
+                        step.food_produced,
+                        site,
+                    );
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Production,
+                        format!(
+                            "The mill used {} grain and {} flour, producing {} flour and {} food.",
+                            step.grain_used,
+                            step.flour_used,
+                            step.flour_produced,
+                            step.food_produced,
+                        ),
+                    );
+                }
+            }
+            BuildingType::Sawmill => {
+                let worker = assigned_worker(colony, &building_id);
+                let caps = storage_caps(colony);
+                let step = advance_sawmill(
+                    colony.buildings[building_index].production_progress,
+                    production_elapsed,
+                    SawmillOptions {
+                        has_worker: worker.is_some(),
+                        worker_is_architect: worker.is_some_and(|cat| {
+                            cat.specialization == Some(CatSpecialization::Architect)
+                        }),
+                        logs_available: colony.resources.logs,
+                        lumber_headroom: (caps.lumber - colony.resources.lumber).max(0.0),
+                    },
+                );
+                colony.buildings[building_index].production_progress = step.next_progress;
+                if step.lumber_produced > 0.0 {
+                    colony.resources.logs = (colony.resources.logs - step.logs_used).max(0.0);
+                    colony.resources.lumber += step.lumber_produced;
+                    let site = colony.buildings[building_index].position;
+                    route_output_to_nearest_pile(
+                        colony,
+                        ResourceKind::Lumber,
+                        step.lumber_produced,
+                        site,
+                    );
+                    append_event(
+                        colony,
+                        gate.processed_through,
+                        EventKind::Production,
+                        format!(
+                            "The sawmill cut {} logs into {} lumber.",
+                            step.logs_used, step.lumber_produced,
+                        ),
+                    );
+                }
             }
             BuildingType::Workshop => {
                 let worker = assigned_worker(colony, &building_id);
@@ -5032,6 +5266,14 @@ fn phase_29_due_completion_gathering_explore_expansion(
                 CarryingKind::Materials,
                 world_seed,
             ),
+            JobKind::GatherLogs => complete_fixed_yield_job(
+                colony,
+                &job,
+                gate,
+                LOGGING_TOTAL_YIELD,
+                CarryingKind::Logs,
+                world_seed,
+            ),
             JobKind::FetchWater => complete_fixed_yield_job(
                 colony,
                 &job,
@@ -5093,6 +5335,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
                 | JobKind::BuildHouse
                 | JobKind::Ritual
                 | JobKind::Quarry
+                | JobKind::GatherLogs
                 | JobKind::Explore
                 | JobKind::FetchWater
                 | JobKind::ExpandVillage
@@ -5133,7 +5376,10 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
             job.status == JobStatus::Active
                 && matches!(
                     job.kind,
-                    JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
+                    JobKind::HuntExpedition
+                        | JobKind::Quarry
+                        | JobKind::GatherLogs
+                        | JobKind::FetchWater
                 )
                 && job.assigned_cat.is_some()
         })
@@ -5828,10 +6074,15 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Food => Some(CarryingKind::Food),
         ResourceKind::Water => Some(CarryingKind::Water),
         ResourceKind::Materials => Some(CarryingKind::Materials),
+        ResourceKind::Logs => Some(CarryingKind::Logs),
         ResourceKind::Herbs
+        | ResourceKind::Catnip
+        | ResourceKind::Grain
+        | ResourceKind::Flour
         | ResourceKind::Refined
         | ResourceKind::Weapons
         | ResourceKind::Armor
+        | ResourceKind::Lumber
         | ResourceKind::Blessings => None,
     }
 }
@@ -5988,6 +6239,7 @@ fn resource_kind_for_gather_job(kind: JobKind) -> Option<ResourceKind> {
     match kind {
         JobKind::HuntExpedition => Some(ResourceKind::Food),
         JobKind::Quarry => Some(ResourceKind::Materials),
+        JobKind::GatherLogs => Some(ResourceKind::Logs),
         JobKind::FetchWater => Some(ResourceKind::Water),
         _ => None,
     }
@@ -7056,11 +7308,16 @@ fn starting_resources_with_blessings(blessings: f64) -> Resources {
         food: 150.0,
         water: 100.0,
         herbs: 16.0,
+        catnip: 0.0,
+        grain: 0.0,
+        flour: 0.0,
         materials: 24.0,
         refined: 0.0,
         weapons: 0.0,
         armor: 0.0,
         planks: 6.0,
+        logs: 0.0,
+        lumber: 0.0,
         blocks: 6.0,
         tools: 0.0,
         fibre: 0.0,
@@ -7514,11 +7771,16 @@ fn clamp_resources_to_caps(resources: &mut Resources, caps: StorageCapacities) {
     resources.food = clamp_resource(resources.food, caps.food);
     resources.water = clamp_resource(resources.water, caps.water);
     resources.herbs = clamp_resource(resources.herbs, caps.herbs);
+    resources.catnip = clamp_resource(resources.catnip, caps.catnip);
+    resources.grain = clamp_resource(resources.grain, caps.grain);
+    resources.flour = clamp_resource(resources.flour, caps.flour);
     resources.materials = clamp_resource(resources.materials, caps.materials);
     resources.refined = clamp_resource(resources.refined, caps.refined);
     resources.weapons = clamp_resource(resources.weapons, caps.weapons);
     resources.armor = clamp_resource(resources.armor, caps.armor);
     resources.planks = clamp_resource(resources.planks, caps.planks);
+    resources.logs = clamp_resource(resources.logs, caps.logs);
+    resources.lumber = clamp_resource(resources.lumber, caps.lumber);
     resources.blocks = clamp_resource(resources.blocks, caps.blocks);
     resources.tools = clamp_resource(resources.tools, caps.tools);
     resources.fibre = clamp_resource(resources.fibre, caps.fibre);
@@ -7739,6 +8001,8 @@ fn queue_job(
                         | BuildingType::WoodCutter
                         | BuildingType::StonePrep
                         | BuildingType::Woodworking
+                        | BuildingType::Mill
+                        | BuildingType::Sawmill
                 )
             {
                 building.assigned_cat = None;
@@ -7779,7 +8043,9 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
     match kind {
         JobKind::HuntExpedition | JobKind::LeaderPlanHunt => Some(TaskType::Hunt),
         JobKind::FetchWater => Some(TaskType::FetchWater),
-        JobKind::Quarry | JobKind::BuildHouse | JobKind::LeaderPlanHouse => Some(TaskType::Build),
+        JobKind::Quarry | JobKind::GatherLogs | JobKind::BuildHouse | JobKind::LeaderPlanHouse => {
+            Some(TaskType::Build)
+        }
         JobKind::Explore | JobKind::ExpandVillage => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Patrol),
         JobKind::Ritual | JobKind::CarryOffering => Some(TaskType::Rest),
@@ -8802,6 +9068,93 @@ fn quarry_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
     sites.into_iter().map(tile_pos_to_world).collect()
 }
 
+fn logging_sites_near_village(colony: &ColonyRuntime, world_seed: u32) -> Vec<WorldPos> {
+    let (candidates, chunks) = logging_scan_inputs(colony);
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let mut sites = Vec::new();
+    for (chunk_x, chunk_y) in chunks {
+        sites.extend(
+            crate::terrain_gen::generate_terrain_chunk(
+                chunk_x,
+                chunk_y,
+                i64::from(world_seed),
+                crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+            )
+            .into_iter()
+            .filter(|tile| {
+                candidates.contains(&TilePos {
+                    x: tile.x,
+                    y: tile.y,
+                })
+            })
+            .filter(|tile| {
+                matches!(
+                    tile.decoration,
+                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
+                ) && tile.climate_biome.properties().resource == ResourceHint::Wood
+            })
+            .map(|tile| TilePos {
+                x: tile.x,
+                y: tile.y,
+            }),
+        );
+    }
+    sites.sort_by_key(|site| (cheb_from_anchor(colony.anchor, *site), site.y, site.x));
+    sites.into_iter().map(tile_pos_to_world).collect()
+}
+
+fn logging_scan_inputs(colony: &ColonyRuntime) -> (BTreeSet<TilePos>, BTreeSet<(i32, i32)>) {
+    let candidates = colony
+        .world_tiles
+        .values()
+        .filter(|tile| {
+            tile_is_explored(colony.anchor, tile)
+                && tile.overlay_feature.as_deref() != Some("stump")
+        })
+        .map(|tile| tile.pos)
+        .collect::<BTreeSet<_>>();
+    let chunks = candidates
+        .iter()
+        .map(|tile| tile_to_chunk(tile.x, tile.y))
+        .map(|chunk| (chunk.chunk_x, chunk.chunk_y))
+        .collect::<BTreeSet<_>>();
+    (candidates, chunks)
+}
+
+fn first_logging_site_if_needed(
+    colony: &ColonyRuntime,
+    active_indices: &[usize],
+    world_seed: u32,
+) -> Option<WorldPos> {
+    first_logging_site_if_needed_with(colony, active_indices, || {
+        logging_sites_near_village(colony, world_seed)
+    })
+}
+
+fn first_logging_site_if_needed_with(
+    colony: &ColonyRuntime,
+    active_indices: &[usize],
+    scan: impl FnOnce() -> Vec<WorldPos>,
+) -> Option<WorldPos> {
+    if !active_indices
+        .iter()
+        .any(|&index| colony.jobs[index].kind == JobKind::GatherLogs)
+    {
+        return None;
+    }
+    scan().into_iter().next()
+}
+
+/// Whether an explored, not-yet-felled tree can satisfy a fresh logging request.
+/// Kept at the world boundary so action validation and tick destination selection use
+/// exactly the same deterministic source predicate.
+#[must_use]
+pub fn has_logging_site(colony: &ColonyRuntime, world_seed: u32) -> bool {
+    !logging_sites_near_village(colony, world_seed).is_empty()
+}
+
 fn water_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
     let mut sites = colony
         .world_tiles
@@ -9022,6 +9375,9 @@ fn complete_fixed_yield_job(
     if job.kind == JobKind::Quarry {
         credit_quarry_ore(colony, site, reward, world_seed);
     }
+    if job.kind == JobKind::GatherLogs && reward > 0.0 {
+        mark_logged_site(colony, site, gate.processed_through);
+    }
     let cat = &mut colony.cats[cat_index];
     if let Some(labor) = Labor::for_job_kind(job.kind) {
         cat.gain_skill(labor, SKILL_GAIN_PER_JOB);
@@ -9068,6 +9424,16 @@ fn credit_quarry_ore(
         == Mining::Full
     {
         colony.resources.ore += reward * QUARRY_ORE_YIELD_RATIO;
+    }
+}
+
+fn mark_logged_site(colony: &mut ColonyRuntime, site: Option<TilePos>, now_ms: i64) {
+    let Some(site) = site else {
+        return;
+    };
+    if let Some(tile) = colony.world_tiles.get_mut(&site) {
+        tile.overlay_feature = Some("stump".to_owned());
+        tile.last_depleted = now_ms;
     }
 }
 
@@ -9341,7 +9707,7 @@ fn return_assigned_cat(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickG
         )
     } else if matches!(
         job.kind,
-        JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
+        JobKind::HuntExpedition | JobKind::Quarry | JobKind::GatherLogs | JobKind::FetchWater
     ) {
         // The completing gatherer carries its final trip's yield home; route it to the pile
         // that yield belongs in (nearest designated pile accepting it), falling back to the
@@ -9432,6 +9798,7 @@ fn total_yield_for_job(
             });
             (skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD) * mult).floor()
         }
+        JobKind::GatherLogs => skill_scaled_yield(cat, job.kind, LOGGING_TOTAL_YIELD),
         JobKind::HuntExpedition => hunt_yield_for(cat, colony),
         _ => 0.0,
     }
@@ -9465,6 +9832,7 @@ fn carrying_kind_for_job(kind: JobKind) -> CarryingKind {
     match kind {
         JobKind::FetchWater => CarryingKind::Water,
         JobKind::Quarry => CarryingKind::Materials,
+        JobKind::GatherLogs => CarryingKind::Logs,
         _ => CarryingKind::Food,
     }
 }
@@ -9557,6 +9925,7 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
     match kind {
         CarryingKind::Food => Some(ResourceKind::Food),
         CarryingKind::Materials => Some(ResourceKind::Materials),
+        CarryingKind::Logs => Some(ResourceKind::Logs),
         CarryingKind::Water => Some(ResourceKind::Water),
         CarryingKind::Blessings => None,
     }
@@ -9730,6 +10099,7 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
     let kind = match carrying.kind {
         CarryingKind::Food => ResourceKind::Food,
         CarryingKind::Materials => ResourceKind::Materials,
+        CarryingKind::Logs => ResourceKind::Logs,
         CarryingKind::Water => ResourceKind::Water,
         CarryingKind::Blessings => {
             colony.global_upgrade_points += carrying.amount;
@@ -9777,6 +10147,9 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
                 carrying.amount
             )
         }
+        CarryingKind::Logs => {
+            format!("{cat_id} hauled {} logs to storage.", carrying.amount)
+        }
         CarryingKind::Water => {
             format!("{cat_id} carried {} water to the shrine.", carrying.amount)
         }
@@ -9796,7 +10169,10 @@ fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str, now_ms: i64) ->
             || job.ends_at.is_some_and(|ends_at| ends_at <= now_ms)
             || !matches!(
                 job.kind,
-                JobKind::HuntExpedition | JobKind::Quarry | JobKind::FetchWater
+                JobKind::HuntExpedition
+                    | JobKind::Quarry
+                    | JobKind::GatherLogs
+                    | JobKind::FetchWater
             )
         {
             return None;
@@ -9896,11 +10272,16 @@ mod tests {
                     food: 100.0,
                     water: 100.0,
                     herbs: 16.0,
+                    catnip: 0.0,
+                    grain: 0.0,
+                    flour: 0.0,
                     materials: 0.0,
                     refined: 0.0,
                     weapons: 0.0,
                     armor: 0.0,
                     planks: 0.0,
+                    logs: 0.0,
+                    lumber: 0.0,
                     blocks: 0.0,
                     tools: 0.0,
                     fibre: 0.0,
@@ -9971,11 +10352,16 @@ mod tests {
                     food: 30.0,
                     water: 1.0,
                     herbs: 16.0,
+                    catnip: 0.0,
+                    grain: 0.0,
+                    flour: 0.0,
                     materials: 24.0,
                     refined: 0.0,
                     weapons: 0.0,
                     armor: 0.0,
                     planks: 0.0,
+                    logs: 0.0,
+                    lumber: 0.0,
                     blocks: 0.0,
                     tools: 0.0,
                     fibre: 0.0,
@@ -10877,11 +11263,16 @@ mod tests {
                     food: 1.0,
                     water: 2.0,
                     herbs: 3.0,
+                    catnip: 0.0,
+                    grain: 0.0,
+                    flour: 0.0,
                     materials: 99.0,
                     refined: 4.0,
                     weapons: 5.0,
                     armor: 6.0,
                     planks: 0.0,
+                    logs: 0.0,
+                    lumber: 0.0,
                     blocks: 0.0,
                     tools: 0.0,
                     fibre: 0.0,
@@ -12353,6 +12744,225 @@ mod tests {
     }
 
     #[test]
+    fn designated_farm_requires_a_living_farmer_and_routes_a_whole_harvest() {
+        let seed = 123;
+        let site = TilePos { x: 12, y: 12 };
+        let fertility = crate::terrain_gen::tile_climate_biome(seed, site.x, site.y)
+            .properties()
+            .fertility;
+        assert!(fertility > 0.0, "test site must be farmable");
+        let cat = adult_idle_cat("farmer", "colony-1");
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![cat],
+            farms: vec![FarmPlot {
+                id: "farm-1".to_owned(),
+                rect: tile_rect(site.x, site.y),
+                crop: CropKind::Grain,
+                planted_at: 0,
+                stage: farming::FarmStage::Soil,
+                growth_hours: 0.0,
+            }],
+            stockpiles: vec![designated_pile(
+                "grain-pile",
+                tile_rect(site.x, site.y),
+                &[ResourceKind::Grain],
+            )],
+            ..ColonyRuntime::default()
+        };
+        let elapsed = (farming::HARVEST_AT_HOURS / fertility * 3_600.0).ceil() as i64 + 1;
+
+        phase_23_production(&mut colony, production_gate(elapsed, 1_000), seed);
+        assert_eq!(colony.resources.grain, 0.0);
+        assert_eq!(colony.farms[0].stage, farming::FarmStage::Soil);
+
+        colony
+            .officers
+            .insert(OfficerRole::Farmer, "farmer".to_owned());
+        phase_23_production(&mut colony, production_gate(elapsed, 2_000), seed);
+        assert_eq!(colony.resources.grain, 2.0);
+        assert!(colony.farms[0].growth_hours < 0.001);
+        assert_eq!(
+            colony.stockpiles[0].contents.grain, 2.0,
+            "harvest is routed from the plot to its nearest accepting pile"
+        );
+    }
+
+    #[test]
+    fn mill_grinds_grain_then_bakes_flour_into_food_without_double_credit() {
+        let mut colony = chain_colony(
+            BuildingType::Mill,
+            Resources {
+                grain: 4.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+        assert_eq!(colony.resources.grain, 0.0);
+        assert_eq!(colony.resources.flour, 2.0);
+        assert_eq!(colony.resources.food, 0.0);
+
+        phase_23_production(&mut colony, production_gate(600, 630_000), 123);
+        assert_eq!(colony.resources.flour, 0.0);
+        assert_eq!(colony.resources.food, 4.0);
+    }
+
+    #[test]
+    fn sawmill_consumes_only_logs_and_produces_lumber() {
+        let mut colony = chain_colony(
+            BuildingType::Sawmill,
+            Resources {
+                logs: 5.0,
+                materials: 11.0,
+                planks: 7.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+        assert_eq!(colony.resources.logs, 0.0);
+        assert_eq!(colony.resources.lumber, 2.0);
+        assert_eq!(colony.resources.materials, 11.0);
+        assert_eq!(colony.resources.planks, 7.0);
+    }
+
+    #[test]
+    fn completed_logging_job_fells_one_site_and_credits_logs_only_on_deposit() {
+        let site = TilePos { x: 20, y: 20 };
+        let mut cat = adult_idle_cat("forester", "colony-1");
+        cat.activity = CatActivity::Working;
+        let job = JobRuntime {
+            id: "logging-1".to_owned(),
+            kind: JobKind::GatherLogs,
+            status: JobStatus::Active,
+            assigned_cat: Some("forester".to_owned()),
+            duration_ms: 1_000,
+            created_at: 0,
+            started_at: Some(0),
+            ends_at: Some(1_000),
+            metadata: JobMetadata::Hauling {
+                site: Some(site),
+                total_yield: Some(LOGGING_TOTAL_YIELD),
+                trips_done: 0,
+                next_trip_at: None,
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        };
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![cat],
+            jobs: vec![job],
+            world_tiles: BTreeMap::from([(site, tile(site.x, site.y, 63, None))]),
+            ..ColonyRuntime::default()
+        };
+        let gate = production_gate(1, 1_000);
+
+        phase_29_due_completion_gathering_explore_expansion(&mut colony, gate, 123);
+        assert_eq!(
+            colony.resources.logs, 0.0,
+            "completion creates cargo, not stock"
+        );
+        let carrying = colony.cats[0].carrying.clone().expect("logs are hauled");
+        assert_eq!(carrying.kind, CarryingKind::Logs);
+        assert_eq!(carrying.amount, LOGGING_TOTAL_YIELD);
+        assert_eq!(
+            colony.world_tiles[&site].overlay_feature.as_deref(),
+            Some("stump")
+        );
+
+        let destination = tile_pos_to_world(colony.anchor);
+        credit_carrying(&mut colony, &carrying, destination);
+        assert_eq!(colony.resources.logs, LOGGING_TOTAL_YIELD);
+        assert_eq!(colony.resources.materials, 0.0);
+        assert_eq!(colony.resources.planks, 0.0);
+    }
+
+    #[test]
+    fn exhausted_logging_trip_does_not_fell_or_credit_a_second_time() {
+        let site = TilePos { x: 20, y: 20 };
+        let cat = adult_idle_cat("forester", "colony-1");
+        let job = JobRuntime {
+            id: "logging-empty".to_owned(),
+            kind: JobKind::GatherLogs,
+            status: JobStatus::Active,
+            assigned_cat: Some("forester".to_owned()),
+            metadata: JobMetadata::Hauling {
+                site: Some(site),
+                total_yield: Some(LOGGING_TOTAL_YIELD),
+                trips_done: HUNT_TRIP_COUNT as u32,
+                next_trip_at: None,
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        };
+        let mut colony = ColonyRuntime {
+            cats: vec![cat],
+            world_tiles: BTreeMap::from([(site, tile(site.x, site.y, 63, None))]),
+            ..ColonyRuntime::default()
+        };
+
+        complete_fixed_yield_job(
+            &mut colony,
+            &job,
+            production_gate(1, 1_000),
+            LOGGING_TOTAL_YIELD,
+            CarryingKind::Logs,
+            123,
+        );
+
+        assert!(colony.cats[0].carrying.is_none());
+        assert!(colony.world_tiles[&site].overlay_feature.is_none());
+        assert_eq!(colony.resources.logs, 0.0);
+    }
+
+    #[test]
+    fn no_active_logging_job_never_invokes_the_terrain_scan() {
+        let colony = ColonyRuntime {
+            jobs: vec![JobRuntime {
+                kind: JobKind::Quarry,
+                status: JobStatus::Active,
+                ..JobRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+        let site = first_logging_site_if_needed_with(&colony, &[0], || {
+            panic!("terrain scan must stay lazy without an active logging job")
+        });
+        assert_eq!(site, None);
+    }
+
+    #[test]
+    fn logging_scan_groups_many_candidates_into_one_generation_per_chunk() {
+        let mut colony = ColonyRuntime::default();
+        for y in 0..crate::terrain_gen::TERRAIN_CHUNK_SIZE {
+            for x in 0..crate::terrain_gen::TERRAIN_CHUNK_SIZE {
+                colony
+                    .world_tiles
+                    .insert(TilePos { x, y }, tile(x, y, 63, None));
+            }
+        }
+        let (candidates, chunks) = logging_scan_inputs(&colony);
+        assert_eq!(
+            candidates.len(),
+            (crate::terrain_gen::TERRAIN_CHUNK_SIZE * crate::terrain_gen::TERRAIN_CHUNK_SIZE)
+                as usize
+        );
+        assert_eq!(chunks, BTreeSet::from([(0, 0)]));
+
+        colony.world_tiles.insert(
+            TilePos {
+                x: crate::terrain_gen::TERRAIN_CHUNK_SIZE,
+                y: 0,
+            },
+            tile(crate::terrain_gen::TERRAIN_CHUNK_SIZE, 0, 63, None),
+        );
+        let (_, chunks) = logging_scan_inputs(&colony);
+        assert_eq!(chunks, BTreeSet::from([(0, 0), (1, 0)]));
+    }
+
+    #[test]
     fn wood_cutter_refines_materials_into_planks_when_it_has_a_worker() {
         // Staffed: 590 + 30 ≥ 600 completes one cycle → 5 materials become 1 plank.
         let mut staffed = chain_colony(
@@ -13436,6 +14046,43 @@ mod tests {
             building_footprint_tiles(scaffold)
                 .iter()
                 .all(|tile| colony.claimed_tiles.contains(tile))
+        );
+    }
+
+    #[test]
+    fn breaking_ground_prefers_new_lumber_and_preserves_legacy_planks() {
+        let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
+        colony.resources.lumber = SCAFFOLD_PLANK_COST;
+        colony.resources.planks = 9.0;
+        colony.resources.blocks = 10.0;
+        let cat_id = colony.cats[0].id.clone();
+        queue_job(
+            &mut colony,
+            10_000,
+            JobKind::BuildHouse,
+            Some(cat_id),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Den,
+                building_id: None,
+                site: None,
+            },
+        );
+
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(60, 70_000),
+            4242,
+        );
+
+        assert_eq!(colony.resources.lumber, 0.0);
+        assert_eq!(colony.resources.planks, 9.0);
+        assert_eq!(colony.resources.blocks, 8.0);
+        assert!(
+            colony
+                .buildings
+                .iter()
+                .any(|building| !building.is_complete)
         );
     }
 
@@ -16585,11 +17232,16 @@ mod tests {
             food: 100.0,
             water: 100.0,
             herbs: 16.0,
+            catnip: 100.0,
+            grain: 100.0,
+            flour: 100.0,
             materials: 100.0,
             refined: 20.0,
             weapons: 0.0,
             armor: 0.0,
             planks: 0.0,
+            logs: 100.0,
+            lumber: 100.0,
             blocks: 0.0,
             tools: 0.0,
             fibre: 100.0,

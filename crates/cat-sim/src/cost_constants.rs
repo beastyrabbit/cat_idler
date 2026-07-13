@@ -46,7 +46,7 @@ pub const ENEMY_STATS: [(EnemyType, EnemyStats); 5] = [
     ),
 ];
 
-pub const BUILDING_COSTS: [(BuildingType, u32); 23] = [
+pub const BUILDING_COSTS: [(BuildingType, u32); 25] = [
     (BuildingType::Den, 0),
     (BuildingType::FoodStorage, 5),
     (BuildingType::WaterBowl, 3),
@@ -81,6 +81,9 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 23] = [
     // client-inspector/cost-preview value; the actual build still pays the shared
     // plank/block scaffold cost like every other `BuildHouse` job.
     (BuildingType::School, 15),
+    // P12.4 processing chain: the mill precedes the heavier timber works.
+    (BuildingType::Mill, 20),
+    (BuildingType::Sawmill, 25),
 ];
 
 pub const TASK_TO_SKILL: [(TaskType, &str); 12] = [
@@ -191,6 +194,8 @@ mod tests {
             (BuildingType::Smelter, 30),
             (BuildingType::ResearchHut, 15),
             (BuildingType::School, 15),
+            (BuildingType::Mill, 20),
+            (BuildingType::Sawmill, 25),
         ];
 
         assert_eq!(BUILDING_COSTS.len(), BuildingType::ALL.len());

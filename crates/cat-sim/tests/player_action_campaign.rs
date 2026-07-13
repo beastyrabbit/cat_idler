@@ -12,17 +12,19 @@ use cat_sim::{
     actions::{ActionCtx, apply_action},
     entities::{CatActivity, MapType, Position},
     items::{Item, ItemKind, Material},
+    terrain_gen::tile_climate_biome,
     trader::{self, TraderState},
     types::{BuildingType, JobKind},
     upgrade_tree::{self, UPGRADE_NODES},
     world_tick::{
         BuildingRuntime, ElectionKind, RaiderRuntime, TilePos, TraderRuntime, WorldState,
         new_world, road_path_attaches_to_shrine, road_placement_error, stockpile_placement_error,
+        tile_is_occupied,
     },
     zones::ZoneRect,
 };
 
-const EXPECTED_ACTIONS: [&str; 29] = [
+const EXPECTED_ACTIONS: [&str; 31] = [
     "advance_time",
     "assign_officer",
     "assign_worker",
@@ -31,8 +33,10 @@ const EXPECTED_ACTIONS: [&str; 29] = [
     "build_road",
     "buy_resource",
     "cast_vote",
+    "clear_farm",
     "create_zone",
     "defend_raid",
+    "designate_farm",
     "designate_gather_spot",
     "designate_stockpile",
     "ensure",
@@ -78,6 +82,8 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::JoinVillage { .. } => "join_village",
         proto::ClientAction::AssignOfficer { .. } => "assign_officer",
         proto::ClientAction::UnassignOfficer { .. } => "unassign_officer",
+        proto::ClientAction::DesignateFarm { .. } => "designate_farm",
+        proto::ClientAction::ClearFarm { .. } => "clear_farm",
         proto::ClientAction::DesignateStockpile { .. } => "designate_stockpile",
         proto::ClientAction::RemoveStockpile { .. } => "remove_stockpile",
         proto::ClientAction::DesignateGatherSpot { .. } => "designate_gather_spot",
@@ -582,6 +588,58 @@ fn run_action_campaign() -> WorldState {
             .boosted
     );
 
+    // Farms occupy claimed expansion outside the founding wall and have a complete
+    // player-controlled designate/clear lifecycle.
+    let farm_pos = world.colonies[0]
+        .world_tiles
+        .keys()
+        .copied()
+        .find(|pos| {
+            let anchor = world.colonies[0].anchor;
+            (pos.x - anchor.x).abs().max((pos.y - anchor.y).abs()) > 6
+                && tile_climate_biome(world.world_seed, pos.x, pos.y)
+                    .properties()
+                    .fertility
+                    > 0.0
+                && !tile_is_occupied(&world.colonies[0], *pos, world.world_seed)
+        })
+        .expect("campaign has fertile expansion ground");
+    world.colonies[0].claimed_tiles.push(farm_pos);
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::DesignateFarm {
+            session_id,
+            nickname,
+            sig,
+            a: proto::TilePoint {
+                x: farm_pos.x,
+                y: farm_pos.y,
+            },
+            b: proto::TilePoint {
+                x: farm_pos.x,
+                y: farm_pos.y,
+            },
+            crop: proto::CropKind::Herb,
+        },
+        &ctx(6_750),
+    );
+    let plot_id = world.colonies[0].farms[0].id.clone();
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::ClearFarm {
+            session_id,
+            nickname,
+            sig,
+            plot_id,
+        },
+        &ctx(6_800),
+    );
+    assert!(world.colonies[0].farms.is_empty());
+
     // Designated piles and P16 gather spots have separate create/remove lifecycles.
     let stockpiles_before = world.colonies[0].stockpiles.len();
     let stockpile_rect = open_stockpile_rect(&world, true, 2);
@@ -822,7 +880,7 @@ fn run_action_campaign() -> WorldState {
 
     let expected: BTreeSet<&str> = EXPECTED_ACTIONS.into_iter().collect();
     assert_eq!(coverage, expected, "the campaign missed an action variant");
-    assert_eq!(coverage.len(), 29);
+    assert_eq!(coverage.len(), 31);
     world
 }
 

@@ -376,7 +376,9 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
         // and shares the same one-scholar staffing shape.
         | BuildingType::ResearchHut
         | BuildingType::School
-        | BuildingType::Smelter => 1,
+        | BuildingType::Smelter
+        | BuildingType::Mill
+        | BuildingType::Sawmill => 1,
         BuildingType::Den
         | BuildingType::FoodStorage
         | BuildingType::WaterBowl
@@ -408,6 +410,8 @@ pub const fn building_cycle_sec(building_type: BuildingType) -> Option<f64> {
         | BuildingType::Clothier
         | BuildingType::Tannery
         | BuildingType::Smelter => Some(WORKSHOP_CYCLE_SEC),
+        BuildingType::Mill => Some(crate::processing::MILL_CYCLE_SEC),
+        BuildingType::Sawmill => Some(crate::processing::SAWMILL_CYCLE_SEC),
         BuildingType::Woodworking => Some(WOODWORKING_CYCLE_SEC),
         BuildingType::Smithy => Some(crate::smithy::SMITHY_CYCLE_SEC),
         _ => None,
@@ -440,6 +444,8 @@ pub const fn building_output_label(building_type: BuildingType) -> Option<&'stat
         BuildingType::Clothier => Some("cloth"),
         BuildingType::Tannery => Some("leather"),
         BuildingType::Smelter => Some("metal"),
+        BuildingType::Mill => Some("flour+food"),
+        BuildingType::Sawmill => Some("lumber"),
         BuildingType::Den
         | BuildingType::FoodStorage
         | BuildingType::WaterBowl

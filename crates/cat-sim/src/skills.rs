@@ -49,6 +49,9 @@ impl Labor {
             JobKind::BuildHouse => Some(Self::Build),
             JobKind::Ritual => Some(Self::Ritual),
             JobKind::Quarry => Some(Self::Quarry),
+            // Forestry reuses the existing resource-extraction proficiency curve. The
+            // closed P12.1 Labor enum intentionally has no separate Woodcut variant.
+            JobKind::GatherLogs => Some(Self::Quarry),
             JobKind::FetchWater => Some(Self::FetchWater),
             JobKind::TrainWarrior => Some(Self::Fight),
             // P12.6: an offering is a ritual act (haul + perform at the shrine), so
@@ -82,6 +85,7 @@ mod tests {
                 JobKind::BuildHouse => assert_eq!(mapped, Some(Labor::Build)),
                 JobKind::Ritual => assert_eq!(mapped, Some(Labor::Ritual)),
                 JobKind::Quarry => assert_eq!(mapped, Some(Labor::Quarry)),
+                JobKind::GatherLogs => assert_eq!(mapped, Some(Labor::Quarry)),
                 JobKind::FetchWater => assert_eq!(mapped, Some(Labor::FetchWater)),
                 JobKind::TrainWarrior => assert_eq!(mapped, Some(Labor::Fight)),
                 JobKind::CarryOffering => assert_eq!(mapped, Some(Labor::Ritual)),

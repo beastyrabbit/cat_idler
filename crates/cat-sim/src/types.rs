@@ -129,6 +129,8 @@ define_wire_enum! {
         // StonePrep's materials -> blocks refine. See production::advance_workshop's
         // Smelter arm in world_tick.rs and the "smelting" upgrade node.
         Smelter => "smelter",
+        Mill => "mill",
+        Sawmill => "sawmill",
         // Second staffed research building, unlocked by the "school" upgrade node
         // (era 2, prereq den_insulation). A completed, staffed School contributes to
         // world_tick::research_workforce exactly like a ResearchHut; the node's own
@@ -195,6 +197,7 @@ define_wire_enum! {
         BuildHouse => "build_house",
         Ritual => "ritual",
         Quarry => "quarry",
+        GatherLogs => "gather_logs",
         Explore => "explore",
         FetchWater => "fetch_water",
         TrainWarrior => "train_warrior",
@@ -307,6 +310,8 @@ mod tests {
             (BuildingType::Tannery, "tannery"),
             (BuildingType::ResearchHut, "research_hut"),
             (BuildingType::Smelter, "smelter"),
+            (BuildingType::Mill, "mill"),
+            (BuildingType::Sawmill, "sawmill"),
             (BuildingType::School, "school"),
         ];
 
@@ -385,6 +390,7 @@ mod tests {
             (JobKind::BuildHouse, "build_house"),
             (JobKind::Ritual, "ritual"),
             (JobKind::Quarry, "quarry"),
+            (JobKind::GatherLogs, "gather_logs"),
             (JobKind::Explore, "explore"),
             (JobKind::FetchWater, "fetch_water"),
             (JobKind::TrainWarrior, "train_warrior"),

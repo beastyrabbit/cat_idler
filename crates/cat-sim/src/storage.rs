@@ -9,6 +9,13 @@ pub struct StorageCapacities {
     pub food: f64,
     pub water: f64,
     pub herbs: f64,
+    /// Farm and mill chain resources.
+    #[serde(default)]
+    pub catnip: f64,
+    #[serde(default)]
+    pub grain: f64,
+    #[serde(default)]
+    pub flour: f64,
     pub materials: f64,
     pub refined: f64,
     pub weapons: f64,
@@ -16,6 +23,11 @@ pub struct StorageCapacities {
     /// Refinement tier (P12.4b): planks/blocks/tools from the wood-cutter,
     /// stone-prep, and woodworking chains.
     pub planks: f64,
+    /// New forestry chain, separate from legacy materials/planks.
+    #[serde(default)]
+    pub logs: f64,
+    #[serde(default)]
+    pub lumber: f64,
     pub blocks: f64,
     pub tools: f64,
     /// Clothing chain (P16/P19 deferred slice): raw fibre/hide and their
@@ -63,11 +75,16 @@ pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     food: 200.0,
     water: 200.0,
     herbs: 100.0,
+    catnip: 100.0,
+    grain: 100.0,
+    flour: 100.0,
     materials: 100.0,
     refined: 100.0,
     weapons: 50.0,
     armor: 50.0,
     planks: 100.0,
+    logs: 100.0,
+    lumber: 100.0,
     blocks: 100.0,
     tools: 100.0,
     fibre: 100.0,
@@ -199,6 +216,9 @@ mod tests {
         assert_f64_bits(actual.food, expected.food, &format!("{label} food"));
         assert_f64_bits(actual.water, expected.water, &format!("{label} water"));
         assert_f64_bits(actual.herbs, expected.herbs, &format!("{label} herbs"));
+        assert_f64_bits(actual.catnip, expected.catnip, &format!("{label} catnip"));
+        assert_f64_bits(actual.grain, expected.grain, &format!("{label} grain"));
+        assert_f64_bits(actual.flour, expected.flour, &format!("{label} flour"));
         assert_f64_bits(
             actual.materials,
             expected.materials,
@@ -216,6 +236,8 @@ mod tests {
         );
         assert_f64_bits(actual.armor, expected.armor, &format!("{label} armor"));
         assert_f64_bits(actual.planks, expected.planks, &format!("{label} planks"));
+        assert_f64_bits(actual.logs, expected.logs, &format!("{label} logs"));
+        assert_f64_bits(actual.lumber, expected.lumber, &format!("{label} lumber"));
         assert_f64_bits(actual.blocks, expected.blocks, &format!("{label} blocks"));
         assert_f64_bits(actual.tools, expected.tools, &format!("{label} tools"));
         assert_f64_bits(actual.fibre, expected.fibre, &format!("{label} fibre"));
@@ -236,11 +258,16 @@ mod tests {
                 food: 200.0,
                 water: 200.0,
                 herbs: 100.0,
+                catnip: 100.0,
+                grain: 100.0,
+                flour: 100.0,
                 materials: 100.0,
                 refined: 100.0,
                 weapons: 50.0,
                 armor: 50.0,
                 planks: 100.0,
+                logs: 100.0,
+                lumber: 100.0,
                 blocks: 100.0,
                 tools: 100.0,
                 fibre: 100.0,
@@ -256,6 +283,32 @@ mod tests {
         assert_f64_bits(GRANARY_BONUS.refined, 50.0, "granary refined");
         assert_f64_bits(WATER_BOWL_BONUS, 200.0, "water bowl");
         assert_f64_bits(SMITHY_ARMORY_BONUS, 50.0, "smithy armory");
+    }
+
+    #[test]
+    fn new_chain_capacities_default_when_deserializing_legacy_payloads() {
+        let legacy = serde_json::json!({
+            "food": 200.0,
+            "water": 200.0,
+            "herbs": 100.0,
+            "materials": 100.0,
+            "refined": 100.0,
+            "weapons": 50.0,
+            "armor": 50.0,
+            "planks": 100.0,
+            "blocks": 100.0,
+            "tools": 100.0,
+            "fibre": 100.0,
+            "hide": 100.0,
+            "cloth": 100.0,
+            "leather": 100.0
+        });
+        let decoded: StorageCapacities = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.catnip, 0.0);
+        assert_eq!(decoded.grain, 0.0);
+        assert_eq!(decoded.flour, 0.0);
+        assert_eq!(decoded.logs, 0.0);
+        assert_eq!(decoded.lumber, 0.0);
     }
 
     #[test]
@@ -277,11 +330,16 @@ mod tests {
                 food: 1_400.0,
                 water: 400.0,
                 herbs: 400.0,
+                catnip: 100.0,
+                grain: 100.0,
+                flour: 100.0,
                 materials: 400.0,
                 refined: 250.0,
                 weapons: 200.0,
                 armor: 200.0,
                 planks: 100.0,
+                logs: 100.0,
+                lumber: 100.0,
                 blocks: 100.0,
                 tools: 100.0,
                 fibre: 100.0,
@@ -318,11 +376,16 @@ mod tests {
                 food: 700.0,
                 water: 700.0,
                 herbs: 225.0,
+                catnip: 100.0,
+                grain: 100.0,
+                flour: 100.0,
                 materials: 225.0,
                 refined: 162.5,
                 weapons: 175.0,
                 armor: 175.0,
                 planks: 100.0,
+                logs: 100.0,
+                lumber: 100.0,
                 blocks: 100.0,
                 tools: 100.0,
                 fibre: 100.0,
@@ -355,11 +418,16 @@ mod tests {
                 food: 600.0,
                 water: 400.0,
                 herbs: 200.0,
+                catnip: 100.0,
+                grain: 100.0,
+                flour: 100.0,
                 materials: 200.0,
                 refined: 150.0,
                 weapons: 100.0,
                 armor: 100.0,
                 planks: 100.0,
+                logs: 100.0,
+                lumber: 100.0,
                 blocks: 100.0,
                 tools: 100.0,
                 fibre: 100.0,

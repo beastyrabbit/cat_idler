@@ -6,6 +6,7 @@ use std::{collections::BTreeMap, path::Path};
 use cat_sim::{
     biomes::MaxResources,
     entities::{Carrying, Cat, CatActivity, ColonyStatus, Position, Resources, RoleXp},
+    farming::FarmPlot,
     items::Item,
     ledger::StockLedger,
     officers::OfficerRole,
@@ -84,6 +85,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             testRngSeed INTEGER,
             officers TEXT,
             stockpiles TEXT,
+            farms TEXT,
             gatherSpots TEXT,
             stockLedger TEXT,
             coin REAL,
@@ -248,6 +250,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
     const ADDITIONS: &[(&str, &str, &str)] = &[
         ("colonies", "officers", "TEXT"),
         ("colonies", "stockpiles", "TEXT"),
+        ("colonies", "farms", "TEXT"),
         ("colonies", "gatherSpots", "TEXT"),
         ("colonies", "stockLedger", "TEXT"),
         ("colonies", "revealedTiles", "TEXT"),
@@ -329,7 +332,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 ritualRequestedAt, criticalSince, claimedTiles, revealedTiles,
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
-                testCriticalMsOverride, testRngSeed, officers, stockpiles, gatherSpots,
+                testCriticalMsOverride, testRngSeed, officers, stockpiles, farms, gatherSpots,
                 stockLedger, coin, items, woodCraftProgress, stoneCraftProgress,
                 clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY
          FROM colonies
@@ -356,13 +359,13 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             criticalSince, claimedTiles, revealedTiles, threatPressure, lastRaidAt,
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
-            stockpiles, gatherSpots, stockLedger, coin, items, woodCraftProgress,
+            stockpiles, farms, gatherSpots, stockLedger, coin, items, woodCraftProgress,
             stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
             anchorX, anchorY
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41
+            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42
         )",
         params![
             colony.id,
@@ -395,6 +398,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.test_rng_seed.map(i64::from),
             serde_json::to_string(&colony.officers).map_err(to_sql_json)?,
             serde_json::to_string(&colony.stockpiles).map_err(to_sql_json)?,
+            serde_json::to_string(&colony.farms).map_err(to_sql_json)?,
             serde_json::to_string(&colony.gather_spots).map_err(to_sql_json)?,
             serde_json::to_string(&colony.stock_ledger).map_err(to_sql_json)?,
             colony.coin,
@@ -449,6 +453,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let revealed_tiles_json: Option<String> = row.get("revealedTiles")?;
     let officers_json: Option<String> = row.get("officers")?;
     let stockpiles_json: Option<String> = row.get("stockpiles")?;
+    let farms_json: Option<String> = row.get("farms")?;
     let gather_spots_json: Option<String> = row.get("gatherSpots")?;
     let stock_ledger_json: Option<String> = row.get("stockLedger")?;
     let items_json: Option<String> = row.get("items")?;
@@ -499,6 +504,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .unwrap_or_default(),
         stockpiles: stockpiles_json
             .map(|raw| serde_json::from_str::<Vec<Stockpile>>(&raw).map_err(from_sql_json))
+            .transpose()?
+            .unwrap_or_default(),
+        farms: farms_json
+            .map(|raw| serde_json::from_str::<Vec<FarmPlot>>(&raw).map_err(from_sql_json))
             .transpose()?
             .unwrap_or_default(),
         gather_spots: gather_spots_json
@@ -1498,6 +1507,7 @@ mod tests {
         for (table, column) in [
             ("colonies", "officers"),
             ("colonies", "stockpiles"),
+            ("colonies", "farms"),
             ("colonies", "stockLedger"),
             ("colonies", "coin"),
             ("cats", "skills"),
@@ -1511,6 +1521,7 @@ mod tests {
         for (table, column) in [
             ("colonies", "officers"),
             ("colonies", "stockpiles"),
+            ("colonies", "farms"),
             ("colonies", "stockLedger"),
             ("colonies", "coin"),
             ("cats", "skills"),
@@ -1544,6 +1555,8 @@ mod tests {
         world.colonies[0].resources.hide = 4.5;
         world.colonies[0].resources.cloth = 2.5;
         world.colonies[0].resources.leather = 1.5;
+        world.colonies[0].resources.grain = 9.0;
+        world.colonies[0].resources.logs = 10.0;
 
         let action = ClientAction::RequestJob {
             session_id: "session-1".to_owned(),
@@ -1611,6 +1624,19 @@ mod tests {
                 kind: cat_sim::stockpiles::ResourceKind::Water,
                 expires_at_ms: 1_500_000,
             });
+        world.colonies[0].farms.push(FarmPlot {
+            id: "farm-a".to_owned(),
+            rect: ZoneRect {
+                x1: 10,
+                y1: 10,
+                x2: 11,
+                y2: 11,
+            },
+            crop: cat_sim::farming::CropKind::Grain,
+            planted_at: 1_100_000,
+            stage: cat_sim::farming::FarmStage::Growing,
+            growth_hours: 7.5,
+        });
         let mover_cat_id = world.colonies[0].cats[0].id.clone();
         world.colonies[0].jobs.push(JobRuntime {
             id: "job-mover".to_owned(),
@@ -1642,6 +1668,7 @@ mod tests {
         assert_eq!(loaded.colonies[0].jobs, world.colonies[0].jobs);
         assert_eq!(loaded.colonies[0].officers, world.colonies[0].officers);
         assert_eq!(loaded.colonies[0].stockpiles, world.colonies[0].stockpiles);
+        assert_eq!(loaded.colonies[0].farms, world.colonies[0].farms);
         assert_eq!(
             loaded.colonies[0].gather_spots,
             world.colonies[0].gather_spots
@@ -1846,11 +1873,16 @@ mod tests {
             food: 11.0,
             water: 12.0,
             herbs: 13.0,
+            catnip: 13.1,
+            grain: 13.2,
+            flour: 13.3,
             materials: 14.0,
             refined: 15.0,
             weapons: 16.0,
             armor: 17.0,
             planks: 18.0,
+            logs: 18.1,
+            lumber: 18.2,
             blocks: 19.0,
             tools: 20.0,
             fibre: 21.0,
@@ -1936,6 +1968,19 @@ mod tests {
             stockpile_id: "gather-audit".to_owned(),
             kind: ResourceKind::Water,
             expires_at_ms: 5_600_000,
+        });
+        colony.farms.push(FarmPlot {
+            id: "farm-audit".to_owned(),
+            rect: ZoneRect {
+                x1: 12,
+                y1: 12,
+                x2: 13,
+                y2: 13,
+            },
+            crop: cat_sim::farming::CropKind::Catnip,
+            planted_at: 5_250_000,
+            stage: cat_sim::farming::FarmStage::Mature,
+            growth_hours: 14.0,
         });
         colony.stock_ledger = StockLedger::counted(&colony.resources, 5_500_000);
         colony

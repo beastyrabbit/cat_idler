@@ -12,7 +12,7 @@ pub struct UpgradeLevels {
     pub resilience: f64,
 }
 
-pub const BASE_JOB_SECONDS: [(JobKind, f64); 14] = [
+pub const BASE_JOB_SECONDS: [(JobKind, f64); 15] = [
     (JobKind::SupplyFood, 20.0),
     (JobKind::SupplyWater, 15.0),
     (JobKind::LeaderPlanHunt, 30.0 * 60.0),
@@ -21,6 +21,7 @@ pub const BASE_JOB_SECONDS: [(JobKind, f64); 14] = [
     (JobKind::BuildHouse, 8.0 * 60.0 * 60.0),
     (JobKind::Ritual, 6.0 * 60.0 * 60.0),
     (JobKind::Quarry, 2.0 * 60.0 * 60.0),
+    (JobKind::GatherLogs, 2.0 * 60.0 * 60.0),
     (JobKind::Explore, 30.0 * 60.0),
     (JobKind::FetchWater, 45.0 * 60.0),
     (JobKind::TrainWarrior, 3.0 * 60.0 * 60.0),
@@ -216,6 +217,7 @@ mod tests {
             (JobKind::BuildHouse, 28_800.0),
             (JobKind::Ritual, 21_600.0),
             (JobKind::Quarry, 7_200.0),
+            (JobKind::GatherLogs, 7_200.0),
             (JobKind::Explore, 1_800.0),
             (JobKind::FetchWater, 2_700.0),
             (JobKind::TrainWarrior, 10_800.0),

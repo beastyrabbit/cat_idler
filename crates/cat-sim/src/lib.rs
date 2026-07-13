@@ -43,10 +43,12 @@ pub mod survival;
 
 // P5 economy/housing/roads modules.
 pub mod depletion;
+pub mod farming;
 pub mod housing;
 pub mod idle_engine;
 pub mod idle_rules;
 pub mod ledger;
+pub mod processing;
 pub mod production;
 pub mod roads;
 pub mod shrine;

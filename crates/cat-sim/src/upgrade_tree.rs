@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::BuildingType;
+use crate::types::{BuildingType, JobKind};
 
 /// Every modifier a node can grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -245,8 +245,8 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         cost: 12.0,
         prerequisites: &["foraging_lore"],
         unlocks: UpgradeUnlocks {
-            buildings: Some(&["sawmill"]),
-            jobs: Some(&["quarry"]),
+            buildings: Some(&[BuildingType::Sawmill.as_str()]),
+            jobs: Some(&[JobKind::GatherLogs.as_str()]),
             effects: Some(&[NodeEffect {
                 key: EffectKey::MaterialYieldMult,
                 value: 0.2,
@@ -351,6 +351,19 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
                 key: EffectKey::FarmYieldMult,
                 value: 0.2,
             }]),
+        },
+    },
+    UpgradeNode {
+        id: "milling",
+        name: "Milling",
+        description: "Raise the mill. Grain is ground into flour, then baked into food by the same staffed works.",
+        era: 2,
+        cost: 14.0,
+        prerequisites: &["irrigation"],
+        unlocks: UpgradeUnlocks {
+            buildings: Some(&[BuildingType::Mill.as_str()]),
+            jobs: None,
+            effects: None,
         },
     },
     UpgradeNode {
@@ -898,7 +911,7 @@ mod tests {
         points_per_tick_for, points_per_tick_for_default, prerequisites_met, resolve_effects,
         serialize_upgrade_tree_state, unlockable_nodes,
     };
-    use crate::types::BuildingType;
+    use crate::types::{BuildingType, JobKind};
 
     fn state_with(owned_node_ids: &[&str], research_points: f64) -> super::UpgradeTreeState {
         super::UpgradeTreeState {
@@ -969,7 +982,7 @@ mod tests {
         // speed + water traversal, both gates checked directly at their pathfinding/
         // movement call sites like `mountaineering`) + the Rust-side `smelting` node
         // (unlocks the smelter building, P17/P19 ore→metal chain).
-        assert_eq!(UPGRADE_NODES.len(), 23);
+        assert_eq!(UPGRADE_NODES.len(), 24);
         assert_eq!(EffectKey::ALL.len(), 11);
         assert_eq!(effect_kind(EffectKey::HuntYieldMult), EffectKind::Mult);
         assert_eq!(effect_kind(EffectKey::WaterCarryCapacity), EffectKind::Add);
@@ -1006,7 +1019,7 @@ mod tests {
         );
         assert_eq!(
             get_node("sawmill").expect("sawmill node").unlocks.jobs,
-            Some(&["quarry"][..])
+            Some(&[JobKind::GatherLogs.as_str()][..])
         );
         assert_eq!(
             get_node("irrigation")
@@ -1015,6 +1028,13 @@ mod tests {
                 .buildings,
             Some(&[BuildingType::Field.as_str()][..])
         );
+        let mill = get_node("milling").expect("milling node");
+        assert_eq!(mill.prerequisites, ["irrigation"]);
+        assert_eq!(
+            mill.unlocks.buildings,
+            Some(&[BuildingType::Mill.as_str()][..])
+        );
+        assert!(mill.cost > get_node("irrigation").unwrap().cost);
     }
 
     #[test]

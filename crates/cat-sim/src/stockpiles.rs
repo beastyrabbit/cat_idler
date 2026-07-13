@@ -84,10 +84,15 @@ pub enum ResourceKind {
     Food,
     Water,
     Herbs,
+    Catnip,
+    Grain,
+    Flour,
     Materials,
     Refined,
     Weapons,
     Armor,
+    Logs,
+    Lumber,
     Blessings,
 }
 
@@ -97,10 +102,15 @@ impl ResourceKind {
         Self::Food,
         Self::Water,
         Self::Herbs,
+        Self::Catnip,
+        Self::Grain,
+        Self::Flour,
         Self::Materials,
         Self::Refined,
         Self::Weapons,
         Self::Armor,
+        Self::Logs,
+        Self::Lumber,
         Self::Blessings,
     ];
 }
@@ -112,10 +122,15 @@ pub fn resource_amount(resources: &Resources, kind: ResourceKind) -> f64 {
         ResourceKind::Food => resources.food,
         ResourceKind::Water => resources.water,
         ResourceKind::Herbs => resources.herbs,
+        ResourceKind::Catnip => resources.catnip,
+        ResourceKind::Grain => resources.grain,
+        ResourceKind::Flour => resources.flour,
         ResourceKind::Materials => resources.materials,
         ResourceKind::Refined => resources.refined,
         ResourceKind::Weapons => resources.weapons,
         ResourceKind::Armor => resources.armor,
+        ResourceKind::Logs => resources.logs,
+        ResourceKind::Lumber => resources.lumber,
         ResourceKind::Blessings => resources.blessings,
     }
 }
@@ -126,10 +141,15 @@ pub fn set_resource(resources: &mut Resources, kind: ResourceKind, value: f64) {
         ResourceKind::Food => resources.food = value,
         ResourceKind::Water => resources.water = value,
         ResourceKind::Herbs => resources.herbs = value,
+        ResourceKind::Catnip => resources.catnip = value,
+        ResourceKind::Grain => resources.grain = value,
+        ResourceKind::Flour => resources.flour = value,
         ResourceKind::Materials => resources.materials = value,
         ResourceKind::Refined => resources.refined = value,
         ResourceKind::Weapons => resources.weapons = value,
         ResourceKind::Armor => resources.armor = value,
+        ResourceKind::Logs => resources.logs = value,
+        ResourceKind::Lumber => resources.lumber = value,
         ResourceKind::Blessings => resources.blessings = value,
     }
 }

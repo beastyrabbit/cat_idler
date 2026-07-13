@@ -690,6 +690,12 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::UnassignOfficer {
             session_id, sig, ..
         }
+        | ClientAction::DesignateFarm {
+            session_id, sig, ..
+        }
+        | ClientAction::ClearFarm {
+            session_id, sig, ..
+        }
         | ClientAction::DesignateStockpile {
             session_id, sig, ..
         }
@@ -761,7 +767,9 @@ mod tests {
             header::{CONTENT_ENCODING, ORIGIN},
         },
     };
-    use cat_protocol::{AccelerationPreset, ClientAction, OfficerRole, ResourceKind, TilePoint};
+    use cat_protocol::{
+        AccelerationPreset, ClientAction, CropKind, OfficerRole, ResourceKind, TilePoint,
+    };
     use std::{fs, path::PathBuf};
     use tower::ServiceExt;
 
@@ -976,6 +984,33 @@ mod tests {
         let mut connection = ConnectionContext::new("test-connection".to_owned());
         connection.identity = Some(signed.clone());
         (connection, signed)
+    }
+
+    #[test]
+    fn farm_mutations_require_the_standard_signed_session_policy() {
+        let designate = ClientAction::DesignateFarm {
+            session_id: "session-1".to_owned(),
+            nickname: "Guest Cat".to_owned(),
+            sig: "signed".to_owned(),
+            a: TilePoint { x: 14, y: 6 },
+            b: TilePoint { x: 16, y: 8 },
+            crop: CropKind::Grain,
+        };
+        let clear = ClientAction::ClearFarm {
+            session_id: "session-1".to_owned(),
+            nickname: "Guest Cat".to_owned(),
+            sig: "signed".to_owned(),
+            plot_id: "farm-1".to_owned(),
+        };
+        for action in [&designate, &clear] {
+            assert_eq!(
+                action_authentication(action),
+                ActionAuthentication::Signed {
+                    session_id: "session-1",
+                    sig: "signed"
+                }
+            );
+        }
     }
 
     async fn send_action(

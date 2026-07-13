@@ -52,6 +52,8 @@ pub enum CarryingKind {
     Blessings,
     #[serde(rename = "materials")]
     Materials,
+    #[serde(rename = "logs")]
+    Logs,
     #[serde(rename = "water")]
     Water,
 }
@@ -61,6 +63,15 @@ pub struct Resources {
     pub food: f64,
     pub water: f64,
     pub herbs: f64,
+    /// Harvested catnip from visible farm plots.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub catnip: f64,
+    /// Harvested grain awaiting mill processing.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub grain: f64,
+    /// Milled flour awaiting conversion into food.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flour: f64,
     pub materials: f64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub refined: f64,
@@ -71,6 +82,14 @@ pub struct Resources {
     /// Refined lumber from the wood-cutter (P12.4b: materials → planks).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub planks: f64,
+    /// Newly gathered raw timber. Unlike legacy `materials`, this is only consumed by
+    /// a sawmill and is never credited by the compatibility wood-cutter chain.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub logs: f64,
+    /// Construction timber made exclusively from `logs` by a sawmill. Legacy `planks`
+    /// remain a fallback construction stock for existing saves.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub lumber: f64,
     /// Dressed stone from the stone-prep workshop (P12.4b: materials → blocks).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub blocks: f64,
@@ -295,11 +314,16 @@ mod tests {
                 food: 10.0,
                 water: 11.0,
                 herbs: 12.0,
+                catnip: 27.0,
+                grain: 28.0,
+                flour: 29.0,
                 materials: 13.0,
                 refined: 14.0,
                 weapons: 15.0,
                 armor: 16.0,
                 planks: 18.0,
+                logs: 30.0,
+                lumber: 31.0,
                 blocks: 19.0,
                 tools: 20.0,
                 fibre: 21.0,
@@ -386,6 +410,42 @@ mod tests {
         assert_eq!(cat.skill(Labor::Hunt), 5.0);
         assert_eq!(cat.skill(Labor::Fight), 0.0);
         assert!(cat.boosted);
+    }
+
+    #[test]
+    fn farm_and_forestry_resources_default_in_legacy_rows_and_round_trip() {
+        let legacy = serde_json::json!({
+            "food": 10.0,
+            "water": 11.0,
+            "herbs": 12.0,
+            "materials": 13.0,
+            "blessings": 14.0
+        });
+        let decoded: Resources = serde_json::from_value(legacy).expect("legacy resources decode");
+        assert_eq!(decoded.catnip, 0.0);
+        assert_eq!(decoded.grain, 0.0);
+        assert_eq!(decoded.flour, 0.0);
+        assert_eq!(decoded.logs, 0.0);
+        assert_eq!(decoded.lumber, 0.0);
+
+        let populated = Resources {
+            catnip: 1.0,
+            grain: 2.0,
+            flour: 3.0,
+            logs: 4.0,
+            lumber: 5.0,
+            ..Resources::default()
+        };
+        let json = serde_json::to_value(&populated).expect("new resources encode");
+        assert_eq!(json["catnip"], serde_json::json!(1.0));
+        assert_eq!(json["grain"], serde_json::json!(2.0));
+        assert_eq!(json["flour"], serde_json::json!(3.0));
+        assert_eq!(json["logs"], serde_json::json!(4.0));
+        assert_eq!(json["lumber"], serde_json::json!(5.0));
+        assert_eq!(
+            serde_json::from_value::<Resources>(json).expect("new resources decode"),
+            populated
+        );
     }
 
     #[test]

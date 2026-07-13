@@ -10,6 +10,7 @@ use cat_protocol as proto;
 
 use crate::{
     entities::{self, Cat, CatActivity, MapType, Position},
+    farming::{self, FarmPlot, FarmStage},
     housing::{self, HousingBuilding},
     idle_engine, idle_rules,
     items::{Item, ItemKind, Material},
@@ -27,8 +28,9 @@ use crate::{
     world_tick::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, TilePos, TradeDirection, VoteRuntime,
-        WorldState, ZoneRuntime, found_colony, found_colony_at, reconcile_colony_stockpiles,
-        select_founding_site, world_tick,
+        WorldState, ZoneRuntime, found_colony, found_colony_at, has_logging_site,
+        inside_village_interior, reconcile_colony_stockpiles, select_founding_site,
+        tile_is_occupied, world_tick,
     },
     zones,
 };
@@ -73,7 +75,10 @@ pub fn apply_action(
         proto::ClientAction::Presence { .. } => ok(),
         proto::ClientAction::RequestJob { kind, .. } => {
             let kind = proto_to_sim_job_kind(*kind);
-            with_colony(world, ctx, |colony| request_job(colony, kind, ctx))
+            let world_seed = world.world_seed;
+            with_colony(world, ctx, |colony| {
+                request_job(colony, kind, world_seed, ctx)
+            })
         }
         proto::ClientAction::Boost { job_id, .. } => {
             with_colony(world, ctx, |colony| boost_job(colony, job_id, ctx))
@@ -168,6 +173,15 @@ pub fn apply_action(
         proto::ClientAction::UnassignOfficer { role, .. } => with_colony(world, ctx, |colony| {
             unassign_officer(colony, proto_to_sim_officer_role(*role), ctx)
         }),
+        proto::ClientAction::DesignateFarm { a, b, crop, .. } => {
+            let world_seed = world.world_seed;
+            with_colony(world, ctx, |colony| {
+                designate_farm(colony, world_seed, *a, *b, *crop, ctx)
+            })
+        }
+        proto::ClientAction::ClearFarm { plot_id, .. } => {
+            with_colony(world, ctx, |colony| clear_farm(colony, plot_id, ctx))
+        }
         proto::ClientAction::DesignateStockpile { a, b, accepts, .. } => {
             let world_seed = world.world_seed;
             with_colony(world, ctx, |colony| {
@@ -250,16 +264,29 @@ fn ensure_colony(world: &mut WorldState, now_ms: i64) {
     }
 }
 
-fn request_job(colony: &mut ColonyRuntime, kind: JobKind, ctx: &ActionCtx) -> proto::ActionResult {
+fn request_job(
+    colony: &mut ColonyRuntime,
+    kind: JobKind,
+    world_seed: u32,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
     if !matches!(
         kind,
         JobKind::SupplyFood
             | JobKind::SupplyWater
             | JobKind::LeaderPlanHunt
             | JobKind::LeaderPlanHouse
+            | JobKind::GatherLogs
             | JobKind::Ritual
     ) {
         return fail("Unknown job kind.");
+    }
+
+    if kind == JobKind::GatherLogs && !upgrade_tree::is_owned(&colony.upgrade_tree, "sawmill") {
+        return fail("Logging must be researched first.");
+    }
+    if kind == JobKind::GatherLogs && !has_logging_site(colony, world_seed) {
+        return fail("No explored forest is available for logging.");
     }
 
     colony.last_player_activity_at = Some(ctx.now_ms);
@@ -288,12 +315,20 @@ fn request_job(colony: &mut ColonyRuntime, kind: JobKind, ctx: &ActionCtx) -> pr
         return ok();
     }
 
+    let assigned_cat = if kind == JobKind::GatherLogs {
+        let Some(cat_id) = select_best_cat(colony, None) else {
+            return fail("No available worker.");
+        };
+        Some(cat_id)
+    } else {
+        None
+    };
     queue_job(
         colony,
         ctx.now_ms,
         kind,
         JobRequester::Player,
-        None,
+        assigned_cat,
         JobMetadata::None,
     );
     ok()
@@ -491,6 +526,8 @@ fn plan_building(
             | BuildingType::FoodStorage
             | BuildingType::Den
             | BuildingType::Smelter
+            | BuildingType::Mill
+            | BuildingType::Sawmill
             | BuildingType::School
     ) {
         return fail("Unknown building type.");
@@ -517,6 +554,14 @@ fn plan_building(
     if building_type == BuildingType::Smelter
         && !upgrade_tree::is_owned(&colony.upgrade_tree, upgrade_tree::SMELTING_NODE_ID)
     {
+        return fail("That building must be researched or granted by the gods first.");
+    }
+    let processing_node = match building_type {
+        BuildingType::Mill => Some("milling"),
+        BuildingType::Sawmill => Some("sawmill"),
+        _ => None,
+    };
+    if processing_node.is_some_and(|node| !upgrade_tree::is_owned(&colony.upgrade_tree, node)) {
         return fail("That building must be researched or granted by the gods first.");
     }
     if active_or_queued_jobs(colony)
@@ -600,7 +645,10 @@ fn assign_worker(
             && building.construction_progress >= 100
             && matches!(
                 building.building_type,
-                BuildingType::Workshop | BuildingType::Smithy
+                BuildingType::Workshop
+                    | BuildingType::Smithy
+                    | BuildingType::Mill
+                    | BuildingType::Sawmill
             )
     }) else {
         return fail("That building cannot take a worker.");
@@ -669,6 +717,92 @@ fn boost_cat(
         cat.boosted = boosted;
         colony.last_player_activity_at = Some(ctx.now_ms);
     }
+    ok()
+}
+
+fn designate_farm(
+    colony: &mut ColonyRuntime,
+    world_seed: u32,
+    a: proto::TilePoint,
+    b: proto::TilePoint,
+    crop: proto::CropKind,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let rect = zones::normalize_rect(
+        f64::from(a.x),
+        f64::from(a.y),
+        f64::from(b.x),
+        f64::from(b.y),
+    );
+    let placement = farming::validate_placement(
+        rect,
+        &colony.farms,
+        |tile| {
+            colony.claimed_tiles.contains(&TilePos {
+                x: tile.x,
+                y: tile.y,
+            })
+        },
+        |tile| {
+            inside_village_interior(
+                colony,
+                TilePos {
+                    x: tile.x,
+                    y: tile.y,
+                },
+            )
+        },
+        |tile| {
+            tile_is_occupied(
+                colony,
+                TilePos {
+                    x: tile.x,
+                    y: tile.y,
+                },
+                world_seed,
+            )
+        },
+        |tile| {
+            crate::terrain_gen::tile_climate_biome(world_seed, tile.x, tile.y)
+                .properties()
+                .fertility
+        },
+    );
+    if let Err(error) = placement {
+        let message = match error {
+            farming::FarmPlacementError::InvalidRect => "Invalid farm rectangle.",
+            farming::FarmPlacementError::TooLarge => "Farm plots are limited to 8x8 tiles.",
+            farming::FarmPlacementError::LimitReached => "This colony already has 16 farm plots.",
+            farming::FarmPlacementError::OutsideClaim => "Farm plots must stay on claimed tiles.",
+            farming::FarmPlacementError::VillageInterior => {
+                "Farm plots belong outside the walled village."
+            }
+            farming::FarmPlacementError::Occupied => "A farm tile is occupied.",
+            farming::FarmPlacementError::Overlap => "Farm plots cannot overlap.",
+            farming::FarmPlacementError::Barren => "Every farm tile must have positive fertility.",
+        };
+        return fail(message);
+    }
+    let id = format!("farm-{}-{}", ctx.now_ms, colony.farms.len() + 1);
+    colony.farms.push(FarmPlot {
+        id,
+        rect,
+        crop: proto_to_sim_crop(crop),
+        planted_at: ctx.now_ms,
+        stage: FarmStage::Soil,
+        growth_hours: 0.0,
+    });
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn clear_farm(colony: &mut ColonyRuntime, plot_id: &str, ctx: &ActionCtx) -> proto::ActionResult {
+    let before = colony.farms.len();
+    colony.farms.retain(|plot| plot.id != plot_id);
+    if colony.farms.len() == before {
+        return fail("Unknown farm plot.");
+    }
+    colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
 
@@ -759,8 +893,9 @@ fn remove_stockpile(
 /// placed on mapped, revealed ground — including outside the claimed village once a
 /// scout has revealed it, unlike a general `DesignateStockpile`'s intent — since it
 /// reuses the same `Stockpile` machinery unchanged: deposit routing/reconcile/capacity
-/// all apply exactly as for any other pile. Only food/water/materials are accepted: the
-/// only resources a gatherer job can currently carry (`entities::CarryingKind`).
+/// all apply exactly as for any other pile. Only food/water/materials/logs are accepted:
+/// the resources a gatherer job can
+/// currently carry (`entities::CarryingKind`).
 fn designate_gather_spot(
     colony: &mut ColonyRuntime,
     a: proto::TilePoint,
@@ -771,9 +906,12 @@ fn designate_gather_spot(
 ) -> proto::ActionResult {
     if !matches!(
         kind,
-        proto::ResourceKind::Food | proto::ResourceKind::Water | proto::ResourceKind::Materials
+        proto::ResourceKind::Food
+            | proto::ResourceKind::Water
+            | proto::ResourceKind::Materials
+            | proto::ResourceKind::Logs
     ) {
-        return fail("Gather spots only collect food, water, or materials.");
+        return fail("Gather spots only collect food, water, materials, or logs.");
     }
     let rect = zones::normalize_rect(
         f64::from(a.x),
@@ -1172,11 +1310,16 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 food: caps.food,
                 water: caps.water,
                 herbs: caps.herbs,
+                catnip: caps.catnip,
+                grain: caps.grain,
+                flour: caps.flour,
                 materials: caps.materials,
                 refined: caps.refined,
                 weapons: caps.weapons,
                 armor: caps.armor,
                 planks: caps.planks,
+                logs: caps.logs,
+                lumber: caps.lumber,
                 blocks: caps.blocks,
                 tools: caps.tools,
             },
@@ -1249,6 +1392,21 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .stockpiles
             .iter()
             .map(|pile| stockpile_snapshot(pile, &colony.gather_spots))
+            .collect(),
+        farms: colony
+            .farms
+            .iter()
+            .map(|plot| proto::FarmSnapshot {
+                id: plot.id.clone(),
+                x1: plot.rect.x1,
+                y1: plot.rect.y1,
+                x2: plot.rect.x2,
+                y2: plot.rect.y2,
+                crop: sim_to_proto_crop(plot.crop),
+                planted_at: plot.planted_at,
+                stage: sim_to_proto_farm_stage(plot.stage),
+                growth_hours: plot.growth_hours,
+            })
             .collect(),
         stock_ledger: Some(stock_ledger_snapshot(colony)),
         items: items_snapshot(&colony.items),
@@ -1646,6 +1804,7 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 // shrine today: every other building type draws its inputs straight from
                 // `colony.resources`, never from physically delivered cargo.
                 inbound_haul: crate::world_tick::building_inbound_haul(colony, building),
+                outbound_haul: 0.0,
             })
         })
         .collect()
@@ -1964,11 +2123,16 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
         food: resources.food,
         water: resources.water,
         herbs: resources.herbs,
+        catnip: resources.catnip,
+        grain: resources.grain,
+        flour: resources.flour,
         materials: resources.materials,
         refined: resources.refined,
         weapons: resources.weapons,
         armor: resources.armor,
         planks: resources.planks,
+        logs: resources.logs,
+        lumber: resources.lumber,
         blocks: resources.blocks,
         tools: resources.tools,
         blessings: resources.blessings,
@@ -1993,6 +2157,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         }
         JobKind::SupplyWater | JobKind::FetchWater => Some(TaskType::FetchWater),
         JobKind::LeaderPlanHouse | JobKind::BuildHouse | JobKind::Quarry => Some(TaskType::Build),
+        JobKind::GatherLogs => Some(TaskType::Build),
         JobKind::Ritual | JobKind::CarryOffering => Some(TaskType::Guard),
         JobKind::Explore => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Guard),
@@ -2114,16 +2279,47 @@ fn sim_to_proto_officer_role(role: OfficerRole) -> proto::OfficerRole {
     }
 }
 
+fn proto_to_sim_crop(crop: proto::CropKind) -> farming::CropKind {
+    match crop {
+        proto::CropKind::Catnip => farming::CropKind::Catnip,
+        proto::CropKind::Grain => farming::CropKind::Grain,
+        proto::CropKind::Herb => farming::CropKind::Herb,
+    }
+}
+
+fn sim_to_proto_crop(crop: farming::CropKind) -> proto::CropKind {
+    match crop {
+        farming::CropKind::Catnip => proto::CropKind::Catnip,
+        farming::CropKind::Grain => proto::CropKind::Grain,
+        farming::CropKind::Herb => proto::CropKind::Herb,
+    }
+}
+
+fn sim_to_proto_farm_stage(stage: farming::FarmStage) -> proto::FarmStage {
+    match stage {
+        farming::FarmStage::Soil => proto::FarmStage::Soil,
+        farming::FarmStage::Sprout => proto::FarmStage::Sprout,
+        farming::FarmStage::Growing => proto::FarmStage::Growing,
+        farming::FarmStage::Mature => proto::FarmStage::Mature,
+        farming::FarmStage::Flowering => proto::FarmStage::Flowering,
+    }
+}
+
 fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::ResourceKind {
     use stockpiles::ResourceKind;
     match kind {
         proto::ResourceKind::Food => ResourceKind::Food,
         proto::ResourceKind::Water => ResourceKind::Water,
         proto::ResourceKind::Herbs => ResourceKind::Herbs,
+        proto::ResourceKind::Catnip => ResourceKind::Catnip,
+        proto::ResourceKind::Grain => ResourceKind::Grain,
+        proto::ResourceKind::Flour => ResourceKind::Flour,
         proto::ResourceKind::Materials => ResourceKind::Materials,
         proto::ResourceKind::Refined => ResourceKind::Refined,
         proto::ResourceKind::Weapons => ResourceKind::Weapons,
         proto::ResourceKind::Armor => ResourceKind::Armor,
+        proto::ResourceKind::Logs => ResourceKind::Logs,
+        proto::ResourceKind::Lumber => ResourceKind::Lumber,
         proto::ResourceKind::Blessings => ResourceKind::Blessings,
     }
 }
@@ -2134,10 +2330,15 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
         ResourceKind::Food => proto::ResourceKind::Food,
         ResourceKind::Water => proto::ResourceKind::Water,
         ResourceKind::Herbs => proto::ResourceKind::Herbs,
+        ResourceKind::Catnip => proto::ResourceKind::Catnip,
+        ResourceKind::Grain => proto::ResourceKind::Grain,
+        ResourceKind::Flour => proto::ResourceKind::Flour,
         ResourceKind::Materials => proto::ResourceKind::Materials,
         ResourceKind::Refined => proto::ResourceKind::Refined,
         ResourceKind::Weapons => proto::ResourceKind::Weapons,
         ResourceKind::Armor => proto::ResourceKind::Armor,
+        ResourceKind::Logs => proto::ResourceKind::Logs,
+        ResourceKind::Lumber => proto::ResourceKind::Lumber,
         ResourceKind::Blessings => proto::ResourceKind::Blessings,
     }
 }
@@ -2152,6 +2353,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::BuildHouse => JobKind::BuildHouse,
         proto::JobKind::Ritual => JobKind::Ritual,
         proto::JobKind::Quarry => JobKind::Quarry,
+        proto::JobKind::GatherLogs => JobKind::GatherLogs,
         proto::JobKind::Explore => JobKind::Explore,
         proto::JobKind::FetchWater => JobKind::FetchWater,
         proto::JobKind::TrainWarrior => JobKind::TrainWarrior,
@@ -2171,6 +2373,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::BuildHouse => proto::JobKind::BuildHouse,
         JobKind::Ritual => proto::JobKind::Ritual,
         JobKind::Quarry => proto::JobKind::Quarry,
+        JobKind::GatherLogs => proto::JobKind::GatherLogs,
         JobKind::Explore => proto::JobKind::Explore,
         JobKind::FetchWater => proto::JobKind::FetchWater,
         JobKind::TrainWarrior => proto::JobKind::TrainWarrior,
@@ -2236,6 +2439,8 @@ fn proto_to_sim_building_type(building_type: proto::BuildingType) -> Option<Buil
         proto::BuildingType::Clothier => Some(BuildingType::Clothier),
         proto::BuildingType::Tannery => Some(BuildingType::Tannery),
         proto::BuildingType::Smelter => Some(BuildingType::Smelter),
+        proto::BuildingType::Mill => Some(BuildingType::Mill),
+        proto::BuildingType::Sawmill => Some(BuildingType::Sawmill),
     }
 }
 
@@ -2269,6 +2474,8 @@ fn sim_to_proto_building_type(building_type: BuildingType) -> Option<proto::Buil
         // `proto::BuildingType`) do not have a Smelter sprite arm yet — flagged for
         // catclient3, see `crates/cat-protocol/src/lib.rs`'s `BuildingType::Smelter` doc.
         BuildingType::Smelter => Some(proto::BuildingType::Smelter),
+        BuildingType::Mill => Some(proto::BuildingType::Mill),
+        BuildingType::Sawmill => Some(proto::BuildingType::Sawmill),
     }
 }
 
@@ -2318,6 +2525,7 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Food => proto::CarryingKind::Food,
         entities::CarryingKind::Blessings => proto::CarryingKind::Blessings,
         entities::CarryingKind::Materials => proto::CarryingKind::Materials,
+        entities::CarryingKind::Logs => proto::CarryingKind::Logs,
         entities::CarryingKind::Water => proto::CarryingKind::Water,
     }
 }
@@ -2369,6 +2577,159 @@ mod tests {
         assert!(colony.storage.capacities.planks > 0.0);
         assert!(colony.storage.capacities.blocks > 0.0);
         assert!(colony.storage.capacities.tools > 0.0);
+    }
+
+    #[test]
+    fn farm_designation_requires_claimed_expansion_outside_the_wall_and_can_be_cleared() {
+        let mut world = world_with_one_colony();
+        let anchor = world.colonies[0].anchor;
+        let inside = proto::ClientAction::DesignateFarm {
+            session_id: "sess_1".to_owned(),
+            nickname: "Tester".to_owned(),
+            sig: "server-verified".to_owned(),
+            a: proto::TilePoint {
+                x: anchor.x + 6,
+                y: anchor.y,
+            },
+            b: proto::TilePoint {
+                x: anchor.x + 6,
+                y: anchor.y,
+            },
+            crop: proto::CropKind::Grain,
+        };
+        let rejected = apply_action(&mut world, &inside, &ctx());
+        assert!(!rejected.ok);
+        assert_eq!(
+            rejected.message.as_deref(),
+            Some("Farm plots belong outside the walled village.")
+        );
+
+        let seed = world.world_seed;
+        let expanded = world.colonies[0]
+            .world_tiles
+            .keys()
+            .copied()
+            .find(|tile| {
+                (tile.x - anchor.x).abs().max((tile.y - anchor.y).abs()) > 6
+                    && crate::terrain_gen::tile_climate_biome(seed, tile.x, tile.y)
+                        .properties()
+                        .fertility
+                        > 0.0
+                    && !tile_is_occupied(&world.colonies[0], *tile, seed)
+            })
+            .expect("starter chunks contain fertile expansion ground");
+        world.colonies[0].claimed_tiles.push(expanded);
+        let designation = proto::ClientAction::DesignateFarm {
+            session_id: "sess_1".to_owned(),
+            nickname: "Tester".to_owned(),
+            sig: "server-verified".to_owned(),
+            a: proto::TilePoint {
+                x: expanded.x,
+                y: expanded.y,
+            },
+            b: proto::TilePoint {
+                x: expanded.x,
+                y: expanded.y,
+            },
+            crop: proto::CropKind::Grain,
+        };
+        let accepted = apply_action(&mut world, &designation, &ctx());
+        assert!(accepted.ok, "{accepted:?}");
+        assert_eq!(world.colonies[0].farms.len(), 1);
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        assert_eq!(snapshot.colonies[0].farms.len(), 1);
+        assert_eq!(snapshot.colonies[0].farms[0].crop, proto::CropKind::Grain);
+        let plot_id = world.colonies[0].farms[0].id.clone();
+        let cleared = apply_action(
+            &mut world,
+            &proto::ClientAction::ClearFarm {
+                session_id: "sess_1".to_owned(),
+                nickname: "Tester".to_owned(),
+                sig: "server-verified".to_owned(),
+                plot_id,
+            },
+            &ctx(),
+        );
+        assert!(cleared.ok, "{cleared:?}");
+        assert!(world.colonies[0].farms.is_empty());
+    }
+
+    #[test]
+    fn gather_logs_requires_research_a_live_worker_and_an_explored_tree() {
+        let mut world = world_with_one_colony();
+        let action = proto::ClientAction::RequestJob {
+            session_id: "sess_1".to_owned(),
+            nickname: "Tester".to_owned(),
+            sig: "server-verified".to_owned(),
+            kind: proto::JobKind::GatherLogs,
+        };
+        let locked = apply_action(&mut world, &action, &ctx());
+        assert!(!locked.ok);
+        assert_eq!(
+            locked.message.as_deref(),
+            Some("Logging must be researched first.")
+        );
+
+        world.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("sawmill".to_owned());
+        let seed = world.world_seed;
+        let tree = (-12..=12)
+            .flat_map(|chunk_y| (-12..=12).map(move |chunk_x| (chunk_x, chunk_y)))
+            .find_map(|(chunk_x, chunk_y)| {
+                crate::terrain_gen::generate_terrain_chunk(
+                    chunk_x,
+                    chunk_y,
+                    i64::from(seed),
+                    crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                )
+                .into_iter()
+                .find(|tile| {
+                    matches!(
+                        tile.decoration,
+                        Some(crate::terrain_gen::DecorationRole::Tree { .. })
+                    ) && tile.climate_biome.properties().resource
+                        == crate::climate::ResourceHint::Wood
+                })
+                .map(|tile| TilePos {
+                    x: tile.x,
+                    y: tile.y,
+                })
+            })
+            .expect("bounded climate scan contains a logging tree");
+        let mut logging_tile = world.colonies[0]
+            .world_tiles
+            .values()
+            .next()
+            .expect("founding world tile")
+            .clone();
+        logging_tile.pos = tree;
+        logging_tile.path_wear = 63;
+        logging_tile.overlay_feature = None;
+        world.colonies[0].world_tiles.insert(tree, logging_tile);
+
+        let accepted = apply_action(&mut world, &action, &ctx());
+        assert!(accepted.ok, "{accepted:?}");
+        let job = world.colonies[0].jobs.last().expect("logging job queued");
+        assert_eq!(job.kind, JobKind::GatherLogs);
+        assert!(job.assigned_cat.is_some());
+
+        let mut no_forest = world_with_one_colony();
+        no_forest.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("sawmill".to_owned());
+        for tile in no_forest.colonies[0].world_tiles.values_mut() {
+            tile.overlay_feature = Some("stump".to_owned());
+        }
+        let rejected = apply_action(&mut no_forest, &action, &ctx());
+        assert!(!rejected.ok);
+        assert_eq!(
+            rejected.message.as_deref(),
+            Some("No explored forest is available for logging.")
+        );
     }
 
     #[test]

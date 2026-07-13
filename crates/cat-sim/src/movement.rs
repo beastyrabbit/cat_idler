@@ -410,7 +410,7 @@ pub fn destination_for_job(kind: &str, context: &JobDestinationContext<'_>) -> O
         "ritual" | "carry_offering" => Some(context.shrine),
         "build_house" => Some(context.site.unwrap_or(context.anchor)),
         "expand_village" => context.expansion_site,
-        "quarry" => context.quarry_site,
+        "quarry" | "gather_logs" => context.quarry_site,
         "fetch_water" => context.water_site,
         "explore" => context.explore_site,
         "hunt_expedition" => hunt_destination(context),

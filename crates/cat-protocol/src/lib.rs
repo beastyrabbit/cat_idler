@@ -65,6 +65,10 @@ pub struct ColonySnapshot {
     /// piles sized to contents. Empty/absent for pre-P12.3 snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stockpiles: Vec<StockpileSnapshot>,
+    /// Visible farm designations and their current crop stage (P12.5). Empty for
+    /// legacy snapshots and colonies without designated plots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub farms: Vec<FarmSnapshot>,
     /// The colony's reported stock ledger (P12.4a): the last-counted totals plus how fresh
     /// they are. Lags the true `resources` unless a staffed Accounting Tent keeps it exact.
     /// Absent for pre-P12.4a snapshots.
@@ -195,10 +199,15 @@ pub enum ResourceKind {
     Food,
     Water,
     Herbs,
+    Catnip,
+    Grain,
+    Flour,
     Materials,
     Refined,
     Weapons,
     Armor,
+    Logs,
+    Lumber,
     Blessings,
 }
 
@@ -217,6 +226,12 @@ pub struct ResourceAmounts {
     pub food: f64,
     pub water: f64,
     pub herbs: f64,
+    #[serde(default)]
+    pub catnip: f64,
+    #[serde(default)]
+    pub grain: f64,
+    #[serde(default)]
+    pub flour: f64,
     pub materials: f64,
     pub refined: f64,
     pub weapons: f64,
@@ -225,6 +240,10 @@ pub struct ResourceAmounts {
     /// (woodworking). Defaulted so legacy wire payloads still deserialize.
     #[serde(default)]
     pub planks: f64,
+    #[serde(default)]
+    pub logs: f64,
+    #[serde(default)]
+    pub lumber: f64,
     #[serde(default)]
     pub blocks: f64,
     #[serde(default)]
@@ -247,6 +266,12 @@ pub struct ResourceCapacities {
     pub food: f64,
     pub water: f64,
     pub herbs: f64,
+    #[serde(default)]
+    pub catnip: f64,
+    #[serde(default)]
+    pub grain: f64,
+    #[serde(default)]
+    pub flour: f64,
     pub materials: f64,
     pub refined: f64,
     #[serde(default)]
@@ -256,6 +281,10 @@ pub struct ResourceCapacities {
     /// P12.4b refinement-tier caps (planks/blocks/tools). Defaulted for legacy payloads.
     #[serde(default)]
     pub planks: f64,
+    #[serde(default)]
+    pub logs: f64,
+    #[serde(default)]
+    pub lumber: f64,
     #[serde(default)]
     pub blocks: f64,
     #[serde(default)]
@@ -365,6 +394,7 @@ pub enum CarryingKind {
     Food,
     Blessings,
     Materials,
+    Logs,
     Water,
 }
 
@@ -427,6 +457,9 @@ pub enum JobKind {
     BuildHouse,
     Ritual,
     Quarry,
+    /// Forest-site gathering job: fells and carries raw logs. This is the sole
+    /// authoritative input source for the sawmill chain.
+    GatherLogs,
     Explore,
     FetchWater,
     TrainWarrior,
@@ -651,6 +684,45 @@ pub struct BuildingSnapshot {
     /// physically delivered cargo. Additive; defaults to 0.0 for older snapshots.
     #[serde(default)]
     pub inbound_haul: f64,
+    /// Resource units physically departing this building in carried cargo. The
+    /// current balancing-stockpile model normally reports zero; the field is present
+    /// so a physical workshop-haul implementation can expose it without a wire break.
+    #[serde(default)]
+    pub outbound_haul: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CropKind {
+    Catnip,
+    Grain,
+    Herb,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FarmStage {
+    Soil,
+    Sprout,
+    Growing,
+    Mature,
+    Flowering,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FarmSnapshot {
+    pub id: String,
+    pub x1: i32,
+    pub y1: i32,
+    pub x2: i32,
+    pub y2: i32,
+    pub crop: CropKind,
+    pub planted_at: i64,
+    pub stage: FarmStage,
+    /// Fertility-scaled hours worked in the current cycle, for progress UI.
+    #[serde(default)]
+    pub growth_hours: f64,
 }
 
 /// A building's tile footprint size, in tiles.
@@ -698,6 +770,8 @@ pub enum BuildingType {
     /// `building_label` in `crates/cat-client/src/lib.rs` are exhaustive matches and
     /// will fail to compile until one is added).
     Smelter,
+    Mill,
+    Sawmill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -849,6 +923,20 @@ pub enum ClientAction {
         nickname: String,
         sig: String,
         role: OfficerRole,
+    },
+    DesignateFarm {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        a: TilePoint,
+        b: TilePoint,
+        crop: CropKind,
+    },
+    ClearFarm {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        plot_id: String,
     },
     DesignateStockpile {
         session_id: String,
@@ -1260,11 +1348,16 @@ mod tests {
                     food: 50.0,
                     water: 40.0,
                     herbs: 5.0,
+                    catnip: 0.0,
+                    grain: 0.0,
+                    flour: 0.0,
                     materials: 12.0,
                     refined: 3.0,
                     weapons: 2.0,
                     armor: 1.0,
                     planks: 0.0,
+                    logs: 0.0,
+                    lumber: 0.0,
                     blocks: 0.0,
                     tools: 0.0,
                     blessings: 8.0,
@@ -1274,11 +1367,16 @@ mod tests {
                         food: 200.0,
                         water: 200.0,
                         herbs: 100.0,
+                        catnip: 100.0,
+                        grain: 100.0,
+                        flour: 100.0,
                         materials: 100.0,
                         refined: 100.0,
                         weapons: 0.0,
                         armor: 0.0,
                         planks: 0.0,
+                        logs: 100.0,
+                        lumber: 100.0,
                         blocks: 0.0,
                         tools: 0.0,
                     },
@@ -1432,6 +1530,7 @@ mod tests {
                     production_progress: 0.0,
                     production_output: None,
                     inbound_haul: 0.0,
+                    outbound_haul: 0.0,
                 }],
                 claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
@@ -1446,6 +1545,7 @@ mod tests {
                 anchor: TilePoint { x: 6, y: 6 },
                 officers: BTreeMap::new(),
                 stockpiles: Vec::new(),
+                farms: Vec::new(),
                 stock_ledger: None,
                 items: Vec::new(),
                 coin: 0.0,
@@ -1478,6 +1578,96 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<ClientAction>(encoded).expect("deserialize"),
             action
+        );
+    }
+
+    #[test]
+    fn farm_actions_and_snapshot_round_trip_with_exact_wire_literals() {
+        let designate = ClientAction::DesignateFarm {
+            session_id: "session_1".to_owned(),
+            nickname: "Guest Cat".to_owned(),
+            sig: "signed".to_owned(),
+            a: TilePoint { x: 14, y: 4 },
+            b: TilePoint { x: 16, y: 6 },
+            crop: CropKind::Catnip,
+        };
+        let encoded = serde_json::to_value(&designate).expect("serialize designateFarm");
+        assert_eq!(
+            encoded,
+            json!({
+                "action": "designateFarm",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "a": { "x": 14, "y": 4 },
+                "b": { "x": 16, "y": 6 },
+                "crop": "catnip"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(encoded).expect("deserialize designateFarm"),
+            designate
+        );
+
+        let clear = ClientAction::ClearFarm {
+            session_id: "session_1".to_owned(),
+            nickname: "Guest Cat".to_owned(),
+            sig: "signed".to_owned(),
+            plot_id: "farm-1".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_value(&clear).expect("serialize clearFarm"),
+            json!({
+                "action": "clearFarm",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "plotId": "farm-1"
+            })
+        );
+
+        let farm = FarmSnapshot {
+            id: "farm-1".to_owned(),
+            x1: 14,
+            y1: 4,
+            x2: 16,
+            y2: 6,
+            crop: CropKind::Herb,
+            planted_at: 1_000,
+            stage: FarmStage::Flowering,
+            growth_hours: 23.5,
+        };
+        let encoded = serde_json::to_value(&farm).expect("serialize farm snapshot");
+        assert_eq!(encoded["crop"], json!("herb"));
+        assert_eq!(encoded["stage"], json!("flowering"));
+        assert_eq!(encoded["plantedAt"], json!(1_000));
+        assert_eq!(
+            serde_json::from_value::<FarmSnapshot>(encoded).expect("farm round-trip"),
+            farm
+        );
+    }
+
+    #[test]
+    fn production_chain_wire_literals_are_exact() {
+        assert_eq!(
+            serde_json::to_value(JobKind::GatherLogs).unwrap(),
+            json!("gather_logs")
+        );
+        assert_eq!(
+            serde_json::to_value(BuildingType::Mill).unwrap(),
+            json!("mill")
+        );
+        assert_eq!(
+            serde_json::to_value(BuildingType::Sawmill).unwrap(),
+            json!("sawmill")
+        );
+        assert_eq!(
+            serde_json::to_value(ResourceKind::Logs).unwrap(),
+            json!("logs")
+        );
+        assert_eq!(
+            serde_json::to_value(ResourceKind::Lumber).unwrap(),
+            json!("lumber")
         );
     }
 
@@ -1699,6 +1889,7 @@ mod tests {
             production_progress: 0.4,
             production_output: Some("refined".to_string()),
             inbound_haul: 0.0,
+            outbound_haul: 0.0,
         };
 
         let encoded = serde_json::to_value(&building).expect("serialize building");
@@ -1717,6 +1908,7 @@ mod tests {
                 "productionProgress": 0.4,
                 "productionOutput": "refined",
                 "inboundHaul": 0.0,
+                "outboundHaul": 0.0,
             })
         );
 
