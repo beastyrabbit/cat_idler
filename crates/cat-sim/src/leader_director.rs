@@ -1377,7 +1377,7 @@ mod tests {
 
     #[test]
     fn tithe_food_keeps_a_per_capita_survival_reserve() {
-        let mut snapshot = founding_five_cat_snapshot();
+        let mut snapshot = founding_fifteen_cat_snapshot();
         snapshot.population = 10;
         snapshot.resources.refined = 0.0;
 
@@ -1764,15 +1764,15 @@ mod tests {
 
     // ---- P16.x founding craft-bench staffing (AssignWorkshop construction demand) ----
 
-    /// A fresh 5-cat founding colony mirroring `world_tick`'s `STARTER_BLUEPRINT`:
+    /// A fresh 15-cat founding colony mirroring `world_tick`'s `STARTER_BLUEPRINT`:
     /// comfortable food/water and three unstaffed P16 raw-material craft benches folded
     /// into `workshops_needing_workers` (per
     /// `world_tick::phase_18_leader_snapshot_assembly`).
-    fn founding_five_cat_snapshot() -> LeaderSnapshot {
+    fn founding_fifteen_cat_snapshot() -> LeaderSnapshot {
         LeaderSnapshot {
-            population: 5,
-            workforce: Some(5.0),
-            idle_cats: 5,
+            population: 15,
+            workforce: Some(15.0),
+            idle_cats: 15,
             employed_cats: 0,
             resources: LeaderResources {
                 food: 120.0,
@@ -1786,7 +1786,7 @@ mod tests {
             water_capacity: 200.0,
             water_drain_per_tick: Some(0.3),
             housing: LeaderHousing {
-                capacity: 10,
+                capacity: 15,
                 committed: 0,
             },
             active_hunts: 0,
@@ -1823,7 +1823,7 @@ mod tests {
 
     #[test]
     fn founding_colony_staffs_at_least_one_craft_bench() {
-        // Regression test for the P16 founding stall: a fresh 5-cat colony with three
+        // Regression test for the P16 founding stall: a fresh 15-cat colony with three
         // unstaffed craft benches (`workshops_needing_workers: 3`, mirroring what
         // `world_tick`'s snapshot builder now reports once it folds the raw-material
         // benches in) must claim at least one idle cat for AssignWorkshop instead of
@@ -1833,7 +1833,7 @@ mod tests {
         // builder only ever counted the (founding-absent) general Workshop building;
         // this proves the ranked loop reliably grants it a slot once that count is
         // fixed, at the flat historical score.
-        let snapshot = founding_five_cat_snapshot();
+        let snapshot = founding_fifteen_cat_snapshot();
         let count = assign_workshop_slot_count(&snapshot);
         assert!(
             count >= 1,
@@ -1843,7 +1843,7 @@ mod tests {
 
     #[test]
     fn founding_colony_craft_bench_staffing_is_deterministic() {
-        let snapshot = founding_five_cat_snapshot();
+        let snapshot = founding_fifteen_cat_snapshot();
         assert_plan_eq(
             &direct_colony(&snapshot),
             &direct_colony(&snapshot),
@@ -1859,7 +1859,7 @@ mod tests {
 
         // (a) The existing `starving` veto (food < 15% fill, world_tick's definition of
         // a survival crisis) still hard-vetoes AssignWorkshop outright.
-        let mut starving = founding_five_cat_snapshot();
+        let mut starving = founding_fifteen_cat_snapshot();
         starving.resources.food = 0.0;
         starving.food_drain_per_tick = Some(10.0);
         starving.starving = Some(true);
@@ -1872,7 +1872,7 @@ mod tests {
         // (b) Even without the starving flag, a simultaneous food+water crisis outranks
         // and out-competes AssignWorkshop for the (scarce) idle labour on pure score +
         // capacity grounds — hunt/water win every idle cat before workshop gets a turn.
-        let mut crisis = founding_five_cat_snapshot();
+        let mut crisis = founding_fifteen_cat_snapshot();
         crisis.resources.food = 0.0;
         crisis.food_drain_per_tick = Some(10.0);
         crisis.water = 0.0;
@@ -1893,8 +1893,8 @@ mod tests {
         // score-scaled slice), that boost let it consistently outrank and out-compete
         // every other early-game goal on the very first tick, and because craft-bench
         // assignment is sticky (never re-contested once granted, unlike a job), it could
-        // permanently claim 3 of a 5-cat colony's workers, leaving zero labour for
-        // Scout ever again. `world_tick::tests::
+        // permanently claim every construction slot ahead of Scout on each founding
+        // plan. `world_tick::tests::
         // scouts_random_walk_outward_and_reveal_new_fog_deterministically` caught this
         // over a 200-tick founding run. The fix here is the flat STAFF_BASE_SCORE: it
         // still reliably bootstraps craft-bench staffing (proven above) without
@@ -1902,7 +1902,7 @@ mod tests {
         // test asserts Scout still opens at least one slot on a comfortable founding
         // colony with unstaffed craft benches, guarding against a future score-driven
         // regression reintroducing the starvation.
-        let snapshot = founding_five_cat_snapshot();
+        let snapshot = founding_fifteen_cat_snapshot();
         let scout_count = direct_colony(&snapshot)
             .slots
             .iter()
@@ -1944,7 +1944,7 @@ mod tests {
     fn offering_fires_on_a_genuine_materials_surplus() {
         // A 20-material build reserve plus the 10-material offering cost is the
         // inclusive dispatch threshold, independent of storage capacity.
-        let mut snapshot = founding_five_cat_snapshot();
+        let mut snapshot = founding_fifteen_cat_snapshot();
         snapshot.materials = 30.0;
         assert!(
             has_offering(&snapshot),
@@ -1954,7 +1954,7 @@ mod tests {
 
     #[test]
     fn no_offering_below_the_materials_surplus_threshold() {
-        let mut snapshot = founding_five_cat_snapshot();
+        let mut snapshot = founding_fifteen_cat_snapshot();
         snapshot.materials = 29.9;
         assert!(
             !has_offering(&snapshot),
@@ -1971,7 +1971,7 @@ mod tests {
 
     #[test]
     fn no_duplicate_offering_while_one_is_already_in_flight() {
-        let mut snapshot = founding_five_cat_snapshot();
+        let mut snapshot = founding_fifteen_cat_snapshot();
         snapshot.materials = 30.0;
         snapshot.offering_in_flight = Some(1);
         assert!(
@@ -1986,8 +1986,8 @@ mod tests {
         // Tithe draws only food/refined; Offering draws only materials. Push both
         // resources into surplus simultaneously and prove each decision's payload
         // depends solely on its own resource pool, not the other's.
-        let mut snapshot = founding_five_cat_snapshot();
-        snapshot.resources.food = 45.0; // five cats reserve 25 + 20 cost -> tithes
+        let mut snapshot = founding_fifteen_cat_snapshot();
+        snapshot.resources.food = 95.0; // fifteen cats reserve 75 + 20 cost -> tithes
         snapshot.resources.refined = 5.0; // >= TITHE_REFINED_AMOUNT -> tithes too
         snapshot.materials = 30.0; // 20 reserve + 10 cost -> offers
 

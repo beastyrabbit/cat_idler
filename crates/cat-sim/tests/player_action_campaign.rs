@@ -17,9 +17,9 @@ use cat_sim::{
     types::{BuildingType, JobKind},
     upgrade_tree::{self, UPGRADE_NODES},
     world_tick::{
-        BuildingRuntime, ElectionKind, RaiderRuntime, TilePos, TraderRuntime, WorldState,
-        new_world, road_path_attaches_to_shrine, road_placement_error, stockpile_placement_error,
-        tile_is_occupied,
+        BuildingRuntime, ElectionKind, EventKind, RaiderRuntime, TilePos, TraderRuntime,
+        WorldState, found_colony, new_world, road_path_attaches_to_shrine, road_placement_error,
+        stockpile_placement_error, tile_is_occupied, world_tick,
     },
     zones::ZoneRect,
 };
@@ -899,4 +899,125 @@ fn every_player_action_mutates_its_feature_and_the_campaign_is_deterministic() {
     assert_eq!(colony_ids.len(), 2, "village ids are distinct");
     assert_eq!(first.colonies[0].items.values().sum::<u32>(), 1);
     assert_eq!(first.colonies[0].coin, 97.0);
+}
+
+fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
+    const STARTED_AT: i64 = 10_000;
+    const STEP_MS: i64 = 15 * 60_000;
+    const ARRIVAL_HOUR: i64 = 30;
+    const END_HOUR: i64 = 75;
+
+    let seed = 42;
+    let mut base = new_world(seed);
+    base.colonies
+        .push(found_colony(seed, "colony-1", STARTED_AT, seed));
+    let mut now = STARTED_AT;
+    while now < STARTED_AT + ARRIVAL_HOUR * 3_600_000 {
+        now += STEP_MS;
+        let report = world_tick(&mut base, now);
+        assert_eq!(report[0].reset_reason, None);
+    }
+    let first_cohort = base.colonies[0]
+        .migration_state
+        .probationary_migrants
+        .iter()
+        .map(|migrant| migrant.id.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !first_cohort.is_empty(),
+        "organic prosperity produced no visitors"
+    );
+    assert_eq!(completed_beds(&base.colonies[0]), 15);
+
+    let mut guided = base.clone();
+    let mut unguided = base;
+    let mut action_accepted_at = None;
+    for _ in 0..=48 {
+        let action = proto::ClientAction::PlanBuilding {
+            session_id: "guided-session".to_owned(),
+            nickname: "Playtester".to_owned(),
+            sig: "validated-at-server-boundary".to_owned(),
+            building_type: proto::BuildingType::Den,
+        };
+        let result = apply_action(
+            &mut guided,
+            &action,
+            &ActionCtx {
+                session_id: "guided-session".to_owned(),
+                player_id: "guided-player".to_owned(),
+                colony_id: "colony-1".to_owned(),
+                now_ms: now,
+            },
+        );
+        if result.ok {
+            action_accepted_at = Some(now);
+            break;
+        }
+        now += STEP_MS;
+        assert_eq!(world_tick(&mut guided, now)[0].reset_reason, None);
+        assert_eq!(world_tick(&mut unguided, now)[0].reset_reason, None);
+    }
+    let accepted_at = action_accepted_at.expect("a worker becomes available for the player's den");
+
+    while now < STARTED_AT + END_HOUR * 3_600_000 {
+        now += STEP_MS;
+        assert_eq!(world_tick(&mut guided, now)[0].reset_reason, None);
+        assert_eq!(world_tick(&mut unguided, now)[0].reset_reason, None);
+    }
+    (guided, unguided, first_cohort, accepted_at)
+}
+
+/// Player-guided counterpart to the no-input soak: the same organic migration
+/// cohort is retained only when the player uses the public action boundary to
+/// order a den before its 36-hour deadline. The unchanged twin demonstrates the
+/// visible departure path, and repeating the whole campaign proves determinism.
+#[test]
+fn player_planned_den_retains_migrants_while_no_input_loses_them() {
+    let (guided, unguided, cohort, accepted_at) = migration_guidance_campaign();
+    let (guided_again, unguided_again, cohort_again, accepted_again) =
+        migration_guidance_campaign();
+    assert_eq!(guided, guided_again, "guided campaign diverged");
+    assert_eq!(unguided, unguided_again, "no-input campaign diverged");
+    assert_eq!(cohort, cohort_again);
+    assert_eq!(accepted_at, accepted_again);
+
+    let guided_colony = &guided.colonies[0];
+    assert!(
+        completed_beds(guided_colony) >= 20,
+        "the requested fourth den never completed"
+    );
+    assert!(cohort.iter().all(|id| {
+        guided_colony
+            .cats
+            .iter()
+            .any(|cat| cat.id == *id && cat.death_time.is_none())
+            && !guided_colony
+                .migration_state
+                .probationary_migrants
+                .iter()
+                .any(|migrant| migrant.id == *id)
+    }));
+    assert!(guided_colony.events.iter().any(|event| {
+        event.kind == EventKind::MigrationRetained && event.at_ms < 10_000 + 66 * 3_600_000
+    }));
+
+    let unguided_colony = &unguided.colonies[0];
+    assert!(cohort.iter().all(|id| {
+        !unguided_colony.cats.iter().any(|cat| cat.id == *id)
+            && !unguided_colony
+                .migration_state
+                .probationary_migrants
+                .iter()
+                .any(|migrant| migrant.id == *id)
+    }));
+    assert!(unguided_colony.migration_departures >= cohort.len() as u64);
+}
+
+fn completed_beds(colony: &cat_sim::world_tick::ColonyRuntime) -> usize {
+    colony
+        .buildings
+        .iter()
+        .filter(|building| building.is_complete && building.building_type == BuildingType::Den)
+        .count()
+        * 5
 }

@@ -5,16 +5,23 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::production::WORKSHOP_MATERIALS_PER_CYCLE;
+
 const MIGRATION_DOMAIN: &[u8] = b"idle-cat-forest/prosperity-migration/v1";
+const MIGRATION_ID_DOMAIN: &[u8] = b"idle-cat-forest/prosperity-migration-id/v2";
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 pub const DEFAULT_ESTABLISHMENT_GAME_MINUTES: u64 = 30 * 60;
-pub const DEFAULT_COHORT_INTERVAL_GAME_MINUTES: u64 = 24 * 60;
+pub const DEFAULT_COHORT_INTERVAL_GAME_MINUTES: u64 = 12 * 60;
 pub const DEFAULT_HOUSING_DEADLINE_GAME_MINUTES: u64 = 36 * 60;
-pub const DEFAULT_FOOD_PER_CAT: f64 = 5.0;
-pub const DEFAULT_WATER_PER_CAT: f64 = 6.0;
-pub const DEFAULT_MATERIALS_PER_CAT: f64 = 4.0;
+pub const DEFAULT_FOOD_PER_CAT: f64 = 4.0;
+pub const DEFAULT_WATER_PER_CAT: f64 = 5.0;
+/// Construction readiness is intentionally a modest reachable reserve, not a
+/// storage-capacity ratio: the founding economy continuously converts raw material
+/// into directly buildable timber and blocks.
+pub const DEFAULT_MATERIALS_PER_CAT: f64 = 0.5;
+pub const DEFAULT_MATERIALS_FLOOR: f64 = 8.0;
 pub const MAX_BASE_COHORT_SIZE: u32 = 4;
 pub const MAX_BONUS_CAT_MODULUS: u32 = 1_000_000;
 
@@ -27,6 +34,7 @@ pub struct MigrationPolicy {
     pub food_per_cat: f64,
     pub water_per_cat: f64,
     pub materials_per_cat: f64,
+    pub materials_floor: f64,
     pub base_cohort_size: u32,
     /// A second cat arrives when the dedicated bucket hash is zero modulo this
     /// value. Zero disables the bonus cat.
@@ -42,8 +50,9 @@ impl Default for MigrationPolicy {
             food_per_cat: DEFAULT_FOOD_PER_CAT,
             water_per_cat: DEFAULT_WATER_PER_CAT,
             materials_per_cat: DEFAULT_MATERIALS_PER_CAT,
+            materials_floor: DEFAULT_MATERIALS_FLOOR,
             base_cohort_size: 1,
-            bonus_cat_modulus: 4,
+            bonus_cat_modulus: 0,
         }
     }
 }
@@ -60,6 +69,7 @@ impl MigrationPolicy {
             food_per_cat: normalized_bar(self.food_per_cat, DEFAULT_FOOD_PER_CAT),
             water_per_cat: normalized_bar(self.water_per_cat, DEFAULT_WATER_PER_CAT),
             materials_per_cat: normalized_bar(self.materials_per_cat, DEFAULT_MATERIALS_PER_CAT),
+            materials_floor: normalized_bar(self.materials_floor, DEFAULT_MATERIALS_FLOOR),
             base_cohort_size: self.base_cohort_size.clamp(1, MAX_BASE_COHORT_SIZE),
             bonus_cat_modulus: self.bonus_cat_modulus.min(MAX_BONUS_CAT_MODULUS),
             ..self
@@ -72,15 +82,40 @@ impl MigrationPolicy {
 pub struct MigrationInputs {
     pub world_seed: u32,
     pub colony_id: String,
+    /// Colony run is part of the migrant identity domain. A post-collapse cohort
+    /// at the same game-minute bucket must never reuse ids from the graveyard.
+    pub run_number: u32,
     pub elapsed_game_minutes: u64,
     /// Established residents only. Probationary arrivals live in
     /// [`MigrationState`] until integration settles or removes them.
     pub resident_population: u32,
+    /// Beds already promised to living pregnancies. Reservations reduce migration
+    /// vacancies but do not consume food/water/construction prosperity bars yet.
+    pub housing_reservations: u32,
     pub housing_capacity: u32,
     pub food: f64,
     pub water: f64,
-    pub materials: f64,
+    /// Raw-equivalent value of materials already held as raw stock or directly
+    /// buildable planks, blocks, and lumber.
+    #[serde(alias = "materials")]
+    pub construction_wealth: f64,
     pub in_crisis: bool,
+}
+
+/// Raw-equivalent value of the colony's directly buildable construction stock.
+///
+/// One plank or block consumes [`WORKSHOP_MATERIALS_PER_CYCLE`] raw materials in the
+/// actual refinement recipe. `allocate_construction_timber` spends lumber and legacy
+/// planks one-for-one, so lumber carries the same raw-equivalent value as a plank.
+/// Logs, tools, refined trade goods, and other inventory are intentionally excluded:
+/// they cannot pay a scaffold cost directly.
+#[must_use]
+pub fn migration_construction_wealth(materials: f64, planks: f64, blocks: f64, lumber: f64) -> f64 {
+    if !materials.is_finite() || !planks.is_finite() || !blocks.is_finite() || !lumber.is_finite() {
+        return f64::NAN;
+    }
+    materials.max(0.0)
+        + (planks.max(0.0) + blocks.max(0.0) + lumber.max(0.0)) * WORKSHOP_MATERIALS_PER_CYCLE
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -94,6 +129,9 @@ pub struct ProbationaryMigrant {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MigrationState {
+    /// Historical field name retained for save compatibility. The cursor records
+    /// the newest cohort bucket that actually produced an arrival, not a failed
+    /// prosperity sample: a healthy colony gets the whole interval to qualify.
     pub last_evaluated_cohort_bucket: Option<u64>,
     pub probationary_migrants: Vec<ProbationaryMigrant>,
 }
@@ -125,7 +163,8 @@ pub fn advance_migration(
     );
     let mut remaining_vacancies = input
         .housing_capacity
-        .saturating_sub(input.resident_population);
+        .saturating_sub(input.resident_population)
+        .saturating_sub(input.housing_reservations);
     allocate_vacancies(
         state,
         &mut remaining_vacancies,
@@ -141,10 +180,9 @@ pub fn advance_migration(
     {
         return outcome;
     }
-    state.last_evaluated_cohort_bucket = Some(bucket);
-
     let newly_retained = u32::try_from(outcome.retained_migrant_ids.len()).unwrap_or(u32::MAX);
     if !input.in_crisis && is_prosperous_with_retained(&policy, state, input, newly_retained) {
+        state.last_evaluated_cohort_bucket = Some(bucket);
         outcome.arrivals = build_cohort(&policy, input, bucket);
         state
             .probationary_migrants
@@ -184,10 +222,11 @@ fn is_prosperous_with_retained(
     let population = f64::from(population);
     input.food.is_finite()
         && input.water.is_finite()
-        && input.materials.is_finite()
+        && input.construction_wealth.is_finite()
         && input.food >= policy.food_per_cat * population
         && input.water >= policy.water_per_cat * population
-        && input.materials >= policy.materials_per_cat * population
+        && input.construction_wealth
+            >= (policy.materials_per_cat * population).max(policy.materials_floor)
 }
 
 fn cohort_bucket(policy: &MigrationPolicy, elapsed_game_minutes: u64) -> Option<u64> {
@@ -207,7 +246,13 @@ fn build_cohort(
     input: &MigrationInputs,
     bucket: u64,
 ) -> Vec<ProbationaryMigrant> {
+    // Cohort sizing keeps its established run-independent schedule so adding a
+    // run namespace cannot silently rebalance a live colony. Only identity is
+    // run-scoped. Run 1 retains its legacy id spelling for save compatibility.
     let hash = migration_bucket_hash(input.world_seed, &input.colony_id, bucket);
+    let identity_hash = (input.run_number > 1).then(|| {
+        migration_identity_hash(input.world_seed, &input.colony_id, input.run_number, bucket)
+    });
     let bonus = u32::from(
         policy.bonus_cat_modulus != 0 && hash.is_multiple_of(u64::from(policy.bonus_cat_modulus)),
     );
@@ -217,7 +262,15 @@ fn build_cohort(
         .saturating_add(policy.housing_deadline_game_minutes);
     (0..cohort_size)
         .map(|index| ProbationaryMigrant {
-            id: format!("migrant-{hash:016x}-{bucket:016x}-{index:02x}"),
+            id: identity_hash.map_or_else(
+                || format!("migrant-{hash:016x}-{bucket:016x}-{index:02x}"),
+                |identity_hash| {
+                    format!(
+                        "migrant-{identity_hash:016x}-r{:08x}-{bucket:016x}-{index:02x}",
+                        input.run_number
+                    )
+                },
+            ),
             arrived_game_minute: input.elapsed_game_minutes,
             housing_deadline_game_minute: deadline,
         })
@@ -293,6 +346,21 @@ fn migration_bucket_hash(world_seed: u32, colony_id: &str, bucket: u64) -> u64 {
     hash
 }
 
+fn migration_identity_hash(world_seed: u32, colony_id: &str, run_number: u32, bucket: u64) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for byte in MIGRATION_ID_DOMAIN
+        .iter()
+        .chain(world_seed.to_le_bytes().iter())
+        .chain(colony_id.as_bytes())
+        .chain(run_number.to_le_bytes().iter())
+        .chain(bucket.to_le_bytes().iter())
+    {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,12 +369,14 @@ mod tests {
         MigrationInputs {
             world_seed: 42,
             colony_id: "willow".to_owned(),
+            run_number: 1,
             elapsed_game_minutes: at_minute,
             resident_population: 6,
+            housing_reservations: 0,
             housing_capacity: 6,
             food: 36.0,
             water: 42.0,
-            materials: 30.0,
+            construction_wealth: 30.0,
             in_crisis: false,
         }
     }
@@ -350,7 +420,7 @@ mod tests {
         small.resident_population = 2;
         small.food = 10.0;
         small.water = 12.0;
-        small.materials = 8.0;
+        small.construction_wealth = 8.0;
         assert!(is_prosperous(&policy, &MigrationState::default(), &small));
 
         let mut large = small.clone();
@@ -380,6 +450,72 @@ mod tests {
                 .arrivals
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn processed_build_stock_counts_toward_prosperity_but_raw_scraps_do_not() {
+        let policy = MigrationPolicy::default();
+        let mut input = prosperous(policy.establishment_game_minutes);
+        input.resident_population = 15;
+        input.housing_capacity = 30;
+        input.food = 60.0;
+        input.water = 75.0;
+
+        input.construction_wealth = migration_construction_wealth(1.0, 2.0, 1.0, 0.0);
+        assert_eq!(input.construction_wealth, 16.0);
+        assert!(
+            is_prosperous(&policy, &MigrationState::default(), &input),
+            "processed build stock is real construction wealth for prosperity"
+        );
+
+        input.construction_wealth = migration_construction_wealth(1.0, 0.0, 0.0, 0.0);
+        assert!(!is_prosperous(&policy, &MigrationState::default(), &input));
+    }
+
+    #[test]
+    fn scaffold_spending_reduces_construction_wealth_by_its_raw_cost() {
+        let raw = 1.0;
+        let planks = 3.0;
+        let blocks = 2.0;
+        let lumber = 1.0;
+        let before = migration_construction_wealth(raw, planks, blocks, lumber);
+        let timber = crate::processing::allocate_construction_timber(2.0, lumber, planks);
+        assert!(timber.covered);
+        let after = migration_construction_wealth(
+            raw,
+            planks - timber.legacy_planks_used,
+            blocks - 2.0,
+            lumber - timber.lumber_used,
+        );
+
+        assert_eq!(before - after, 4.0 * WORKSHOP_MATERIALS_PER_CYCLE);
+        assert_eq!(
+            migration_construction_wealth(raw, planks, blocks, lumber).to_bits(),
+            before.to_bits(),
+            "the pure wealth projection is deterministic"
+        );
+    }
+
+    #[test]
+    fn a_cohort_window_stays_open_until_prosperity_then_fires_only_once() {
+        let policy = MigrationPolicy::default();
+        let mut state = MigrationState::default();
+        let mut input = prosperous(policy.establishment_game_minutes);
+        input.food = 0.0;
+
+        let lean = advance_migration(&policy, &mut state, &input);
+        assert!(lean.arrivals.is_empty());
+        assert_eq!(state.last_evaluated_cohort_bucket, None);
+
+        input.elapsed_game_minutes += policy.cohort_interval_game_minutes / 2;
+        input.food = 100.0;
+        let recovered = advance_migration(&policy, &mut state, &input);
+        assert!(!recovered.arrivals.is_empty());
+        assert_eq!(state.last_evaluated_cohort_bucket, Some(0));
+
+        let duplicate = advance_migration(&policy, &mut state, &input);
+        assert!(duplicate.arrivals.is_empty());
+        assert_eq!(state.last_evaluated_cohort_bucket, Some(0));
     }
 
     #[test]
@@ -512,6 +648,44 @@ mod tests {
         assert_eq!(outcome.retained_migrant_ids, [old.id]);
         assert!(!outcome.arrivals.is_empty());
         assert_eq!(state.probationary_migrants, outcome.arrivals);
+    }
+
+    #[test]
+    fn pregnancy_reservation_and_migrant_never_claim_the_same_last_bed() {
+        let policy = MigrationPolicy::default();
+        let mut input = prosperous(policy.establishment_game_minutes);
+        input.housing_capacity = input.resident_population + 1;
+        input.housing_reservations = 1;
+
+        let mut state = MigrationState::default();
+        let outcome = advance_migration(&policy, &mut state, &input);
+
+        assert!(!outcome.arrivals.is_empty());
+        assert!(outcome.retained_migrant_ids.is_empty());
+        assert_eq!(state.probationary_migrants, outcome.arrivals);
+    }
+
+    #[test]
+    fn reset_run_domain_never_reuses_a_prior_cohort_id() {
+        let policy = MigrationPolicy::default();
+        let mut first_input = prosperous(policy.establishment_game_minutes);
+        first_input.run_number = 1;
+        let mut first_state = MigrationState::default();
+        let first = advance_migration(&policy, &mut first_state, &first_input);
+
+        let mut next_input = first_input;
+        next_input.run_number = 2;
+        let mut next_state = MigrationState::default();
+        let next = advance_migration(&policy, &mut next_state, &next_input);
+
+        assert!(!first.arrivals.is_empty());
+        assert!(!next.arrivals.is_empty());
+        assert!(
+            first
+                .arrivals
+                .iter()
+                .all(|old| next.arrivals.iter().all(|new| old.id != new.id))
+        );
     }
 
     #[test]

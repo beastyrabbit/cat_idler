@@ -1014,6 +1014,30 @@ mod tests {
         assert_eq!(canonical.online_count, 0);
     }
 
+    #[test]
+    fn websocket_snapshot_serialization_handles_a_populated_zero_den_legacy_colony() {
+        let mut world = new_world(WORLD_SEED);
+        let mut colony = found_colony(
+            WORLD_SEED,
+            STARTER_COLONY_ID,
+            1_000_000,
+            STARTER_COLONY_SEED,
+        );
+        colony
+            .buildings
+            .retain(|building| building.building_type != cat_sim::types::BuildingType::Den);
+        world.colonies.push(colony);
+
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        assert_eq!(snapshot.colonies[0].housing.capacity, 0);
+        assert!(snapshot.colonies[0].housing.pressure.is_finite());
+        let websocket_text =
+            serde_json::to_string(&snapshot).expect("send_snapshot serialization path");
+        let decoded: WorldSnapshot =
+            serde_json::from_str(&websocket_text).expect("client websocket decode");
+        assert_eq!(decoded, snapshot);
+    }
+
     #[tokio::test]
     async fn strict_origin_policy_rejects_untrusted_websocket_handshakes() {
         let state = build_state(1_000_000);
@@ -1174,6 +1198,176 @@ mod tests {
     ) -> ServerActionResult {
         let encoded = serde_json::to_string(action).expect("serialize action");
         handle_client_text(state, connection, &encoded).await
+    }
+
+    fn build_test_state_from_world(world: WorldState, now_ms: i64) -> AppState {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        persistence::init_schema(&conn).expect("init in-memory schema");
+        build_state_from_world(
+            world,
+            conn,
+            "guided-campaign-secret".to_owned(),
+            false,
+            now_ms,
+        )
+    }
+
+    #[tokio::test]
+    async fn signed_player_den_retains_migrant_while_unattended_twin_loses_them() {
+        const SEED: u32 = 7;
+        const TICK_MS: i64 = 15 * 60_000;
+        const HORIZON_HOURS: i64 = 90;
+
+        let started_at = now_ms();
+        let mut initial_world = new_world(SEED);
+        initial_world
+            .colonies
+            .push(found_colony(SEED, STARTER_COLONY_ID, started_at, SEED));
+        let guided = build_test_state_from_world(initial_world.clone(), started_at);
+        let unattended = build_test_state_from_world(initial_world, started_at);
+
+        // Exercise the real production handshake: the server issues the signed
+        // session, binds it to this connection, and the following build action is
+        // authenticated through the same HMAC path as a websocket client.
+        let mut connection = ConnectionContext::new("guided-player".to_owned());
+        let presence = send_action(
+            &guided,
+            &mut connection,
+            &ClientAction::Presence {
+                session_id: String::new(),
+                nickname: "Builder Cat".to_owned(),
+                sig: None,
+            },
+        )
+        .await;
+        assert!(
+            presence.result.ok,
+            "presence handshake failed: {presence:?}"
+        );
+        let session_id = presence.fields["sessionId"].clone();
+        let sig = presence.fields["sig"].clone();
+        assert!(verify_session(
+            session_id.as_str(),
+            Some(sig.as_str()),
+            guided.session_secret.as_str()
+        ));
+
+        let mut plan_sent = false;
+        let mut guided_arrival_id = None;
+        let mut unattended_arrival_id = None;
+        let mut finished_at = started_at;
+        for step in 1..=HORIZON_HOURS * 60 / 15 {
+            let tick_now = started_at + step * TICK_MS;
+            finished_at = tick_now;
+            for state in [&guided, &unattended] {
+                let mut world = state.world.lock().await;
+                let reports = world_tick(&mut world, tick_now);
+                assert_eq!(reports[0].reset_reason, None, "tick {step} reset a twin");
+            }
+
+            if guided_arrival_id.is_none() {
+                guided_arrival_id = guided.world.lock().await.colonies[0]
+                    .migration_state
+                    .probationary_migrants
+                    .first()
+                    .map(|migrant| migrant.id.clone());
+                unattended_arrival_id = unattended.world.lock().await.colonies[0]
+                    .migration_state
+                    .probationary_migrants
+                    .first()
+                    .map(|migrant| migrant.id.clone());
+            }
+
+            if guided_arrival_id.is_some() && !plan_sent {
+                assert_eq!(guided_arrival_id, unattended_arrival_id);
+                let result = send_action(
+                    &guided,
+                    &mut connection,
+                    &ClientAction::PlanBuilding {
+                        session_id: session_id.clone(),
+                        nickname: "Builder Cat".to_owned(),
+                        sig: sig.clone(),
+                        building_type: cat_protocol::BuildingType::Den,
+                    },
+                )
+                .await;
+                assert!(result.result.ok, "signed den plan failed: {result:?}");
+                plan_sent = true;
+            }
+
+            if plan_sent {
+                let guided_world = guided.world.lock().await;
+                let unattended_world = unattended.world.lock().await;
+                let guided_colony = &guided_world.colonies[0];
+                let unattended_colony = &unattended_world.colonies[0];
+                let guided_retained = guided_arrival_id.as_ref().is_some_and(|id| {
+                    guided_colony
+                        .cats
+                        .iter()
+                        .any(|cat| cat.id == *id && cat.death_time.is_none())
+                        && guided_colony
+                            .migration_state
+                            .probationary_migrants
+                            .is_empty()
+                });
+                let unattended_departed = unattended_arrival_id.as_ref().is_some_and(|id| {
+                    !unattended_colony.cats.iter().any(|cat| cat.id == *id)
+                        && unattended_colony.migration_departures > 0
+                });
+                if guided_retained && unattended_departed {
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            plan_sent,
+            "organic campaign never reached a migrant arrival"
+        );
+        let guided_arrival_id = guided_arrival_id.expect("guided migrant id");
+        let unattended_arrival_id = unattended_arrival_id.expect("unattended migrant id");
+        {
+            let world = guided.world.lock().await;
+            let colony = &world.colonies[0];
+            assert!(
+                colony
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == guided_arrival_id && cat.death_time.is_none())
+            );
+            assert!(
+                !colony
+                    .migration_state
+                    .probationary_migrants
+                    .iter()
+                    .any(|migrant| migrant.id == guided_arrival_id)
+            );
+        }
+        {
+            let world = unattended.world.lock().await;
+            assert!(
+                !world.colonies[0]
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == unattended_arrival_id)
+            );
+        }
+        let guided_snapshot = {
+            let world = guided.world.lock().await;
+            build_snapshot(&world, finished_at, 1)
+        };
+        let unattended_snapshot = {
+            let world = unattended.world.lock().await;
+            build_snapshot(&world, finished_at, 1)
+        };
+        let guided_colony = &guided_snapshot.colonies[0];
+        let unattended_colony = &unattended_snapshot.colonies[0];
+        assert!(guided_colony.housing.capacity >= 20);
+        assert_eq!(guided_colony.housing.probationary, 0);
+        assert!(guided_colony.housing.population >= 16);
+        assert_eq!(unattended_colony.housing.capacity, 15);
+        assert_eq!(unattended_colony.housing.housed, 15);
+        assert!(unattended_colony.housing.departures > 0);
     }
 
     #[tokio::test]

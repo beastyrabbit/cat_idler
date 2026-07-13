@@ -11,8 +11,6 @@ use crate::{
     types::{LifeStage, TaskType},
 };
 
-const HOUR_MS: f64 = 1000.0 * 60.0 * 60.0;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AssignmentRolls {
     pub wrong_assignment: f64,
@@ -29,7 +27,7 @@ pub struct AssignedCat<'a> {
 pub fn get_optimal_cat_for_task(
     cats: &[Cat],
     task_type: TaskType,
-    current_time_ms: i64,
+    _current_time_ms: i64,
 ) -> Option<&Cat> {
     if cats.is_empty() {
         return None;
@@ -50,8 +48,10 @@ pub fn get_optimal_cat_for_task(
     let relevant_skill = task_skill(task_type);
 
     let mut eligible_cats = cats.iter().filter(|cat| {
-        let age = get_age_in_hours(cat.birth_time, current_time_ms);
-        let life_stage = get_life_stage(age);
+        // `age_hours` is the simulation clock and survives accelerated/offline
+        // progression. Wall-clock birth timestamps are identity/history metadata;
+        // deriving stage from them makes accelerated kittens work as adults.
+        let life_stage = crate::age::get_life_stage(cat.age_hours);
         can_perform_task(life_stage, requires_outside, is_dangerous_task)
     });
 
@@ -137,22 +137,6 @@ fn wrong_chance(leadership_stat: f64) -> f64 {
     }
 }
 
-fn get_age_in_hours(birth_time_ms: i64, current_time_ms: i64) -> f64 {
-    (current_time_ms - birth_time_ms) as f64 / HOUR_MS
-}
-
-fn get_life_stage(age_in_hours: f64) -> LifeStage {
-    if age_in_hours < 6.0 {
-        LifeStage::Kitten
-    } else if age_in_hours < 24.0 {
-        LifeStage::Young
-    } else if age_in_hours < 48.0 {
-        LifeStage::Adult
-    } else {
-        LifeStage::Elder
-    }
-}
-
 fn can_perform_task(
     life_stage: LifeStage,
     task_requires_outside: bool,
@@ -223,7 +207,7 @@ mod tests {
             activity: crate::entities::CatActivity::Idle,
             is_pregnant: false,
             pregnancy_due_time: None,
-            age_hours: 0.0,
+            age_hours: (NOW - birth_time) as f64 / HOUR_MS as f64,
             pregnancy_due_age_hours: None,
             pregnancy_mate_id: None,
             sprite_params: None,
@@ -297,6 +281,20 @@ mod tests {
         assert_eq!(
             get_optimal_cat_for_task(&cats, TaskType::Clean, NOW).map(|cat| cat.id.as_str()),
             Some("kitten")
+        );
+    }
+
+    #[test]
+    fn accelerated_age_hours_is_authoritative_over_wall_clock_birth_time() {
+        let mut accelerated_adult = cat("accelerated-adult", NOW, stats_with("hunting", 100.0));
+        accelerated_adult.age_hours = 30.0;
+        let mut wall_clock_adult = adult("sim-kitten", stats_with("hunting", 200.0));
+        wall_clock_adult.age_hours = 5.0;
+
+        let cats = vec![wall_clock_adult, accelerated_adult];
+        assert_eq!(
+            get_optimal_cat_for_task(&cats, TaskType::Hunt, NOW).map(|cat| cat.id.as_str()),
+            Some("accelerated-adult")
         );
     }
 

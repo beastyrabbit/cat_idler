@@ -1,4 +1,5 @@
-//! Needs, life-stage, and leader-quality constants ported from `types/game.ts`.
+//! Needs and leader-quality constants ported from `types/game.ts`, plus the
+//! post-port idle-game life-stage pacing.
 
 use crate::types::LifeStage;
 
@@ -49,13 +50,13 @@ pub const LIFE_STAGE_HOURS: [(LifeStage, LifeStageHours); 4] = [
         LifeStage::Adult,
         LifeStageHours {
             min: 24.0,
-            max: 48.0,
+            max: 240.0,
         },
     ),
     (
         LifeStage::Elder,
         LifeStageHours {
-            min: 48.0,
+            min: 240.0,
             max: f64::INFINITY,
         },
     ),
@@ -129,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn life_stage_hours_match_types_game_ts() {
+    fn life_stage_hours_use_the_deliberate_idle_game_lifespan() {
         let expected = [
             (LifeStage::Kitten, LifeStageHours { min: 0.0, max: 6.0 }),
             (
@@ -143,13 +144,13 @@ mod tests {
                 LifeStage::Adult,
                 LifeStageHours {
                     min: 24.0,
-                    max: 48.0,
+                    max: 240.0,
                 },
             ),
             (
                 LifeStage::Elder,
                 LifeStageHours {
-                    min: 48.0,
+                    min: 240.0,
                     max: f64::INFINITY,
                 },
             ),

@@ -24,12 +24,12 @@ use bevy::sprite::{BorderRect, SliceScaleMode, TextureSlicer};
 use bevy::ui::{InteractionDisabled, RelativeCursorPosition, VisualBox, widget::NodeImageMode};
 use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage, PrimaryWindow};
 use cat_protocol::{
-    ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot,
-    ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmStage, FootprintSize, GateSide,
-    ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus, ResourceAmounts, ResourceCapacities,
-    ResourceKind, RoleXp, ScoutMission, ScoutResource, Specialization, StockLedgerSnapshot,
-    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderVisitState, WorldSnapshot,
-    ZoneKind,
+    ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
+    CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmStage,
+    FootprintSize, GateSide, ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus,
+    ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp, ScoutMission, ScoutResource,
+    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
+    TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -1878,7 +1878,7 @@ fn count_vital_events(events: &[EventSnapshot]) -> (u32, u32) {
 
 /// Tally colony demographics from the living cats, the event feed, and the leader
 /// name. Cats with a `death_time` are excluded. Life-stage thresholds mirror the
-/// sim's `age::get_life_stage` (kitten <6h, young <24h, adult <48h, elder ≥48h);
+/// sim's `age::get_life_stage` (kitten <6h, young <24h, adult <240h, elder ≥240h);
 /// a non-finite age falls through to elder, matching the sim.
 fn colony_census(cats: &[CatSnapshot], events: &[EventSnapshot], leader: Option<&str>) -> Census {
     let mut c = Census {
@@ -1894,7 +1894,7 @@ fn colony_census(cats: &[CatSnapshot], events: &[EventSnapshot], leader: Option<
             c.kittens += 1;
         } else if age < 24.0 {
             c.young += 1;
-        } else if age < 48.0 {
+        } else if age < 240.0 {
             c.adults += 1;
         } else {
             c.elders += 1;
@@ -6217,13 +6217,18 @@ fn dashboard_header_text(colony: &ColonySnapshot, online: u32) -> String {
         "online {online}\n\
          Colony: {name}  [{status:?}]\n\
          Leader: {leader}\n\
-         Pop {pop}/{cap_house}  Village Lv {lvl}\n\
+         Pop {pop}  Beds {housed}/{cap_house}  Village Lv {lvl}\n\
+         Awaiting homes {probationary}  Unhoused {unhoused}  Left {departures}\n\
          Threat: {threat:?} ({pressure:.0})  warriors {warriors}",
         name = colony.name,
         status = colony.status,
         pop = colony.housing.population,
+        housed = colony.housing.housed,
         cap_house = colony.housing.capacity,
         lvl = colony.housing.village_level,
+        probationary = colony.housing.probationary,
+        unhoused = colony.housing.unhoused,
+        departures = colony.housing.departures,
         threat = colony.threat.band,
         pressure = colony.threat.pressure,
         warriors = colony.threat.warriors,
@@ -7266,12 +7271,12 @@ fn toggle_selection(current: Option<&str>, picked: Option<String>) -> Option<Str
 }
 
 /// Life stage from accelerated age (game-hours): kitten 0–6, young 6–24,
-/// adult 24–48, elder 48+.
+/// adult 24–240, elder 240+.
 fn life_stage(age_hours: f64) -> &'static str {
     match age_hours {
         a if a < 6.0 => "kitten",
         a if a < 24.0 => "young",
-        a if a < 48.0 => "adult",
+        a if a < 240.0 => "adult",
         _ => "elder",
     }
 }
@@ -7347,12 +7352,27 @@ fn inspector_text(cat: &CatSnapshot) -> String {
     } else {
         ""
     };
+    let housing = match cat.housing_status {
+        CatHousingStatus::Housed => "housing: housed".to_owned(),
+        CatHousingStatus::Unhoused => "housing: unhoused — build a den".to_owned(),
+        CatHousingStatus::Probationary => {
+            let remaining = cat.probation_remaining_game_minutes.unwrap_or(0);
+            let hours = remaining / 60;
+            let minutes = remaining % 60;
+            if remaining == 0 {
+                "housing: awaiting home — leaves now unless a den opens".to_owned()
+            } else {
+                format!("housing: awaiting home — {hours}h {minutes:02}m left; build a den")
+            }
+        }
+    };
     format!(
         "{name}\n\
          {spec} - {stage} ({age:.0}h)\n\
          at {x},{y} - {activity}\n\
          dest {dest}\n\
          carrying {carrying}{parents}{expecting}\n\
+         {housing}\n\
          \n\
          skills: {skills}\n\
          leadership {lead:.0}",
@@ -7365,6 +7385,7 @@ fn inspector_text(cat: &CatSnapshot) -> String {
         activity = activity_name(cat.activity),
         skills = cat_skills_line(&cat.role_xp),
         lead = cat.stats.leadership,
+        housing = housing,
     )
 }
 
@@ -8040,7 +8061,26 @@ mod tests {
             parents: Vec::new(),
             boosted,
             pregnant: false,
+            housing_status: cat_protocol::CatHousingStatus::Housed,
+            probation_remaining_game_minutes: None,
         }
+    }
+
+    #[test]
+    fn cat_inspector_makes_probation_deadline_and_housing_action_explicit() {
+        let mut cat = census_cat(30.0, None, false);
+        cat.housing_status = CatHousingStatus::Probationary;
+        cat.probation_remaining_game_minutes = Some(2_161);
+        let waiting = inspector_text(&cat);
+        assert!(waiting.contains("housing: awaiting home"));
+        assert!(waiting.contains("36h 01m left; build a den"));
+
+        cat.probation_remaining_game_minutes = Some(0);
+        assert!(inspector_text(&cat).contains("leaves now unless a den opens"));
+
+        cat.housing_status = CatHousingStatus::Housed;
+        cat.probation_remaining_game_minutes = None;
+        assert!(inspector_text(&cat).contains("housing: housed"));
     }
 
     #[test]
@@ -8101,7 +8141,7 @@ mod tests {
             census_cat(3.0, None, false),                         // kitten, unspec
             census_cat(10.0, Some(Specialization::Hunter), true), // young, hunter, boosted
             census_cat(30.0, Some(Specialization::Architect), false), // adult
-            census_cat(50.0, Some(Specialization::Warrior), false), // elder
+            census_cat(250.0, Some(Specialization::Warrior), false), // elder
             census_cat(40.0, Some(Specialization::Ritualist), false), // adult
         ];
         // A pregnant adult (counts toward Expecting).
@@ -8143,7 +8183,7 @@ mod tests {
         assert_eq!(c.boosted, 1);
         // Only living pregnant cats count; the dead pregnant cat is excluded.
         assert_eq!(c.expecting, 1);
-        assert!((c.avg_age_hours - (3.0 + 10.0 + 30.0 + 50.0 + 40.0 + 28.0) / 6.0).abs() < 1e-9);
+        assert!((c.avg_age_hours - (3.0 + 10.0 + 30.0 + 250.0 + 40.0 + 28.0) / 6.0).abs() < 1e-9);
         // "born" counts as a birth; "expecting a litter" (conception) does not.
         assert_eq!(c.births, 1);
         assert_eq!(c.deaths, 1);
@@ -8162,7 +8202,7 @@ mod tests {
             1
         );
         assert_eq!(
-            colony_census(&[census_cat(48.0, None, false)], &[], None).elders,
+            colony_census(&[census_cat(240.0, None, false)], &[], None).elders,
             1
         );
         // A non-finite age falls through to elder (sim parity), no NaN avg on empty.
@@ -9020,8 +9060,8 @@ mod tests {
         assert_eq!(life_stage(6.0), "young");
         assert_eq!(life_stage(23.9), "young");
         assert_eq!(life_stage(24.0), "adult");
-        assert_eq!(life_stage(47.9), "adult");
-        assert_eq!(life_stage(48.0), "elder");
+        assert_eq!(life_stage(239.9), "adult");
+        assert_eq!(life_stage(240.0), "elder");
     }
 
     #[test]

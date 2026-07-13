@@ -28,7 +28,7 @@ pub const FIELD_UNLOCK_LEVEL: u32 = 4;
 /// (`leader_director::is_research_comfortable`) — starving research and every
 /// comfort-gated advance and still tripping `UnattendedCollapse` resets.
 ///
-/// The leader therefore auto-commissions a small, population-scaled number of fields at
+/// The leader therefore auto-commissions up to a small, population-scaled field ceiling at
 /// founding, ungated by the tree/village level — exactly mirroring how the research hut
 /// was made founding-buildable (`world_tick::manage_field`). Fields are a passive floor
 /// that lifts the sawtooth trough above comfort; the cap below keeps them a *supplement*
@@ -44,7 +44,7 @@ pub const FIELD_UNLOCK_LEVEL: u32 = 4;
 /// is fenced by the population-scaled cap.
 pub const FIELD_MIN_COUNT: usize = 2;
 
-/// Cats per field the leader targets beyond the essential base: the field cap is
+/// Cats per field used to calculate the leader's ceiling beyond the essential base: the cap is
 /// `max(FIELD_MIN_COUNT, ceil(population / FIELD_CATS_PER_FIELD))`. At the base grass
 /// fertility a field yields ~2.4 food/hour. Five cats/field leaves a fully-grown colony's
 /// passive base still short of its consumption (~1 food/cat/hour) — hunts must carry the
@@ -55,30 +55,18 @@ pub const FIELD_CATS_PER_FIELD: f64 = 5.0;
 /// Food fill-ratio at/above which the leader stops commissioning fields. Set comfortably
 /// above the per-capita research-comfort bar (`leader_director::is_research_comfortable`;
 /// e.g. a 15-cat colony is food-comfortable from 60/200 = 0.3) so fields accumulate until
-/// the larder is comfortably — not just barely — stocked; once food is this full the
-/// passive base is already doing its job and no new field is broken ground (standing
-/// fields persist).
+/// the larder is comfortably — not just barely — stocked. This makes the population
+/// formula a hard ceiling, not a quota: a healthy pantry may need fewer fields.
 pub const FIELD_STOCK_TARGET_RATIO: f64 = 0.75;
-
-/// Acute-crisis floor for *discretionary* fields (those beyond [`FIELD_MIN_COUNT`]): the
-/// leader will not break ground on an above-the-base field while food sits below this
-/// fraction of capacity. In a genuine trough a cat is worth far more out hunting than tied
-/// up on an 8-hour build, so discretionary expansion is confined to the band
-/// `[FIELD_BUILD_MIN_RATIO, FIELD_STOCK_TARGET_RATIO)`. The essential base ignores this
-/// floor — it is precisely what ends the trough — and is self-limited instead by builder
-/// availability (`select_best_cat` yields nobody when every cat is on survival work).
-pub const FIELD_BUILD_MIN_RATIO: f64 = 0.25;
 
 /// Planks AND blocks the colony must already have banked before the leader breaks ground
 /// on ANY field (essential base included). A field scaffold costs 2 planks + 2 blocks
 /// (`SCAFFOLD_PLANK_COST`/`SCAFFOLD_BLOCK_COST`), and those build materials come from the
-/// staffed wood-cutter/stone-prep chain the founding colony needs to fund its dens. Fields
-/// are food *scaling*, and must be strictly ADDITIVE — never a tax on the critical
-/// material economy — so a field is only commissioned out of a genuine build-material
-/// surplus (buffer well above the scaffold cost, leaving plenty for the next den after the
-/// field takes its share). Below this buffer the material chain keeps its cats and its
-/// output, and no field is ordered.
-pub const FIELD_MATERIAL_BUFFER: f64 = 4.0;
+/// staffed wood-cutter/stone-prep chain the founding colony needs to fund its dens. The
+/// threshold is the exact paid scaffold cost: phase 14 serializes the shared resource
+/// withdrawal, while the raw benches repair the protected 4/4 construction reserve after
+/// each project. Below this threshold no field is ordered.
+pub const FIELD_MATERIAL_BUFFER: f64 = 2.0;
 
 /// Passive per-cat fibre forage (P16/P19 clothing chain slice): cats picking up
 /// wayside plant fibre while going about their day, independent of any building,

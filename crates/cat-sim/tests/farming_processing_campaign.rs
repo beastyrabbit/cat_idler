@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
-    entities::{CatActivity, Resources},
+    entities::Resources,
     terrain_gen::{
         DecorationRole, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk, tile_climate_biome,
     },
@@ -54,6 +54,30 @@ fn signed() -> (String, String, String) {
         "Playtester".to_owned(),
         "server-verified".to_owned(),
     )
+}
+
+fn advance_at_player_cadence(world: &mut WorldState, now_ms: &mut i64, seconds: u64) {
+    const STEP_SECONDS: u64 = 300;
+    let whole_steps = seconds / STEP_SECONDS;
+    for _ in 0..whole_steps {
+        apply_ok(
+            world,
+            proto::ClientAction::AdvanceTime {
+                seconds: STEP_SECONDS,
+            },
+            *now_ms,
+        );
+        *now_ms += i64::try_from(STEP_SECONDS * 1_000).expect("step time fits i64");
+    }
+    let remainder = seconds % STEP_SECONDS;
+    if remainder > 0 {
+        apply_ok(
+            world,
+            proto::ClientAction::AdvanceTime { seconds: remainder },
+            *now_ms,
+        );
+        *now_ms += i64::try_from(remainder * 1_000).expect("remainder time fits i64");
+    }
 }
 
 fn generated_sites(seed: u32) -> (TilePos, TilePos, TilePos) {
@@ -123,22 +147,11 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     let (farm_a, farm_b, forest_site) = generated_sites(seed);
     let colony = &mut world.colonies[0];
 
-    // Keep survival staffed while the explicitly assigned processors work.
+    // Exercise the real 15-cat founding roster. Twelve cats remain available for
+    // survival while the farmer and two explicitly assigned processors work, and
+    // the additional guided den leaves one five-bed migration cohort of headroom.
     for cat in &mut colony.cats {
         cat.age_hours = 8.0;
-    }
-    let founders = colony.cats.clone();
-    for copy in 1..=2 {
-        for founder in &founders {
-            let mut cat = founder.clone();
-            cat.id = format!("{}-copy-{copy}", founder.id);
-            cat.name = format!("{} {copy}", founder.name);
-            cat.activity = CatActivity::Idle;
-            cat.current_task = None;
-            cat.destination = None;
-            cat.carrying = None;
-            colony.cats.push(cat);
-        }
     }
     colony.resources.food = 1_000.0;
     colony.resources.water = 1_000.0;
@@ -326,28 +339,14 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         START_MS,
     );
 
-    // Logging completes first; the second tick harvests and lets both processors
-    // consume the newly returned inputs.
-    apply_ok(
-        &mut world,
-        proto::ClientAction::AdvanceTime { seconds: 8 * 3_600 },
-        START_MS,
-    );
-    let after_logging_ms = START_MS + 8 * 3_600 * 1_000;
-    apply_ok(
-        &mut world,
-        proto::ClientAction::AdvanceTime {
-            seconds: 16 * 3_600,
-        },
-        after_logging_ms,
-    );
-    let after_harvest_ms = after_logging_ms + 16 * 3_600 * 1_000;
-    apply_ok(
-        &mut world,
-        proto::ClientAction::AdvanceTime { seconds: 600 },
-        after_harvest_ms,
-    );
-    let after_processing_ms = after_harvest_ms + 600 * 1_000;
+    // Drive time through repeated player actions rather than one giant offline jump.
+    // Five-minute decisions let cats physically drink, walk, haul, and return between
+    // the guided orders while still covering a full crop cycle quickly.
+    let mut campaign_at = START_MS;
+    advance_at_player_cadence(&mut world, &mut campaign_at, 8 * 3_600);
+    advance_at_player_cadence(&mut world, &mut campaign_at, 16 * 3_600);
+    advance_at_player_cadence(&mut world, &mut campaign_at, 600);
+    let after_processing_ms = campaign_at;
 
     let colony = &world.colonies[0];
     assert!(
@@ -369,10 +368,16 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         colony.resources.logs,
         colony.resources.lumber,
     );
-    assert_eq!(
-        colony.world_tiles[&forest_site].overlay_feature.as_deref(),
-        Some("stump"),
-        "the explicit logging source was depleted exactly once"
+    assert!(
+        colony.world_tiles[&forest_site].last_depleted > START_MS,
+        "the explicit logging source records its depletion"
+    );
+    assert!(
+        matches!(
+            colony.world_tiles[&forest_site].overlay_feature.as_deref(),
+            Some("stump" | "road_built")
+        ),
+        "the explicit logging source stays marked as cleared terrain"
     );
 
     // Guide the processing cats off their benches through the same action a real

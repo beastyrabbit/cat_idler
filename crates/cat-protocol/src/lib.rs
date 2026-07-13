@@ -345,6 +345,23 @@ pub struct CatSnapshot {
     /// defaults to `false` for older payloads.
     #[serde(default)]
     pub pregnant: bool,
+    /// Stable permanent-bed status. Probationary cats are physically present and may
+    /// work, but remain unhoused until a vacancy is allocated before their deadline.
+    #[serde(default)]
+    pub housing_status: CatHousingStatus,
+    /// Remaining in-game minutes before an unhoused probationary arrival leaves.
+    /// `None` for permanent residents and legacy snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probation_remaining_game_minutes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CatHousingStatus {
+    #[default]
+    Housed,
+    Probationary,
+    Unhoused,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -523,6 +540,18 @@ pub struct HousingSnapshot {
     pub capacity: u32,
     pub pressure: f64,
     pub village_level: u32,
+    /// Permanent residents with a deterministic bed allocation.
+    #[serde(default)]
+    pub housed: u32,
+    /// Living arrivals still inside their 36-game-hour housing probation.
+    #[serde(default)]
+    pub probationary: u32,
+    /// All living cats without a permanent bed (including probationers).
+    #[serde(default)]
+    pub unhoused: u32,
+    /// Lifetime number of probationary cats who physically left without housing.
+    #[serde(default)]
+    pub departures: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1325,6 +1354,30 @@ mod tests {
     }
 
     #[test]
+    fn populated_zero_den_housing_snapshot_is_json_round_trip_safe() {
+        let mut snapshot = sample_world_snapshot();
+        snapshot.colonies[0].housing = HousingSnapshot {
+            population: 15,
+            capacity: 0,
+            pressure: 15.0,
+            village_level: 1,
+            housed: 0,
+            probationary: 0,
+            unhoused: 15,
+            departures: 0,
+        };
+
+        let websocket_text = serde_json::to_string(&snapshot).expect("serialize WS snapshot");
+        let wire: serde_json::Value =
+            serde_json::from_str(&websocket_text).expect("inspect WS snapshot");
+        assert_eq!(wire["colonies"][0]["housing"]["pressure"], 15.0);
+        let decoded: WorldSnapshot =
+            serde_json::from_str(&websocket_text).expect("deserialize WS snapshot");
+        assert_eq!(decoded, snapshot);
+        assert!(decoded.colonies[0].housing.pressure.is_finite());
+    }
+
+    #[test]
     fn ts_dashboard_id_aliases_deserialize() {
         let mut encoded =
             serde_json::to_value(sample_world_snapshot()).expect("serialize snapshot");
@@ -1503,6 +1556,8 @@ mod tests {
                     parents: vec!["Ash".to_string()],
                     boosted: false,
                     pregnant: false,
+                    housing_status: CatHousingStatus::Housed,
+                    probation_remaining_game_minutes: None,
                 }],
                 jobs: vec![JobSnapshot {
                     id: "job_1".to_string(),
@@ -1529,6 +1584,10 @@ mod tests {
                     capacity: 4,
                     pressure: 0.25,
                     village_level: 1,
+                    housed: 1,
+                    probationary: 0,
+                    unhoused: 0,
+                    departures: 0,
                 },
                 research: ResearchSnapshot {
                     owned_node_ids: vec!["root".to_string()],
@@ -2083,5 +2142,35 @@ mod tests {
             .remove("pregnant");
         let back: WorldSnapshot = serde_json::from_value(old).expect("deserialize");
         assert!(!back.colonies[0].cats[0].pregnant);
+    }
+
+    #[test]
+    fn cat_snapshot_probation_countdown_round_trips_and_defaults_absent() {
+        let mut snap = sample_world_snapshot();
+        snap.colonies[0].cats[0].housing_status = CatHousingStatus::Probationary;
+        snap.colonies[0].cats[0].probation_remaining_game_minutes = Some(2_160);
+        let encoded = serde_json::to_value(&snap).expect("serialize");
+        assert_eq!(
+            encoded["colonies"][0]["cats"][0]["probationRemainingGameMinutes"],
+            json!(2_160)
+        );
+        let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
+        assert_eq!(round, snap);
+
+        let mut old = serde_json::to_value(sample_world_snapshot()).expect("serialize");
+        let cat = old["colonies"][0]["cats"][0]
+            .as_object_mut()
+            .expect("cat object");
+        cat.remove("housingStatus");
+        cat.remove("probationRemainingGameMinutes");
+        let back: WorldSnapshot = serde_json::from_value(old).expect("deserialize");
+        assert_eq!(
+            back.colonies[0].cats[0].housing_status,
+            CatHousingStatus::Housed
+        );
+        assert_eq!(
+            back.colonies[0].cats[0].probation_remaining_game_minutes,
+            None
+        );
     }
 }

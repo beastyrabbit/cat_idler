@@ -12,6 +12,7 @@ use cat_sim::{
     farming::FarmPlot,
     items::Item,
     ledger::StockLedger,
+    migration::MigrationState,
     officers::OfficerRole,
     skills::Labor,
     stockpiles::{GatherSpot, Stockpile},
@@ -100,7 +101,9 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             tanneryCraftProgress REAL,
             metalForgeProgress REAL,
             anchorX INTEGER,
-            anchorY INTEGER
+            anchorY INTEGER,
+            migrationState TEXT,
+            migrationDepartures INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS cats (
@@ -269,6 +272,8 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "metalForgeProgress", "REAL"),
         ("colonies", "anchorX", "INTEGER"),
         ("colonies", "anchorY", "INTEGER"),
+        ("colonies", "migrationState", "TEXT"),
+        ("colonies", "migrationDepartures", "INTEGER"),
         ("cats", "skills", "TEXT"),
         ("cats", "boosted", "INTEGER NOT NULL DEFAULT 0"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
@@ -340,7 +345,8 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 testResourceDecayMultiplier, testResilienceHoursOverride,
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, farms, gatherSpots,
                 stockLedger, coin, items, woodCraftProgress, stoneCraftProgress,
-                clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY
+                clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY,
+                migrationState, migrationDepartures
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -367,11 +373,11 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
             stockpiles, farms, gatherSpots, stockLedger, coin, items, woodCraftProgress,
             stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
-            anchorX, anchorY
+            anchorX, anchorY, migrationState, migrationDepartures
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
-            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43
+            ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45
         )",
         params![
             colony.id,
@@ -417,6 +423,8 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.metal_forge_progress,
             colony.anchor.x,
             colony.anchor.y,
+            serde_json::to_string(&colony.migration_state).map_err(to_sql_json)?,
+            i64::try_from(colony.migration_departures).unwrap_or(i64::MAX),
         ],
     )?;
 
@@ -465,6 +473,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let gather_spots_json: Option<String> = row.get("gatherSpots")?;
     let stock_ledger_json: Option<String> = row.get("stockLedger")?;
     let items_json: Option<String> = row.get("items")?;
+    let migration_state_json: Option<String> = row.get("migrationState")?;
     let anchor = TilePos {
         x: row.get::<_, Option<i32>>("anchorX")?.unwrap_or(6),
         y: row.get::<_, Option<i32>>("anchorY")?.unwrap_or(6),
@@ -571,6 +580,14 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         coin: row.get::<_, Option<f64>>("coin")?.unwrap_or(0.0),
         trader: None,
         last_trader_departed_at: None,
+        migration_state: migration_state_json
+            .map(|raw| serde_json::from_str::<MigrationState>(&raw).map_err(from_sql_json))
+            .transpose()?
+            .unwrap_or_default(),
+        migration_departures: row
+            .get::<_, Option<i64>>("migrationDepartures")?
+            .unwrap_or(0)
+            .max(0) as u64,
         threat_pressure: row.get::<_, Option<f64>>("threatPressure")?.unwrap_or(0.0),
         last_raid_at: row.get("lastRaidAt")?,
         active_raid: row.get("activeRaidId")?,
@@ -1594,13 +1611,129 @@ mod tests {
     use cat_protocol::{ClientAction, JobKind as ProtoJobKind};
     use cat_sim::{
         actions::apply_action,
+        migration::ProbationaryMigrant,
         world_tick::{
             RaidPhase, ScoutMission, ScoutResource, found_colony, found_colony_at,
-            founding_revealed_tiles, new_world,
+            founding_revealed_tiles, new_world, world_tick,
         },
     };
 
     use super::*;
+
+    #[test]
+    fn migration_probation_cursor_and_departure_count_survive_restart_exactly() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(4_242);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 4_242);
+        colony.migration_state.last_evaluated_cohort_bucket = Some(7);
+        colony
+            .migration_state
+            .probationary_migrants
+            .push(ProbationaryMigrant {
+                id: "migrant-persisted".to_owned(),
+                arrived_game_minute: 1_800,
+                housing_deadline_game_minute: 3_960,
+            });
+        colony.migration_departures = 3;
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save");
+        let loaded = load_world(&conn).expect("load").expect("world");
+
+        assert_eq!(
+            loaded.colonies[0].migration_state,
+            world.colonies[0].migration_state
+        );
+        assert_eq!(loaded.colonies[0].migration_departures, 3);
+    }
+
+    #[test]
+    fn restart_at_organic_arrival_preserves_the_exact_deadline_outcome() {
+        const STARTED_AT: i64 = 10_000;
+        const STEP_MS: i64 = 15 * 60_000;
+        const ARRIVAL_HOUR: i64 = 30;
+        const DEADLINE_HOUR: i64 = 66;
+
+        let conn = open_database(":memory:").expect("database");
+        let seed = 42;
+        let mut uninterrupted = new_world(seed);
+        uninterrupted
+            .colonies
+            .push(found_colony(seed, "colony-1", STARTED_AT, seed));
+        let mut now = STARTED_AT;
+        while now < STARTED_AT + ARRIVAL_HOUR * 3_600_000 {
+            now += STEP_MS;
+            assert_eq!(world_tick(&mut uninterrupted, now)[0].reset_reason, None);
+        }
+        let arrival_ids = uninterrupted.colonies[0]
+            .migration_state
+            .probationary_migrants
+            .iter()
+            .map(|migrant| migrant.id.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            !arrival_ids.is_empty(),
+            "fixture never reached organic migration"
+        );
+        assert!(
+            uninterrupted.colonies[0]
+                .migration_state
+                .probationary_migrants
+                .iter()
+                .all(|migrant| migrant.housing_deadline_game_minute == 66 * 60)
+        );
+
+        save_world(&conn, &uninterrupted).expect("save at arrival");
+        let mut restarted = load_world(&conn)
+            .expect("load at arrival")
+            .expect("persisted world");
+        assert_eq!(
+            restarted.colonies[0].migration_state,
+            uninterrupted.colonies[0].migration_state
+        );
+        assert_eq!(restarted.colonies[0].migration_departures, 0);
+        for id in &arrival_ids {
+            assert!(restarted.colonies[0].cats.iter().any(|cat| cat.id == *id));
+        }
+
+        while now < STARTED_AT + DEADLINE_HOUR * 3_600_000 {
+            now += STEP_MS;
+            // Hold the deliberately poor branch below the materials bar so no later
+            // cohort obscures the first cohort's exact deadline comparison.
+            for world in [&mut uninterrupted, &mut restarted] {
+                world.colonies[0].resources.materials = 0.0;
+                world.colonies[0].resources.planks = 0.0;
+                world.colonies[0].resources.blocks = 0.0;
+            }
+            assert_eq!(
+                world_tick(&mut uninterrupted, now),
+                world_tick(&mut restarted, now),
+                "restart changed tick outcome at {now}"
+            );
+            assert_eq!(
+                restarted.colonies[0].migration_state, uninterrupted.colonies[0].migration_state,
+                "restart changed probation state at {now}"
+            );
+            assert_eq!(
+                restarted.colonies[0].migration_departures,
+                uninterrupted.colonies[0].migration_departures,
+                "restart changed departure count at {now}"
+            );
+        }
+
+        for world in [&uninterrupted, &restarted] {
+            let colony = &world.colonies[0];
+            assert!(arrival_ids.iter().all(|id| {
+                !colony.cats.iter().any(|cat| cat.id == *id)
+                    && !colony
+                        .migration_state
+                        .probationary_migrants
+                        .iter()
+                        .any(|migrant| migrant.id == *id)
+            }));
+            assert_eq!(colony.migration_departures, arrival_ids.len() as u64);
+        }
+    }
 
     #[test]
     fn permanent_fog_scout_mission_and_provisional_notes_survive_restart() {
@@ -1729,6 +1862,8 @@ mod tests {
             ("colonies", "stockLedger"),
             ("colonies", "provisionalTiles"),
             ("colonies", "coin"),
+            ("colonies", "migrationState"),
+            ("colonies", "migrationDepartures"),
             ("cats", "skills"),
             ("cats", "boosted"),
         ] {
@@ -1745,6 +1880,8 @@ mod tests {
             ("colonies", "stockLedger"),
             ("colonies", "provisionalTiles"),
             ("colonies", "coin"),
+            ("colonies", "migrationState"),
+            ("colonies", "migrationDepartures"),
             ("cats", "skills"),
             ("cats", "boosted"),
         ] {

@@ -1,10 +1,11 @@
-//! Cat age calculations ported from `lib/game/age.ts`.
+//! Cat age calculations ported from `lib/game/age.ts`, with the post-port
+//! idle-game lifespan replacing the web prototype's two-day lifetime.
 
 use crate::{needs_constants::LIFE_STAGE_HOURS, types::LifeStage};
 
 const MS_PER_HOUR: f64 = 1000.0 * 60.0 * 60.0;
-const STANDARD_DEATH_THRESHOLD_HOURS: f64 = 48.0;
-const LEADER_OR_HEALER_DEATH_THRESHOLD_HOURS: f64 = 57.6;
+const STANDARD_DEATH_THRESHOLD_HOURS: f64 = 240.0;
+const LEADER_OR_HEALER_DEATH_THRESHOLD_HOURS: f64 = 288.0;
 const BASE_DEATH_CHANCE: f64 = 0.01;
 const DEATH_CHANCE_PER_HOUR: f64 = 0.005;
 
@@ -89,11 +90,8 @@ mod tests {
         source: String,
         note: String,
         age_in_hours: Vec<AgeInHoursCase>,
-        life_stages: Vec<LifeStageCase>,
-        death_chances: Vec<DeathChanceCase>,
         skill_modifiers: Vec<SkillModifierCase>,
         task_permissions: Vec<TaskPermissionCase>,
-        old_age_rolls: Vec<OldAgeRollCase>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -102,20 +100,6 @@ mod tests {
         birth_time: i64,
         current_time: i64,
         age: f64,
-    }
-
-    #[derive(Debug, Deserialize)]
-    struct LifeStageCase {
-        age: f64,
-        stage: LifeStage,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct DeathChanceCase {
-        age: f64,
-        is_leader_or_healer: bool,
-        chance: f64,
     }
 
     #[derive(Debug, Deserialize)]
@@ -131,15 +115,6 @@ mod tests {
         task_requires_outside: bool,
         is_dangerous_task: bool,
         can_perform: bool,
-    }
-
-    #[derive(Debug, Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct OldAgeRollCase {
-        age: f64,
-        is_leader_or_healer: bool,
-        roll: f64,
-        dies: bool,
     }
 
     fn fixture() -> Fixture {
@@ -173,20 +148,16 @@ mod tests {
     }
 
     #[test]
-    fn life_stage_boundaries_match_ts_fixture() {
-        for case in fixture().life_stages {
-            assert_eq!(get_life_stage(case.age), case.stage);
-        }
-    }
+    fn life_stage_and_mortality_boundaries_use_idle_game_pacing() {
+        assert_eq!(get_life_stage(23.999), LifeStage::Young);
+        assert_eq!(get_life_stage(24.0), LifeStage::Adult);
+        assert_eq!(get_life_stage(239.999), LifeStage::Adult);
+        assert_eq!(get_life_stage(240.0), LifeStage::Elder);
 
-    #[test]
-    fn death_chance_boundaries_match_ts_fixture() {
-        for case in fixture().death_chances {
-            assert_f64_exact(
-                get_death_chance(case.age, case.is_leader_or_healer),
-                case.chance,
-            );
-        }
+        assert_f64_exact(get_death_chance(239.999, false), 0.0);
+        assert_f64_exact(get_death_chance(240.0, false), 0.01);
+        assert_f64_exact(get_death_chance(287.999, true), 0.0);
+        assert_f64_exact(get_death_chance(288.0, true), 0.01);
     }
 
     #[test]
@@ -211,13 +182,12 @@ mod tests {
     }
 
     #[test]
-    fn old_age_rolls_match_ts_math_random_cases() {
-        for case in fixture().old_age_rolls {
-            assert_eq!(
-                should_die_of_old_age(case.age, case.is_leader_or_healer, case.roll),
-                case.dies
-            );
-        }
+    fn old_age_rolls_follow_the_idle_game_thresholds() {
+        assert!(!should_die_of_old_age(239.999, false, 0.0));
+        assert!(should_die_of_old_age(240.0, false, 0.009));
+        assert!(!should_die_of_old_age(240.0, false, 0.01));
+        assert!(!should_die_of_old_age(287.999, true, 0.0));
+        assert!(should_die_of_old_age(288.0, true, 0.009));
     }
 
     #[test]

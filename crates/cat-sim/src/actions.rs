@@ -29,8 +29,8 @@ use crate::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, ScoutMission, ScoutResource, TilePos,
         TradeDirection, VoteRuntime, WorldState, ZoneRuntime, found_colony, found_colony_at,
-        has_logging_site, inside_village_interior, reconcile_colony_stockpiles,
-        select_founding_site, tile_is_occupied, world_tick,
+        has_logging_site, inside_village_interior, migration_game_minute_at,
+        reconcile_colony_stockpiles, select_founding_site, tile_is_occupied, world_tick,
     },
     zones,
 };
@@ -1323,6 +1323,33 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
     let housing_buildings = housing_buildings(colony);
     let housing_capacity = housing::housing_capacity(&housing_buildings, effects.housing_per_den);
     let population = alive_cats.len() as u32;
+    let current_migration_minute = migration_game_minute_at(colony, now_ms);
+    let probation_deadlines = colony
+        .migration_state
+        .probationary_migrants
+        .iter()
+        .map(|migrant| (migrant.id.as_str(), migrant.housing_deadline_game_minute))
+        .collect::<BTreeMap<_, _>>();
+    let probationary = u32::try_from(
+        alive_cats
+            .iter()
+            .filter(|cat| probation_deadlines.contains_key(cat.id.as_str()))
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let permanent_population = population.saturating_sub(probationary);
+    let housing_capacity_u32 = housing_capacity.max(0.0).floor() as u32;
+    let housed = permanent_population.min(housing_capacity_u32);
+    let mut permanent_ids = alive_cats
+        .iter()
+        .filter(|cat| !probation_deadlines.contains_key(cat.id.as_str()))
+        .map(|cat| cat.id.as_str())
+        .collect::<Vec<_>>();
+    permanent_ids.sort_unstable();
+    let housed_ids = permanent_ids
+        .into_iter()
+        .take(housing_capacity_u32 as usize)
+        .collect::<BTreeSet<_>>();
     let election_payload = election_snapshot(colony, &alive_cats);
     let vote_kick_payload = vote_kick_snapshot(colony, &alive_cats);
     let warrior_count = alive_cats
@@ -1362,16 +1389,35 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         leader: leader_snapshot(colony, &alive_cats),
         cats: alive_cats
             .iter()
-            .map(|cat| cat_snapshot(colony, cat))
+            .map(|cat| {
+                let deadline = probation_deadlines.get(cat.id.as_str()).copied();
+                let status = if deadline.is_some() {
+                    proto::CatHousingStatus::Probationary
+                } else if housed_ids.contains(cat.id.as_str()) {
+                    proto::CatHousingStatus::Housed
+                } else {
+                    proto::CatHousingStatus::Unhoused
+                };
+                cat_snapshot(
+                    colony,
+                    cat,
+                    status,
+                    deadline.map(|deadline| deadline.saturating_sub(current_migration_minute)),
+                )
+            })
             .collect(),
         jobs: jobs_snapshot(colony),
         upgrades: upgrades_snapshot(colony),
         events: events_snapshot(colony),
         housing: proto::HousingSnapshot {
             population,
-            capacity: housing_capacity as u32,
+            capacity: housing_capacity_u32,
             pressure: housing::housing_pressure(f64::from(population), housing_capacity),
             village_level: housing::village_level(&housing_buildings),
+            housed,
+            probationary,
+            unhoused: population.saturating_sub(housed),
+            departures: colony.migration_departures,
         },
         research: research_snapshot(colony),
         election: election_payload,
@@ -1551,7 +1597,12 @@ fn stockpile_snapshot(
     }
 }
 
-fn cat_snapshot(colony: &ColonyRuntime, cat: &Cat) -> proto::CatSnapshot {
+fn cat_snapshot(
+    colony: &ColonyRuntime,
+    cat: &Cat,
+    housing_status: proto::CatHousingStatus,
+    probation_remaining_game_minutes: Option<u64>,
+) -> proto::CatSnapshot {
     proto::CatSnapshot {
         id: cat.id.clone(),
         name: cat.name.clone(),
@@ -1602,6 +1653,8 @@ fn cat_snapshot(colony: &ColonyRuntime, cat: &Cat) -> proto::CatSnapshot {
             .collect(),
         boosted: cat.boosted,
         pregnant: cat.is_pregnant,
+        housing_status,
+        probation_remaining_game_minutes,
     }
 }
 
@@ -3007,6 +3060,124 @@ mod tests {
         assert_eq!(shrine.staff_cap, 0);
         assert_eq!(shrine.production_progress, 0.0);
         assert_eq!(shrine.production_output, None);
+    }
+
+    #[test]
+    fn snapshot_exposes_visible_probationers_beds_unhoused_and_departures() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.run_started_at = 0;
+        let mut migrant = colony.cats[0].clone();
+        migrant.id = "migrant-snapshot".to_owned();
+        migrant.name = "Wayfarer Snapshot".to_owned();
+        colony.cats.push(migrant);
+        colony
+            .migration_state
+            .probationary_migrants
+            .push(crate::migration::ProbationaryMigrant {
+                id: "migrant-snapshot".to_owned(),
+                arrived_game_minute: 1_800,
+                housing_deadline_game_minute: 3_960,
+            });
+        colony.migration_departures = 2;
+
+        let snapshot = build_snapshot(&world, 1_800 * 60_000, 1);
+        let colony = &snapshot.colonies[0];
+
+        assert_eq!(colony.housing.population, 16);
+        assert_eq!(colony.housing.capacity, 15);
+        assert_eq!(colony.housing.housed, 15);
+        assert_eq!(colony.housing.probationary, 1);
+        assert_eq!(colony.housing.unhoused, 1);
+        assert_eq!(colony.housing.departures, 2);
+        assert_eq!(
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == "migrant-snapshot")
+                .unwrap()
+                .housing_status,
+            proto::CatHousingStatus::Probationary
+        );
+        assert_eq!(
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == "migrant-snapshot")
+                .unwrap()
+                .probation_remaining_game_minutes,
+            Some(2_160)
+        );
+
+        let deadline = build_snapshot(&world, 3_960 * 60_000, 1);
+        assert_eq!(
+            deadline.colonies[0]
+                .cats
+                .iter()
+                .find(|cat| cat.id == "migrant-snapshot")
+                .unwrap()
+                .probation_remaining_game_minutes,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn populated_legacy_zero_den_snapshot_crosses_json_without_nonfinite_pressure() {
+        let mut world = world_with_one_colony();
+        world.colonies[0]
+            .buildings
+            .retain(|building| building.building_type != BuildingType::Den);
+
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let housing = snapshot.colonies[0].housing;
+        assert_eq!(housing.population, 15);
+        assert_eq!(housing.capacity, 0);
+        assert_eq!(housing.pressure, 15.0);
+        assert!(housing.pressure.is_finite());
+
+        let websocket_text = serde_json::to_string(&snapshot).expect("serialize snapshot");
+        let decoded: proto::WorldSnapshot =
+            serde_json::from_str(&websocket_text).expect("deserialize snapshot");
+        assert_eq!(decoded, snapshot);
+    }
+
+    #[test]
+    fn large_census_housing_allocation_is_single_pass_shaped_and_order_stable() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        for index in 0..485 {
+            let mut cat = colony.cats[0].clone();
+            cat.id = format!("bulk-{index:04}");
+            cat.name = format!("Bulk {index}");
+            colony.cats.push(cat);
+            if index < 100 {
+                colony.migration_state.probationary_migrants.push(
+                    crate::migration::ProbationaryMigrant {
+                        id: format!("bulk-{index:04}"),
+                        arrived_game_minute: 1_800,
+                        housing_deadline_game_minute: 3_960,
+                    },
+                );
+            }
+        }
+        let mut reversed = world.clone();
+        reversed.colonies[0].cats.reverse();
+
+        let summarize = |world: &WorldState| {
+            let snapshot = build_snapshot(world, 1_800 * 60_000, 1);
+            let colony = &snapshot.colonies[0];
+            assert_eq!(colony.housing.population, 500);
+            assert_eq!(colony.housing.housed, 15);
+            assert_eq!(colony.housing.probationary, 100);
+            assert_eq!(colony.housing.unhoused, 485);
+            colony
+                .cats
+                .iter()
+                .map(|cat| (cat.id.clone(), cat.housing_status))
+                .collect::<BTreeMap<_, _>>()
+        };
+
+        assert_eq!(summarize(&world), summarize(&reversed));
     }
 
     #[test]

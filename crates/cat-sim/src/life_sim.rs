@@ -1,10 +1,11 @@
-//! Life-simulation rules ported from `lib/game/lifeSim.ts`.
+//! Life-simulation rules ported from `lib/game/lifeSim.ts`, with deliberate
+//! post-port idle-game population pacing.
 
 pub use crate::age::get_life_stage;
 
 use crate::{
     age::get_death_chance,
-    breeding::calculate_breeding_chance,
+    breeding::calculate_fertility_bonus,
     entities::CatStats,
     types::{CatSpecialization, LifeStage},
 };
@@ -13,9 +14,25 @@ pub const BREEDING_MIN_FOOD_RATIO: f64 = 0.35;
 pub const BREEDING_MIN_WATER_RATIO: f64 = 0.35;
 pub const BREEDING_FOOD_PER_CAT: f64 = 2.5;
 pub const BREEDING_WATER_PER_CAT: f64 = 2.5;
-pub const GESTATION_GAME_HOURS: f64 = 6.0;
-pub const BASE_BREEDING_CHANCE_PER_HOUR: f64 = 0.06;
-pub const SPECIALIST_BREEDING_BONUS: f64 = 0.1;
+/// Litters take eighteen game-hours after conception. Combined with the low
+/// aggregate conception rate, even the luckiest roll cannot produce an instant
+/// same-session population burst.
+pub const GESTATION_GAME_HOURS: f64 = 18.0;
+/// A fresh run spends its first day and a half establishing food, water and
+/// prosperity migration before beginning pregnancies. This keeps migration the
+/// visible fast-growth path without preventing already-pregnant cats from giving
+/// birth after a reset.
+pub const BREEDING_ESTABLISHMENT_GAME_HOURS: u64 = 36;
+/// One eligible cat has a 0.1% chance per game-hour. Across the 15-cat founding
+/// roster that is about a 1.5% colony-hour conception chance, before the one-
+/// conception-per-tick cap: the first migration opportunity is reliably the
+/// fast prosperity response, while breeding remains slow generational growth.
+pub const BASE_BREEDING_CHANCE_PER_HOUR: f64 = 0.001;
+pub const SPECIALIST_BREEDING_BONUS: f64 = 0.0002;
+/// Blessings remain useful without turning the old 2%-per-blessing helper into an
+/// instant litter faucet. Its already-capped bonus is scaled to at most 0.035%/h,
+/// preserving roughly the same proportion after the slower base-rate change.
+pub const FERTILITY_BLESSING_RATE_SCALE: f64 = 0.0007;
 pub const STAT_INHERIT_HIGH_WEIGHT: f64 = 0.6;
 pub const STAT_MUTATION: f64 = 8.0;
 pub const LEADERSHIP_GAIN_PER_HOUR: f64 = 0.35;
@@ -79,9 +96,9 @@ pub fn cat_breeding_chance_per_hour(
     specialization: Option<CatSpecialization>,
     blessings: f64,
 ) -> f64 {
-    let base =
-        BASE_BREEDING_CHANCE_PER_HOUR + specialization.map_or(0.0, |_| SPECIALIST_BREEDING_BONUS);
-    calculate_breeding_chance(base, blessings)
+    BASE_BREEDING_CHANCE_PER_HOUR
+        + specialization.map_or(0.0, |_| SPECIALIST_BREEDING_BONUS)
+        + calculate_fertility_bonus(blessings) * FERTILITY_BLESSING_RATE_SCALE
 }
 
 #[must_use]
@@ -279,23 +296,23 @@ mod tests {
 
     #[test]
     fn old_age_death_probability_scales_and_clamps() {
-        assert_f64_bits(old_age_death_probability(30.0, false, 1.0), 0.0, "young");
+        assert_f64_bits(old_age_death_probability(200.0, false, 1.0), 0.0, "adult");
         assert_f64_bits(
-            old_age_death_probability(48.0, false, 2.0),
+            old_age_death_probability(240.0, false, 2.0),
             0.02,
             "standard threshold two hours",
         );
         assert_f64_bits(
-            old_age_death_probability(57.6, true, 1.5),
+            old_age_death_probability(288.0, true, 1.5),
             0.015,
             "leader threshold one and a half hours",
         );
         assert_f64_bits(
-            old_age_death_probability(200.0, false, 10_000.0),
+            old_age_death_probability(500.0, false, 10_000.0),
             1.0,
             "skip-time cap",
         );
-        assert_f64_bits(old_age_death_probability(60.0, false, 0.0), 0.0, "zero");
+        assert_f64_bits(old_age_death_probability(300.0, false, 0.0), 0.0, "zero");
     }
 
     #[test]
@@ -339,33 +356,35 @@ mod tests {
 
     #[test]
     fn conception_uses_base_specialist_blessing_and_elapsed_time() {
-        assert_f64_bits(BASE_BREEDING_CHANCE_PER_HOUR, 0.06, "base breeding chance");
-        assert_f64_bits(SPECIALIST_BREEDING_BONUS, 0.1, "specialist breeding bonus");
+        assert_f64_bits(BASE_BREEDING_CHANCE_PER_HOUR, 0.001, "base breeding chance");
+        assert_f64_bits(
+            SPECIALIST_BREEDING_BONUS,
+            0.0002,
+            "specialist breeding bonus",
+        );
 
         assert_f64_bits(
             cat_breeding_chance_per_hour(None, 0.0),
-            0.06,
+            0.001,
             "plain per hour",
         );
-        assert_f64_bits(
+        assert_f64_close(
             cat_breeding_chance_per_hour(Some(CatSpecialization::Hunter), 0.0),
-            0.16,
+            0.0012,
             "specialist per hour",
         );
-        assert_f64_bits(
-            cat_breeding_chance_per_hour(None, 5.0),
-            0.16,
-            "plain with five blessings",
+        assert!(
+            (cat_breeding_chance_per_hour(None, 5.0) - 0.00107).abs() < 1e-12,
+            "plain with five blessings"
         );
-        assert_f64_bits(
-            conception_probability(None, 5.0, 2.5),
-            0.4,
-            "elapsed scaling",
+        assert!(
+            (conception_probability(None, 5.0, 2.5) - 0.002675).abs() < 1e-12,
+            "elapsed scaling"
         );
-        assert_f64_bits(
+        assert_f64_close(
             conception_probability(Some(CatSpecialization::Hunter), 100.0, 2.0),
-            1.0,
-            "conception cap",
+            0.0031,
+            "elapsed scaling remains slow even with many blessings",
         );
         assert_f64_bits(conception_probability(None, 0.0, 0.0), 0.0, "zero");
     }
@@ -443,6 +462,7 @@ mod tests {
         assert_eq!(get_life_stage(0.0), LifeStage::Kitten);
         assert_eq!(get_life_stage(12.0), LifeStage::Young);
         assert_eq!(get_life_stage(30.0), LifeStage::Adult);
-        assert_eq!(get_life_stage(60.0), LifeStage::Elder);
+        assert_eq!(get_life_stage(239.999), LifeStage::Adult);
+        assert_eq!(get_life_stage(240.0), LifeStage::Elder);
     }
 }

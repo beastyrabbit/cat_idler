@@ -1,4 +1,4 @@
-//! Housing and village growth rules ported from `lib/game/housing.ts`.
+//! Permanent housing and village growth rules.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,11 +23,11 @@ impl HousingBuilding {
     }
 }
 
-/// Cats sheltered by the shrine itself.
-pub const SHRINE_CAPACITY: f64 = 4.0;
+/// The shrine is a public building, not permanent housing.
+pub const SHRINE_CAPACITY: f64 = 0.0;
 
-/// Cats sheltered per den level.
-pub const DEN_CAPACITY_PER_LEVEL: f64 = 2.0;
+/// Permanent beds provided by every completed den/early house.
+pub const DEN_CAPACITY: f64 = 5.0;
 
 /// Leader plans a new den when pressure reaches this.
 pub const HOUSE_PRESSURE_THRESHOLD: f64 = 0.8;
@@ -54,8 +54,9 @@ pub fn housing_capacity(buildings: &[HousingBuilding], extra_per_den: f64) -> f6
                 capacity += SHRINE_CAPACITY;
             }
             BuildingType::Den => {
-                capacity += DEN_CAPACITY_PER_LEVEL * js_max(1.0, building.level)
-                    + js_max(0.0, extra_per_den);
+                // Legacy levels describe the building itself, not repeated floors of
+                // invisible beds. Explicit research remains an additive per-den bonus.
+                capacity += DEN_CAPACITY + js_max(0.0, extra_per_den);
             }
             _ => {}
         }
@@ -69,10 +70,26 @@ pub fn housing_pressure(population: f64, capacity: f64) -> f64 {
     if population <= 0.0 {
         return 0.0;
     }
-    if capacity <= 0.0 {
-        return f64::INFINITY;
+    // Housing pressure crosses the JSON/WebSocket boundary. `Infinity` cannot be
+    // represented by serde_json, so a populated zero-den legacy village uses one
+    // virtual denominator solely for the pressure signal. It remains strongly over
+    // threshold without inventing a real bed in `housing_capacity`.
+    let finite_population = if population.is_finite() {
+        population
+    } else {
+        f64::MAX
+    };
+    let finite_capacity = if capacity.is_finite() && capacity > 0.0 {
+        capacity
+    } else {
+        1.0
+    };
+    let pressure = finite_population / finite_capacity;
+    if pressure.is_finite() {
+        pressure
+    } else {
+        f64::MAX
     }
-    population / capacity
 }
 
 #[must_use]
@@ -115,7 +132,7 @@ fn js_max(left: f64, right: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEN_CAPACITY_PER_LEVEL, HOUSE_PRESSURE_THRESHOLD, HousingBuilding, SHRINE_CAPACITY,
+        DEN_CAPACITY, HOUSE_PRESSURE_THRESHOLD, HousingBuilding, SHRINE_CAPACITY,
         VILLAGE_LEVEL_THRESHOLDS, housing_capacity, housing_capacity_default, housing_pressure,
         should_queue_house, village_level,
     };
@@ -143,14 +160,14 @@ mod tests {
 
     #[test]
     fn constants_match_typescript_exports() {
-        assert_f64_bits(SHRINE_CAPACITY, 4.0, "shrine capacity");
-        assert_f64_bits(DEN_CAPACITY_PER_LEVEL, 2.0, "den capacity per level");
+        assert_f64_bits(SHRINE_CAPACITY, 0.0, "shrine capacity");
+        assert_f64_bits(DEN_CAPACITY, 5.0, "den capacity");
         assert_f64_bits(HOUSE_PRESSURE_THRESHOLD, 0.8, "house pressure threshold");
         assert_eq!(VILLAGE_LEVEL_THRESHOLDS, [6, 12, 20, 30]);
     }
 
     #[test]
-    fn capacity_counts_finished_shrine_and_den_levels() {
+    fn capacity_counts_five_beds_per_finished_den_and_ignores_levels() {
         let buildings = [
             building(BuildingType::Shrine, 1.0, 100.0),
             den(),
@@ -159,8 +176,8 @@ mod tests {
 
         assert_f64_bits(
             housing_capacity_default(&buildings),
-            4.0 + 2.0 + 4.0,
-            "shrine plus dens",
+            10.0,
+            "two five-bed dens",
         );
     }
 
@@ -174,7 +191,7 @@ mod tests {
 
         assert_f64_bits(
             housing_capacity_default(&buildings),
-            4.0,
+            0.0,
             "finished housing",
         );
         assert_f64_bits(housing_capacity_default(&[]), 0.0, "empty building list");
@@ -188,25 +205,21 @@ mod tests {
             building(BuildingType::Den, 2.0, 100.0),
         ];
 
-        assert_f64_bits(
-            housing_capacity(&buildings, 1.0),
-            4.0 + (2.0 + 1.0) + (4.0 + 1.0),
-            "per-den bonus",
-        );
+        assert_f64_bits(housing_capacity(&buildings, 1.0), 12.0, "per-den bonus");
         assert_f64_bits(
             housing_capacity(&[building(BuildingType::Shrine, 1.0, 100.0)], 3.0),
-            4.0,
+            0.0,
             "shrine receives no per-den bonus",
         );
         assert_f64_bits(
             housing_capacity(&[den()], -9.0),
-            2.0,
+            5.0,
             "negative bonus clamps to zero",
         );
     }
 
     #[test]
-    fn capacity_clamps_den_level_to_at_least_one_like_typescript() {
+    fn legacy_den_levels_do_not_multiply_permanent_beds() {
         let buildings = [
             building(BuildingType::Den, 0.0, 100.0),
             building(BuildingType::Den, -4.0, 100.0),
@@ -215,14 +228,18 @@ mod tests {
 
         assert_f64_bits(
             housing_capacity_default(&buildings),
-            2.0 + 2.0 + 5.0,
-            "levels",
+            15.0,
+            "three dens regardless of legacy level",
         );
     }
 
     #[test]
     fn capacity_preserves_typescript_nan_edges() {
-        assert!(housing_capacity_default(&[building(BuildingType::Den, f64::NAN, 100.0)]).is_nan());
+        assert_f64_bits(
+            housing_capacity_default(&[building(BuildingType::Den, f64::NAN, 100.0)]),
+            5.0,
+            "legacy level is ignored",
+        );
         assert!(housing_capacity(&[den()], f64::NAN).is_nan());
 
         assert_f64_bits(
@@ -236,7 +253,12 @@ mod tests {
     fn pressure_is_population_over_capacity_with_empty_and_zero_capacity_cases() {
         assert_f64_bits(housing_pressure(10.0, 20.0), 0.5, "half full");
         assert_f64_bits(housing_pressure(20.0, 14.0), 20.0 / 14.0, "over capacity");
-        assert!(housing_pressure(5.0, 0.0).is_infinite());
+        assert_f64_bits(
+            housing_pressure(5.0, 0.0),
+            5.0,
+            "populated zero-den pressure remains finite",
+        );
+        assert!(housing_pressure(5.0, 0.0).is_finite());
         assert_f64_bits(housing_pressure(0.0, 0.0), 0.0, "empty with no capacity");
         assert_f64_bits(housing_pressure(0.0, 10.0), 0.0, "empty with capacity");
     }
