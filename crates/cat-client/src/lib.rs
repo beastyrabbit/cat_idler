@@ -22,32 +22,40 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
 use bevy::ui::RelativeCursorPosition;
 use cat_protocol::{
-    BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot, ClientAction,
-    ColonySnapshot, EventSnapshot, FootprintSize, GateSide, ItemStackSnapshot, JobKind,
-    OfficerRole, RaiderStatus, ResearchSnapshot, ResourceAmounts, ResourceCapacities, ResourceKind,
-    RoleXp, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
+    ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot,
+    ClientAction, ColonySnapshot, EventSnapshot, FootprintSize, GateSide, ItemStackSnapshot,
+    JobKind, OfficerRole, RaiderStatus, ResearchSnapshot, ResourceAmounts, ResourceCapacities,
+    ResourceKind, RoleXp, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint,
+    TraderBuyOffer, TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
-    DecorationRole, RockSize, TerrainTile, WORLD_TERRAIN_OPTIONS, derive_biome_decoration,
-    generate_terrain_chunk, tile_climate_biome,
+    DecorationRole, RockSize, TERRAIN_CHUNK_SIZE, TerrainTile, WORLD_TERRAIN_OPTIONS,
+    derive_biome_decoration, generate_terrain_chunk, tile_climate_biome,
 };
 use cat_sim::upgrade_tree::{UPGRADE_NODES, UpgradeNode};
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Side length (world units) of one flat tile. Shrunk to ~1/3 of the original 28
 /// so buildings read at a sensible size and more of the world fits on screen;
 /// everything (terrain, footprint buildings, cats, trees, walls) scales off it.
 const TILE: f32 = 10.0;
-/// Half-width (in tiles) of the terrain window regenerated around the anchor.
-const WINDOW_RADIUS: i32 = 30;
+/// Chunks kept immediately around the camera. Five chunks across cover the
+/// default 1280x800 view while keeping the terrain entity count bounded.
+const TERRAIN_CHUNK_RADIUS: i32 = 2;
+/// A one-chunk cache margin avoids unloading/reloading a full strip when the
+/// camera briefly crosses a chunk edge.
+const TERRAIN_RETAIN_RADIUS: i32 = TERRAIN_CHUNK_RADIUS + 1;
+/// Reconnect attempts use exponential backoff, capped so a long-running idle
+/// client recovers without hammering a missing server.
+const MAX_RECONNECT_DELAY_SECS: f32 = 30.0;
+const CLIENT_ALERT_CAP: usize = 8;
 /// Starting (and R-reset) camera zoom, tuned to frame the village at the small
 /// tile — a little zoomed in since there's now more world per screen.
-const DEFAULT_ZOOM: f32 = 0.4;
+const DEFAULT_ZOOM: f32 = 0.25;
 /// Orthographic-scale zoom bounds (smaller scale = closer). `MIN_ZOOM` lets the
 /// wheel push all the way in to individual-cat level; `MAX_ZOOM` frames the
 /// whole known map.
@@ -269,6 +277,44 @@ struct Session {
     presence_sent: bool,
     ready: bool,
 }
+
+/// Current transport lifecycle. A failed connection waits for a capped
+/// exponential delay, then tries again for as long as the idle client runs.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+enum ConnectionPhase {
+    #[default]
+    Disconnected,
+    Connecting,
+    Connected,
+    WaitingToRetry,
+}
+
+#[derive(Resource, Default)]
+struct ConnectionState {
+    phase: ConnectionPhase,
+    retry_attempt: u32,
+    retry_remaining_secs: f32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum FeedbackLevel {
+    #[default]
+    Info,
+    Error,
+}
+
+/// Prominent connection/action feedback shown above the world.
+#[derive(Resource, Default)]
+struct ClientFeedback {
+    message: Option<String>,
+    level: FeedbackLevel,
+    remaining_secs: f32,
+}
+
+/// Client-side dispatches that must survive the next snapshot update (notably
+/// rejected actions and transport loss).
+#[derive(Resource, Default)]
+struct ClientAlerts(VecDeque<String>);
 
 /// Outbound action queue drained onto the socket by [`flush_outgoing`].
 #[derive(Resource, Default)]
@@ -535,10 +581,18 @@ impl ToolMode {
     }
 }
 
-/// Tracks one-time terrain spawn (terrain is static per `world_seed`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct ChunkKey {
+    x: i32,
+    y: i32,
+}
+
+/// Camera-relative terrain cache. Terrain is deterministic per seed, but the
+/// loaded chunk set streams as the camera crosses the unbounded world.
 #[derive(Resource, Default)]
 struct WorldRender {
-    terrain_spawned: bool,
+    world_seed: Option<i64>,
+    loaded_chunks: HashSet<ChunkKey>,
 }
 
 /// Pixel-art terrain + nature texture handles, loaded once at startup.
@@ -1125,6 +1179,11 @@ struct WsConn {
     receiver: WsReceiver,
 }
 
+/// The single camera that renders and navigates the world. Keeping an explicit
+/// marker prevents future UI/minimap cameras from being panned accidentally.
+#[derive(Component)]
+struct WorldCamera;
+
 /// A persistent cat body sprite, keyed by cat id so it survives snapshots and
 /// glides toward its target tile.
 #[derive(Component)]
@@ -1253,9 +1312,20 @@ struct HudHeaderText;
 /// Marker for the HUD jobs + ledger footer text.
 #[derive(Component)]
 struct HudFooterText;
-/// Marker for a fog-of-war tile sprite.
+/// Marker for one deterministic terrain/decor visual, used to unload a chunk.
+#[derive(Component, Clone, Copy)]
+struct TerrainVisual(ChunkKey);
+/// A fog-of-war tile sprite, keyed by tile for incremental updates.
+#[derive(Component, Clone, Copy)]
+struct FogTile {
+    x: i32,
+    y: i32,
+}
+/// Prominent action/connection feedback panel and its text child.
 #[derive(Component)]
-struct FogTile;
+struct ClientFeedbackPanel;
+#[derive(Component)]
+struct ClientFeedbackText;
 /// Marker for a paved-road tile sprite.
 #[derive(Component)]
 struct RoadTile;
@@ -1799,6 +1869,13 @@ type ButtonQuery<'w, 's> = Query<
     (&'static Interaction, &'static ActionButton),
     (Changed<Interaction>, With<Button>),
 >;
+/// Disjoint feedback label query kept named so the HUD system signature stays readable.
+type FeedbackLabelQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Text, &'static mut TextColor),
+    (With<ClientFeedbackText>, Without<ClientFeedbackPanel>),
+>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ButtonAction {
@@ -1878,6 +1955,9 @@ pub fn run() {
         .add_plugins(BrpDevPlugin)
         .insert_resource(LatestSnapshot::default())
         .insert_resource(Session::default())
+        .insert_resource(ConnectionState::default())
+        .insert_resource(ClientFeedback::default())
+        .insert_resource(ClientAlerts::default())
         .insert_resource(OutgoingActions::default())
         .insert_resource(WorldRender::default())
         .insert_resource(Selection::default())
@@ -1893,7 +1973,9 @@ pub fn run() {
         .insert_resource(CatBodies::default())
         .insert_resource(RaiderBodies::default())
         .insert_resource(Tools::default())
-        .insert_resource(ClearColor(Color::srgb(0.06, 0.09, 0.08)))
+        // Match the unloaded world to full fog so zooming out never exposes a
+        // hard rectangle around the bounded chunk cache.
+        .insert_resource(ClearColor(FOG_COLOR))
         .add_systems(Startup, (setup, connect_ws))
         // Grouped into sub-tuples to stay within Bevy's 20-per-tuple system arity.
         .add_systems(
@@ -1902,10 +1984,11 @@ pub fn run() {
                 // networking + world render
                 (
                     poll_ws,
-                    ensure_presence,
-                    spawn_terrain,
+                    reconnect_ws.after(poll_ws),
+                    ensure_presence.after(poll_ws).after(reconnect_ws),
+                    spawn_terrain.after(camera_controls),
                     render_roads,
-                    render_fog,
+                    render_fog.after(spawn_terrain),
                     render_buildings,
                     render_walls,
                     render_zones,
@@ -1939,6 +2022,7 @@ pub fn run() {
                     render_zone_preview,
                     update_hud,
                     update_event_log,
+                    update_client_feedback,
                     handle_buttons,
                     toggle_officers,
                     update_officers_panel,
@@ -2186,7 +2270,39 @@ fn setup(
     // Camera at Z=1000: a default Camera2d sits at Z=0 and clips sprites at
     // Z>0. Centre on the village anchor.
     let center = grid_to_world(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y);
-    commands.spawn((Camera2d, Transform::from_xyz(center.x, center.y, CAMERA_Z)));
+    commands.spawn((
+        Camera2d,
+        Transform::from_xyz(center.x, center.y, CAMERA_Z),
+        WorldCamera,
+    ));
+
+    // Transport and rejected-action feedback must not disappear into the log.
+    // Keep a compact banner above the world; it is hidden until feedback exists.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Percent(30.0),
+                top: Val::Px(58.0),
+                width: Val::Percent(40.0),
+                min_height: Val::Px(34.0),
+                padding: UiRect::axes(Val::Px(UI_PAD), Val::Px(UI_GAP)),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                display: Display::None,
+                ..default()
+            },
+            GlobalZIndex(100),
+            ui_panel_frame(),
+            ClientFeedbackPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                ui_text("", FS_BODY, UI_INK),
+                TextLayout::justify(Justify::Center),
+                ClientFeedbackText,
+            ));
+        });
 
     // HUD dashboard (top-left): a kit panel with a "Colony" title bar, a status
     // header, a two-column resource grid and a jobs/ledger footer.
@@ -2911,59 +3027,197 @@ fn server_ws_url() -> String {
 }
 
 fn connect_ws(world: &mut World) {
+    begin_connection(world);
+}
+
+fn begin_connection(world: &mut World) {
     let url = server_ws_url();
+    world.resource_mut::<ConnectionState>().phase = ConnectionPhase::Connecting;
     match ewebsock::connect(url.clone(), ewebsock::Options::default()) {
         Ok((sender, receiver)) => {
             info!("cat-client connecting to {url}");
             world.insert_non_send(WsConn { sender, receiver });
         }
-        Err(err) => error!("cat-client failed to connect to {url}: {err}"),
+        Err(err) => {
+            error!("cat-client failed to connect to {url}: {err}");
+            schedule_reconnect(world, format!("Connection failed: {err}"));
+        }
     }
 }
 
 /// Drain socket messages: `WorldSnapshot`s update the render, action results
 /// carry the signed session after a `Presence` handshake.
-fn poll_ws(
-    conn: Option<NonSend<WsConn>>,
-    mut latest: ResMut<LatestSnapshot>,
-    mut session: ResMut<Session>,
-) {
-    let Some(conn) = conn else {
+fn poll_ws(world: &mut World) {
+    let Some(conn) = world.get_non_send::<WsConn>() else {
         return;
     };
+    let mut events = Vec::new();
     while let Some(event) = conn.receiver.try_recv() {
-        let WsEvent::Message(WsMessage::Text(text)) = event else {
-            continue;
-        };
-        // Snapshots carry a `colonies` array; action results carry `ok`.
-        match serde_json::from_str::<serde_json::Value>(&text) {
-            Ok(value) if value.get("colonies").is_some() => {
-                match serde_json::from_str::<WorldSnapshot>(&text) {
-                    Ok(snapshot) => latest.0 = Some(snapshot),
-                    Err(err) => warn!("bad snapshot: {err}"),
+        events.push(event);
+    }
+
+    for event in events {
+        match event {
+            WsEvent::Opened => {
+                let was_retry = world.resource::<ConnectionState>().retry_attempt > 0;
+                {
+                    let mut state = world.resource_mut::<ConnectionState>();
+                    state.phase = ConnectionPhase::Connected;
+                    state.retry_attempt = 0;
+                    state.retry_remaining_secs = 0.0;
                 }
+                set_feedback(
+                    world,
+                    if was_retry {
+                        "Reconnected to colony server."
+                    } else {
+                        "Connected to colony server."
+                    },
+                    FeedbackLevel::Info,
+                );
             }
-            Ok(value) => {
-                if let (Some(sid), Some(sig)) = (
-                    value.get("sessionId").and_then(|v| v.as_str()),
-                    value.get("sig").and_then(|v| v.as_str()),
-                ) {
-                    session.session_id = sid.to_string();
-                    session.sig = sig.to_string();
-                    session.ready = true;
+            WsEvent::Message(WsMessage::Text(text)) => match parse_server_message(&text) {
+                Ok(ServerPayload::Snapshot(snapshot)) => {
+                    world.resource_mut::<LatestSnapshot>().0 = Some(snapshot);
                 }
+                Ok(ServerPayload::Action {
+                    result,
+                    signed_session,
+                }) => {
+                    if let Some((session_id, sig)) = signed_session {
+                        let mut session = world.resource_mut::<Session>();
+                        session.session_id = session_id;
+                        session.sig = sig;
+                        session.ready = true;
+                    }
+                    if !result.ok {
+                        let message = result
+                            .message
+                            .unwrap_or_else(|| "The server rejected that action.".to_string());
+                        let visible = format!("Action failed: {message}");
+                        push_client_alert(world, visible.clone());
+                        set_feedback(world, visible, FeedbackLevel::Error);
+                    } else if let Some(message) = result.message {
+                        set_feedback(world, message, FeedbackLevel::Info);
+                    }
+                }
+                Err(err) => warn!("bad ws message: {err}"),
+            },
+            WsEvent::Message(_) => {}
+            WsEvent::Error(err) => {
+                schedule_reconnect(world, format!("Connection error: {err}"));
+                break;
             }
-            Err(err) => warn!("bad ws message: {err}"),
+            WsEvent::Closed => {
+                schedule_reconnect(world, "Connection closed.".to_string());
+                break;
+            }
         }
     }
 }
 
+#[derive(Debug)]
+enum ServerPayload {
+    Snapshot(WorldSnapshot),
+    Action {
+        result: ActionResult,
+        signed_session: Option<(String, String)>,
+    },
+}
+
+fn parse_server_message(text: &str) -> Result<ServerPayload, String> {
+    let value: serde_json::Value = serde_json::from_str(text).map_err(|err| err.to_string())?;
+    if value.get("colonies").is_some() {
+        return serde_json::from_value(value)
+            .map(ServerPayload::Snapshot)
+            .map_err(|err| err.to_string());
+    }
+    if value.get("ok").is_none() {
+        return Err("message was neither a snapshot nor an action result".to_string());
+    }
+    let signed_session = match (
+        value.get("sessionId").and_then(|field| field.as_str()),
+        value.get("sig").and_then(|field| field.as_str()),
+    ) {
+        (Some(session_id), Some(sig)) => Some((session_id.to_string(), sig.to_string())),
+        _ => None,
+    };
+    serde_json::from_value::<ActionResult>(value)
+        .map(|result| ServerPayload::Action {
+            result,
+            signed_session,
+        })
+        .map_err(|err| err.to_string())
+}
+
+fn reconnect_delay_secs(attempt: u32) -> f32 {
+    let exponent = attempt.saturating_sub(1).min(5);
+    (2_u32.pow(exponent) as f32).min(MAX_RECONNECT_DELAY_SECS)
+}
+
+fn schedule_reconnect(world: &mut World, reason: String) {
+    world.remove_non_send::<WsConn>();
+    {
+        let mut session = world.resource_mut::<Session>();
+        session.session_id.clear();
+        session.sig.clear();
+        session.presence_sent = false;
+        session.ready = false;
+    }
+    let (attempt, delay) = {
+        let mut state = world.resource_mut::<ConnectionState>();
+        state.retry_attempt = state.retry_attempt.saturating_add(1);
+        state.retry_remaining_secs = reconnect_delay_secs(state.retry_attempt);
+        state.phase = ConnectionPhase::WaitingToRetry;
+        (state.retry_attempt, state.retry_remaining_secs)
+    };
+    let message = format!("{reason} Retrying in {delay:.0}s (attempt {attempt}).");
+    push_client_alert(world, message.clone());
+    set_feedback(world, message, FeedbackLevel::Error);
+}
+
+fn reconnect_ws(world: &mut World) {
+    let delta = world.resource::<Time>().delta_secs();
+    let should_reconnect = {
+        let mut state = world.resource_mut::<ConnectionState>();
+        if state.phase != ConnectionPhase::WaitingToRetry {
+            false
+        } else {
+            state.retry_remaining_secs = (state.retry_remaining_secs - delta).max(0.0);
+            state.retry_remaining_secs == 0.0
+        }
+    };
+    if should_reconnect {
+        begin_connection(world);
+    }
+}
+
+fn set_feedback(world: &mut World, message: impl Into<String>, level: FeedbackLevel) {
+    let mut feedback = world.resource_mut::<ClientFeedback>();
+    feedback.message = Some(message.into());
+    feedback.level = level;
+    feedback.remaining_secs = match level {
+        FeedbackLevel::Info => 3.0,
+        FeedbackLevel::Error => 8.0,
+    };
+}
+
+fn push_client_alert(world: &mut World, message: String) {
+    let mut alerts = world.resource_mut::<ClientAlerts>();
+    alerts.0.push_front(message);
+    alerts.0.truncate(CLIENT_ALERT_CAP);
+}
+
 /// Send the `Presence` handshake once so the server issues a signed session.
-fn ensure_presence(conn: Option<NonSendMut<WsConn>>, mut session: ResMut<Session>) {
+fn ensure_presence(
+    conn: Option<NonSendMut<WsConn>>,
+    state: Res<ConnectionState>,
+    mut session: ResMut<Session>,
+) {
     let Some(mut conn) = conn else {
         return;
     };
-    if session.presence_sent {
+    if state.phase != ConnectionPhase::Connected || session.presence_sent {
         return;
     }
     let action = ClientAction::Presence {
@@ -2977,31 +3231,68 @@ fn ensure_presence(conn: Option<NonSendMut<WsConn>>, mut session: ResMut<Session
     }
 }
 
-/// Spawn the flat terrain grid once, from the first snapshot's `world_seed`.
+/// Stream deterministic terrain chunks around the camera. The world is
+/// unbounded: panning (including a minimap jump) swaps in the new local chunks
+/// and drops chunks beyond a one-chunk retention margin.
 fn spawn_terrain(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
     art: Option<Res<TerrainArt>>,
     mut render: ResMut<WorldRender>,
+    camera: Query<&Transform, With<WorldCamera>>,
+    visuals: Query<(Entity, &TerrainVisual)>,
 ) {
-    if render.terrain_spawned {
-        return;
-    }
     let (Some(world), Some(art)) = (latest.0.as_ref(), art) else {
         return;
     };
     let seed = world.world_seed;
-    let tiles = window_terrain(seed);
+    let Ok(camera) = camera.single() else {
+        return;
+    };
+    let camera_tile = world_to_tile(camera.translation.truncate());
+    let center = tile_to_chunk(camera_tile.0, camera_tile.1);
+    let center = ChunkKey {
+        x: center.chunk_x,
+        y: center.chunk_y,
+    };
+
+    if render.world_seed != Some(seed) {
+        for (entity, _) in &visuals {
+            commands.entity(entity).despawn();
+        }
+        render.loaded_chunks.clear();
+        render.world_seed = Some(seed);
+    }
+
+    let retained = chunks_around(center, TERRAIN_RETAIN_RADIUS);
+    let expired: HashSet<ChunkKey> = render
+        .loaded_chunks
+        .difference(&retained)
+        .copied()
+        .collect();
+    if !expired.is_empty() {
+        for (entity, visual) in &visuals {
+            if expired.contains(&visual.0) {
+                commands.entity(entity).despawn();
+            }
+        }
+        render
+            .loaded_chunks
+            .retain(|chunk| !expired.contains(chunk));
+    }
+
+    let desired = chunks_around(center, TERRAIN_CHUNK_RADIUS);
+    let needed: HashSet<ChunkKey> = desired.difference(&render.loaded_chunks).copied().collect();
+    if needed.is_empty() {
+        return;
+    }
+
+    let (tiles, water) = terrain_for_chunks(seed, &needed);
     // Water coordinates (river overlay OR a water climate biome), so shore tiles
     // (a non-water orthogonal neighbour) can use the water_edge variant.
-    let water: HashSet<(i32, i32)> = tiles
-        .iter()
-        .filter(|t| t.river.is_some() || is_water_biome(t.climate_biome))
-        .map(|t| (t.x, t.y))
-        .collect();
-
     for tile in &tiles {
         let p = grid_to_world(tile.x, tile.y);
+        let chunk = chunk_for_tile(tile.x, tile.y);
         let is_water = tile.river.is_some() || is_water_biome(tile.climate_biome);
         let ground = if is_water {
             if is_shore(tile.x, tile.y, &water) {
@@ -3023,6 +3314,7 @@ fn spawn_terrain(
                 ..default()
             },
             Transform::from_xyz(p.x, p.y, Z_TERRAIN),
+            TerrainVisual(chunk),
         ));
 
         // Per-biome decoration density: forests dense with trees, plains open,
@@ -3049,6 +3341,7 @@ fn spawn_terrain(
                     },
                     Anchor::CENTER,
                     Transform::from_xyz(p.x, p.y, ysort_z(p.y)),
+                    TerrainVisual(chunk),
                 ));
             }
             Some(DecorationRole::Rock { size, .. }) => {
@@ -3062,13 +3355,68 @@ fn spawn_terrain(
                     },
                     Anchor::BOTTOM_CENTER,
                     Transform::from_xyz(p.x, base_y, ysort_z(base_y)),
+                    TerrainVisual(chunk),
                 ));
             }
             None => {}
         }
     }
-    render.terrain_spawned = true;
-    info!("terrain spawned (seed {seed}, {} tiles)", tiles.len());
+    let loaded = needed.len();
+    render.loaded_chunks.extend(needed);
+    debug!(
+        "terrain streamed (seed {seed}, {loaded} chunks, {} tiles)",
+        tiles.len()
+    );
+}
+
+fn chunk_for_tile(x: i32, y: i32) -> ChunkKey {
+    let chunk = tile_to_chunk(x, y);
+    ChunkKey {
+        x: chunk.chunk_x,
+        y: chunk.chunk_y,
+    }
+}
+
+fn chunks_around(center: ChunkKey, radius: i32) -> HashSet<ChunkKey> {
+    let mut chunks = HashSet::with_capacity(((radius * 2 + 1).pow(2)) as usize);
+    for y in center.y - radius..=center.y + radius {
+        for x in center.x - radius..=center.x + radius {
+            chunks.insert(ChunkKey { x, y });
+        }
+    }
+    chunks
+}
+
+fn expanded_chunks(chunks: &HashSet<ChunkKey>, radius: i32) -> HashSet<ChunkKey> {
+    let mut expanded = HashSet::new();
+    for chunk in chunks {
+        expanded.extend(chunks_around(*chunk, radius));
+    }
+    expanded
+}
+
+/// Generate requested chunks plus a one-chunk halo used only for correct shore
+/// classification at chunk seams.
+fn terrain_for_chunks(
+    seed: i64,
+    requested: &HashSet<ChunkKey>,
+) -> (Vec<TerrainTile>, HashSet<(i32, i32)>) {
+    let mut generation: Vec<ChunkKey> = expanded_chunks(requested, 1).into_iter().collect();
+    generation.sort_by_key(|chunk| (chunk.y, chunk.x));
+
+    let mut tiles = Vec::new();
+    let mut water = HashSet::new();
+    for chunk in generation {
+        for tile in generate_terrain_chunk(chunk.x, chunk.y, seed, WORLD_TERRAIN_OPTIONS) {
+            if tile.river.is_some() || is_water_biome(tile.climate_biome) {
+                water.insert((tile.x, tile.y));
+            }
+            if requested.contains(&chunk) {
+                tiles.push(tile);
+            }
+        }
+    }
+    (tiles, water)
 }
 
 /// A river tile with at least one non-water orthogonal neighbour is a shore.
@@ -3157,41 +3505,6 @@ fn biome_tree(biome: Biome) -> TreeSprite {
     }
 }
 
-/// The inclusive tile bounds `(x0, y0, x1, y1)` of the render window around the
-/// village anchor. Terrain and fog cover exactly this rectangle.
-fn window_bounds() -> (i32, i32, i32, i32) {
-    (
-        VILLAGE_ANCHOR.x - WINDOW_RADIUS,
-        VILLAGE_ANCHOR.y - WINDOW_RADIUS,
-        VILLAGE_ANCHOR.x + WINDOW_RADIUS,
-        VILLAGE_ANCHOR.y + WINDOW_RADIUS,
-    )
-}
-
-/// Regenerate the terrain tiles inside the window around the village anchor.
-fn window_terrain(seed: i64) -> Vec<TerrainTile> {
-    let min = tile_to_chunk(
-        VILLAGE_ANCHOR.x - WINDOW_RADIUS,
-        VILLAGE_ANCHOR.y - WINDOW_RADIUS,
-    );
-    let max = tile_to_chunk(
-        VILLAGE_ANCHOR.x + WINDOW_RADIUS,
-        VILLAGE_ANCHOR.y + WINDOW_RADIUS,
-    );
-    let (x0, y0, x1, y1) = window_bounds();
-    let mut tiles = Vec::new();
-    for cy in min.chunk_y..=max.chunk_y {
-        for cx in min.chunk_x..=max.chunk_x {
-            for tile in generate_terrain_chunk(cx, cy, seed, WORLD_TERRAIN_OPTIONS) {
-                if (x0..=x1).contains(&tile.x) && (y0..=y1).contains(&tile.y) {
-                    tiles.push(tile);
-                }
-            }
-        }
-    }
-    tiles
-}
-
 /// The set of revealed tile coordinates, for O(1) fog lookups.
 fn revealed_lookup(tiles: &[TilePoint]) -> HashSet<(i32, i32)> {
     tiles.iter().map(|t| (t.x, t.y)).collect()
@@ -3226,22 +3539,22 @@ fn fog_state(
     }
 }
 
-/// Fog of war: opaque dark tiles over every window tile the colony hasn't
-/// revealed yet. Re-read each snapshot (the revealed set grows as cats walk), so
-/// the fog visibly recedes. Drawn above the world sprites, so it also hides the
-/// terrain, trees, buildings and cats sitting on undiscovered tiles.
+/// Fog of war over the currently streamed chunks. Existing fog entities are
+/// updated incrementally rather than rebuilding thousands of sprites per
+/// snapshot, and follow the camera along with terrain.
 fn render_fog(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
-    fog: Query<Entity, With<FogTile>>,
+    render: Res<WorldRender>,
+    mut fog: Query<(Entity, &FogTile, &mut Sprite)>,
 ) {
-    if !latest.is_changed() {
+    if !latest.is_changed() && !render.is_changed() {
         return;
     }
-    for entity in &fog {
-        commands.entity(entity).despawn();
-    }
     let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
+        for (entity, _, _) in &mut fog {
+            commands.entity(entity).despawn();
+        }
         return;
     };
     let revealed = revealed_lookup(&colony.revealed_tiles);
@@ -3250,23 +3563,51 @@ fn render_fog(
     // would black out the map — so show the full map until the set is non-empty.
     // Once the sim emits a non-empty revealed set, fog kicks in normally.
     if revealed.is_empty() {
+        for (entity, _, _) in &mut fog {
+            commands.entity(entity).despawn();
+        }
         return;
     }
     let provisional = revealed_lookup(&colony.provisional_tiles);
-    let (x0, y0, x1, y1) = window_bounds();
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            let color = match fog_state(&revealed, &provisional, x, y) {
-                FogState::Clear => continue,
-                FogState::Dim => PROVISIONAL_FOG_COLOR,
-                FogState::Full => FOG_COLOR,
-            };
-            let p = grid_to_world(x, y);
-            commands.spawn((
-                Sprite::from_color(color, Vec2::splat(TILE)),
-                Transform::from_xyz(p.x, p.y, Z_FOG),
-                FogTile,
-            ));
+    // One fog chunk beyond terrain hides overhanging tree/rock sprites at the
+    // streaming seam; the clear colour matches full fog beyond that halo.
+    let fog_chunks = expanded_chunks(&render.loaded_chunks, 1);
+    let mut existing = HashSet::new();
+    for (entity, tile, mut sprite) in &mut fog {
+        let chunk = chunk_for_tile(tile.x, tile.y);
+        let state = fog_state(&revealed, &provisional, tile.x, tile.y);
+        if !fog_chunks.contains(&chunk) || state == FogState::Clear {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        sprite.color = match state {
+            FogState::Clear => unreachable!("clear fog entities are despawned"),
+            FogState::Dim => PROVISIONAL_FOG_COLOR,
+            FogState::Full => FOG_COLOR,
+        };
+        existing.insert((tile.x, tile.y));
+    }
+
+    for chunk in &fog_chunks {
+        let x0 = chunk.x * TERRAIN_CHUNK_SIZE;
+        let y0 = chunk.y * TERRAIN_CHUNK_SIZE;
+        for y in y0..y0 + TERRAIN_CHUNK_SIZE {
+            for x in x0..x0 + TERRAIN_CHUNK_SIZE {
+                if existing.contains(&(x, y)) {
+                    continue;
+                }
+                let color = match fog_state(&revealed, &provisional, x, y) {
+                    FogState::Clear => continue,
+                    FogState::Dim => PROVISIONAL_FOG_COLOR,
+                    FogState::Full => FOG_COLOR,
+                };
+                let p = grid_to_world(x, y);
+                commands.spawn((
+                    Sprite::from_color(color, Vec2::splat(TILE)),
+                    Transform::from_xyz(p.x, p.y, Z_FOG),
+                    FogTile { x, y },
+                ));
+            }
         }
     }
 }
@@ -4122,7 +4463,7 @@ fn animate_sprites(time: Res<Time>, mut sprites: Query<(&AnimSprite, &mut Sprite
 fn select_cat(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     ui: Query<&Interaction, With<Button>>,
     tools: Res<Tools>,
     latest: Res<LatestSnapshot>,
@@ -4179,7 +4520,7 @@ fn select_building(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     ui: Query<&Interaction, With<Button>>,
     latest: Res<LatestSnapshot>,
     mut selection: ResMut<BuildingSelection>,
@@ -4226,7 +4567,7 @@ fn cycle_stacked_selection(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     ui: Query<&Interaction, With<Button>>,
     latest: Res<LatestSnapshot>,
     mut cat_sel: ResMut<Selection>,
@@ -4410,7 +4751,7 @@ fn close_inspectors_on_esc(
 /// Cursor position in world space, or `None` if off-window / no camera.
 fn cursor_world(
     windows: &Query<&Window>,
-    camera: &Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    camera: &Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
 ) -> Option<Vec2> {
     let window = windows.single().ok()?;
     let cursor = window.cursor_position()?;
@@ -4423,7 +4764,7 @@ fn cursor_world(
 /// right-click big inspector panels, which stay.
 fn hover_tooltip(
     windows: Query<&Window>,
-    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     ui: Query<&Interaction, With<Button>>,
     latest: Res<LatestSnapshot>,
     mut panel: Query<&mut Node, With<TooltipPanel>>,
@@ -4644,7 +4985,7 @@ fn zone_paint(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     windows: Query<&Window>,
-    camera: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     ui: Query<&Interaction, With<Button>>,
     session: Res<Session>,
     mut tools: ResMut<Tools>,
@@ -4739,7 +5080,7 @@ fn camera_controls(
     mut wheel: MessageReader<MouseWheel>,
     time: Res<Time>,
     mut inited: Local<bool>,
-    mut camera: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
+    mut camera: Query<(&mut Transform, &mut Projection), With<WorldCamera>>,
 ) {
     let Ok((mut transform, mut projection)) = camera.single_mut() else {
         return;
@@ -5441,7 +5782,7 @@ fn update_minimap(
 /// current world view, so it stays in sync while panning/zooming.
 fn update_minimap_viewport(
     windows: Query<&Window>,
-    camera: Query<(&Projection, &Transform), With<Camera2d>>,
+    camera: Query<(&Projection, &Transform), With<WorldCamera>>,
     ui: Res<MinimapUi>,
     minimap: Res<Minimap>,
     mut rect: Query<&mut Node, With<MinimapViewportRect>>,
@@ -5486,7 +5827,7 @@ fn minimap_click_to_pan(
     ui: Res<MinimapUi>,
     minimap: Res<Minimap>,
     image: Query<&RelativeCursorPosition, With<MinimapImageNode>>,
-    mut camera: Query<&mut Transform, With<Camera2d>>,
+    mut camera: Query<&mut Transform, With<WorldCamera>>,
 ) {
     if !ui.visible || !buttons.just_pressed(MouseButton::Left) {
         return;
@@ -5510,24 +5851,73 @@ fn minimap_click_to_pan(
     }
 }
 
-fn update_event_log(latest: Res<LatestSnapshot>, mut log: Query<&mut Text, With<EventLogText>>) {
-    if !latest.is_changed() {
+fn update_client_feedback(
+    time: Res<Time>,
+    mut feedback: ResMut<ClientFeedback>,
+    mut panel: Query<
+        (&mut Node, &mut BackgroundColor, &mut BorderColor),
+        With<ClientFeedbackPanel>,
+    >,
+    mut label: FeedbackLabelQuery,
+) {
+    let (Ok((mut node, mut background, mut border)), Ok((mut text, mut color))) =
+        (panel.single_mut(), label.single_mut())
+    else {
+        return;
+    };
+    let Some(message) = feedback.message.as_ref() else {
+        node.display = Display::None;
+        return;
+    };
+    node.display = Display::Flex;
+    text.0.clone_from(message);
+    match feedback.level {
+        FeedbackLevel::Info => {
+            *background = BackgroundColor(Color::srgba(0.12, 0.25, 0.16, 0.97));
+            *border = BorderColor::all(UI_POSITIVE);
+            color.0 = UI_INK;
+        }
+        FeedbackLevel::Error => {
+            *background = BackgroundColor(Color::srgba(0.32, 0.08, 0.06, 0.98));
+            *border = BorderColor::all(UI_WARNING);
+            color.0 = Color::WHITE;
+        }
+    }
+    feedback.remaining_secs = (feedback.remaining_secs - time.delta_secs()).max(0.0);
+    if feedback.remaining_secs == 0.0 {
+        feedback.message = None;
+        node.display = Display::None;
+    }
+}
+
+fn update_event_log(
+    latest: Res<LatestSnapshot>,
+    alerts: Res<ClientAlerts>,
+    mut log: Query<&mut Text, With<EventLogText>>,
+) {
+    if !latest.is_changed() && !alerts.is_changed() {
         return;
     }
     let Ok(mut text) = log.single_mut() else {
         return;
     };
-    let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
-        return;
-    };
-    let mut events = colony.events.clone();
-    events.sort_by_key(|e| e.timestamp);
-    let lines: Vec<String> = events
+    let mut lines: Vec<String> = alerts
+        .0
         .iter()
-        .rev()
         .take(4)
-        .map(|e| format!("- {}", e.message))
+        .map(|message| format!("! {message}"))
         .collect();
+    if let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) {
+        let mut events = colony.events.clone();
+        events.sort_by_key(|event| event.timestamp);
+        lines.extend(
+            events
+                .iter()
+                .rev()
+                .take(4_usize.saturating_sub(lines.len()))
+                .map(|event| format!("- {}", event.message)),
+        );
+    }
     text.0 = if lines.is_empty() {
         "no recent events".to_string()
     } else {
@@ -5575,11 +5965,15 @@ fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction>
 }
 
 /// Send any queued actions over the socket.
-fn flush_outgoing(conn: Option<NonSendMut<WsConn>>, mut outgoing: ResMut<OutgoingActions>) {
+fn flush_outgoing(
+    conn: Option<NonSendMut<WsConn>>,
+    state: Res<ConnectionState>,
+    mut outgoing: ResMut<OutgoingActions>,
+) {
     let Some(mut conn) = conn else {
         return;
     };
-    if outgoing.0.is_empty() {
+    if state.phase != ConnectionPhase::Connected || outgoing.0.is_empty() {
         return;
     }
     for action in outgoing.0.drain(..) {
@@ -6462,25 +6856,31 @@ mod tests {
     }
 
     #[test]
-    fn window_terrain_covers_the_anchor_window() {
-        let tiles = window_terrain(20_240_703);
-        assert!(!tiles.is_empty());
-        // The anchor tile must be present and within window bounds.
+    fn camera_chunk_set_is_bounded_and_handles_negative_world_space() {
+        let chunks = chunks_around(ChunkKey { x: -4, y: 7 }, TERRAIN_CHUNK_RADIUS);
+        assert_eq!(chunks.len(), 25);
+        assert!(chunks.contains(&ChunkKey { x: -6, y: 5 }));
+        assert!(chunks.contains(&ChunkKey { x: -2, y: 9 }));
+        assert!(!chunks.contains(&ChunkKey { x: -7, y: 7 }));
+
+        let fog_halo = expanded_chunks(&chunks, 1);
+        assert_eq!(fog_halo.len(), 49);
+        assert!(fog_halo.contains(&ChunkKey { x: -7, y: 4 }));
+    }
+
+    #[test]
+    fn streamed_terrain_generates_exact_requested_chunks() {
+        let requested = HashSet::from([ChunkKey { x: -2, y: 3 }, ChunkKey { x: 11, y: -8 }]);
+        let (tiles, _) = terrain_for_chunks(20_240_703, &requested);
+        assert_eq!(
+            tiles.len(),
+            requested.len() * (TERRAIN_CHUNK_SIZE * TERRAIN_CHUNK_SIZE) as usize
+        );
         assert!(
             tiles
                 .iter()
-                .any(|t| t.x == VILLAGE_ANCHOR.x && t.y == VILLAGE_ANCHOR.y)
+                .all(|tile| requested.contains(&chunk_for_tile(tile.x, tile.y)))
         );
-        for t in &tiles {
-            assert!(
-                (VILLAGE_ANCHOR.x - WINDOW_RADIUS..=VILLAGE_ANCHOR.x + WINDOW_RADIUS)
-                    .contains(&t.x)
-            );
-            assert!(
-                (VILLAGE_ANCHOR.y - WINDOW_RADIUS..=VILLAGE_ANCHOR.y + WINDOW_RADIUS)
-                    .contains(&t.y)
-            );
-        }
     }
 
     #[test]
@@ -6598,12 +6998,45 @@ mod tests {
     }
 
     #[test]
-    fn window_bounds_is_square_around_the_anchor() {
-        let (x0, y0, x1, y1) = window_bounds();
-        assert_eq!(x0, VILLAGE_ANCHOR.x - WINDOW_RADIUS);
-        assert_eq!(y0, VILLAGE_ANCHOR.y - WINDOW_RADIUS);
-        assert_eq!(x1, VILLAGE_ANCHOR.x + WINDOW_RADIUS);
-        assert_eq!(y1, VILLAGE_ANCHOR.y + WINDOW_RADIUS);
+    fn reconnect_backoff_is_exponential_and_bounded() {
+        assert_eq!(reconnect_delay_secs(1), 1.0);
+        assert_eq!(reconnect_delay_secs(2), 2.0);
+        assert_eq!(reconnect_delay_secs(3), 4.0);
+        assert_eq!(reconnect_delay_secs(6), MAX_RECONNECT_DELAY_SECS);
+        assert_eq!(reconnect_delay_secs(100), MAX_RECONNECT_DELAY_SECS);
+    }
+
+    #[test]
+    fn action_result_parser_preserves_failure_and_signed_presence() {
+        let failed = parse_server_message(r#"{"ok":false,"message":"Not enough food."}"#)
+            .expect("valid action result");
+        let ServerPayload::Action {
+            result,
+            signed_session,
+        } = failed
+        else {
+            panic!("expected action result");
+        };
+        assert!(!result.ok);
+        assert_eq!(result.message.as_deref(), Some("Not enough food."));
+        assert!(signed_session.is_none());
+
+        let presence = parse_server_message(
+            r#"{"ok":true,"sessionId":"session-1","sig":"signed-token","playerId":"p1"}"#,
+        )
+        .expect("valid signed presence result");
+        let ServerPayload::Action {
+            result,
+            signed_session,
+        } = presence
+        else {
+            panic!("expected presence action result");
+        };
+        assert!(result.ok);
+        assert_eq!(
+            signed_session,
+            Some(("session-1".to_string(), "signed-token".to_string()))
+        );
     }
 
     #[test]
