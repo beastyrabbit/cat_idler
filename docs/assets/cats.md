@@ -25,7 +25,7 @@ placeholder, and — the key question — **what actually reads top-down next to
   (colored circles) — unusable.**
 - **Enemies/raiders (top-down, cohesive with Tiny Town):** use **Tiny Battle**
   faction units (recolor per raider warband) and **Tiny Dungeon** monsters
-  (orc/ghost/spider/slime). All **CC0**. The existing `public/images/enemies/*.png`
+  (orc/ghost/spider/slime). The existing `public/images/enemies/*.png`
   are **placeholder circles — unusable.** True fox/badger/hawk/bear have **no
   cohesive pixel source** in the repo (all packs lack them).
 
@@ -124,7 +124,7 @@ Specializations: `hunter`, `architect`, `ritualist`, `warrior` (per
 
 ## Enemies & raiders
 
-### Recommended (cohesive with Tiny Town, all CC0)
+### Recommended (cohesive with Tiny Town)
 
 - **Tiny Battle** — `…/2D assets/Tiny Battle/` (16px top-down). Faction-colored units
   in **grey/green/blue/red/orange**: infantry, tanks, planes, flags, HQ buildings.
@@ -154,11 +154,11 @@ Specializations: `hunter`, `architect`, `ritualist`, `warrior` (per
   with text labels. Placeholders, do not ship.**
 - **Animal Pack** (`elephant, giraffe, hippo, monkey, panda, parrot, penguin, pig,
   rabbit, snake`) and **Animal Pack Remastered** (`bear, buffalo, moose, gorilla,
-  owl, wolf/dog, rhino, …` — **no fox, no badger**), both CC0: smooth flat-vector
+  owl, wolf/dog, rhino, …` — **no fox, no badger**): smooth flat-vector
   **round "face" style**, single static frame. **Clashes with both the pixel cats and
   Tiny Town.** Only reach for `bear`/`moose`/`owl` here if you accept a hard style
   break for a set-piece enemy.
-- **Monster Builder Pack** (CC0): modular flat-vector monster parts — build custom
+- **Monster Builder Pack**: modular flat-vector monster parts — build custom
   beasts, but vector style, assembly-heavy, clashes.
 - **Fox specifically:** only a **3D voxel** fox exists (`…/Voxel Pack/PNG/Characters/
   Fox/`) — wrong style entirely.

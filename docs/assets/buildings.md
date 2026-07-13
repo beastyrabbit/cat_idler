@@ -1,7 +1,7 @@
 # Building / Prop / Farm / Enemy Art Manifest
 
 Top-down pixel art for **Idle Cat Forest**, per the locked art direction in `docs/assets/SELECTION.md`
-(family is final — do not re-evaluate). All source packs are **CC0** and gitignored under
+(family is final — do not re-evaluate). Source packs are gitignored under
 `public/Kenney Game Assets All-in-1 3.5.0/`; only the sliced/composited PNGs under
 `public/images/game/` are used at runtime.
 

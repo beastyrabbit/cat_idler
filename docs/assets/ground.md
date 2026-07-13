@@ -4,7 +4,7 @@ Curated top-down terrain + nature art for the Dwarf-Fortress-Steam-style forest 
 Scope: **ground terrain + nature props** (grass / forest floor / water / dirt / stone / sand / farmland /
 flowers, plus trees / bushes / rocks / stumps). Buildings, characters, and UI are out of scope.
 
-All candidates below are 16×16 top-down and CC0. Isometric packs, 8×8 (Micro Roguelike), monochrome,
+All candidates below are 16×16 top-down. Isometric packs, 8×8 (Micro Roguelike), monochrome,
 side-view platformer, and smooth-vector families were excluded up front.
 
 ---
