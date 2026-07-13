@@ -36,6 +36,14 @@ Verified foundations include:
 - a persistent village selector and secure selected-village routing. This is not yet the
   canonical-global/personal-ownership/discovery/trade model.
 
+The founding/housing integration is actively replacing the archived five-cat loop. Its accepted
+contract is exact: 15 adult founders, three five-bed Dens, bed reservations for slow pregnancy,
+prosperity migration with a 36-game-hour unhoused probation, deterministic atomic extinction
+recovery, and a real fetch/carry/deposit job for emergency water. Old-age mortality is
+deliberately retuned from 48/57.6 to 240/288 game-hours (ordinary versus leader/healer). Keep this
+slice `in progress` until the full gates and guided/framebuffer campaign recorded in
+`docs/IMPLEMENTATION_AUDIT.md` pass.
+
 Dev tooling (`be7cdee`) includes `CAT_BRP=1` for Bevy Remote Protocol inspection and a headless
 playtest harness:
 `SEED=... HOURS=48 CADENCE_MS=1000 cargo run --release -p cat-sim --example playtest`.
@@ -52,9 +60,10 @@ playtest harness:
    and add upgrade-gated escalating building costs. Keep tithe/offering reachability and
    research pacing in the same balance campaigns.
 3. **Integrate the larger product models.** Wire purchases/effects/persistence and the daily
-   leader choice for the 500-study catalog; implement 15-cat/three-house founding with slow
-   breeding plus prosperity migration/unhoused departure; complete global/personal village
-   ownership, discovery, and direct trade.
+   leader choice for the 500-study catalog; finish and prove 15-adult/three-Den founding, slow
+   reserved-bed breeding, prosperity migration/36-hour unhoused departure, deterministic reset,
+   and physical emergency water fetching; complete global/personal village ownership,
+   discovery, and direct trade.
 4. **Close world and presentation gaps.** Finish full tree/rock occupancy and staged wall growth,
    clear actual interior deposits/resources, expose traffic dirt roads, replace rail/shipping
    multipliers with built routes/vehicles, restore fishing, make Accounting Tent snapshot-

@@ -16,7 +16,8 @@ Status key: `open`, `in progress`, `verified`, `deferred`.
 | Storehouse reservoir | The shrine remains the all-resource fallback reservoir; the P12 seeded general storehouse/local reservoir model is not live. | open | Founding storehouse inventory, spatial capacity/fallback rules, physical hauling, persistence, and inspector campaign |
 | Tools | Woodworking is always staffed after both input benches and tools have no protected construction reserve. Produced tools currently have no equipment, consumption, or labor-speed effect; decide explicitly whether they become useful equipment or remain construction/trade inputs. | in progress | Tool throughput, protected reserve, field commissioning, long-step reserve test, and explicit usefulness semantics |
 | Research | First autonomous node arrives around game-hour 120 at live cadence. | in progress | Healthy multi-seed first-node window and crisis non-staffing |
-| Survival | The production integration restored a zero-reset five-seed × 200h proxy campaign after exterior-field expansion initially caused two collapse paths. However, the independent fog gate reproduced a pre-existing main failure in `founding_colony_sustains_its_population_over_a_long_horizon` (seed 2024 mean population 4.5, required 5). | in progress | Fix rather than weaken the guardrail, then repeat five seeds × 200h and true live-cadence campaigns after officer/economy/housing changes; determinism twin |
+| Survival | The old five-cat population guardrail is superseded by the 15-adult founding contract. The integration now has a 15-cat floor and longer 240/288-hour old-age pacing, but it is not verified until every maintained seed survives the full housing/migration campaign without an artificial resource grant. | in progress | Five seeds × 300h proxy and true-live campaigns; population/housing/resource bounds; zero unintended reset; byte-identical twins |
+| Emergency water | The accepted recovery path is a real fetch job from a known water site, with worker pre-emption, travel, carrying, and deposit. A direct crisis-phase resource bucket is forbidden. | in progress | Threshold boundaries, no duplicate jobs, no free resource mutation, physical source/cargo/deposit path, five-seed survival and determinism twin |
 | Server responsiveness | Simulation, snapshot construction, and synchronous SQLite work run on Tokio's blocking pool. New sockets clone a startup-initialized last-completed snapshot; save ticks release the authoritative world lock before disk I/O; missed intervals skip rather than burst. | verified | One-worker injected 250 ms tick keeps health and initial snapshot under 50 ms; 28 server tests; live health/WS probes and tick/save timings; strict Clippy |
 | Server security | Socket-bound identity, exhaustive mutation authentication, selected-colony routing, release-disabled test controls. | verified | 15 server, 692 sim, and 61 client tests; strict Clippy |
 | Web build | Release bundle uses same-origin WS; local serve retains explicit port 8787. | verified | Optimized Trunk build and combined-host live probes |
@@ -55,21 +56,21 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 | Global and personal villages | Player-keyed personal-site allocation is now pure, deterministic, order-stable, grass/lowland buildable, overflow-safe, and separated by at least 48 tiles. The canonical global village, durable ownership/access, discovery, and inter-village trade are not wired yet. | in progress | Site properties are verified; ownership/access/routing/persistence, distant discovery, and two-player join/found/trade campaign remain |
 | Sprite review tool | [`docs/sprite-review.html`](sprite-review.html) compares current art with three persisted/exportable proposals for all 22 current buildings plus Accounting Tent, Mill, Sawmill, and a global hall/market concept. | verified | Desktop/mobile browser runs: 26 rows, filters, favorites, reload persistence, path copying, JSON export, zero page/image errors |
 | Research tree scale and UX | A pure 500-node catalog provides 167 building, 167 recipe/resource, and 166 upgrade nodes across named families, with stable IDs, typed payloads, AND prerequisites, and layout coordinates. The live Mill study is reconciled without changing those totals. The full-page client ledger renders the complete graph; generated nodes honestly remain read-only until runtime integration. | in progress | Catalog validation and exact-size UI campaign are verified; integrate purchasing/effects/persistence and the once-per-real-day leader choice, then repeat the live interaction campaign |
-| Founding population and housing | A pure migration policy now enforces 30-hour establishment, per-cat prosperity, domain-separated deterministic cohorts, over-capacity probation, deterministic vacancy allocation, and 36-hour unhoused departure. Live founding still starts five cats and old housing/breeding rules remain. | in progress | Migration policy/full-sim gate is verified; exact 15-cat/three-house snapshot, five-per-house housing, slow breeding, tick/persistence integration and live campaigns remain |
+| Founding population and housing | The active integration creates exactly 15 adult founders and three complete five-bed Dens; pregnancy is slow, starts only after establishment, and reserves a permanent bed through 18 game-hours of gestation. Prosperity migration begins after 30 game-hours, checks at 12-hour intervals, requires 4 food and 5 water per currently present cat plus construction wealth of 0.5 raw-equivalent per cat (floor 8), and uses deterministic one-cat cohorts. A physically present unhoused arrival has 36 game-hours to obtain a bed before departure. An extinction reset atomically restores the complete founding state with run-scoped identities. | in progress | Focused policy/tick/protocol/persistence tests exist; finish all-seed long runs, signed server retention/departure actions, save/restart, exact 15/15 and probation framebuffers, independent review, and four-crate gates |
 | Roads | Authored stone-road connectivity and movement multipliers exist, but the snapshot exposes only paved tiles, so traffic-formed dirt paths are invisible to the player. Enforce the complete P16 model: authored stone roads, traffic-formed dirt roads, exact surface restrictions, connected shrine/gate/exterior routes, and the single south founding gate. | in progress | Real traffic crosses the wear threshold; stone ground never auto-forms dirt; both surfaces persist and reach the protocol; exact movement boundaries, connectivity properties, and before/after framebuffers |
 
 ## Current design-document traceability
 
 | Document | Implementation status | Follow-up |
 | --- | --- | --- |
-| `docs/GAME_VISION.md` | partial | Finish manual-to-officer automation, physical workshop/farm labor, usable multi-village, complete visible production controls |
-| `docs/ARCHITECTURE.md` | stale/overbroad | Remove labelled-building and “known gaps complete” claims; record the maintained gaps in this ledger |
-| `docs/HANDOFF.md` | partial | Replace the broad “P0–P19 shipped” summary with verified slices and keep NEXT STEPS synchronized here |
-| `docs/migration/BOARD.md` | core migration complete, expansion rows overclaim | Reopen partial P12–P19 slices and close them only after feature campaigns |
+| `docs/GAME_VISION.md` | current intent, partially implemented | Finish manual-to-officer automation, physical workshop/farm labor, usable multi-village, complete visible production controls, and the housing acceptance gate |
+| `docs/ARCHITECTURE.md` | reconciled | Keep the maintained founding/life-pacing contract and known-gap section synchronized with real runtime state |
+| `docs/HANDOFF.md` | reconciled | Keep NEXT STEPS synchronized here; do not promote the active housing integration before its player/server/framebuffer gates |
+| `docs/migration/BOARD.md` | core migration complete, expansion rollup reconciled | Close partial P12–P19 slices only after their feature campaigns |
 | `p12-idle-cat-forest.md` | partial | Officers, manual work, all-labor skills, physical workshop/farm logistics, local inventories, role-building gates, shrine reachability |
 | `p14-spatial-placement.md` | partial | Atomic placement/reservations/scaffold recovery are verified; full tree/rock occupancy and staged outer-wall growth remain |
 | `p15-playtest-feedback.md` | partial | Dynamic infinite map is fixed; multi-village UX and richer actions remain |
-| `p16-village-blueprint.md` | partial | Exact road surfaces/gate, fishing/gather controls, interior clearing, and reachable physical production chains |
+| `p16-village-blueprint.md` | partial | The 15-adult/three-five-bed-Den lifecycle is integrating; exact road surfaces/gate, fishing/gather controls, interior clearing, and reachable physical production chains remain |
 | `p17-biome-generator.md` | simulation-heavy, product partial | Apply fine-biome movement, expose resources/logistics, and replace placeholder rail/shipping with real transport |
 | `p18-visual-polish.md` | partial | Open stations, the label-free map, and the Adventure panel/button/progress/cursor skin are native-framebuffer verified; Accounting Tent reachability and WASM visual interaction remain |
 | `p19-items-materials-trade.md` | partial | Complete per-material items/recipes, physical inventories, fishing, transport, and expose every chain to play |
@@ -89,7 +90,7 @@ checked by requirement group so “historical” does not conceal a dropped curr
 
 | Original design group | Current disposition |
 | --- | --- |
-| Needs, autonomous survival, aging, genetics, breeding, skills, specialization, leaders, elections, raids, death, and extinction recovery | Carried at the world-tick level into deterministic `cat-sim`; shared colony food/water currently restore cats abstractly, rather than cats physically seeking food/drink/sleep. Physical need behavior is not implied unless promoted into the current vision. Balance and role-aware guided campaigns remain part of this audit. |
+| Needs, autonomous survival, aging, genetics, breeding, skills, specialization, leaders, elections, raids, death, and extinction recovery | Carried at the world-tick level into deterministic `cat-sim`; shared colony food/water currently restore cats abstractly, rather than cats physically seeking food/drink/sleep. The current design deliberately replaces the prototype's 48/57.6-hour old-age thresholds with 240/288 hours and replaces its five-cat recovery roster with the 15-adult/three-Den invariant. Balance and role-aware guided campaigns remain part of this audit. |
 | Dynamic colony grid plus a fixed 16×16 world map | Superseded by one flat, streamed, effectively infinite world containing multiple villages |
 | Fog, expeditions, path wear, terrain travel cost, walls, and gates | Carried forward; shrine-return resource/general scouting is verified above, while the exact current road model remains open |
 | Click-to-feed/heal/assign/fight and a browser task queue | Superseded by typed management actions and the manual-to-officer loop; missing usable Bevy controls remain open above |
@@ -111,7 +112,9 @@ This section is required completion coverage, not a claim that every listed camp
   staged officer handoff, productive expansion, and deliberately poor decisions with real
   consequences. Guided runs dispatch real `ClientAction`s from observed colony state rather
   than mutating fixtures behind the action layer.
-- Survival, needs, breeding, aging, death, extinction recovery, and determinism.
+- Survival, needs, slow reserved-bed breeding, 15-adult/three-Den founding, prosperity migration,
+  36-hour probation/retention/departure, 240/288-hour aging, atomic extinction recovery, and
+  determinism. Emergency water must be fetched, carried, and deposited by a living cat.
 - Every leader/manual job and every officer both vacant and filled.
 - Every constructible building: plan, build, staff, produce, inspect, and persist.
 - Research through both cat research points and shrine blessings, including prerequisites.
@@ -149,9 +152,27 @@ valid PNG tiles. A separate exact 1024×768 framebuffer verified the responsive 
 all five scout commands and all existing controls remain visible. All temporary capture code and
 processes were removed.
 
+### Founding/housing integration checkpoint — 2026-07-13
+
+The in-progress slice replaces the old five-cat loop with exact 15-adult/three-five-bed-Den
+founding, pregnancy bed reservations, 18-game-hour gestation, 30-game-hour migration
+establishment, and a 36-game-hour probation for real unhoused arrivals. Migration state,
+departure counts, bed counts, and each cat's probation countdown have protocol and SQLite shapes;
+reset is being exercised as an atomic complete-roster recovery with run-scoped identities. The
+life-sim threshold change from 48/57.6 to 240/288 game-hours is deliberate and covered at its
+boundaries rather than treated as TypeScript parity.
+
+This checkpoint is not a completion claim. The slice remains `in progress` until emergency water
+is produced by an actual fetch/carry/deposit job, every maintained long-run seed passes, the
+signed server campaign proves both housing retention and departure, save/restart is exercised,
+and the Bevy client captures and visually proves exact 15/15 founding plus a selected migrant's
+probation countdown. Temporary capture code must be removed before the gate.
+
 ### Unattended live cadence — 2026-07-13
 
-Three seeded colonies ran for 48 game-hours at the production one-second cadence, followed
+This is a **pre-housing-integration baseline**, retained so pacing regressions can be compared;
+its five-cat population ranges are not the current founding target. Three seeded colonies ran
+for 48 game-hours at the production one-second cadence, followed
 by an identical silent repeat. Every repeat matched exactly and every seed completed with
 zero resets. Feature reachability was not uniform, so the run remains a failing pacing
 baseline rather than a blanket pass:
@@ -222,8 +243,9 @@ three-seed deterministic guided campaign uses real `AssignOfficer`, `AssignWorke
 `DesignateFarm`, `RequestJob(GatherLogs)`, `PlanBuilding`, `ClearFarm`, and `AdvanceTime`
 actions; it does not delete jobs or assignments behind the action layer. Farm/Field placement
 and logging reject the fixed settlement interior. Linked exterior Field claims remain visible
-one tile at a time but use a one-game-minute job cadence so the five-cat founding roster is not
-consumed by a day-long boundary job.
+one tile at a time but use a one-game-minute job cadence so the then-current five-cat founding
+roster was not consumed by a day-long boundary job. This is dated evidence for the production
+slice, not the current founding contract.
 
 The final four-crate gate passed all 905 tests (one intentionally skipped), including five seeds
 over 200 game-hours with zero resets, strict Clippy, and formatting. Exact 1280×800 and

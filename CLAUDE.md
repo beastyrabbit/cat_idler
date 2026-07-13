@@ -147,8 +147,10 @@ split; most labor allocation still runs through the single director.
   colony-global resources; skills cover only four legacy labors and recipe/material breadth is
   partial.
 - **Research and founding:** the full-page 500-study ledger is live, but generated studies are
-  read-only. Founding still uses the five-cat housing model rather than the maintained
-  15-cat/three-house migration loop.
+  read-only. The maintained founding integration is 15 adult cats in three five-bed Dens, slow
+  pregnancy with a reserved permanent bed, prosperity migration with a 36-game-hour unhoused
+  probation, deterministic reset, and physical emergency water fetching; its complete
+  persistence/guided/framebuffer gate is still in progress.
 - **World model and transport:** selected-village routing works, while global/personal ownership,
   discovery, direct inter-village trade, visible traffic dirt roads, and real rail/ship/fishing
   routes remain.
@@ -240,8 +242,12 @@ the corresponding struct field and read/write code).
   `run_founding_population_trajectory` (`world_tick.rs`) is the current "survival proof": it
   runs a freshly founded colony unattended at a 5-game-minute tick cadence over 100+ game hours
   and asserts it never goes fully extinct, never dips near extinction after a 30h establishment
-  window, and sustains a mean population at or above the founding count — a deliberately
+  window, and sustains a mean population at or above the 15-cat founding count — a deliberately
   harsher proxy than the live 1s tick, so passing it is a conservative sustainability guarantee.
+  Housing work must additionally prove three five-bed Dens, pregnancy bed reservations,
+  36-game-hour migrant probation/retention/departure, deterministic atomic reset, and real
+  fetch/carry/deposit water recovery. Current old-age thresholds are deliberately 240 game-hours
+  for ordinary cats and 288 for leaders/healers; archived 48/57.6-hour fixtures are history.
 - **`cat-protocol`**: serde round-trip tests (serialize → deserialize → equal).
 - **`cat-server`**: integration tests spin up the axum app in-process (no real socket needed)
   and drive it through `ClientAction` JSON (e.g. founding a village, asserting the shared

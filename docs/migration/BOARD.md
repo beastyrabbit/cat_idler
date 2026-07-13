@@ -39,7 +39,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, the full-page 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; complete manual work controls and live generated-study purchases remain |
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, linked expansion, and scaffold recovery are verified; trees occupy only their anchor, rocks are not occupants, and wall expansion is not staged outer-before-inner |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster and resource/general shrine-return scouting are verified, including restart-safe in-flight notebooks and responsive controls; the richer manual inspector/control surface remains partial |
-| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — farms/legacy fields and logging are now excluded from the core; the five-cat blueprint is superseded by the 15-cat/three-house model and exact authored/traffic road rules remain |
+| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — farms/legacy fields and logging are excluded from the core; the active lifecycle integration uses 15 adults, three five-bed Dens, reserved-bed pregnancy, prosperity migration/36-hour probation, deterministic reset, and physical emergency water fetching; final gates and exact authored/traffic roads remain |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fine-biome movement is unused, rail/shipping are global multipliers rather than built routes/vehicles, and fishing is absent |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current protocol variants have framebuffer-verified residential/open-station compositions, including Mill/Sawmill and crop stages; the Adventure sliced-panel/button/progress/cursor skin is exact-size native-framebuffer verified and the release WASM bundle builds; Accounting Tent is not snapshot-reachable and WASM visual interaction remains |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — base item/trade slices shipped; recipe/resource breadth and guided reachability remain |
@@ -607,9 +607,16 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   constant-speed walking.
 
 ### P16 — Founding village blueprint (spec: `docs/migration/specs/p16-village-blueprint.md`)
-- Fixed founding blueprint shipped with the older five-cat start; the maintained target is now
-  15 adult cats in three five-cat houses with slow breeding plus prosperity migration/unhoused
-  departure, tracked as in progress in `docs/IMPLEMENTATION_AUDIT.md`.
+- The fixed blueprint's older five-cat start is superseded. The active integration creates
+  15 adult cats in three five-bed Dens, reserves a bed before an 18-game-hour pregnancy, opens
+  prosperity migration after 30 game-hours, and gives an unhoused arrival 36 game-hours to gain
+  a permanent bed before leaving. Extinction reset must restore that whole state atomically.
+- Ordinary old-age mortality is deliberately retuned from 48 to 240 game-hours, with the
+  leader/healer threshold retuned from 57.6 to 288. Emergency water must be a physical
+  source→carry→deposit job rather than a direct resource grant.
+- The founding/housing slice remains `in progress` pending all-seed long runs, signed server
+  retention/departure, persistence/restart, exact housing framebuffers, and independent review;
+  see `docs/IMPLEMENTATION_AUDIT.md`.
 - Gather spots (temporary drop points) + a gatherer/mover work split, with resource-typed
   markers rendered on the map.
 - Farms and legacy fields stay beyond the permanent settlement core; logging ignores hidden
@@ -657,9 +664,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   textured floors + furnace/altar props (`546d852`, `4b6a375`).
 - **Life-sim breeding wired into the tick loop** — population is a loop, not a fixed roster
   (`b55637c`); old-age death made consistent with survival death (`2bba148`); a long-horizon
-  "founding population boom-bust" fix admitting `Young` cats to the fertile pool so the colony
-  self-sustains unattended (`b84c2a5` — see the `Testing Contract` section of `CLAUDE.md` for
-  the survival-proof test this fix is guarded by).
+  "founding population boom-bust" fix admitted `Young` cats to the fertile pool (`b84c2a5`).
+  That older pacing is historical implementation evidence: the maintained P16 lifecycle now
+  requires reserved-bed slow pregnancy, migration-led early growth, and the longer 240/288-hour
+  old-age thresholds described above.
 - **Census**: a colony census panel (live demographics) and inspector surfacing cat pregnancy
   ("expecting") (`fe9161a`, `410bb70`).
 - **Upgrade-tree UI**: read-only browse of the whole tech tree by era, plus a god-purchase

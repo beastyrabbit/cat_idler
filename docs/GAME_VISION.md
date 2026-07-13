@@ -96,10 +96,25 @@ their contents are reported.
   affordable nodes. The leader may autonomously choose at most one node per real-life day.
 
 ### Founding, housing, breeding, and migration
-- A new village starts with **15 cats and three early houses**; each house holds five cats.
-- Breeding is slow and occurs only when permanent housing is available.
-- A prosperous village attracts migrants. Arrivals may temporarily exceed housing capacity,
-  but unhoused cats leave again unless the player builds enough homes in time.
+- A new village starts with **15 adult cats and three early Dens**; each Den provides exactly
+  five permanent beds. The founding blueprint therefore starts full, not with spare breeding
+  capacity.
+- Breeding is deliberately slow: a pregnancy may begin only after the establishment window and
+  only when a permanent bed can be reserved for the future kitten. Gestation takes 18 game-hours,
+  and the reservation prevents a migrant or another pregnancy from silently overbooking it.
+- A prosperous village attracts migrants after a 30-game-hour establishment window. Arrivals
+  are real cats who work, consume resources, and may temporarily exceed housing capacity. An
+  unhoused arrival remains on 36 game-hours of probation, then physically leaves unless a
+  permanent bed becomes available first.
+- Extinction recovery is deterministic and atomic: a reset clears the failed run's transient
+  work and restores the complete 15-adult/three-Den founding state without ghost cats, stale
+  housing reservations, or reused migrant identities.
+- Water recovery remains physical even in an emergency. The director may pre-empt a worker and
+  dispatch a real fetch from a known water source, but the simulation never conjures an
+  emergency bucket directly into storage.
+- Cat lives are paced for an idle game. Ordinary old-age mortality begins at **240 game-hours**;
+  leaders and healers receive the same 20% extension and begin at **288 game-hours**. This is a
+  deliberate current-design replacement for the archived web prototype's 48/57.6-hour values.
 
 ## Post-cutover completion order
 The Rust/Bevy cutover and the original P9–P19 migration phases are complete. Remaining

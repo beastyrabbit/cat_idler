@@ -2,7 +2,8 @@
 
 > **Living target spec.** The original five-cat start was superseded by the 2026-07-13
 > playtest direction: every ordinary personal village starts with **15 adult cats in three
-> five-cat houses**. Housing, migration, and exact dirt/stone roads remain in progress; see
+> five-bed Dens**. The founding/housing integration is in progress; exact dirt/stone roads remain
+> open. See
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Detailed founding/economy/spatial design from playtest. Numbers are the spec.
@@ -27,12 +28,30 @@ A fixed starting blueprint:
 - **Shrine** 3×3 dead center, reserving 5×5 (road ring).
 - **Roads from the shrine out to the wall in N/S/E/W** (stone roads by default). The wall has a
   **single gate in the SOUTH** (the one opening).
-- **3 early houses** (2×3 each), **15 adult cats** total; each early house holds **5**.
+- **3 early Dens** (house form, 2×3 each), **15 adult cats** total; each Den provides exactly
+  **5 permanent beds**.
 - **Wood-cutting workshop** (3×3): logs → **planks**.
 - **Stone-prep workshop** (3×3): raw stone → **prepped stone / blocks**.
 - **Woodworking workshop** (3×3): planks + stone → **tools** (axe, shovel, fishing rod, …) + weapons.
 - **General stockpile** pre-filled at founding: **50 wood, 50 food, 10 stone**.
 - **New house cost**: X planks + X stone (was materials — now the plank/stone chain gates growth).
+
+Population rules attached to this blueprint:
+- A fresh run has no spare beds. Pregnancy begins only after 36 game-hours, only when food/water
+  are healthy, and only after reserving a permanent future bed; gestation is 18 game-hours.
+- Prosperity migration begins after 30 game-hours and samples at 12-game-hour intervals. It
+  requires at least 4 food and 5 water per currently present cat (including probationers) plus
+  construction wealth worth 0.5 raw materials per cat (floor 8); directly buildable planks,
+  blocks, and lumber count at their raw-input value. A deterministic one-cat cohort arrives when
+  those bars are met. The real arrival may work and consume resources while unhoused, but leaves
+  after a 36-game-hour probation unless a permanent bed opens.
+- Extinction reset atomically rebuilds the 15-adult/three-Den state and clears stale work,
+  reservations, officers, and migration probation. New-run identities are deterministic and
+  cannot collide with the prior run.
+- An emergency water shortage schedules a real source→carry→deposit fetch; it never grants a
+  free resource bucket.
+- The maintained idle-game old-age thresholds are 240 game-hours for ordinary cats and 288 for
+  leaders/healers, deliberately replacing the archived prototype's 48/57.6-hour thresholds.
 
 ## Resources & chains (this is the P12.4b expansion, now specified)
 New resource types + chains:
@@ -74,7 +93,7 @@ New resource types + chains:
 ## Build order (foundational → dependent)
 1. **Tile recalibration + footprints** (render TILE shrink + footprint sizes; recal P14.1). Client
    render + sim footprint constants. Do with the footprint-render/y-sort card (P14.5).
-2. **Default village blueprint** (sim founding): fixed shrine+roads+gate-south+3 houses+3 workshops
+2. **Default village blueprint** (sim founding): fixed shrine+roads+gate-south+3 Dens+3 workshops
    +pre-filled general stockpile+15 cats. Replaces organic founding. (After keep-cats-busy lands —
    both touch world_tick founding/director.)
 3. **Resource chains** (P12.4b): logs→planks, stone→blocks, →tools/weapons; house cost = planks+stone.

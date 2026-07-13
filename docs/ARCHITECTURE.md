@@ -126,14 +126,32 @@ maintained product behavior rather than migration:
   the canonical global village, personal ownership/access, discovery, and direct inter-village
   trade are not modeled.
 - **Research, housing, and manual controls.** The generated 500-node catalog/ledger is read-only,
-  live founding still uses the old five-cat housing model, and most typed protocol actions have
-  no usable exact client tool.
+  and most typed protocol actions have no usable exact client tool. The founding/housing
+  integration is replacing the old five-cat loop with 15 adults in three five-bed Dens, slow
+  reserved-bed pregnancy, prosperity migration with 36-game-hour probation, and deterministic
+  extinction recovery; its full persistence, guided-player, long-run, and framebuffer gates are
+  still in progress.
 - **Spatial, transport, and visual completeness.** Full tree/rock occupancy, staged wall growth,
   visible traffic dirt roads, real rail/ship/fishing routes, remaining menu/WASM skin states, and
   Accounting Tent reachability remain incomplete. The maintained Adventure panel, button,
   progress, minimap, and cursor foundation is native-framebuffer verified.
 
 The evidence and completion tests for each gap live in `docs/IMPLEMENTATION_AUDIT.md`.
+
+### Maintained founding and life pacing
+
+An ordinary village founding is a fixed simulation invariant, not client decoration: 15 adult
+cat entities occupy three complete Dens with five beds apiece. Pregnancy reserves a permanent
+bed before conception and gestates for 18 game-hours. After a 30-game-hour establishment window,
+a prosperous settlement can receive deterministic migrant cohorts; unhoused arrivals participate
+in the real economy during a 36-game-hour probation and leave if no bed opens. An extinction
+reset reconstructs the whole founding state atomically and uses run-scoped identities so old
+migrant or job records cannot leak into the new run.
+
+Old-age pacing intentionally diverges from the archived TypeScript prototype: ordinary mortality
+begins at 240 game-hours and leader/healer mortality at 288, rather than 48 and 57.6. Emergency
+water is likewise an ordinary physical job: a selected cat travels to water, carries the yield,
+and deposits it. No crisis phase may add free water directly to colony resources.
 
 ## cat-protocol — the wire contract
 
