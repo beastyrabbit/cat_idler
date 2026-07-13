@@ -24,10 +24,10 @@ Status key: `open`, `in progress`, `verified`, `deferred`.
 | Manual controls | Most protocol actions, buildings, workers, research, military, and hauling lack usable client paths. | open | Script every action through server and exercise all visible controls |
 | Manual raid defense | `DefendRaid` applies damage immediately and the next tick replays the banked telemetry counter, so each player click currently damages twice. | open | One action across the following tick deals exactly one `DEFEND_CLICK_DAMAGE`; guided raid twin |
 | Multi-village | Socket-selected routing and a persistent client village selector survive reorder/reconnect/founding and missing-village fallback. | verified | 72 client tests, authenticated server routing test, and opposite-target 1024×768/1920×1080 framebuffers |
-| Spatial invariants | Stockpiles can overlap land/buildings/other piles; roads are eventually repaired rather than guaranteed at placement. | open | Per-tick spatial property campaign across seeds |
+| Spatial invariants | Player and leader placement now validates and commits atomically across terrain, claims, buildings, roads, stockpiles, gather spots, and queued future footprints. Expansion-backed sites persist their exact donor link, duplicate reservations are excluded, and paid scaffolds resume monotonically after every builder-death path. | verified | 708 sim and 24 server tests, including player campaigns, persistence/legacy round trips, real old-age/survival/raid death paths, and independent correctness review; strict Clippy |
 | Production breadth | Farming choices/chains and several material/item recipes promised by current specs are missing or unreachable. Construction also pays one flat house cost instead of upgrade-gated, escalating per-building costs. | open | Build/staff/produce every building and recipe from player actions; pinned plan-time cost and escalation boundaries |
 | Client visibility | Ore/metal and generalized production/skills are not fully represented in protocol/HUD/inspectors. | open | Snapshot round trips and mature-colony UI inspection |
-| Visual truth | Persistent map plaques are removed and the permanent settlement core no longer renders procedural nature props. Roofed workshop facades are still superseded by the requested open-top/cutaway art. | in progress | Sprite-candidate selection and open-workshop replacement; label/core-clear normal+dense framebuffers are verified at 1024×768, 1280×800, and 1920×1080 |
+| Visual truth | Persistent map plaques are removed. Residential rooms retain roof silhouettes; every current workshop, civic/supply station, field, and shrine is a typed open floor-and-prop composition. The fixed settlement core no longer renders procedural nature props. | verified | Label/core-clear and open-station normal+dense framebuffers inspected at exact 1024×768, 1280×800, and 1920×1080; 84 client tests and strict Clippy |
 | CI/hosting | Forgejo quality workflow and combined non-root server/WASM image are committed. | in progress | First pushed CI run remains; hosting live probes and deployment docs are verified |
 
 The existing Paws & Whiskers cat and raider sheets are accepted project assets.
@@ -40,7 +40,7 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 | Feedback | Required behavior | Status | Verification required |
 | --- | --- | --- | --- |
 | Fog of war and scouting | A new village reveals only its viable core plus roughly two tiles. Scouts choose a resource target or general exploration; their discoveries remain provisional until they return and touch the shrine. Nearby founding wood should be a very short scout trip. | open | Fresh-village and resource/general scout campaigns; outbound/return/shrine boundary tests; before/after framebuffers |
-| Open workshops | Houses may retain roofs, but workshops use readable open-top/cutaway sprites in the top-down DF-Steam style. | open | Candidate approval page followed by dense-village native framebuffers |
+| Open workshops | Houses retain roofs, while all current workshops and non-residential stations use explicit top-down floors and function-readable props. The shrine uses an altar, reliquary, candelabra, and brazier; fields use soil/crops rather than a market facade. | verified | Normal+dense own-framebuffer captures at exact 1024×768, 1280×800, and 1920×1080; exhaustive 22-building visual grammar and distinct-workshop tests |
 | Building labels | Persistent map-name plaques are gone; hover/click inspector names remain available. | verified | Label-free normal and dense client framebuffers at 1024×768, 1280×800, and 1920×1080 |
 | Clear village interior | Procedural tree/rock props are hidden in the selected village's fixed radius-six settlement core while radius-seven and expanded territory stay decorated. Natural sim resources, deposits, and farms must still be excluded from the same core. | in progress | Rendering boundary tests and native captures are verified; founding/expansion sim property campaigns across biomes remain |
 | Global and personal villages | Player-keyed personal-site allocation is now pure, deterministic, order-stable, grass/lowland buildable, overflow-safe, and separated by at least 48 tiles. The canonical global village, durable ownership/access, discovery, and inter-village trade are not wired yet. | in progress | Site properties are verified; ownership/access/routing/persistence, distant discovery, and two-player join/found/trade campaign remain |
@@ -151,6 +151,31 @@ required sizes. A first capture with an empty canvas was rejected; its centre-or
 bug was corrected and covered by a transform test before the three accepted captures. All
 temporary capture/window systems and compositor processes were removed before the 80-test
 client gate, strict Clippy, and formatting checks.
+
+### Atomic spatial placement and recovery — 2026-07-13
+
+All authored placement paths now reject hard conflicts before mutation and preserve connected
+shrine/gate/exterior access. Future construction footprints are exclusive reservations; forced
+expansion claims only the footprint plus its required orthogonal fence margin, records the exact
+source build, and charges/times construction only at real breakground. A paid scaffold survives
+and resumes from remaining work when its builder dies through ordinary survival, old age, or a
+raid. Duplicate-reservation, phase-order, and diagonal-overclaim failures found by the long
+research campaigns were fixed rather than hidden by weaker fixtures. The final branch gate was
+708 simulation and 24 server tests with strict Clippy; an independent review found no remaining
+correctness blocker.
+
+### Label-free open-station native framebuffers — 2026-07-13
+
+Normal and injected dense settlements were rendered through the client's own primary-window
+screenshot path at exact 1024×768, 1280×800, and 1920×1080 physical resolutions. The frames show
+roofed residential rooms alongside distinct open timber, masonry, metal, textile, research,
+school, barracks, supply, farm, and shrine compositions with no persistent map names. An initial
+shrine gold-pile choice was rejected because it resembled a resource deposit; the accepted
+recaptures use the reviewed reliquary. During this art-only capture, the server tick task was
+temporarily bypassed so the real booted server could serve its real starter snapshot despite
+concurrent debug-simulation contention; that bypass and all screenshot/window hooks were removed
+before the 84-test client gate, strict Clippy, and commit. Production snapshot cadence still gets
+an isolated benchmark after the spatial/production merge.
 
 ## Completion rule
 
