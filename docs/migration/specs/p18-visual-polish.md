@@ -36,5 +36,5 @@ panels**, ornate borders, **icon-driven** readouts, clear tabbed menus, banners/
   performant.
 
 ## Also here (from P15)
-- **Better wall asset** (palisade could read nicer) and a **cleaner CC0 top-down cat** search
-  (current P&W cat is a license blocker) — fold into the asset polish.
+- **Better wall asset** (palisade could read nicer) and a cleaner top-down cat search may be
+  folded into future asset polish; the current P&W sheet remains the selected runtime art.

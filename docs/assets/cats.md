@@ -20,8 +20,6 @@ placeholder, and — the key question — **what actually reads top-down next to
   where Tiny is flat top-down. It will read as a sprite from a different game.
   **Recommendation: make/commission a 16px top-down cat in the Tiny style** (or edit
   a Tiny Dungeon humanoid). Keep P&W only if you also keep the iso map.
-- **P&W license is also a hard commercial blocker** (non-commercial, no redistribution
-  of modifications, no AI-basis) — a second reason not to build the shipped look on it.
 - **Roles:** 32×32 pixel **hats** are real art (for P&W). For Tiny-scale, tint/hat in
   the 16px style instead. Coat-color `black/`, `calico/`… folders are **placeholders
   (colored circles) — unusable.**
@@ -79,7 +77,7 @@ specifically against the 16px Tiny tiles.
   `lib/render/pixi/textures.ts` (`CAT_SHEET_URL`; its "32×32 cells" comment is off —
   cells are 32×64).
 - **Verdict:** excellent sprite, **only** for an isometric/higher-res map. Do not mix
-  with Tiny Town. License is non-commercial (see [Licenses](#licenses)).
+  with Tiny Town.
 
 ### Static single-frame cats (UI only)
 
@@ -147,8 +145,8 @@ Specializations: `hunter`, `architect`, `ritualist`, `warrior` (per
 
 - `public/images/cats/raider-sheet.png` (`1024×64`, same 8×4 / 32×64 layout as the cat
   sheet) — a dark recolor of the P&W cats, used by `components/map/RaiderLayer.tsx`.
-  **Only real "cat raider" art**, but shares P&W's style-clash-with-Tiny and license
-  caveat. Fine on the iso path; replace with a Tiny-scale rival on the Tiny path.
+  **Only real "cat raider" art**, but shares P&W's style clash with Tiny. Fine on the
+  iso path; replace with a Tiny-scale rival on the Tiny path.
 
 ### Unusable / weak
 
@@ -172,22 +170,6 @@ options are all compromises: (a) recolor/edit Tiny Dungeon vermin + Tiny Battle 
 into "beast raiders", (b) author new 16px critters, or (c) accept the vector style
 break with Animal Pack Remastered `bear`/`moose`/`owl`. Treat true forest mammals as
 a **new-art / sourcing task.**
-
----
-
-## Licenses
-
-- **All Kenney packs** (Tiny Town, Tiny Dungeon, Tiny Battle, Roguelike Characters,
-  Animal Pack (Remastered), Monster Builder, Micro Roguelike, Fish, Voxel): **CC0 1.0**
-  — free for commercial use, attribution appreciated, not required. **Safe.**
-- **Paws & Whiskers Free** (source of `cat-sheet.png` + `raider-sheet.png`;
-  `public/Paws & Whiskers - Isometric Cats Pack (Free)/readme_free.txt`):
-  - ✅ Non-commercial only; may modify.
-  - ❌ No resale/redistribution **even if modified** (incl. NFTs).
-  - ❌ No use as a **basis for AI-generated content**.
-  - Page: `netherzapdos.itch.io/paws-whiskers-isometric-cats-pack`.
-  - **Hard blocker for any commercial release** and for generating derived art — a
-    second reason to move the colonist to CC0 / original 16px art for the Tiny path.
 
 ---
 

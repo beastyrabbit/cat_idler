@@ -90,17 +90,11 @@ for fox/badger/bear/rival-beast; rival-cat raiders keep the wired `raider-sheet.
 white glyphs → recolor per resource at runtime (CSS/shader mask). Cat-food glyph = Fish
 Pack `fish_blue.png`.
 
-## Licensing
+## Provenance
 
-- **All Kenney packs are CC0 1.0** (public domain) — commercial-safe, no attribution
-  required (crediting kenney.nl appreciated). This covers terrain, buildings, enemies,
-  icons, UI.
-- **Cats are the exception.** `cat-sheet.png` / `raider-sheet.png` are byte-identical to
-  the **Paws & Whiskers Free** pack: **non-commercial only, no redistribution even if
-  modified, not usable as a basis for AI-generated content.** Fine for this prototype;
-  **a commercial ship needs a CC0/licensed cat sheet in the same 32×64 8-dir×4-frame
-  layout as a drop-in replacement.** This is a tracked pre-1.0 blocker, not a today
-  problem.
+- Terrain, buildings, enemies, icons, and UI come from the selected Kenney packs.
+- `cat-sheet.png` and `raider-sheet.png` come from the Paws & Whiskers pack. Their
+  32×64, 8-direction, 4-frame layout is the runtime atlas contract.
 
 ## Copy convention
 

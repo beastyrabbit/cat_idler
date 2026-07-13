@@ -214,7 +214,7 @@ runnable, on branch `archive/web-game` (tag `web-final`).
 | [`docs/migration/BOARD.md`](docs/migration/BOARD.md) | Phase-by-phase task board (P0–P9 tracked in detail) |
 | [`docs/migration/specs/`](docs/migration/specs/) | Design specs for pathfinding, leader director, world_tick, and P12–P19 (skills/roles, spatial placement, biomes, visual polish, item economy) |
 | [`docs/migration/WASM.md`](docs/migration/WASM.md) | Browser/WASM build feasibility + remaining steps |
-| [`docs/assets/SELECTION.md`](docs/assets/SELECTION.md) | Sprite pack selection + licensing notes for the Bevy client's art |
+| [`docs/assets/SELECTION.md`](docs/assets/SELECTION.md) | Sprite pack selection and provenance for the Bevy client's art |
 | [`AGENTS.md`](AGENTS.md) | Ground rules for the codex/Claude build team doing the port |
 
 Docs describing the old TypeScript/Next.js game (`docs/plan.md`, `docs/ROADMAP.md`,

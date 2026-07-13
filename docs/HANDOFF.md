@@ -56,12 +56,7 @@ Architecture, module map, persistence, and testing contract live in `CLAUDE.md` 
    filled role automates its category (Steward hauling/stockpiles, Forester wood, Farmer
    food, Captain defense, Loremaster research); unfilled roles stay manual. Spec:
    `docs/migration/specs/p12-idle-cat-forest.md` + `docs/migration/specs/leader_director.md`.
-3. **Cat-art licensing (pre-1.0 release blocker, not a dev blocker).** The in-use cat walk
-   sheet `public/images/cats/cat-sheet.png` is the Paws & Whiskers pack — **non-commercial
-   license**, and it's tracked in git. Before any public release: replace with a CC0/CC-BY
-   32×64-cell 8-dir×4-frame walk sheet (or commission/confirm a license with the owner).
-   The rest of the art is Kenney (CC0) — `docs/assets/SELECTION.md` is the source of truth.
-4. **Deploy-time follow-ups** (from the P10 close-out, `docs/migration/WASM.md`): hosting
+3. **Deploy-time follow-ups** (from the P10 close-out, `docs/migration/WASM.md`): hosting
    for the web bundle + transfer-weight optimization. Not blockers.
 
 ## HOW TO WORK — hard-won lessons (do not relearn these)

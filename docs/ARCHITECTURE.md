@@ -193,9 +193,8 @@ an event log, the upgrade tree (read-only browse + purchase), a trade menu, and 
 inspectors (hover tooltip + right-click detail panel).
 
 Art: curated Kenney "Roguelike 16px" sprites under `public/images/game/{terrain,nature,
-buildings,infra,props,farm,enemies}/` — see `docs/assets/SELECTION.md` for the pack choice and
-licensing rationale (the previous cat sprite sheet was non-commercial and is a pre-1.0 blocker;
-tracked in `docs/migration/BOARD.md`).
+buildings,infra,props,farm,enemies}/`, with Paws & Whiskers cat sprites under
+`public/images/cats/` — see `docs/assets/SELECTION.md` for the pack choices.
 
 Bevy-specific gotchas (camera Z-layering, sprite/text API shapes, asset-root resolution) are
 documented in `docs/HANDOFF.md` — read that before touching client rendering code.

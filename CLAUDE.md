@@ -188,7 +188,7 @@ trade menu, cat/building inspectors).
 
 Art: curated Kenney "Roguelike 16px" sprites under
 `public/images/game/{terrain,nature,buildings,infra,props,farm,enemies}/` — see
-`docs/assets/SELECTION.md` for licensing rationale. Bevy-specific gotchas (camera Z-layering —
+`docs/assets/SELECTION.md` for asset provenance and selection rationale. Bevy-specific gotchas (camera Z-layering —
 keep the camera at Z~1000, sprites below it or they get clipped/black-screened; `Sprite`/`Text`
 API shapes; asset-root resolution via `BEVY_ASSET_ROOT`) are documented in `docs/HANDOFF.md` —
 read it before touching client rendering code. There is no automated visual test suite; Bevy
@@ -297,7 +297,7 @@ The world ticks once a second (fixed; not currently configurable via env var).
   the P12–P19 gameplay systems (skills/roles, spatial placement, biome generator, visual
   polish, item economy)
 - `docs/migration/WASM.md` — browser/WASM build feasibility + remaining steps
-- `docs/assets/SELECTION.md` — sprite pack selection + licensing notes for the Bevy client's art
+- `docs/assets/SELECTION.md` — sprite pack selection and provenance for the Bevy client's art
 - `AGENTS.md` — ground rules for the codex/Claude build team doing the port (parity discipline,
   determinism rules, the one permitted JS use, commit conventions)
 

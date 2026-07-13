@@ -69,9 +69,8 @@ Two-tier inspector, driven by the cursor:
 ## Assets
 - **Better wall asset** — the palisade could read better; source a nicer fence/wall (Roguelike/
   Tiny Town).
-- **Cleaner top-down 2D cat?** Current `cat-sheet` is near-top-down P&W (also a non-commercial
-  license blocker). Search Kenney packs (Tiny Dungeon / animal packs) for a CC0 top-down cat;
-  if none, keep P&W for now (prototype).
+- **Cleaner top-down 2D cat?** Current `cat-sheet` is near-top-down P&W. A future art-polish
+  pass may evaluate alternatives, but P&W remains the selected runtime sheet.
 
 ## Already-there (verify, don't rebuild)
 - Cat movement, chunked-infinite terrain, multi-colony founding, fog reveal, term elections all
