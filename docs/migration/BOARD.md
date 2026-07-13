@@ -35,13 +35,13 @@ codex, plus a Claude review for high-value slices) signs off.
 | P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
 | P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh`; a same-origin combined server/WASM image, compression, health/readiness probes, exact Origin checks, and deployment instructions are verified. Native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Transfer-weight optimization remains optional. See `docs/migration/WASM.md` |
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
-| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — shipped additive officers and initial chains; true vacant-role manual play, farming/logging/mill/sawmill breadth, and guided campaigns are active fixes |
-| P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment and the framebuffer-verified full-page 500-study research ledger shipped; complete manual work controls, live generated-study purchases, and expanded production chains still need usable player paths |
+| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — farming/logging/Mill/Sawmill and a guided action campaign are verified; true vacant-role manual play, broader recipes, and escalating building costs remain |
+| P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, the full-page 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; complete manual work controls and live generated-study purchases remain |
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done — atomic action validation, collision-free buildings/piles/roads/gather spots/future reservations, linked expansion persistence, exact shrine/gate/exterior connectivity, and paid-scaffold recovery are verified; the broader authored/traffic road feel remains tracked under P16 |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/control slices shipped; scouting must become resource-targeted and commit knowledge only at shrine return, including loaded-village behavior |
-| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the shipped five-cat blueprint is superseded by the 15-cat/three-house model and exact authored/traffic road rules remain |
-| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — generator/mining/transport shipped; outside-settlement farms and complete visible production paths remain |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all current non-residential buildings now use framebuffer-verified open top-down floor/prop compositions; Mill/Sawmill extension lands with the active production slice |
+| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — farms/legacy fields and logging are now excluded from the core; the five-cat blueprint is superseded by the 15-cat/three-house model and exact authored/traffic road rules remain |
+| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — generator/mining/transport and outside-settlement crop plots shipped; complete visible production breadth remains |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current building types use framebuffer-verified residential/open-station compositions, including distinct Mill/Sawmill and live crop stages |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — base item/trade slices shipped; recipe/resource breadth and guided reachability remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
@@ -569,7 +569,8 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - **P12.3 spatial stockpiles** — real containers with a balancing reservoir (stockpiles are
   places in the world, not an abstract number).
 - **P12.4a/b workshop chains + Accountant** — inter-workshop stockpile routing, a stock-ledger
-  freshness system ("Accountant"), workshop crafting chains (planks/blocks/tools).
+  freshness system ("Accountant"), workshop crafting chains (planks/blocks/tools), exterior
+  catnip/grain/herb plots, logging, Mill grain→flour→food, and Sawmill logs→lumber.
 - **P12.6 logistics** — general/limited stockpile designation, shrine offerings (cats convert
   surplus materials to blessings), the Steward auto-placing gather spots near distant worked
   sites.
@@ -577,6 +578,7 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 ### P13 — Client UI for P12
 - Spatial stockpile designation + render (`b3d28fb`).
 - Officer assignment UI (`e32e32d`).
+- Crop/timber HUD state, visible farm growth stages, and distinct roofless Mill/Sawmill stations.
 
 ### P14 — Spatial placement (spec: `docs/migration/specs/p14-spatial-placement.md`)
 - **P14.1** building footprints + tile-occupancy + tree collision.
@@ -598,6 +600,8 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Fixed founding blueprint (5-cat small start) + a fog-reveal fix.
 - Gather spots (temporary drop points) + a gatherer/mover work split, with resource-typed
   markers rendered on the map.
+- Farms and legacy fields stay beyond the permanent settlement core; logging ignores hidden
+  interior trees, and linked field claims retain one-tile expansion without starving founders.
 - Tile recalibration (smaller render tile, footprint sizes tuned: house 2×3, workshop 3×3,
   shrine 3×3 with a road ring, tree 2×3).
 
@@ -621,6 +625,8 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Slice 1: item/material data model + per-colony item store; workshop crafting chains
   (planks/blocks/tools).
 - Slice 1b: workshops go live — auto-staffing + wired resources + build cost.
+- Production extension: logging + Sawmill (`logs→lumber`) and crop plots + Mill
+  (`grain→flour→food`), with lumber-first construction and persistence.
 - Slice 2: workshops craft material-variant trade goods.
 - Slice 3/4: visiting traders + a coin economy + sell/buy actions; the client renders the
   visiting trader (merchant cat + minimap mark), a goods/inventory panel, item glyphs, and an

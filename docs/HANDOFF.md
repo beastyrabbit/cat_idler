@@ -13,8 +13,8 @@ module doc-comments' "ported from `lib/game/*.ts`" citations point into that bra
 
 ## State of the game (verified 2026-07-13)
 
-- **P0–P19 all shipped** (see `docs/migration/BOARD.md` for the rollup): pure deterministic
-  sim core (`cat-sim`, ~680 tests), authoritative server (`cat-server`: 1s tick, WS
+- **P0–P19 migration shipped** (see `docs/migration/BOARD.md` for the rollup): pure deterministic
+  sim core plus authoritative server (`cat-server`: intended 1s tick, WS
   snapshots, SQLite), Bevy 0.19 top-down client with the "cozy ledger" UI kit, spatial
   stockpiles + gather spots, officer roles, workshop/crafting chains, climate biomes +
   ore/metal mining, traders + coin economy, fog of war, multi-village founding.
@@ -46,9 +46,9 @@ Architecture, module map, persistence, and testing contract live in `CLAUDE.md` 
    of capacity, and the quarry deficit curve pins materials at ~0.3 — so on-map
    `blessings` stay 0 for whole 48h runs (god-currency has a separate reachable path via
    shrine devotion). Consider per-capita/per-flow bars like `is_research_comfortable`.
-   Also: tool crafting is near-zero at live cadence (0–1 tools per 48h), and at the
-   harsher 5-min proxy cadence seed 7 now takes one `UnattendedCollapse` at gh~182
-   (pre-fix it took none over 200gh; the trough guardrail's 150gh window stays green).
+   Also: tool crafting is near-zero at live cadence (0–1 tools per 48h). The farming/timber
+   integration now passes five seeds × 200 game-hours at the harsher 5-minute proxy cadence
+   with zero resets; rerun both proxy and true-live campaigns after each balance slice.
 2. **Finish the officer/role split** (the one tracked gameplay gap — `docs/ARCHITECTURE.md`
    "Known gaps", `docs/GAME_VISION.md` pillar 2). Officer roles exist as an *additive*
    assignable layer (`officers.rs`, `AssignOfficer`/`UnassignOfficer`), but the single
@@ -56,7 +56,11 @@ Architecture, module map, persistence, and testing contract live in `CLAUDE.md` 
    filled role automates its category (Steward hauling/stockpiles, Forester wood, Farmer
    food, Captain defense, Loremaster research); unfilled roles stay manual. Spec:
    `docs/migration/specs/p12-idle-cat-forest.md` + `docs/migration/specs/leader_director.md`.
-3. **Deploy-time follow-ups** (from the P10 close-out, `docs/migration/WASM.md`): hosting
+3. **Server tick responsiveness.** A normal boot can starve `/health` and the initial WS
+   snapshot for over a minute while world work holds the critical path; the art-only tick
+   bypass answers in milliseconds. Diagnose/fix this without weakening the authoritative
+   one-second simulation contract, then benchmark health, first snapshot, and steady cadence.
+4. **Deploy-time follow-ups** (from the P10 close-out, `docs/migration/WASM.md`): hosting
    for the web bundle + transfer-weight optimization. Not blockers.
 
 ## HOW TO WORK — hard-won lessons (do not relearn these)
