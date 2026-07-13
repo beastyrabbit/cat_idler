@@ -88,6 +88,26 @@ documents. `ENGINE_MCP_EVALUATION.md` carries the same historical banner.
 - WASM boot, connect, action feedback, reconnect, resize, caching, and transfer budget.
 - Invalid authentication, malformed actions, rate limiting, restart equality, and test-control denial.
 
+## Playtest evidence
+
+### Unattended live cadence — 2026-07-13
+
+Three seeded colonies ran for 48 game-hours at the production one-second cadence, followed
+by an identical silent repeat. Every repeat matched exactly and every seed completed with
+zero resets. Feature reachability was not uniform, so the run remains a failing pacing
+baseline rather than a blanket pass:
+
+| Seed | Population | Reached | Unreached by hour 48 |
+| --- | --- | --- | --- |
+| 7 | 5–12, 9 births, 3 deaths | fields, raids, elections, 4 tools, 6 offerings | research, item recipes, tithe |
+| 555 | 5–8, 5 births, 5 deaths | fields, raids, elections, tithe, 2 offerings | research, item recipes, tools |
+| 99 | 3–6, 2 births, 4 deaths | fields, raids, elections, tithe, research staffing/0.46 points | offerings, item recipes, tools |
+
+Raw logs are local test artifacts at `/tmp/cat-playtest-live-{7,555,99}.log`. The officer,
+production, and research fixes must rerun this campaign, while the manual-role design also
+requires the guided ClientAction campaigns above; unattended behavior alone is not the
+target player experience.
+
 ## Completion rule
 
 An item moves to `verified` only when the behavior is reachable through the real player path,
