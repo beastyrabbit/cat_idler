@@ -1,6 +1,6 @@
 //! Expanded research catalog for the post-cutover design.
 //!
-//! The 23 legacy nodes from `upgrade_tree.rs` are owned records in an embedded
+//! The 24 legacy nodes from `upgrade_tree.rs` are owned records in an embedded
 //! data file. Compact, named family templates deterministically expand the rest
 //! of the 500-node graph. This module is deliberately additive: it performs no
 //! research ticks and grants no unlocks until later integration slices consume
@@ -703,8 +703,9 @@ mod tests {
             .collect();
         assert_eq!(ids.first(), Some(&"research_hut"));
         assert_eq!(ids.get(22), Some(&"shipping"));
-        assert_eq!(ids.get(23), Some(&"den_foundations"));
-        assert_eq!(ids.get(181), Some(&"sawmill_reinforcement"));
+        assert_eq!(ids.get(23), Some(&"milling"));
+        assert_eq!(ids.get(24), Some(&"den_foundations"));
+        assert_eq!(ids.get(181), Some(&"sawmill_crews"));
         assert_eq!(ids.get(182), Some(&"hunting_sources"));
         assert_eq!(ids.get(345), Some(&"expedition_supplies_masterwork"));
         assert_eq!(ids.get(346), Some(&"logistics_basics"));
@@ -743,7 +744,7 @@ mod tests {
         let catalog = research_catalog();
         assert_eq!(
             UPGRADE_NODES.len(),
-            23,
+            24,
             "update the embedded legacy catalog"
         );
         for legacy in UPGRADE_NODES {

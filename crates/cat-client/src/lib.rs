@@ -23,10 +23,10 @@ use bevy::sprite::Anchor;
 use bevy::ui::RelativeCursorPosition;
 use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatNeeds, CatSnapshot,
-    ClientAction, ColonySnapshot, EventSnapshot, FootprintSize, GateSide, ItemStackSnapshot,
-    JobKind, OfficerRole, RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp,
-    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
+    ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmStage, FootprintSize, GateSide,
+    ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus, ResourceAmounts, ResourceCapacities,
+    ResourceKind, RoleXp, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint,
+    TraderBuyOffer, TraderSellOffer, TraderVisitState, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -1294,6 +1294,10 @@ struct VillageButton(String);
 /// Marker for a building marker sprite.
 #[derive(Component)]
 struct BuildingSprite;
+/// A soil or crop sprite belonging to a player-designated farm plot. These also
+/// carry [`BuildingSprite`] so the snapshot redraw stays atomic with buildings.
+#[derive(Component)]
+struct FarmPlotSprite;
 /// One repeated footprint tile beneath a building or open station.
 #[derive(Component)]
 struct StationFloorSprite;
@@ -1809,14 +1813,19 @@ const STOCKPILE_OVERLAY: Color = Color::srgba(0.85, 0.60, 0.25, 0.30);
 
 /// Resource kinds a designated stockpile accepts by default (all storable
 /// goods; blessings are not a physical pile).
-const STORABLE_KINDS: [ResourceKind; 7] = [
+const STORABLE_KINDS: [ResourceKind; 12] = [
     ResourceKind::Food,
     ResourceKind::Water,
     ResourceKind::Herbs,
+    ResourceKind::Catnip,
+    ResourceKind::Grain,
+    ResourceKind::Flour,
     ResourceKind::Materials,
     ResourceKind::Refined,
     ResourceKind::Weapons,
     ResourceKind::Armor,
+    ResourceKind::Logs,
+    ResourceKind::Lumber,
 ];
 
 /// Query filter for the per-tick redraw of building sprite entities.
@@ -2058,11 +2067,16 @@ pub fn run() {
 enum HudRes {
     Food,
     Water,
+    Catnip,
+    Grain,
+    Flour,
     Materials,
     Refined,
     Planks,
     Blocks,
     Tools,
+    Logs,
+    Lumber,
     Herbs,
     Weapons,
     Armor,
@@ -2070,14 +2084,19 @@ enum HudRes {
 }
 
 /// The HUD resources, in display order (refinement tier grouped after refined).
-const HUD_RESOURCES: [HudRes; 11] = [
+const HUD_RESOURCES: [HudRes; 16] = [
     HudRes::Food,
     HudRes::Water,
+    HudRes::Catnip,
+    HudRes::Grain,
+    HudRes::Flour,
     HudRes::Materials,
     HudRes::Refined,
     HudRes::Planks,
     HudRes::Blocks,
     HudRes::Tools,
+    HudRes::Logs,
+    HudRes::Lumber,
     HudRes::Herbs,
     HudRes::Weapons,
     HudRes::Armor,
@@ -2123,11 +2142,14 @@ impl IconArt {
         match kind {
             HudRes::Food => self.food.clone(),
             HudRes::Water => self.water.clone(),
+            HudRes::Catnip => self.herbs.clone(),
+            HudRes::Grain | HudRes::Flour => self.food.clone(),
             HudRes::Materials => self.materials.clone(),
             HudRes::Refined => self.refined.clone(),
             HudRes::Planks => self.planks.clone(),
             HudRes::Blocks => self.blocks.clone(),
             HudRes::Tools => self.tools.clone(),
+            HudRes::Logs | HudRes::Lumber => self.planks.clone(),
             HudRes::Herbs => self.herbs.clone(),
             HudRes::Weapons => self.weapons.clone(),
             HudRes::Armor => self.armor.clone(),
@@ -2175,10 +2197,15 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
         ResourceKind::Food => HudRes::Food,
         ResourceKind::Water => HudRes::Water,
         ResourceKind::Herbs => HudRes::Herbs,
+        ResourceKind::Catnip => HudRes::Catnip,
+        ResourceKind::Grain => HudRes::Grain,
+        ResourceKind::Flour => HudRes::Flour,
         ResourceKind::Materials => HudRes::Materials,
         ResourceKind::Refined => HudRes::Refined,
         ResourceKind::Weapons => HudRes::Weapons,
         ResourceKind::Armor => HudRes::Armor,
+        ResourceKind::Logs => HudRes::Logs,
+        ResourceKind::Lumber => HudRes::Lumber,
         ResourceKind::Blessings => HudRes::Blessings,
     }
 }
@@ -2188,11 +2215,16 @@ fn resource_icon_tint(kind: HudRes) -> Color {
     match kind {
         HudRes::Food => Color::srgb(0.87, 0.35, 0.26),
         HudRes::Water => Color::srgb(0.36, 0.62, 0.93),
+        HudRes::Catnip => Color::srgb(0.66, 0.48, 0.82),
+        HudRes::Grain => Color::srgb(0.88, 0.68, 0.26),
+        HudRes::Flour => Color::srgb(0.92, 0.88, 0.72),
         HudRes::Materials => Color::srgb(0.62, 0.46, 0.29),
         HudRes::Refined => Color::srgb(0.86, 0.71, 0.40),
         HudRes::Planks => Color::srgb(0.82, 0.66, 0.42),
         HudRes::Blocks => Color::srgb(0.62, 0.64, 0.66),
         HudRes::Tools => Color::srgb(0.70, 0.74, 0.80),
+        HudRes::Logs => Color::srgb(0.45, 0.29, 0.17),
+        HudRes::Lumber => Color::srgb(0.76, 0.55, 0.30),
         HudRes::Herbs => Color::srgb(0.51, 0.79, 0.42),
         HudRes::Weapons => Color::srgb(0.74, 0.76, 0.82),
         HudRes::Armor => Color::srgb(0.56, 0.64, 0.76),
@@ -2206,11 +2238,16 @@ fn hud_resource_value(kind: HudRes, r: &ResourceAmounts, cap: &ResourceCapacitie
     match kind {
         HudRes::Food => format!("{:.0} / {:.0}", r.food, cap.food),
         HudRes::Water => format!("{:.0} / {:.0}", r.water, cap.water),
+        HudRes::Catnip => format!("{:.0} / {:.0}", r.catnip, cap.catnip),
+        HudRes::Grain => format!("{:.0} / {:.0}", r.grain, cap.grain),
+        HudRes::Flour => format!("{:.0} / {:.0}", r.flour, cap.flour),
         HudRes::Materials => format!("{:.0} / {:.0}", r.materials, cap.materials),
         HudRes::Refined => format!("{:.0} / {:.0}", r.refined, cap.refined),
         HudRes::Planks => format!("{:.0} / {:.0}", r.planks, cap.planks),
         HudRes::Blocks => format!("{:.0} / {:.0}", r.blocks, cap.blocks),
         HudRes::Tools => format!("{:.0} / {:.0}", r.tools, cap.tools),
+        HudRes::Logs => format!("{:.0} / {:.0}", r.logs, cap.logs),
+        HudRes::Lumber => format!("{:.0} / {:.0}", r.lumber, cap.lumber),
         HudRes::Herbs => format!("{:.0} / {:.0}", r.herbs, cap.herbs),
         HudRes::Weapons => format!("{:.0}", r.weapons),
         HudRes::Armor => format!("{:.0}", r.armor),
@@ -3881,6 +3918,82 @@ fn render_buildings(
                 complete,
             ),
         }
+    }
+    for farm in &colony.farms {
+        spawn_farm_plot(&mut commands, &art, farm);
+    }
+}
+
+/// Render every designated farm as an exposed soil rectangle with one crop per
+/// tile at its live growth stage. Crop-specific tint distinguishes catnip,
+/// grain, and herbs without adding persistent map labels.
+fn spawn_farm_plot(commands: &mut Commands, art: &BuildingArt, farm: &cat_protocol::FarmSnapshot) {
+    let (x0, x1) = (farm.x1.min(farm.x2), farm.x1.max(farm.x2));
+    let (y0, y1) = (farm.y1.min(farm.y2), farm.y1.max(farm.y2));
+    let crop_prop = farm_stage_prop(farm.stage);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let tile = TilePoint { x, y };
+            spawn_station_floor(
+                commands,
+                art,
+                tile,
+                FootprintSize {
+                    width: 1,
+                    height: 1,
+                },
+                StationFloor::Soil,
+                true,
+            );
+            let Some(prop) = crop_prop else {
+                continue;
+            };
+            let geometry = station_prop_geometry(
+                tile,
+                FootprintSize {
+                    width: 1,
+                    height: 1,
+                },
+                PropPlacement {
+                    prop,
+                    x: 500,
+                    y: 500,
+                },
+            );
+            commands.spawn((
+                Sprite {
+                    image: art.prop(prop),
+                    color: farm_crop_tint(farm.crop),
+                    custom_size: Some(geometry.size * 0.82),
+                    ..default()
+                },
+                Transform::from_xyz(
+                    geometry.center.x,
+                    geometry.center.y,
+                    ysort_z(geometry.base_y) + 0.2,
+                ),
+                BuildingSprite,
+                FarmPlotSprite,
+            ));
+        }
+    }
+}
+
+fn farm_stage_prop(stage: FarmStage) -> Option<StationProp> {
+    match stage {
+        FarmStage::Soil => None,
+        FarmStage::Sprout => Some(StationProp::CropSprout),
+        FarmStage::Growing => Some(StationProp::CropGrowing),
+        FarmStage::Mature => Some(StationProp::CropMature),
+        FarmStage::Flowering => Some(StationProp::CropFlowering),
+    }
+}
+
+fn farm_crop_tint(crop: CropKind) -> Color {
+    match crop {
+        CropKind::Catnip => Color::srgb(0.78, 0.60, 0.92),
+        CropKind::Grain => Color::srgb(0.96, 0.78, 0.34),
+        CropKind::Herb => Color::srgb(0.55, 0.88, 0.48),
     }
 }
 
@@ -6425,7 +6538,18 @@ fn officer_holder_name(colony: &ColonySnapshot, role: OfficerRole) -> Option<&st
 
 /// Sum of the storable goods held in a stockpile (blessings excluded).
 fn resource_total(c: &ResourceAmounts) -> f64 {
-    c.food + c.water + c.herbs + c.materials + c.refined + c.weapons + c.armor
+    c.food
+        + c.water
+        + c.herbs
+        + c.catnip
+        + c.grain
+        + c.flour
+        + c.materials
+        + c.refined
+        + c.weapons
+        + c.armor
+        + c.logs
+        + c.lumber
 }
 
 /// The single largest storable resource in a pile, or `None` when it's empty.
@@ -6434,10 +6558,15 @@ fn dominant_resource(c: &ResourceAmounts) -> Option<ResourceKind> {
         (ResourceKind::Food, c.food),
         (ResourceKind::Water, c.water),
         (ResourceKind::Herbs, c.herbs),
+        (ResourceKind::Catnip, c.catnip),
+        (ResourceKind::Grain, c.grain),
+        (ResourceKind::Flour, c.flour),
         (ResourceKind::Materials, c.materials),
         (ResourceKind::Refined, c.refined),
         (ResourceKind::Weapons, c.weapons),
         (ResourceKind::Armor, c.armor),
+        (ResourceKind::Logs, c.logs),
+        (ResourceKind::Lumber, c.lumber),
     ]
     .into_iter()
     .filter(|(_, v)| *v > 0.0)
@@ -6451,8 +6580,10 @@ fn pile_prop(kind: ResourceKind) -> PropTexture {
         ResourceKind::Food => PropTexture::Sack,
         ResourceKind::Water => PropTexture::Barrel,
         ResourceKind::Herbs => PropTexture::Haystack,
+        ResourceKind::Catnip | ResourceKind::Grain | ResourceKind::Flour => PropTexture::Sack,
         ResourceKind::Materials => PropTexture::StonePile,
         ResourceKind::Refined => PropTexture::GoldPile,
+        ResourceKind::Logs | ResourceKind::Lumber => PropTexture::Crate,
         ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => PropTexture::Crate,
     }
 }
@@ -6469,10 +6600,15 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::Food => "food",
         ResourceKind::Water => "water",
         ResourceKind::Herbs => "herbs",
+        ResourceKind::Catnip => "catnip",
+        ResourceKind::Grain => "grain",
+        ResourceKind::Flour => "flour",
         ResourceKind::Materials => "materials",
         ResourceKind::Refined => "refined",
         ResourceKind::Weapons => "weapons",
         ResourceKind::Armor => "armor",
+        ResourceKind::Logs => "logs",
+        ResourceKind::Lumber => "lumber",
         ResourceKind::Blessings => "blessings",
     }
 }
@@ -6822,6 +6958,8 @@ fn building_label(building: BuildingType) -> &'static str {
         BuildingType::Clothier => "clothier",
         BuildingType::Tannery => "tannery",
         BuildingType::Smelter => "smelter",
+        BuildingType::Mill => "mill",
+        BuildingType::Sawmill => "sawmill",
     }
 }
 
@@ -6894,6 +7032,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
         CarryingKind::Water => Color::srgb(0.35, 0.65, 0.95),
         CarryingKind::Materials => Color::srgb(0.70, 0.55, 0.35),
         CarryingKind::Blessings => Color::srgb(0.95, 0.85, 0.40),
+        CarryingKind::Logs => Color::srgb(0.45, 0.29, 0.17),
     }
 }
 
@@ -7172,10 +7311,15 @@ mod tests {
         assert_eq!(hud_res_of(ResourceKind::Food), HudRes::Food);
         assert_eq!(hud_res_of(ResourceKind::Water), HudRes::Water);
         assert_eq!(hud_res_of(ResourceKind::Herbs), HudRes::Herbs);
+        assert_eq!(hud_res_of(ResourceKind::Catnip), HudRes::Catnip);
+        assert_eq!(hud_res_of(ResourceKind::Grain), HudRes::Grain);
+        assert_eq!(hud_res_of(ResourceKind::Flour), HudRes::Flour);
         assert_eq!(hud_res_of(ResourceKind::Materials), HudRes::Materials);
         assert_eq!(hud_res_of(ResourceKind::Refined), HudRes::Refined);
         assert_eq!(hud_res_of(ResourceKind::Weapons), HudRes::Weapons);
         assert_eq!(hud_res_of(ResourceKind::Armor), HudRes::Armor);
+        assert_eq!(hud_res_of(ResourceKind::Logs), HudRes::Logs);
+        assert_eq!(hud_res_of(ResourceKind::Lumber), HudRes::Lumber);
         assert_eq!(hud_res_of(ResourceKind::Blessings), HudRes::Blessings);
     }
 
@@ -7581,16 +7725,50 @@ mod tests {
         assert_eq!(atlas_index(7, 3), 31); // last cell of a 32-cell sheet
     }
 
+    #[test]
+    fn farm_stages_have_explicit_crop_art_and_crop_tints_are_distinct() {
+        assert_eq!(farm_stage_prop(FarmStage::Soil), None);
+        assert_eq!(
+            farm_stage_prop(FarmStage::Sprout),
+            Some(StationProp::CropSprout)
+        );
+        assert_eq!(
+            farm_stage_prop(FarmStage::Growing),
+            Some(StationProp::CropGrowing)
+        );
+        assert_eq!(
+            farm_stage_prop(FarmStage::Mature),
+            Some(StationProp::CropMature)
+        );
+        assert_eq!(
+            farm_stage_prop(FarmStage::Flowering),
+            Some(StationProp::CropFlowering)
+        );
+        assert_ne!(
+            farm_crop_tint(CropKind::Catnip),
+            farm_crop_tint(CropKind::Grain)
+        );
+        assert_ne!(
+            farm_crop_tint(CropKind::Grain),
+            farm_crop_tint(CropKind::Herb)
+        );
+    }
+
     fn amounts(food: f64, materials: f64, refined: f64) -> ResourceAmounts {
         ResourceAmounts {
             food,
             water: 0.0,
             herbs: 0.0,
+            catnip: 0.0,
+            grain: 0.0,
+            flour: 0.0,
             materials,
             refined,
             weapons: 0.0,
             armor: 0.0,
             planks: 0.0,
+            logs: 0.0,
+            lumber: 0.0,
             blocks: 0.0,
             tools: 0.0,
             blessings: 0.0,
@@ -8244,7 +8422,7 @@ mod tests {
             .iter()
             .map(|k| resource_icon_tint(*k))
             .collect();
-        assert_eq!(tints.len(), 11);
+        assert_eq!(tints.len(), 16);
         assert_ne!(
             resource_icon_tint(HudRes::Food),
             resource_icon_tint(HudRes::Water)
@@ -8270,11 +8448,16 @@ mod tests {
             food: 150.0,
             water: 100.0,
             herbs: 16.0,
+            catnip: 3.0,
+            grain: 14.0,
+            flour: 6.0,
             materials: 24.0,
             refined: 0.0,
             weapons: 3.0,
             armor: 2.0,
             planks: 12.0,
+            logs: 9.0,
+            lumber: 4.0,
             blocks: 7.0,
             tools: 1.0,
             blessings: 4.5,
@@ -8283,15 +8466,24 @@ mod tests {
             food: 200.0,
             water: 200.0,
             herbs: 100.0,
+            catnip: 50.0,
+            grain: 100.0,
+            flour: 100.0,
             materials: 100.0,
             refined: 100.0,
             weapons: 0.0,
             armor: 0.0,
             planks: 100.0,
+            logs: 100.0,
+            lumber: 100.0,
             blocks: 100.0,
             tools: 100.0,
         };
         assert_eq!(hud_resource_value(HudRes::Food, &r, &cap), "150 / 200");
+        assert_eq!(hud_resource_value(HudRes::Grain, &r, &cap), "14 / 100");
+        assert_eq!(hud_resource_value(HudRes::Flour, &r, &cap), "6 / 100");
+        assert_eq!(hud_resource_value(HudRes::Logs, &r, &cap), "9 / 100");
+        assert_eq!(hud_resource_value(HudRes::Lumber, &r, &cap), "4 / 100");
         // The refinement tier shows amount / cap like the other storables.
         assert_eq!(hud_resource_value(HudRes::Planks, &r, &cap), "12 / 100");
         assert_eq!(hud_resource_value(HudRes::Blocks, &r, &cap), "7 / 100");
@@ -8313,11 +8505,16 @@ mod tests {
                 food: 12.0,
                 water: 0.0,
                 herbs: 0.0,
+                catnip: 0.0,
+                grain: 0.0,
+                flour: 0.0,
                 materials: 0.0,
                 refined: 0.0,
                 weapons: 0.0,
                 armor: 0.0,
                 planks: 0.0,
+                logs: 0.0,
+                lumber: 0.0,
                 blocks: 0.0,
                 tools: 0.0,
                 blessings: 0.0,
@@ -8461,11 +8658,16 @@ mod tests {
             food: 148.0,
             water: 100.0,
             herbs: 16.0,
+            catnip: 0.0,
+            grain: 0.0,
+            flour: 0.0,
             materials: 24.0,
             refined: 0.0,
             weapons: 0.0,
             armor: 0.0,
             planks: 0.0,
+            logs: 0.0,
+            lumber: 0.0,
             blocks: 0.0,
             tools: 0.0,
             blessings: 0.0,

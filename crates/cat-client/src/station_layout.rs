@@ -276,6 +276,27 @@ const SMELTER: StationLayout = StationLayout {
         prop(StationProp::MetalBasin, 790, 760),
     ],
 };
+const MILL: StationLayout = StationLayout {
+    floor: StationFloor::Stone,
+    props: &[
+        // The workbench reads as the milling surface while the three distinct
+        // containers make the grain-in/flour-out flow legible from above.
+        prop(StationProp::Workbench, 500, 270),
+        prop(StationProp::Sack, 190, 750),
+        prop(StationProp::Sack, 500, 750),
+        prop(StationProp::Barrel, 810, 750),
+    ],
+};
+const SAWMILL: StationLayout = StationLayout {
+    floor: StationFloor::Wood,
+    props: &[
+        // The long reviewed display-table prop becomes a saw bed, flanked by
+        // unmistakable raw-log input and a separate finished-goods crate.
+        prop(StationProp::DisplayTable, 500, 300),
+        prop(StationProp::LogPile, 210, 760),
+        prop(StationProp::Crate, 790, 760),
+    ],
+};
 
 /// Exhaustive visual decision for every building currently present on the wire.
 ///
@@ -305,6 +326,8 @@ pub(crate) const fn building_visual(building: BuildingType) -> BuildingVisual {
         BuildingType::Clothier => BuildingVisual::Open(&CLOTHIER),
         BuildingType::Tannery => BuildingVisual::Open(&TANNERY),
         BuildingType::Smelter => BuildingVisual::Open(&SMELTER),
+        BuildingType::Mill => BuildingVisual::Open(&MILL),
+        BuildingType::Sawmill => BuildingVisual::Open(&SAWMILL),
     }
 }
 
@@ -312,7 +335,7 @@ pub(crate) const fn building_visual(building: BuildingType) -> BuildingVisual {
 mod tests {
     use super::*;
 
-    const ALL_BUILDINGS: [BuildingType; 22] = [
+    const ALL_BUILDINGS: [BuildingType; 24] = [
         BuildingType::Den,
         BuildingType::FoodStorage,
         BuildingType::WaterBowl,
@@ -335,11 +358,13 @@ mod tests {
         BuildingType::Clothier,
         BuildingType::Tannery,
         BuildingType::Smelter,
+        BuildingType::Mill,
+        BuildingType::Sawmill,
     ];
 
     #[test]
     fn every_protocol_building_has_one_explicit_visual_treatment() {
-        assert_eq!(ALL_BUILDINGS.len(), 22);
+        assert_eq!(ALL_BUILDINGS.len(), 24);
         for building in ALL_BUILDINGS {
             match building_visual(building) {
                 BuildingVisual::Open(layout) => {
@@ -365,6 +390,8 @@ mod tests {
             BuildingType::Clothier,
             BuildingType::Tannery,
             BuildingType::Smelter,
+            BuildingType::Mill,
+            BuildingType::Sawmill,
         ];
         let mut signatures = Vec::new();
         for building in workshops {
@@ -423,5 +450,26 @@ mod tests {
                 .any(|p| p.prop == StationProp::ReliquaryGold)
         );
         assert!(shrine.props.iter().any(|p| p.prop == StationProp::Brazier));
+    }
+
+    #[test]
+    fn mill_and_sawmill_are_distinct_roofless_production_stations() {
+        let BuildingVisual::Open(mill) = building_visual(BuildingType::Mill) else {
+            panic!("mill must be an open station");
+        };
+        let BuildingVisual::Open(sawmill) = building_visual(BuildingType::Sawmill) else {
+            panic!("sawmill must be an open station");
+        };
+        assert_eq!(mill.floor, StationFloor::Stone);
+        assert_eq!(sawmill.floor, StationFloor::Wood);
+        assert_ne!(mill.props, sawmill.props);
+        assert!(mill.props.iter().any(|p| p.prop == StationProp::Sack));
+        assert!(sawmill.props.iter().any(|p| p.prop == StationProp::LogPile));
+        assert!(
+            sawmill
+                .props
+                .iter()
+                .any(|p| p.prop == StationProp::DisplayTable)
+        );
     }
 }

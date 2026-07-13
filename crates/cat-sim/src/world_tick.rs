@@ -2710,6 +2710,9 @@ fn phase_13_tick_local_target_caches(_: &mut ColonyRuntime, _: TickGate) {}
 const SCAFFOLD_PLANK_COST: f64 = 2.0;
 /// Dressed-stone blocks a construction scaffold consumes at break-ground.
 const SCAFFOLD_BLOCK_COST: f64 = 2.0;
+/// Linked claims for an exterior legacy field stay one tile per expansion job, but
+/// resolve quickly enough that the founding food safety net arrives before starvation.
+const FIELD_LINKED_EXPANSION_MS: i64 = 60_000;
 /// Planks and blocks the tools bench must leave available for construction.
 const TOOL_BUILD_MATERIAL_RESERVE: f64 = 4.0;
 
@@ -3889,11 +3892,14 @@ fn field_count_built_or_in_flight(colony: &ColonyRuntime) -> usize {
 /// never reaches, so food stays a lumpy hunt-only sawtooth that rarely holds above the
 /// comfort bar. This breaks that deadlock the same way [`manage_research_hut`] broke the
 /// research-hut one: the leader auto-commissions fields **ungated by the tree/village
-/// level** at founding, placing each on farmable ground (`next_claimed_building_site`
-/// already refuses barren tiles for a `Field`).
+/// level** at founding, placing each on farmable ground
+/// beyond the permanent wall ring (`next_claimed_building_site` refuses barren or
+/// interior tiles for a `Field`).
 ///
-/// Three guards keep fields strictly ADDITIVE — food scaling that never poaches a cat or a
+/// Four guards keep fields strictly ADDITIVE — food scaling that never poaches a cat or a
 /// plank the survival/construction economy needs:
+/// - linked exterior claim trips use a short one-minute cadence, preserving visible
+///   one-tile expansion without monopolizing one of the five founding cats for hours;
 /// - a build-material surplus ([`FIELD_MATERIAL_BUFFER`] planks AND blocks) so a field never
 ///   taxes the wood-cutter/stone-prep chain the colony needs to fund its dens — even the
 ///   essential base waits for the materials to exist;
@@ -3904,7 +3910,7 @@ fn field_count_built_or_in_flight(colony: &ColonyRuntime) -> usize {
 /// - a food band for the *discretionary* tier (`[FIELD_BUILD_MIN_RATIO,
 ///   FIELD_STOCK_TARGET_RATIO)`); the base ignores it (it is what ends the trough) and is
 ///   self-limited by builder availability — `select_best_cat` yields nobody when every cat
-///   is on survival work, so the base can never strand the founding roster without a hunter.
+///   is on survival work, so the base cannot strand the founding roster without a hunter.
 ///
 /// Deterministic: population, ratios, and the field cap are flat functions of colony state;
 /// only the commission draws the seeded policy-reliability roll, at the same call site the
@@ -5498,7 +5504,12 @@ fn phase_32_movement_setup_and_village_expansion_queue(
             colony.jobs.iter().position(|job| {
                 if job.kind != JobKind::BuildHouse
                     || job.status != JobStatus::Queued
-                    || colony.resources.planks < SCAFFOLD_PLANK_COST
+                    || !allocate_construction_timber(
+                        SCAFFOLD_PLANK_COST,
+                        colony.resources.lumber,
+                        colony.resources.planks,
+                    )
+                    .covered
                     || colony.resources.blocks < SCAFFOLD_BLOCK_COST
                 {
                     return false;
@@ -5637,6 +5648,11 @@ fn phase_32_movement_setup_and_village_expansion_queue(
                 colony.jobs[index].assigned_cat = None;
                 colony.jobs[index].id.clone()
             });
+            let linked_field_expansion = source_build_job_id.as_ref().is_some_and(|source_id| {
+                colony.jobs.iter().any(|job| {
+                    job.id == *source_id && job_building_type(job) == Some(BuildingType::Field)
+                })
+            });
             queue_job(
                 colony,
                 gate.processed_through,
@@ -5651,6 +5667,12 @@ fn phase_32_movement_setup_and_village_expansion_queue(
                     source_build_job_id,
                 },
             );
+            if linked_field_expansion {
+                let expansion = colony.jobs.last_mut().expect("expansion was just queued");
+                expansion.duration_ms = expansion.duration_ms.min(FIELD_LINKED_EXPANSION_MS);
+                expansion.ends_at =
+                    Some(gate.processed_through.saturating_add(expansion.duration_ms));
+            }
         }
     }
 
@@ -8745,7 +8767,8 @@ fn next_claimed_building_site(
                 && building_footprint_has_claim_margin(&tiles, &occupancy.claimed)
                 && (!require_farmable
                     || tiles.iter().all(|tile| {
-                        tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
+                        !inside_village_interior(colony, *tile)
+                            && tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
                     }))
                 && candidate_building_road_route_with_context(*anchor, building_type, &occupancy)
                     .is_some()
@@ -8832,9 +8855,10 @@ fn claimed_building_site_is_ready(
     placement_error_for_tiles(colony, &tiles, world_seed, true).is_none()
         && building_footprint_has_claim_margin(&tiles, &claimed)
         && (building_type != BuildingType::Field
-            || tiles
-                .iter()
-                .all(|tile| tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))))
+            || tiles.iter().all(|tile| {
+                !inside_village_interior(colony, *tile)
+                    && tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
+            }))
         && candidate_building_road_route(colony, site, building_type, world_seed).is_some()
 }
 
@@ -8890,10 +8914,13 @@ fn next_expansion_building_site(
             continue;
         }
         if building_type == BuildingType::Field
-            && tiles.iter().any(|tile| {
-                !(tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
-                    || missing.contains(tile) && occupancy.has_uncleared_tree(*tile))
-            })
+            && (tiles
+                .iter()
+                .any(|tile| inside_village_interior(colony, *tile))
+                || tiles.iter().any(|tile| {
+                    !(tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
+                        || missing.contains(tile) && occupancy.has_uncleared_tree(*tile))
+                }))
         {
             continue;
         }
@@ -9111,6 +9138,7 @@ fn logging_scan_inputs(colony: &ColonyRuntime) -> (BTreeSet<TilePos>, BTreeSet<(
         .values()
         .filter(|tile| {
             tile_is_explored(colony.anchor, tile)
+                && !inside_village_interior(colony, tile.pos)
                 && tile.overlay_feature.as_deref() != Some("stump")
         })
         .map(|tile| tile.pos)
@@ -11935,7 +11963,22 @@ mod tests {
             .colonies
             .push(found_colony(right.world_seed, "colony-1", 1_000, 4242));
 
-        let mut saw_nonzero_inbound = false;
+        let hauler = carrying_cat_at(
+            "deterministic-hauler",
+            CarryingKind::Food,
+            8.0,
+            WorldPos { x: 200.0, y: 3.0 },
+        );
+        left.colonies[0].cats.push(hauler.clone());
+        right.colonies[0].cats.push(hauler);
+
+        let left_shrine = &left.colonies[0].buildings[0];
+        let right_shrine = &right.colonies[0].buildings[0];
+        let mut saw_nonzero_inbound = building_inbound_haul(&left.colonies[0], left_shrine) > 0.0;
+        assert_eq!(
+            building_inbound_haul(&left.colonies[0], left_shrine),
+            building_inbound_haul(&right.colonies[0], right_shrine)
+        );
         for step in 1..=120 {
             let now = 1_000 + i64::from(step) * 60_000;
             let _ = world_tick(&mut left, now);
@@ -12935,7 +12978,10 @@ mod tests {
 
     #[test]
     fn logging_scan_groups_many_candidates_into_one_generation_per_chunk() {
-        let mut colony = ColonyRuntime::default();
+        let mut colony = ColonyRuntime {
+            anchor: pos(100, 100),
+            ..ColonyRuntime::default()
+        };
         for y in 0..crate::terrain_gen::TERRAIN_CHUNK_SIZE {
             for x in 0..crate::terrain_gen::TERRAIN_CHUNK_SIZE {
                 colony
@@ -12960,6 +13006,56 @@ mod tests {
         );
         let (_, chunks) = logging_scan_inputs(&colony);
         assert_eq!(chunks, BTreeSet::from([(0, 0), (1, 0)]));
+    }
+
+    #[test]
+    fn logging_selects_generated_wood_only_outside_the_village_interior() {
+        let (seed, anchor, interior, exterior) = (0_u32..10)
+            .find_map(|seed| {
+                let mut wood_trees = Vec::new();
+                for chunk_y in -2..=2 {
+                    for chunk_x in -2..=2 {
+                        wood_trees.extend(
+                            crate::terrain_gen::generate_terrain_chunk(
+                                chunk_x,
+                                chunk_y,
+                                i64::from(seed),
+                                crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                            )
+                            .into_iter()
+                            .filter(|tile| {
+                                matches!(
+                                    tile.decoration,
+                                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
+                                ) && tile.climate_biome.properties().resource == ResourceHint::Wood
+                            })
+                            .map(|tile| pos(tile.x, tile.y)),
+                        );
+                    }
+                }
+                wood_trees.iter().find_map(|&anchor| {
+                    let exterior = wood_trees
+                        .iter()
+                        .copied()
+                        .find(|tree| cheb_from_anchor(anchor, *tree) > VILLAGE_START_RADIUS)?;
+                    Some((seed, anchor, anchor, exterior))
+                })
+            })
+            .expect("bounded deterministic terrain contains interior and exterior wood trees");
+        let mut colony = ColonyRuntime {
+            anchor,
+            ..ColonyRuntime::default()
+        };
+        colony
+            .world_tiles
+            .insert(interior, tile(interior.x, interior.y, 63, None));
+        colony
+            .world_tiles
+            .insert(exterior, tile(exterior.x, exterior.y, 63, None));
+
+        let sites = logging_sites_near_village(&colony, seed);
+        assert_eq!(sites, vec![tile_pos_to_world(exterior)]);
+        assert!(!sites.contains(&tile_pos_to_world(interior)));
     }
 
     #[test]
@@ -13970,6 +14066,33 @@ mod tests {
         assert_eq!(colony.resources.materials, 50.0);
     }
 
+    fn claim_and_connect_future_building_site(
+        colony: &mut ColonyRuntime,
+        seed: u32,
+        building_type: BuildingType,
+    ) -> TilePos {
+        let site = next_expansion_building_site(colony, seed, building_type)
+            .expect("a deterministic future building site exists");
+        for tile in building_claim_region(site, building_type)
+            .expect("the future site's claim margin is representable")
+        {
+            if !colony.claimed_tiles.contains(&tile) {
+                colony.claimed_tiles.push(tile);
+            }
+            if tile_has_uncleared_tree(colony, tile, seed) {
+                let mut cleared = fresh_ground_tile(tile);
+                cleared.tile_type = TileType::Field;
+                colony.world_tiles.insert(tile, cleared);
+            }
+        }
+        let (width, height) = footprint_for(building_type);
+        let reserved = footprint_tiles(site, width, height).into_iter().collect();
+        assert!(connect_current_gate_to_shrine_avoiding(
+            colony, seed, &reserved
+        ));
+        site
+    }
+
     #[test]
     fn breaking_ground_on_a_scaffold_consumes_planks_and_blocks() {
         // P19 slice 1b build cost: committing a scaffold site draws SCAFFOLD_PLANK_COST
@@ -13978,26 +14101,7 @@ mod tests {
         colony.resources.planks = 10.0;
         colony.resources.blocks = 10.0;
         let cat_id = colony.cats[0].id.clone();
-        let site = next_expansion_building_site(&colony, 4242, BuildingType::Den)
-            .expect("a deterministic future den site exists");
-        for tile in building_claim_region(site, BuildingType::Den)
-            .expect("the future site's claim margin is representable")
-        {
-            if !colony.claimed_tiles.contains(&tile) {
-                colony.claimed_tiles.push(tile);
-            }
-            if tile_has_uncleared_tree(&colony, tile, 4242) {
-                let mut cleared = fresh_ground_tile(tile);
-                cleared.tile_type = TileType::Field;
-                colony.world_tiles.insert(tile, cleared);
-            }
-        }
-        let reserved = footprint_tiles(site, 2, 3).into_iter().collect();
-        assert!(connect_current_gate_to_shrine_avoiding(
-            &mut colony,
-            4242,
-            &reserved
-        ));
+        let site = claim_and_connect_future_building_site(&mut colony, 4242, BuildingType::Den);
         let scaffolds_before = colony
             .buildings
             .iter()
@@ -14056,6 +14160,7 @@ mod tests {
         colony.resources.planks = 9.0;
         colony.resources.blocks = 10.0;
         let cat_id = colony.cats[0].id.clone();
+        let site = claim_and_connect_future_building_site(&mut colony, 4242, BuildingType::Den);
         queue_job(
             &mut colony,
             10_000,
@@ -14065,7 +14170,7 @@ mod tests {
                 phase: ConstructionPhase::ConstructHouse,
                 building_type: BuildingType::Den,
                 building_id: None,
-                site: None,
+                site: Some(site),
             },
         );
 
@@ -14092,6 +14197,8 @@ mod tests {
         colony.resources.planks = 10.0;
         colony.resources.blocks = 10.0;
         let first_builder = colony.cats[0].id.clone();
+        let site =
+            claim_and_connect_future_building_site(&mut colony, 4242, BuildingType::ResearchHut);
         queue_job(
             &mut colony,
             10_000,
@@ -14101,7 +14208,7 @@ mod tests {
                 phase: ConstructionPhase::ConstructHouse,
                 building_type: BuildingType::ResearchHut,
                 building_id: None,
-                site: None,
+                site: Some(site),
             },
         );
         phase_14_promote_queued_jobs_and_break_ground(
@@ -14393,7 +14500,10 @@ mod tests {
 
         let founding_revealed = world.colonies[0].revealed_tiles.len();
 
-        for step in 1..=60 {
+        // Exterior field claims legitimately occupy the founding crew through the first
+        // hour. Give autonomous scouts enough time to finish that survival work, travel,
+        // return to the shrine, and commit their provisional map.
+        for step in 1..=180 {
             let now = 10_000 + i64::from(step) * 60_000;
             let _ = world_tick(&mut world, now);
         }
@@ -18273,6 +18383,42 @@ mod tests {
         assert!(
             next_claimed_building_site(&rock, 0.0, seed, BuildingType::Den).is_some(),
             "a den fits on decoration-free claimed rock after mountaineering makes it passable"
+        );
+    }
+
+    #[test]
+    fn field_placement_rejects_fertile_village_interior_and_readies_exterior_ground() {
+        let seed = 42;
+        let mut colony = ColonyRuntime::default();
+        typed_block(&mut colony, pos(1, 1), 11, 11, TileType::Field);
+        typed_block(&mut colony, pos(30, 30), 7, 8, TileType::Field);
+        let interior = pos(3, 3);
+        let exterior = pos(31, 31);
+
+        assert!(
+            footprint_tiles(interior, 2, 3)
+                .iter()
+                .all(|tile| tile_is_farmable(seed, *tile, colony.world_tiles.get(tile)))
+        );
+        assert!(!claimed_building_site_is_ready(
+            &colony,
+            interior,
+            seed,
+            BuildingType::Field
+        ));
+        assert!(claimed_building_site_is_ready(
+            &colony,
+            exterior,
+            seed,
+            BuildingType::Field
+        ));
+
+        let chosen = next_claimed_building_site(&colony, 0.0, seed, BuildingType::Field)
+            .expect("the exterior field footprint remains placeable");
+        assert!(
+            footprint_tiles(chosen, 2, 3)
+                .iter()
+                .all(|tile| !inside_village_interior(&colony, *tile))
         );
     }
 

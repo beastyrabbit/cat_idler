@@ -100,7 +100,7 @@
       "leaderPriority": 150,
       "payloads": [
         { "kind": "unlock_building", "building_id": "sawmill" },
-        { "kind": "unlock_job", "job_id": "quarry" },
+        { "kind": "unlock_job", "job_id": "gather_logs" },
         { "kind": "modify", "effect_id": "materialYieldMult", "operation": "add", "value": 0.2 }
       ]
     },
@@ -334,6 +334,20 @@
       "leaderPriority": 208,
       "payloads": [
         { "kind": "unlock_capability", "capability_id": "water_travel" }
+      ]
+    },
+    {
+      "id": "milling",
+      "name": "Milling",
+      "description": "Raise the mill. Grain is ground into flour, then baked into food by the same staffed works.",
+      "category": "building",
+      "cost": 14.0,
+      "prerequisites": ["irrigation"],
+      "era": 2,
+      "layout": { "x": 2, "y": 6 },
+      "leaderPriority": 142,
+      "payloads": [
+        { "kind": "unlock_building", "building_id": "mill" }
       ]
     }
   ]

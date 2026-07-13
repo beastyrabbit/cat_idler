@@ -245,7 +245,10 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         },
         START_MS,
     );
-    for (cat_id, building_id) in [(miller_id, "guided-mill"), (sawyer_id, "guided-sawmill")] {
+    for (cat_id, building_id) in [
+        (miller_id.clone(), "guided-mill"),
+        (sawyer_id.clone(), "guided-sawmill"),
+    ] {
         let (session_id, nickname, sig) = signed();
         apply_ok(
             &mut world,
@@ -345,43 +348,91 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         "the explicit logging source was depleted exactly once"
     );
 
-    // Isolate one real PlanBuilding request. Breaking ground must consume new lumber
-    // first and leave the legacy plank stock untouched.
-    let colony = &mut world.colonies[0];
-    colony.jobs.clear();
-    for cat in &mut colony.cats {
-        cat.activity = CatActivity::Idle;
-        cat.current_task = None;
-        cat.destination = None;
-        cat.carrying = None;
+    // Guide the processing cats off their benches through the same action a real
+    // client uses. This freezes lumber production while the construction spend is
+    // observed, without mutating jobs or assignments behind the action boundary.
+    let mut action_at = after_processing_ms;
+    for cat_id in [miller_id, sawyer_id] {
+        let (session_id, nickname, sig) = signed();
+        apply_ok(
+            &mut world,
+            proto::ClientAction::AssignWorker {
+                session_id,
+                nickname,
+                sig,
+                cat_id,
+                building_id: None,
+            },
+            action_at,
+        );
     }
-    let lumber_before = colony.resources.lumber;
-    let legacy_planks_before = colony.resources.planks;
-    let (session_id, nickname, sig) = signed();
-    apply_ok(
-        &mut world,
-        proto::ClientAction::PlanBuilding {
+
+    // Submit one real PlanBuilding request as soon as a naturally available cat
+    // can take it. Existing survival work is allowed to finish normally.
+    let mut plan_accepted = false;
+    let mut buildings_before = 0;
+    let mut lumber_before = 0.0;
+    let mut legacy_planks_before = 0.0;
+    for _ in 0..120 {
+        let (session_id, nickname, sig) = signed();
+        let action = proto::ClientAction::PlanBuilding {
             session_id,
             nickname,
             sig,
             building_type: proto::BuildingType::Den,
-        },
-        after_processing_ms,
+        };
+        let result = apply_action(&mut world, &action, &ctx(action_at));
+        if result.ok {
+            let colony = &world.colonies[0];
+            buildings_before = colony.buildings.len();
+            lumber_before = colony.resources.lumber;
+            legacy_planks_before = colony.resources.planks;
+            plan_accepted = true;
+            break;
+        }
+        assert!(
+            matches!(
+                result.message.as_deref(),
+                Some("No available worker.") | Some("That request is already in progress.")
+            ),
+            "unexpected PlanBuilding rejection: {:?}",
+            result.message
+        );
+        apply_ok(
+            &mut world,
+            proto::ClientAction::AdvanceTime { seconds: 60 },
+            action_at,
+        );
+        action_at += 60_000;
+    }
+    assert!(
+        plan_accepted,
+        "a guided build must become publicly reachable"
     );
-    apply_ok(
-        &mut world,
-        proto::ClientAction::AdvanceTime { seconds: 1 },
-        after_processing_ms,
-    );
+
+    // The spatial-invariant layer may reserve a future footprint and perform
+    // several visible, linked frontier expansions before the scaffold can be
+    // committed. Drive that real public path rather than assuming the old
+    // immediate-breakground behavior.
+    let mut breakground_at = action_at;
+    for _ in 0..96 {
+        apply_ok(
+            &mut world,
+            proto::ClientAction::AdvanceTime { seconds: 300 },
+            breakground_at,
+        );
+        breakground_at += 300_000;
+        if world.colonies[0].buildings.len() > buildings_before {
+            break;
+        }
+    }
     let colony = &world.colonies[0];
+    assert!(
+        colony.buildings.len() > buildings_before,
+        "the guided plan eventually commits one spatially legal scaffold"
+    );
     assert_eq!(colony.resources.lumber, lumber_before - 2.0);
     assert_eq!(colony.resources.planks, legacy_planks_before);
-    assert!(
-        colony
-            .buildings
-            .iter()
-            .any(|building| !building.is_complete)
-    );
 
     let plot_id = colony.farms[0].id.clone();
     let (session_id, nickname, sig) = signed();
@@ -393,7 +444,7 @@ fn run_guided_campaign(seed: u32) -> WorldState {
             sig,
             plot_id,
         },
-        after_processing_ms + 1_000,
+        breakground_at + 1_000,
     );
     assert!(world.colonies[0].farms.is_empty());
     world
