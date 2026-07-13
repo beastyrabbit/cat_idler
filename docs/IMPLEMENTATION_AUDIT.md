@@ -26,7 +26,7 @@ Status key: `open`, `in progress`, `verified`, `deferred`.
 | Spatial invariants | Stockpiles can overlap land/buildings/other piles; roads are eventually repaired rather than guaranteed at placement. | open | Per-tick spatial property campaign across seeds |
 | Production breadth | Farming choices/chains and several material/item recipes promised by current specs are missing or unreachable. | open | Build/staff/produce every building and recipe from player actions |
 | Client visibility | Ore/metal and generalized production/skills are not fully represented in protocol/HUD/inspectors. | open | Snapshot round trips and mature-colony UI inspection |
-| Visual truth | Current buildings are distinct and inspected, but player feedback supersedes the roofed workshop facades and persistent map plaques. Workshops must become open-top/cutaway and self-explanatory without labels. | in progress | Sprite-candidate approval page, then label-free normal/dense native framebuffers at 1024×768, 1280×800, and 1920×1080 |
+| Visual truth | Persistent map plaques are removed and the permanent settlement core no longer renders procedural nature props. Roofed workshop facades are still superseded by the requested open-top/cutaway art. | in progress | Sprite-candidate selection and open-workshop replacement; label/core-clear normal+dense framebuffers are verified at 1024×768, 1280×800, and 1920×1080 |
 | CI/hosting | Forgejo quality workflow and combined non-root server/WASM image are committed. | in progress | First pushed CI run remains; hosting live probes and deployment docs are verified |
 
 The existing Paws & Whiskers cat and raider sheets are accepted project assets.
@@ -40,8 +40,8 @@ open until the real player path and, where applicable, Bevy framebuffers prove t
 | --- | --- | --- | --- |
 | Fog of war and scouting | A new village reveals only its viable core plus roughly two tiles. Scouts choose a resource target or general exploration; their discoveries remain provisional until they return and touch the shrine. Nearby founding wood should be a very short scout trip. | open | Fresh-village and resource/general scout campaigns; outbound/return/shrine boundary tests; before/after framebuffers |
 | Open workshops | Houses may retain roofs, but workshops use readable open-top/cutaway sprites in the top-down DF-Steam style. | open | Candidate approval page followed by dense-village native framebuffers |
-| Building labels | Remove persistent map-name plaques; a building's purpose must read from its sprite and inspector/hover affordance. | open | Label-free 1024×768, 1280×800, and 1920×1080 captures |
-| Clear village interior | Claimed village interiors contain no natural trees, stone/deposits, or farm fields. Player-designated farms and resource work sites belong outside the settlement interior. | open | Founding/expansion spatial property tests across biomes and native captures |
+| Building labels | Persistent map-name plaques are gone; hover/click inspector names remain available. | verified | Label-free normal and dense client framebuffers at 1024×768, 1280×800, and 1920×1080 |
+| Clear village interior | Procedural tree/rock props are hidden in the selected village's fixed radius-six settlement core while radius-seven and expanded territory stay decorated. Natural sim resources, deposits, and farms must still be excluded from the same core. | in progress | Rendering boundary tests and native captures are verified; founding/expansion sim property campaigns across biomes remain |
 | Global and personal villages | One large global village is available to everyone. Each player may also found a personal village at a different deterministic world location; all remain on the same world map and can eventually meet/trade. | open | Ownership/access/routing/persistence tests, distant placement, two-player join/found/trade campaign |
 | Sprite review tool | [`docs/sprite-review.html`](sprite-review.html) compares current art with three persisted/exportable proposals for all 22 current buildings plus Accounting Tent, Mill, Sawmill, and a global hall/market concept. | verified | Desktop/mobile browser runs: 26 rows, filters, favorites, reload persistence, path copying, JSON export, zero page/image errors |
 | Research tree scale and UX | Research opens as a full-page Cities-Skylines-style dependency tree. Target about 500 data-driven nodes: at least one third building unlocks and one third recipes/resources, with the remainder covering movement, labor, capacity, defense, and other upgrades. Players may buy any affordable nodes; the leader may autonomously select at most one node per real-life day. | open | Schema/content validation, dependency/topology tests, daily leader boundary, full-page Bevy/WASM framebuffer and interaction campaign |
@@ -129,6 +129,15 @@ Raw logs are local test artifacts at `/tmp/cat-playtest-live-{7,555,99}.log`. Th
 production, and research fixes must rerun this campaign, while the manual-role design also
 requires the guided ClientAction campaigns above; unattended behavior alone is not the
 target player experience.
+
+### Label-free, clear-core native framebuffers — 2026-07-13
+
+The client rendered both a normal founding village and a dense 16-structure village through
+its own primary-window screenshot path at exact 1024×768, 1280×800, and 1920×1080 physical
+resolutions. All six images were inspected: no building-name text or plaque entities remain,
+inspector labels are retained, the permanent radius-six core contains no procedural tree/rock
+props, and outside vegetation remains visible. The temporary screenshot/window-size systems
+were removed before the 73-test client gate, strict Clippy, and formatting checks.
 
 ## Completion rule
 
