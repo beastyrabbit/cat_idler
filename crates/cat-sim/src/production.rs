@@ -24,9 +24,9 @@ pub const FIELD_UNLOCK_LEVEL: u32 = 4;
 /// (village level 4 = twelve completed non-shrine buildings), which a food-lean colony
 /// never reaches. Left purely hunt-fed, food arrives in lumpy ~24-unit hunt deliveries
 /// every 8 game-hours while consumption drains ~1/cat/hour continuously, so the larder
-/// sawtooths from ~full to near-zero and rarely holds above the comfort bar
-/// (`RESEARCH_COMFORT_RATIO`) — starving research and every comfort-gated advance and
-/// still tripping `UnattendedCollapse` resets.
+/// sawtooths from ~full to near-zero and rarely holds above the research-comfort bar
+/// (`leader_director::is_research_comfortable`) — starving research and every
+/// comfort-gated advance and still tripping `UnattendedCollapse` resets.
 ///
 /// The leader therefore auto-commissions a small, population-scaled number of fields at
 /// founding, ungated by the tree/village level — exactly mirroring how the research hut
@@ -52,10 +52,12 @@ pub const FIELD_MIN_COUNT: usize = 2;
 /// colony can hold comfort.
 pub const FIELD_CATS_PER_FIELD: f64 = 3.0;
 
-/// Food fill-ratio at/above which the leader stops commissioning fields. Set a touch above
-/// [`RESEARCH_COMFORT_RATIO`] so fields accumulate until the larder is comfortably — not
-/// just barely — stocked; once food is this full the passive base is already doing its job
-/// and no new field is broken ground (standing fields persist).
+/// Food fill-ratio at/above which the leader stops commissioning fields. Set comfortably
+/// above the per-capita research-comfort bar (`leader_director::is_research_comfortable`;
+/// e.g. a 15-cat colony is food-comfortable from 60/200 = 0.3) so fields accumulate until
+/// the larder is comfortably — not just barely — stocked; once food is this full the
+/// passive base is already doing its job and no new field is broken ground (standing
+/// fields persist).
 pub const FIELD_STOCK_TARGET_RATIO: f64 = 0.75;
 
 /// Acute-crisis floor for *discretionary* fields (those beyond [`FIELD_MIN_COUNT`]): the

@@ -26,7 +26,30 @@ pub const PROJECTION_HORIZON_TICKS: f64 = 6.0;
 pub const HUNT_CANCEL_RATIO: f64 = 1.1;
 pub const STORAGE_RATIO: f64 = 0.9;
 pub const DEN_PRESSURE_THRESHOLD: f64 = 0.8;
-pub const RESEARCH_COMFORT_RATIO: f64 = 0.5;
+/// Food a colony must hold **per live cat** to count "research-comfortable" (see
+/// [`is_research_comfortable`]). Comfort used to be a fill ratio of storage capacity
+/// (0.5 × 200 = 100 food), but the per-capita breeding gate
+/// ([`crate::life_sim::BREEDING_FOOD_PER_CAT`] = 2.5) converts any stock above ~2.5/cat
+/// into kittens whose consumption pulls the stock back down — a population homeostat
+/// that pins the larder at ~0.1–0.3 of capacity forever. Instrumented across 5 seeds ×
+/// 200 unattended game-hours, a capacity-ratio bar of 0.5 was never organically held
+/// (research stayed at 0 points / 0 nodes at every cadence), so the comfort bar must be
+/// denominated in the same per-capita currency as the homeostat. 5.0 food/cat is ≥5
+/// hours of buffer at the worst-case 1 food/cat/hour consumption
+/// ([`crate::idle_rules::consumption_for_tick`]) and sits deliberately *above* the 2.5
+/// breeding threshold: kittens before books, and research pauses whenever the buffer
+/// thins toward a genuine crisis. (4.0 read comfortable often enough at the harsher
+/// 5-game-minute test cadence to shave seed 555's 120-hour sustained mean below its
+/// founding count; 5.0 keeps the long-horizon population-sustain guardrail green.)
+pub const RESEARCH_COMFORT_FOOD_PER_CAT: f64 = 5.0;
+/// Water per live cat for research comfort: the same ≥5-hour buffer as
+/// [`RESEARCH_COMFORT_FOOD_PER_CAT`] at water's faster 1.2/cat/hour drain rate
+/// (`consumption_for_tick` divides by 3000 vs food's 3600), so 5.0 × 1.2 = 6.0.
+pub const RESEARCH_COMFORT_WATER_PER_CAT: f64 = 6.0;
+/// Absolute comfort floor: however small the colony, a store below this is never
+/// "comfortable" (a 3-cat colony holding 12 food is scraping by, not studying).
+/// Matches the shape of the ritual gate's 16-unit absolute floor in `idle_rules`.
+pub const RESEARCH_COMFORT_FLOOR: f64 = 20.0;
 pub const TITHE_FOOD_RATIO: f64 = 0.6;
 pub const TITHE_FOOD_AMOUNT: u32 = 20;
 pub const TITHE_REFINED_AMOUNT: u32 = 5;
@@ -694,6 +717,20 @@ pub fn scout_wild_deficit(snapshot: &LeaderSnapshot) -> f64 {
     deficit_below_comfort(materials_r).max(deficit_below_comfort(food_r))
 }
 
+/// Whether the colony is comfortable enough to spend a cat on research: food AND
+/// water each hold at least a ~4-hour per-capita buffer
+/// ([`RESEARCH_COMFORT_FOOD_PER_CAT`]/[`RESEARCH_COMFORT_WATER_PER_CAT`], with the
+/// [`RESEARCH_COMFORT_FLOOR`] absolute minimum). Shared by the `AssignResearch`
+/// labour-goal veto here and `world_tick::manage_research_hut`'s commission/staffing
+/// gate, so "comfortable" means one thing everywhere.
+#[must_use]
+pub fn is_research_comfortable(snapshot: &LeaderSnapshot) -> bool {
+    let pop = f64::from(snapshot.population);
+    let food_bar = (pop * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+    let water_bar = (pop * RESEARCH_COMFORT_WATER_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+    snapshot.resources.food >= food_bar && snapshot.water >= water_bar
+}
+
 fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
     let budget = (workforce_of(snapshot) * EMPLOYMENT_TARGET_RATIO).floor();
     let food_r = ratio(snapshot.resources.food, snapshot.food_capacity);
@@ -711,7 +748,7 @@ fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
         snapshot.water_drain_per_tick.unwrap_or(0.0),
     );
     let materials_score = deficit_curve(materials_r);
-    let comfortable = food_r >= RESEARCH_COMFORT_RATIO && water_r >= RESEARCH_COMFORT_RATIO;
+    let comfortable = is_research_comfortable(snapshot);
     let warrior_gap = i64::from(target_warriors(snapshot))
         - i64::from(snapshot.warrior_count.unwrap_or(0))
         - i64::from(snapshot.training_in_flight.unwrap_or(0));
@@ -1288,6 +1325,33 @@ mod tests {
     fn boosted(mut cat: CatBrief) -> CatBrief {
         cat.boosted = true;
         cat
+    }
+
+    /// Boundary vectors for the per-capita research-comfort bar (new-constant
+    /// discipline: every simulation constant gets a boundary test in its owning module).
+    #[test]
+    fn research_comfort_is_per_capita_with_an_absolute_floor() {
+        let snap = |population: u32, food: f64, water: f64| {
+            let mut snapshot = healthy_snapshot(0, population);
+            snapshot.resources.food = food;
+            snapshot.water = water;
+            snapshot
+        };
+
+        // pop 10: bars are food 50.0 (10 × 5.0), water 60.0 (10 × 6.0) — inclusive.
+        assert!(is_research_comfortable(&snap(10, 50.0, 60.0)));
+        assert!(!is_research_comfortable(&snap(10, 49.9, 60.0)));
+        assert!(!is_research_comfortable(&snap(10, 50.0, 59.9)));
+
+        // pop 3: per-capita bars (15.0/18.0) fall below the 20.0 absolute floor.
+        assert!(is_research_comfortable(&snap(3, 20.0, 20.0)));
+        assert!(!is_research_comfortable(&snap(3, 19.9, 20.0)));
+        assert!(!is_research_comfortable(&snap(3, 20.0, 19.9)));
+
+        // The bar tracks population, not storage capacity: the same 60-food larder is
+        // comfortable at pop 10 and lean at pop 20 regardless of the 200 capacity.
+        assert!(is_research_comfortable(&snap(10, 60.0, 60.0)));
+        assert!(!is_research_comfortable(&snap(20, 60.0, 120.0)));
     }
 
     #[test]

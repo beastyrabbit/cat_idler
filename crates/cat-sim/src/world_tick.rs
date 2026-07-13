@@ -27,7 +27,7 @@ use crate::{
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions,
-        OFFERING_MATERIALS_AMOUNT, RESEARCH_COMFORT_RATIO, direct_colony,
+        OFFERING_MATERIALS_AMOUNT, direct_colony, is_research_comfortable,
         match_cats_to_slots_with_officers,
     },
     ledger::{StockLedger, refresh_ledger},
@@ -1193,6 +1193,19 @@ fn starting_resources() -> Resources {
 }
 
 fn create_starter_cats(colony_id: &str, now_ms: i64, seed: u32) -> Vec<Cat> {
+    create_starter_cats_with_id_prefix(colony_id, colony_id, now_ms, seed)
+}
+
+/// [`create_starter_cats`] with an explicit cat-id prefix. The founding call keeps the
+/// historical `{colony_id}-cat-N` ids; the post-extinction respawn
+/// ([`respawn_starter_roster`]) passes a run-scoped prefix because the founding ids live
+/// on in the colony's dead-cat records and ids must stay unique.
+fn create_starter_cats_with_id_prefix(
+    colony_id: &str,
+    id_prefix: &str,
+    now_ms: i64,
+    seed: u32,
+) -> Vec<Cat> {
     let names = starter_names();
     let mut rolls = SeededRollSource::new(seed);
 
@@ -1200,7 +1213,7 @@ fn create_starter_cats(colony_id: &str, now_ms: i64, seed: u32) -> Vec<Cat> {
         .map(|index| {
             let spot = starter_cat_spot(index);
             Cat {
-                id: format!("{colony_id}-cat-{}", index + 1),
+                id: format!("{id_prefix}-cat-{}", index + 1),
                 colony_id: colony_id.to_owned(),
                 name: names[index].clone(),
                 parent_ids: vec![None, None],
@@ -1601,6 +1614,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         let plan = phase_19_leader_cancellations(colony, gate, &snapshot);
         phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan);
         phase_21_leader_capital_decisions_and_tithe(colony, gate, policy, &plan);
+        release_research_staff_unless_comfortable(colony, &snapshot);
         manage_research_hut(colony, gate, policy, &snapshot);
         manage_field(colony, gate, policy, &snapshot);
         phase_22_ritual_approval(colony, gate);
@@ -3095,6 +3109,37 @@ fn accrue_shrine_devotion(colony: &mut ColonyRuntime, gate: TickGate) {
 
 /// Whether the colony already has a research hut standing or a build for one under way,
 /// so the commission below only ever puts a single hut in play.
+/// Game-time a run must be old before the leader spends anything on research (see the
+/// establishment-window comment in [`manage_research_hut`]). Matches the 30-game-hour
+/// establishment window `run_founding_population_trajectory` samples after.
+const RESEARCH_ESTABLISHMENT_MS: i64 = 30 * 3_600_000;
+
+/// Research occupancy is comfort-conditional, not just comfort-gated at entry: any tick
+/// the colony is below the [`is_research_comfortable`] per-capita bar, every scholar is
+/// released back to the labour pool so the leader's survival pass can re-draft them for
+/// hunting/water — the same non-sticky discipline the raw-material benches use
+/// ([`release_raw_material_workshop_workers`]). When comfort returns,
+/// [`manage_research_hut`]'s step-1 mop-up re-staffs from the idle surplus. Without this,
+/// a scholar staffed in good times kept studying straight through a later larder
+/// collapse (a 1-cat drain that at the harsh 5-game-minute test cadence tipped seed 7's
+/// trough into an `UnattendedCollapse` reset ~20 game-hours after research engaged).
+fn release_research_staff_unless_comfortable(
+    colony: &mut ColonyRuntime,
+    snapshot: &LeaderSnapshot,
+) {
+    if is_research_comfortable(snapshot) {
+        return;
+    }
+    for building in &mut colony.buildings {
+        if matches!(
+            building.building_type,
+            BuildingType::ResearchHut | BuildingType::School
+        ) {
+            building.assigned_cat = None;
+        }
+    }
+}
+
 fn has_research_hut_or_build_in_flight(colony: &ColonyRuntime) -> bool {
     let has_building = colony
         .buildings
@@ -3115,11 +3160,11 @@ fn has_research_hut_or_build_in_flight(colony: &ColonyRuntime) -> bool {
 /// auto-unlocks the cheapest affordable node — starting with `research_hut` itself — and the
 /// tree climbs on its own.
 ///
-/// Everything here is gated on the colony being *comfortable* (food and water both at/above
-/// [`RESEARCH_COMFORT_RATIO`] of capacity), the same bar the `AssignResearch` labour goal
-/// carries — so research never draws a cat off survival work during a crisis, and a colony
-/// that is not comfortable is untouched (byte-identical). Two comfort-gated steps run each
-/// tick:
+/// Everything here is gated on the colony being *comfortable* (food and water both holding
+/// the per-capita buffer of [`is_research_comfortable`]), the same bar the `AssignResearch`
+/// labour goal carries — so research never draws a cat off survival work during a crisis,
+/// and a colony that is not comfortable is untouched (byte-identical). Two comfort-gated
+/// steps run each tick:
 ///
 /// 1. **Staff idle huts** from genuinely idle cats. The director's `AssignResearch` labour
 ///    goal lives in the ranked employment budget, but the ~0.95 idle-employment floor keeps
@@ -3148,6 +3193,16 @@ fn manage_research_hut(
     if snapshot.population == 0 {
         return;
     }
+    // Establishment window: a freshly-founded (or freshly-reset) run keeps every paw on
+    // survival before any is spent on study. The per-capita comfort bar can read true in
+    // the very first hours (a 5-cat founding larder of ~44 food clears it), but the early
+    // coarse-cadence economy is a lumpy sawtooth where diverting the architect + scaffold
+    // planks into a hut tips troughs into `UnattendedCollapse` (caught by
+    // `founding_colony_food_trough_is_lifted_without_going_trivial`). Mirrors the
+    // 30-game-hour establishment window the survival guardrails sample after.
+    if gate.processed_through - colony.run_started_at < RESEARCH_ESTABLISHMENT_MS {
+        return;
+    }
     let has_shrine = colony
         .buildings
         .iter()
@@ -3155,10 +3210,7 @@ fn manage_research_hut(
     if !has_shrine {
         return;
     }
-    let food_r = ratio_or_zero(snapshot.resources.food, snapshot.food_capacity);
-    let water_r = ratio_or_zero(snapshot.water, snapshot.water_capacity);
-    let comfortable = food_r >= RESEARCH_COMFORT_RATIO && water_r >= RESEARCH_COMFORT_RATIO;
-    if !comfortable {
+    if !is_research_comfortable(snapshot) {
         return;
     }
 
@@ -4290,7 +4342,37 @@ fn phase_26_empty_colony_reset(
     }
 
     reset_run(colony, gate.processed_through, RunResetReason::AllCatsDead);
+    respawn_starter_roster(colony, gate.processed_through);
     Some(RunResetReason::AllCatsDead)
+}
+
+/// TS parity (`server/game.ts` `ensureColony`: `createStarterCats` whenever
+/// `aliveCats.length === 0`): a fully-extinct colony's run reset must repopulate with a
+/// fresh founding roster, not leave a dead world. Without this, `phase_26_empty_colony_reset`
+/// found zero living cats again on every subsequent tick and fired an `AllCatsDead` reset
+/// forever (instrumented: seed 99 went extinct at game-hour ~114 and then banked 895
+/// back-to-back resets over the rest of a 200-hour run with the colony permanently empty).
+///
+/// Deterministic: the roster is rolled from the colony's own founding seed forked by the
+/// (just-incremented) run number, so each run gets distinct cats but two identical
+/// trajectories respawn identical rosters. Ids carry the run number because the founding
+/// `{colony_id}-cat-N` ids live on in the dead-cat records.
+fn respawn_starter_roster(colony: &mut ColonyRuntime, now_ms: i64) {
+    let seed = colony
+        .test_rng_seed
+        .unwrap_or(0)
+        .wrapping_add(colony.run_number.wrapping_mul(1_000_003));
+    let id_prefix = format!("{}-run{}", colony.id, colony.run_number);
+    let roster = create_starter_cats_with_id_prefix(&colony.id, &id_prefix, now_ms, seed);
+    colony.cats.extend(roster);
+    // `reset_run` picked its interim leader while every cat was dead (i.e. none).
+    colony.leader_id = choose_interim_leader_excluding(colony, None);
+    append_event(
+        colony,
+        now_ms,
+        EventKind::ResetReason,
+        "New paws pad into the empty village - a fresh founding roster takes over the ruins.",
+    );
 }
 
 /// Phase 27: collect due active jobs and preserve the phase-14 queued snapshot
@@ -9471,6 +9553,60 @@ mod tests {
         assert_eq!(colony.elections[0].winner_cat_id, None);
     }
 
+    /// TS-parity guardrail (`server/game.ts` `ensureColony` re-seeded starter cats
+    /// whenever no cat was alive): a fully-extinct colony must come back as a fresh
+    /// founding roster on the reset tick — and must NOT reset again on the next tick.
+    /// Pre-fix, a dead colony fired `AllCatsDead` every tick forever (instrumented:
+    /// seed 99 went extinct at game-hour ~114 and banked 895 back-to-back resets over
+    /// the rest of a 200-game-hour run with the world permanently empty).
+    #[test]
+    fn extinct_colony_respawns_a_fresh_starter_roster_and_stops_reset_storming() {
+        let run = || {
+            let mut world = new_world(99);
+            world
+                .colonies
+                .push(found_colony(world.world_seed, "colony-1", 10_000, 99));
+            for cat in &mut world.colonies[0].cats {
+                cat.death_time = Some(20_000);
+            }
+
+            let first = world_tick(&mut world, 70_000);
+            assert_eq!(
+                first[0].reset_reason,
+                Some(RunResetReason::AllCatsDead),
+                "an extinct roster must trip the all-dead reset"
+            );
+            let alive: Vec<(String, String, f64)> = alive_cats(&world.colonies[0].cats)
+                .map(|cat| (cat.id.clone(), cat.name.clone(), cat.stats.hunting))
+                .collect();
+            assert_eq!(
+                alive.len(),
+                STARTER_CAT_COUNT,
+                "the reset must respawn a full founding roster"
+            );
+            for (id, _, _) in &alive {
+                assert!(
+                    id.contains("-run2-"),
+                    "respawned ids must be run-scoped (the founding ids live on in the \
+                     graveyard), got {id}"
+                );
+            }
+            assert!(
+                world.colonies[0].leader_id.is_some(),
+                "the respawned roster must seat an interim leader"
+            );
+
+            let second = world_tick(&mut world, 130_000);
+            assert_eq!(
+                second[0].reset_reason, None,
+                "a repopulated colony must not keep reset-storming"
+            );
+            alive
+        };
+        // Determinism twin folded in: identical trajectories respawn identical rosters.
+        assert_eq!(run(), run());
+    }
+
     #[test]
     fn founded_colony_elects_a_leader_over_time_without_player_input() {
         let mut world = new_world(2024);
@@ -12567,8 +12703,9 @@ mod tests {
     /// Comfort harness: model a colony that has solved its food/water economy (a full-ish
     /// larder every tick, no player actions) so the cat-research mechanic is exercised in
     /// isolation from the orthogonal founding-food balance. Keeps food/water at 0.6 of cap —
-    /// comfortably over [`RESEARCH_COMFORT_RATIO`] without slamming the larder to the cap
-    /// (which over-breeds into an old-age collapse). Deterministic; touches only food/water.
+    /// comfortably over the [`is_research_comfortable`] per-capita bar without slamming the
+    /// larder to the cap (which over-breeds into an old-age collapse). Deterministic;
+    /// touches only food/water.
     #[cfg(test)]
     fn keep_comfortable(colony: &mut ColonyRuntime) {
         let caps = storage_caps(colony);
@@ -12606,7 +12743,10 @@ mod tests {
             world.colonies.push(colony);
 
             let mut built_and_staffed = false;
-            for step in 1..=2_500i64 {
+            // 4000 one-minute steps ≈ 67 game-hours: the first 30 are the research
+            // establishment window (no hut is commissioned before it), the rest cover
+            // build + staff + the final accrual to the head-started root node.
+            for step in 1..=4_000i64 {
                 keep_comfortable(&mut world.colonies[0]);
                 let now = 10_000 + step * 60_000;
                 let _ = world_tick(&mut world, now);
@@ -12626,6 +12766,49 @@ mod tests {
             assert!(
                 !colony.upgrade_tree.owned_node_ids.is_empty(),
                 "seed {seed}: the research tree never advanced to an owned node — the cat path is dormant"
+            );
+        }
+    }
+
+    /// ORGANIC research-engagement guardrail (playtest 2026-07-13): the research-comfort
+    /// bar must be reachable by the colony's OWN unattended economy — not only under the
+    /// [`keep_comfortable`] harness the tree-advance proof uses. Under the old
+    /// capacity-ratio bar (food/water ≥ 0.5 × capacity) that never happened: the
+    /// per-capita breeding gate converts any larder above ~2.5 food/cat into kittens
+    /// whose consumption pulls the stock back down, pinning food at ~0.1–0.3 of capacity
+    /// indefinitely (instrumented via [`instrument_food_trajectory`]: 5 seeds × 200
+    /// unattended game-hours ended with 0.0 research points and 0 owned nodes at every
+    /// cadence — research was dormant in real play). With the per-capita bar
+    /// ([`is_research_comfortable`]) the same unattended economy must commission, build,
+    /// and staff a research hut and bank research points, with no player action.
+    #[test]
+    fn an_unattended_colony_organically_engages_research() {
+        for seed in [7u32, 2024] {
+            let mut world = new_world(seed);
+            world
+                .colonies
+                .push(found_colony(world.world_seed, "colony-1", 10_000, seed));
+
+            let mut ever_staffed = false;
+            // 4500 one-minute steps ≈ 75 game-hours: 30 of establishment window, then
+            // organic comfort → commission → build → staff → accrue.
+            for step in 1..=4_500i64 {
+                let now = 10_000 + step * 60_000;
+                let _ = world_tick(&mut world, now);
+                if research_workforce(&world.colonies[0]) > 0.0 {
+                    ever_staffed = true;
+                }
+            }
+
+            assert!(
+                ever_staffed,
+                "seed {seed}: the colony's own economy never staffed a research hut — the \
+                 comfort bar is unreachable in unattended play"
+            );
+            assert!(
+                world.colonies[0].upgrade_tree.research_points > 0.0,
+                "seed {seed}: no research points banked over 75 unattended game-hours — \
+                 research is dormant in real play"
             );
         }
     }
@@ -12780,13 +12963,17 @@ mod tests {
     /// Survival guardrail for the cat-research path: staffing a research hut must respect the
     /// comfort gate the `AssignResearch` labour goal already carries, so a *starving* colony
     /// never pulls a mouth off survival work to study. A completed, unstaffed hut in a colony
-    /// held below [`RESEARCH_COMFORT_RATIO`] on food/water stays unstaffed and commissions no
-    /// new hut; the same colony made comfortable staffs it. Deterministic (short bounded run).
+    /// held below the [`is_research_comfortable`] per-capita bar on food/water stays unstaffed
+    /// and commissions no new hut; the same colony made comfortable staffs it. Deterministic
+    /// (short bounded run).
     #[test]
     fn research_staffing_and_commission_respect_the_comfort_gate() {
         // Starving: food/water pinned near zero every tick, so no comfortable ticks pass.
+        // Both halves age the run past the research establishment window so the assert
+        // exercises the comfort gate itself, not the founding-window guard.
         let mut world = new_world(7);
         let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 7);
+        colony.run_started_at = 10_000 - RESEARCH_ESTABLISHMENT_MS;
         let scholar = colony.cats[0].id.clone();
         attach_staffed_research_hut(&mut colony, &scholar);
         // Free the scholar so only the leader (comfort-gated) could re-staff it.
@@ -12822,6 +13009,7 @@ mod tests {
         // Comfortable: food/water pinned at capacity, so the leader staffs the idle hut.
         let mut comfy = new_world(7);
         let mut colony = found_colony(comfy.world_seed, "colony-1", 10_000, 7);
+        colony.run_started_at = 10_000 - RESEARCH_ESTABLISHMENT_MS;
         let scholar = colony.cats[0].id.clone();
         attach_staffed_research_hut(&mut colony, &scholar);
         for building in &mut colony.buildings {
@@ -15793,7 +15981,13 @@ mod tests {
                 final_pop = pop;
                 let food_r = c.resources.food / caps.food;
                 max_r = max_r.max(food_r);
-                if food_r >= RESEARCH_COMFORT_RATIO {
+                // Mirror the food half of `is_research_comfortable`'s per-capita bar.
+                use crate::leader_director::{
+                    RESEARCH_COMFORT_FLOOR, RESEARCH_COMFORT_FOOD_PER_CAT,
+                };
+                let food_comfortable = c.resources.food
+                    >= (pop as f64 * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+                if food_comfortable {
                     cur_run += 5; // game-minutes
                     longest_run = longest_run.max(cur_run);
                 } else {
@@ -15810,7 +16004,7 @@ mod tests {
                     .filter(|b| b.building_type == BuildingType::Den && b.is_complete)
                     .count();
                 let gh = step * 5 / 60;
-                if food_r >= RESEARCH_COMFORT_RATIO {
+                if food_comfortable {
                     comfort_ticks += 1;
                     if comfort_first.is_none() {
                         comfort_first = Some(gh);
