@@ -16,7 +16,7 @@ Status key: `open`, `in progress`, `verified`, `deferred`.
 | Tools | Woodworking is always staffed after both input benches and tools have no protected construction reserve. | in progress | Tool throughput, field commissioning, long-step reserve test |
 | Research | First autonomous node arrives around game-hour 120 at live cadence. | in progress | Healthy multi-seed first-node window and crisis non-staffing |
 | Survival | The production integration restored a zero-reset five-seed × 200h proxy campaign after exterior-field expansion initially caused two distinct collapse paths. Further balance changes still require live-cadence comparison. | in progress | Repeat five seeds × 200h and live-cadence campaigns after officer/economy/housing changes; determinism twin |
-| Server responsiveness | A normal freshly booted server can hold its world work long enough that `/health` times out and the client receives no initial snapshot for over a minute; the art-only tick bypass answers in about 5 ms. | in progress | Isolated before/after world-tick timing, health latency while a tick is slow, prompt initial WS snapshot, production tick cadence, restart equality |
+| Server responsiveness | Simulation, snapshot construction, and synchronous SQLite work run on Tokio's blocking pool. New sockets clone a startup-initialized last-completed snapshot; save ticks release the authoritative world lock before disk I/O; missed intervals skip rather than burst. | verified | One-worker injected 250 ms tick keeps health and initial snapshot under 50 ms; 28 server tests; live health/WS probes and tick/save timings; strict Clippy |
 | Server security | Socket-bound identity, exhaustive mutation authentication, selected-colony routing, release-disabled test controls. | verified | 15 server, 692 sim, and 61 client tests; strict Clippy |
 | Web build | Release bundle uses same-origin WS; local serve retains explicit port 8787. | verified | Optimized Trunk build and combined-host live probes |
 | Client reliability | Failed actions are visible and closed/error sockets reconnect with capped backoff. | verified | 62 client tests and connected framebuffer smoke |
@@ -175,8 +175,8 @@ shrine gold-pile choice was rejected because it resembled a resource deposit; th
 recaptures use the reviewed reliquary. During this art-only capture, the server tick task was
 temporarily bypassed so the real booted server could serve its real starter snapshot despite
 concurrent debug-simulation contention; that bypass and all screenshot/window hooks were removed
-before the 84-test client gate, strict Clippy, and commit. Production snapshot cadence still gets
-an isolated benchmark after the spatial/production merge.
+before the 84-test client gate, strict Clippy, and commit. The server responsiveness campaign
+recorded below subsequently verified production snapshot cadence without that bypass.
 
 ### Farming, timber, and exterior production campaign — 2026-07-13
 
@@ -194,9 +194,27 @@ The final four-crate gate passed all 905 tests (one intentionally skipped), incl
 over 200 game-hours with zero resets, strict Clippy, and formatting. Exact 1280×800 and
 1920×1080 primary-window captures were inspected: Mill and Sawmill are distinct roofless
 stations, three crop/stage plots sit beyond the wall, the HUD remains usable, and persistent map
-labels remain absent. Normal server ticking starved the art client and `/health`, so the already
-documented temporary tick bypass was used only for these frames and removed; the runtime defect
-is the active server-responsiveness item above, not accepted visual behavior.
+labels remain absent. Normal server ticking starved the art client and `/health` at the time, so
+the documented temporary tick bypass was used only for these frames and removed. The responsive
+authoritative-server slice recorded below subsequently fixed and verified that runtime defect.
+
+### Responsive authoritative server — 2026-07-13
+
+The tick loop now performs CPU-heavy simulation and synchronous SQLite work through Tokio's
+blocking pool while retaining the authoritative world lock for mutation ordering. A canonical
+last-completed snapshot is built at startup and updated only after a completed tick, so a new
+WebSocket can receive real state without waiting behind an in-progress simulation. Periodic
+saves clone the completed world and release the world lock before taking the database lock;
+missed intervals use `Skip` to avoid burst amplification.
+
+A current-thread Tokio regression injects a 250 ms tick while the world lock is held and proves
+both `/health` and the cached initial snapshot finish within 50 ms. On a normal fresh founding,
+20 independent root probes measured health at 0.10–0.41 ms; the implementation branch measured
+five initial 21,557-byte WebSocket snapshots at 0.10–0.45 ms, ordinary simulation at 6–22 ms,
+and a save tick at roughly 23 ms. The first minute-rollover ticks in the independent debug run
+occasionally took about 0.4–0.5 s but did not block liveness. The same slice backfills a missing
+legacy `upgradeLevels` SQLite column and verifies a real save/load round trip. The independent
+gate passed 28 server tests, strict Clippy, and formatting.
 
 ## Completion rule
 

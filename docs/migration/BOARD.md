@@ -512,11 +512,11 @@ adds a +50% research-rate multiplier via its upgrade node.
 persona: developer   scope: crates/cat-protocol: WorldSnapshot (multi-colony generalization of getGlobalDashboard payload) + per-colony ColonySnapshot (resources+caps, leader, cats, jobs, upgrades, events, housing, research, election, voteKick, zones, threat, raiders, buildings, storage, claimedTiles, gate, villageRadius, anchor, worldSeed, onlineCount) + ClientAction enum (~19 actions from actions/route.ts + foundVillage/joinVillage). serde, round-trip tests.
 ### P8.2 apply_action (pure) in cat-sim   [status: done]
 persona: developer   depends_on:[P8.1]   scope: cat-sim: apply a ClientAction to WorldState/ColonyRuntime (requestJob, boost, purchaseUpgrade, castVote, requestVoteKick, create/removeZone, planBuilding, unlockNode, assignWorker, trainWarrior, defendRaid, buildRoad, test controls, foundVillage->found_colony). Pure; validation + soft-fail results. Snapshot builder WorldState->WorldSnapshot.
-### P8.3 cat-server tick loop + transport   [status: done]
-persona: developer   depends_on:[P8.2]   scope: crates/cat-server: tokio loop running world_tick each 1s; WebSocket (axum or tokio-tungstenite) broadcasting WorldSnapshot + receiving ClientAction; presence/online tracking.
+### P8.3 cat-server tick loop + transport   [status: done; responsiveness follow-up verified in `daa75e8`]
+persona: developer   depends_on:[P8.2]   scope: crates/cat-server: tokio loop running world_tick each 1s; WebSocket (axum or tokio-tungstenite) broadcasting WorldSnapshot + receiving ClientAction; presence/online tracking. CPU-heavy ticks and synchronous persistence run on the blocking pool; new sockets read a last-completed snapshot cache without waiting on the authoritative world lock.
 ### P8.4 cat-server persistence + identity   [status: done]
 persona: developer   depends_on:[P8.3]   scope: SQLite (rusqlite) save/load WorldState (mirror db/schema tables); identity/HMAC session sig; rate-limit (30 actions/10s). Migrations on open.
-### P8.gate P8 integration   [status: done (LIVE: boot+/health, WS snapshot push, foundVillage grows colonies to 2, load_world reloads; save-timing gap filed as followup)]
+### P8.gate P8 integration   [status: done (LIVE: boot+/health, prompt cached WS snapshot, foundVillage grows colonies to 2, load_world reloads; save-timing/responsiveness follow-up closed in `daa75e8`)]
 persona: qa/orchestrator   scope: server boots, ticks, a client connects, founds a village, submits actions, receives snapshots; persistence round-trips.
 
 ### P8.followup persistence save timing   [status: done]

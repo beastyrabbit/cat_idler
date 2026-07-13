@@ -56,12 +56,14 @@ Architecture, module map, persistence, and testing contract live in `CLAUDE.md` 
    filled role automates its category (Steward hauling/stockpiles, Forester wood, Farmer
    food, Captain defense, Loremaster research); unfilled roles stay manual. Spec:
    `docs/migration/specs/p12-idle-cat-forest.md` + `docs/migration/specs/leader_director.md`.
-3. **Server tick responsiveness.** A normal boot can starve `/health` and the initial WS
-   snapshot for over a minute while world work holds the critical path; the art-only tick
-   bypass answers in milliseconds. Diagnose/fix this without weakening the authoritative
-   one-second simulation contract, then benchmark health, first snapshot, and steady cadence.
-4. **Deploy-time follow-ups** (from the P10 close-out, `docs/migration/WASM.md`): hosting
+3. **Deploy-time follow-ups** (from the P10 close-out, `docs/migration/WASM.md`): hosting
    for the web bundle + transfer-weight optimization. Not blockers.
+
+Recently fixed: `daa75e8` moved simulation and synchronous persistence onto Tokio's blocking
+pool, initialized a last-completed snapshot cache for new sockets, and stopped missed ticks
+from burst-replaying. A one-worker 250 ms injected tick keeps `/health` and the initial
+snapshot below 50 ms; live probes were 0.10–0.51 ms. The authoritative world lock still
+serializes actions with ticks, while periodic saves clone and release it before SQLite I/O.
 
 ## HOW TO WORK — hard-won lessons (do not relearn these)
 
