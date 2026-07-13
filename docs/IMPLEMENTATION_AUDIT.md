@@ -70,6 +70,28 @@ The following are explicitly historical/superseded and do not create open featur
 `TERRAIN_DESIGN.md`, `TESTING.md`, `UI_CONCEPTS.md`, `plan.md`, and the old browser campaign
 documents. `ENGINE_MCP_EVALUATION.md` carries the same historical banner.
 
+### Original TypeScript-design reconciliation
+
+The frozen implementation and original documents remain on `archive/web-game` at tag
+`web-final`; maintained copies of the design rationale remain under `docs/`. They were
+checked by requirement group so “historical” does not conceal a dropped current promise:
+
+| Original design group | Current disposition |
+| --- | --- |
+| Needs, autonomous survival, aging, genetics, breeding, skills, specialization, leaders, elections, raids, death, and extinction recovery | Carried into deterministic `cat-sim`; balance and role-aware guided campaigns remain part of this audit |
+| Dynamic colony grid plus a fixed 16×16 world map | Superseded by one flat, streamed, effectively infinite world containing multiple villages |
+| Fog, expeditions, path wear, terrain travel cost, walls, and gates | Carried forward; shrine-return scouting and the exact current road model are open above |
+| Click-to-feed/heal/assign/fight and a browser task queue | Superseded by typed management actions and the manual-to-officer loop; missing usable Bevy controls remain open above |
+| Blessings, buildings, and the original ~18-node research tree | Carried forward; faucet reachability is in progress and the current direction expands the tree to about 500 nodes |
+| Multiple colonies and inter-colony trade | Partially carried forward; authoritative multi-colony state and traders exist, while global/personal ownership, meeting, and direct trade remain open |
+| External sprite-render service, DOM/Pixi rendering, isometric/elevation experiments, and newspaper UI | Superseded or explicitly dropped by the Rust/Bevy top-down direction |
+| Seasonal events, achievements, accessories, sound/music, and a mobile app | Listed only as non-MVP future ideas in the original document; not current commitments unless promoted into `GAME_VISION.md` |
+| Historical roadmap stretch items such as fishing, traveler interception, and elevation-aware zones | Not current commitments; bridges/transport that were later promoted are represented in the Rust-era specs |
+
+The old result templates and browser test campaigns document measurements of the retired web
+client. They are evidence archives, not Bevy acceptance criteria; the current matrix below
+replaces them.
+
 ## Full playtest matrix
 
 - Multi-seed unattended runs plus longitudinal player-guided runs: fully manual survival,
