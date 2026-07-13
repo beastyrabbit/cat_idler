@@ -12,7 +12,7 @@ TypeScript/Next.js game was removed from this tree and is preserved — runnable
 `archive/web-game` (tag `web-final`, `8d3bc5a`). Reference only, never the target. The Rust
 module doc-comments' "ported from `lib/game/*.ts`" citations point into that branch.
 
-## State of the game (verified 2026-07-13)
+## State of the game (verified 2026-07-14)
 
 The **migration and P11 cutover are complete**; the maintained game is still pre-release and
 several P12–P19 product promises remain partial. Do not turn a phase label or compiling crate
@@ -35,14 +35,14 @@ Verified foundations include:
   Generated studies honestly remain read-only until their live effects are implemented;
 - a persistent village selector and secure selected-village routing. This is not yet the
   canonical-global/personal-ownership/discovery/trade model.
+- the complete founding lifecycle: exactly 15 adult cats in three five-bed Dens, slow
+  reserved-bed breeding, prosperity migration with a 36-game-hour unhoused probation,
+  240/288-game-hour old-age thresholds, atomic extinction recovery, and physical emergency
+  water fetching.
 
-The founding/housing integration is actively replacing the archived five-cat loop. Its accepted
-contract is exact: 15 adult founders, three five-bed Dens, bed reservations for slow pregnancy,
-prosperity migration with a 36-game-hour unhoused probation, deterministic atomic extinction
-recovery, and a real fetch/carry/deposit job for emergency water. Old-age mortality is
-deliberately retuned from 48/57.6 to 240/288 game-hours (ordinary versus leader/healer). Keep this
-slice `in progress` until the full gates and guided/framebuffer campaign recorded in
-`docs/IMPLEMENTATION_AUDIT.md` pass.
+The founding/housing integration replaced the archived five-cat loop and passed its full
+simulation, protocol, server, client, persistence, guided-action, determinism, and framebuffer
+gate. The exact evidence is recorded in `docs/IMPLEMENTATION_AUDIT.md`.
 
 Dev tooling (`be7cdee`) includes `CAT_BRP=1` for Bevy Remote Protocol inspection and a headless
 playtest harness:
@@ -60,10 +60,9 @@ playtest harness:
    and add upgrade-gated escalating building costs. Keep tithe/offering reachability and
    research pacing in the same balance campaigns.
 3. **Integrate the larger product models.** Wire purchases/effects/persistence and the daily
-   leader choice for the 500-study catalog; finish and prove 15-adult/three-Den founding, slow
-   reserved-bed breeding, prosperity migration/36-hour unhoused departure, deterministic reset,
-   and physical emergency water fetching; complete global/personal village ownership,
-   discovery, and direct trade.
+   leader choice for the 500-study catalog; complete global/personal village ownership,
+   discovery, and direct trade. Preserve the now-verified founding, housing, migration, aging,
+   reset, and physical emergency-water contracts while doing so.
 4. **Close world and presentation gaps.** Finish full tree/rock occupancy and staged wall growth,
    clear actual interior deposits/resources, expose traffic dirt roads, replace rail/shipping
    multipliers with built routes/vehicles, restore fishing, make Accounting Tent snapshot-

@@ -39,7 +39,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, the full-page 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; complete manual work controls and live generated-study purchases remain |
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, linked expansion, and scaffold recovery are verified; trees occupy only their anchor, rocks are not occupants, and wall expansion is not staged outer-before-inner |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster and resource/general shrine-return scouting are verified, including restart-safe in-flight notebooks and responsive controls; the richer manual inspector/control surface remains partial |
-| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — farms/legacy fields and logging are excluded from the core; the active lifecycle integration uses 15 adults, three five-bed Dens, reserved-bed pregnancy, prosperity migration/36-hour probation, deterministic reset, and physical emergency water fetching; final gates and exact authored/traffic roads remain |
+| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, reserved-bed pregnancy, prosperity migration/36-hour probation, aging, deterministic reset, physical emergency water, and lifecycle gates are verified; exact authored/traffic roads, interior clearing, and gather spots remain |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fine-biome movement is unused, rail/shipping are global multipliers rather than built routes/vehicles, and fishing is absent |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current protocol variants have framebuffer-verified residential/open-station compositions, including Mill/Sawmill and crop stages; the Adventure sliced-panel/button/progress/cursor skin is exact-size native-framebuffer verified and the release WASM bundle builds; Accounting Tent is not snapshot-reachable and WASM visual interaction remains |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — base item/trade slices shipped; recipe/resource breadth and guided reachability remain |
@@ -614,9 +614,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Ordinary old-age mortality is deliberately retuned from 48 to 240 game-hours, with the
   leader/healer threshold retuned from 57.6 to 288. Emergency water must be a physical
   source→carry→deposit job rather than a direct resource grant.
-- The founding/housing slice remains `in progress` pending all-seed long runs, signed server
-  retention/departure, persistence/restart, exact housing framebuffers, and independent review;
-  see `docs/IMPLEMENTATION_AUDIT.md`.
+- The founding/housing slice is verified by all-seed long runs and determinism twins, signed
+  server actions, persistence/restart, focused four-crate gates, independent review, and exact
+  15/15 plus unhoused-probation framebuffers; see `docs/IMPLEMENTATION_AUDIT.md`.
 - Gather spots (temporary drop points) + a gatherer/mover work split, with resource-typed
   markers rendered on the map.
 - Farms and legacy fields stay beyond the permanent settlement core; logging ignores hidden
