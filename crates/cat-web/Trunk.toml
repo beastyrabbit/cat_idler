@@ -13,7 +13,7 @@
 dist = "dist"
 
 [serve]
-address = "127.0.0.1"
+addresses = ["127.0.0.1"]
 port = 8080
 # Never fall back to serving index.html for missing asset requests — a 404 on a
 # sprite should read as a 404, not silently return HTML.

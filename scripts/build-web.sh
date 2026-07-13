@@ -19,6 +19,12 @@
 # lands at ~8 MB gzipped.
 set -euo pipefail
 
+# Trunk's clap environment parser expects a boolean while the conventional
+# NO_COLOR value used by CI and Codex shells is often `1`.
+if [[ "${NO_COLOR:-}" == "1" ]]; then
+  export NO_COLOR=true
+fi
+
 cd "$(dirname "$0")/../crates/cat-web"
 
 if [[ "${1:-}" == "--serve" ]]; then

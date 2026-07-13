@@ -1,0 +1,16 @@
+.git
+.gitignore
+.forgejo
+.github
+.idea
+.vscode
+target
+data
+crates/cat-web/dist
+node_modules
+*.db
+*.db-shm
+*.db-wal
+*.log
+docs
+codex

@@ -3,7 +3,6 @@
 
 use std::{
     collections::BTreeMap,
-    net::SocketAddr,
     sync::{
         Arc,
         atomic::{AtomicU32, AtomicU64, Ordering},
@@ -13,11 +12,17 @@ use std::{
 
 use axum::{
     Router,
+    body::Body,
     extract::{
         State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    response::IntoResponse,
+    http::{
+        Request, StatusCode,
+        header::{CACHE_CONTROL, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS},
+    },
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use cat_protocol::{ActionResult, ClientAction, WorldSnapshot};
@@ -25,18 +30,23 @@ use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
     world_tick::{WorldState, found_colony, new_world, world_tick},
 };
+use hosting::ServerConfig;
 use identity::{SignedSession, issue_session, signed_session, verify_session};
 use persistence::{load_world, open_database_from_env, save_world};
 use rate_limit::RateLimiter;
 use rusqlite::Connection;
 use tokio::sync::{Mutex, broadcast};
+use tower_http::{
+    compression::CompressionLayer,
+    services::{ServeDir, ServeFile},
+};
 use tracing::{debug, error, info, warn};
 
+mod hosting;
 mod identity;
 mod persistence;
 mod rate_limit;
 
-const DEFAULT_PORT: u16 = 8787;
 const WORLD_SEED: u32 = 20_240_703;
 const STARTER_COLONY_ID: &str = "colony-1";
 const STARTER_COLONY_SEED: u32 = 1;
@@ -65,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let conn = open_database_from_env()?;
     let session_secret = identity::session_secret_from_env()?;
+    let config = ServerConfig::from_env()?;
     let state = build_state_from_connection(now_ms(), conn, session_secret)?;
     if state.allow_test_actions {
         warn!(
@@ -74,34 +85,129 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     spawn_tick_task(state.clone());
 
-    let port = std::env::var("PORT")
-        .ok()
-        .and_then(|port| port.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
 
-    info!(%addr, "cat-server listening");
-    axum::serve(listener, app(state.clone()))
+    info!(addr = %config.listen_addr, "cat-server listening");
+    if let Some(dist) = &config.web_dist {
+        info!(path = %dist.display(), "serving browser client");
+    }
+    if config.allowed_origins.is_restricted() {
+        info!("strict WebSocket Origin allowlist enabled");
+    }
+    axum::serve(listener, app(state.clone(), &config))
         .with_graceful_shutdown(shutdown_signal(state))
         .await?;
 
     Ok(())
 }
 
-fn app(state: AppState) -> Router {
-    Router::new()
+fn app(state: AppState, config: &ServerConfig) -> Router {
+    let mut router = Router::new()
         .route("/health", get(health))
-        .route("/ws", get(ws_handler))
-        .with_state(state)
+        .route("/ready", get(readiness))
+        .route(
+            "/ws",
+            get(ws_handler).route_layer(middleware::from_fn_with_state(
+                config.allowed_origins.clone(),
+                enforce_ws_origin,
+            )),
+        )
+        .with_state(state);
+
+    if let Some(images) = &config.public_images {
+        let image_router = Router::new()
+            .fallback_service(ServeDir::new(images))
+            .layer(middleware::from_fn(static_cache_headers));
+        router = router.nest("/public/images", image_router);
+    }
+
+    if let Some(dist) = &config.web_dist {
+        let static_router = Router::new()
+            .fallback_service(
+                ServeDir::new(dist).fallback(ServeFile::new(hosting::index_path(dist))),
+            )
+            .layer(middleware::from_fn(static_cache_headers));
+        router = router.merge(static_router);
+    }
+
+    router.layer(CompressionLayer::new().br(true).gzip(true))
 }
 
 async fn health() -> &'static str {
     "ok"
 }
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
+async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
+    let database_ready = state
+        .db
+        .lock()
+        .await
+        .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+        .is_ok_and(|value| value == 1);
+    let world_ready = !state.world.lock().await.colonies.is_empty();
+
+    if database_ready && world_ready {
+        (StatusCode::OK, "ready")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
+    }
+}
+
+async fn enforce_ws_origin(
+    State(allowed_origins): State<hosting::AllowedOrigins>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if !allowed_origins.request_origin_allowed(request.headers()) {
+        warn!("rejected WebSocket connection with an untrusted Origin");
+        return (StatusCode::FORBIDDEN, "WebSocket Origin is not allowed").into_response();
+    }
+    next.run(request).await
+}
+
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
     ws.on_upgrade(move |socket| handle_socket(socket, state))
+        .into_response()
+}
+
+async fn static_cache_headers(request: Request<Body>, next: Next) -> Response {
+    let path = request.uri().path().to_owned();
+    let mut response = next.run(request).await;
+    if response.status().is_success() {
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok());
+        let is_html = content_type.is_some_and(|value| value.starts_with("text/html"));
+        let is_image = content_type.is_some_and(|value| value.starts_with("image/"));
+        let cache_control = if is_html {
+            "no-cache"
+        } else if is_fingerprinted_asset(&path) {
+            "public, max-age=31536000, immutable"
+        } else if is_image {
+            "public, max-age=86400"
+        } else {
+            "public, max-age=3600"
+        };
+        response.headers_mut().insert(
+            CACHE_CONTROL,
+            cache_control.parse().expect("static cache header is valid"),
+        );
+        response.headers_mut().insert(
+            X_CONTENT_TYPE_OPTIONS,
+            "nosniff".parse().expect("nosniff header is valid"),
+        );
+    }
+    response
+}
+
+fn is_fingerprinted_asset(path: &str) -> bool {
+    let Some(file_name) = path.rsplit('/').next() else {
+        return false;
+    };
+    file_name
+        .split(['-', '_', '.'])
+        .any(|part| part.len() >= 8 && part.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 fn starter_world(now_ms: i64) -> WorldState {
@@ -648,7 +754,222 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        body::to_bytes,
+        http::{
+            Method,
+            header::{CONTENT_ENCODING, ORIGIN},
+        },
+    };
     use cat_protocol::{AccelerationPreset, ClientAction, OfficerRole, ResourceKind, TilePoint};
+    use std::{fs, path::PathBuf};
+    use tower::ServiceExt;
+
+    static NEXT_STATIC_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
+
+    struct StaticFixture {
+        root: PathBuf,
+        dist: PathBuf,
+        images: PathBuf,
+    }
+
+    impl StaticFixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "cat-server-router-{}-{}",
+                std::process::id(),
+                NEXT_STATIC_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            let dist = root.join("dist");
+            let images = root.join("images");
+            fs::create_dir_all(&dist).expect("create dist");
+            fs::create_dir_all(&images).expect("create images");
+            fs::write(
+                dist.join("index.html"),
+                format!(
+                    "<!doctype html><title>Cats</title><p>{}</p>",
+                    "cat".repeat(1_000)
+                ),
+            )
+            .expect("write index");
+            Self { root, dist, images }
+        }
+
+        fn config(&self) -> ServerConfig {
+            ServerConfig {
+                listen_addr: "127.0.0.1:8787".parse().expect("test listen address"),
+                web_dist: Some(self.dist.clone()),
+                public_images: Some(self.images.clone()),
+                allowed_origins: hosting::AllowedOrigins::default(),
+            }
+        }
+    }
+
+    impl Drop for StaticFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn local_config() -> ServerConfig {
+        ServerConfig {
+            listen_addr: "127.0.0.1:8787".parse().expect("test listen address"),
+            web_dist: None,
+            public_images: None,
+            allowed_origins: hosting::AllowedOrigins::default(),
+        }
+    }
+
+    fn request(path: &str) -> Request<Body> {
+        Request::builder()
+            .method(Method::GET)
+            .uri(path)
+            .body(Body::empty())
+            .expect("build request")
+    }
+
+    #[tokio::test]
+    async fn liveness_and_readiness_report_distinct_server_health() {
+        let state = build_state(1_000_000);
+        let router = app(state.clone(), &local_config());
+        let health_response = router
+            .clone()
+            .oneshot(request("/health"))
+            .await
+            .expect("health response");
+        assert_eq!(health_response.status(), StatusCode::OK);
+        let ready_response = router
+            .oneshot(request("/ready"))
+            .await
+            .expect("readiness response");
+        assert_eq!(ready_response.status(), StatusCode::OK);
+
+        state.world.lock().await.colonies.clear();
+        let not_ready_response = app(state, &local_config())
+            .oneshot(request("/ready"))
+            .await
+            .expect("not-ready response");
+        assert_eq!(not_ready_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn strict_origin_policy_rejects_untrusted_websocket_handshakes() {
+        let state = build_state(1_000_000);
+        let mut config = local_config();
+        config.allowed_origins =
+            hosting::AllowedOrigins::parse(Some("https://cats.example".to_owned()), "test origins")
+                .expect("origin policy");
+        let mut websocket_request = request("/ws");
+        let headers = websocket_request.headers_mut();
+        headers.insert("connection", "upgrade".parse().expect("connection header"));
+        headers.insert("upgrade", "websocket".parse().expect("upgrade header"));
+        headers.insert(
+            "sec-websocket-version",
+            "13".parse().expect("version header"),
+        );
+        headers.insert(
+            "sec-websocket-key",
+            "dGhlIHNhbXBsZSBub25jZQ==".parse().expect("key header"),
+        );
+        headers.insert(
+            ORIGIN,
+            "https://intruder.example".parse().expect("origin header"),
+        );
+
+        let response = app(state, &config)
+            .oneshot(websocket_request)
+            .await
+            .expect("websocket response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn static_host_uses_spa_fallback_mime_cache_and_compression_headers() {
+        let fixture = StaticFixture::new();
+        fs::write(
+            fixture.dist.join("cat-web-deadbeef.wasm"),
+            vec![0_u8; 4_096],
+        )
+        .expect("write wasm");
+        let router = app(build_state(1_000_000), &fixture.config());
+
+        let mut spa_request = request("/colony/dashboard");
+        spa_request.headers_mut().insert(
+            "accept-encoding",
+            "br, gzip".parse().expect("accept encoding"),
+        );
+        let spa_response = router
+            .clone()
+            .oneshot(spa_request)
+            .await
+            .expect("SPA response");
+        assert_eq!(spa_response.status(), StatusCode::OK);
+        assert_eq!(
+            spa_response.headers().get(CONTENT_TYPE),
+            Some(&"text/html".parse().expect("content type"))
+        );
+        assert_eq!(
+            spa_response.headers().get(CACHE_CONTROL),
+            Some(&"no-cache".parse().expect("cache header"))
+        );
+        assert_eq!(
+            spa_response.headers().get(CONTENT_ENCODING),
+            Some(&"br".parse().expect("content encoding"))
+        );
+
+        let mut wasm_request = request("/cat-web-deadbeef.wasm");
+        wasm_request
+            .headers_mut()
+            .insert("accept-encoding", "br".parse().expect("accept encoding"));
+        let wasm_response = router.oneshot(wasm_request).await.expect("wasm response");
+        assert_eq!(wasm_response.status(), StatusCode::OK);
+        assert_eq!(
+            wasm_response.headers().get(CONTENT_TYPE),
+            Some(&"application/wasm".parse().expect("content type"))
+        );
+        assert_eq!(
+            wasm_response.headers().get(CACHE_CONTROL),
+            Some(
+                &"public, max-age=31536000, immutable"
+                    .parse()
+                    .expect("cache header")
+            )
+        );
+        assert_eq!(
+            wasm_response.headers().get(CONTENT_ENCODING),
+            Some(&"br".parse().expect("content encoding"))
+        );
+        assert_eq!(
+            wasm_response.headers().get(X_CONTENT_TYPE_OPTIONS),
+            Some(&"nosniff".parse().expect("nosniff header"))
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_public_image_directory_overrides_the_dist_copy() {
+        let fixture = StaticFixture::new();
+        fs::create_dir_all(fixture.dist.join("public/images")).expect("create dist images");
+        fs::write(fixture.dist.join("public/images/cat.png"), b"dist").expect("write dist image");
+        fs::write(fixture.images.join("cat.png"), b"explicit").expect("write explicit image");
+
+        let response = app(build_state(1_000_000), &fixture.config())
+            .oneshot(request("/public/images/cat.png"))
+            .await
+            .expect("image response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE),
+            Some(&"image/png".parse().expect("content type"))
+        );
+        assert_eq!(
+            response.headers().get(CACHE_CONTROL),
+            Some(&"public, max-age=86400".parse().expect("cache header"))
+        );
+        let body = to_bytes(response.into_body(), 64)
+            .await
+            .expect("read response body");
+        assert_eq!(&body[..], b"explicit");
+    }
 
     fn authenticated_connection(state: &AppState) -> (ConnectionContext, SignedSession) {
         let signed = signed_session("session-1".to_owned(), state.session_secret.as_str());
