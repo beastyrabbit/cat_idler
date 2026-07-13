@@ -35,22 +35,22 @@ codex, plus a Claude review for high-value slices) signs off.
 | P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
 | P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh`; a same-origin combined server/WASM image, compression, health/readiness probes, exact Origin checks, and deployment instructions are verified. Native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Transfer-weight optimization remains optional. See `docs/migration/WASM.md` |
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
-| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — farming/logging/Mill/Sawmill and a guided action campaign are verified; true vacant-role manual play, broader recipes, and escalating building costs remain |
+| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — farming/logging/Mill/Sawmill and spatial container actions are verified; skills cover only four legacy labors, officers remain additive, the shrine is still the all-resource fallback, and physical local workshop logistics/broader recipes/escalating costs remain |
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, the full-page 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; complete manual work controls and live generated-study purchases remain |
-| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done — atomic action validation, collision-free buildings/piles/roads/gather spots/future reservations, linked expansion persistence, exact shrine/gate/exterior connectivity, and paid-scaffold recovery are verified; the broader authored/traffic road feel remains tracked under P16 |
+| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, linked expansion, and scaffold recovery are verified; trees occupy only their anchor, rocks are not occupants, and wall expansion is not staged outer-before-inner |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/control slices shipped; scouting must become resource-targeted and commit knowledge only at shrine return, including loaded-village behavior |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — farms/legacy fields and logging are now excluded from the core; the five-cat blueprint is superseded by the 15-cat/three-house model and exact authored/traffic road rules remain |
-| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — generator/mining/transport and outside-settlement crop plots shipped; complete visible production breadth remains |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current building types use framebuffer-verified residential/open-station compositions, including distinct Mill/Sawmill and live crop stages |
+| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fine-biome movement is unused, rail/shipping are global multipliers rather than built routes/vehicles, and fishing is absent |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current protocol variants have framebuffer-verified residential/open-station compositions, including Mill/Sawmill and crop stages; Accounting Tent is not snapshot-reachable and the specified 9-patch/button/cursor skin is absent |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — base item/trade slices shipped; recipe/resource breadth and guided reachability remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
 format fell out of active use for day-to-day tracking — the per-slice specs live in
 `docs/migration/specs/p12-idle-cat-forest.md` through `p19-items-materials-trade.md`, and
-the authoritative status for each slice is the git log (commit subjects are tagged with
-their phase/slice, e.g. `P12.1:`, `P19 slice 2/4:`). This table is a summary rollup, not a
-card-by-card log; see "P12–P19 — what actually shipped" below for the feature list and
-`docs/HANDOFF.md` for the living status of anything still in flight underneath a "done" row.
+the git log records what landed (commit subjects are tagged with phase/slice where applicable).
+This table is a summary rollup, not a card-by-card log; see “P12–P19 — what actually landed”
+below for the historical feature list and
+`docs/IMPLEMENTATION_AUDIT.md` for the evidence-backed status and remaining acceptance matrix.
 
 ---
 
@@ -187,7 +187,7 @@ notes: TS source `lib/game/noise.ts`; fixture
 `docs/migration/fixtures/p2/noise_vectors.json`; parity criterion is exact
 32-bit hash/LCG semantics and JS-number-equivalent noise values.
 
-### P2.3 Biome tables and calculators   [status: qa]
+### P2.3 Biome tables and calculators   [status: done]
 persona: test-engineer -> developer -> qa            depends_on: [P2.1, P1.2]        parallel_group: P2-foundation
 scope: Port `lib/game/biomes.ts` into `crates/cat-sim/src/biomes.rs`: biome and
 overlay feature enums, `BIOME_PROPERTIES`, `OVERLAY_FEATURE_PROPERTIES`,
@@ -199,7 +199,8 @@ determinism checks, then `cargo nextest run -p cat-sim`,
 `cargo clippy -p cat-sim --all-targets -- -D warnings`, and `cargo fmt` pass.
 notes: TS source `lib/game/biomes.ts`; fixture
 `docs/migration/fixtures/p2/biome_vectors.json`; parity criterion is exact table
-coverage and exact calculator outputs.
+coverage and exact calculator outputs. QA rerun 2026-07-13: all five fixture-backed
+literal/property/calculator/NaN/determinism tests passed; strict `cat-sim` Clippy passed.
 
 ### P2.4 Terrain generator researcher spec   [status: done]
 persona: researcher            depends_on: [P2.2]        parallel_group: P2-research
@@ -520,25 +521,25 @@ persona: developer   depends_on:[P8.3]   scope: SQLite (rusqlite) save/load Worl
 persona: qa/orchestrator   scope: server boots, ticks, a client connects, founds a village, submits actions, receives snapshots; persistence round-trips.
 
 ### P8.followup persistence save timing   [status: done]
-note: P8 gate proved live WS transport + actions + load_world work, BUT a colony founded
-just before an abrupt kill did NOT survive reboot (loaded the starter colony-1 only). The
-save/load mechanism is correct (unit test passes) + periodic save works; the gap is
-save-frequency / no SIGTERM save-on-shutdown for very-recent state. Fix: save every tick
-(or a few) and/or a graceful-shutdown save handler. Server-owns-everything needs durable saves.
+historical note: P8 gate found that a colony created immediately before an abrupt kill could
+precede the next periodic save. The server now saves every five completed ticks and on graceful
+shutdown; save/load round trips and responsiveness are verified. Abrupt process termination can
+still lose the bounded interval since the previous save, which is the documented durability
+contract rather than an open migration card.
 
 ## P9 — Client render + UI — TOP-DOWN (design pivot: see docs/GAME_VISION.md)
-NOTE: pivoted from isometric to a flat TOP-DOWN grid (single level), per the
+HISTORICAL CARD NOTE: P9 pivoted from isometric to a flat TOP-DOWN grid (single level), per the
 "Idle Cat Forest = idle Dwarf Fortress, cats, forest" vision. Render the live
-snapshot top-down: terrain grid, cats (+carried item), labelled workshops/buildings,
+snapshot top-down: terrain grid, cats (+carried item), the original labelled workshop markers,
 visible storage/stockpiles, camera, dashboard, manual action tools first. Deeper sim
 (role/officer system, spatial stockpiles, more workshops + hauling chains) = new
 phase P12 after the visible world is up.
 The labelled-marker wording records the original P9 slice and is superseded by the current
 label-free/open-workshop direction in `docs/GAME_VISION.md` and `docs/IMPLEMENTATION_AUDIT.md`.
 ### P9.1 cat-client foundation (Bevy app + WS + cats)   [status: done]
-scope: cat-client run() Bevy app; ewebsock WS client -> WorldSnapshot resource; iso projection + camera + cat atlas lifted from reference/spike-bevy-0.19.rs; render cats from the snapshot. cat-desktop main -> cat_client::run().
+scope: HISTORICAL foundation — cat-client run() Bevy app; ewebsock WS client -> WorldSnapshot resource; the first spike's projection/camera + cat atlas; render cats from the snapshot. The current renderer is flat top-down. cat-desktop main -> cat_client::run().
 ### P9.2 terrain/buildings/raiders/zones render (TOP-DOWN)   [status: done]
-scope: REWRITTEN flat top-down (per docs/GAME_VISION.md — no iso). Terrain regenerated from worldSeed via cat-sim generate_terrain_chunk (biome colours + blue rivers + tree/rock decoration dots), labelled building markers, cats coloured by specialization + carried-item glyph, raiders, avoid/gather zone overlays, on-map stockpile readout near the shrine. Framebuffer-verified.
+scope: HISTORICAL P9 acceptance — flat top-down terrain regenerated from worldSeed via cat-sim generate_terrain_chunk (biome colours + blue rivers + tree/rock decoration dots), original labelled building markers, cats coloured by specialization + carried-item glyph, raiders, avoid/gather zone overlays, and an on-map stockpile readout. Current rendering supersedes the marker slice with label-free roofed homes/open stations and typed inspectors; see P18 and `docs/IMPLEMENTATION_AUDIT.md`.
 ### P9.3 input + camera   [status: done]
 scope: WASD/arrow pan, middle-drag pan, wheel zoom, R reset — centred on the village anchor. (tool modes/selection inspector deferred.)
 ### P9.4 dashboard + action buttons   [status: done]
@@ -550,42 +551,49 @@ scope: client connects to cat-server, renders the live world, an action round-tr
 
 ---
 
-## P12–P19 — what actually shipped
+## P12–P19 — what actually landed (not a completion checklist)
 
 These phases ran outside the card-by-card `todo → researching → red → dev → qa → done`
 workflow used above — they're tracked as design specs in `docs/migration/specs/` plus the
-git log, not as individual cards on this board (per `README.md`'s note that P12+ is
-"tracked in specs/ and the git log rather than the board"). This section is a rollup of
-what actually landed on `migration/bevy-rust`, grouped by phase, for anyone auditing status
+git log, not as individual cards on this board. `docs/IMPLEMENTATION_AUDIT.md` is the maintained
+completion ledger; this section is a rollup of
+what actually landed and remains in `main`, grouped by phase, for anyone auditing status
 without reading ~150 commits. It intentionally does not restate every commit — see `git log`
 for exact commit hashes/messages, and the corresponding spec doc for the original design.
 
 ### P12 — Sim expansion (spec: `docs/migration/specs/p12-idle-cat-forest.md`)
-- **P12.1 skills** — per-labor proficiency; cats improve at what they do.
+- **P12.1 skills** — proficiency/XP persists and is exposed for the four legacy labors
+  (Hunter, Architect, Ritualist, Warrior). Mill, Farm, Research, and other maintained labors do
+  not yet have complete gain/effect/UI paths.
 - **P12.2 officers** — assignable officer roles as an additive automation layer (steward/etc.),
   `AssignOfficer`/`UnassignOfficer` actions. Not a full split of the leader director into
   per-role automation — most labor allocation still runs through the single director (tracked
   as a known gap in `docs/ARCHITECTURE.md`).
-- **P12.3 spatial stockpiles** — real containers with a balancing reservoir (stockpiles are
-  places in the world, not an abstract number).
-- **P12.4a/b workshop chains + Accountant** — inter-workshop stockpile routing, a stock-ledger
-  freshness system ("Accountant"), workshop crafting chains (planks/blocks/tools), exterior
-  catnip/grain/herb plots, logging, Mill grain→flour→food, and Sawmill logs→lumber.
-- **P12.6 logistics** — general/limited stockpile designation, shrine offerings (cats convert
-  surplus materials to blessings), the Steward auto-placing gather spots near distant worked
-  sites.
+- **P12.3 spatial stockpiles** — designated containers are places in the world, but the shrine
+  remains the all-resource fallback reservoir; the specified seeded general storehouse/local
+  capacity model and physical hauling contract are not complete.
+- **P12.4a/b workshop chains + Accountant direction** — workshop crafting covers
+  planks/blocks/tools, exterior catnip/grain/herb plots, logging, Mill grain→flour→food, and
+  Sawmill logs→lumber. Workers do not path to their station and inputs/outputs still use
+  colony-global resources; the Accountant role and station-local ledgers/queues are absent.
+- **P12.6 logistics** — general/limited stockpile designation, shrine offering mechanics, and
+  Steward gather-spot automation landed. Organic tithe/offering gates are not reliably reachable
+  in unattended play, and the local physical logistics promised by the spec remain open.
 
 ### P13 — Client UI for P12
 - Spatial stockpile designation + render (`b3d28fb`).
 - Officer assignment UI (`e32e32d`).
 - Crop/timber HUD state, visible farm growth stages, and distinct roofless Mill/Sawmill stations.
+- A full-page 500-study ledger with dependencies, filter/search/pan/zoom. Generated studies are
+  visibly read-only pending runtime purchase/effect/persistence integration.
 
 ### P14 — Spatial placement (spec: `docs/migration/specs/p14-spatial-placement.md`)
-- **P14.1** building footprints + tile-occupancy + tree collision.
-- **P14.2** buildings/trees as soft obstacles cats route around (cost-based pathfinding, not
-  hard blocking).
-- **P14.4** road-accessibility invariant — buildings get paved to the shrine.
-- **P14.5** footprint building render + y-sort 2.5D depth in the client.
+- **Verified slice:** atomic player/leader validation and commit, exclusive future footprints,
+  collision-free building/stockpile/gather/road reservations, exact shrine/gate/exterior
+  connectivity, linked expansion persistence, and paid-scaffold recovery.
+- **Still partial:** a generated tree occupies only its anchor rather than its rendered 2×3
+  footprint, rocks are not occupants, and perimeter expansion replaces the derived wall
+  immediately instead of building the outer wall before removing the inner wall.
 
 ### P15 — Playtest-feedback backlog (spec: `docs/migration/specs/p15-playtest-feedback.md`)
 - Fog of war: first slice (tiny start + revealed-tile state), then provisional → committed
@@ -610,16 +618,18 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   tint + per-biome tree density.
 - Per-biome crop fertility + mining rules; **ore/metal mining is wired** (mountain-biome ore,
   a `Smelter` building refining ore → metal bars, metal-bars-for-better-gear via
-  `smithy::advance_metal_forge`) — note this contradicts the "ore/metal not yet wired" line
-  still present in `README.md`'s Status section as of this writing; trust the git log
-  (`edc1f21`, `341cf2a`, `c4ed4a3`) and `crates/cat-sim/src/world_tick.rs`/`smithy.rs` over
-  that stale README line.
-- Transport upgrades: rail (long-haul speed) and shipping (cross-water routes).
+  `smithy::advance_metal_forge`).
+- Transport upgrade flags exist, but fine-biome movement factors are unused, rail is a
+  distance-triggered global multiplier without tracks/trains, shipping makes water slow-walkable
+  without routes/vessels, and maintained fishing paths are absent.
 
 ### P18 — Visual polish (spec: `docs/migration/specs/p18-visual-polish.md`)
-- DF-Steam-styled wood/parchment UI panels, HUD resource icons + hover tooltips.
-- Dedicated craft-station sprites for the P16 workshops; climate-biome rendering (shared with
-  P17).
+- DF-Steam-inspired solid-color/border panels plus HUD resource icons and hover tooltips. The
+  specified Adventure 9-patch panels/buttons/progress assets and cursor states are not live.
+- Persistent map-name plaques are removed. All 24 current protocol building variants have an
+  explicit residential/open/infrastructure treatment; Mill/Sawmill and crop stages are
+  framebuffer-verified. Accounting Tent is not snapshot-reachable, so this is not an
+  all-maintained-buildings completion claim.
 
 ### P19 — Item/material economy (spec: `docs/migration/specs/p19-items-materials-trade.md`)
 - Slice 1: item/material data model + per-colony item store; workshop crafting chains
@@ -631,6 +641,8 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Slice 3/4: visiting traders + a coin economy + sell/buy actions; the client renders the
   visiting trader (merchant cat + minimap mark), a goods/inventory panel, item glyphs, and an
   always-visible HUD treasury total.
+- Remaining breadth includes bone/gem/clay/metal variants, finished tool/weapon/armor chains,
+  physical local inventories, fishing, and reachable client controls for every chain.
 
 ### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)
 - **Multi-village founding**: per-colony anchors, distinct village sites (`a8a5503`).

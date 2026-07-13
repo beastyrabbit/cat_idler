@@ -42,7 +42,7 @@ effect. There is no client-side prediction.
 ## cat-sim — the simulation core
 
 `crates/cat-sim` is a `#![forbid(unsafe_code)]`, dependency-light crate (only `cat-protocol`,
-`serde`, `serde_json`, and `ryu-js` for TS-compatible float formatting) with **no I/O**: no
+`serde`, `serde_json`, and `ryu-js` for archived-behavior float formatting) with **no I/O**: no
 filesystem, no networking, no clock, no threads, no `rand`. Every module is unit-tested in
 place; `cargo test -p cat-sim` runs ~650 tests in well under 20 seconds because none of it
 touches the outside world.
@@ -112,16 +112,25 @@ that's the fastest way to find the ported behavior's original spec and tests.
 ### Known product gaps
 
 The core migration is complete, including ore/metal extraction and staffed Research Hut and
-School buildings. The remaining work is correctness and product exposure rather than porting:
+School buildings. Verified post-cutover slices include atomic placement/reservations, exterior
+farm/logging production with Mill/Sawmill, label-free open stations, selected-village routing,
+the 500-study client ledger, and a responsive blocking-pool server tick. The remaining work is
+maintained product behavior rather than migration:
 
 - **Officer/manual split.** Assignable roles exist, but the leader director still automates
   categories whose office is vacant, contrary to `GAME_VISION.md`.
-- **Multi-village player path.** The world and persistence are multi-colony, but routing,
-  selection, and client rendering have not yet made additional villages fully usable.
-- **Protocol/UI breadth.** Several simulated resources, buildings, jobs, and production chains
-  are not reachable or visible through ordinary client controls.
-- **Spatial/visual completeness.** Stockpile collision invariants and several read-at-a-glance
-  building/production promises need implementation and framebuffer verification.
+- **Physical work and production breadth.** Workshop staffing is an id assignment rather than
+  station travel; inputs/outputs still draw on colony-global resources, skills cover only four
+  legacy labors, and many recipes/material variants are absent.
+- **Multi-village product model.** Socket-selected routing and the persistent selector work, but
+  the canonical global village, personal ownership/access, discovery, and direct inter-village
+  trade are not modeled.
+- **Research, housing, and manual controls.** The generated 500-node catalog/ledger is read-only,
+  live founding still uses the old five-cat housing model, and most typed protocol actions have
+  no usable exact client tool.
+- **Spatial, transport, and visual completeness.** Full tree/rock occupancy, staged wall growth,
+  visible traffic dirt roads, real rail/ship/fishing routes, the Adventure-style UI skin, and
+  Accounting Tent reachability remain incomplete.
 
 The evidence and completion tests for each gap live in `docs/IMPLEMENTATION_AUDIT.md`.
 
@@ -135,11 +144,12 @@ over the WebSocket:
   jobs, buildings, upgrade-tree progress, research, election/vote-kick state, zones, threat +
   raiders, claimed tiles/fence/gate, village radius/anchor, officers, stockpiles, gather spots,
   item store, road tiles, online count.
-- **`ClientAction`** — a ~29-variant enum covering everything a player can do: `Ensure`,
-  `Presence` (handshake), `RequestJob`, `Boost`, `PurchaseUpgrade`, `CastVote`,
+- **`ClientAction`** — a 30-variant typed server contract: `Presence` (handshake),
+  `RequestJob`, `Boost`, `PurchaseUpgrade`, `CastVote`,
   `RequestVoteKick`, `CreateZone`/`RemoveZone`, `PlanBuilding`, `UnlockNode`, `AssignWorker`,
   `TrainWarrior`, `DefendRaid`, `BuildRoad`, `FoundVillage`/`JoinVillage`,
-  `AssignOfficer`/`UnassignOfficer`, `DesignateStockpile`/`RemoveStockpile`,
+  `AssignOfficer`/`UnassignOfficer`, `DesignateFarm`/`ClearFarm`,
+  `DesignateStockpile`/`RemoveStockpile`,
   `DesignateGatherSpot`/`RemoveGatherSpot`, `SellGoods`, `BuyResource`, `BoostCat`, plus test
   controls (`SetTestAcceleration`, `AdvanceTime`, `SetTestRngSeed`).
 
@@ -151,15 +161,17 @@ via `#[serde(rename_all = "camelCase")]`-style annotations; most actions carry `
 
 `crates/cat-server` (tokio + axum) is a single binary:
 
-- `GET /health` → `"ok"` liveness probe.
+- `GET /health` → `"ok"` liveness probe; `GET /ready` checks persisted-state readiness.
 - `GET /ws` → WebSocket upgrade. Each connection is a task that reads `ClientAction` JSON
   frames, calls `apply_action` against the shared `Arc<Mutex<WorldState>>`, and forwards the
   broadcast `WorldSnapshot` stream.
-- A `tokio::spawn`ed loop calls `world_tick` **once per second** for the whole world (not
-  currently configurable — no `WORKER_TICK_MS`-style env var; the interval is
-  `Duration::from_secs(1)` in `main.rs`), then broadcasts the resulting snapshot to every
-  connected client and saves to SQLite every 5 ticks, plus once on graceful shutdown
-  (`SIGTERM`/Ctrl-C).
+- A `tokio::spawn`ed loop schedules `world_tick` **once per second** for the whole world (not
+  currently configurable — the interval is `Duration::from_secs(1)` in `main.rs`). CPU-heavy
+  simulation, snapshot construction, and synchronous SQLite work run on Tokio's blocking pool.
+  A startup-initialized last-completed snapshot lets new sockets connect without waiting for an
+  in-progress world lock; saves clone completed state and release that lock before disk I/O.
+  Missed intervals skip rather than burst-replay. The server broadcasts after completed ticks,
+  saves every 5 ticks, and saves once on graceful shutdown (`SIGTERM`/Ctrl-C).
 - **Persistence** (`persistence.rs`) is `rusqlite` (bundled SQLite) with tables mirroring the
   old Drizzle schema (`world`, `colonies`, `cats`, `jobs`, `buildings`, `world_tiles`, `events`,
   `zones`, `elections`, `votes`, `raiders`) and additive `ALTER TABLE`-style migrations applied
@@ -168,10 +180,18 @@ via `#[serde(rename_all = "camelCase")]`-style annotations; most actions carry `
   (`SESSION_HMAC_SECRET`; refuses to boot in `NODE_ENV=production` without one, falls back to
   an insecure dev secret otherwise) — the hardening the old TS game's `docs/plan.md` flagged as
   a "forgeable sessionId, HMAC hardening is a flagged follow-up" is now implemented here.
+- **Routing and security** bind signed identity and selected-colony state to each socket. A join
+  reorders that socket's complete shared-world snapshot so the selected colony is first while
+  mutation context targets the same colony. This is verified routing, not yet an ownership model.
 - **Rate limiting** (`rate_limit.rs`) caps actions at 30 per 10-second window per session.
+- **Production host** can serve the Trunk SPA and tracked images from the same process, with
+  Brotli/gzip, cache headers, exact WebSocket Origin checks, and SPA fallback. The repository
+  `Dockerfile` packages that mode as a non-root image.
 
-Env vars: `PORT` (default `8787`), `GAME_DB_PATH` (default `data/cat.db`),
-`SESSION_HMAC_SECRET`.
+Core env vars: `BIND_ADDR` (default `127.0.0.1`), `PORT` (default `8787`),
+`GAME_DB_PATH` (default `data/cat.db`), and `SESSION_HMAC_SECRET`. Static production mode adds
+`CAT_SERVER_WEB_DIST_DIR`, `CAT_SERVER_PUBLIC_IMAGES_DIR`, and
+`CAT_SERVER_ALLOWED_ORIGINS`; see `docs/DEPLOYMENT.md`.
 
 ## cat-client / cat-desktop / cat-web — the renderer
 
@@ -184,17 +204,18 @@ systems read each frame.
 The renderer is **top-down**, not isometric — a deliberate pivot mid-migration (see
 `docs/GAME_VISION.md`'s "design pivot" note and `docs/migration/BOARD.md` P9). It draws: biome
 terrain generated client-side from the shared `world_seed` (via `cat_sim::generate_terrain_chunk`
-— the client doesn't need the server to stream tile data, just the seed), fog of war, roads,
-cats (colored by specialization, carrying-item glyph, walk animation that interpolates toward
-the latest snapshot tile rather than teleporting), labelled buildings with craft-station
-sprites, stockpiles/gather spots, raiders, and zone overlays. The HUD (a DF-Steam-styled parchment
-UI, per `docs/migration/specs/p18-visual-polish.md`) shows resources with caps, colony census,
-an event log, the upgrade tree (read-only browse + purchase), a trade menu, and cat/building
-inspectors (hover tooltip + right-click detail panel).
+— the client doesn't need the server to stream tile data, just the seed), fog of war, paved
+roads, cats (colored by specialization, carrying marker, walk animation that interpolates toward
+the latest snapshot tile rather than teleporting), label-free roofed homes and typed open
+stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The HUD shows
+resources with caps, colony census, event log, trade, officers, village selection, and
+cat/building inspectors. Its full-page research screen renders the 500-study catalog with
+filter/search/pan/zoom; generated studies explicitly remain read-only until runtime integration.
+The maintained P18 9-patch/cursor skin is not yet implemented.
 
-Art: curated Kenney "Roguelike 16px" sprites under `public/images/game/{terrain,nature,
-buildings,infra,props,farm,enemies}/`, with Paws & Whiskers cat sprites under
-`public/images/cats/` — see `docs/assets/SELECTION.md` for the pack choices.
+Art: curated pixel sprites under `public/images/game/{terrain,nature,buildings,interior,infra,
+props,farm,enemies}/`, with accepted cat/raider sheets under `public/images/cats/` — see
+`docs/assets/SELECTION.md` for the runtime mapping.
 
 Bevy-specific gotchas (camera Z-layering, sprite/text API shapes, asset-root resolution) are
 documented in `docs/HANDOFF.md` — read that before touching client rendering code.
@@ -205,8 +226,9 @@ documented in `docs/HANDOFF.md` — read that before touching client rendering c
   client together. Uses `bevy`'s `multi_threaded`, `x11`, `wayland` features.
 - **Browser** (`cat-web`): builds through Trunk for `wasm32-unknown-unknown`, serves the same
   tracked assets, uses `ewebsock`, and derives its production WebSocket URL from
-  `window.location`. The bundle has been exercised end-to-end in Chromium. Remaining hosting,
-  caching, and transfer-weight work is tracked in `docs/migration/WASM.md`.
+  `window.location`. The bundle has been exercised end-to-end in Chromium and the combined
+  server/WASM production image is verified. Optional transfer/performance work is tracked in
+  `docs/migration/WASM.md`.
 
 ## cat-dev — the local dev launcher
 
@@ -219,7 +241,7 @@ attaching a fresh client to a stale, pre-rebuild server.
 
 ## Testing strategy
 
-- **`cat-sim`**: plain `#[test]` unit tests (~650, sub-20s) plus golden-master fixtures under
+- **`cat-sim`**: 770+ pure unit/integration tests plus golden-master fixtures under
   `docs/migration/fixtures/` for modules ported from TS, generated by a one-off `npx tsx`
   script run against the *frozen, never-edited* TS source (`AGENTS.md` rule #5 — the sole
   permitted JS use in this codebase). Any new simulation constant needs a boundary test in the
@@ -228,8 +250,8 @@ attaching a fresh client to a stale, pre-rebuild server.
 - **`cat-server`**: integration tests spin up the axum app in-process (no real socket needed)
   and drive it through `ClientAction` JSON, e.g. founding a village and asserting the shared
   snapshot updates.
-- **`cat-client`**: no automated visual tests; Bevy rendering is verified manually by capturing
-  the client's own framebuffer to a PNG and reading it back (method documented in
+- **`cat-client`**: logic/UI-shape tests supplement manual visual checks. Rendering is verified
+  by capturing the client's own framebuffer to a PNG and reading it back (method documented in
   `docs/HANDOFF.md`), since "it compiles" has previously hidden a black-screen regression.
 
 Quality gate before any commit (per `AGENTS.md`): `cargo nextest run -p <crate>`,
@@ -240,6 +262,6 @@ hooks that used to gate the TypeScript game are no longer relevant to this works
 ## What's not here yet
 
 The P11 cutover is complete: the TypeScript implementation lives only on `archive/web-game`
-(`web-final`), and the browser bundle runs end-to-end. Remaining work is the gameplay,
-client-exposure, production-hosting, and exhaustive QA backlog in
+(`web-final`), and the browser bundle plus combined production host run end-to-end. Remaining
+work is the gameplay, client exposure, production breadth, and exhaustive QA backlog in
 `docs/IMPLEMENTATION_AUDIT.md`; it is not unfinished migration work.

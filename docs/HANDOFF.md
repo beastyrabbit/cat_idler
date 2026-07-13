@@ -3,7 +3,8 @@
 You are picking up **Idle Cat Forest** — "an idle Dwarf Fortress, played by cats, in a
 forest": a top-down god-sim where a cat colony lives, works, breeds, researches, and fights
 on its own, ticked once a second by an authoritative server. Read this file, then
-`docs/GAME_VISION.md` (what we're building) and `docs/migration/BOARD.md` (what shipped).
+`docs/GAME_VISION.md` (what we're building) and `docs/migration/BOARD.md` (what landed and what
+remains partial).
 
 **The web→Rust/Bevy migration is COMPLETE.** Work on **`main`** (repo root
 `/mnt/storage/workspace/projects/cat_idler`). The P11 cutover landed 2026-07-11: the old
@@ -13,57 +14,53 @@ module doc-comments' "ported from `lib/game/*.ts`" citations point into that bra
 
 ## State of the game (verified 2026-07-13)
 
-- **P0–P19 migration shipped** (see `docs/migration/BOARD.md` for the rollup): pure deterministic
-  sim core plus authoritative server (`cat-server`: intended 1s tick, WS
-  snapshots, SQLite), Bevy 0.19 top-down client with the "cozy ledger" UI kit, spatial
-  stockpiles + gather spots, officer roles, workshop/crafting chains, climate biomes +
-  ore/metal mining, traders + coin economy, fog of war, multi-village founding.
-- **WASM/web build works end-to-end**: `scripts/build-web.sh` → release bundle verified in
-  Chromium (WebGL2, live WS, 0 console errors). Native ships as
-  `cargo build --release -p cat-desktop`.
-- **Dev tooling** (`be7cdee`): `CAT_BRP=1` starts the Bevy Remote Protocol server (port
-  15702) in the native client so the bevy MCP can `world.query` the live game; and a
-  headless playtest harness prints hourly colony vitals + anomaly flags:
-  `SEED=... HOURS=48 CADENCE_MS=1000 cargo run --release -p cat-sim --example playtest`.
+The **migration and P11 cutover are complete**; the maintained game is still pre-release and
+several P12–P19 product promises remain partial. Do not turn a phase label or compiling crate
+into a completion claim. `docs/IMPLEMENTATION_AUDIT.md` is the detailed evidence ledger.
 
-Architecture, module map, persistence, and testing contract live in `CLAUDE.md` and
-`docs/ARCHITECTURE.md` — both refreshed at the cutover and accurate. Don't re-derive them.
+Verified foundations include:
 
-## NEXT STEPS (the real open work, in rough priority order)
+- the deterministic sim and authoritative SQLite/WebSocket server, with simulation and disk work
+  on Tokio's blocking pool, startup-cached snapshots, responsive health/initial connections, and
+  selected-colony action/snapshot routing;
+- the native and browser Bevy clients, bounded world streaming, reconnect/action feedback, and a
+  same-origin non-root production image with `/health`, `/ready`, compression, and Origin checks;
+- atomic placement/reservations/scaffold recovery; label-free roofed homes and explicit open
+  compositions for the 24 current protocol building variants; exterior crop/logging production
+  with distinct Mill and Sawmill stations;
+- a pure 500-node research catalog and full-page searchable/filterable/pannable client ledger.
+  Generated studies honestly remain read-only until their live effects are implemented;
+- a persistent village selector and secure selected-village routing. This is not yet the
+  canonical-global/personal-ownership/discovery/trade model.
 
-1. **Playtest-driven balance + polish.** The previous session built the playtest harness and
-   BRP introspection specifically to *play the game* and fix what a player would notice.
-   Run the harness on several seeds (true 1s cadence), watch for anomalies (extinction,
-   resets, starvation windows, idle stalls, unfought raids), and fix in `cat-sim` with a
-   guardrail test + determinism twin per the pattern in `CLAUDE.md` "Testing Contract".
-   **Findings so far (2026-07-13 sweep, first two fixed in `4f0cde8`):** research was
-   dormant in all real play (capacity-ratio comfort bar vs the per-capita breeding
-   homeostat — fixed with a per-capita bar + establishment window + non-sticky scholars);
-   extinction left a permanently dead, reset-storming world (TS respawned starter cats —
-   fixed). **Still open, same disease:** the shrine **tithe** (`TITHE_FOOD_RATIO` 0.6 of
-   food capacity) and **offering** (`OFFERING_MATERIALS_RATIO` 0.6 of materials capacity)
-   faucets never fire in unattended play — the breeding homeostat pins food at ~0.1–0.3
-   of capacity, and the quarry deficit curve pins materials at ~0.3 — so on-map
-   `blessings` stay 0 for whole 48h runs (god-currency has a separate reachable path via
-   shrine devotion). Consider per-capita/per-flow bars like `is_research_comfortable`.
-   Also: tool crafting is near-zero at live cadence (0–1 tools per 48h). The farming/timber
-   integration now passes five seeds × 200 game-hours at the harsher 5-minute proxy cadence
-   with zero resets; rerun both proxy and true-live campaigns after each balance slice.
-2. **Finish the officer/role split** (the one tracked gameplay gap — `docs/ARCHITECTURE.md`
-   "Known gaps", `docs/GAME_VISION.md` pillar 2). Officer roles exist as an *additive*
-   assignable layer (`officers.rs`, `AssignOfficer`/`UnassignOfficer`), but the single
-   leader director (`leader_director.rs`) still runs most labor allocation. Target: each
-   filled role automates its category (Steward hauling/stockpiles, Forester wood, Farmer
-   food, Captain defense, Loremaster research); unfilled roles stay manual. Spec:
-   `docs/migration/specs/p12-idle-cat-forest.md` + `docs/migration/specs/leader_director.md`.
-3. **Deploy-time follow-ups** (from the P10 close-out, `docs/migration/WASM.md`): hosting
-   for the web bundle + transfer-weight optimization. Not blockers.
+Dev tooling (`be7cdee`) includes `CAT_BRP=1` for Bevy Remote Protocol inspection and a headless
+playtest harness:
+`SEED=... HOURS=48 CADENCE_MS=1000 cargo run --release -p cat-sim --example playtest`.
 
-Recently fixed: `daa75e8` moved simulation and synchronous persistence onto Tokio's blocking
-pool, initialized a last-completed snapshot cache for new sockets, and stopped missed ticks
-from burst-replaying. A one-worker 250 ms injected tick keeps `/health` and the initial
-snapshot below 50 ms; live probes were 0.10–0.51 ms. The authoritative world lock still
-serializes actions with ticks, while periodic saves clone and release it before SQLite I/O.
+## NEXT STEPS (maintained backlog, in rough priority order)
+
+1. **Make the intended player loop real.** Finish vacant-role manual ownership, role-building
+   gates, exact placement/farm/gather/road/staffing/military/ritual/election controls, and the
+   manual-raid single-damage fix. Exercise every path with signed `ClientAction`s, not fixture
+   mutation.
+2. **Finish the physical economy.** Route workers and carried inputs/outputs through local
+   stations and stockpiles, seed the intended storehouse reservoir, extend skills to maintained
+   labors, make tools deliberately useful or explicitly input-only, complete recipes/materials,
+   and add upgrade-gated escalating building costs. Keep tithe/offering reachability and
+   research pacing in the same balance campaigns.
+3. **Integrate the larger product models.** Wire purchases/effects/persistence and the daily
+   leader choice for the 500-study catalog; implement 15-cat/three-house founding with slow
+   breeding plus prosperity migration/unhoused departure; complete global/personal village
+   ownership, discovery, and direct trade.
+4. **Close world and presentation gaps.** Finish full tree/rock occupancy and staged wall growth,
+   clear actual interior deposits/resources, expose traffic dirt roads, replace rail/shipping
+   multipliers with built routes/vehicles, restore fishing, and implement the maintained
+   9-patch/cursor UI skin plus Accounting Tent reachability.
+5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
+   balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
+   WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality
+   workflow is committed; its first pushed run is still unverified. Transfer-weight optimization
+   is optional and hosting itself is no longer open.
 
 ## HOW TO WORK — hard-won lessons (do not relearn these)
 

@@ -5,17 +5,17 @@ Top-down pixel art for **Idle Cat Forest**, per the locked art direction in `doc
 `public/Kenney Game Assets All-in-1 3.5.0/`; only the sliced/composited PNGs under
 `public/images/game/` are used at runtime.
 
-**Families (locked):** exterior buildings = **Tiny Town** (16px, composited); stockpile props =
-**Roguelike Base Pack** sheet; farm = **Pixel Platformer Farm Expansion**; enemies = **Roguelike
-Characters Pack**. RTS Medieval is borrowed only for the 4 building types Tiny Town cannot render
-distinctly (windmill / chapel / forge / loom), downscaled to 48px — sanctioned by SELECTION.md.
+**Families:** roofed residential silhouettes and retained facade choices use **Tiny Town**;
+open stations use **Roguelike Base Pack** floors/props plus individual interior pieces; farms
+use **Pixel Platformer Farm Expansion**; enemies use **Roguelike Characters Pack**. The Bevy
+runtime no longer uses facade art for workshops.
 
 Slicing: Base sheet tile `(col,row)` = `crop 16x16 at x=col*17, y=row*17`. Tiny Town / Farm tiles are
 individual PNGs (`tile_NNNN.png`, 16px / 18px).
 
 ---
 
-## Buildings — `public/images/game/buildings/` (17 files)
+## Retained facades — `public/images/game/buildings/` (18 files)
 
 Composited from **Tiny Town** `Tiles/tile_NNNN.png` unless marked RTS. House template = 3-wide × 3-tall
 (48×48): `[roof]/[wall,window|badge,wall]/[wall,door,wall]`. Roof shingles: red `52,53,54` / grey
@@ -33,7 +33,7 @@ window `84`. Verified by montage.
 | `market.png` | TT covered cart `57` + barrel `106` | Trade cart with wares. 48×32. |
 | `tent.png` | TT awning booth `104` + sign `83` | Stall/tent (also the accounting tent). 48×32. |
 | `monument.png` | TT grey peak `63` + wall `109`×2 | Grey stone obelisk. 16×48. |
-| `shrine.png` | **RTS** `Structure_04` → 48px | Cross chapel — reads sacred. |
+| `shrine.png` | RTS `Structure_04` → 48px | Archived facade; the runtime shrine is an open altar court. |
 
 ### Open stations — current runtime treatment
 
@@ -43,13 +43,16 @@ individual top-down props sit on it with their own y-sorted depth. This keeps ca
 working, makes Field a real crop plot, and leaves the Shrine open on every side for scout returns.
 Only Den, Beds, Nursery, and Elder Corner retain the roofed `den.png` silhouette.
 
-The runtime compositions are exhaustive in `crates/cat-client/src/station_layout.rs`. In addition
+The runtime compositions are exhaustive for the 24 current protocol variants in
+`crates/cat-client/src/station_layout.rs`. In addition
 to the existing `interior/`, `props/`, and `farm/` sprites, the review bench promoted these
 individual pieces into `public/images/game/interior/`: colored beds, bookcase, brazier,
 candelabra, display table, forge fire, map table, metal basin, gold reliquary, scroll, stool,
 stove, sword block, and weapon stand. They remain separate images; no station is flattened into a
-new building texture. Mill and Sawmill can extend the same typed mapping when their protocol
-variants land.
+new building texture. Mill and Sawmill are live, distinct open layouts: grain/flour containers on
+a stone milling floor versus a saw bed, raw logs, and finished-goods crate on a wood floor.
+Accounting Tent is represented only on the review bench until it becomes snapshot-reachable, so
+it is not evidence that every maintained building is playable.
 
 ### Retained workshop facades — review/fallback alternatives
 
@@ -67,9 +70,10 @@ cloth bolts, workbench, plank stack, hand-saw, log-end bundle). Roguelike Base c
 | `smithy.png` | TT stone hut (roof vent `51`) + Roguelike forge-fire `(54,8)` **in the doorway** + drawn anvil + TT hammer `128` | Glowing forge in the door + anvil + hammer → **unmistakable smithy**. Strongest reader. |
 | `mill.png` | TT stone hut + drawn windmill sails (X-lattice vanes on the face) | Bold windmill sails → **mill**. Replaces the spare RTS sail-cross. |
 | `clothier.png` | TT wood hut + TT striped awning `104` storefront + drawn cloth bolts (red/teal/gold) | Striped awning + folded cloth → **weaver/textiles**. |
+| `tannery.png` | Wood floor + workbench/vat props | Hide-processing fallback; runtime uses its typed open layout instead. |
 | `workshop.png` | TT wood hut + TT hammer `128` wall emblem + Roguelike barrel/crate props | Generic craft/tool shed — the fallback. |
 
-**Notes:** these seven 48×48 facades remain available to the sprite review page and as fallbacks, but
+**Notes:** these eight 48×48 alternatives remain available to the sprite review page and as fallbacks, but
 the map renderer no longer uses them for craft stations. The current clothier communicates textile
 work with an open display table and colored fabric/bedroll pieces; its typed layout can accept a more
 specific loom prop without changing rendering architecture.
@@ -137,10 +141,11 @@ forest animals — these are the closest cohesive fantasy-creature stand-ins, no
 ## Also present (other agents / earlier passes)
 
 - `public/images/game/terrain/`, `nature/` — ground + trees, owned by the ground/terrain agent.
-- `public/images/game/infra/` (10 files) — soil/palisade/gate/bridge/roads from the Base sheet
-  (a prior pass; roads are dirt-path autotile cells — full autotile wiring is the terrain agent's).
+- `public/images/game/infra/` (10 files) — soil/palisade/gate/bridge/road sprites from the Base
+  sheet. The client currently renders authored/paved road tiles; traffic-formed dirt-path
+  exposure remains tracked in `docs/IMPLEMENTATION_AUDIT.md`.
 
 ## Files written / current in each dir
 
-- **buildings: 17** · **interior: 21** · **props: 11** · **farm: 6** · **enemies: 4**
+- **buildings: 18** · **interior: 21** · **props: 11** · **farm: 6** · **enemies: 4**
   (infra: 10 from an earlier pass)

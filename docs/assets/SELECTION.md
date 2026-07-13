@@ -1,15 +1,14 @@
 # Art Direction — Idle Cat Forest (top-down, DF-Steam style)
 
-**Decision owner:** orchestrator. This doc is the single source of truth; the per-slice
-catalogs (`ground.md`, `buildings.md`, `items_ui.md`, `cats.md`) hold the exhaustive
-tile-by-tile tables. Where they disagree, this doc wins.
+This is the maintained family-level art map. The per-slice catalogs (`ground.md`,
+`buildings.md`, `items_ui.md`, `cats.md`) hold the detailed mappings, while the exhaustive
+runtime building grammar lives in `crates/cat-client/src/station_layout.rs`.
 
 ## The load-bearing constraint
 
-Our only cohesive **cat** art is `public/images/cats/cat-sheet.png` — 32×64 cells,
-8-dir × 4-frame walk, near-top-down **pixel** art (already wired into the renderer).
-No cohesive cat art exists in any other style. **Therefore the whole world must be
-pixel-art**, so the 32px pixel cats sit on it without a style break.
+Colonists use `public/images/cats/cat-sheet.png` — `32x64` cells, eight direction groups,
+four walk frames — and the world uses readable pixel art around them. The existing cat and
+raider sheets are accepted project assets; replacing them is not a maintained release task.
 
 That single fact resolves the cross-slice tie: the buildings agent's beautiful
 **RTS Medieval** family is 64px flat-vector and would clash with the pixel cats, so it
@@ -24,10 +23,11 @@ buildings agent pre-conceded "use the 16px set if the ground agent picks 16px ro
 | Slice | Family | Format | Path (under `public/Kenney Game Assets All-in-1 3.5.0/2D assets/`) |
 |---|---|---|---|
 | Terrain + nature + stockpile props | **Roguelike Base Pack** | one 16px sheet, 57×31 grid, 17px pitch | `Roguelike Base Pack/Spritesheet/roguelikeSheet_transparent.png` |
-| Exterior buildings | **Tiny Town** (composited multi-tile) | 16px tiles → pre-baked ~32×48 PNGs | `Tiny Town/Tiles/tile_NNNN.png` |
+| Residential/fallback facades | **Tiny Town** (composited multi-tile) | 16px tiles → pre-baked ~32×48 PNGs | `Tiny Town/Tiles/tile_NNNN.png` |
+| Open stations | **Roguelike Base + tracked interior props** | repeated 16px floor cells + typed props | `public/images/game/{interior,props,farm}/` |
 | Farm plots + crop growth stages | **Pixel Platformer Farm Expansion** | 18px → downscale to 16 | `Pixel Platformer Farm Expansion/Tiles/` |
 | Enemies / critters / raiders | **Roguelike Dungeon + Characters Packs** | 16px, same style as Base | `Roguelike Dungeon Pack/`, `Roguelike Characters Pack/` |
-| Cats / colonists | **cat-sheet.png** (Paws & Whiskers) + hats | 32×64 walk sheet, 32×32 hats | already tracked in `public/images/cats/` |
+| Cats / colonists | **cat-sheet.png** + hats | 32×64 walk sheet, 32×32 hats | already tracked in `public/images/cats/` |
 | HUD / UI / resource icons | **Board Game Icons** + **UI Pack – Adventure** + **Fish Pack** | vector, recolorable | `Icons/Board Game Icons`, `UI assets/UI Pack - Adventure`, `2D assets/Fish Pack` |
 
 **Why not one single pack:** the world is a blend of two Kenney **16px pixel** packs, which
@@ -38,9 +38,9 @@ is coherent enough (same resolution/idiom; the cats sit on both). Evidence for t
   structure tiles are interior furniture + modular door/window/wall components, not standalone
   exterior buildings. Its terrain, trees, and props (barrels/sacks/chests/gold-piles/graves)
   ARE excellent and adopted.
-- **Tiny Town — ADOPTED for buildings** (verified via `Sample.png`): its modular tiles
-  composite into beautiful, readable exterior village buildings; per-type composite recipes
-  live in `buildings.md`.
+- **Tiny Town — ADOPTED for residential/fallback facades** (verified via `Sample.png`): its
+  modular tiles composite into readable exterior village buildings; retained recipes live in
+  `buildings.md`. Workplaces now use the open-station grammar instead.
 - **RTS Medieval — REJECTED as world family**: 64px flat-vector, clashes with the pixel cats.
   (Optionally borrow ~4 single-sprite gap buildings — mill/chapel/forge/loom — downscaled, if
   a Tiny Town composite reads as a generic house; noted as a caveat, not the default.)
@@ -71,10 +71,12 @@ tile, plus `river`, and `DecorationRole::{Tree, Rock}`. Terrain sprites are name
 `tree_oak.png` (13,9) 16×32 · `tree_pine.png` (16,9) 16×32 · `stump.png` (13,8).
 Trees are 2 tiles tall, bottom-anchored on their lower tile.
 
-**Buildings — `public/images/game/buildings/`:** pre-baked composites from **Tiny Town**
-tiles (recipes in `buildings.md`), ~32×48 per building type (den, storehouse, workshop,
-smithy, mill, clothier, research_hut, school, barracks, town_hall, market, tent/accounting,
-shrine, monument).
+**Buildings and stations — `public/images/game/{buildings,interior,props,farm}/`:** residential
+rooms use the Tiny Town `den.png` roof silhouette. Non-residential buildings are composed at
+runtime as exposed wood, stone, or soil floors with typed top-down props; persistent map-name
+plaques are not part of the art direction. The 24 current protocol building variants have an
+explicit treatment, including distinct open Mill and Sawmill layouts. The facade PNGs remain
+review/fallback choices in `docs/sprite-review.html` rather than the workshop renderer.
 
 **Stockpile props — `public/images/game/props/`:** from the **Roguelike Base** sheet
 (barrels, sacks, chests, gold/ore piles, gravestone, campfire, well) — these grow/shrink as
@@ -86,15 +88,15 @@ stages (sprout → tall → mature → flowering) + scarecrow.
 **Enemies — `public/images/game/enemies/`:** Roguelike Dungeon/Characters monster sprites
 for fox/badger/bear/rival-beast; rival-cat raiders keep the wired `raider-sheet.png`.
 
-**Icons / UI — `public/images/game/{icons,ui}/`:** per `items_ui.md`. Board Game Icons are
-white glyphs → recolor per resource at runtime (CSS/shader mask). Cat-food glyph = Fish
-Pack `fish_blue.png`.
+**Icons / UI — `public/images/game/icons/`:** per `items_ui.md`. The resource icons are
+tracked PNGs used by the Bevy HUD. The maintained Adventure panel/button/cursor assets have not
+yet been integrated; that gap is tracked in `docs/IMPLEMENTATION_AUDIT.md`.
 
-## Provenance
+## Source mapping
 
 - Terrain, buildings, enemies, icons, and UI come from the selected Kenney packs.
-- `cat-sheet.png` and `raider-sheet.png` come from the Paws & Whiskers pack. Their
-  32×64, 8-direction, 4-frame layout is the runtime atlas contract.
+- `cat-sheet.png` and `raider-sheet.png` share the `32x64`, eight-direction, four-frame runtime
+  atlas contract documented in `cats.md`.
 
 ## Copy convention
 

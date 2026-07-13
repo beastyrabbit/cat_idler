@@ -10,7 +10,7 @@ _A self-running cat colony you nudge, not micromanage — now a native Rust + Be
 ![Bevy](https://img.shields.io/badge/Bevy-0.19-blue?style=flat-square)
 ![Tokio](https://img.shields.io/badge/tokio_+_axum-WebSocket-informational?style=flat-square)
 ![SQLite](https://img.shields.io/badge/SQLite_(rusqlite)-persistence-003b57?style=flat-square&logo=sqlite&logoColor=white)
-![Tests](https://img.shields.io/badge/cat--sim_tests-650%2B_passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/cat--sim_tests-770%2B_passing-brightgreen?style=flat-square)
 ![Status](https://img.shields.io/badge/status-pre--release%2C_migration_complete-yellow?style=flat-square)
 
 </div>
@@ -26,11 +26,13 @@ a second whether or not anyone is watching. You don't control individual cats �
 who shapes the world: found villages, paint zones, boost jobs, assign leadership roles, vote,
 and spend a slow tech tree while the colony runs its own life.
 
-A **utility-AI leader director** keeps almost every cat employed across a shared labor budget
+A **utility-AI leader director** currently keeps almost every cat employed across a shared labor budget
 (hunting, hauling, building, research, defense, farming…), so the colony reads as intentional
 rather than random: cats walk every tile to get where they're going, lineages form through
 breeding, roads wear in from traffic, stockpiles fill and empty, and raid pressure builds with
-your success. See [`docs/GAME_VISION.md`](docs/GAME_VISION.md) for the full design pillars
+your success. The maintained direction makes each officer automate one category and leaves
+vacant categories manual; that split is not complete yet. See
+[`docs/GAME_VISION.md`](docs/GAME_VISION.md) for the full design pillars
 (manual → role-automation, visible workplaces, production chains) and
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the Rust workspace implements it.
 
@@ -87,12 +89,14 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   player-founded villages (`found_colony`) as a first-class primitive.
 - **`cat-protocol`** — `serde` wire types shared by client and server: `WorldSnapshot` /
   `ColonySnapshot` (resources, cats, jobs, buildings, upgrades, threat, raiders, zones, items,
-  officers, gather spots, road tiles…) and a ~29-variant `ClientAction` enum (found/join
+  officers, gather spots, road tiles…) and a 30-variant `ClientAction` enum (found/join
   village, request job, boost, purchase upgrade, vote, zones, plan building, unlock node,
-  assign worker/officer, train warrior, defend raid, build road, designate stockpile/gather
-  spot, sell/buy goods, boost cat, test-acceleration controls).
-- **`cat-server`** — `axum` exposes `GET /health` and `GET /ws` (WebSocket). A `tokio::spawn`ed
-  loop ticks every connected world once a second, saves to SQLite every 5 ticks (plus a
+  assign worker/officer, train warrior, defend raid, build road, designate/clear farms,
+  designate stockpile/gather spot, sell/buy goods, boost cat, test-acceleration controls).
+- **`cat-server`** — `axum` exposes `GET /health`, stateful `GET /ready`, and `GET /ws`
+  (WebSocket). CPU-heavy simulation and synchronous persistence run on Tokio's blocking pool;
+  new sockets receive a startup-initialized last-completed snapshot without waiting behind an
+  in-progress tick. The loop ticks the shared world once a second, saves to SQLite every 5 ticks (plus a
   graceful-shutdown save), and broadcasts the new snapshot. Persistence
   (`crates/cat-server/src/persistence.rs`) mirrors the old Drizzle schema in `rusqlite` tables
   (`world`, `colonies`, `cats`, `jobs`, `buildings`, `world_tiles`, `events`, `zones`,
@@ -101,15 +105,18 @@ Plus **cat-dev**, a small launcher bin (`cargo dev`) that builds and runs `cat-s
   `NODE_ENV=production`); actions are rate-limited (30 / 10s per session).
 - **`cat-client`** — a Bevy 0.19 app (`cat_client::run()`) shared by native and wasm: connects
   over WebSocket via `ewebsock`, deserializes `WorldSnapshot` every frame, and renders the
-  world **top-down** (a design pivot away from the TS game's isometric map — see
+  world **top-down** (a design pivot away from the archived game's isometric map — see
   `docs/GAME_VISION.md`): terrain by biome, cats colored by specialization with carried-item
-  glyphs, labelled buildings with craft-station sprites, visible stockpiles/gather spots,
-  fog of war, roads, raiders, a DF-Steam-styled HUD (resources, census, event log, upgrade
-  tree, trade menu, cat inspector), and action buttons that round-trip over the WebSocket.
+  markers, label-free roofed homes and open craft stations, visible stockpiles/gather spots,
+  fog of war, roads, raiders, a DF-Steam-inspired HUD (resources, census, event log, trade,
+  inspectors), and a full-page 500-study research ledger. Generated studies are intentionally
+  marked read-only until their runtime effects are integrated.
 - **`cat-desktop`** / **`cat-web`** — thin binaries over `cat-client`. `cat-web` builds with
   Trunk, serves the selected assets, derives a same-origin WebSocket URL for deployment, and
-  has been exercised end-to-end in Chromium. See [`docs/migration/WASM.md`](docs/migration/WASM.md)
-  for the build recipe and remaining transfer-weight/hosting work.
+  has been exercised end-to-end in Chromium. The production `Dockerfile` serves the optimized
+  SPA, assets, probes, and WebSocket from one non-root server image with compression and exact
+  Origin checks. See [`docs/migration/WASM.md`](docs/migration/WASM.md) for the build recipe and
+  optional transfer-weight work.
 
 For the full phase-by-phase build history and current in-flight work, see
 [`docs/migration/BOARD.md`](docs/migration/BOARD.md). The post-cutover correctness pass and
@@ -141,8 +148,12 @@ BEVY_ASSET_ROOT=$PWD CAT_SERVER_URL=ws://127.0.0.1:8787/ws cargo run -p cat-desk
 
 ```env
 PORT=8787                              # cat-server listen port (both binaries agree on this via cat-dev)
+BIND_ADDR=127.0.0.1                    # server bind IP; production image uses 0.0.0.0
 GAME_DB_PATH=data/cat.db               # SQLite file (created + migrated automatically)
 SESSION_HMAC_SECRET=...                # required in NODE_ENV=production; insecure dev default otherwise
+CAT_SERVER_WEB_DIST_DIR=...            # optional Trunk dist served by cat-server
+CAT_SERVER_PUBLIC_IMAGES_DIR=...       # optional image tree served at /public/images
+CAT_SERVER_ALLOWED_ORIGINS=...         # optional exact comma-separated WS Origin allowlist
 CAT_SERVER_URL=ws://127.0.0.1:8787/ws  # cat-desktop/cat-web: which server to connect to
 BEVY_ASSET_ROOT=$PWD                   # cat-desktop: resolve public/images/... from the workspace root
 ```
@@ -153,8 +164,10 @@ The world ticks once a second (fixed; not currently configurable via env var).
 
 The reproducible entry point is `scripts/build-web.sh` (or `scripts/build-web.sh --serve`). It
 creates the Trunk release bundle under `crates/cat-web/dist/`; the browser client has been
-live-verified in Chromium. See [`docs/migration/WASM.md`](docs/migration/WASM.md) for the smoke
-test and remaining hosting, caching, and transfer-weight work.
+live-verified in Chromium. Production packaging is the repository `Dockerfile` plus
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). See
+[`docs/migration/WASM.md`](docs/migration/WASM.md) for the smoke test and optional transfer and
+performance work.
 
 ## Testing & determinism
 
@@ -164,7 +177,7 @@ raids, so a given seed reproduces the same run bit-for-bit. This is what makes t
 **unit-testable without a server or client**:
 
 ```bash
-cargo test -p cat-sim        # ~650 unit tests, pure logic, no I/O — fast
+cargo test -p cat-sim        # 770+ unit/integration tests, pure logic, no I/O — fast
 cargo test -p cat-protocol   # wire-type round-trip tests
 cargo test -p cat-server     # WS/action integration tests (in-process, no real network needed)
 cargo nextest run -p <crate> # preferred runner if cargo-nextest is installed
@@ -211,8 +224,8 @@ runnable, on branch `archive/web-game` (tag `web-final`).
 | [`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) | Current design-to-code gaps, active fixes, and full playtest matrix |
 | [`docs/migration/BOARD.md`](docs/migration/BOARD.md) | Phase-by-phase task board (P0–P9 tracked in detail) |
 | [`docs/migration/specs/`](docs/migration/specs/) | Design specs for pathfinding, leader director, world_tick, and P12–P19 (skills/roles, spatial placement, biomes, visual polish, item economy) |
-| [`docs/migration/WASM.md`](docs/migration/WASM.md) | Browser/WASM build feasibility + remaining steps |
-| [`docs/assets/SELECTION.md`](docs/assets/SELECTION.md) | Sprite pack selection and provenance for the Bevy client's art |
+| [`docs/migration/WASM.md`](docs/migration/WASM.md) | Verified browser/production build and optional optimization work |
+| [`docs/assets/SELECTION.md`](docs/assets/SELECTION.md) | Sprite-family selection and runtime art mapping |
 | [`AGENTS.md`](AGENTS.md) | Ground rules for the codex/Claude build team doing the port |
 
 Docs describing the old TypeScript/Next.js game (`docs/plan.md`, `docs/ROADMAP.md`,
@@ -223,14 +236,15 @@ port — they no longer describe how to build, run, or test this project.
 
 ## Status
 
-Pre-release, but the web→Rust/Bevy migration is complete. Simulation core, server, and
-multi-colony founding are done and live-verified. The Bevy client renders the full top-down
-world with a cohesive "cozy ledger" UI (spatial stockpiles, gather spots, the item/material
-economy, ore/metal mining, research/School buildings — all wired). The browser/WASM build runs
-end-to-end in Chromium, and the P11 cutover is done: `main` is now the Rust game and the old
-TypeScript tree lives on `archive/web-game`. The one deliberately-partial area is the
-officer/role split (assignable roles exist; the single leader director still does most labor
-allocation). See `docs/IMPLEMENTATION_AUDIT.md` for the living, evidence-backed status.
+Pre-release, with the web→Rust/Bevy migration and P11 cutover complete. Verified product slices
+include the responsive authoritative server, selected-village routing, a production browser
+image, bounded world streaming, label-free roofed homes/open stations, the full-page 500-study
+ledger, and exterior farming/logging with distinct Mill/Sawmill production. Those foundations
+do not mean every P12–P19 design promise is complete: manual/officer ownership, physical local
+workshop logistics, generated-study effects, the global/personal village model, founding
+housing/migration, exact roads/transport, recipe breadth, and exhaustive guided play remain.
+[`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md) is the living evidence-backed
+backlog.
 
 ---
 
