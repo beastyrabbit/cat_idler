@@ -1,0 +1,340 @@
+{
+  "nodes": [
+    {
+      "id": "research_hut",
+      "name": "Research Hut",
+      "description": "Build the research hut and assign a scholar. The root of the whole tree — nothing is researched until a mouth is spared to study.",
+      "category": "building",
+      "cost": 5.0,
+      "prerequisites": [],
+      "era": 1,
+      "layout": { "x": 0, "y": 0 },
+      "leaderPriority": 100,
+      "payloads": [
+        { "kind": "unlock_building", "building_id": "research_hut" },
+        { "kind": "unlock_job", "job_id": "research" }
+      ]
+    },
+    {
+      "id": "basic_tools",
+      "name": "Basic Tools",
+      "description": "Knapped claws and better snares. Hunters bring back more.",
+      "category": "upgrade",
+      "cost": 5.0,
+      "prerequisites": ["research_hut"],
+      "era": 1,
+      "layout": { "x": 1, "y": 0 },
+      "leaderPriority": 110,
+      "payloads": [
+        { "kind": "modify", "effect_id": "huntYieldMult", "operation": "add", "value": 0.1 }
+      ]
+    },
+    {
+      "id": "water_carriers",
+      "name": "Water Carriers",
+      "description": "Woven gourds let a fetch-water trip haul far more per run.",
+      "category": "recipe_resource",
+      "cost": 8.0,
+      "prerequisites": ["research_hut"],
+      "era": 1,
+      "layout": { "x": 1, "y": 1 },
+      "leaderPriority": 120,
+      "payloads": [
+        { "kind": "unlock_job", "job_id": "fetch_water" },
+        { "kind": "modify", "effect_id": "waterCarryCapacity", "operation": "add", "value": 1.0 }
+      ]
+    },
+    {
+      "id": "den_insulation",
+      "name": "Den Insulation",
+      "description": "Moss-lined dens shelter another cat each without the chill.",
+      "category": "upgrade",
+      "cost": 8.0,
+      "prerequisites": ["research_hut"],
+      "era": 1,
+      "layout": { "x": 1, "y": 2 },
+      "leaderPriority": 115,
+      "payloads": [
+        { "kind": "modify", "effect_id": "housingPerDen", "operation": "add", "value": 1.0 }
+      ]
+    },
+    {
+      "id": "foraging_lore",
+      "name": "Foraging Lore",
+      "description": "Elders teach which berries feed and which kill.",
+      "category": "upgrade",
+      "cost": 6.0,
+      "prerequisites": ["basic_tools"],
+      "era": 1,
+      "layout": { "x": 2, "y": 0 },
+      "leaderPriority": 125,
+      "payloads": [
+        { "kind": "modify", "effect_id": "gatherYieldMult", "operation": "add", "value": 0.15 }
+      ]
+    },
+    {
+      "id": "textiles",
+      "name": "Textiles",
+      "description": "Raise the clothier and tannery. Fibre and hunt hides become cloth, leather, and warm clothing.",
+      "category": "building",
+      "cost": 12.0,
+      "prerequisites": ["foraging_lore"],
+      "era": 2,
+      "layout": { "x": 3, "y": 0 },
+      "leaderPriority": 145,
+      "payloads": [
+        { "kind": "unlock_building", "building_id": "clothier" },
+        { "kind": "unlock_building", "building_id": "tannery" },
+        { "kind": "unlock_job", "job_id": "craft_clothing" }
+      ]
+    },
+    {
+      "id": "sawmill",
+      "name": "Sawmill",
+      "description": "Raise the Sägewerk. Felled timber becomes usable materials far faster.",
+      "category": "building",
+      "cost": 12.0,
+      "prerequisites": ["foraging_lore"],
+      "era": 2,
+      "layout": { "x": 3, "y": 1 },
+      "leaderPriority": 150,
+      "payloads": [
+        { "kind": "unlock_building", "building_id": "sawmill" },
+        { "kind": "unlock_job", "job_id": "quarry" },
+        { "kind": "modify", "effect_id": "materialYieldMult", "operation": "add", "value": 0.2 }
+      ]
+    },
+    {
+      "id": "masonry",
+      "name": "Masonry",
+      "description": "Stacked stone stores. Every storehouse level holds more.",
+      "category": "upgrade",
+      "cost": 12.0,
+      "prerequisites": ["sawmill"],
+      "era": 2,
+      "layout": { "x": 4, "y": 1 },
+      "leaderPriority": 155,
+      "payloads": [
+        { "kind": "modify", "effect_id": "storagePerLevelMult", "operation": "add", "value": 0.25 }
+      ]
+    },
+    {
+      "id": "mountaineering",
+      "name": "Mountaineering",
+      "description": "Pitons, ropes, and cut switchback trails. Cats can finally cross the peaks — slow going, but the high ore is within reach.",
+      "category": "upgrade",
+      "cost": 15.0,
+      "prerequisites": ["masonry"],
+      "era": 2,
+      "layout": { "x": 5, "y": 1 },
+      "leaderPriority": 165,
+      "payloads": [
+        { "kind": "unlock_capability", "capability_id": "mountain_travel" }
+      ]
+    },
+    {
+      "id": "smelting",
+      "name": "Smelting",
+      "description": "A proper forge-hearth for the ore mountaineering finally opened up. Raw stone off the peak comes back down as metal bars.",
+      "category": "building",
+      "cost": 22.0,
+      "prerequisites": ["mountaineering"],
+      "era": 3,
+      "layout": { "x": 6, "y": 1 },
+      "leaderPriority": 190,
+      "payloads": [
+        { "kind": "unlock_building", "building_id": "smelter" }
+      ]
+    },
+    {
+      "id": "smithy",
+      "name": "Smithy",
+      "description": "Build the smithy. Metal tools open the path to weapons.",
+      "category": "building",
+      "cost": 15.0,
+      "prerequisites": ["sawmill"],
+      "era": 2,
+      "layout": { "x": 4, "y": 2 },
+      "leaderPriority": 160,
+      "payloads": [
+        { "kind": "unlock_building", "building_id": "smithy" },
+        { "kind": "unlock_job", "job_id": "forge_tools" }
+      ]
+    },
+    {
+      "id": "barracks",
+      "name": "Barracks",
+      "description": "Raise the barracks so cats can drill into real warriors.",
+      "category": "building",
+      "cost": 18.0,
+      "prerequisites": ["basic_tools"],
+      "era": 2,
+      "layout": { "x": 2, "y": 3 },
+      "leaderPriority": 170,
+      "payloads": [
+        { "kind": "unlock_building", "building_id": "barracks" },
+        { "kind": "unlock_job", "job_id": "train_warrior" }
+      ]
+    },
+    {
+      "id": "school",
+      "name": "School",
+      "description": "Build the school. Kittens sit and learn, feeding the research effort while they grow.",
+      "category": "building",
+      "cost": 15.0,
+      "prerequisites": ["den_insulation"],
+      "era": 2,
+      "layout": { "x": 2, "y": 4 },
+      "leaderPriority": 175,
+      "payloads": [
+        { "kind": "unlock_building", "building_id": "school" },
+        { "kind": "unlock_job", "job_id": "teach" },
+        { "kind": "modify", "effect_id": "researchRateMult", "operation": "add", "value": 0.5 }
+      ]
+    },
+    {
+      "id": "irrigation",
+      "name": "Irrigation",
+      "description": "Dug channels feed the fields. Crops come in heavier.",
+      "category": "building",
+      "cost": 10.0,
+      "prerequisites": ["water_carriers"],
+      "era": 2,
+      "layout": { "x": 2, "y": 5 },
+      "leaderPriority": 140,
+      "payloads": [
+        { "kind": "unlock_building", "building_id": "field" },
+        { "kind": "modify", "effect_id": "farmYieldMult", "operation": "add", "value": 0.2 }
+      ]
+    },
+    {
+      "id": "housing_tier_2",
+      "name": "Timbered Longdens",
+      "description": "Two-storey dens. Each den now shelters a small clan.",
+      "category": "upgrade",
+      "cost": 20.0,
+      "prerequisites": ["masonry"],
+      "era": 3,
+      "layout": { "x": 5, "y": 3 },
+      "leaderPriority": 185,
+      "payloads": [
+        { "kind": "modify", "effect_id": "housingPerDen", "operation": "add", "value": 2.0 }
+      ]
+    },
+    {
+      "id": "weaponsmithing",
+      "name": "Weaponsmithing",
+      "description": "Forge claws of iron. Warriors strike far harder.",
+      "category": "recipe_resource",
+      "cost": 22.0,
+      "prerequisites": ["smithy"],
+      "era": 3,
+      "layout": { "x": 5, "y": 4 },
+      "leaderPriority": 200,
+      "payloads": [
+        { "kind": "unlock_job", "job_id": "forge_weapon" },
+        { "kind": "modify", "effect_id": "combatPowerMult", "operation": "add", "value": 0.25 }
+      ]
+    },
+    {
+      "id": "armorsmithing",
+      "name": "Armorsmithing",
+      "description": "Hammered plate. Defenders shrug off blows that once felled them.",
+      "category": "recipe_resource",
+      "cost": 22.0,
+      "prerequisites": ["smithy"],
+      "era": 3,
+      "layout": { "x": 5, "y": 5 },
+      "leaderPriority": 198,
+      "payloads": [
+        { "kind": "unlock_job", "job_id": "forge_armor" },
+        { "kind": "modify", "effect_id": "defenseMult", "operation": "add", "value": 0.25 }
+      ]
+    },
+    {
+      "id": "advanced_storage",
+      "name": "Advanced Storage",
+      "description": "Sealed cellars and lofts. Storehouses hold half again as much.",
+      "category": "upgrade",
+      "cost": 18.0,
+      "prerequisites": ["masonry"],
+      "era": 3,
+      "layout": { "x": 5, "y": 6 },
+      "leaderPriority": 180,
+      "payloads": [
+        { "kind": "modify", "effect_id": "storagePerLevelMult", "operation": "add", "value": 0.5 }
+      ]
+    },
+    {
+      "id": "scholars_guild",
+      "name": "Scholars' Guild",
+      "description": "A true academy. Research races ahead.",
+      "category": "upgrade",
+      "cost": 25.0,
+      "prerequisites": ["school"],
+      "era": 3,
+      "layout": { "x": 5, "y": 7 },
+      "leaderPriority": 205,
+      "payloads": [
+        { "kind": "modify", "effect_id": "researchRateMult", "operation": "add", "value": 0.75 }
+      ]
+    },
+    {
+      "id": "mounted_scouts",
+      "name": "Mounted Scouts",
+      "description": "Trained runners cover far more ground between waypoints.",
+      "category": "upgrade",
+      "cost": 20.0,
+      "prerequisites": ["barracks"],
+      "era": 3,
+      "layout": { "x": 5, "y": 8 },
+      "leaderPriority": 195,
+      "payloads": [
+        { "kind": "unlock_job", "job_id": "explore" },
+        { "kind": "modify", "effect_id": "moveSpeedMult", "operation": "add", "value": 0.3 }
+      ]
+    },
+    {
+      "id": "grand_housing",
+      "name": "Grand Housing",
+      "description": "Stone halls. A single den now houses a whole lineage.",
+      "category": "upgrade",
+      "cost": 25.0,
+      "prerequisites": ["housing_tier_2"],
+      "era": 3,
+      "layout": { "x": 6, "y": 3 },
+      "leaderPriority": 210,
+      "payloads": [
+        { "kind": "modify", "effect_id": "housingPerDen", "operation": "add", "value": 3.0 }
+      ]
+    },
+    {
+      "id": "rail",
+      "name": "Rail Line",
+      "description": "Rails laid through the passes mountaineering first opened. A distant biome is a day's walk no longer — the wagons run on iron tracks now.",
+      "category": "upgrade",
+      "cost": 20.0,
+      "prerequisites": ["mountaineering"],
+      "era": 3,
+      "layout": { "x": 6, "y": 4 },
+      "leaderPriority": 215,
+      "payloads": [
+        { "kind": "unlock_capability", "capability_id": "rail_logistics" }
+      ]
+    },
+    {
+      "id": "shipping",
+      "name": "Shipping",
+      "description": "Hulls raised at the sawmill's dock. Cats can finally cross open water — slow, cautious poling, but it reaches biomes no road ever will.",
+      "category": "upgrade",
+      "cost": 24.0,
+      "prerequisites": ["sawmill"],
+      "era": 3,
+      "layout": { "x": 6, "y": 5 },
+      "leaderPriority": 208,
+      "payloads": [
+        { "kind": "unlock_capability", "capability_id": "water_travel" }
+      ]
+    }
+  ]
+}
