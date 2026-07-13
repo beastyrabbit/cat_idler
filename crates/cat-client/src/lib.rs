@@ -56,6 +56,14 @@ const CLIENT_ALERT_CAP: usize = 8;
 /// Starting (and R-reset) camera zoom, tuned to frame the village at the small
 /// tile — a little zoomed in since there's now more world per screen.
 const DEFAULT_ZOOM: f32 = 0.25;
+/// Founding radius already fits comfortably at DEFAULT_ZOOM. Larger villages
+/// auto-fit once, until the player deliberately pans or zooms.
+const STARTER_CAMERA_RADIUS: u32 = 6;
+/// Top command strip + bottom toolbar space kept clear by mature-village fitting.
+const CAMERA_VERTICAL_UI_RESERVE: f32 = 160.0;
+/// The mature view centres in the unobscured map rectangle: 332px of persistent
+/// HUD on the left versus 195px of minimap on the right.
+const CAMERA_SAFE_CENTER_OFFSET_X: f32 = (332.0 - 195.0) / 2.0;
 /// Orthographic-scale zoom bounds (smaller scale = closer). `MIN_ZOOM` lets the
 /// wheel push all the way in to individual-cat level; `MAX_ZOOM` frames the
 /// whole known map.
@@ -686,10 +694,6 @@ enum GroundTexture {
 
 /// Pixel-art building sprite handles, loaded once at startup.
 #[derive(Resource, Clone)]
-// The building-sprite handles + handle() are retired by the cutaway-interior
-// render (floor + prop); kept behind allow(dead_code) while that look is under
-// review, to be removed once confirmed.
-#[allow(dead_code)]
 struct BuildingArt {
     shrine: Handle<Image>,
     den: Handle<Image>,
@@ -706,16 +710,10 @@ struct BuildingArt {
     woodworking: Handle<Image>,
     clothier: Handle<Image>,
     tannery: Handle<Image>,
-    // Cutaway top-down interior tiles: a footprint-filling floor + a centred
-    // workstation prop, viewed straight from above (no roofs). CC0 Kenney
-    // Roguelike.
+    // A subtle footprint floor keeps occupancy legible underneath the dedicated
+    // building facade. All art is from the tracked Kenney selection.
     floor_wood: Handle<Image>,
     floor_stone: Handle<Image>,
-    prop_workbench: Handle<Image>,
-    prop_bed: Handle<Image>,
-    prop_crate: Handle<Image>,
-    prop_furnace: Handle<Image>,
-    prop_altar: Handle<Image>,
 }
 
 impl BuildingArt {
@@ -738,11 +736,6 @@ impl BuildingArt {
             tannery: assets.load("public/images/game/buildings/tannery.png"),
             floor_wood: assets.load("public/images/game/interior/floor_wood.png"),
             floor_stone: assets.load("public/images/game/interior/floor_stone.png"),
-            prop_workbench: assets.load("public/images/game/interior/workbench.png"),
-            prop_bed: assets.load("public/images/game/interior/bed.png"),
-            prop_crate: assets.load("public/images/game/props/crate.png"),
-            prop_furnace: assets.load("public/images/game/interior/furnace.png"),
-            prop_altar: assets.load("public/images/game/interior/altar.png"),
         }
     }
 
@@ -753,20 +746,6 @@ impl BuildingArt {
         }
     }
 
-    /// A prop handle + its native tile footprint (width, height) so the render can
-    /// size it without stretching (workbench/bed are 2×1, crate 1×1).
-    fn prop(&self, prop: InteriorProp) -> Option<(Handle<Image>, Vec2)> {
-        match prop {
-            InteriorProp::Workbench => Some((self.prop_workbench.clone(), Vec2::new(2.0, 1.0))),
-            InteriorProp::Bed => Some((self.prop_bed.clone(), Vec2::new(2.0, 1.0))),
-            InteriorProp::Crate => Some((self.prop_crate.clone(), Vec2::new(1.0, 1.0))),
-            InteriorProp::Furnace => Some((self.prop_furnace.clone(), Vec2::new(1.3, 1.3))),
-            InteriorProp::Altar => Some((self.prop_altar.clone(), Vec2::new(1.3, 1.3))),
-            InteriorProp::None => None,
-        }
-    }
-
-    #[allow(dead_code)]
     fn handle(&self, texture: BuildingTexture) -> Handle<Image> {
         match texture {
             BuildingTexture::Shrine => self.shrine.clone(),
@@ -2378,7 +2357,8 @@ fn setup(
         .spawn((
             Node {
                 left: Val::Px(10.0),
-                bottom: Val::Px(66.0),
+                // Clear the two-row command bar at 768px-high windows.
+                bottom: Val::Px(100.0),
                 ..ui_panel_node(Val::Px(430.0))
             },
             ui_panel_frame(),
@@ -2396,7 +2376,8 @@ fn setup(
         .spawn((
             Node {
                 right: Val::Px(10.0),
-                bottom: Val::Px(66.0),
+                // Clear the two-row command bar at 768px-high windows.
+                bottom: Val::Px(100.0),
                 ..ui_panel_node(Val::Px(168.0 + 2.0 * UI_GAP + 2.0 * UI_BORDER_W))
             },
             GlobalZIndex(70),
@@ -2464,9 +2445,11 @@ fn setup(
             bar.spawn((
                 Node {
                     margin: UiRect::right(Val::Px(UI_PAD)),
+                    flex_shrink: 0.0,
                     ..default()
                 },
                 ui_text("Idle Cat Forest", FS_TITLE, UI_ACCENT),
+                TextLayout::no_wrap(),
             ));
             bar.spawn((
                 ui_button(),
@@ -2500,11 +2483,14 @@ fn setup(
             bar.spawn((
                 Node {
                     margin: UiRect::left(Val::Auto),
+                    min_width: Val::Px(0.0),
                     max_width: Val::Px(400.0),
+                    flex_shrink: 1.0,
                     overflow: Overflow::clip(),
                     ..default()
                 },
                 ui_text("", FS_SMALL, UI_MUTED),
+                TextLayout::no_wrap(),
                 AnnouncementTicker,
             ));
         });
@@ -3669,41 +3655,84 @@ fn render_buildings(
         return;
     };
     for building in &colony.buildings {
-        // Cutaway top-down interior: the footprint is drawn as a FLOOR (flat on
-        // the ground, no roof) with a centred workstation prop, viewed straight
-        // from above. Walls render as the palisade — skip.
-        let Some((floor_kind, prop)) = building_interior(building.building_type) else {
+        // Walls are rendered by render_village_boundary; every point building
+        // gets a footprint floor, its dedicated facade (where one exists), and a
+        // short identity plaque. The facade was previously loaded but never used,
+        // leaving every workshop as the same generic floor/prop combination.
+        let Some(texture) = building_texture(building.building_type) else {
             continue;
         };
-        let w = building.footprint.width.max(1) as f32;
-        let h = building.footprint.height.max(1) as f32;
-        let nw = building.world_position;
-        let cx = (nw.x as f32 + (w - 1.0) / 2.0) * TILE;
-        let cy = -((nw.y as f32 + (h - 1.0) / 2.0) * TILE);
-        // Floor fills the footprint, flat on the ground (low z, not y-sorted).
+        let layout = building_render_layout(
+            building.world_position,
+            building.footprint,
+            building_aspect(texture),
+        );
         commands.spawn((
             Sprite {
-                image: art.floor(floor_kind),
-                custom_size: Some(Vec2::new(w * TILE, h * TILE)),
+                image: art.floor(building_floor(building.building_type)),
+                custom_size: Some(layout.floor_size),
                 ..default()
             },
             Anchor::CENTER,
-            Transform::from_xyz(cx, cy, Z_BUILDING_FLOOR),
+            Transform::from_xyz(
+                layout.floor_center.x,
+                layout.floor_center.y,
+                Z_BUILDING_FLOOR,
+            ),
             BuildingSprite,
         ));
-        // Centred workstation prop, y-sorted so cats pass in front of / behind it.
-        if let Some((image, tiles)) = art.prop(prop) {
-            commands.spawn((
-                Sprite {
-                    image,
-                    custom_size: Some(Vec2::new(tiles.x * TILE, tiles.y * TILE)),
-                    ..default()
-                },
-                Anchor::CENTER,
-                Transform::from_xyz(cx, cy, ysort_z(cy) + 0.2),
-                BuildingSprite,
-            ));
-        }
+        commands.spawn((
+            Sprite {
+                image: art.handle(texture),
+                color: building_sprite_color(
+                    building.building_type,
+                    building.construction_progress >= 100.0,
+                ),
+                custom_size: Some(layout.facade_size),
+                ..default()
+            },
+            Anchor::BOTTOM_CENTER,
+            Transform::from_xyz(
+                layout.facade_base.x,
+                layout.facade_base.y,
+                ysort_z(layout.facade_base.y) + 0.2,
+            ),
+            BuildingSprite,
+        ));
+
+        let label = building_map_label(building.building_type);
+        let plaque_size = Vec2::new(label.chars().count() as f32 * 3.1 + 3.0, 6.4);
+        commands.spawn((
+            Sprite::from_color(Color::srgba(0.26, 0.19, 0.115, 0.88), plaque_size),
+            Transform::from_xyz(
+                layout.label_position.x,
+                layout.label_position.y,
+                ysort_z(layout.facade_base.y) + 0.45,
+            ),
+            BuildingSprite,
+        ));
+        commands.spawn((
+            Text2d::new(label),
+            TextFont {
+                // Rasterise the narrow pixel face at a legible size, then scale
+                // it down in world space. Direct 5px rasterisation turns each
+                // word into an unreadable row of stems.
+                font_size: FontSize::Px(10.0),
+                ..default()
+            },
+            TextColor(if building.construction_progress >= 100.0 {
+                Color::srgb(1.0, 0.90, 0.68)
+            } else {
+                Color::srgb(0.82, 0.82, 0.80)
+            }),
+            Transform::from_xyz(
+                layout.label_position.x,
+                layout.label_position.y,
+                ysort_z(layout.facade_base.y) + 0.5,
+            )
+            .with_scale(Vec3::splat(0.5)),
+            BuildingSprite,
+        ));
     }
 }
 
@@ -3843,20 +3872,6 @@ fn render_stockpiles(
                     Transform::from_xyz(cx, cy, ysort_z(cy) + 2.0),
                     StockpileVis,
                 ));
-                commands.spawn((
-                    Text2d::new(format!(
-                        "{} {}",
-                        resource_kind_name(dominant),
-                        total.round() as i64
-                    )),
-                    TextFont {
-                        font_size: FontSize::Px(9.0),
-                        ..default()
-                    },
-                    TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
-                    Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, ysort_z(cy) + 2.5),
-                    StockpileVis,
-                ));
             }
             continue;
         }
@@ -3900,7 +3915,7 @@ fn render_stockpiles(
         commands.spawn((
             Text2d::new(label),
             TextFont {
-                font_size: FontSize::Px(9.0),
+                font_size: FontSize::Px(5.0),
                 ..default()
             },
             TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
@@ -5073,13 +5088,19 @@ fn render_zone_preview(
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn camera_controls(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut motion: MessageReader<MouseMotion>,
     mut wheel: MessageReader<MouseWheel>,
     time: Res<Time>,
+    latest: Res<LatestSnapshot>,
+    windows: Query<&Window>,
     mut inited: Local<bool>,
+    mut last_auto_radius: Local<u32>,
+    mut last_window_size: Local<Vec2>,
+    mut user_adjusted: Local<bool>,
     mut camera: Query<(&mut Transform, &mut Projection), With<WorldCamera>>,
 ) {
     let Ok((mut transform, mut projection)) = camera.single_mut() else {
@@ -5093,28 +5114,65 @@ fn camera_controls(
         *inited = true;
         projection.scale = DEFAULT_ZOOM;
     }
+    let window_size = windows
+        .single()
+        .map(|window| Vec2::new(window.width(), window.height()))
+        .unwrap_or(Vec2::new(1280.0, 800.0));
+    if let Some(colony) = latest
+        .0
+        .as_ref()
+        .and_then(|snapshot| snapshot.colonies.first())
+    {
+        let radius_grew = colony.village_radius > *last_auto_radius;
+        let window_changed = window_size != *last_window_size;
+        if !*user_adjusted && (radius_grew || window_changed) {
+            projection.scale =
+                village_fit_zoom(colony.village_radius, window_size.x, window_size.y);
+            let center =
+                village_camera_center(colony.anchor, colony.village_radius, projection.scale);
+            transform.translation.x = center.x;
+            transform.translation.y = center.y;
+        }
+        *last_auto_radius = (*last_auto_radius).max(colony.village_radius);
+        *last_window_size = window_size;
+    }
     let speed = 620.0 * time.delta_secs() * projection.scale;
     if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
+        *user_adjusted = true;
         transform.translation.x -= speed;
     }
     if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+        *user_adjusted = true;
         transform.translation.x += speed;
     }
     if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
+        *user_adjusted = true;
         transform.translation.y += speed;
     }
     if keys.pressed(KeyCode::KeyS) || keys.pressed(KeyCode::ArrowDown) {
+        *user_adjusted = true;
         transform.translation.y -= speed;
     }
     if keys.just_pressed(KeyCode::KeyR) {
-        let center = grid_to_world(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y);
+        *user_adjusted = false;
+        let colony = latest
+            .0
+            .as_ref()
+            .and_then(|snapshot| snapshot.colonies.first());
+        let center = colony.map_or_else(
+            || grid_to_world(VILLAGE_ANCHOR.x, VILLAGE_ANCHOR.y),
+            |colony| village_camera_center(colony.anchor, colony.village_radius, projection.scale),
+        );
         transform.translation.x = center.x;
         transform.translation.y = center.y;
-        projection.scale = DEFAULT_ZOOM;
+        projection.scale = colony.map_or(DEFAULT_ZOOM, |colony| {
+            village_fit_zoom(colony.village_radius, window_size.x, window_size.y)
+        });
     }
     // Middle-button drag pans the map (left = select cat, right = select
     // building).
     if buttons.pressed(MouseButton::Middle) {
+        *user_adjusted = true;
         for ev in motion.read() {
             transform.translation.x -= ev.delta.x * projection.scale;
             transform.translation.y += ev.delta.y * projection.scale;
@@ -5123,9 +5181,35 @@ fn camera_controls(
         motion.clear();
     }
     for ev in wheel.read() {
+        *user_adjusted = true;
         projection.scale =
             (projection.scale * if ev.y > 0.0 { 0.9 } else { 1.1 }).clamp(MIN_ZOOM, MAX_ZOOM);
     }
+}
+
+/// Orthographic scale that preserves the close founding view, then fits an
+/// expanded village between the fixed top and bottom HUD strips.
+fn village_fit_zoom(radius: u32, window_width: f32, window_height: f32) -> f32 {
+    if radius <= STARTER_CAMERA_RADIUS {
+        return DEFAULT_ZOOM;
+    }
+    let diameter_tiles = radius.saturating_mul(2).saturating_add(1) as f32 + 4.0;
+    let world_span = diameter_tiles * TILE;
+    let usable_height = (window_height - CAMERA_VERTICAL_UI_RESERVE).max(window_height * 0.5);
+    DEFAULT_ZOOM
+        .max(world_span / window_width.max(1.0))
+        .max(world_span / usable_height.max(1.0))
+        .clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
+fn village_camera_center(anchor: TilePoint, radius: u32, zoom: f32) -> Vec2 {
+    let mut center = grid_to_world(anchor.x + 1, anchor.y + 1);
+    if radius > STARTER_CAMERA_RADIUS {
+        // Moving the camera left shifts the village right into the safe map
+        // rectangle. Scale converts the fixed screen-space inset to world units.
+        center.x -= CAMERA_SAFE_CENTER_OFFSET_X * zoom;
+    }
+    center
 }
 
 fn update_hud(
@@ -6013,9 +6097,9 @@ fn paint_preview_color(kind: PaintKind) -> Color {
     }
 }
 
-/// Read-only inspector body for a building: type, level, complete/under-
-/// construction, its assigned cats, and — for producers — live staffing +
-/// production progress from the snapshot.
+/// Read-only inspector body for a building. Everything shown is authoritative
+/// snapshot state: construction, occupied tiles, assigned cats, production and
+/// cargo already in flight.
 fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot) -> String {
     let mut out = format!(
         "{name}  Lv {lvl}",
@@ -6024,36 +6108,60 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
     );
     if building.construction_progress < 100.0 {
         out.push_str(&format!(
-            "\nunder construction {:.0}%\nat {},{}",
-            building.construction_progress, building.world_position.x, building.world_position.y,
+            "\nunder construction {:.0}%\nprogress {} {}%",
+            building.construction_progress,
+            progress_bar(building.construction_progress / 100.0, 10),
+            progress_pct(building.construction_progress / 100.0),
         ));
-        return out;
+    } else {
+        out.push_str("\noperational");
     }
     out.push_str(&format!(
-        "\noperational\nat {},{}",
-        building.world_position.x, building.world_position.y
+        "\norigin: {},{}\nfootprint: {}x{} tiles",
+        building.world_position.x,
+        building.world_position.y,
+        building.footprint.width.max(1),
+        building.footprint.height.max(1),
     ));
-    // Producer buildings (staff_cap > 0) show live staffing + a progress bar.
+
+    let workers: Vec<&str> = colony
+        .cats
+        .iter()
+        .filter(|c| c.assigned_building_id.as_deref() == Some(building.id.as_str()))
+        .map(|c| c.name.as_str())
+        .collect();
     if building.staff_cap > 0 {
         out.push_str(&format!(
             "\nstaffed: {}/{}",
             building.staff_count, building.staff_cap
         ));
-        let workers: Vec<&str> = colony
-            .cats
-            .iter()
-            .filter(|c| c.assigned_building_id.as_deref() == Some(building.id.as_str()))
-            .map(|c| c.name.as_str())
-            .collect();
+        out.push_str(if workers.is_empty() {
+            "\nassigned: none"
+        } else {
+            "\nassigned: "
+        });
         if !workers.is_empty() {
-            out.push_str(&format!(" - {}", workers.join(", ")));
+            out.push_str(&workers.join(", "));
         }
         if let Some(output) = &building.production_output {
             out.push_str(&format!(
                 "\n{}",
                 production_line(output, building.production_progress)
             ));
+        } else if building.construction_progress >= 100.0 {
+            out.push_str("\nproduction: waiting");
         }
+    } else if !workers.is_empty() {
+        out.push_str(&format!("\nassigned: {}", workers.join(", ")));
+    }
+
+    if building.inbound_haul > 0.0 {
+        out.push_str(&format!(
+            "\ninbound: {:.1} units en route",
+            building.inbound_haul
+        ));
+    } else {
+        out.push_str("\ninbound: none");
     }
     out
 }
@@ -6384,55 +6492,122 @@ enum FloorKind {
     Stone,
 }
 
-/// The workstation prop placed on a building's floor, distinguishing it by
-/// function rather than by any roof. (Per-building props — loom/anvil/forge —
-/// land in later slices; this set covers the categories.)
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum InteriorProp {
-    Workbench,
-    Bed,
-    Crate,
-    Furnace,
-    Altar,
-    None,
-}
-
-/// The cutaway top-down interior for a building: its floor material + the
-/// workstation prop that sits on it. `None` for `Walls` (drawn as the palisade).
-fn building_interior(building: BuildingType) -> Option<(FloorKind, InteriorProp)> {
+/// Floor underlay for the footprint. It communicates workshop/dwelling material
+/// while the dedicated facade above it carries the building's identity.
+fn building_floor(building: BuildingType) -> FloorKind {
     use BuildingType as B;
-    Some(match building {
-        // Craft workshops: a wooden shop floor + a workbench.
+    match building {
         B::Workshop | B::Woodworking | B::WoodCutter | B::StonePrep | B::Clothier | B::Tannery => {
-            (FloorKind::Wood, InteriorProp::Workbench)
+            FloorKind::Wood
         }
-        // Metalworking: a stone forge floor + a furnace.
-        B::Smithy | B::Smelter => (FloorKind::Stone, InteriorProp::Furnace),
-        // Dwellings: a wooden floor + beds.
-        B::Den | B::Beds | B::Nursery | B::ElderCorner | B::HerbGarden => {
-            (FloorKind::Wood, InteriorProp::Bed)
+        B::Smithy | B::Smelter => FloorKind::Stone,
+        B::Den | B::Beds | B::Nursery | B::ElderCorner | B::HerbGarden => FloorKind::Wood,
+        B::FoodStorage | B::WaterBowl | B::MouseFarm => FloorKind::Wood,
+        B::Shrine | B::ResearchHut | B::School | B::Barracks | B::Field | B::Walls => {
+            FloorKind::Stone
         }
-        // Storage: a wooden floor + crates.
-        B::FoodStorage | B::WaterBowl | B::MouseFarm => (FloorKind::Wood, InteriorProp::Crate),
-        // Shrine: a stone floor + a candelabra altar.
-        B::Shrine => (FloorKind::Stone, InteriorProp::Altar),
-        // Civic/support: stone floors, prop TBD.
-        B::ResearchHut | B::School | B::Barracks | B::Field => {
-            (FloorKind::Stone, InteriorProp::None)
-        }
-        B::Walls => return None,
-    })
+    }
 }
 
 /// Native width/height aspect of a building sprite (48x48 square = 1.0; market
-/// 48x32 wide = 1.5; well 16x32 tall = 0.5). Retired by the cutaway-interior
-/// render; kept for the mapping unit test while the interior look is reviewed.
-#[allow(dead_code)]
+/// 48x32 wide = 1.5; well 16x32 tall = 0.5).
 fn building_aspect(texture: BuildingTexture) -> f32 {
     match texture {
         BuildingTexture::Market => 48.0 / 32.0,
         BuildingTexture::Well => 16.0 / 32.0,
         _ => 1.0,
+    }
+}
+
+/// Pure geometry used by the renderer. Keeping this independent of ECS makes
+/// footprint placement and screen-clipping guardrails cheap to test.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct BuildingRenderLayout {
+    floor_center: Vec2,
+    floor_size: Vec2,
+    facade_base: Vec2,
+    facade_size: Vec2,
+    label_position: Vec2,
+}
+
+fn building_render_layout(
+    nw: TilePoint,
+    footprint: FootprintSize,
+    aspect: f32,
+) -> BuildingRenderLayout {
+    let w = footprint.width.max(1) as f32;
+    let h = footprint.height.max(1) as f32;
+    let floor_size = Vec2::new(w * TILE, h * TILE);
+    let floor_center = Vec2::new(
+        (nw.x as f32 + (w - 1.0) / 2.0) * TILE,
+        -(nw.y as f32 + (h - 1.0) / 2.0) * TILE,
+    );
+    let facade_base = Vec2::new(floor_center.x, -(nw.y as f32 + h - 1.0) * TILE - TILE / 2.0);
+
+    // Use the footprint width, but cap tall art at one tile of north-side roof
+    // overhang. This keeps the well's 1:2 image and square 3x2 facades visible
+    // without covering the next village row.
+    let mut facade_size = Vec2::new(floor_size.x, floor_size.x / aspect.max(0.01));
+    let max_height = floor_size.y + TILE;
+    if facade_size.y > max_height {
+        let scale = max_height / facade_size.y;
+        facade_size *= scale;
+    }
+
+    BuildingRenderLayout {
+        floor_center,
+        floor_size,
+        facade_base,
+        facade_size,
+        label_position: Vec2::new(facade_base.x, facade_base.y - TILE * 0.46),
+    }
+}
+
+/// Aliased facades get restrained functional tints. Labels still carry the
+/// exact identity; tint prevents adjacent den/storehouse variants reading as
+/// accidental duplicates before the player has read them.
+fn building_sprite_color(building: BuildingType, complete: bool) -> Color {
+    if !complete {
+        return Color::srgba(0.72, 0.72, 0.70, 0.72);
+    }
+    match building {
+        BuildingType::Beds => Color::srgb(0.78, 0.88, 1.0),
+        BuildingType::HerbGarden => Color::srgb(0.73, 1.0, 0.72),
+        BuildingType::Nursery => Color::srgb(1.0, 0.83, 0.86),
+        BuildingType::ElderCorner => Color::srgb(0.82, 0.78, 0.72),
+        BuildingType::MouseFarm => Color::srgb(0.90, 0.78, 0.60),
+        BuildingType::Field => Color::srgb(0.78, 0.96, 0.66),
+        BuildingType::Smelter => Color::srgb(1.0, 0.72, 0.52),
+        _ => Color::WHITE,
+    }
+}
+
+/// A short title-case plaque for the map. These intentionally differ from the
+/// longer lowercase inspector labels and remain unique across all wire types.
+fn building_map_label(building: BuildingType) -> &'static str {
+    match building {
+        BuildingType::Den => "Den",
+        BuildingType::FoodStorage => "Food",
+        BuildingType::WaterBowl => "Water",
+        BuildingType::Beds => "Beds",
+        BuildingType::HerbGarden => "Herbs",
+        BuildingType::Nursery => "Nurse",
+        BuildingType::ElderCorner => "Elder",
+        BuildingType::Walls => "Walls",
+        BuildingType::MouseFarm => "Mice",
+        BuildingType::Shrine => "Altar",
+        BuildingType::Workshop => "Work",
+        BuildingType::Field => "Field",
+        BuildingType::ResearchHut => "Rsch",
+        BuildingType::School => "Tutor",
+        BuildingType::Smithy => "Smith",
+        BuildingType::Barracks => "Guard",
+        BuildingType::WoodCutter => "Logs",
+        BuildingType::StonePrep => "Stone",
+        BuildingType::Woodworking => "Wood",
+        BuildingType::Clothier => "Cloth",
+        BuildingType::Tannery => "Tan",
+        BuildingType::Smelter => "Melt",
     }
 }
 
@@ -7294,6 +7469,91 @@ mod tests {
     }
 
     #[test]
+    fn every_protocol_building_has_a_unique_concise_map_label() {
+        let variants = [
+            BuildingType::Den,
+            BuildingType::FoodStorage,
+            BuildingType::WaterBowl,
+            BuildingType::Beds,
+            BuildingType::HerbGarden,
+            BuildingType::Nursery,
+            BuildingType::ElderCorner,
+            BuildingType::Walls,
+            BuildingType::MouseFarm,
+            BuildingType::Shrine,
+            BuildingType::Workshop,
+            BuildingType::Field,
+            BuildingType::ResearchHut,
+            BuildingType::School,
+            BuildingType::Smithy,
+            BuildingType::Barracks,
+            BuildingType::WoodCutter,
+            BuildingType::StonePrep,
+            BuildingType::Woodworking,
+            BuildingType::Clothier,
+            BuildingType::Tannery,
+            BuildingType::Smelter,
+        ];
+        let mut labels = HashSet::new();
+        for building in variants {
+            let label = building_map_label(building);
+            assert!(!label.is_empty(), "empty label for {building:?}");
+            assert!(label.chars().count() <= 5, "map label is noisy: {label}");
+            assert!(labels.insert(label), "duplicate map label: {label}");
+        }
+    }
+
+    #[test]
+    fn building_render_layout_fits_footprint_and_keeps_label_below_facade() {
+        let layout = building_render_layout(
+            TilePoint { x: 6, y: 6 },
+            FootprintSize {
+                width: 3,
+                height: 2,
+            },
+            1.0,
+        );
+        assert_eq!(layout.floor_size, Vec2::new(3.0 * TILE, 2.0 * TILE));
+        assert_eq!(layout.floor_center, Vec2::new(7.0 * TILE, -6.5 * TILE));
+        assert!(layout.facade_size.x <= layout.floor_size.x);
+        assert!(layout.facade_size.y <= layout.floor_size.y + TILE);
+        assert!(layout.label_position.y < layout.facade_base.y);
+
+        let tiny = building_render_layout(
+            TilePoint { x: -2, y: 4 },
+            FootprintSize {
+                width: 0,
+                height: 0,
+            },
+            building_aspect(BuildingTexture::Well),
+        );
+        assert_eq!(tiny.floor_size, Vec2::splat(TILE));
+        assert!(tiny.facade_size.x <= TILE);
+    }
+
+    #[test]
+    fn mature_village_camera_fit_preserves_founding_zoom_and_uses_window_space() {
+        assert_eq!(
+            village_fit_zoom(STARTER_CAMERA_RADIUS, 1024.0, 768.0),
+            DEFAULT_ZOOM
+        );
+
+        let compact = village_fit_zoom(10, 1024.0, 768.0);
+        let wide = village_fit_zoom(10, 1920.0, 1080.0);
+        assert!(compact > DEFAULT_ZOOM);
+        assert!(wide > DEFAULT_ZOOM);
+        assert!(compact > wide, "small windows must zoom farther out");
+        assert!(compact <= MAX_ZOOM);
+
+        let anchor = TilePoint { x: 6, y: 6 };
+        let founding_center = village_camera_center(anchor, STARTER_CAMERA_RADIUS, DEFAULT_ZOOM);
+        assert_eq!(founding_center, grid_to_world(7, 7));
+        let mature_center = village_camera_center(anchor, 10, compact);
+        let screen_shift = (founding_center.x - mature_center.x) / compact;
+        assert!((screen_shift - CAMERA_SAFE_CENTER_OFFSET_X).abs() < 0.001);
+    }
+
+    #[test]
     fn footprint_sprite_spans_tiles_and_sits_on_front_edge() {
         let nw = TilePoint { x: 6, y: 6 };
         // A 3x3 square building: 3 tiles wide, 3 tall (aspect 1).
@@ -7997,8 +8257,8 @@ mod tests {
                 "threat":{"pressure":0,"band":"calm","raidActive":false,"warriors":0,"weapons":0,"armor":0},
                 "raiders":[],
                 "buildings":[
-                    {"id":"b1","type":"workshop","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0},"staffCount":1,"staffCap":1,"productionProgress":0.4,"productionOutput":"refined"},
-                    {"id":"b2","type":"den","level":1,"constructionProgress":40.0,"worldPosition":{"x":5,"y":6},"position":{"x":-1,"y":0}}
+                    {"id":"b1","type":"workshop","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0},"footprint":{"width":3,"height":2},"staffCount":1,"staffCap":1,"productionProgress":0.4,"productionOutput":"refined","inboundHaul":7.5},
+                    {"id":"b2","type":"den","level":1,"constructionProgress":40.0,"worldPosition":{"x":5,"y":6},"position":{"x":-1,"y":0},"footprint":{"width":2,"height":2}}
                 ],
                 "claimedTiles":[],"villageGate":null,"villageRadius":4,"anchor":{"x":6,"y":6}
             }]
@@ -8016,9 +8276,13 @@ mod tests {
         assert!(ws.contains("making refined")); // live production output
         assert!(ws.contains("[####------]")); // progress bar at 0.4
         assert!(ws.contains("40%"));
+        assert!(ws.contains("footprint: 3x2 tiles"));
+        assert!(ws.contains("inbound: 7.5"));
         // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);
         assert!(den_text.contains("under construction 40%"));
+        assert!(den_text.contains("[####------]"));
+        assert!(den_text.contains("footprint: 2x2 tiles"));
         assert!(!den_text.contains("staffed"));
         assert!(!den_text.contains("making"));
     }
