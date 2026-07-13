@@ -502,12 +502,10 @@ persona: developer   depends_on:[P7.1]   scope: port the 37 phases in small grou
 ### P7.gate P7 parity gate   [status: done (integration: deterministic, 40-tick survival, multi-colony independence; exact aggregate match vs TS mulberry32 fixture not required per 'same idea')]
 persona: qa/orchestrator   scope: seed -> N ticks aggregate trajectory matches worker-tick golden fixture; multi-colony independence.
 
-### P7.followup BuildingType research_hut/school   [status: todo]
-note: DB schema allows building types "research_hut"/"school" (upgrade-tree unlocks) but
-types/game.ts BuildingType union omits them; TS uses string compares. Rust BuildingType
-(strict enum, 14 variants) can't represent them -> research-hut/school staffing inert in
-world_tick P7.5. Fix: add ResearchHut/School variants + non-purchasable BUILDING_COSTS
-entries (adjust the exhaustive test). Low priority (secondary research economy).
+### P7.followup BuildingType research_hut/school   [status: done]
+note: closed by the ResearchHut/School ports (`aa938a3`-era + `133165e`): both variants
+exist in `types.rs`, are buildable/staffable research faucets in `world_tick`, and School
+adds a +50% research-rate multiplier via its upgrade node.
 
 ## P8 — Protocol + server (+ multi-village founding) (decomposed by orchestrator)
 ### P8.1 cat-protocol wire types   [status: done]
