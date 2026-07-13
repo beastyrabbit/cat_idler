@@ -1,0 +1,1084 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Idle Cat Forest — Sprite Review Bench</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #2d291f;
+      --muted: #6e6657;
+      --paper: #f3ecdb;
+      --paper-raised: #fbf7ec;
+      --paper-deep: #e7dcc4;
+      --line: #c9b995;
+      --line-strong: #9f8b64;
+      --wood: #65472f;
+      --forest: #315c43;
+      --forest-dark: #234431;
+      --rust: #a75132;
+      --focus: #276d8a;
+      --sprite-scale: 3;
+      --sidebar: 248px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { background: var(--paper-deep); }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+      line-height: 1.45;
+    }
+
+    button, input, select { font: inherit; }
+
+    button, select, input[type="search"] {
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      color: var(--ink);
+      background: var(--paper-raised);
+    }
+
+    button {
+      min-height: 38px;
+      padding: 7px 12px;
+      cursor: pointer;
+    }
+
+    button:hover { border-color: var(--wood); background: #fffaf0; }
+    button:active { background: var(--paper-deep); }
+
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible,
+    summary:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--focus) 38%, transparent);
+      outline-offset: 2px;
+    }
+
+    .primary {
+      color: #fffdf7;
+      border-color: var(--forest-dark);
+      background: var(--forest);
+      font-weight: 700;
+    }
+
+    .primary:hover { color: #fff; background: var(--forest-dark); }
+
+    .quiet-danger { color: #773621; }
+
+    .app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      min-height: 76px;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line-strong);
+      background: #efe4cc;
+    }
+
+    .title-block { min-width: 0; }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1 {
+      margin-bottom: 3px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(1.4rem, 2.6vw, 1.85rem);
+      line-height: 1.15;
+      color: #352719;
+    }
+
+    .subtitle { margin: 0; color: var(--muted); }
+
+    .header-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
+    .app-shell {
+      display: grid;
+      grid-template-columns: var(--sidebar) minmax(0, 1fr);
+      min-height: calc(100vh - 76px);
+    }
+
+    .sidebar {
+      padding: 22px 20px 40px;
+      border-right: 1px solid var(--line);
+      background: #ede2ca;
+    }
+
+    .sidebar-inner { position: sticky; top: 18px; }
+
+    .control-group {
+      margin: 0 0 24px;
+      padding: 0 0 22px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .control-group:last-child { border-bottom: 0; }
+
+    .control-group legend,
+    .field-label {
+      display: block;
+      margin: 0 0 8px;
+      padding: 0;
+      font-weight: 750;
+      color: #433421;
+    }
+
+    .search-input, .select-input { width: 100%; min-height: 40px; padding: 8px 10px; }
+
+    .check-list { display: grid; gap: 8px; }
+
+    .check-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 28px;
+      cursor: pointer;
+    }
+
+    input[type="checkbox"], input[type="radio"] { accent-color: var(--forest); }
+
+    .range-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    input[type="range"] { width: 100%; accent-color: var(--forest); }
+
+    output {
+      min-width: 38px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+
+    .sidebar-note { color: var(--muted); font-size: 0.84rem; }
+    .sidebar-note kbd { padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--paper-raised); }
+
+    main { min-width: 0; padding: 24px clamp(16px, 3vw, 34px) 72px; }
+
+    .review-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 20px;
+      max-width: 1500px;
+      margin: 0 auto 16px;
+    }
+
+    .review-heading h2 {
+      margin-bottom: 2px;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.25rem;
+    }
+
+    .review-count { margin: 0; color: var(--muted); font-size: 0.9rem; }
+
+    .review-list { display: grid; gap: 18px; max-width: 1500px; margin: 0 auto; }
+
+    .building-row {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--paper-raised);
+      box-shadow: 0 1px 0 rgba(71, 49, 29, 0.08);
+      overflow: hidden;
+    }
+
+    .building-row[hidden] { display: none; }
+
+    .building-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #f4ead5;
+    }
+
+    .building-header h3 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 1.1rem; }
+
+    .category-label { color: var(--muted); font-size: 0.82rem; }
+
+    .gap-note {
+      margin: 0;
+      padding: 9px 16px;
+      border-bottom: 1px solid #d8c49e;
+      color: #684226;
+      background: #f5e7c8;
+      font-size: 0.88rem;
+    }
+
+    .comparison-grid {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      align-items: stretch;
+    }
+
+    .current-block {
+      padding: 14px;
+      border-right: 1px solid var(--line);
+      background: #f0e7d4;
+    }
+
+    .block-label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .current-preview { display: grid; place-items: center; min-height: 156px; border: 1px solid var(--line); background: #d8caa9; }
+
+    .current-path { display: flex; align-items: center; gap: 5px; margin-top: 9px; }
+
+    code {
+      min-width: 0;
+      overflow: hidden;
+      color: #514738;
+      font: 0.72rem/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .copy-button {
+      min-width: 32px;
+      min-height: 28px;
+      padding: 3px 7px;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 0.74rem;
+    }
+
+    .options-block { min-width: 0; padding: 14px; }
+
+    .candidate-grid { display: grid; grid-template-columns: repeat(3, minmax(190px, 1fr)); gap: 10px; }
+
+    .candidate {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto auto 1fr auto;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffaf0;
+      overflow: hidden;
+      transition: border-color 140ms ease, background-color 140ms ease;
+    }
+
+    .candidate:has(input:checked) { border-color: var(--forest); box-shadow: inset 0 0 0 1px var(--forest); background: #f6f7e9; }
+
+    .candidate-top { display: flex; align-items: start; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; padding: 9px 10px 8px; }
+
+    .choice-label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 7px; min-width: 0; cursor: pointer; font-weight: 750; line-height: 1.25; }
+    .choice-label span { min-width: 0; overflow-wrap: anywhere; }
+
+    .choice-label input { margin: 3px 0 0; }
+
+    .favorite-button {
+      flex: 0 0 auto;
+      min-width: 31px;
+      min-height: 30px;
+      padding: 2px 7px;
+      border: 0;
+      border-radius: 5px;
+      color: #716550;
+      background: transparent;
+      font-size: 1.12rem;
+      line-height: 1;
+    }
+
+    .favorite-button[aria-pressed="true"] { color: #945f00; background: #f0dfaa; }
+
+    .preview-stage {
+      display: grid;
+      place-items: center;
+      min-height: 174px;
+      border-block: 1px solid var(--line);
+      overflow: hidden;
+      background-color: #d8caa9;
+    }
+
+    .preview-stage[data-background="checker"] {
+      background-color: #d8caa9;
+      background-image:
+        linear-gradient(45deg, #c7b68f 25%, transparent 25%),
+        linear-gradient(-45deg, #c7b68f 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #c7b68f 75%),
+        linear-gradient(-45deg, transparent 75%, #c7b68f 75%);
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+      background-size: 16px 16px;
+    }
+
+    .preview-stage[data-background="grass"] {
+      background-color: #6f9d48;
+      background-image: url("../public/images/game/terrain/grass.png");
+      background-repeat: repeat;
+      background-size: calc(16px * var(--sprite-scale));
+      image-rendering: pixelated;
+    }
+
+    .preview-stage[data-background="stone"] {
+      background-color: #bfc0bb;
+      background-image: url("../public/images/game/interior/floor_stone.png");
+      background-repeat: repeat;
+      background-size: calc(16px * var(--sprite-scale));
+      image-rendering: pixelated;
+    }
+
+    .pixel-frame { width: calc(48px * var(--sprite-scale)); height: calc(48px * var(--sprite-scale)); }
+
+    .sprite-canvas {
+      position: relative;
+      width: 48px;
+      height: 48px;
+      transform: scale(var(--sprite-scale));
+      transform-origin: top left;
+      image-rendering: pixelated;
+    }
+
+    .sprite-canvas.floor-wood,
+    .sprite-canvas.floor-stone,
+    .sprite-canvas.floor-soil {
+      background-repeat: repeat;
+      background-size: 16px 16px;
+    }
+
+    .sprite-canvas.floor-wood { background-image: url("../public/images/game/interior/floor_wood.png"); }
+    .sprite-canvas.floor-stone { background-image: url("../public/images/game/interior/floor_stone.png"); }
+    .sprite-canvas.floor-soil { background-image: url("../public/images/game/farm/soil.png"); }
+
+    .sprite-canvas img { position: absolute; display: block; image-rendering: pixelated; }
+    .sprite-canvas .facade { inset: auto 0 0; max-width: 48px; max-height: 48px; margin: auto; object-fit: contain; }
+
+    .candidate-copy { padding: 9px 10px 6px; color: var(--muted); font-size: 0.83rem; }
+    .candidate-copy p { margin-bottom: 0; }
+
+    .source-list { margin: 0 10px 10px; padding-top: 4px; border-top: 1px solid #ddd0b6; }
+    .source-list details { border-top: 1px solid #e5dbc6; }
+    .source-list summary { padding: 5px 0 3px; color: var(--muted); cursor: pointer; font-size: 0.75rem; }
+    .source-row { display: flex; align-items: center; gap: 5px; padding: 3px 0; }
+
+    .empty-state { padding: 40px 20px; border: 1px solid var(--line); text-align: center; background: var(--paper-raised); }
+    .empty-state[hidden] { display: none; }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 20;
+      max-width: min(360px, calc(100vw - 36px));
+      padding: 10px 14px;
+      border: 1px solid var(--forest-dark);
+      border-radius: 8px;
+      color: white;
+      background: var(--forest-dark);
+      box-shadow: 0 5px 18px rgba(36, 31, 21, 0.22);
+    }
+
+    .toast[hidden] { display: none; }
+
+    @media (max-width: 1080px) {
+      .candidate-grid { grid-template-columns: repeat(2, minmax(190px, 1fr)); }
+    }
+
+    @media (max-width: 820px) {
+      .app-header { align-items: flex-start; padding-inline: 16px; }
+      .app-shell { display: block; }
+      .sidebar { padding: 14px 16px; border-right: 0; border-bottom: 1px solid var(--line-strong); }
+      .sidebar-inner { position: static; display: grid; grid-template-columns: minmax(160px, 1.4fr) 1fr 1fr; gap: 16px; }
+      .control-group { margin: 0; padding: 0; border: 0; }
+      .control-group:last-child { display: none; }
+      main { padding-top: 18px; }
+      .comparison-grid { grid-template-columns: 150px minmax(0, 1fr); }
+      .candidate-grid { grid-template-columns: 1fr; }
+      .current-preview { min-height: 148px; }
+    }
+
+    @media (max-width: 590px) {
+      .app-header { display: block; }
+      .header-actions { margin-top: 12px; }
+      .header-actions button { flex: 1; }
+      .sidebar-inner { grid-template-columns: 1fr 1fr; }
+      .sidebar-inner .control-group:first-child { grid-column: 1 / -1; }
+      .review-heading { display: block; }
+      .comparison-grid { display: block; }
+      .current-block { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 10px; border-right: 0; border-bottom: 1px solid var(--line); }
+      .current-block .block-label { grid-column: 1 / -1; margin-bottom: 0; }
+      .current-preview { min-height: 112px; }
+      .current-path { margin: 0; }
+      .preview-stage { min-height: 164px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="title-block">
+      <h1>Sprite review bench</h1>
+      <p class="subtitle">Compare today’s façades with roofless, top-down station proposals. Choices stay in this browser until exported.</p>
+    </div>
+    <div class="header-actions">
+      <button class="quiet-danger" id="resetButton" type="button">Reset choices</button>
+      <button class="primary" id="exportButton" type="button">Export JSON</button>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Review filters">
+      <div class="sidebar-inner">
+        <div class="control-group">
+          <label class="field-label" for="searchInput">Find a building</label>
+          <input class="search-input" id="searchInput" type="search" placeholder="Smithy, storage, shrine…" autocomplete="off">
+        </div>
+
+        <fieldset class="control-group">
+          <legend>Show categories</legend>
+          <div class="check-list" id="categoryFilters"></div>
+          <label class="check-row"><input id="favoritesOnly" type="checkbox"> Favorites only</label>
+        </fieldset>
+
+        <div class="control-group">
+          <label class="field-label" for="backgroundSelect">Preview ground</label>
+          <select class="select-input" id="backgroundSelect">
+            <option value="checker">Checkerboard</option>
+            <option value="grass">Grass</option>
+            <option value="stone">Stone floor</option>
+          </select>
+          <div class="range-row">
+            <label for="zoomInput">Sprite zoom</label>
+            <output id="zoomOutput" for="zoomInput">3×</output>
+          </div>
+          <input id="zoomInput" type="range" min="2" max="4" step="0.5" value="3">
+        </div>
+
+        <p class="control-group sidebar-note"><kbd>/</kbd> focuses search. <kbd>Esc</kbd> clears it. Radio buttons choose one proposal; stars make a shortlist.</p>
+      </div>
+    </aside>
+
+    <main>
+      <div class="review-heading">
+        <div>
+          <h2>Building decisions</h2>
+          <p class="review-count" id="reviewCount"></p>
+        </div>
+        <p class="review-count" id="selectionCount"></p>
+      </div>
+      <div class="review-list" id="reviewList"></div>
+      <div class="empty-state" id="emptyState" hidden>
+        <strong>No buildings match these filters.</strong>
+        <p>Clear the search or enable another category.</p>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const ROOT = {
+        buildings: "public/images/game/buildings/",
+        interior: "public/images/game/interior/",
+        props: "public/images/game/props/",
+        farm: "public/images/game/farm/",
+        infra: "public/images/game/infra/",
+        review: "docs/sprite-review-assets/"
+      };
+
+      const A = {
+        den: ROOT.buildings + "den.png",
+        storehouse: ROOT.buildings + "storehouse.png",
+        research: ROOT.buildings + "research_hut.png",
+        school: ROOT.buildings + "school.png",
+        barracks: ROOT.buildings + "barracks.png",
+        shrine: ROOT.buildings + "shrine.png",
+        workshop: ROOT.buildings + "workshop.png",
+        smithy: ROOT.buildings + "smithy.png",
+        woodCutter: ROOT.buildings + "wood_cutter.png",
+        stonePrep: ROOT.buildings + "stone_prep.png",
+        woodworking: ROOT.buildings + "woodworking.png",
+        clothier: ROOT.buildings + "clothier.png",
+        tannery: ROOT.buildings + "tannery.png",
+        tent: ROOT.buildings + "tent.png",
+        mill: ROOT.buildings + "mill.png",
+        townHall: ROOT.buildings + "town_hall.png",
+        market: ROOT.buildings + "market.png",
+        well: ROOT.props + "well.png",
+        crate: ROOT.props + "crate.png",
+        barrel: ROOT.props + "barrel.png",
+        sack: ROOT.props + "sack.png",
+        logs: ROOT.props + "log_pile.png",
+        stones: ROOT.props + "stone_pile.png",
+        ore: ROOT.props + "ore_pile.png",
+        gold: ROOT.props + "gold_pile.png",
+        hay: ROOT.props + "haystack.png",
+        campfire: ROOT.props + "campfire.png",
+        altar: ROOT.interior + "altar.png",
+        workbench: ROOT.interior + "workbench.png",
+        furnace: ROOT.interior + "furnace.png",
+        bed: ROOT.interior + "bed.png",
+        cropSprout: ROOT.farm + "crop_sprout.png",
+        cropGrowing: ROOT.farm + "crop_growing.png",
+        cropMature: ROOT.farm + "crop_mature.png",
+        cropFlowering: ROOT.farm + "crop_flowering.png",
+        scarecrow: ROOT.farm + "scarecrow.png",
+        palisade: ROOT.infra + "palisade.png",
+        gateClosed: ROOT.infra + "gate_closed.png",
+        gateOpen: ROOT.infra + "gate_open.png",
+        plant: ROOT.review + "plant-pot.png",
+        leafy: ROOT.review + "plant-leafy.png",
+        scroll: ROOT.review + "scroll.png",
+        candles: ROOT.review + "candelabra.png",
+        candleStand: ROOT.review + "candle-stand.png",
+        copper: ROOT.review + "reliquary-copper.png",
+        silver: ROOT.review + "reliquary-silver.png",
+        goldRelic: ROOT.review + "reliquary-gold.png",
+        stool: ROOT.review + "stool-square.png",
+        roundTable: ROOT.review + "table-round.png",
+        ovalTable: ROOT.review + "table-oval.png",
+        weaponStand: ROOT.review + "weapon-stand.png",
+        swordBlock: ROOT.review + "sword-block.png",
+        stove: ROOT.review + "stove.png",
+        mapTable: ROOT.review + "map-table.png",
+        bookcase: ROOT.review + "bookcase.png",
+        displayTable: ROOT.review + "display-table.png",
+        waterPail: ROOT.review + "water-pail.png",
+        brazier: ROOT.review + "brazier.png",
+        forge: ROOT.review + "forge-fire.png",
+        metalBasin: ROOT.review + "metal-basin.png",
+        bedOrange: ROOT.review + "bed-orange.png",
+        bedGreen: ROOT.review + "bed-green.png"
+      };
+
+      const categories = ["Housing", "Supplies", "Civic", "Workshop"];
+      const floorSources = {
+        wood: ROOT.interior + "floor_wood.png",
+        stone: ROOT.interior + "floor_stone.png",
+        soil: ROOT.farm + "soil.png"
+      };
+      const layer = (src, x, y, width = null, height = null) => ({ src, x, y, width, height });
+      const sprite = (id, label, note, src) => ({ id, label, note, mode: "sprite", src, sources: [src] });
+      const station = (id, label, note, floor, layers) => ({
+        id, label, note, mode: "station", floor, layers,
+        sources: [...new Set([...layers.map(item => item.src), floorSources[floor]])]
+      });
+
+      const layoutPositions = [
+        [[7, 4], [4, 28], [28, 28], [30, 8]],
+        [[7, 28], [4, 4], [28, 4], [30, 24]],
+        [[7, 16], [2, 2], [30, 2], [2, 30]]
+      ];
+
+      function openSet(id, labels, note, floor, parts) {
+        return layoutPositions.map((positions, index) => station(
+          `${id}-${index + 1}`,
+          labels[index],
+          note,
+          floor,
+          parts.map((part, partIndex) => {
+            let [x, y] = positions[partIndex] || [16, 16];
+            if (part.width) {
+              const maxX = 48 - part.width;
+              x = maxX < 0 ? Math.floor(maxX / 2) : Math.max(0, Math.min(maxX, x));
+            }
+            if (part.height) {
+              const maxY = 48 - part.height;
+              y = maxY < 0 ? Math.floor(maxY / 2) : Math.max(0, Math.min(maxY, y));
+            }
+            return layer(part.src || part, x, y, part.width || null, part.height || null);
+          })
+        ));
+      }
+
+      const records = [
+        {
+          id: "den", name: "Den", category: "Housing", current: A.den,
+          candidates: [
+            sprite("den-keep", "Red cottage", "Keep the clean roofed home already in use.", A.den),
+            sprite("den-grey", "Grey cottage", "A quieter roof, but the visible stores need removing in a final composite.", A.storehouse),
+            sprite("den-lodge", "Timber lodge", "Warmer wall palette; the exterior log-and-axe badge needs removing.", A.woodCutter)
+          ],
+          gap: "Tiny Town has one convincing clean cottage. The grey and timber options need small badge/prop cleanup before runtime use."
+        },
+        {
+          id: "beds", name: "Beds", category: "Housing", current: A.den,
+          candidates: openSet("beds", ["Shared bedroom", "Compact dormitory", "Open sleeping nook"], "Beds remain visible without a map label; these can still sit under a roofed home silhouette at distant zoom.", "wood", [
+            { src: A.bed, width: 34 }, { src: A.sack }, { src: A.stool }
+          ])
+        },
+        {
+          id: "nursery", name: "Nursery", category: "Housing", current: A.den,
+          candidates: openSet("nursery", ["Twin-cot room", "Caretaker nook", "Open nursery"], "Two bed colors and a caretaker stool make the use clearer than another identical cottage.", "wood", [
+            { src: A.bedOrange, width: 34 }, { src: A.bedGreen, width: 34 }, { src: A.stool }
+          ])
+        },
+        {
+          id: "elder-corner", name: "Elder Corner", category: "Housing", current: A.den,
+          candidates: openSet("elder", ["Story circle", "Tea corner", "Quiet table"], "A round table, seats, and a candle read as a social rest space.", "wood", [
+            { src: A.ovalTable, width: 34 }, { src: A.stool }, { src: A.candleStand }
+          ])
+        },
+        {
+          id: "food-storage", name: "Food Storage", category: "Supplies", current: A.storehouse,
+          candidates: openSet("food", ["Open larder", "Dry store", "Loading bay"], "Crates, sacks, and barrels expose the stockpile instead of hiding it behind a roof.", "wood", [
+            { src: A.crate }, { src: A.sack }, { src: A.barrel }
+          ])
+        },
+        {
+          id: "water-bowl", name: "Water Bowl", category: "Supplies", current: A.well,
+          candidates: openSet("water", ["Well court", "Pail stand", "Water cache"], "Stone floor keeps the water point separate from workshops.", "stone", [
+            { src: A.well, height: 32 }, { src: A.waterPail }, { src: A.barrel }
+          ]),
+          gap: "The pack has no convincing communal cat-sized top-down bowl. These are well/pail stand-ins and need a purpose-made bowl if none is approved."
+        },
+        {
+          id: "herb-garden", name: "Herb Garden", category: "Supplies", current: A.den,
+          candidates: openSet("herbs", ["Planter court", "Drying garden", "Herbalist plot"], "Plants and a supply sack read directly, with no building plaque.", "soil", [
+            { src: A.plant }, { src: A.leafy }, { src: A.sack }
+          ])
+        },
+        {
+          id: "mouse-farm", name: "Mouse Farm", category: "Supplies", current: A.storehouse,
+          candidates: openSet("mice", ["Feed pens", "Hay enclosure", "Store-and-pen"], "Hay, sacks, and crates suggest animal feed and shelter.", "soil", [
+            { src: A.hay }, { src: A.sack }, { src: A.crate }
+          ]),
+          gap: "There is no mouse, cage, or small-animal pen in the selected pack. All three layouts need one unmistakable custom pen sprite."
+        },
+        {
+          id: "field", name: "Field", category: "Supplies", current: A.market,
+          candidates: [
+            station("field-growth", "Growth rows", "Sprout, growing, and mature plants show crop progress.", "soil", [layer(A.cropSprout, 4, 5), layer(A.cropGrowing, 17, 16), layer(A.cropMature, 31, 27)]),
+            station("field-mixed", "Mixed crop bed", "A denser mixed plot for the village edge.", "soil", [layer(A.cropFlowering, 4, 5), layer(A.cropGrowing, 18, 5), layer(A.cropMature, 31, 22), layer(A.cropSprout, 7, 29)]),
+            station("field-scarecrow", "Scarecrow plot", "The harvest totem anchors the field while crops remain visible.", "soil", [layer(A.scarecrow, 16, 8, null, 32), layer(A.cropMature, 2, 28), layer(A.cropFlowering, 32, 28)])
+          ],
+          gap: "The crop pieces are readable but side-view stand-ins. A strict top-down crop family is still absent from the tracked pack."
+        },
+        {
+          id: "shrine", name: "Shrine / Altar", category: "Civic", current: A.shrine,
+          candidates: [
+            station("shrine-candles", "Candle altar", "A central candelabra with a small gold relic; open on all sides for scout returns.", "stone", [layer(A.altar, 16, 16), layer(A.goldRelic, 16, 2), layer(A.candles, 2, 28)]),
+            station("shrine-relics", "Reliquary court", "Three offerings make the shrine a distinct destination without a roof.", "stone", [layer(A.copper, 3, 16), layer(A.goldRelic, 16, 6), layer(A.silver, 29, 16), layer(A.candleStand, 16, 30)]),
+            station("shrine-brazier", "Brazier shrine", "A fire, candles, and the silver relic make the touch point visible in motion.", "stone", [layer(A.brazier, 16, 16), layer(A.candleStand, 2, 3), layer(A.candles, 30, 3), layer(A.silver, 16, 31)])
+          ]
+        },
+        {
+          id: "research-hut", name: "Research Hut", category: "Civic", current: A.research,
+          candidates: openSet("research", ["Map archive", "Field laboratory", "Open study"], "Books, a map table, and a relic communicate research without the key-emblem cottage.", "wood", [
+            { src: A.mapTable, width: 34 }, { src: A.bookcase, width: 34 }, { src: A.scroll }
+          ])
+        },
+        {
+          id: "school", name: "School", category: "Civic", current: A.school,
+          candidates: openSet("school", ["Map classroom", "Reading court", "Open lesson"], "Map, books, and seats form a readable top-down classroom.", "wood", [
+            { src: A.mapTable, width: 34 }, { src: A.bookcase, width: 34 }, { src: A.stool }
+          ])
+        },
+        {
+          id: "barracks", name: "Barracks", category: "Civic", current: A.barracks,
+          candidates: openSet("barracks", ["Arms court", "Guard post", "Open drill bay"], "Weapon stands and a bed distinguish the guard station from production shops.", "stone", [
+            { src: A.bed, width: 34 }, { src: A.weaponStand }, { src: A.swordBlock }
+          ])
+        },
+        {
+          id: "walls", name: "Walls and Gate", category: "Civic", current: A.palisade,
+          candidates: [
+            sprite("walls-palisade", "Palisade run", "Keep the current wood wall segment.", A.palisade),
+            sprite("walls-gate-closed", "Closed south gate", "Use the dedicated closed gate when the village is sealed.", A.gateClosed),
+            sprite("walls-gate-open", "Open south gate", "Use the matching open gate during normal traffic.", A.gateOpen)
+          ]
+        },
+        {
+          id: "workshop", name: "General Workshop", category: "Workshop", current: A.workshop,
+          candidates: openSet("workshop", ["Open work floor", "Compact tool bay", "Linear workbench"], "The bench, crate, and barrel form an open DF-style generic station.", "wood", [
+            { src: A.workbench, width: 34 }, { src: A.crate }, { src: A.barrel }
+          ])
+        },
+        {
+          id: "smithy", name: "Smithy", category: "Workshop", current: A.smithy,
+          candidates: openSet("smithy", ["Forge court", "Compact smithy", "Open forge line"], "Fire, stove, and quench basin remain visible from above with no roof.", "stone", [
+            { src: A.forge }, { src: A.stove }, { src: A.metalBasin }
+          ])
+        },
+        {
+          id: "wood-cutter", name: "Wood Cutter", category: "Workshop", current: A.woodCutter,
+          candidates: openSet("woodcutter", ["Saw yard", "Log bay", "Open cutting floor"], "Logs beside a long workbench read as raw timber processing.", "wood", [
+            { src: A.workbench, width: 34 }, { src: A.logs }, { src: A.crate }
+          ])
+        },
+        {
+          id: "stone-prep", name: "Stone Prep", category: "Workshop", current: A.stonePrep,
+          candidates: openSet("stoneprep", ["Mason court", "Block bay", "Open stone bench"], "Stone and ore piles flank a cutting bench on a stone floor.", "stone", [
+            { src: A.workbench, width: 34 }, { src: A.stones }, { src: A.ore }
+          ])
+        },
+        {
+          id: "woodworking", name: "Woodworking", category: "Workshop", current: A.woodworking,
+          candidates: openSet("woodworking", ["Carpenter court", "Joinery bay", "Open carpenter bench"], "Finished crates separate this bench from the raw-log cutting yard.", "wood", [
+            { src: A.workbench, width: 34 }, { src: A.crate }, { src: A.logs }
+          ])
+        },
+        {
+          id: "clothier", name: "Clothier", category: "Workshop", current: A.clothier,
+          candidates: openSet("clothier", ["Cloth table", "Dye bay", "Open textile floor"], "Colored fabric stand-ins and a display table suggest textile work, but do not yet read as a loom.", "wood", [
+            { src: A.displayTable, width: 51 }, { src: A.bedGreen, width: 34 }, { src: A.bedOrange, width: 34 }
+          ]),
+          gap: "The selected 2D pack has no convincing top-down loom, spinning wheel, or cloth bolts. These layouts test composition only; a custom loom remains necessary."
+        },
+        {
+          id: "tannery", name: "Tannery", category: "Workshop", current: A.tannery,
+          candidates: openSet("tannery", ["Hide table", "Wash bay", "Open tanning floor"], "A table, barrel, and basin imply wet processing but do not identify tanning on their own.", "wood", [
+            { src: A.ovalTable, width: 34 }, { src: A.barrel }, { src: A.metalBasin }
+          ]),
+          gap: "The pack has no hide rack, stretched hide, or tanning vat. A small custom hide-rack sprite is needed for a label-free reading."
+        },
+        {
+          id: "smelter", name: "Smelter", category: "Workshop", current: A.smithy,
+          candidates: openSet("smelter", ["Ore furnace", "Smelting bay", "Open metal line"], "Ore, furnace fire, and a metal basin distinguish smelting from the smithy’s tool work.", "stone", [
+            { src: A.forge }, { src: A.ore }, { src: A.metalBasin }
+          ])
+        },
+        {
+          id: "accounting-tent", name: "Accounting Tent", category: "Civic", status: "planned", current: A.tent,
+          candidates: openSet("accounting", ["Ledger desk", "Open counting tent", "Records table"], "A map, books, and supply crate make the planned officer station legible without relying on its awning.", "wood", [
+            { src: A.mapTable, width: 34 }, { src: A.bookcase, width: 34 }, { src: A.crate }
+          ])
+        },
+        {
+          id: "mill", name: "Mill", category: "Workshop", status: "planned", current: A.mill,
+          candidates: openSet("mill", ["Grinding floor", "Compact mill bay", "Open grain line"], "Sacks, a work table, and bins test an open processing layout for the planned mill.", "stone", [
+            { src: A.roundTable }, { src: A.sack }, { src: A.crate }
+          ]),
+          gap: "The pack has no convincing top-down millstone or hand quern. The open layouts need one custom grinding centerpiece before they can replace the readable windmill façade."
+        },
+        {
+          id: "sawmill", name: "Sawmill", category: "Workshop", status: "planned", current: A.woodworking,
+          candidates: openSet("sawmill", ["Long saw floor", "Timber mill bay", "Open lumber line"], "A long workbench, log pile, and output crate provide a roofless starting point for the planned logs-to-lumber station.", "wood", [
+            { src: A.workbench, width: 34 }, { src: A.logs }, { src: A.crate }
+          ]),
+          gap: "There is no two-cat pit saw, saw carriage, or visible blade in the selected pack. A dedicated saw table would separate this from Wood Cutter and Woodworking."
+        },
+        {
+          id: "global-village-hall", name: "Global Village Hall / Market", category: "Civic", status: "concept", current: A.townHall,
+          candidates: [
+            sprite("global-hall", "Stone village hall", "Use the existing civic hall as the global shared-village landmark.", A.townHall),
+            sprite("global-market", "Open market cart", "Use the existing market cart as the shared trade destination.", A.market),
+            station("global-court", "Hall market court", "An open court combines visible goods and a meeting table; a final version could sit in front of the hall.", "stone", [layer(A.ovalTable, 7, 5, 34), layer(A.crate, 3, 28), layer(A.barrel, 29, 28)])
+          ]
+        }
+      ];
+
+      const storageKey = "idle-cat-forest.sprite-review.v1";
+      const uiKey = "idle-cat-forest.sprite-review-ui.v1";
+      const state = loadState(storageKey, { selections: {}, favorites: [] });
+      const uiState = loadState(uiKey, { categories: categories.slice(), background: "checker", zoom: 3 });
+      state.favorites = new Set(Array.isArray(state.favorites) ? state.favorites : []);
+      uiState.categories = new Set(Array.isArray(uiState.categories) ? uiState.categories : categories);
+
+      const list = document.querySelector("#reviewList");
+      const filters = document.querySelector("#categoryFilters");
+      const search = document.querySelector("#searchInput");
+      const favoritesOnly = document.querySelector("#favoritesOnly");
+      const background = document.querySelector("#backgroundSelect");
+      const zoom = document.querySelector("#zoomInput");
+      const zoomOutput = document.querySelector("#zoomOutput");
+      const emptyState = document.querySelector("#emptyState");
+      const reviewCount = document.querySelector("#reviewCount");
+      const selectionCount = document.querySelector("#selectionCount");
+      const toast = document.querySelector("#toast");
+      let toastTimer = null;
+
+      function loadState(key, fallback) {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(key));
+          return parsed && typeof parsed === "object" ? { ...fallback, ...parsed } : fallback;
+        } catch (_) {
+          return fallback;
+        }
+      }
+
+      function assetUrl(path) {
+        return path.startsWith("docs/") ? `./${path.slice(5)}` : `../${path}`;
+      }
+
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
+      }
+
+      function copyRow(path) {
+        return `<div class="source-row"><code title="${escapeHtml(path)}">${escapeHtml(path)}</code><button class="copy-button" type="button" data-copy="${escapeHtml(path)}" aria-label="Copy ${escapeHtml(path)}">Copy</button></div>`;
+      }
+
+      function pixelCanvas(candidate, label) {
+        if (candidate.mode === "sprite") {
+          return `<div class="pixel-frame"><div class="sprite-canvas"><img class="facade" src="${assetUrl(candidate.src)}" alt="${escapeHtml(label)}"></div></div>`;
+        }
+        const images = candidate.layers.map(item => {
+          const styles = [`left:${item.x}px`, `top:${item.y}px`];
+          if (item.width) styles.push(`width:${item.width}px`);
+          if (item.height) styles.push(`height:${item.height}px`);
+          return `<img src="${assetUrl(item.src)}" alt="" style="${styles.join(";")}">`;
+        }).join("");
+        return `<div class="pixel-frame"><div class="sprite-canvas floor-${candidate.floor}">${images}</div></div>`;
+      }
+
+      function currentCanvas(record) {
+        return `<div class="pixel-frame"><div class="sprite-canvas"><img class="facade" src="${assetUrl(record.current)}" alt="Current ${escapeHtml(record.name)} sprite"></div></div>`;
+      }
+
+      function renderRecords() {
+        list.innerHTML = records.map(record => {
+          const candidates = record.candidates.map(candidate => {
+            const key = `${record.id}:${candidate.id}`;
+            const checked = state.selections[record.id] === candidate.id;
+            const favorite = state.favorites.has(key);
+            return `
+              <section class="candidate" data-favorite-key="${key}">
+                <div class="candidate-top">
+                  <label class="choice-label">
+                    <input type="radio" name="choice-${record.id}" value="${candidate.id}" data-building="${record.id}" ${checked ? "checked" : ""}>
+                    <span>${escapeHtml(candidate.label)}</span>
+                  </label>
+                  <button class="favorite-button" type="button" data-favorite="${key}" aria-pressed="${favorite}" aria-label="${favorite ? "Remove" : "Add"} ${escapeHtml(candidate.label)} ${favorite ? "from" : "to"} favorites" title="Shortlist this option">${favorite ? "★" : "☆"}</button>
+                </div>
+                <div class="preview-stage" data-background="${uiState.background}">${pixelCanvas(candidate, candidate.label)}</div>
+                <div class="candidate-copy"><p>${escapeHtml(candidate.note)}</p></div>
+                <div class="source-list">
+                  ${copyRow(candidate.sources[0])}
+                  ${candidate.sources.length > 1 ? `<details><summary>+${candidate.sources.length - 1} composition ${candidate.sources.length === 2 ? "path" : "paths"}</summary>${candidate.sources.slice(1).map(copyRow).join("")}</details>` : ""}
+                </div>
+              </section>`;
+          }).join("");
+
+          const statusLabel = record.status === "planned" ? " · Planned" : record.status === "concept" ? " · Concept" : "";
+          const mappingLabel = record.status ? "Reference art" : "Current mapping";
+          return `
+            <article class="building-row" id="building-${record.id}" data-id="${record.id}" data-name="${escapeHtml(record.name.toLowerCase())}" data-category="${record.category}">
+              <header class="building-header"><h3>${escapeHtml(record.name)}</h3><span class="category-label">${record.category}${statusLabel}</span></header>
+              ${record.gap ? `<p class="gap-note"><strong>Pack gap:</strong> ${escapeHtml(record.gap)}</p>` : ""}
+              <div class="comparison-grid">
+                <div class="current-block">
+                  <span class="block-label">${mappingLabel}</span>
+                  <div class="current-preview preview-stage" data-background="${uiState.background}">${currentCanvas(record)}</div>
+                  <div class="current-path">${copyRow(record.current)}</div>
+                </div>
+                <div class="options-block">
+                  <span class="block-label">Proposed alternatives</span>
+                  <div class="candidate-grid">${candidates}</div>
+                </div>
+              </div>
+            </article>`;
+        }).join("");
+      }
+
+      function renderFilters() {
+        filters.innerHTML = categories.map(category => {
+          const checked = uiState.categories.has(category);
+          const count = records.filter(record => record.category === category).length;
+          return `<label class="check-row"><input type="checkbox" value="${category}" ${checked ? "checked" : ""}> ${category} (${count})</label>`;
+        }).join("");
+      }
+
+      function persist() {
+        localStorage.setItem(storageKey, JSON.stringify({
+          selections: state.selections,
+          favorites: [...state.favorites]
+        }));
+      }
+
+      function persistUi() {
+        localStorage.setItem(uiKey, JSON.stringify({
+          categories: [...uiState.categories],
+          background: uiState.background,
+          zoom: uiState.zoom
+        }));
+      }
+
+      function applyVisualSettings() {
+        document.documentElement.style.setProperty("--sprite-scale", uiState.zoom);
+        background.value = uiState.background;
+        zoom.value = uiState.zoom;
+        zoomOutput.value = `${uiState.zoom}×`;
+        document.querySelectorAll(".preview-stage").forEach(stage => stage.dataset.background = uiState.background);
+      }
+
+      function applyFilters() {
+        const term = search.value.trim().toLowerCase();
+        let shown = 0;
+        document.querySelectorAll(".building-row").forEach(row => {
+          const categoryAllowed = uiState.categories.has(row.dataset.category);
+          const textAllowed = !term || row.dataset.name.includes(term) || row.dataset.category.toLowerCase().includes(term);
+          const favoriteAllowed = !favoritesOnly.checked || [...row.querySelectorAll("[data-favorite-key]")].some(card => state.favorites.has(card.dataset.favoriteKey));
+          row.hidden = !(categoryAllowed && textAllowed && favoriteAllowed);
+          if (!row.hidden) shown += 1;
+        });
+        reviewCount.textContent = `${shown} of ${records.length} review targets shown`;
+        emptyState.hidden = shown !== 0;
+        const selected = Object.keys(state.selections).length;
+        selectionCount.textContent = `${selected} of ${records.length} choices made`;
+      }
+
+      function showToast(message) {
+        window.clearTimeout(toastTimer);
+        toast.textContent = message;
+        toast.hidden = false;
+        toastTimer = window.setTimeout(() => { toast.hidden = true; }, 2200);
+      }
+
+      async function copyText(value) {
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch (_) {
+          const area = document.createElement("textarea");
+          area.value = value;
+          area.style.position = "fixed";
+          area.style.opacity = "0";
+          document.body.append(area);
+          area.select();
+          document.execCommand("copy");
+          area.remove();
+        }
+        showToast(`Copied ${value}`);
+      }
+
+      function exportJson() {
+        const choices = records.map(record => {
+          const selectedId = state.selections[record.id] || null;
+          const selected = record.candidates.find(candidate => candidate.id === selectedId) || null;
+          return {
+            building: record.id,
+            name: record.name,
+            category: record.category,
+            status: record.status || "current",
+            current: record.current,
+            selected: selected ? {
+              id: selected.id,
+              label: selected.label,
+              sources: selected.sources,
+              favorite: state.favorites.has(`${record.id}:${selected.id}`)
+            } : null,
+            favorites: record.candidates.filter(candidate => state.favorites.has(`${record.id}:${candidate.id}`)).map(candidate => candidate.id),
+            packGap: record.gap || null
+          };
+        });
+        const payload = JSON.stringify({
+          tool: "Idle Cat Forest sprite review bench",
+          exportedAt: new Date().toISOString(),
+          choices
+        }, null, 2);
+        const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = "idle-cat-forest-sprite-choices.json";
+        anchor.click();
+        URL.revokeObjectURL(url);
+        showToast("Choice file exported");
+      }
+
+      renderFilters();
+      renderRecords();
+      applyVisualSettings();
+      applyFilters();
+
+      list.addEventListener("change", event => {
+        const input = event.target.closest("input[type=radio][data-building]");
+        if (!input) return;
+        state.selections[input.dataset.building] = input.value;
+        persist();
+        applyFilters();
+      });
+
+      list.addEventListener("click", event => {
+        const favoriteButton = event.target.closest("[data-favorite]");
+        if (favoriteButton) {
+          const key = favoriteButton.dataset.favorite;
+          const isFavorite = state.favorites.has(key);
+          if (isFavorite) state.favorites.delete(key); else state.favorites.add(key);
+          favoriteButton.setAttribute("aria-pressed", String(!isFavorite));
+          favoriteButton.textContent = isFavorite ? "☆" : "★";
+          const optionName = favoriteButton.closest(".candidate").querySelector(".choice-label span").textContent;
+          favoriteButton.setAttribute("aria-label", `${isFavorite ? "Add" : "Remove"} ${optionName} ${isFavorite ? "to" : "from"} favorites`);
+          persist();
+          applyFilters();
+          return;
+        }
+        const copyButton = event.target.closest("[data-copy]");
+        if (copyButton) copyText(copyButton.dataset.copy);
+      });
+
+      filters.addEventListener("change", event => {
+        const input = event.target.closest("input[type=checkbox]");
+        if (!input) return;
+        if (input.checked) uiState.categories.add(input.value); else uiState.categories.delete(input.value);
+        persistUi();
+        applyFilters();
+      });
+
+      search.addEventListener("input", applyFilters);
+      favoritesOnly.addEventListener("change", applyFilters);
+
+      background.addEventListener("change", () => {
+        uiState.background = background.value;
+        persistUi();
+        applyVisualSettings();
+      });
+
+      zoom.addEventListener("input", () => {
+        uiState.zoom = Number(zoom.value);
+        persistUi();
+        applyVisualSettings();
+      });
+
+      document.querySelector("#exportButton").addEventListener("click", exportJson);
+      document.querySelector("#resetButton").addEventListener("click", () => {
+        if (!window.confirm("Clear all selected and favorite sprite options in this browser?")) return;
+        state.selections = {};
+        state.favorites.clear();
+        persist();
+        renderRecords();
+        applyVisualSettings();
+        applyFilters();
+        showToast("Choices reset");
+      });
+
+      document.addEventListener("click", event => {
+        const copyButton = event.target.closest("[data-copy]");
+        if (copyButton && !copyButton.closest("#reviewList")) copyText(copyButton.dataset.copy);
+      });
+
+      document.addEventListener("keydown", event => {
+        if (event.key === "/" && !/input|select|textarea/i.test(document.activeElement.tagName)) {
+          event.preventDefault();
+          search.focus();
+        }
+        if (event.key === "Escape" && document.activeElement === search) {
+          search.value = "";
+          applyFilters();
+          search.blur();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
