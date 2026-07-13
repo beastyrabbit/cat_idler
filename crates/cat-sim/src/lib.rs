@@ -37,6 +37,7 @@ pub mod age;
 pub mod breeding;
 pub mod genetics;
 pub mod life_sim;
+pub mod migration;
 pub mod needs;
 pub mod survival;
 
@@ -57,6 +58,7 @@ pub mod storage;
 pub mod trips;
 pub mod village_area;
 pub mod village_layout;
+pub mod village_sites;
 
 // P6 military/governance/upgrade-tree modules.
 pub mod combat;
