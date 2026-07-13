@@ -286,6 +286,19 @@ struct Session {
     ready: bool,
 }
 
+/// The village this client is looking at and sending colony-scoped actions to.
+///
+/// The id deliberately lives outside [`LatestSnapshot`]: the server may reorder
+/// its shared-world snapshot, and a reconnect creates a fresh socket whose
+/// server-side selection starts at the founding colony. `join_required` records
+/// that the persisted choice must be restored once Presence yields a new signed
+/// session.
+#[derive(Resource, Default, Debug)]
+struct VillageSelection {
+    selected_id: Option<String>,
+    join_required: bool,
+}
+
 /// Current transport lifecycle. A failed connection waits for a capped
 /// exponential delay, then tries again for as long as the idle client runs.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -1231,6 +1244,12 @@ struct BuildingInspectorPanel;
 /// Marker for the building-inspector text.
 #[derive(Component)]
 struct BuildingInspectorText;
+/// Container whose children are rebuilt from the snapshot's village list.
+#[derive(Component)]
+struct VillageSelectorRows;
+/// One village selector button, keyed by stable colony id.
+#[derive(Component, Clone)]
+struct VillageButton(String);
 /// Marker for a building marker sprite.
 #[derive(Component)]
 struct BuildingSprite;
@@ -1855,6 +1874,17 @@ type FeedbackLabelQuery<'w, 's> = Query<
     (&'static mut Text, &'static mut TextColor),
     (With<ClientFeedbackText>, Without<ClientFeedbackPanel>),
 >;
+/// Visible top-level UI rectangles that block world hover tooltips.
+type UiRootQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static ComputedNode,
+        &'static UiGlobalTransform,
+        &'static Node,
+    ),
+    (Without<ChildOf>, Without<TooltipPanel>),
+>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ButtonAction {
@@ -1934,6 +1964,7 @@ pub fn run() {
         .add_plugins(BrpDevPlugin)
         .insert_resource(LatestSnapshot::default())
         .insert_resource(Session::default())
+        .insert_resource(VillageSelection::default())
         .insert_resource(ConnectionState::default())
         .insert_resource(ClientFeedback::default())
         .insert_resource(ClientAlerts::default())
@@ -1965,6 +1996,9 @@ pub fn run() {
                     poll_ws,
                     reconnect_ws.after(poll_ws),
                     ensure_presence.after(poll_ws).after(reconnect_ws),
+                    restore_village_selection
+                        .after(poll_ws)
+                        .after(ensure_presence),
                     spawn_terrain.after(camera_controls),
                     render_roads,
                     render_fog.after(spawn_terrain),
@@ -1999,7 +2033,7 @@ pub fn run() {
                     ),
                     zone_paint,
                     render_zone_preview,
-                    update_hud,
+                    (update_hud, update_village_selector, handle_village_buttons),
                     update_event_log,
                     update_client_feedback,
                     handle_buttons,
@@ -2492,6 +2526,51 @@ fn setup(
                 ui_text("", FS_SMALL, UI_MUTED),
                 TextLayout::no_wrap(),
                 AnnouncementTicker,
+            ));
+        });
+
+    // Shared-world village selector. It stays visible beside (not on top of)
+    // the fixed HUD and inspectors, so changing the action/render target is an
+    // explicit player choice rather than an invisible consequence of snapshot
+    // ordering or founding another settlement.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(54.0),
+                left: Val::Px(340.0),
+                right: Val::Px(310.0),
+                min_height: Val::Px(54.0),
+                padding: UiRect::all(Val::Px(UI_GAP)),
+                align_items: AlignItems::Center,
+                column_gap: Val::Px(UI_GAP),
+                border: UiRect::all(Val::Px(UI_BORDER_W)),
+                border_radius: BorderRadius::all(Val::Px(UI_RADIUS)),
+                ..default()
+            },
+            GlobalZIndex(65),
+            ui_panel_frame(),
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Node {
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                ui_text("Villages", FS_SECTION, UI_ACCENT),
+                TextLayout::no_wrap(),
+            ));
+            panel.spawn((
+                Node {
+                    min_width: Val::Px(0.0),
+                    flex_grow: 1.0,
+                    flex_wrap: FlexWrap::Wrap,
+                    align_items: AlignItems::Center,
+                    column_gap: Val::Px(UI_GAP),
+                    row_gap: Val::Px(UI_GAP),
+                    ..default()
+                },
+                VillageSelectorRows,
             ));
         });
 
@@ -3063,8 +3142,19 @@ fn poll_ws(world: &mut World) {
                 );
             }
             WsEvent::Message(WsMessage::Text(text)) => match parse_server_message(&text) {
-                Ok(ServerPayload::Snapshot(snapshot)) => {
+                Ok(ServerPayload::Snapshot(mut snapshot)) => {
+                    let fallback = {
+                        let mut selection = world.resource_mut::<VillageSelection>();
+                        reconcile_village_selection(&mut snapshot, &mut selection)
+                    };
                     world.resource_mut::<LatestSnapshot>().0 = Some(snapshot);
+                    if let Some((missing, fallback)) = fallback {
+                        let message = format!(
+                            "Village {missing} is no longer available; showing {fallback}."
+                        );
+                        push_client_alert(world, message.clone());
+                        set_feedback(world, message, FeedbackLevel::Info);
+                    }
                 }
                 Ok(ServerPayload::Action {
                     result,
@@ -3136,6 +3226,64 @@ fn parse_server_message(text: &str) -> Result<ServerPayload, String> {
         .map_err(|err| err.to_string())
 }
 
+/// Keep the selected village at index zero because the existing render/UI
+/// systems consume `colonies.first()`. Returns the missing/fallback ids when a
+/// persisted selection disappeared from the shared world.
+fn reconcile_village_selection(
+    snapshot: &mut WorldSnapshot,
+    selection: &mut VillageSelection,
+) -> Option<(String, String)> {
+    let Some(first) = snapshot.colonies.first() else {
+        selection.selected_id = None;
+        selection.join_required = false;
+        return None;
+    };
+
+    let fallback_id = first.id.clone();
+    let Some(selected_id) = selection.selected_id.clone() else {
+        selection.selected_id = Some(fallback_id);
+        return None;
+    };
+    if let Some(index) = snapshot
+        .colonies
+        .iter()
+        .position(|colony| colony.id == selected_id)
+    {
+        snapshot.colonies.swap(0, index);
+        return None;
+    }
+
+    selection.selected_id = Some(fallback_id.clone());
+    selection.join_required = false;
+    Some((selected_id, fallback_id))
+}
+
+fn join_village_action(colony_id: &str, session: &Session) -> Option<ClientAction> {
+    session.ready.then(|| ClientAction::JoinVillage {
+        colony_id: colony_id.to_owned(),
+        session_id: session.session_id.clone(),
+    })
+}
+
+/// Select a village immediately for local rendering and, when authenticated,
+/// return the server action that moves this socket's mutation target to it.
+fn choose_village(
+    colony_id: &str,
+    snapshot: &mut WorldSnapshot,
+    selection: &mut VillageSelection,
+    session: &Session,
+) -> Option<ClientAction> {
+    let index = snapshot
+        .colonies
+        .iter()
+        .position(|colony| colony.id == colony_id)?;
+    snapshot.colonies.swap(0, index);
+    selection.selected_id = Some(colony_id.to_owned());
+    let action = join_village_action(colony_id, session);
+    selection.join_required = action.is_none();
+    action
+}
+
 fn reconnect_delay_secs(attempt: u32) -> f32 {
     let exponent = attempt.saturating_sub(1).min(5);
     (2_u32.pow(exponent) as f32).min(MAX_RECONNECT_DELAY_SECS)
@@ -3149,6 +3297,10 @@ fn schedule_reconnect(world: &mut World, reason: String) {
         session.sig.clear();
         session.presence_sent = false;
         session.ready = false;
+    }
+    {
+        let mut selection = world.resource_mut::<VillageSelection>();
+        selection.join_required = selection.selected_id.is_some();
     }
     let (attempt, delay) = {
         let mut state = world.resource_mut::<ConnectionState>();
@@ -3215,6 +3367,47 @@ fn ensure_presence(
         conn.sender.send(WsMessage::Text(json));
         session.presence_sent = true;
     }
+}
+
+/// Restore the persisted village on a fresh socket after Presence supplies its
+/// new authenticated session. This is intentionally separate from founding:
+/// creating another village never silently changes the player's selected map.
+fn restore_village_selection(
+    session: Res<Session>,
+    mut selection: ResMut<VillageSelection>,
+    latest: Res<LatestSnapshot>,
+    mut outgoing: ResMut<OutgoingActions>,
+) {
+    if let Some(action) = pending_village_rejoin(latest.0.as_ref(), &mut selection, &session) {
+        outgoing.0.push(action);
+    }
+}
+
+fn pending_village_rejoin(
+    snapshot: Option<&WorldSnapshot>,
+    selection: &mut VillageSelection,
+    session: &Session,
+) -> Option<ClientAction> {
+    if !selection.join_required || !session.ready {
+        return None;
+    }
+    let Some(selected_id) = selection.selected_id.clone() else {
+        selection.join_required = false;
+        return None;
+    };
+    if !snapshot.is_some_and(|snapshot| {
+        snapshot
+            .colonies
+            .iter()
+            .any(|colony| colony.id == selected_id)
+    }) {
+        return None;
+    }
+    let action = join_village_action(&selected_id, session);
+    if action.is_some() {
+        selection.join_required = false;
+    }
+    action
 }
 
 /// Stream deterministic terrain chunks around the camera. The world is
@@ -4781,6 +4974,7 @@ fn hover_tooltip(
     windows: Query<&Window>,
     camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
     ui: Query<&Interaction, With<Button>>,
+    ui_roots: UiRootQuery,
     latest: Res<LatestSnapshot>,
     mut panel: Query<&mut Node, With<TooltipPanel>>,
     mut text: Query<&mut Text, With<TooltipText>>,
@@ -4788,10 +4982,18 @@ fn hover_tooltip(
     let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
         return;
     };
-    // Don't cover the toolbar: suppress while hovering a button.
+    let cursor = windows.single().ok().and_then(|w| w.cursor_position());
+    // Suppress over every visible UI root, not only interactive buttons. Without
+    // this hit test, pointing at a title bar or HUD still projected through to
+    // the terrain and painted an unrelated biome card on top of the panel.
     let over_button = ui.iter().any(|i| !matches!(i, Interaction::None));
-    let hovered = (!over_button)
-        .then(|| windows.single().ok().and_then(|w| w.cursor_position()))
+    let over_ui = cursor.is_some_and(|cursor| {
+        ui_roots.iter().any(|(computed, transform, style)| {
+            style.display != Display::None && computed.contains_point(*transform, cursor)
+        })
+    });
+    let hovered = world_tooltip_allowed(over_button, over_ui, cursor.is_some())
+        .then_some(cursor)
         .flatten()
         .zip(cursor_world(&windows, &camera))
         .and_then(|(cursor, world)| {
@@ -4808,6 +5010,10 @@ fn hover_tooltip(
         }
         None => node.display = Display::None,
     }
+}
+
+fn world_tooltip_allowed(over_button: bool, over_ui: bool, has_cursor: bool) -> bool {
+    has_cursor && !over_button && !over_ui
 }
 
 /// The tooltip text for whatever sits under `world` — cats first, then buildings,
@@ -5099,6 +5305,7 @@ fn camera_controls(
     windows: Query<&Window>,
     mut inited: Local<bool>,
     mut last_auto_radius: Local<u32>,
+    mut last_colony_id: Local<Option<String>>,
     mut last_window_size: Local<Vec2>,
     mut user_adjusted: Local<bool>,
     mut camera: Query<(&mut Transform, &mut Projection), With<WorldCamera>>,
@@ -5123,6 +5330,21 @@ fn camera_controls(
         .as_ref()
         .and_then(|snapshot| snapshot.colonies.first())
     {
+        let village_changed = last_colony_id.as_deref() != Some(colony.id.as_str());
+        if village_changed {
+            // A selected village can be arbitrarily far from the prior one.
+            // Always move to the newly selected map, even when the player had
+            // panned or zoomed the old village by hand.
+            *user_adjusted = false;
+            *last_auto_radius = colony.village_radius;
+            projection.scale =
+                village_fit_zoom(colony.village_radius, window_size.x, window_size.y);
+            let center =
+                village_camera_center(colony.anchor, colony.village_radius, projection.scale);
+            transform.translation.x = center.x;
+            transform.translation.y = center.y;
+            *last_colony_id = Some(colony.id.clone());
+        }
         let radius_grew = colony.village_radius > *last_auto_radius;
         let window_changed = window_size != *last_window_size;
         if !*user_adjusted && (radius_grew || window_changed) {
@@ -5250,6 +5472,100 @@ fn update_hud(
     let cap = &colony.storage.capacities;
     for (mut text, res) in &mut values {
         text.0 = hud_resource_value(res.0, r, cap);
+    }
+}
+
+/// Rebuild the compact selector only when village identity/summary/selection
+/// changes (not on every one-second resource update).
+fn update_village_selector(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    selection: Res<VillageSelection>,
+    rows: Query<Entity, With<VillageSelectorRows>>,
+    mut last_signature: Local<Vec<String>>,
+) {
+    let Some(snapshot) = latest.0.as_ref() else {
+        return;
+    };
+    let signature: Vec<String> = snapshot
+        .colonies
+        .iter()
+        .map(|colony| {
+            format!(
+                "{}|{}|{}|{:?}|{}",
+                colony.id,
+                colony.name,
+                colony.housing.population,
+                colony.status,
+                selection.selected_id.as_deref() == Some(colony.id.as_str())
+            )
+        })
+        .collect();
+    if *last_signature == signature {
+        return;
+    }
+    *last_signature = signature;
+
+    let Ok(rows) = rows.single() else {
+        return;
+    };
+    commands
+        .entity(rows)
+        .despawn_children()
+        .with_children(|row| {
+            for colony in &snapshot.colonies {
+                let active = selection.selected_id.as_deref() == Some(colony.id.as_str());
+                let status = format!("{:?}", colony.status).to_lowercase();
+                let marker = if active { "●" } else { "○" };
+                let label = format!(
+                    "{marker} {name}\n#{id} · {pop} cats · {status}",
+                    name = colony.name,
+                    id = colony.id,
+                    pop = colony.housing.population,
+                );
+                row.spawn((
+                    Button,
+                    Node {
+                        width: Val::Px(132.0),
+                        height: Val::Px(40.0),
+                        padding: UiRect::axes(Val::Px(UI_GAP), Val::Px(UI_GAP_TIGHT)),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(UI_RADIUS - 2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(if active { UI_BTN_ACTIVE } else { UI_BTN }),
+                    BorderColor::all(UI_BORDER),
+                    KitButton,
+                    KitToggle { active },
+                    VillageButton(colony.id.clone()),
+                    children![(
+                        ui_text(label, FS_SMALL, UI_INK),
+                        TextLayout::justify(Justify::Center),
+                    )],
+                ));
+            }
+        });
+}
+
+fn handle_village_buttons(
+    mut buttons: Query<(&Interaction, &VillageButton), Changed<Interaction>>,
+    mut latest: ResMut<LatestSnapshot>,
+    mut selection: ResMut<VillageSelection>,
+    session: Res<Session>,
+    mut outgoing: ResMut<OutgoingActions>,
+) {
+    for (interaction, button) in &mut buttons {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let Some(snapshot) = latest.0.as_mut() else {
+            continue;
+        };
+        if let Some(action) = choose_village(&button.0, snapshot, &mut selection, &session) {
+            outgoing.0.push(action);
+        }
     }
 }
 
@@ -6012,16 +6328,39 @@ fn update_event_log(
 /// React to toolbar clicks: tint the button and enqueue its action.
 fn handle_buttons(
     session: Res<Session>,
+    selection: Res<VillageSelection>,
     mut outgoing: ResMut<OutgoingActions>,
     mut buttons: ButtonQuery,
 ) {
     for (interaction, button) in &mut buttons {
-        if *interaction == Interaction::Pressed
-            && let Some(action) = build_action(button.0, &session)
-        {
-            outgoing.0.push(action);
+        if *interaction == Interaction::Pressed {
+            outgoing.0.extend(build_button_actions(
+                button.0,
+                &session,
+                selection.selected_id.as_deref(),
+            ));
         }
     }
+}
+
+fn build_button_actions(
+    action: ButtonAction,
+    session: &Session,
+    selected_village: Option<&str>,
+) -> Vec<ClientAction> {
+    let Some(primary) = build_action(action, session) else {
+        return Vec::new();
+    };
+    let mut actions = vec![primary];
+    if action == ButtonAction::FoundVillage
+        && let Some(join) = selected_village.and_then(|id| join_village_action(id, session))
+    {
+        // The server selects a newly founded village on this socket. Explicitly
+        // restore the viewing/action target so founding and selecting remain
+        // independent player operations.
+        actions.push(join);
+    }
+    actions
 }
 
 fn build_action(action: ButtonAction, session: &Session) -> Option<ClientAction> {
@@ -6739,6 +7078,182 @@ mod tests {
                 name: "Forest Hollow".to_owned(),
                 session_id: "signed-session".to_owned(),
             })
+        );
+    }
+
+    fn village_colony(id: &str, name: &str, population: u32, status: &str) -> ColonySnapshot {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "name": name,
+            "status": status,
+            "resources": {
+                "food": 1, "water": 1, "herbs": 0, "materials": 0,
+                "refined": 0, "weapons": 0, "armor": 0, "blessings": 0
+            },
+            "storage": {
+                "capacities": {
+                    "food": 200, "water": 200, "herbs": 100,
+                    "materials": 100, "refined": 100
+                },
+                "foodCapacity": 200,
+                "titheRates": { "food": 20, "refined": 5 }
+            },
+            "leader": null,
+            "cats": [],
+            "jobs": [],
+            "upgrades": [],
+            "events": [],
+            "housing": {
+                "population": population, "capacity": 20,
+                "pressure": 0.5, "villageLevel": 1
+            },
+            "research": {
+                "ownedNodeIds": [], "researchPoints": 0,
+                "researcherCount": 0, "blessings": 0, "nextTarget": null
+            },
+            "election": null,
+            "voteKick": null,
+            "zones": [],
+            "threat": {
+                "pressure": 0, "band": "calm", "raidActive": false,
+                "warriors": 0, "weapons": 0, "armor": 0
+            },
+            "raiders": [],
+            "buildings": [],
+            "claimedTiles": [],
+            "villageGate": null,
+            "villageRadius": 4,
+            "anchor": { "x": 6, "y": 6 }
+        }))
+        .expect("valid village fixture")
+    }
+
+    fn village_world(order: &[&str]) -> WorldSnapshot {
+        let colonies = order
+            .iter()
+            .map(|id| match *id {
+                "alpha" => village_colony("alpha", "Moss Hollow", 5, "thriving"),
+                "beta" => village_colony("beta", "River Paws", 9, "struggling"),
+                other => village_colony(other, "Unknown", 0, "starting"),
+            })
+            .collect();
+        WorldSnapshot {
+            now: 1,
+            world_seed: 7,
+            colonies,
+            online_count: 1,
+        }
+    }
+
+    fn signed_session(id: &str) -> Session {
+        Session {
+            session_id: id.to_owned(),
+            sig: "signed".to_owned(),
+            presence_sent: true,
+            ready: true,
+        }
+    }
+
+    #[test]
+    fn village_selection_survives_snapshot_reordering() {
+        let mut selection = VillageSelection {
+            selected_id: Some("beta".to_owned()),
+            join_required: false,
+        };
+        let mut first = village_world(&["alpha", "beta"]);
+        assert!(reconcile_village_selection(&mut first, &mut selection).is_none());
+        assert_eq!(first.colonies[0].id, "beta");
+
+        let mut reordered = village_world(&["beta", "alpha"]);
+        assert!(reconcile_village_selection(&mut reordered, &mut selection).is_none());
+        assert_eq!(reordered.colonies[0].id, "beta");
+        assert_eq!(selection.selected_id.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn selecting_a_village_switches_render_order_and_builds_join_action() {
+        let mut snapshot = village_world(&["alpha", "beta"]);
+        let mut selection = VillageSelection::default();
+        reconcile_village_selection(&mut snapshot, &mut selection);
+        let action = choose_village(
+            "beta",
+            &mut snapshot,
+            &mut selection,
+            &signed_session("fresh-session"),
+        );
+
+        assert_eq!(snapshot.colonies[0].id, "beta");
+        assert_eq!(selection.selected_id.as_deref(), Some("beta"));
+        assert!(!selection.join_required);
+        assert_eq!(
+            action,
+            Some(ClientAction::JoinVillage {
+                colony_id: "beta".to_owned(),
+                session_id: "fresh-session".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn missing_selected_village_falls_back_to_first_available() {
+        let mut snapshot = village_world(&["alpha"]);
+        let mut selection = VillageSelection {
+            selected_id: Some("gone".to_owned()),
+            join_required: true,
+        };
+        assert_eq!(
+            reconcile_village_selection(&mut snapshot, &mut selection),
+            Some(("gone".to_owned(), "alpha".to_owned()))
+        );
+        assert_eq!(selection.selected_id.as_deref(), Some("alpha"));
+        assert!(!selection.join_required);
+    }
+
+    #[test]
+    fn reconnect_rejoins_persisted_village_with_new_session() {
+        let snapshot = village_world(&["alpha", "beta"]);
+        let mut selection = VillageSelection {
+            selected_id: Some("beta".to_owned()),
+            join_required: true,
+        };
+        let action = pending_village_rejoin(
+            Some(&snapshot),
+            &mut selection,
+            &signed_session("replacement-session"),
+        );
+        assert_eq!(
+            action,
+            Some(ClientAction::JoinVillage {
+                colony_id: "beta".to_owned(),
+                session_id: "replacement-session".to_owned(),
+            })
+        );
+        assert!(!selection.join_required, "rejoin is emitted only once");
+        assert!(
+            pending_village_rejoin(
+                Some(&snapshot),
+                &mut selection,
+                &signed_session("replacement-session")
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn founding_and_selecting_are_independent_actions() {
+        let actions = build_button_actions(
+            ButtonAction::FoundVillage,
+            &signed_session("signed-session"),
+            Some("beta"),
+        );
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(actions[0], ClientAction::FoundVillage { .. }));
+        assert_eq!(
+            actions[1],
+            ClientAction::JoinVillage {
+                colony_id: "beta".to_owned(),
+                session_id: "signed-session".to_owned(),
+            }
         );
     }
 
@@ -8124,6 +8639,14 @@ mod tests {
         let tile_tip =
             hover_text(colony, snap.world_seed, Vec2::new(9000.0, 9000.0)).expect("tile tooltip");
         assert!(!tile_tip.is_empty());
+    }
+
+    #[test]
+    fn world_tooltip_is_suppressed_over_all_ui_not_only_buttons() {
+        assert!(world_tooltip_allowed(false, false, true));
+        assert!(!world_tooltip_allowed(true, false, true));
+        assert!(!world_tooltip_allowed(false, true, true));
+        assert!(!world_tooltip_allowed(false, false, false));
     }
 
     #[test]
