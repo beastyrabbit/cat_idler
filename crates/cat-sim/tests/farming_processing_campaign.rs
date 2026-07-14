@@ -14,8 +14,8 @@ use cat_sim::{
     upgrade_tree,
     world_gen::tile_to_chunk,
     world_tick::{
-        BuildingRuntime, ColonyRuntime, JobMetadata, TilePos, WorldState, footprint_for,
-        found_colony,
+        BuildingRuntime, ColonyRuntime, JobMetadata, TilePos, WorldState,
+        farm_designation_route_blocker, footprint_for, found_colony, inside_village_interior,
     },
     zones::ZoneRect,
 };
@@ -102,6 +102,95 @@ fn try_plan_at_claimed_site(
             site: None,
         },
         now_ms,
+    )
+}
+
+/// Whether the player already has a live scaffold/reservation for this building type.
+/// A real player waits on that visible construction instead of repainting every claimed
+/// tile with the same plan button each decision step.
+fn has_pending_building(colony: &ColonyRuntime, building_type: BuildingType) -> bool {
+    colony
+        .buildings
+        .iter()
+        .any(|building| building.building_type == building_type && !building.is_complete)
+        || colony.jobs.iter().any(|job| {
+            matches!(
+                job.status,
+                cat_sim::types::JobStatus::Queued | cat_sim::types::JobStatus::Active
+            ) && matches!(
+                job.metadata,
+                JobMetadata::Construction {
+                    building_type: candidate,
+                    ..
+                } if candidate == building_type
+            )
+        })
+}
+
+/// Visible one-tile farm candidates a player would reasonably click. Field-linked
+/// expansion explicitly paints prepared agricultural territory outside the palisade,
+/// so those tiles come first; other exterior claim-edge tiles are a fallback.
+/// Filtering obvious interior misses before sending signed actions keeps the harness
+/// faithful to an informed map click instead of brute-forcing every settlement tile.
+fn visible_exterior_farm_candidates(colony: &ColonyRuntime) -> Vec<TilePos> {
+    let claimed = colony
+        .claimed_tiles
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut candidates = claimed
+        .iter()
+        .copied()
+        .filter(|tile| {
+            let prepared = colony.agricultural_tiles.contains(tile);
+            let claim_edge = [
+                TilePos {
+                    x: tile.x,
+                    y: tile.y - 1,
+                },
+                TilePos {
+                    x: tile.x + 1,
+                    y: tile.y,
+                },
+                TilePos {
+                    x: tile.x,
+                    y: tile.y + 1,
+                },
+                TilePos {
+                    x: tile.x - 1,
+                    y: tile.y,
+                },
+            ]
+            .into_iter()
+            .any(|neighbor| !claimed.contains(&neighbor));
+            colony.revealed_tiles.contains(tile)
+                && !inside_village_interior(colony, *tile)
+                && (prepared || claim_edge)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|tile| {
+        (
+            !colony.agricultural_tiles.contains(tile),
+            (tile.x - colony.anchor.x)
+                .abs()
+                .max((tile.y - colony.anchor.y).abs()),
+            tile.y,
+            tile.x,
+        )
+    });
+    candidates
+}
+
+fn farm_click_geometry_signature(colony: &ColonyRuntime) -> (usize, usize, usize, usize) {
+    (
+        colony.claimed_tiles.len(),
+        colony.buildings.len(),
+        colony.stockpiles.len(),
+        colony
+            .world_tiles
+            .values()
+            .filter(|tile| tile.overlay_feature.as_deref() == Some("road_built"))
+            .count(),
     )
 }
 
@@ -762,6 +851,7 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
     let founding_reveal = world.colonies[0].revealed_tiles.len();
     let mut now_ms = START_MS;
     let mut manual_access_road_built = false;
+    let mut last_farm_click_geometry = None;
 
     for step in 0..MAX_STEPS {
         let colony = &world.colonies[0];
@@ -790,7 +880,10 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
             building.building_type == BuildingType::ResearchHut && building.is_complete
         });
         if !research_hut_complete {
-            let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::ResearchHut, now_ms);
+            if !has_pending_building(&world.colonies[0], BuildingType::ResearchHut) {
+                let _ =
+                    try_plan_at_claimed_site(&mut world, proto::BuildingType::ResearchHut, now_ms);
+            }
             manual_access_road_built |=
                 try_pave_reserved_build_access(&mut world, BuildingType::ResearchHut, now_ms);
         }
@@ -879,7 +972,9 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
             building.building_type == BuildingType::Workshop && building.is_complete
         });
         if basic_tools && !workshop_complete {
-            let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::Workshop, now_ms);
+            if !has_pending_building(&world.colonies[0], BuildingType::Workshop) {
+                let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::Workshop, now_ms);
+            }
             manual_access_road_built |=
                 try_pave_reserved_build_access(&mut world, BuildingType::Workshop, now_ms);
         }
@@ -920,15 +1015,25 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
             .contains_key(&cat_sim::officers::OfficerRole::Steward)
             && complete_non_shrine < 20
         {
-            let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::FoodStorage, now_ms);
+            if !has_pending_building(&world.colonies[0], BuildingType::FoodStorage) {
+                let _ =
+                    try_plan_at_claimed_site(&mut world, proto::BuildingType::FoodStorage, now_ms);
+            }
             manual_access_road_built |=
                 try_pave_reserved_build_access(&mut world, BuildingType::FoodStorage, now_ms);
         }
 
+        let field_complete = world.colonies[0]
+            .buildings
+            .iter()
+            .any(|building| building.building_type == BuildingType::Field && building.is_complete);
         if upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, "irrigation")
             && complete_non_shrine >= 20
+            && !field_complete
         {
-            let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::Field, now_ms);
+            if !has_pending_building(&world.colonies[0], BuildingType::Field) {
+                let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::Field, now_ms);
+            }
             manual_access_road_built |=
                 try_pave_reserved_build_access(&mut world, BuildingType::Field, now_ms);
         }
@@ -982,28 +1087,32 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
         }) {
             // Wait for the Field and its worker before painting agricultural ground.
         } else {
-            let candidates = world.colonies[0].claimed_tiles.to_vec();
-            for tile in candidates {
-                let (session_id, nickname, sig) = signed();
-                if try_action(
-                    &mut world,
-                    proto::ClientAction::DesignateFarm {
-                        session_id,
-                        nickname,
-                        sig,
-                        a: proto::TilePoint {
-                            x: tile.x,
-                            y: tile.y,
+            let geometry = farm_click_geometry_signature(&world.colonies[0]);
+            if last_farm_click_geometry != Some(geometry) {
+                last_farm_click_geometry = Some(geometry);
+                let candidates = visible_exterior_farm_candidates(&world.colonies[0]);
+                for tile in candidates {
+                    let (session_id, nickname, sig) = signed();
+                    if try_action(
+                        &mut world,
+                        proto::ClientAction::DesignateFarm {
+                            session_id,
+                            nickname,
+                            sig,
+                            a: proto::TilePoint {
+                                x: tile.x,
+                                y: tile.y,
+                            },
+                            b: proto::TilePoint {
+                                x: tile.x,
+                                y: tile.y,
+                            },
+                            crop: proto::CropKind::Grain,
                         },
-                        b: proto::TilePoint {
-                            x: tile.x,
-                            y: tile.y,
-                        },
-                        crop: proto::CropKind::Grain,
-                    },
-                    now_ms,
-                ) {
-                    break;
+                        now_ms,
+                    ) {
+                        break;
+                    }
                 }
             }
         }
@@ -1099,8 +1208,54 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
     }
 
     let colony = &world.colonies[0];
+    let agricultural_route_diagnostics = colony
+        .agricultural_tiles
+        .iter()
+        .copied()
+        .map(|tile| {
+            (
+                tile,
+                farm_designation_route_blocker(
+                    colony,
+                    seed,
+                    cat_sim::movement::WorldPos {
+                        x: f64::from(colony.anchor.x),
+                        y: f64::from(colony.anchor.y),
+                    },
+                    ZoneRect {
+                        x1: tile.x,
+                        y1: tile.y,
+                        x2: tile.x,
+                        y2: tile.y,
+                    },
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    let visible_route_diagnostics = visible_exterior_farm_candidates(colony)
+        .into_iter()
+        .map(|tile| {
+            (
+                tile,
+                farm_designation_route_blocker(
+                    colony,
+                    seed,
+                    cat_sim::movement::WorldPos {
+                        x: f64::from(colony.anchor.x),
+                        y: f64::from(colony.anchor.y),
+                    },
+                    ZoneRect {
+                        x1: tile.x,
+                        y1: tile.y,
+                        x2: tile.x,
+                        y2: tile.y,
+                    },
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
     panic!(
-        "no-cheat farm smoke timed out: alive={} food={} water={} blessings={} research={} owned={:?} buildings={:?} farms={:?}",
+        "no-cheat farm smoke timed out: alive={} food={} water={} blessings={} research={} owned={:?} buildings={:?} farms={:?} agricultural_routes={agricultural_route_diagnostics:?} visible_routes={visible_route_diagnostics:?}",
         colony
             .cats
             .iter()

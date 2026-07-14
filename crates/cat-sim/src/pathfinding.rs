@@ -1053,6 +1053,37 @@ mod tests {
     }
 
     #[test]
+    fn multi_goal_reachability_is_independent_of_surface_costs() {
+        let blocked = ["2,0", "2,1"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<HashSet<_>>();
+        let plain = TestGrid {
+            blocked: blocked.clone(),
+            costs: HashMap::new(),
+            roads: HashSet::new(),
+        };
+        let expensive = TestGrid {
+            blocked,
+            costs: [
+                ("1,0".to_owned(), 10_000.0),
+                ("1,1".to_owned(), MIN_STEP_COST),
+                ("2,-1".to_owned(), f64::INFINITY),
+            ]
+            .into_iter()
+            .collect(),
+            roads: HashSet::new(),
+        };
+        let goals = [WorldPos { x: 3.0, y: 0.0 }, WorldPos { x: -2.0, y: 1.0 }];
+        let options = FindPathOptions::default();
+
+        assert_eq!(
+            all_reachable(WorldPos { x: 0.0, y: 0.0 }, &goals, &plain, options),
+            all_reachable(WorldPos { x: 0.0, y: 0.0 }, &goals, &expensive, options),
+        );
+    }
+
+    #[test]
     fn constants_match_ts_fixture() {
         let constants = fixture().constants;
         assert_eq!(constants.road_cost, ROAD_COST);

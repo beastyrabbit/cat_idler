@@ -6629,7 +6629,7 @@ fn ensure_farmer_plots(colony: &mut ColonyRuntime, world_seed: u32, now_ms: i64)
                     ]
                 })
                 .collect::<Vec<_>>();
-            let exterior = farm_designation_exterior_component(colony, world_seed, &targets);
+            let exterior = farm_designation_exterior_component(colony, &targets);
             // Validate the exact post-designation palisade for each sorted candidate. A
             // batch exterior flood ignores the settlement wall by design and can therefore
             // preaccept a parcel whose final shrine-to-gate route is blocked. The candidate
@@ -11361,7 +11361,7 @@ fn commit_repair_claim(
         .iter()
         .any(|building| building.building_type == BuildingType::Shrine && building.is_complete)
         && (!connect_current_gate_to_shrine_avoiding(&mut transaction, world_seed, &reserved)
-            || !all_farm_routes_reachable(&transaction, world_seed))
+            || !village_gate_and_farm_routes_reachable(&transaction, world_seed))
     {
         return false;
     }
@@ -13537,7 +13537,7 @@ fn farm_routes_survive_staged_expansion(
         },
         ..JobRuntime::default()
     });
-    all_farm_routes_reachable(&staged, world_seed)
+    village_gate_and_farm_routes_reachable(&staged, world_seed)
 }
 
 fn completed_outer_wall_segment_count(job: &JobRuntime, total: usize) -> usize {
@@ -14283,7 +14283,7 @@ fn next_expansion_building_site(
         if !connect_current_gate_to_shrine_avoiding(&mut projected, world_seed, &reserved) {
             continue;
         }
-        if !all_farm_routes_reachable(&projected, world_seed) {
+        if !village_gate_and_farm_routes_reachable(&projected, world_seed) {
             continue;
         }
         if claimed_building_site_is_ready(&projected, anchor, world_seed, building_type) {
@@ -14323,7 +14323,7 @@ fn next_claim_toward_building_site(
         projected.claimed_tiles.push(*target);
         all_farms_touch_claim_boundary(&projected)
             && connect_current_gate_to_shrine_avoiding(&mut projected, world_seed, &reserved)
-            && all_farm_routes_reachable(&projected, world_seed)
+            && village_gate_and_farm_routes_reachable(&projected, world_seed)
             && (building_type == BuildingType::Field
                 || farm_routes_survive_staged_expansion(colony, *target, world_seed))
     })
@@ -15492,7 +15492,7 @@ fn complete_village_expansion(
         colony.agricultural_tiles.insert(target);
     }
     if !connect_current_gate_to_shrine_avoiding(colony, world_seed, &reserved_footprint)
-        || !all_farm_routes_reachable(colony, world_seed)
+        || !village_gate_and_farm_routes_reachable(colony, world_seed)
     {
         // The prospective perimeter would put its sole gate somewhere that
         // cannot reach the shrine without crossing a hard occupant. Roll the
@@ -16111,7 +16111,6 @@ fn path_tile_for_world(pos: WorldPos) -> PathTilePos {
 /// center/handoff is an O(1) membership check instead of another grid build and A* pair.
 fn farm_designation_exterior_component(
     colony: &ColonyRuntime,
-    world_seed: u32,
     targets: &[WorldPos],
 ) -> HashSet<PathTilePos> {
     if targets.is_empty() {
@@ -16127,7 +16126,6 @@ fn farm_designation_exterior_component(
         .map(walk_tile_from_runtime)
         .collect::<Vec<_>>();
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
-    let surface_factors = movement_surface_factors(colony, world_seed);
     let grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &walk_tiles,
         anchor: PathTilePos {
@@ -16147,7 +16145,9 @@ fn farm_designation_exterior_component(
         shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
         soft_obstacles: None,
         soft_obstacle_field: None,
-        surface_factors: Some(&surface_factors),
+        // This grid is consumed only by `all_reachable`; biome costs cannot alter
+        // connectivity, and building a full cost table inside designation scans is waste.
+        surface_factors: None,
     });
     let targets = targets
         .iter()
@@ -16194,9 +16194,31 @@ pub(crate) fn farm_designation_route_is_reachable(
     from: WorldPos,
     rect: ZoneRect,
 ) -> bool {
+    farm_designation_route_blocker(colony, world_seed, from, rect).is_none()
+}
+
+/// Exact physical leg that prevents a proposed farm parcel from joining the
+/// village logistics route. Kept public so deterministic integration campaigns
+/// can report actionable topology failures instead of only a generic timeout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FarmDesignationRouteBlocker {
+    NoAdjacentHandoff,
+    ProjectedGateInvalid,
+    ShrineToOutsideGate,
+    OutsideGateToPlot,
+    OutsideGateToHandoff,
+}
+
+#[must_use]
+pub fn farm_designation_route_blocker(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    from: WorldPos,
+    rect: ZoneRect,
+) -> Option<FarmDesignationRouteBlocker> {
     let occupancy = SpatialOccupancyContext::new(colony, world_seed);
     let Some(handoff) = farm_gather_spot_candidate(colony, rect, &occupancy) else {
-        return false;
+        return Some(FarmDesignationRouteBlocker::NoAdjacentHandoff);
     };
     let projected = farming::rect_tiles(rect)
         .map(|tile| TilePos {
@@ -16212,7 +16234,7 @@ pub(crate) fn farm_designation_route_is_reachable(
     }
     let retained_gate = retained_area_gate(colony);
     if !area_supports_gate(&projected_area, retained_gate) {
-        return false;
+        return Some(FarmDesignationRouteBlocker::ProjectedGateInvalid);
     }
     let destinations = [
         WorldPos {
@@ -16221,7 +16243,7 @@ pub(crate) fn farm_designation_route_is_reachable(
         },
         tile_pos_to_world(handoff),
     ];
-    let exterior = farm_designation_exterior_component(colony, world_seed, &destinations);
+    let exterior = farm_designation_exterior_component(colony, &destinations);
     let outside_gate = movement_gate(
         colony.anchor,
         retained_gate,
@@ -16229,22 +16251,28 @@ pub(crate) fn farm_designation_route_is_reachable(
     );
     let shrine_reaches_gate =
         farm_route_is_reachable(colony, world_seed, from, tile_pos_to_world(outside_gate));
-    shrine_reaches_gate
-        && destinations
-            .iter()
-            .all(|destination| exterior.contains(&path_tile_for_world(*destination)))
+    if !shrine_reaches_gate {
+        return Some(FarmDesignationRouteBlocker::ShrineToOutsideGate);
+    }
+    if !exterior.contains(&path_tile_for_world(destinations[0])) {
+        return Some(FarmDesignationRouteBlocker::OutsideGateToPlot);
+    }
+    if !exterior.contains(&path_tile_for_world(destinations[1])) {
+        return Some(FarmDesignationRouteBlocker::OutsideGateToHandoff);
+    }
+    None
 }
 
 /// Expansion transactions may move the settlement's sole gate even when every farm
 /// remains geometrically boundary-connected. Validate the exact post-transaction wall
 /// topology at planning/commit time so a formerly reachable exterior parcel or Field
 /// workstation cannot become a permanent island after the worker has already been assigned.
-fn all_farm_routes_reachable(colony: &ColonyRuntime, world_seed: u32) -> bool {
+fn village_gate_and_farm_routes_reachable(colony: &ColonyRuntime, world_seed: u32) -> bool {
     let shrine = village_anchor_world(colony.anchor);
     let destinations = farm_logistics_destinations(colony);
-    if destinations.is_empty() {
-        return true;
-    }
+    // The gate leg is a village invariant even before the first farm exists. Skipping
+    // it for an empty destination list lets an ordinary expansion commit an unreachable
+    // retained gate, after which every truthful farm designation must fail forever.
     farm_routes_are_reachable_projected(colony, world_seed, shrine, &destinations, &[])
 }
 
@@ -16387,7 +16415,6 @@ fn farm_routes_are_reachable_projected(
             mix(&[u8::from(tile_has_water(Some(runtime)))]);
         }
     }
-    let surface_factors = movement_surface_factors(colony, world_seed);
     let grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &walk_tiles,
         anchor: PathTilePos {
@@ -16407,7 +16434,9 @@ fn farm_routes_are_reachable_projected(
         shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
         soft_obstacles: None,
         soft_obstacle_field: None,
-        surface_factors: Some(&surface_factors),
+        // Exact projected farm validation asks only whether each endpoint is reachable.
+        // Fine-biome costs still apply to real A* routes and movement, not this topology check.
+        surface_factors: None,
     });
     let destinations = destinations
         .iter()
@@ -23571,12 +23600,12 @@ mod tests {
             1,
             "one auto-designation search builds one exterior component"
         );
-        assert!(all_farm_routes_reachable(&automated, seed));
+        assert!(village_gate_and_farm_routes_reachable(&automated, seed));
         let expansion_component_traversals = automated
             .decoration_cache
             .farm_route_component_traversals
             .get();
-        assert!(all_farm_routes_reachable(&automated, seed));
+        assert!(village_gate_and_farm_routes_reachable(&automated, seed));
         assert_eq!(
             automated
                 .decoration_cache
@@ -31646,8 +31675,12 @@ mod tests {
 
     #[test]
     fn staged_wall_work_survives_death_and_resumes_deterministically() {
-        let seed = 77;
+        let seed = 93;
         let (mut left, target) = staged_expansion_fixture(seed);
+        assert!(
+            village_gate_and_farm_routes_reachable(&left, seed),
+            "the synthetic founding gate must be reachable before staged wall work"
+        );
         phase_28b_advance_staged_wall_work(&mut left, production_gate(1, 2_000));
         let mut right = left.clone();
         let dead = left.jobs[0].assigned_cat.clone().expect("worker");
@@ -31683,6 +31716,10 @@ mod tests {
             assert_ne!(replacement, dead);
             accept_job(colony, 0, 0);
             phase_28b_advance_staged_wall_work(colony, production_gate(2, 5_000));
+            assert!(
+                village_gate_and_farm_routes_reachable(colony, seed),
+                "the completed staged outer wall must retain a shrine-to-gate route"
+            );
             phase_29_due_completion_gathering_explore_expansion(
                 colony,
                 production_gate(2, 5_000),
@@ -31755,7 +31792,7 @@ mod tests {
 
     #[test]
     fn field_linked_claim_is_agricultural_and_never_moves_the_wall() {
-        let seed = 91;
+        let seed = 93;
         let (mut colony, target) = staged_expansion_fixture(seed);
         colony.jobs.insert(
             0,
@@ -31783,6 +31820,17 @@ mod tests {
         }
         let before = claimed_area(&colony);
         let before_wall = effective_wall_segments(&colony);
+        assert!(
+            village_gate_and_farm_routes_reachable(&colony, seed),
+            "the synthetic founding gate must be reachable before agricultural paint"
+        );
+        let mut projected = colony.clone();
+        projected.claimed_tiles.push(target);
+        projected.agricultural_tiles.insert(target);
+        assert!(
+            village_gate_and_farm_routes_reachable(&projected, seed),
+            "agricultural paint must retain the pre-expansion gate route"
+        );
         let expansion = colony.jobs[1].clone();
         complete_village_expansion(&mut colony, &expansion, production_gate(1, 4_000), seed);
 
@@ -31843,6 +31891,135 @@ mod tests {
     }
 
     #[test]
+    fn no_farm_village_still_accepts_its_reachable_founding_gate() {
+        let seed = 93;
+        let colony = found_colony(seed, "empty-farm-gate-open", 1_000, seed);
+
+        assert!(farm_logistics_destinations(&colony).is_empty());
+        assert!(village_gate_and_farm_routes_reachable(&colony, seed));
+    }
+
+    #[test]
+    fn no_farm_village_rejects_a_blocked_outside_gate() {
+        let seed = 93;
+        let mut colony = found_colony(seed, "empty-farm-gate-blocked", 1_000, seed);
+        let gate = retained_area_gate(&colony).expect("founding has one retained gate");
+        let delta = side_delta(gate.side);
+        let outside_gate = TilePos {
+            x: gate.x + delta.x,
+            y: gate.y + delta.y,
+        };
+        let blocked = colony
+            .world_tiles
+            .entry(outside_gate)
+            .or_insert_with(|| fresh_ground_tile(outside_gate));
+        blocked.tile_type = TileType::River;
+        blocked.resources.water = 999;
+        blocked.overlay_feature = Some("river".to_owned());
+
+        assert!(farm_logistics_destinations(&colony).is_empty());
+        assert!(!village_gate_and_farm_routes_reachable(&colony, seed));
+    }
+
+    fn no_farm_gate_moving_expansion_fixture(
+        seed: u32,
+    ) -> (ColonyRuntime, TilePos, AreaGatePlacement) {
+        let mut colony = found_colony(seed, "empty-farm-expansion", 1_000, seed);
+        let center = shrine_center_tile(colony.anchor);
+        let old_gate = retained_area_gate(&colony).expect("founding gate");
+        let mut east_x = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.x)
+            .max()
+            .unwrap();
+        let (target, new_gate) = (0..32)
+            .find_map(|_| {
+                let target = TilePos {
+                    x: east_x + 1,
+                    y: center.y,
+                };
+                let mut projected = colony.clone();
+                projected.claimed_tiles.push(target);
+                let new_gate = retained_area_gate(&projected)?;
+                if new_gate != old_gate {
+                    Some((target, new_gate))
+                } else {
+                    colony.claimed_tiles.push(target);
+                    colony.revealed_tiles.insert(target);
+                    colony
+                        .world_tiles
+                        .entry(target)
+                        .or_insert_with(|| fresh_ground_tile(target));
+                    east_x += 1;
+                    None
+                }
+            })
+            .expect("bounded tail relocates the gate");
+        colony
+            .world_tiles
+            .entry(target)
+            .or_insert_with(|| fresh_ground_tile(target));
+        (colony, target, new_gate)
+    }
+
+    fn one_tick_expansion(colony: &ColonyRuntime, target: TilePos) -> JobRuntime {
+        JobRuntime {
+            id: "no-farm-gate-expansion".to_owned(),
+            kind: JobKind::ExpandVillage,
+            status: JobStatus::Active,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            duration_ms: 1,
+            metadata: JobMetadata::Expansion {
+                target,
+                accepted: true,
+                source_build_job_id: None,
+                wall_work_ms: 1,
+            },
+            ..JobRuntime::default()
+        }
+    }
+
+    #[test]
+    fn no_farm_reachable_gate_relocation_commits_the_expansion() {
+        let seed = 93;
+        let (mut colony, target, _) = no_farm_gate_moving_expansion_fixture(seed);
+        let expansion = one_tick_expansion(&colony, target);
+
+        complete_village_expansion(&mut colony, &expansion, production_gate(1, 4_000), seed);
+
+        assert!(colony.claimed_tiles.contains(&target));
+        assert!(village_gate_and_farm_routes_reachable(&colony, seed));
+    }
+
+    #[test]
+    fn no_farm_blocked_gate_relocation_rolls_the_expansion_back_atomically() {
+        let seed = 93;
+        let (mut colony, target, new_gate) = no_farm_gate_moving_expansion_fixture(seed);
+        let delta = side_delta(new_gate.side);
+        let blocked_new_exit = TilePos {
+            x: new_gate.x + delta.x,
+            y: new_gate.y + delta.y,
+        };
+        let blocked = colony
+            .world_tiles
+            .entry(blocked_new_exit)
+            .or_insert_with(|| fresh_ground_tile(blocked_new_exit));
+        blocked.tile_type = TileType::River;
+        blocked.resources.water = 999;
+        blocked.overlay_feature = Some("river".to_owned());
+        let before = colony.clone();
+        let expansion = one_tick_expansion(&colony, target);
+
+        complete_village_expansion(&mut colony, &expansion, production_gate(1, 4_000), seed);
+
+        assert_eq!(colony.claimed_tiles, before.claimed_tiles);
+        assert_eq!(colony.agricultural_tiles, before.agricultural_tiles);
+        assert_eq!(colony.world_tiles, before.world_tiles);
+        assert!(!colony.claimed_tiles.contains(&target));
+    }
+
+    #[test]
     fn settlement_expansion_rejects_a_gate_relocation_that_isolates_an_exterior_farm() {
         let seed = 93;
         let mut colony = found_colony(seed, "gate-relocation", 1_000, seed);
@@ -31880,7 +32057,7 @@ mod tests {
             pending_output: 0.0,
         });
         let old_gate = retained_area_gate(&colony).expect("the farm preserves a retained gate");
-        assert!(all_farm_routes_reachable(&colony, seed));
+        assert!(village_gate_and_farm_routes_reachable(&colony, seed));
 
         let mut east_x = colony
             .claimed_tiles
@@ -31939,7 +32116,7 @@ mod tests {
         projected.claimed_tiles.push(target);
         assert!(all_farms_touch_claim_boundary(&projected));
         assert_eq!(retained_area_gate(&projected), Some(new_gate));
-        assert!(!all_farm_routes_reachable(&projected, seed));
+        assert!(!village_gate_and_farm_routes_reachable(&projected, seed));
 
         let expansion = JobRuntime {
             id: "gate-moving-expansion".to_owned(),
@@ -31963,7 +32140,7 @@ mod tests {
             colony.world_tiles, before.world_tiles,
             "rejected gate relocation must roll tentative access-road paving back"
         );
-        assert!(all_farm_routes_reachable(&colony, seed));
+        assert!(village_gate_and_farm_routes_reachable(&colony, seed));
     }
 
     struct SoleGateDetourGrid;
