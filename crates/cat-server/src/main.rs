@@ -975,6 +975,12 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::BoostCat {
             session_id, sig, ..
         }
+        | ClientAction::SetCatLaborPreference {
+            session_id, sig, ..
+        }
+        | ClientAction::EditProductionQueue {
+            session_id, sig, ..
+        }
         | ClientAction::AssignOfficer {
             session_id, sig, ..
         }
@@ -1845,6 +1851,21 @@ mod tests {
                 stockpile_id: "gather-1".to_owned(),
                 cat_id: None,
             },
+            ClientAction::SetCatLaborPreference {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                cat_id: cat_id.clone(),
+                labor: cat_protocol::Labor::Process,
+                enabled: true,
+            },
+            ClientAction::EditProductionQueue {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                building_id: "sawmill-1".to_owned(),
+                edit: cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
+            },
             ClientAction::DispatchScout {
                 session_id: signed.session_id,
                 nickname: "Tester".to_owned(),
@@ -1870,6 +1891,111 @@ mod tests {
         assert!(world.colonies[0].officers.is_empty());
         assert_eq!(world.colonies[0].stockpiles.len(), 1);
         assert!(world.colonies[0].gather_spots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn signed_labor_and_sawmill_guidance_survives_database_restart() {
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-guidance-restart-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let secret = "guidance-restart-secret";
+        let mut world = starter_world(1_000_000);
+        world.colonies[0]
+            .buildings
+            .push(cat_sim::world_tick::BuildingRuntime {
+                id: "guidance-sawmill".to_owned(),
+                building_type: cat_sim::types::BuildingType::Sawmill,
+                position: cat_sim::world_tick::TilePos { x: 40, y: 40 },
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: cat_sim::world_tick::default_production_queue(
+                    cat_sim::types::BuildingType::Sawmill,
+                ),
+                ..cat_sim::world_tick::BuildingRuntime::default()
+            });
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        let sawmill_id = world.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| {
+                building.building_type == cat_sim::types::BuildingType::Sawmill
+                    && building.is_complete
+            })
+            .expect("starter village has its complete Sawmill")
+            .id
+            .clone();
+        let conn = Connection::open(&path).expect("open guidance database");
+        persistence::init_schema(&conn).expect("init guidance database");
+        let state = build_state_from_world(world, conn, secret.to_owned(), false, 1_000_000);
+        let signed = signed_session("guidance-session".to_owned(), secret);
+        let mut connection =
+            ConnectionContext::new("guidance-socket".to_owned(), STARTER_COLONY_ID.to_owned());
+        connection.identity = Some(signed.clone());
+
+        for action in [
+            ClientAction::SetCatLaborPreference {
+                session_id: signed.session_id.clone(),
+                nickname: "Guide".to_owned(),
+                sig: signed.sig.clone(),
+                cat_id: cat_id.clone(),
+                labor: cat_protocol::Labor::Process,
+                enabled: true,
+            },
+            ClientAction::EditProductionQueue {
+                session_id: signed.session_id.clone(),
+                nickname: "Guide".to_owned(),
+                sig: signed.sig.clone(),
+                building_id: sawmill_id.clone(),
+                edit: cat_protocol::ProductionQueueEdit::SetRepeat {
+                    index: 0,
+                    repeat: false,
+                },
+            },
+            ClientAction::EditProductionQueue {
+                session_id: signed.session_id.clone(),
+                nickname: "Guide".to_owned(),
+                sig: signed.sig.clone(),
+                building_id: sawmill_id.clone(),
+                edit: cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
+            },
+        ] {
+            let result = send_action(&state, &mut connection, &action).await;
+            assert!(result.result.ok, "signed guidance failed: {result:?}");
+        }
+        save_current_world(&state)
+            .await
+            .expect("persist signed guidance");
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen guidance database");
+        persistence::init_schema(&conn).expect("migrate guidance database");
+        let restarted = build_state_from_connection(2_000_000, conn, secret.to_owned())
+            .expect("restore signed guidance");
+        let restored = restarted.world.lock().await;
+        let colony = &restored.colonies[0];
+        assert!(
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == cat_id)
+                .expect("guided cat restored")
+                .preferred_labors
+                .contains(&cat_sim::skills::Labor::Process)
+        );
+        let sawmill = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == sawmill_id)
+            .expect("guided Sawmill restored");
+        assert!(sawmill.production_paused);
+        assert_eq!(sawmill.production_queue.len(), 1);
+        assert!(!sawmill.production_queue[0].repeat);
+        drop(restored);
+        drop(restarted);
+        fs::remove_file(path).expect("remove guidance database");
     }
 
     #[tokio::test]

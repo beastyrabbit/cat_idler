@@ -7,6 +7,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldSnapshot {
@@ -464,6 +468,10 @@ pub struct CatSnapshot {
     /// lands in a later card).
     #[serde(default)]
     pub boosted: bool,
+    /// Player-maintained labor preferences. These bias eligible job/station
+    /// matching without making the cat immune to emergency work or other gates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preferred_labors: Vec<Labor>,
     /// Whether this cat is currently expecting a litter (mirrors `entities::Cat::
     /// is_pregnant`). Lets the census/inspector show an "expecting" state. Additive;
     /// defaults to `false` for older payloads.
@@ -881,9 +889,13 @@ pub struct BuildingSnapshot {
     /// deliberately absent from colony aggregate resources until deposited.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_inventory: Vec<ResourceStackSnapshot>,
-    /// Stable recipe ids in deterministic execution order.
+    /// Durable recipes in deterministic execution order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub production_queue: Vec<String>,
+    pub production_queue: Vec<ProductionQueueEntrySnapshot>,
+    /// Pausing prevents a new recipe cycle while still allowing already-finished
+    /// output to be physically hauled away.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub production_paused: bool,
     /// Stable machine-readable reason that the queue cannot currently advance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production_block_reason: Option<String>,
@@ -901,6 +913,72 @@ pub struct BuildingSnapshot {
 pub struct ResourceStackSnapshot {
     pub kind: ResourceKind,
     pub amount: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionQueueEntrySnapshot {
+    pub recipe_id: String,
+    pub repeat: bool,
+}
+
+impl<'de> Deserialize<'de> for ProductionQueueEntrySnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Legacy(String),
+            Entry {
+                #[serde(rename = "recipeId")]
+                recipe_id: String,
+                repeat: bool,
+            },
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Legacy(recipe_id) => Self {
+                recipe_id,
+                repeat: true,
+            },
+            Wire::Entry { recipe_id, repeat } => Self { recipe_id, repeat },
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueMoveDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ProductionQueueEdit {
+    Add {
+        recipe_id: String,
+        repeat: bool,
+    },
+    Remove {
+        index: usize,
+    },
+    Move {
+        index: usize,
+        direction: QueueMoveDirection,
+    },
+    SetRepeat {
+        index: usize,
+        repeat: bool,
+    },
+    SetPaused {
+        paused: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1324,6 +1402,23 @@ pub enum ClientAction {
         cat_id: String,
         boosted: bool,
     },
+    /// Add or remove one maintained labor preference for a living cat.
+    SetCatLaborPreference {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        cat_id: String,
+        labor: Labor,
+        enabled: bool,
+    },
+    /// Edit the durable recipe queue of one exact production station.
+    EditProductionQueue {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        building_id: String,
+        edit: ProductionQueueEdit,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1375,6 +1470,43 @@ mod tests {
 
         let decoded: ClientAction = serde_json::from_value(encoded).expect("deserialize action");
         assert_eq!(decoded, action);
+    }
+
+    #[test]
+    fn exact_labor_and_station_queue_actions_round_trip_typed_payloads() {
+        let actions = [
+            ClientAction::SetCatLaborPreference {
+                session_id: "session_1".to_owned(),
+                nickname: "Player".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: "cat_7".to_owned(),
+                labor: Labor::Process,
+                enabled: true,
+            },
+            ClientAction::EditProductionQueue {
+                session_id: "session_1".to_owned(),
+                nickname: "Player".to_owned(),
+                sig: "signed".to_owned(),
+                building_id: "sawmill_2".to_owned(),
+                edit: ProductionQueueEdit::Move {
+                    index: 3,
+                    direction: QueueMoveDirection::Up,
+                },
+            },
+        ];
+        for action in actions {
+            let encoded = serde_json::to_value(&action).unwrap();
+            let decoded: ClientAction = serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded, action);
+        }
+    }
+
+    #[test]
+    fn legacy_station_queue_strings_deserialize_as_repeating_entries() {
+        let entry: ProductionQueueEntrySnapshot =
+            serde_json::from_value(json!("logs_to_lumber")).unwrap();
+        assert_eq!(entry.recipe_id, "logs_to_lumber");
+        assert!(entry.repeat);
     }
 
     #[test]
@@ -1901,6 +2033,7 @@ mod tests {
                     parent_ids: vec!["cat_0".to_string()],
                     parents: vec!["Ash".to_string()],
                     boosted: false,
+                    preferred_labors: vec![Labor::Hunt],
                     pregnant: false,
                     housing_status: CatHousingStatus::Housed,
                     probation_remaining_game_minutes: None,
@@ -2646,6 +2779,7 @@ mod tests {
             parent_ids: Vec::new(),
             parents: Vec::new(),
             boosted: false,
+            preferred_labors: Vec::new(),
             pregnant: false,
             housing_status: CatHousingStatus::Housed,
             probation_remaining_game_minutes: None,

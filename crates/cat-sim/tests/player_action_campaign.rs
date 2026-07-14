@@ -25,7 +25,7 @@ use cat_sim::{
     zones::ZoneRect,
 };
 
-const EXPECTED_ACTIONS: [&str; 36] = [
+const EXPECTED_ACTIONS: [&str; 38] = [
     "advance_time",
     "assign_officer",
     "assign_worker",
@@ -41,6 +41,7 @@ const EXPECTED_ACTIONS: [&str; 36] = [
     "designate_gather_spot",
     "designate_stockpile",
     "dispatch_scout",
+    "edit_production_queue",
     "ensure",
     "found_village",
     "haul_gather_spot",
@@ -55,6 +56,7 @@ const EXPECTED_ACTIONS: [&str; 36] = [
     "request_job",
     "request_vote_kick",
     "sell_goods",
+    "set_cat_labor_preference",
     "set_test_acceleration",
     "set_test_rng_seed",
     "train_warrior",
@@ -105,6 +107,8 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::SellGoods { .. } => "sell_goods",
         proto::ClientAction::BuyResource { .. } => "buy_resource",
         proto::ClientAction::BoostCat { .. } => "boost_cat",
+        proto::ClientAction::SetCatLaborPreference { .. } => "set_cat_labor_preference",
+        proto::ClientAction::EditProductionQueue { .. } => "edit_production_queue",
     }
 }
 
@@ -162,6 +166,8 @@ fn complete_building(id: impl Into<String>, building_type: BuildingType) -> Buil
         production_progress: 0.0,
         assigned_cat: None,
         automated_by: None,
+        production_queue: cat_sim::world_tick::default_production_queue(building_type),
+        production_paused: false,
     }
 }
 
@@ -700,6 +706,55 @@ fn run_action_campaign() -> WorldState {
             .buildings
             .push(complete_building(id, building_type));
     }
+
+    // Player guidance can persist an exact labor preference and edit the physical
+    // Sawmill queue without waiting for an officer automation tick.
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::SetCatLaborPreference {
+            session_id,
+            nickname,
+            sig,
+            cat_id: worker_id.clone(),
+            labor: proto::Labor::Woodcut,
+            enabled: true,
+        },
+        &ctx(6_250),
+    );
+    assert!(
+        world.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id == worker_id)
+            .expect("campaign worker")
+            .preferred_labors
+            .contains(&cat_sim::skills::Labor::Woodcut)
+    );
+
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::EditProductionQueue {
+            session_id,
+            nickname,
+            sig,
+            building_id: "campaign-sawmill".to_owned(),
+            edit: proto::ProductionQueueEdit::SetPaused { paused: true },
+        },
+        &ctx(6_275),
+    );
+    assert!(
+        world.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "campaign-sawmill")
+            .expect("campaign sawmill")
+            .production_paused
+    );
+
     for role in [
         proto::OfficerRole::Steward,
         proto::OfficerRole::Accountant,

@@ -2,13 +2,14 @@
 //! `lib/game/leaderAI.ts`.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     leader_ai::{LeaderDecision, LeaderSnapshot, ThreatBand},
     officers::OfficerRole,
+    skills::Labor,
     types::CatSpecialization,
 };
 
@@ -316,6 +317,8 @@ pub struct CatBrief {
     /// `#[serde(default)]` on the `Cat` entity.
     #[serde(default)]
     pub boosted: bool,
+    #[serde(default)]
+    pub preferred_labors: BTreeSet<Labor>,
 }
 
 /// Multiplicative fit bonus for a boosted cat, applied alongside (and independent of)
@@ -330,6 +333,20 @@ pub struct CatBrief {
 /// stronger pick.
 const BOOST_FIT_MULTIPLIER: f64 = 1.6;
 const SPECIALIZATION_FIT_MULTIPLIER: f64 = 1.5;
+const LABOR_PREFERENCE_FIT_MULTIPLIER: f64 = 2.0;
+
+const fn labor_for_goal(goal: LaborGoalKind) -> Labor {
+    match goal {
+        LaborGoalKind::Hunt => Labor::Hunt,
+        LaborGoalKind::FetchWater => Labor::FetchWater,
+        LaborGoalKind::Quarry => Labor::Quarry,
+        LaborGoalKind::Scout => Labor::Scout,
+        LaborGoalKind::TrainWarrior => Labor::Train,
+        LaborGoalKind::AssignWorkshop => Labor::Process,
+        LaborGoalKind::AssignResearch => Labor::Research,
+        LaborGoalKind::AssignSmithy => Labor::Metalwork,
+    }
+}
 
 #[must_use]
 pub fn assignment_fit(cat: &CatBrief, goal: LaborGoalKind) -> f64 {
@@ -355,8 +372,13 @@ pub fn assignment_fit(cat: &CatBrief, goal: LaborGoalKind) -> f64 {
     } else {
         1.0
     };
+    let preference_multiplier = if cat.preferred_labors.contains(&labor_for_goal(goal)) {
+        LABOR_PREFERENCE_FIT_MULTIPLIER
+    } else {
+        1.0
+    };
 
-    base * spec_multiplier * boost_multiplier
+    base * spec_multiplier * boost_multiplier * preference_multiplier
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1226,6 +1248,7 @@ mod tests {
                 leadership: 10.0,
             },
             boosted: false,
+            preferred_labors: Default::default(),
         };
         let boosted_but_useless = CatBrief {
             id: "boosted-unfit".to_owned(),
@@ -1240,6 +1263,7 @@ mod tests {
                 leadership: 10.0,
             },
             boosted: true,
+            preferred_labors: Default::default(),
         };
 
         let slots = vec![OpenSlots {
@@ -1291,6 +1315,7 @@ mod tests {
                 leadership: 10.0,
             },
             boosted: false,
+            preferred_labors: Default::default(),
         }
     }
 

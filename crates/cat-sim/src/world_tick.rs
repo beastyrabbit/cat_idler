@@ -437,6 +437,30 @@ pub struct BuildingRuntime {
     /// Manual AssignWorker writes `None`, allowing vacancy reconciliation to stop
     /// sticky automated production without stripping a player's explicit worker.
     pub automated_by: Option<OfficerRole>,
+    /// Ordered, durable station instructions. Only recipe ids backed by a real
+    /// implementation may enter this queue.
+    pub production_queue: Vec<ProductionQueueEntry>,
+    /// Pausing stops recipe work, but does not strand completed output at the station.
+    pub production_paused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductionQueueEntry {
+    pub recipe_id: String,
+    pub repeat: bool,
+}
+
+pub const SAWMILL_RECIPE_ID: &str = "logs_to_lumber";
+
+#[must_use]
+pub fn default_production_queue(building_type: BuildingType) -> Vec<ProductionQueueEntry> {
+    match building_type {
+        BuildingType::Sawmill => vec![ProductionQueueEntry {
+            recipe_id: SAWMILL_RECIPE_ID.to_owned(),
+            repeat: true,
+        }],
+        _ => Vec::new(),
+    }
 }
 
 /// Tile footprint `(width, height)` a building of `building_type` occupies.
@@ -1687,6 +1711,8 @@ impl Default for BuildingRuntime {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: Vec::new(),
+            production_paused: false,
         }
     }
 }
@@ -2008,6 +2034,7 @@ fn create_starter_cats_with_id_prefix(
                 role_xp: RoleXp::default(),
                 skills: Default::default(),
                 boosted: false,
+                preferred_labors: Default::default(),
             }
         })
         .collect()
@@ -2155,6 +2182,8 @@ fn starter_buildings(anchor: TilePos, _world_seed: u32) -> Vec<BuildingRuntime> 
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: default_production_queue(building_type),
+                production_paused: false,
             }
         })
         .collect()
@@ -2765,6 +2794,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
             role_xp: RoleXp::default(),
             skills: BTreeMap::new(),
             boosted: false,
+            preferred_labors: Default::default(),
         });
 
         let mother_cat = &mut colony.cats[mother_index];
@@ -3290,6 +3320,8 @@ pub(crate) fn commit_player_scaffold(
         production_progress: 0.0,
         assigned_cat: None,
         automated_by: None,
+        production_queue: default_production_queue(building_type),
+        production_paused: false,
     });
     if has_officer(colony, OfficerRole::Steward) {
         pave_access_route(colony, &access_route);
@@ -3628,6 +3660,8 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: default_production_queue(scaffold_type),
+                production_paused: false,
             });
             if has_officer(colony, OfficerRole::Steward) {
                 pave_access_route(colony, &access_route);
@@ -6980,6 +7014,7 @@ fn create_migrant_cat(colony: &ColonyRuntime, id: &str, now_ms: i64) -> Cat {
         role_xp: RoleXp::default(),
         skills: BTreeMap::new(),
         boosted: false,
+        preferred_labors: Default::default(),
     }
 }
 
@@ -8832,6 +8867,8 @@ fn candidate_building_road_route_with_context(
         production_progress: 0.0,
         assigned_cat: None,
         automated_by: None,
+        production_queue: default_production_queue(building_type),
+        production_paused: false,
     };
     let (width, height) = footprint_for(building_type);
     let extra_blocked: HashSet<TilePos> = footprint_tiles(position, width, height)
@@ -11011,6 +11048,7 @@ fn cat_brief(cat: &Cat) -> CatBrief {
             leadership: cat.stats.leadership,
         },
         boosted: cat.boosted,
+        preferred_labors: cat.preferred_labors.clone(),
     }
 }
 
@@ -12950,13 +12988,29 @@ fn auto_staff_idle_buildings(
         .iter()
         .filter_map(|building| building.assigned_cat.as_deref())
         .collect::<Vec<_>>();
-    let cats = colony
+    let labor = Labor::for_building_type(building_type);
+    let mut cats = colony
         .cats
         .iter()
         .filter(|cat| {
             can_take_new_job_with_busy(cat, &busy_ids)
                 && !assigned_building_ids.contains(&cat.id.as_str())
         })
+        .collect::<Vec<_>>();
+    cats.sort_by(|left, right| {
+        let left_preferred = labor.is_some_and(|labor| left.preferred_labors.contains(&labor));
+        let right_preferred = labor.is_some_and(|labor| right.preferred_labors.contains(&labor));
+        right_preferred
+            .cmp(&left_preferred)
+            .then_with(|| {
+                let left_skill = labor.map_or(0.0, |labor| left.skill(labor));
+                let right_skill = labor.map_or(0.0, |labor| right.skill(labor));
+                right_skill.total_cmp(&left_skill)
+            })
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let cats = cats
+        .into_iter()
         .map(|cat| cat.id.clone())
         .collect::<Vec<_>>();
 
@@ -13926,6 +13980,17 @@ fn advance_physical_sawmill(
         return;
     }
 
+    if building.production_paused
+        || building
+            .production_queue
+            .first()
+            .is_none_or(|entry| entry.recipe_id != SAWMILL_RECIPE_ID)
+    {
+        colony.cats[cat_index].activity = CatActivity::Idle;
+        colony.cats[cat_index].destination = None;
+        return;
+    }
+
     let input_amount = colony
         .stockpiles
         .iter()
@@ -14053,6 +14118,12 @@ fn advance_physical_sawmill(
         Labor::Process,
         step.lumber_produced / crate::processing::SAWMILL_LUMBER_PER_CYCLE * SKILL_GAIN_PER_JOB,
     );
+    let completed = colony.buildings[building_index].production_queue.remove(0);
+    if completed.repeat {
+        colony.buildings[building_index]
+            .production_queue
+            .push(completed);
+    }
 }
 
 /// Restore the physical-store invariant for a colony (seeds/migrates the finite general
@@ -14294,11 +14365,8 @@ pub fn building_station_cargo(
 }
 
 #[must_use]
-pub fn building_production_queue(building: &BuildingRuntime) -> Vec<String> {
-    match building.building_type {
-        BuildingType::Sawmill => vec!["logs_to_lumber".to_owned()],
-        _ => Vec::new(),
-    }
+pub fn building_production_queue(building: &BuildingRuntime) -> Vec<ProductionQueueEntry> {
+    building.production_queue.clone()
 }
 
 #[must_use]
@@ -14381,6 +14449,15 @@ pub fn building_production_block_reason(
             }
             .to_owned(),
         );
+    }
+    if building.production_paused {
+        return Some("paused".to_owned());
+    }
+    let Some(recipe) = building.production_queue.first() else {
+        return Some("queue_empty".to_owned());
+    };
+    if recipe.recipe_id != SAWMILL_RECIPE_ID {
+        return Some("unsupported_recipe".to_owned());
     }
     let input = building_station_inventory(colony, building, false)
         .into_iter()
@@ -15965,6 +16042,10 @@ mod tests {
                         production_progress: 0.0,
                         assigned_cat: None,
                         automated_by: None,
+                        production_queue: crate::world_tick::default_production_queue(
+                            BuildingType::Shrine,
+                        ),
+                        production_paused: false,
                     },
                     BuildingRuntime {
                         id: "farmer-field".to_owned(),
@@ -15976,6 +16057,10 @@ mod tests {
                         production_progress: 0.0,
                         assigned_cat: None,
                         automated_by: None,
+                        production_queue: crate::world_tick::default_production_queue(
+                            BuildingType::Field,
+                        ),
+                        production_paused: false,
                     },
                 ],
                 world_tiles: BTreeMap::from([(
@@ -17214,6 +17299,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+            production_paused: false,
         });
         let reserved_site = pos(120, 120);
         for (id, building_id, site) in [
@@ -18784,6 +18871,10 @@ mod tests {
                 production_progress: 590.0,
                 assigned_cat: Some("smith".to_owned()),
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(
+                    BuildingType::Workshop,
+                ),
+                production_paused: false,
             }],
             last_tick: 0,
             test_rng_seed: Some(1),
@@ -18863,6 +18954,8 @@ mod tests {
                 production_progress: 590.0,
                 assigned_cat: staffed.then(|| "crafter".to_owned()),
                 automated_by: None,
+                production_queue: default_production_queue(building_type),
+                production_paused: false,
             }],
             last_tick: 0,
             test_rng_seed: Some(1),
@@ -19089,6 +19182,8 @@ mod tests {
                         production_progress: 590.0,
                         assigned_cat: Some(format!("raw-{}", if index == 0 { 'a' } else { 'b' })),
                         automated_by: None,
+                        production_queue: default_production_queue(building_type),
+                        production_paused: false,
                     })
                     .collect(),
                 last_tick: 0,
@@ -19159,6 +19254,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: Some("farmer".to_owned()),
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
+            production_paused: false,
         });
         phase_23_production(&mut colony, production_gate(elapsed, 2_000), seed);
         assert_eq!(colony.resources.grain, 2.0);
@@ -19364,6 +19461,113 @@ mod tests {
         assert_eq!(left.stockpiles, right.stockpiles);
         assert_eq!(left.cats, right.cats);
         assert_eq!(left.buildings, right.buildings);
+    }
+
+    #[test]
+    fn officer_station_matching_prefers_exact_labor_but_never_drafts_a_busy_cat() {
+        let mut colony = chain_colony(BuildingType::Sawmill, Resources::default(), false);
+        colony.cats.push(adult_idle_cat("preferred", "colony-1"));
+        colony.cats[1].preferred_labors.insert(Labor::Process);
+        colony
+            .officers
+            .insert(OfficerRole::Forester, colony.cats[0].id.clone());
+
+        auto_staff_idle_buildings(&mut colony, BuildingType::Sawmill, 1_000, false);
+        assert_eq!(
+            colony.buildings[0].assigned_cat.as_deref(),
+            Some("preferred")
+        );
+
+        colony.buildings[0].assigned_cat = None;
+        colony.buildings[0].automated_by = None;
+        colony.cats[1].carrying = Some(Carrying {
+            kind: CarryingKind::Water,
+            amount: 1.0,
+            job_ended_at: 1_000,
+            source_gather_spot: None,
+        });
+        auto_staff_idle_buildings(&mut colony, BuildingType::Sawmill, 2_000, false);
+        assert_eq!(
+            colony.buildings[0].assigned_cat.as_deref(),
+            Some("crafter"),
+            "preference cannot bypass the physical busy gate"
+        );
+    }
+
+    #[test]
+    fn physical_sawmill_queue_pause_and_empty_state_never_fetch_or_credit_early() {
+        for queue in [default_production_queue(BuildingType::Sawmill), Vec::new()] {
+            let mut colony = chain_colony(
+                BuildingType::Sawmill,
+                Resources {
+                    logs: 5.0,
+                    ..Resources::default()
+                },
+                true,
+            );
+            colony.buildings[0].production_queue = queue;
+            colony.buildings[0].production_paused = true;
+            place_chain_worker_at_seeded_store(&mut colony);
+            phase_23_production(&mut colony, production_gate(1, 1_000), 123);
+            assert!(colony.cats[0].carrying.is_none());
+            assert_eq!(colony.resources.logs, 5.0);
+            assert_eq!(colony.resources.lumber, 0.0);
+            assert_eq!(
+                building_production_block_reason(&colony, &colony.buildings[0]).as_deref(),
+                Some("paused")
+            );
+        }
+    }
+
+    #[test]
+    fn completed_sawmill_cycle_consumes_once_and_rotates_repeat_without_early_credit() {
+        let mut colony = chain_colony(
+            BuildingType::Sawmill,
+            Resources {
+                logs: 10.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.buildings[0].production_progress = crate::processing::SAWMILL_CYCLE_SEC - 1.0;
+        colony.buildings[0].production_queue = vec![
+            ProductionQueueEntry {
+                recipe_id: SAWMILL_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
+            ProductionQueueEntry {
+                recipe_id: SAWMILL_RECIPE_ID.to_owned(),
+                repeat: true,
+            },
+        ];
+        ensure_sawmill_station_stores(&mut colony, 0);
+        let input_id = stockpiles::station_input_id(&colony.buildings[0].id);
+        stockpiles::add_resource(
+            &mut colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == input_id)
+                .unwrap()
+                .contents,
+            ResourceKind::Logs,
+            5.0,
+        );
+        colony.cats[0].position = position_from_world(station_work_point(&colony.buildings[0]));
+        phase_23_production(&mut colony, production_gate(1, 1_000), 123);
+
+        assert_eq!(colony.buildings[0].production_queue.len(), 1);
+        assert!(colony.buildings[0].production_queue[0].repeat);
+        assert_eq!(
+            colony.resources.lumber, 0.0,
+            "station output is not aggregate stock"
+        );
+        assert_eq!(
+            building_station_inventory(&colony, &colony.buildings[0], true),
+            vec![(
+                ResourceKind::Lumber,
+                crate::processing::SAWMILL_LUMBER_PER_CYCLE
+            )]
+        );
     }
 
     #[test]
@@ -19654,6 +19858,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Sawmill),
+            production_paused: false,
         });
         colony
             .upgrade_tree
@@ -20033,6 +20239,8 @@ mod tests {
             production_progress: 590.0,
             assigned_cat: Some("stone-worker".to_owned()),
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::StonePrep),
+            production_paused: false,
         });
         let before_materials = colony.resources.materials;
         let before_outputs = colony.resources.planks + colony.resources.blocks;
@@ -20077,6 +20285,8 @@ mod tests {
             production_progress: 590.0,
             assigned_cat: Some("stone-worker".to_owned()),
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::StonePrep),
+            production_paused: false,
         });
 
         // Both benches have enough time for five cycles. Deficient-side repair must
@@ -20115,6 +20325,8 @@ mod tests {
             production_progress: 590.0,
             assigned_cat: Some("smith".to_owned()),
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Smithy),
+            production_paused: false,
         });
 
         phase_23_production(&mut colony, production_gate(1_230, 1_230_000), 123);
@@ -21283,6 +21495,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
+            production_paused: false,
         });
         assert_eq!(scaffold_cost(&colony, BuildingType::Workshop), (2.5, 2.5));
         assert_eq!(
@@ -21315,6 +21529,10 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(
+                    BuildingType::Workshop,
+                ),
+                production_paused: false,
             });
         }
         assert_eq!(scaffold_cost(&colony, BuildingType::Workshop), (5.0, 5.0));
@@ -21651,6 +21869,10 @@ mod tests {
                     production_progress: 0.0,
                     assigned_cat: Some("book".to_owned()),
                     automated_by: None,
+                    production_queue: crate::world_tick::default_production_queue(
+                        BuildingType::AccountingTent,
+                    ),
+                    production_paused: false,
                 }],
                 vec![adult_idle_cat("book", "colony-1")],
             )
@@ -22688,6 +22910,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: Some(smelter_cat_id),
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Smelter),
+            production_paused: false,
         });
         world.colonies.push(colony);
         world
@@ -23367,6 +23591,10 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(
+                BuildingType::ResearchHut,
+            ),
+            production_paused: false,
         });
         colony.jobs.push(JobRuntime {
             id: "interrupted-build".to_owned(),
@@ -23507,6 +23735,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
+            production_paused: false,
         });
         colony.jobs.push(JobRuntime {
             id: "raid-interrupted-build".to_owned(),
@@ -24449,6 +24679,20 @@ mod tests {
     fn old_age_death_cancels_the_dying_cats_active_and_queued_jobs() {
         let cat = ancient_cat("elder", "colony-1");
         let mut colony = old_age_colony(cat, 0.0);
+        let durable_queue = vec![ProductionQueueEntry {
+            recipe_id: SAWMILL_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        colony.buildings.push(BuildingRuntime {
+            id: "elder-sawmill".to_owned(),
+            building_type: BuildingType::Sawmill,
+            is_complete: true,
+            construction_progress: 100,
+            assigned_cat: Some("elder".to_owned()),
+            production_queue: durable_queue.clone(),
+            production_paused: true,
+            ..BuildingRuntime::default()
+        });
         colony.jobs = vec![
             JobRuntime {
                 id: "job-active".to_owned(),
@@ -24495,6 +24739,8 @@ mod tests {
             "expected both jobs cancelled, got {:?}",
             colony.jobs
         );
+        assert_eq!(colony.buildings[0].production_queue, durable_queue);
+        assert!(colony.buildings[0].production_paused);
     }
 
     #[test]
@@ -24583,6 +24829,10 @@ mod tests {
                     production_progress: 0.0,
                     assigned_cat: None,
                     automated_by: None,
+                    production_queue: crate::world_tick::default_production_queue(
+                        BuildingType::Shrine,
+                    ),
+                    production_paused: false,
                 },
                 BuildingRuntime {
                     id: "den-1".to_owned(),
@@ -24594,6 +24844,10 @@ mod tests {
                     production_progress: 0.0,
                     assigned_cat: None,
                     automated_by: None,
+                    production_queue: crate::world_tick::default_production_queue(
+                        BuildingType::Den,
+                    ),
+                    production_paused: false,
                 },
             ],
             test_rng_seed: Some(777),
@@ -24685,6 +24939,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+            production_paused: false,
         }];
 
         phase_6_life_simulation(&mut colony, production_gate(3_600, 3_600_000));
@@ -25137,6 +25393,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+            production_paused: false,
         });
     }
 
@@ -25529,6 +25787,7 @@ mod tests {
             role_xp: Default::default(),
             skills: Default::default(),
             boosted: false,
+            preferred_labors: Default::default(),
         }
     }
 
@@ -27329,6 +27588,8 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: Some("farmer".to_owned()),
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
+                production_paused: false,
             }],
             ..ColonyRuntime::default()
         }
@@ -27613,6 +27874,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+            production_paused: false,
         });
 
         phase_25c_prosperity_migration(&mut colony, production_gate(60, 31 * 60 * 60_000), 4242);
@@ -27760,6 +28023,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+            production_paused: false,
         });
 
         phase_6_life_simulation(&mut full, production_gate(3_600, 3_600_000));
@@ -27789,6 +28054,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+            production_paused: false,
         });
 
         phase_6_life_simulation(&mut colony, production_gate(3_600, 35 * 3_600_000));
@@ -27825,6 +28092,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+            production_paused: false,
         });
         let mut probationer = colony.cats[0].clone();
         probationer.id = "probation-breeding".to_owned();
@@ -27982,6 +28251,8 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+                production_paused: false,
             });
             let mut first_birth_hour = None;
             let mut min_alive = STARTER_CAT_COUNT;
@@ -28147,6 +28418,10 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(
+                    BuildingType::Workshop,
+                ),
+                production_paused: false,
             });
             filler_index += 1;
         }
@@ -28166,6 +28441,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
+            production_paused: false,
         });
         for (index, position) in den_positions.into_iter().enumerate() {
             colony.buildings.push(BuildingRuntime {
@@ -28178,6 +28455,8 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(BuildingType::Beds),
+                production_paused: false,
             });
         }
         let old_claim = colony.claimed_tiles.iter().copied().collect::<HashSet<_>>();
@@ -28406,6 +28685,8 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+                production_paused: false,
             });
             for tile in inspected {
                 let runtime = recovered
@@ -30431,6 +30712,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Shrine),
+            production_paused: false,
         });
         colony.buildings.push(BuildingRuntime {
             id: "building-test-den".to_owned(),
@@ -30442,6 +30725,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+            production_paused: false,
         });
         colony.buildings.push(BuildingRuntime {
             id: "steward-workshop".to_owned(),
@@ -30453,6 +30738,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
+            production_paused: false,
         });
         colony
     }
@@ -30629,6 +30916,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Shrine),
+            production_paused: false,
         });
         colony.buildings.push(BuildingRuntime {
             id: "building-adjacent-den".to_owned(),
@@ -30640,6 +30929,8 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+            production_paused: false,
         });
 
         let den = colony.buildings[1].clone();
@@ -31004,6 +31295,8 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
+                production_paused: false,
             });
         }
         colony.resources.food = 1.0;
@@ -31080,6 +31373,8 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
+                production_paused: false,
             });
         }
         colony.resources.food = 1_000.0;
@@ -31147,6 +31442,8 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
+                production_paused: false,
             });
         }
         establish_core_offices(&mut established);

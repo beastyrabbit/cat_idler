@@ -102,6 +102,7 @@ mod tests {
             role_xp: RoleXp::default(),
             skills: Default::default(),
             boosted: false,
+            preferred_labors: Default::default(),
         }
     }
 

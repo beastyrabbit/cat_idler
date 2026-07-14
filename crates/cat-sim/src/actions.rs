@@ -284,6 +284,19 @@ pub fn apply_action(
         } => with_colony(world, ctx, |colony| {
             boost_cat(colony, cat_id, *boosted, ctx)
         }),
+        proto::ClientAction::SetCatLaborPreference {
+            cat_id,
+            labor,
+            enabled,
+            ..
+        } => with_colony(world, ctx, |colony| {
+            set_cat_labor_preference(colony, cat_id, proto_to_sim_labor(*labor), *enabled, ctx)
+        }),
+        proto::ClientAction::EditProductionQueue {
+            building_id, edit, ..
+        } => with_colony(world, ctx, |colony| {
+            edit_production_queue(colony, building_id, edit, ctx)
+        }),
     }
 }
 
@@ -437,14 +450,19 @@ fn request_job(
         return fail("That request is already in progress.");
     }
 
+    let labor = Labor::for_job_kind(kind);
     let assigned_cat = match kind {
-        JobKind::HuntExpedition => select_best_cat(colony, Some(CatSpecialization::Hunter)),
-        JobKind::Quarry => select_best_cat(colony, Some(CatSpecialization::Architect)),
+        JobKind::HuntExpedition => {
+            select_best_cat_for_labor(colony, Some(CatSpecialization::Hunter), labor)
+        }
+        JobKind::Quarry => {
+            select_best_cat_for_labor(colony, Some(CatSpecialization::Architect), labor)
+        }
         JobKind::GatherLogs
         | JobKind::ForageFibre
         | JobKind::Explore
         | JobKind::FetchWater
-        | JobKind::ExpandVillage => select_best_cat(colony, None),
+        | JobKind::ExpandVillage => select_best_cat_for_labor(colony, None, labor),
         _ => None,
     };
     if matches!(
@@ -1188,6 +1206,95 @@ fn boost_cat(
         cat.boosted = boosted;
         colony.last_player_activity_at = Some(ctx.now_ms);
     }
+    ok()
+}
+
+fn set_cat_labor_preference(
+    colony: &mut ColonyRuntime,
+    cat_id: &str,
+    labor: Labor,
+    enabled: bool,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(cat) = colony
+        .cats
+        .iter_mut()
+        .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+    else {
+        return fail("That cat is not available.");
+    };
+    if enabled {
+        cat.preferred_labors.insert(labor);
+    } else {
+        cat.preferred_labors.remove(&labor);
+    }
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn edit_production_queue(
+    colony: &mut ColonyRuntime,
+    building_id: &str,
+    edit: &proto::ProductionQueueEdit,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(building) = colony.buildings.iter_mut().find(|building| {
+        building.id == building_id
+            && building.construction_progress >= 100
+            && building.building_type == BuildingType::Sawmill
+    }) else {
+        return fail("That building has no editable production queue.");
+    };
+
+    match edit {
+        proto::ProductionQueueEdit::Add { recipe_id, repeat } => {
+            if recipe_id != crate::world_tick::SAWMILL_RECIPE_ID {
+                return fail("That recipe is not available at this station.");
+            }
+            if building.production_queue.len() >= 32 {
+                return fail("That production queue is full.");
+            }
+            building
+                .production_queue
+                .push(crate::world_tick::ProductionQueueEntry {
+                    recipe_id: recipe_id.clone(),
+                    repeat: *repeat,
+                });
+        }
+        proto::ProductionQueueEdit::Remove { index } => {
+            if *index >= building.production_queue.len() {
+                return fail("That queue entry no longer exists.");
+            }
+            building.production_queue.remove(*index);
+            if *index == 0 {
+                building.production_progress = 0.0;
+            }
+        }
+        proto::ProductionQueueEdit::Move { index, direction } => {
+            let target = match direction {
+                proto::QueueMoveDirection::Up => index.checked_sub(1),
+                proto::QueueMoveDirection::Down => index.checked_add(1),
+            };
+            let Some(target) = target.filter(|target| *target < building.production_queue.len())
+            else {
+                return fail("That queue entry cannot move farther.");
+            };
+            building.production_queue.swap(*index, target);
+            if *index == 0 || target == 0 {
+                building.production_progress = 0.0;
+            }
+        }
+        proto::ProductionQueueEdit::SetRepeat { index, repeat } => {
+            let Some(entry) = building.production_queue.get_mut(*index) else {
+                return fail("That queue entry no longer exists.");
+            };
+            entry.repeat = *repeat;
+        }
+        proto::ProductionQueueEdit::SetPaused { paused } => {
+            building.production_paused = *paused;
+        }
+    }
+    colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
 
@@ -2437,6 +2544,12 @@ fn cat_snapshot(
             })
             .collect(),
         boosted: cat.boosted,
+        preferred_labors: cat
+            .preferred_labors
+            .iter()
+            .copied()
+            .map(sim_to_proto_labor)
+            .collect(),
         pregnant: cat.is_pregnant,
         housing_status,
         probation_remaining_game_minutes,
@@ -2463,6 +2576,29 @@ fn sim_to_proto_labor(labor: Labor) -> proto::Labor {
         Labor::Haul => proto::Labor::Haul,
         Labor::Research => proto::Labor::Research,
         Labor::Scout => proto::Labor::Scout,
+    }
+}
+
+fn proto_to_sim_labor(labor: proto::Labor) -> Labor {
+    match labor {
+        proto::Labor::Hunt => Labor::Hunt,
+        proto::Labor::Build => Labor::Build,
+        proto::Labor::Ritual => Labor::Ritual,
+        proto::Labor::Fight => Labor::Fight,
+        proto::Labor::Train => Labor::Train,
+        proto::Labor::Quarry => Labor::Quarry,
+        proto::Labor::Woodcut => Labor::Woodcut,
+        proto::Labor::Forage => Labor::Forage,
+        proto::Labor::FetchWater => Labor::FetchWater,
+        proto::Labor::Mill => Labor::Mill,
+        proto::Labor::Process => Labor::Process,
+        proto::Labor::Craft => Labor::Craft,
+        proto::Labor::Textile => Labor::Textile,
+        proto::Labor::Metalwork => Labor::Metalwork,
+        proto::Labor::Farm => Labor::Farm,
+        proto::Labor::Haul => Labor::Haul,
+        proto::Labor::Research => Labor::Research,
+        proto::Labor::Scout => Labor::Scout,
     }
 }
 
@@ -2714,7 +2850,14 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                     amount,
                 })
                 .collect(),
-                production_queue: crate::world_tick::building_production_queue(building),
+                production_queue: crate::world_tick::building_production_queue(building)
+                    .into_iter()
+                    .map(|entry| proto::ProductionQueueEntrySnapshot {
+                        recipe_id: entry.recipe_id,
+                        repeat: entry.repeat,
+                    })
+                    .collect(),
+                production_paused: building.production_paused,
                 production_block_reason: crate::world_tick::building_production_block_reason(
                     colony, building,
                 ),
@@ -2877,6 +3020,14 @@ fn select_best_cat(
     colony: &ColonyRuntime,
     specialization: Option<CatSpecialization>,
 ) -> Option<String> {
+    select_best_cat_for_labor(colony, specialization, None)
+}
+
+fn select_best_cat_for_labor(
+    colony: &ColonyRuntime,
+    specialization: Option<CatSpecialization>,
+    labor: Option<Labor>,
+) -> Option<String> {
     let busy = busy_cat_ids(colony);
     let assigned = assigned_building_cat_ids(colony);
     let mut pool = colony
@@ -2904,8 +3055,15 @@ fn select_best_cat(
 
     pool.into_iter()
         .max_by(|a, b| {
-            specialization_stat(a, specialization)
-                .total_cmp(&specialization_stat(b, specialization))
+            let a_preferred = labor.is_some_and(|labor| a.preferred_labors.contains(&labor));
+            let b_preferred = labor.is_some_and(|labor| b.preferred_labors.contains(&labor));
+            a_preferred
+                .cmp(&b_preferred)
+                .then_with(|| {
+                    specialization_stat(a, specialization)
+                        .total_cmp(&specialization_stat(b, specialization))
+                })
+                .then_with(|| b.id.cmp(&a.id))
         })
         .map(|cat| cat.id.clone())
 }
@@ -3561,7 +3719,7 @@ fn sim_to_proto_threat_band(band: threat::ThreatBand) -> proto::ThreatBand {
 mod tests {
     use super::*;
     use crate::village_layout::VILLAGE_ANCHOR;
-    use crate::world_tick::TraderRuntime;
+    use crate::world_tick::{BuildingRuntime, TraderRuntime};
 
     fn ctx() -> ActionCtx {
         ActionCtx {
@@ -4453,6 +4611,7 @@ mod tests {
             role_xp: Default::default(),
             skills: Default::default(),
             boosted: false,
+            preferred_labors: Default::default(),
         }
     }
 
@@ -4477,6 +4636,8 @@ mod tests {
             production_progress: 300.0,
             assigned_cat: Some(worker_id),
             automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
+            production_paused: false,
         });
 
         let snapshot = build_snapshot(&world, 1_000_000, 1);
@@ -4745,6 +4906,10 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                production_queue: crate::world_tick::default_production_queue(
+                    prerequisite.building,
+                ),
+                production_paused: false,
             });
         }
     }
@@ -5910,5 +6075,151 @@ mod tests {
             !snap.colonies[0].revealed_tiles.is_empty(),
             "revealed set must survive an empty world_tiles map"
         );
+    }
+
+    #[test]
+    fn guided_labor_preference_selects_the_exact_cat_without_bypassing_liveness() {
+        let mut world = world_with_one_colony();
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        let action = proto::ClientAction::SetCatLaborPreference {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "signed".to_owned(),
+            cat_id: cat_id.clone(),
+            labor: proto::Labor::Scout,
+            enabled: true,
+        };
+        assert!(apply_action(&mut world, &action, &ctx()).ok);
+        assert!(
+            world.colonies[0].cats[0]
+                .preferred_labors
+                .contains(&Labor::Scout)
+        );
+
+        let explore = proto::ClientAction::RequestJob {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "signed".to_owned(),
+            kind: proto::JobKind::Explore,
+        };
+        assert!(apply_action(&mut world, &explore, &ctx()).ok);
+        assert_eq!(
+            world.colonies[0]
+                .jobs
+                .last()
+                .unwrap()
+                .assigned_cat
+                .as_deref(),
+            Some(cat_id.as_str())
+        );
+
+        world.colonies[0].cats[0].death_time = Some(ctx().now_ms);
+        let clear = proto::ClientAction::SetCatLaborPreference {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "signed".to_owned(),
+            cat_id,
+            labor: proto::Labor::Scout,
+            enabled: false,
+        };
+        assert!(!apply_action(&mut world, &clear, &ctx()).ok);
+    }
+
+    #[test]
+    fn guided_sawmill_queue_edits_are_ordered_repeatable_and_exact() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.buildings.push(BuildingRuntime {
+            id: "sawmill-player".to_owned(),
+            building_type: BuildingType::Sawmill,
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: Vec::new(),
+            ..BuildingRuntime::default()
+        });
+        let edit = |edit| proto::ClientAction::EditProductionQueue {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "signed".to_owned(),
+            building_id: "sawmill-player".to_owned(),
+            edit,
+        };
+        for repeat in [false, true] {
+            assert!(
+                apply_action(
+                    &mut world,
+                    &edit(proto::ProductionQueueEdit::Add {
+                        recipe_id: crate::world_tick::SAWMILL_RECIPE_ID.to_owned(),
+                        repeat,
+                    }),
+                    &ctx(),
+                )
+                .ok
+            );
+        }
+        assert!(
+            apply_action(
+                &mut world,
+                &edit(proto::ProductionQueueEdit::Move {
+                    index: 1,
+                    direction: proto::QueueMoveDirection::Up,
+                }),
+                &ctx(),
+            )
+            .ok
+        );
+        let queue = &world.colonies[0].buildings.last().unwrap().production_queue;
+        assert_eq!(
+            queue.iter().map(|entry| entry.repeat).collect::<Vec<_>>(),
+            vec![true, false]
+        );
+        assert!(
+            apply_action(
+                &mut world,
+                &edit(proto::ProductionQueueEdit::SetPaused { paused: true }),
+                &ctx(),
+            )
+            .ok
+        );
+        assert!(
+            world.colonies[0]
+                .buildings
+                .last()
+                .unwrap()
+                .production_paused
+        );
+
+        assert!(
+            !apply_action(
+                &mut world,
+                &edit(proto::ProductionQueueEdit::Add {
+                    recipe_id: "imaginary_recipe".to_owned(),
+                    repeat: false,
+                }),
+                &ctx(),
+            )
+            .ok
+        );
+    }
+
+    #[test]
+    fn foreign_personal_village_denies_labor_and_queue_mutations() {
+        let mut world = world_with_one_colony();
+        world.colonies[0].kind = VillageKind::Personal;
+        world.colonies[0].owner_player_id = Some("another-player".to_owned());
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::SetCatLaborPreference {
+                session_id: "sess_1".to_owned(),
+                nickname: "Player".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id,
+                labor: proto::Labor::Haul,
+                enabled: true,
+            },
+            &ctx(),
+        );
+        assert!(!result.ok);
     }
 }

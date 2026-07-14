@@ -27,9 +27,10 @@ use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
     CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
     FarmStage, FootprintSize, GateSide, ItemStackSnapshot, JobKind, Labor, OfficerRole,
-    RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp, ScoutMission,
-    ScoutResource, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint,
-    TraderBuyOffer, TraderSellOffer, TraderVisitState, VillageKind, WorldSnapshot, ZoneKind,
+    ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts, ResourceCapacities,
+    ResourceKind, RoleXp, ScoutMission, ScoutResource, Specialization, StockLedgerSnapshot,
+    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderVisitState, VillageKind,
+    WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -1815,6 +1816,26 @@ const CAT_NEEDS: [(NeedKind, &str); 4] = [
     (NeedKind::Rest, "rest"),
     (NeedKind::Health, "health"),
 ];
+const ALL_LABORS: [Labor; 18] = [
+    Labor::Hunt,
+    Labor::Build,
+    Labor::Ritual,
+    Labor::Fight,
+    Labor::Train,
+    Labor::Quarry,
+    Labor::Woodcut,
+    Labor::Forage,
+    Labor::FetchWater,
+    Labor::Mill,
+    Labor::Process,
+    Labor::Craft,
+    Labor::Textile,
+    Labor::Metalwork,
+    Labor::Farm,
+    Labor::Haul,
+    Labor::Research,
+    Labor::Scout,
+];
 /// Tags a need-bar fill node so the inspector can resize/recolor it each tick.
 #[derive(Component, Clone, Copy)]
 struct NeedBar(NeedKind);
@@ -1963,6 +1984,34 @@ struct BoostButton;
 /// The label text inside the boost button, repainted live from `boosted`.
 #[derive(Component)]
 struct BoostButtonText;
+#[derive(Component)]
+struct CycleLaborPreference;
+#[derive(Component)]
+struct ToggleLaborPreference;
+#[derive(Component)]
+struct LaborPreferenceText;
+#[derive(Resource, Default)]
+struct LaborPreferenceUi {
+    selected: usize,
+}
+#[derive(Component)]
+struct StationQueueControls;
+#[derive(Component)]
+struct StationQueueText;
+#[derive(Component, Clone, Copy)]
+enum StationQueueButton {
+    Add,
+    SelectNext,
+    MoveUp,
+    MoveDown,
+    Remove,
+    ToggleRepeat,
+    TogglePause,
+}
+#[derive(Resource, Default)]
+struct StationQueueUi {
+    selected: usize,
+}
 /// Marker for the HUD colony header text (name / leader / pop / threat).
 #[derive(Component)]
 struct HudHeaderText;
@@ -2718,6 +2767,8 @@ pub fn run() {
         .insert_resource(Selection::default())
         .insert_resource(StockpileSelection::default())
         .insert_resource(BuildingSelection::default())
+        .insert_resource(LaborPreferenceUi::default())
+        .insert_resource(StationQueueUi::default())
         .insert_resource(OfficersUi { visible: true })
         .insert_resource(OrdersUi::default())
         .insert_resource(GovernanceUi::default())
@@ -2771,6 +2822,8 @@ pub fn run() {
                     select_building,
                     close_inspectors_on_esc,
                     update_building_inspector,
+                    update_station_queue_controls.after(update_building_inspector),
+                    handle_station_queue_buttons,
                     update_remove_panel,
                     handle_remove_button,
                     update_inspector,
@@ -2828,6 +2881,8 @@ pub fn run() {
                     handle_trade_buttons,
                     update_boost_button,
                     handle_boost_button,
+                    update_labor_preference_controls,
+                    handle_labor_preference_buttons,
                     toggle_census,
                     update_census,
                     (
@@ -3726,6 +3781,19 @@ fn setup(
                         BoostButtonText,
                     )],
                 ));
+                body.spawn(ui_text("Preferred labor:", FS_SMALL, UI_MUTED));
+                body.spawn(bottom_bar_row_node()).with_children(|row| {
+                    row.spawn((
+                        ui_button_small(),
+                        CycleLaborPreference,
+                        children![(ui_text("hunt", FS_SMALL, UI_INK), LaborPreferenceText)],
+                    ));
+                    row.spawn((
+                        ui_button_small(),
+                        ToggleLaborPreference,
+                        children![ui_text("enable / clear", FS_SMALL, UI_INK)],
+                    ));
+                });
                 body.spawn(ui_text("Appoint officer:", FS_SMALL, UI_MUTED));
                 body.spawn(Node {
                     flex_direction: FlexDirection::Row,
@@ -3789,6 +3857,35 @@ fn setup(
             panel.spawn(ui_title_bar("Building"));
             panel.spawn(ui_panel_body()).with_children(|body| {
                 body.spawn((ui_text("", FS_BODY, UI_INK), BuildingInspectorText));
+                body.spawn((
+                    Node {
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(UI_GAP_TIGHT),
+                        display: Display::None,
+                        ..default()
+                    },
+                    StationQueueControls,
+                ))
+                .with_children(|controls| {
+                    controls.spawn((ui_text("", FS_SMALL, UI_MUTED), StationQueueText));
+                    controls.spawn(bottom_bar_row_node()).with_children(|row| {
+                        for (kind, label) in [
+                            (StationQueueButton::Add, "+ cut logs"),
+                            (StationQueueButton::SelectNext, "next"),
+                            (StationQueueButton::MoveUp, "up"),
+                            (StationQueueButton::MoveDown, "down"),
+                            (StationQueueButton::Remove, "remove"),
+                            (StationQueueButton::ToggleRepeat, "repeat"),
+                            (StationQueueButton::TogglePause, "pause"),
+                        ] {
+                            row.spawn((
+                                ui_button_small(),
+                                kind,
+                                children![ui_text(label, FS_SMALL, UI_INK)],
+                            ));
+                        }
+                    });
+                });
             });
         });
 
@@ -5874,6 +5971,234 @@ fn handle_boost_button(
             });
         }
     }
+}
+
+fn labor_name(labor: Labor) -> &'static str {
+    match labor {
+        Labor::Hunt => "hunt",
+        Labor::Build => "build",
+        Labor::Ritual => "ritual",
+        Labor::Fight => "fight",
+        Labor::Train => "train",
+        Labor::Quarry => "quarry",
+        Labor::Woodcut => "woodcut",
+        Labor::Forage => "forage",
+        Labor::FetchWater => "fetch water",
+        Labor::Mill => "mill",
+        Labor::Process => "process",
+        Labor::Craft => "craft",
+        Labor::Textile => "textile",
+        Labor::Metalwork => "metalwork",
+        Labor::Farm => "farm",
+        Labor::Haul => "haul",
+        Labor::Research => "research",
+        Labor::Scout => "scout",
+    }
+}
+
+fn update_labor_preference_controls(
+    latest: Res<LatestSnapshot>,
+    selection: Res<Selection>,
+    ui: Res<LaborPreferenceUi>,
+    mut text: Query<&mut Text, With<LaborPreferenceText>>,
+) {
+    if !latest.is_changed() && !selection.is_changed() && !ui.is_changed() {
+        return;
+    }
+    let Ok(mut text) = text.single_mut() else {
+        return;
+    };
+    let labor = ALL_LABORS[ui.selected % ALL_LABORS.len()];
+    let enabled =
+        selected_cat(&latest, &selection).is_some_and(|cat| cat.preferred_labors.contains(&labor));
+    text.0 = format!(
+        "{} [{}]",
+        labor_name(labor),
+        if enabled { "on" } else { "off" }
+    );
+}
+
+fn handle_labor_preference_buttons(
+    session: Res<Session>,
+    selection: Res<Selection>,
+    latest: Res<LatestSnapshot>,
+    mut ui: ResMut<LaborPreferenceUi>,
+    mut outgoing: ResMut<OutgoingActions>,
+    cycle: Query<&Interaction, (Changed<Interaction>, With<CycleLaborPreference>)>,
+    toggle: Query<&Interaction, (Changed<Interaction>, With<ToggleLaborPreference>)>,
+) {
+    if cycle
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        ui.selected = (ui.selected + 1) % ALL_LABORS.len();
+    }
+    if !toggle
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+        || !session.ready
+    {
+        return;
+    }
+    let Some(cat) = selected_cat(&latest, &selection) else {
+        return;
+    };
+    let labor = ALL_LABORS[ui.selected % ALL_LABORS.len()];
+    if let Some(action) = labor_preference_action(&session, cat, labor) {
+        outgoing.0.push(action);
+    }
+}
+
+fn labor_preference_action(
+    session: &Session,
+    cat: &CatSnapshot,
+    labor: Labor,
+) -> Option<ClientAction> {
+    session.ready.then(|| ClientAction::SetCatLaborPreference {
+        session_id: session.session_id.clone(),
+        nickname: "Desktop Cat".to_owned(),
+        sig: session.sig.clone(),
+        cat_id: cat.id.clone(),
+        labor,
+        enabled: !cat.preferred_labors.contains(&labor),
+    })
+}
+
+fn update_station_queue_controls(
+    latest: Res<LatestSnapshot>,
+    selection: Res<BuildingSelection>,
+    mut ui: ResMut<StationQueueUi>,
+    mut panel: Query<&mut Node, With<StationQueueControls>>,
+    mut text: Query<&mut Text, With<StationQueueText>>,
+) {
+    if !latest.is_changed() && !selection.is_changed() && !ui.is_changed() {
+        return;
+    }
+    let (Ok(mut panel), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
+        return;
+    };
+    let building = selection.selected.as_deref().and_then(|id| {
+        latest
+            .0
+            .as_ref()
+            .and_then(|world| world.colonies.first())
+            .and_then(|colony| colony.buildings.iter().find(|building| building.id == id))
+    });
+    let Some(building) =
+        building.filter(|building| building.building_type == BuildingType::Sawmill)
+    else {
+        panel.display = Display::None;
+        ui.selected = 0;
+        return;
+    };
+    panel.display = Display::Flex;
+    if building.production_queue.is_empty() {
+        ui.selected = 0;
+        text.0 = format!(
+            "queue empty — add cut logs | {}",
+            if building.production_paused {
+                "paused"
+            } else {
+                "running"
+            }
+        );
+    } else {
+        ui.selected = ui.selected.min(building.production_queue.len() - 1);
+        let entry = &building.production_queue[ui.selected];
+        text.0 = format!(
+            "queue {}/{}: {}{} | {}",
+            ui.selected + 1,
+            building.production_queue.len(),
+            entry.recipe_id.replace('_', " "),
+            if entry.repeat { " (repeat)" } else { " (once)" },
+            if building.production_paused {
+                "paused"
+            } else {
+                "running"
+            },
+        );
+    }
+}
+
+fn handle_station_queue_buttons(
+    session: Res<Session>,
+    latest: Res<LatestSnapshot>,
+    selection: Res<BuildingSelection>,
+    mut ui: ResMut<StationQueueUi>,
+    mut outgoing: ResMut<OutgoingActions>,
+    buttons: Query<(&Interaction, &StationQueueButton), Changed<Interaction>>,
+) {
+    let Some(building) = selection.selected.as_deref().and_then(|id| {
+        latest
+            .0
+            .as_ref()
+            .and_then(|world| world.colonies.first())
+            .and_then(|colony| colony.buildings.iter().find(|building| building.id == id))
+    }) else {
+        return;
+    };
+    for (interaction, button) in &buttons {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if matches!(button, StationQueueButton::SelectNext) {
+            if !building.production_queue.is_empty() {
+                ui.selected = (ui.selected + 1) % building.production_queue.len();
+            }
+            continue;
+        }
+        if !session.ready {
+            continue;
+        }
+        let Some(action) = station_queue_action(&session, building, ui.selected, *button) else {
+            continue;
+        };
+        outgoing.0.push(action);
+    }
+}
+
+fn station_queue_action(
+    session: &Session,
+    building: &BuildingSnapshot,
+    selected: usize,
+    button: StationQueueButton,
+) -> Option<ClientAction> {
+    if !session.ready || building.building_type != BuildingType::Sawmill {
+        return None;
+    }
+    let edit = match button {
+        StationQueueButton::Add => ProductionQueueEdit::Add {
+            recipe_id: "logs_to_lumber".to_owned(),
+            repeat: true,
+        },
+        StationQueueButton::MoveUp => ProductionQueueEdit::Move {
+            index: selected,
+            direction: QueueMoveDirection::Up,
+        },
+        StationQueueButton::MoveDown => ProductionQueueEdit::Move {
+            index: selected,
+            direction: QueueMoveDirection::Down,
+        },
+        StationQueueButton::Remove => ProductionQueueEdit::Remove { index: selected },
+        StationQueueButton::ToggleRepeat => {
+            let entry = building.production_queue.get(selected)?;
+            ProductionQueueEdit::SetRepeat {
+                index: selected,
+                repeat: !entry.repeat,
+            }
+        }
+        StationQueueButton::TogglePause => ProductionQueueEdit::SetPaused {
+            paused: !building.production_paused,
+        },
+        StationQueueButton::SelectNext => return None,
+    };
+    Some(ClientAction::EditProductionQueue {
+        session_id: session.session_id.clone(),
+        nickname: "Desktop Cat".to_owned(),
+        sig: session.sig.clone(),
+        building_id: building.id.clone(),
+        edit,
+    })
 }
 
 /// The currently selected, still-living cat in the latest snapshot (if any).
@@ -8666,8 +8991,16 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
     if !building.production_queue.is_empty() {
         out.push_str(&format!(
             "\nqueue: {}",
-            building.production_queue.join(" -> ")
+            building
+                .production_queue
+                .iter()
+                .map(|entry| format!("{}{}", entry.recipe_id, if entry.repeat { "*" } else { "" }))
+                .collect::<Vec<_>>()
+                .join(" -> ")
         ));
+    }
+    if building.production_paused {
+        out.push_str("\nproduction paused");
     }
     if let Some(reason) = &building.production_block_reason {
         out.push_str(&format!("\nblocked: {}", reason.replace('_', " ")));
@@ -9016,6 +9349,16 @@ fn inspector_text(cat: &CatSnapshot) -> String {
             }
         }
     };
+    let preferred = if cat.preferred_labors.is_empty() {
+        "none".to_owned()
+    } else {
+        cat.preferred_labors
+            .iter()
+            .copied()
+            .map(labor_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     format!(
         "{name}\n\
          {spec} - {stage} ({age:.0}h)\n\
@@ -9025,6 +9368,7 @@ fn inspector_text(cat: &CatSnapshot) -> String {
          {housing}\n\
          \n\
          skills: {skills}\n\
+         prefers: {preferred}\n\
          leadership {lead:.0}",
         name = cat.name,
         spec = specialization_name(cat.specialization),
@@ -9036,6 +9380,7 @@ fn inspector_text(cat: &CatSnapshot) -> String {
         skills = cat_skills_line(&cat.skills, &cat.role_xp),
         lead = cat.stats.leadership,
         housing = housing,
+        preferred = preferred,
     )
 }
 
@@ -10341,6 +10686,7 @@ mod tests {
             parent_ids: Vec::new(),
             parents: Vec::new(),
             boosted,
+            preferred_labors: Vec::new(),
             pregnant: false,
             housing_status: cat_protocol::CatHousingStatus::Housed,
             probation_remaining_game_minutes: None,
@@ -10540,6 +10886,30 @@ mod tests {
         // The star prefix ties the button to the on-map marker in both states.
         assert!(boost_button_label(false).starts_with('★'));
         assert!(boost_button_label(true).starts_with('★'));
+    }
+
+    #[test]
+    fn cat_labor_control_builds_exact_signed_toggle_from_snapshot_state() {
+        let session = signed_session("labor-session");
+        let mut cat = census_cat(30.0, None, false);
+        cat.id = "worker-7".to_owned();
+        assert_eq!(
+            labor_preference_action(&session, &cat, Labor::Process),
+            Some(ClientAction::SetCatLaborPreference {
+                session_id: "labor-session".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: "worker-7".to_owned(),
+                labor: Labor::Process,
+                enabled: true,
+            })
+        );
+        cat.preferred_labors.push(Labor::Process);
+        assert!(matches!(
+            labor_preference_action(&session, &cat, Labor::Process),
+            Some(ClientAction::SetCatLaborPreference { enabled: false, .. })
+        ));
+        assert!(labor_preference_action(&Session::default(), &cat, Labor::Process).is_none());
     }
 
     #[test]
@@ -11907,6 +12277,35 @@ mod tests {
         assert!(ws.contains("blocked: output in transit"));
         assert!(ws.contains("worker: hauling output to storage"));
         assert!(ws.contains("outbound: 2.0"));
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("queue-session"),
+                workshop,
+                0,
+                StationQueueButton::ToggleRepeat,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                session_id,
+                building_id,
+                edit: ProductionQueueEdit::SetRepeat {
+                    index: 0,
+                    repeat: false,
+                },
+                ..
+            }) if session_id == "queue-session" && building_id == "b1"
+        ));
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("queue-session"),
+                workshop,
+                0,
+                StationQueueButton::TogglePause,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                edit: ProductionQueueEdit::SetPaused { paused: true },
+                ..
+            })
+        ));
         // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);
         assert!(den_text.contains("under construction 40%"));

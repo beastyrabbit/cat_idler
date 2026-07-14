@@ -1,7 +1,7 @@
 //! Cat and colony entity state ported from `types/game.ts` plus persisted fields
 //! from `db/schema.ts`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -263,6 +263,11 @@ pub struct Cat {
     /// null-default back-compat).
     #[serde(default)]
     pub boosted: bool,
+    /// Player-maintained labor preferences. Matching treats these as a strong,
+    /// bounded preference among otherwise eligible cats; they never confer
+    /// eligibility or suppress emergency work.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub preferred_labors: BTreeSet<Labor>,
 }
 
 impl Cat {
@@ -409,6 +414,7 @@ mod tests {
             },
             skills: BTreeMap::from([(Labor::Hunt, 5.0), (Labor::Haul, 2.0)]),
             boosted: true,
+            preferred_labors: Default::default(),
         };
 
         assert_eq!(colony.world_seed, Some(42));

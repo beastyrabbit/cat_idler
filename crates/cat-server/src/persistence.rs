@@ -21,9 +21,9 @@ use cat_sim::{
     world_gen::TileResources,
     world_tick::{
         BuildingRuntime, ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime,
-        EventKind, EventLog, JobMetadata, JobRequester, JobRuntime, RaiderRuntime, TilePos,
-        VillageKind, VoteRuntime, WorldState, WorldTileRuntime, ZoneRuntime,
-        founding_revealed_tiles,
+        EventKind, EventLog, JobMetadata, JobRequester, JobRuntime, ProductionQueueEntry,
+        RaiderRuntime, TilePos, VillageKind, VoteRuntime, WorldState, WorldTileRuntime,
+        ZoneRuntime, default_production_queue, founding_revealed_tiles,
     },
     zones::{ZoneKind, ZoneRect},
 };
@@ -138,7 +138,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             specialization TEXT,
             roleXp TEXT,
             skills TEXT,
-            boosted INTEGER NOT NULL DEFAULT 0
+            boosted INTEGER NOT NULL DEFAULT 0,
+            preferredLabors TEXT
         );
 
         CREATE TABLE IF NOT EXISTS jobs (
@@ -171,6 +172,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             isComplete INTEGER NOT NULL DEFAULT 0,
             assignedCatId TEXT,
             automatedOfficerRole TEXT,
+            productionQueue TEXT,
+            productionPaused INTEGER NOT NULL DEFAULT 0,
             -- Buildings are colony-scoped: type-derived ids (e.g. "shrine") are
             -- only unique within a colony, so the key is (colonyId, id).
             PRIMARY KEY (colonyId, id)
@@ -300,8 +303,15 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "lastOfferingAt", "INTEGER"),
         ("cats", "skills", "TEXT"),
         ("cats", "boosted", "INTEGER NOT NULL DEFAULT 0"),
+        ("cats", "preferredLabors", "TEXT"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
         ("buildings", "automatedOfficerRole", "TEXT"),
+        ("buildings", "productionQueue", "TEXT"),
+        (
+            "buildings",
+            "productionPaused",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
     ];
     for (table, column, decl) in ADDITIONS {
         if !column_exists(conn, table, column)? {
@@ -758,10 +768,10 @@ fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<(
             id, colonyId, name, parentIds, birthTime, deathTime, stats, needs,
             currentTask, position, destination, carrying, activity, isPregnant,
             pregnancyDueTime, ageHours, pregnancyDueAgeHours, pregnancyMateId,
-            spriteParams, specialization, roleXp, skills, boosted
+            spriteParams, specialization, roleXp, skills, boosted, preferredLabors
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
         )",
         params![
             scoped_storage_id(colony_id, &cat.id),
@@ -799,6 +809,7 @@ fn save_cat(conn: &Connection, colony_id: &str, cat: &Cat) -> rusqlite::Result<(
             serde_json::to_string(&cat.role_xp).map_err(to_sql_json)?,
             serde_json::to_string(&cat.skills).map_err(to_sql_json)?,
             cat.boosted,
+            serde_json::to_string(&cat.preferred_labors).map_err(to_sql_json)?,
         ],
     )?;
     Ok(())
@@ -809,7 +820,7 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
         "SELECT id, name, parentIds, birthTime, deathTime, stats, needs,
                 currentTask, position, destination, carrying, activity, isPregnant,
                 pregnancyDueTime, ageHours, pregnancyDueAgeHours, pregnancyMateId,
-                spriteParams, specialization, roleXp, skills, boosted
+                spriteParams, specialization, roleXp, skills, boosted, preferredLabors
          FROM cats WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
@@ -819,6 +830,7 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
         let position_json: String = row.get("position")?;
         let role_xp_json: Option<String> = row.get("roleXp")?;
         let skills_json: Option<String> = row.get("skills")?;
+        let preferred_labors_json: Option<String> = row.get("preferredLabors")?;
         Ok(Cat {
             id: runtime_id_from_storage(colony_id, row.get("id")?),
             colony_id: colony_id.to_owned(),
@@ -871,6 +883,10 @@ fn load_cats(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Cat>> {
                 .transpose()?
                 .unwrap_or_default(),
             boosted: row.get("boosted")?,
+            preferred_labors: preferred_labors_json
+                .map(|raw| serde_json::from_str::<BTreeSet<Labor>>(&raw).map_err(from_sql_json))
+                .transpose()?
+                .unwrap_or_default(),
         })
     })?;
     rows.collect()
@@ -947,8 +963,9 @@ fn save_building(
     conn.execute(
         "INSERT INTO buildings (
             id, colonyId, type, level, position, constructionProgress,
-            productionProgress, isComplete, assignedCatId, automatedOfficerRole
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            productionProgress, isComplete, assignedCatId, automatedOfficerRole,
+            productionQueue, productionPaused
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -960,6 +977,8 @@ fn save_building(
             building.is_complete,
             building.assigned_cat,
             automated_officer_role,
+            serde_json::to_string(&building.production_queue).map_err(to_sql_json)?,
+            building.production_paused,
         ],
     )?;
     Ok(())
@@ -968,15 +987,24 @@ fn save_building(
 fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<BuildingRuntime>> {
     let mut stmt = conn.prepare(
         "SELECT id, type, level, position, constructionProgress, productionProgress,
-                isComplete, assignedCatId, automatedOfficerRole
+                isComplete, assignedCatId, automatedOfficerRole, productionQueue,
+                productionPaused
          FROM buildings WHERE colonyId = ?1 ORDER BY rowid",
     )?;
     let rows = stmt.query_map([colony_id], |row| {
         let position_json: String = row.get("position")?;
         let progress: f64 = row.get("constructionProgress")?;
+        let building_type = parse_wire_enum::<BuildingType>(&row.get::<_, String>("type")?)?;
+        let production_queue = row
+            .get::<_, Option<String>>("productionQueue")?
+            .map(|raw| {
+                serde_json::from_str::<Vec<ProductionQueueEntry>>(&raw).map_err(from_sql_json)
+            })
+            .transpose()?
+            .unwrap_or_else(|| default_production_queue(building_type));
         Ok(BuildingRuntime {
             id: runtime_id_from_storage(colony_id, row.get("id")?),
-            building_type: parse_wire_enum::<BuildingType>(&row.get::<_, String>("type")?)?,
+            building_type,
             level: row.get("level")?,
             position: parse_tile_pos_str(&position_json)?,
             is_complete: row.get("isComplete")?,
@@ -987,6 +1015,8 @@ fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Bu
                 .get::<_, Option<String>>("automatedOfficerRole")?
                 .map(|raw| serde_json::from_str::<OfficerRole>(&raw).map_err(from_sql_json))
                 .transpose()?,
+            production_queue,
+            production_paused: row.get("productionPaused")?,
         })
     })?;
     rows.collect()
@@ -1855,6 +1885,11 @@ mod tests {
             construction_progress: 100,
             production_progress: 317.5,
             assigned_cat: Some(colony.cats[0].id.clone()),
+            production_queue: vec![ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
+                repeat: false,
+            }],
+            production_paused: true,
             ..BuildingRuntime::default()
         });
         let transit_id = cat_sim::stockpiles::station_transit_id(building_id);
@@ -1911,6 +1946,9 @@ mod tests {
             Some(format!("station-in|{building_id}|{transit_id}").as_str())
         );
         assert_eq!(colony.buildings.last().unwrap().production_progress, 317.5);
+        assert_eq!(colony.buildings.last().unwrap().production_queue.len(), 1);
+        assert!(!colony.buildings.last().unwrap().production_queue[0].repeat);
+        assert!(colony.buildings.last().unwrap().production_paused);
     }
 
     #[test]
@@ -3093,6 +3131,8 @@ mod tests {
             production_progress: 5.5,
             assigned_cat: Some(colony.cats[3].id.clone()),
             automated_by: Some(OfficerRole::Captain),
+            production_queue: Vec::new(),
+            production_paused: false,
         });
         colony.events.push(EventLog {
             id: "event-audit".to_owned(),
@@ -3183,6 +3223,7 @@ mod tests {
             cat_a.gain_skill(Labor::Hunt, 9.0);
             cat_a.gain_skill(Labor::Craft, 3.0);
             cat_a.boosted = true;
+            cat_a.preferred_labors = BTreeSet::from([Labor::Hunt, Labor::Research]);
         }
         colony.cats[1].death_time = Some(5_700_000);
 
