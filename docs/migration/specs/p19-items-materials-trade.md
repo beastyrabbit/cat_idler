@@ -2,7 +2,8 @@
 
 > **Living target spec.** The item/material model, a small recipe subset, visiting traders, and
 > basic buy/sell actions exist. Full source/crafting breadth, local physical inventories,
-> quality/UI coverage, fishing, and transport remain open. Configurable, consensual inter-village
+> quality/UI coverage, and built transport remain open. Finite fresh-Fish habitats and the
+> physical shore→store route are verified. Configurable, consensual inter-village
 > resource barter is verified with a 32-open-offer cap and atomic inventory/storage rechecks;
 > deeper item-stack/route/relationship trade remains open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).

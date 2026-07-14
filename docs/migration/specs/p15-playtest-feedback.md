@@ -4,7 +4,8 @@
 > shrine-return scouting, visible authored/traffic roads, exact footprints/depth, and secure
 > global/personal village foundations are verified. Coordinate placement, selectable/removable
 > designations, election controls, and the first physical Sawmill inspector/queue are verified;
-> broader physical stations, shared-world depth, and the baseline Leader's browser/native visual close-out remain open in
+> the baseline Leader's browser/native shrine-return close-out is also verified. Broader physical
+> stations and shared-world depth remain open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Captured from live `cargo dev` playtesting. Triaged; "already there" notes from a code survey.

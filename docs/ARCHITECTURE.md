@@ -128,7 +128,7 @@ maintained product behavior rather than migration:
 - **Physical work and production breadth.** Founding now seeds a finite spatial storehouse and the
   logs→Sawmill→lumber chain physically routes a staffed cat, reserved cargo, station-local input
   and output, and final stockpile delivery before aggregate credit. The inspector exposes that
-  real queue and travel state. All 18 maintained labor skills now have truthful gain sources,
+  real queue and travel state. All 19 maintained labor skills now have truthful gain sources,
   bounded effects, persistence, and inspector visibility. Other workshops still draw aggregate
   inputs/outputs, and many recipes/material variants are absent.
 - **Multi-village product model.** One canonical communal village and one personal village per
@@ -159,10 +159,10 @@ maintained product behavior rather than migration:
 - **Spatial, transport, and visual completeness.** Exact tree/rock occupancy, visible road
   surfaces, persisted exterior agricultural claims, staged outer-wall construction with an
   atomic one-gate cutover, and persisted finite-water-habitat fishing routes are live. Real
-  rail/ship routes and remaining integrated
-  wall/menu/WASM skin captures remain incomplete. Accounting
-  Tent is snapshot-reachable and has an explicit open-station client composition; the maintained
-  Adventure panel, button, progress, minimap, and cursor foundation is native-framebuffer verified.
+  rail/ship routes remain incomplete. The integrated staged-wall, Accounting Tent, native UI,
+  and optimized-WASM skin captures are verified. Accounting Tent is snapshot-reachable and has
+  an explicit open-station client composition; the maintained Adventure panel, button, progress,
+  minimap, and cursor foundation is native- and browser-framebuffer verified.
 
 The evidence and completion tests for each gap live in `docs/IMPLEMENTATION_AUDIT.md`.
 

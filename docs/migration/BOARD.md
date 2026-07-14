@@ -700,6 +700,11 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Remaining breadth includes bone/gem/clay/metal item variants, finished functional
   tool/weapon/armor chains, broader physical local inventories, and reachable exact client
   controls for every chain.
+- Physical-economy follow-ups remain explicit: farms and all non-Sawmill stations need the
+  station-local carry/work/delivery contract; the Accountant must visit and refresh individual
+  piles; climate resource hints must become real fine-biome sources; and registry-only research
+  payloads need runtime consumers. P16's older founding-stockpile numbers also need one canonical
+  decision and exact aggregate/physical-pile tests.
 
 ### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)
 - **Multi-village founding and contact**: one larger durable communal global village (30 adults,

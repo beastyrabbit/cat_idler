@@ -73,7 +73,8 @@ so a correct scout route cannot conceal a missing founding dispatch.
 1. **Finish the physical economy.** The finite founding storehouse and complete physical
    logs→Sawmill→lumber route are verified, including station-local ledgers, transit reservation,
    delivery-before-credit, death conservation, restart persistence, and the live inspector. Apply
-   that contract to every other workshop and farm, and complete recipes/materials. All 19
+   that contract to every other workshop and farm, make the Accountant physically visit and count
+   individual piles, and complete recipes/materials. All 19
    maintained labor skills now have truthful gain sources, bounded effects, persistence, and
    inspector visibility. Signed per-cat preferences and the Sawmill's real editable queue are live;
    extend the generic queue control as physical recipes land. Preserve the verified tool
@@ -92,7 +93,9 @@ so a correct scout route cannot conceal a missing founding dispatch.
    and tick-partition determinism. Finite fresh-Fish habitats deplete only on physical catches,
    replenish at 0.5 fish per game-hour up to 24, survive repaint/restart, and pass guided plus
    unattended twins. Preserve those contracts while replacing rail/shipping multipliers with
-   built routes/vehicles and extending physical logistics to the remaining workshops.
+   built routes/vehicles, making fine biomes own their promised physical resource ecology, and
+   extending physical logistics to the remaining workshops. Turn every currently registry-only
+   research payload (recipes/resources/jobs, worker slots, and durability) into observable behavior.
 4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

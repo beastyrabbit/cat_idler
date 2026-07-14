@@ -3,8 +3,9 @@
 > **Living target spec.** The original five-cat start was superseded by the 2026-07-13
 > playtest direction: every ordinary personal village starts with **15 adult cats in three
 > five-bed Dens**. Founding/housing, authoritative interior clearing, exterior water, and the
-> exact dirt/stone road model are verified; gather logistics and agricultural-territory
-> semantics remain open. See
+> exact dirt/stone road model are verified. Selectable/removable gather controls, finite shoreline
+> fishing, and persisted exterior agricultural territory are live; physical farm labor and the
+> remaining workshop routes remain open. See
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Detailed founding/economy/spatial design from playtest. Numbers are the spec.
@@ -34,7 +35,11 @@ A fixed starting blueprint:
 - **Wood-cutting workshop** (3×3): logs → **planks**.
 - **Stone-prep workshop** (3×3): raw stone → **prepped stone / blocks**.
 - **Woodworking workshop** (3×3): planks + stone → **tools** (axe, shovel, fishing rod, …) + weapons.
-- **General stockpile** pre-filled at founding: **50 wood, 50 food, 10 stone**.
+- **Finite general storehouse** pre-filled at a personal founding with **50 food, 100 water,
+  16 herbs, 60 general materials, 10 planks, and 10 blocks**. The larger communal blueprint
+  receives twice that runway. Logs, lumber, grain, flour, fibre, hide, cloth, leather, ore,
+  metal, fish, tools, weapons, armor, catnip, refined goods, and blessings begin at zero and
+  must enter through their real chains.
 - **New house cost**: X planks + X stone (was materials — now the plank/stone chain gates growth).
 
 Population rules attached to this blueprint:
