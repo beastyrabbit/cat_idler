@@ -32,10 +32,10 @@ Verified foundations include:
 - exact founding fog plus signed resource/general scouting whose provisional knowledge commits
   only on physical shrine return, including restart-safe in-flight notebooks and responsive
   controls at 1024×768 through 1920×1080;
-- a pure 500-node research catalog and full-page searchable/filterable/pannable client ledger.
-  Players can spend research points on the original 24 live nodes and a Loremaster may complete
-  at most one of those nodes per rolling real-life day. The other 476 generated studies honestly
-  remain read-only until their live effects are implemented;
+- a complete 500-node research runtime and full-page searchable/filterable/pannable client ledger.
+  Every study can be purchased with research points and persists; a Loremaster may complete at
+  most one affordable full-catalog node per rolling real-life day. Typed modeled effects are live,
+  while future recipe/resource/job IDs remain truthful registries until those systems exist;
 - strict manual-to-officer ownership across Steward, Accountant, Forester, Farmer, Captain,
   Loremaster, and Cloth Leader: a vacant office leaves its category manual, appointment requires
   the matching researched and completed role station, and signed client controls cover the
@@ -63,28 +63,26 @@ playtest harness:
 
 ## NEXT STEPS (maintained backlog, in rough priority order)
 
-1. **Finish the remaining exact player tools.** The seven-role manual/officer split, role-station
-   gates, staffing, farm/gather/road tools, military/ritual orders, and raid single-hit behavior are
-   verified. Add coordinate-selectable building placement, selectable farm crops and gather
-   resources, client election/vote/vote-kick and clear/remove designation controls, and real
-   production queues. Exercise each addition with signed `ClientAction`s, not fixture mutation.
+1. **Finish the remaining production controls.** The seven-role manual/officer split, role-station
+   gates, staffing, coordinate-selectable building placement, selectable farm/gather/road tools,
+   election/vote-kick and clear/remove controls, military/ritual orders, and raid single-hit
+   behavior are verified through signed restart campaigns. Add exact per-cat labor assignment and
+   real editable production queues, then exercise them with signed `ClientAction`s rather than
+   fixture mutation.
 2. **Finish the physical economy.** Route workers and carried inputs/outputs through local
    stations and stockpiles, seed the intended storehouse reservoir, extend skills to maintained
    labors, and complete recipes/materials. Preserve the now-verified tool productivity,
    type-local escalating costs, shrine faucets, and research pacing in balance campaigns.
-3. **Integrate the generated research model.** The original 24 nodes support direct
-   research-point purchases and one-per-real-day Loremaster automation. Wire purchase,
-   persistence, prerequisites, and typed runtime effects for the other 476 generated studies.
-4. **Deepen the shared world.** Make the communal village mechanically larger than a personal
+3. **Deepen the shared world.** Make the communal village mechanically larger than a personal
    founding. Replace per-colony duplicated mutable terrain with an authoritative shared spatial
    model where appropriate, then turn summary contact and atomic scalar barter into physical
    meeting, item trade, and routes. Decide whether scouts should genuinely search by deterministic
    random walk; current targeting selects the nearest useful hidden tile from generated terrain.
-5. **Close world and presentation gaps.** Finish staged closed-perimeter wall growth and an
+4. **Close world and presentation gaps.** Finish staged closed-perimeter wall growth and an
    explicit outside-the-wall agricultural territory model, replace rail/shipping multipliers
    with built routes/vehicles, restore fishing, and complete the remaining WASM visual/interaction
    validation for the maintained Adventure skin.
-6. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
+5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality
    workflow is committed; its first pushed run is still unverified. Transfer-weight optimization

@@ -114,15 +114,15 @@ that's the fastest way to find the ported behavior's original spec and tests.
 The core migration is complete, including ore/metal extraction and staffed Research Hut and
 School buildings. Verified post-cutover slices include atomic placement/reservations, exterior
 farm/logging production with Mill/Sawmill, label-free open stations, selected-village routing,
-the 500-study client ledger, and a responsive blocking-pool server tick. The remaining work is
+the complete purchasable and persistent 500-study runtime/client ledger, and a responsive blocking-pool server tick. The remaining work is
 maintained product behavior rather than migration:
 
 - **Officer/manual split.** The seven maintained offices now own distinct automation categories;
   vacant offices are manual-only, and appointment requires both the researched unlock and a
   completed role station. Signed client paths cover basic farm/gather/road designation, staffing,
   military, ritual, shrine, and production orders. Exact coordinate building placement,
-  selectable farm/gather variants, election/vote controls, designation removal, and station
-  production queues remain open.
+  selectable farm/gather variants, election/vote-kick controls, and designation removal are live;
+  exact per-cat labor and editable station production queues remain open.
 - **Physical work and production breadth.** Workshop staffing is an id assignment rather than
   station travel; inputs/outputs still draw on colony-global resources, the shrine remains the
   fallback reservoir instead of the specified general storehouse, skills lack complete
@@ -141,9 +141,9 @@ maintained product behavior rather than migration:
 - **Durable native identity.** The native client keeps its HMAC bearer and selected village in a
   mode-0600 file replaced through a synced same-directory temporary file and atomic rename; WASM
   uses the corresponding local-storage record.
-- **Research and scouting depth.** Players can spend research points on the original 24 live
-  nodes, and a Loremaster may complete at most one of those nodes per rolling real-life day. The
-  other 476 generated catalog nodes remain read-only and effectless. Resource scouts preserve the
+- **Research and scouting depth.** Players can spend research points on all 500 studies, and a
+  Loremaster may complete at most one affordable full-catalog node per rolling real-life day.
+  Typed modeled effects and future-content unlock registries persist. Resource scouts preserve the
   shrine-return knowledge contract but currently select the nearest useful hidden terrain target
   rather than performing the deterministic random-walk search described by the P15 feedback spec.
 - **Spatial, transport, and visual completeness.** Exact tree/rock occupancy and visible road
@@ -246,8 +246,8 @@ roads, cats (colored by specialization, carrying marker, walk animation that int
 the latest snapshot tile rather than teleporting), label-free roofed homes and typed open
 stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The HUD shows
 resources with caps, colony census, event log, trade, officers, village selection, and
-cat/building inspectors. Its full-page research screen renders the 500-study catalog with
-filter/search/pan/zoom; generated studies explicitly remain read-only until runtime integration.
+cat/building inspectors. Its full-page research screen renders and purchases the complete
+500-study catalog with filter/search/pan/zoom.
 The maintained P18 Adventure 9-patch/button/progress/minimap/cursor foundation is implemented and
 native-framebuffer verified at 1024×768, 1280×800, and 1920×1080. New menus still require the same
 responsive native and WASM interaction checks before they are called complete.
