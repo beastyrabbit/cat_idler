@@ -321,32 +321,71 @@ pub enum GatherSpotPurpose {
     Fishing,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResourceKind {
-    Food,
-    Fish,
-    Water,
-    Herbs,
-    Catnip,
-    Grain,
-    Flour,
-    Materials,
-    Refined,
-    Weapons,
-    Armor,
-    Logs,
-    Lumber,
-    Planks,
-    Blocks,
-    Tools,
-    Fibre,
-    Hide,
-    Cloth,
-    Leather,
-    Ore,
-    Metal,
-    Blessings,
+macro_rules! define_resource_kinds {
+    ($( $(#[$meta:meta])* $kind:ident => $physical:literal),+ $(,)?) => {
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+        )]
+        #[serde(rename_all = "snake_case")]
+        pub enum ResourceKind {
+            $(
+                $(#[$meta])*
+                $kind,
+            )+
+        }
+
+        impl ResourceKind {
+            /// Every wire resource kind in stable display and serialization-test order.
+            ///
+            /// This inventory and [`Self::is_physical_stockpile_good`] are generated from
+            /// the same declaration so adding a resource cannot silently omit it from the
+            /// General-stockpile classification.
+            pub const ALL: &'static [Self] = &[$(Self::$kind),+];
+
+            /// Whether cats can haul and store this resource in a physical stockpile.
+            #[must_use]
+            pub const fn is_physical_stockpile_good(self) -> bool {
+                match self {
+                    $(Self::$kind => $physical),+
+                }
+            }
+
+            /// Every physical stockpile good in [`Self::ALL`] order.
+            pub fn physical_stockpile_goods() -> impl Iterator<Item = Self> {
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .filter(|kind| kind.is_physical_stockpile_good())
+            }
+        }
+    };
+}
+
+define_resource_kinds! {
+    Food => true,
+    Fish => true,
+    Water => true,
+    Herbs => true,
+    Catnip => true,
+    Grain => true,
+    Flour => true,
+    Materials => true,
+    Refined => true,
+    Weapons => true,
+    Armor => true,
+    Logs => true,
+    Lumber => true,
+    Planks => true,
+    Blocks => true,
+    Tools => true,
+    Fibre => true,
+    Hide => true,
+    Cloth => true,
+    Leather => true,
+    Ore => true,
+    Metal => true,
+    /// Spendable divine favor, not an item cats can haul or place in a pile.
+    Blessings => false,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1531,6 +1570,55 @@ pub struct ActionResult {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn physical_stockpile_classification_is_exhaustive_for_all_resource_kinds() {
+        let expected_all = [
+            ResourceKind::Food,
+            ResourceKind::Fish,
+            ResourceKind::Water,
+            ResourceKind::Herbs,
+            ResourceKind::Catnip,
+            ResourceKind::Grain,
+            ResourceKind::Flour,
+            ResourceKind::Materials,
+            ResourceKind::Refined,
+            ResourceKind::Weapons,
+            ResourceKind::Armor,
+            ResourceKind::Logs,
+            ResourceKind::Lumber,
+            ResourceKind::Planks,
+            ResourceKind::Blocks,
+            ResourceKind::Tools,
+            ResourceKind::Fibre,
+            ResourceKind::Hide,
+            ResourceKind::Cloth,
+            ResourceKind::Leather,
+            ResourceKind::Ore,
+            ResourceKind::Metal,
+            ResourceKind::Blessings,
+        ];
+        assert_eq!(ResourceKind::ALL, expected_all);
+
+        let physical = ResourceKind::physical_stockpile_goods().collect::<Vec<_>>();
+        assert_eq!(physical.len(), 22);
+        for &kind in ResourceKind::ALL {
+            assert_eq!(
+                physical.contains(&kind),
+                kind.is_physical_stockpile_good(),
+                "classification drifted for {kind:?}"
+            );
+        }
+        assert_eq!(
+            ResourceKind::ALL
+                .iter()
+                .copied()
+                .filter(|kind| !kind.is_physical_stockpile_good())
+                .collect::<Vec<_>>(),
+            vec![ResourceKind::Blessings],
+            "Blessings alone are nonphysical divine favor, not hauled inventory"
+        );
+    }
 
     #[test]
     fn client_action_round_trips_with_route_field_names() {

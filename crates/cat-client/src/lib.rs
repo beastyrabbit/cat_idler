@@ -757,11 +757,12 @@ enum AcceptChoice {
 impl AcceptChoice {
     /// Cycle: General -> each storable kind in order -> back to General.
     fn next(self) -> Self {
+        let storable = storable_kinds();
         match self {
-            Self::General => Self::Only(STORABLE_KINDS[0]),
+            Self::General => Self::Only(storable[0]),
             Self::Only(kind) => {
-                let idx = STORABLE_KINDS.iter().position(|&k| k == kind).unwrap_or(0);
-                STORABLE_KINDS
+                let idx = storable.iter().position(|&k| k == kind).unwrap_or(0);
+                storable
                     .get(idx + 1)
                     .map_or(Self::General, |&next| Self::Only(next))
             }
@@ -771,7 +772,7 @@ impl AcceptChoice {
     /// The accept-set to send in DesignateStockpile.
     fn kinds(self) -> Vec<ResourceKind> {
         match self {
-            Self::General => STORABLE_KINDS.to_vec(),
+            Self::General => storable_kinds(),
             Self::Only(kind) => vec![kind],
         }
     }
@@ -2555,28 +2556,11 @@ const ZONE_MAX_TILES: i32 = 8;
 /// Amber tint for stockpile overlays (distinct from avoid-red / gather-green).
 const STOCKPILE_OVERLAY: Color = Color::srgba(0.85, 0.60, 0.25, 0.30);
 
-/// Resource kinds a designated stockpile accepts by default (all storable
-/// goods; blessings are not a physical pile).
-const STORABLE_KINDS: [ResourceKind; 18] = [
-    ResourceKind::Food,
-    ResourceKind::Water,
-    ResourceKind::Herbs,
-    ResourceKind::Catnip,
-    ResourceKind::Grain,
-    ResourceKind::Flour,
-    ResourceKind::Materials,
-    ResourceKind::Refined,
-    ResourceKind::Weapons,
-    ResourceKind::Armor,
-    ResourceKind::Logs,
-    ResourceKind::Lumber,
-    ResourceKind::Fibre,
-    ResourceKind::Hide,
-    ResourceKind::Cloth,
-    ResourceKind::Leather,
-    ResourceKind::Ore,
-    ResourceKind::Metal,
-];
+/// Resource kinds a designated General stockpile accepts. The protocol owns the
+/// physical/nonphysical classification so this picker cannot drift as kinds are added.
+fn storable_kinds() -> Vec<ResourceKind> {
+    ResourceKind::physical_stockpile_goods().collect()
+}
 
 /// Query filter for the per-tick redraw of building sprite entities.
 type BuildingEntities = With<BuildingSprite>;
@@ -9716,7 +9700,7 @@ fn accepts_label(accepts: &[ResourceKind]) -> String {
 
 /// True when an accept-set covers every storable kind (order-independent).
 fn is_general_accepts(accepts: &[ResourceKind]) -> bool {
-    STORABLE_KINDS.iter().all(|k| accepts.contains(k))
+    ResourceKind::physical_stockpile_goods().all(|kind| accepts.contains(&kind))
 }
 
 /// Translucent overlay colour: amber for General, else tinted by the single
@@ -11962,31 +11946,50 @@ mod tests {
 
     #[test]
     fn accept_choice_cycles_general_through_kinds() {
+        let storable = storable_kinds();
+        assert_eq!(storable.len(), 22);
+        for &kind in ResourceKind::ALL {
+            assert_eq!(
+                storable.contains(&kind),
+                kind.is_physical_stockpile_good(),
+                "General classification drifted for {kind:?}"
+            );
+        }
+        assert!(storable.contains(&ResourceKind::Fish));
+        assert!(storable.contains(&ResourceKind::Planks));
+        assert!(storable.contains(&ResourceKind::Blocks));
+        assert!(storable.contains(&ResourceKind::Tools));
+        assert!(
+            !storable.contains(&ResourceKind::Blessings),
+            "divine favor is not physical stockpile cargo"
+        );
+
         // General -> first kind -> ... -> last kind -> General.
         let mut choice = AcceptChoice::General;
-        assert_eq!(choice.kinds(), STORABLE_KINDS.to_vec());
+        assert_eq!(choice.kinds(), storable);
         choice = choice.next();
         assert_eq!(choice, AcceptChoice::Only(ResourceKind::Food));
         assert_eq!(choice.kinds(), vec![ResourceKind::Food]);
 
-        // Walk the whole cycle and confirm it returns to General after all 7.
+        // Walk the whole cycle and confirm it returns to General after every physical kind.
         let mut seen = vec![choice];
-        for _ in 0..STORABLE_KINDS.len() {
+        for _ in 0..storable_kinds().len() {
             choice = choice.next();
             seen.push(choice);
         }
         assert_eq!(*seen.last().unwrap(), AcceptChoice::General);
         // Every storable kind appears exactly once in the cycle.
-        for kind in STORABLE_KINDS {
+        for kind in storable_kinds() {
             assert!(seen.contains(&AcceptChoice::Only(kind)));
         }
     }
 
     #[test]
     fn accepts_label_maps_general_single_and_subset() {
-        assert_eq!(accepts_label(&STORABLE_KINDS), "General");
+        let storable = storable_kinds();
+        assert_eq!(accepts_label(&storable), "General");
         // Order-independent General detection.
-        let mut shuffled = STORABLE_KINDS.to_vec();
+        let mut shuffled = storable.clone();
         shuffled.reverse();
         assert_eq!(accepts_label(&shuffled), "General");
         assert_eq!(accepts_label(&[ResourceKind::Food]), "food only");
@@ -11996,7 +11999,7 @@ mod tests {
             "food/water"
         );
         assert!(!is_general_accepts(&[ResourceKind::Food]));
-        assert!(is_general_accepts(&STORABLE_KINDS));
+        assert!(is_general_accepts(&storable));
     }
 
     #[test]

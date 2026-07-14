@@ -1596,6 +1596,14 @@ fn designate_stockpile(
     if accepts.is_empty() {
         return fail("A stockpile must accept at least one resource.");
     }
+    if accepts
+        .iter()
+        .any(|kind| !kind.is_physical_stockpile_good())
+    {
+        return fail(
+            "Stockpiles accept only physical goods; Blessings are divine favor and are never hauled or stored in piles.",
+        );
+    }
     let rect = zones::normalize_rect(
         f64::from(a.x),
         f64::from(a.y),
@@ -5920,6 +5928,63 @@ mod tests {
         );
         assert!(!empty.ok, "empty accept set rejected");
         assert_eq!(world.colonies[0].stockpiles.len(), before);
+    }
+
+    #[test]
+    fn designate_stockpile_accepts_all_physical_kinds_and_rejects_only_blessings() {
+        const NONPHYSICAL_MESSAGE: &str = "Stockpiles accept only physical goods; Blessings are divine favor and are never hauled or stored in piles.";
+
+        assert_eq!(proto::ResourceKind::ALL.len(), 23);
+        for &kind in proto::ResourceKind::ALL {
+            let mut world = world_with_one_colony();
+            let before = world.colonies[0].stockpiles.len();
+            let (a, b) = open_stockpile_points(&world, 1, 1);
+            let result = apply_action(&mut world, &designate_action(a, b, vec![kind]), &ctx());
+
+            assert_eq!(
+                result.ok,
+                kind.is_physical_stockpile_good(),
+                "unexpected validation result for {kind:?}: {result:?}"
+            );
+            if kind.is_physical_stockpile_good() {
+                assert_eq!(world.colonies[0].stockpiles.len(), before + 1);
+                let pile = world.colonies[0]
+                    .stockpiles
+                    .last()
+                    .expect("accepted designation adds a pile");
+                assert_eq!(
+                    pile.accepts.iter().copied().collect::<Vec<_>>(),
+                    vec![proto_to_sim_resource_kind(kind)]
+                );
+            } else {
+                assert_eq!(kind, proto::ResourceKind::Blessings);
+                assert_eq!(result.message.as_deref(), Some(NONPHYSICAL_MESSAGE));
+                assert_eq!(world.colonies[0].stockpiles.len(), before);
+            }
+        }
+
+        let mut world = world_with_one_colony();
+        let before = world.colonies[0].stockpiles.len();
+        let (a, b) = open_stockpile_points(&world, 1, 1);
+        let mixed = apply_action(
+            &mut world,
+            &designate_action(
+                a,
+                b,
+                vec![proto::ResourceKind::Food, proto::ResourceKind::Blessings],
+            ),
+            &ctx(),
+        );
+        assert!(
+            !mixed.ok,
+            "one nonphysical kind rejects the whole accept set"
+        );
+        assert_eq!(mixed.message.as_deref(), Some(NONPHYSICAL_MESSAGE));
+        assert_eq!(
+            world.colonies[0].stockpiles.len(),
+            before,
+            "mixed invalid designation is atomic"
+        );
     }
 
     #[test]
