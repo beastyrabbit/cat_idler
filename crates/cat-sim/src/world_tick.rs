@@ -2077,9 +2077,8 @@ fn reveal_founding_area(colony: &mut ColonyRuntime) {
 }
 
 fn starting_resources(scale_kind: VillageScale) -> Resources {
-    // P16 pre-filled general stockpile. `materials` stands in for the "50 wood + 10
-    // stone" of the blueprint until the P12.4b wood/stone chains land; food seeds the
-    // colony while the first hunts and the nearby water source come online.
+    // P16's canonical finite general-storehouse runway. Raw and processed resources
+    // outside this explicit mix must enter through their real production chains.
     let scale = if scale_kind == VillageScale::Communal {
         2.0
     } else {
@@ -10506,37 +10505,11 @@ fn orthogonal_repair_corridor(start: TilePos, end: TilePos) -> Vec<TilePos> {
 }
 
 fn starting_resources_with_blessings(scale: VillageScale, blessings: f64) -> Resources {
-    // Preserve the established personal-colony reset package exactly. The communal
-    // hub gets the same per-capita runway for its doubled founding census.
-    let multiplier = match scale {
-        VillageScale::Communal => 2.0,
-        VillageScale::Personal => 1.0,
-    };
-    Resources {
-        food: 150.0 * multiplier,
-        fish: 0.0,
-        water: 100.0 * multiplier,
-        herbs: 16.0 * multiplier,
-        catnip: 0.0,
-        grain: 0.0,
-        flour: 0.0,
-        materials: 24.0 * multiplier,
-        refined: 0.0,
-        weapons: 0.0,
-        armor: 0.0,
-        planks: 6.0 * multiplier,
-        logs: 0.0,
-        lumber: 0.0,
-        blocks: 6.0 * multiplier,
-        tools: 0.0,
-        fibre: 0.0,
-        hide: 0.0,
-        cloth: 0.0,
-        leather: 0.0,
-        ore: 0.0,
-        metal: 0.0,
-        blessings,
-    }
+    // A reset is another founding run, so it uses the same canonical finite loadout.
+    // Blessings alone survive a collapse as banked spiritual progress.
+    let mut resources = starting_resources(scale);
+    resources.blessings = blessings;
+    resources
 }
 
 fn reset_reason_wire(reason: RunResetReason) -> &'static str {
@@ -29408,6 +29381,8 @@ mod tests {
             starting_resources_with_blessings(VillageScale::Personal, 0.0)
         );
         assert_eq!(personal.owner_player_id.as_deref(), Some("owner"));
+        assert_founding_storehouse_contract(global, &communal_founding_loadout());
+        assert_founding_storehouse_contract(personal, &personal_founding_loadout());
     }
 
     #[test]
@@ -30450,13 +30425,97 @@ mod tests {
         panic!("seed scan did not find an initially-unmaterialized forest recovery parcel");
     }
 
-    #[test]
-    fn founding_pre_fills_the_stockpile_with_food_and_materials() {
-        let colony = found_colony(4242, "colony-1", 1_000, 4242);
-        assert_eq!(colony.resources.food, 50.0);
-        assert_eq!(colony.resources.materials, 60.0);
-        // The shrine reservoir invariant (P12.3): stockpile contents sum to resources.
-        assert!(colony.stockpiles.iter().any(Stockpile::is_shrine));
+    fn personal_founding_loadout() -> Resources {
+        Resources {
+            food: 50.0,
+            fish: 0.0,
+            water: 100.0,
+            herbs: 16.0,
+            catnip: 0.0,
+            grain: 0.0,
+            flour: 0.0,
+            materials: 60.0,
+            refined: 0.0,
+            weapons: 0.0,
+            armor: 0.0,
+            planks: 10.0,
+            logs: 0.0,
+            lumber: 0.0,
+            blocks: 10.0,
+            tools: 0.0,
+            fibre: 0.0,
+            hide: 0.0,
+            cloth: 0.0,
+            leather: 0.0,
+            ore: 0.0,
+            metal: 0.0,
+            blessings: 0.0,
+        }
+    }
+
+    fn communal_founding_loadout() -> Resources {
+        Resources {
+            food: 100.0,
+            fish: 0.0,
+            water: 200.0,
+            herbs: 32.0,
+            catnip: 0.0,
+            grain: 0.0,
+            flour: 0.0,
+            materials: 120.0,
+            refined: 0.0,
+            weapons: 0.0,
+            armor: 0.0,
+            planks: 20.0,
+            logs: 0.0,
+            lumber: 0.0,
+            blocks: 20.0,
+            tools: 0.0,
+            fibre: 0.0,
+            hide: 0.0,
+            cloth: 0.0,
+            leather: 0.0,
+            ore: 0.0,
+            metal: 0.0,
+            blessings: 0.0,
+        }
+    }
+
+    fn assert_founding_storehouse_contract(colony: &ColonyRuntime, expected: &Resources) {
+        assert_eq!(&colony.resources, expected, "exact aggregate loadout");
+        assert_eq!(
+            colony.stockpiles.len(),
+            1,
+            "founding has exactly one physical store, with no duplicate shrine credit"
+        );
+        let storehouse = &colony.stockpiles[0];
+        assert_eq!(
+            storehouse.id,
+            stockpiles::GENERAL_STOREHOUSE_ID,
+            "the finite general storehouse is canonical"
+        );
+        assert_eq!(storehouse.rect, general_storehouse_rect(colony));
+        assert_eq!(
+            storehouse.capacity(),
+            Some(stockpiles::GENERAL_STOREHOUSE_CAPACITY)
+        );
+        assert_eq!(
+            storehouse.accepts.iter().copied().collect::<Vec<_>>(),
+            ResourceKind::ALL.to_vec(),
+            "the general storehouse accepts every maintained scalar resource"
+        );
+        assert_eq!(
+            &storehouse.contents, expected,
+            "the seeded physical contents equal the aggregate exactly"
+        );
+        assert!(
+            colony
+                .stockpiles
+                .iter()
+                .all(|pile| pile.id != stockpiles::SHRINE_STOCKPILE_ID),
+            "the obsolete shrine reservoir must not duplicate the storehouse"
+        );
+
         for &kind in ResourceKind::ALL {
             let sum: f64 = colony
                 .stockpiles
@@ -30464,7 +30523,63 @@ mod tests {
                 .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
                 .sum();
             let total = stockpiles::resource_amount(&colony.resources, kind);
-            assert!((sum - total).abs() <= 1e-6, "{kind:?} reservoir invariant");
+            assert_eq!(
+                sum.to_bits(),
+                total.to_bits(),
+                "{kind:?} physical piles conserve the aggregate ledger exactly"
+            );
+        }
+    }
+
+    #[test]
+    fn personal_founding_storehouse_has_the_exact_canonical_loadout() {
+        let mut colony = found_colony(4242, "colony-1", 1_000, 4242);
+        let expected = personal_founding_loadout();
+        assert_founding_storehouse_contract(&colony, &expected);
+        let nonzero = ResourceKind::ALL
+            .iter()
+            .copied()
+            .filter(|&kind| stockpiles::resource_amount(&colony.resources, kind) != 0.0)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            nonzero,
+            vec![
+                ResourceKind::Food,
+                ResourceKind::Water,
+                ResourceKind::Herbs,
+                ResourceKind::Materials,
+                ResourceKind::Planks,
+                ResourceKind::Blocks,
+            ],
+            "every resource outside the canonical six starts at zero"
+        );
+
+        let once = colony.stockpiles.clone();
+        reconcile_colony_stockpiles(&mut colony);
+        assert_eq!(colony.stockpiles, once, "reconciliation is idempotent");
+        reconcile_colony_stockpiles(&mut colony);
+        assert_eq!(
+            colony.stockpiles, once,
+            "repeated reconciliation cannot duplicate founding credit"
+        );
+        assert_founding_storehouse_contract(&colony, &expected);
+    }
+
+    #[test]
+    fn communal_founding_storehouse_exactly_doubles_the_personal_runway() {
+        let personal = found_colony(4242, "personal", 1_000, 4242);
+        let communal = found_global_colony(4242, "communal", 1_000, 4242);
+        let personal_expected = personal_founding_loadout();
+        let communal_expected = communal_founding_loadout();
+        assert_founding_storehouse_contract(&personal, &personal_expected);
+        assert_founding_storehouse_contract(&communal, &communal_expected);
+
+        for &kind in ResourceKind::ALL {
+            assert_eq!(
+                stockpiles::resource_amount(&communal.resources, kind).to_bits(),
+                (stockpiles::resource_amount(&personal.resources, kind) * 2.0).to_bits(),
+                "communal {kind:?} must be exactly twice the personal founding amount"
+            );
         }
     }
 
