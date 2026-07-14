@@ -63,29 +63,26 @@ playtest harness:
 
 ## NEXT STEPS (maintained backlog, in rough priority order)
 
-1. **Finish the remaining production controls.** The seven-role manual/officer split, role-station
-   gates, staffing, coordinate-selectable building placement, selectable farm/gather/road tools,
-   election/vote-kick and clear/remove controls, military/ritual orders, and raid single-hit
-   behavior are verified through signed restart campaigns. Add exact per-cat labor assignment and
-   real editable production queues, then exercise them with signed `ClientAction`s rather than
-   fixture mutation.
-2. **Finish the physical economy.** The finite founding storehouse and complete physical
+1. **Finish the physical economy.** The finite founding storehouse and complete physical
    logs→Sawmill→lumber route are verified, including station-local ledgers, transit reservation,
    delivery-before-credit, death conservation, restart persistence, and the live inspector. Apply
    that contract to every other workshop and farm, and complete recipes/materials. All 18
    maintained labor skills now have truthful gain sources, bounded effects, persistence, and
-   inspector visibility. Preserve the now-verified tool productivity,
-   type-local escalating costs, shrine faucets, and research pacing in balance campaigns.
-3. **Deepen the shared world.** Make the communal village mechanically larger than a personal
-   founding. Replace per-colony duplicated mutable terrain with an authoritative shared spatial
-   model where appropriate, then turn summary contact and atomic scalar barter into physical
-   meeting, item trade, and routes. Deterministic knowledge-blind scout search is now verified;
-   preserve its physical-observation and shrine-return contracts as shared-world depth grows.
-4. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
+   inspector visibility. Signed per-cat preferences and the Sawmill's real editable queue are live;
+   extend the generic queue control as physical recipes land. Preserve the verified tool
+   productivity, type-local escalating costs, shrine faucets, and research pacing in balance
+   campaigns.
+2. **Deepen the shared world.** The durable 30-cat/six-Den/19×19 communal hub is mechanically
+   larger than exact 15-cat/three-Den personal villages. Replace per-colony duplicated mutable
+   terrain with an authoritative shared spatial model where appropriate, then turn summary contact
+   and atomic scalar barter into physical meeting, item trade, and routes. Deterministic
+   knowledge-blind scout search is verified; preserve its physical-observation and shrine-return
+   contracts as shared-world depth grows.
+3. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
    outside-the-wall agricultural territory subset are live; finish their integrated framebuffer
    campaign, replace rail/shipping multipliers with built routes/vehicles, restore fishing, and
    complete the remaining WASM visual/interaction validation for the maintained Adventure skin.
-5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
+4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality
    workflow is committed; its first pushed run is still unverified. Transfer-weight optimization

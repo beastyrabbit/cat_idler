@@ -121,8 +121,9 @@ maintained product behavior rather than migration:
   vacant offices are manual-only, and appointment requires both the researched unlock and a
   completed role station. Signed client paths cover basic farm/gather/road designation, staffing,
   military, ritual, shrine, and production orders. Exact coordinate building placement,
-  selectable farm/gather variants, election/vote-kick controls, and designation removal are live;
-  exact per-cat labor and editable station production queues remain open.
+  selectable farm/gather variants, election/vote-kick controls, designation removal, durable
+  per-cat typed labor preferences, and the physical Sawmill's editable ordered/repeatable/pausable
+  queue are live. The generic queue model is ready for other recipes as their physical chains land.
 - **Physical work and production breadth.** Founding now seeds a finite spatial storehouse and the
   logs→Sawmill→lumber chain physically routes a staffed cat, reserved cargo, station-local input
   and output, and final stockpile delivery before aggregate credit. The inspector exposes that
@@ -135,9 +136,11 @@ maintained product behavior rather than migration:
   summary contact; configurable signed propose/accept/cancel actions perform capped atomic direct
   barter. Whole-world SQLite replacement is transactional, and colony-local runtime ids receive a
   storage-only colony namespace so simultaneous settlements cannot collide in legacy global-key
-  tables. The communal village is not yet mechanically larger than a personal founding, however;
-  each colony owns a duplicate mutable terrain map, meeting is a delivered summary rather than a
-  physical encounter, and direct barter swaps scalar resources without caravans or item stacks.
+  tables. A durable communal scale gives the ownerless global hub 30 adults, six Dens, a 19×19
+  core, doubled production/runway, and civic buildings, while personal villages remain exact
+  15-adult/three-Den/13×13 settlements through extinction recovery. Each colony still owns a
+  duplicate mutable terrain map; meeting is a delivered summary and direct barter swaps scalar
+  resources without physical encounters, caravans, or item stacks.
 - **Durable native identity.** The native client keeps its HMAC bearer and selected village in a
   mode-0600 file replaced through a synced same-directory temporary file and atomic rename; WASM
   uses the corresponding local-storage record.
