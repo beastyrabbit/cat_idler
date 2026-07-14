@@ -86,8 +86,9 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 25] = [
     (BuildingType::Sawmill, 25),
 ];
 
-pub const TASK_TO_SKILL: [(TaskType, &str); 12] = [
+pub const TASK_TO_SKILL: [(TaskType, &str); 13] = [
     (TaskType::Hunt, "hunting"),
+    (TaskType::Fish, "hunting"),
     (TaskType::GatherHerbs, "medicine"),
     (TaskType::FetchWater, "hunting"),
     (TaskType::Clean, "cleaning"),
@@ -225,6 +226,7 @@ mod tests {
     fn task_to_skill_matches_typescript_record_for_every_task_type() {
         let expected = [
             (TaskType::Hunt, "hunting"),
+            (TaskType::Fish, "hunting"),
             (TaskType::GatherHerbs, "medicine"),
             (TaskType::FetchWater, "hunting"),
             (TaskType::Clean, "cleaning"),

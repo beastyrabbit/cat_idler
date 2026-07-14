@@ -296,6 +296,18 @@ pub struct StockpileSnapshot {
 pub struct GatherSpotSnapshot {
     pub kind: ResourceKind,
     pub expires_at_ms: i64,
+    /// Why this temporary pile exists. Fishing spots are one-tile shoreline
+    /// work/drop points; legacy and ordinary gather spots default to `general`.
+    #[serde(default)]
+    pub purpose: GatherSpotPurpose,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatherSpotPurpose {
+    #[default]
+    General,
+    Fishing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -505,6 +517,7 @@ pub struct CatSnapshot {
 #[serde(rename_all = "snake_case")]
 pub enum Labor {
     Hunt,
+    Fishing,
     Build,
     Ritual,
     Fight,
@@ -652,6 +665,8 @@ pub enum JobKind {
     /// Forest-site gathering job: fells and carries raw logs. This is the sole
     /// authoritative input source for the sawmill chain.
     GatherLogs,
+    /// Physical shoreline food gathering into a designated fishing spot.
+    Fish,
     /// Bounded foraging shift that gathers fibre for the textile chain.
     ForageFibre,
     Explore,
@@ -1375,6 +1390,15 @@ pub enum ClientAction {
         a: TilePoint,
         b: TilePoint,
         kind: ResourceKind,
+    },
+    /// Designate one exact, revealed shoreline tile as a fishing workplace and
+    /// finite food drop point. Clicking adjacent water is also accepted and
+    /// resolves to a deterministic walkable bank tile.
+    DesignateFishingSpot {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        at: TilePoint,
     },
     /// Remove a gather spot by its underlying stockpile id before its TTL. Its
     /// remaining contents fold back into the shrine reservoir via reconcile, exactly
@@ -2805,5 +2829,31 @@ mod tests {
         legacy.as_object_mut().unwrap().remove("skills");
         let decoded: CatSnapshot = serde_json::from_value(legacy).unwrap();
         assert!(decoded.skills.is_empty());
+    }
+
+    #[test]
+    fn fishing_wire_types_round_trip_and_legacy_gather_spots_default_to_general() {
+        let action = ClientAction::DesignateFishingSpot {
+            session_id: "session".to_owned(),
+            nickname: "Angler".to_owned(),
+            sig: "signed".to_owned(),
+            at: TilePoint { x: -4, y: 19 },
+        };
+        let encoded = serde_json::to_value(&action).expect("serialize fishing designation");
+        assert_eq!(encoded["action"], json!("designateFishingSpot"));
+        assert_eq!(encoded["at"], json!({ "x": -4, "y": 19 }));
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(encoded).expect("round trip"),
+            action
+        );
+        assert_eq!(serde_json::to_value(JobKind::Fish).unwrap(), json!("fish"));
+        assert_eq!(
+            serde_json::to_value(Labor::Fishing).unwrap(),
+            json!("fishing")
+        );
+
+        let old = json!({ "kind": "food", "expiresAtMs": 99 });
+        let spot: GatherSpotSnapshot = serde_json::from_value(old).expect("legacy gather spot");
+        assert_eq!(spot.purpose, GatherSpotPurpose::General);
     }
 }

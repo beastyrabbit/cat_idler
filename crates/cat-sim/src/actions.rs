@@ -260,6 +260,12 @@ pub fn apply_action(
                 designate_gather_spot(colony, *a, *b, *kind, world_seed, ctx)
             })
         }
+        proto::ClientAction::DesignateFishingSpot { at, .. } => {
+            let world_seed = world.world_seed;
+            with_colony(world, ctx, |colony| {
+                designate_fishing_spot(colony, *at, world_seed, ctx)
+            })
+        }
         proto::ClientAction::RemoveGatherSpot { stockpile_id, .. } => {
             with_colony(world, ctx, |colony| {
                 remove_gather_spot(colony, stockpile_id, ctx)
@@ -373,6 +379,7 @@ fn request_job(
             | JobKind::LeaderPlanHunt
             | JobKind::LeaderPlanHouse
             | JobKind::GatherLogs
+            | JobKind::Fish
             | JobKind::ForageFibre
             | JobKind::Ritual
             | JobKind::HuntExpedition
@@ -393,6 +400,9 @@ fn request_job(
     }
     if kind == JobKind::GatherLogs && !has_logging_site(colony, world_seed) {
         return fail("No explored forest is available for logging.");
+    }
+    if kind == JobKind::Fish && !crate::world_tick::has_fishing_site(colony) {
+        return fail("Designate a revealed shoreline fishing spot first.");
     }
     if kind == JobKind::Quarry && !has_quarry_site(colony) {
         return fail("No explored quarry site is available.");
@@ -459,6 +469,7 @@ fn request_job(
             select_best_cat_for_labor(colony, Some(CatSpecialization::Architect), labor)
         }
         JobKind::GatherLogs
+        | JobKind::Fish
         | JobKind::ForageFibre
         | JobKind::Explore
         | JobKind::FetchWater
@@ -470,6 +481,7 @@ fn request_job(
         JobKind::HuntExpedition
             | JobKind::Quarry
             | JobKind::GatherLogs
+            | JobKind::Fish
             | JobKind::ForageFibre
             | JobKind::Explore
             | JobKind::FetchWater
@@ -1541,6 +1553,88 @@ fn designate_gather_spot(
         stockpile_id: id,
         kind: sim_kind,
         expires_at_ms: ctx.now_ms + stockpiles::GATHER_SPOT_TTL_MS,
+        purpose: stockpiles::GatherSpotPurpose::General,
+    });
+    reconcile_colony_stockpiles(colony);
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+/// Create a durable one-tile food gather spot on a physically walkable bank.
+/// The player may click the bank itself or its adjacent water cell; water clicks
+/// resolve in stable N/E/S/W order so signed replays remain deterministic.
+fn designate_fishing_spot(
+    colony: &mut ColonyRuntime,
+    at: proto::TilePoint,
+    world_seed: u32,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if colony.gather_spots.len() >= stockpiles::MAX_GATHER_SPOTS {
+        return fail(format!(
+            "You already have {} gather spots.",
+            stockpiles::MAX_GATHER_SPOTS
+        ));
+    }
+    let clicked = TilePos { x: at.x, y: at.y };
+    let mut candidates = vec![clicked];
+    if crate::world_tick::tile_has_water(colony.world_tiles.get(&clicked)) {
+        candidates = [
+            TilePos {
+                x: at.x,
+                y: at.y - 1,
+            },
+            TilePos {
+                x: at.x + 1,
+                y: at.y,
+            },
+            TilePos {
+                x: at.x,
+                y: at.y + 1,
+            },
+            TilePos {
+                x: at.x - 1,
+                y: at.y,
+            },
+        ]
+        .into_iter()
+        .collect();
+    }
+    let site = candidates.into_iter().find(|site| {
+        crate::world_tick::is_valid_fishing_shore(colony, *site)
+            && crate::world_tick::stockpile_placement_error(
+                colony,
+                zones::normalize_rect(
+                    f64::from(site.x),
+                    f64::from(site.y),
+                    f64::from(site.x),
+                    f64::from(site.y),
+                ),
+                world_seed,
+                false,
+            )
+            .is_none()
+    });
+    let Some(site) = site else {
+        return fail("Choose a revealed, clear shoreline tile beside water.");
+    };
+    let rect = zones::normalize_rect(
+        f64::from(site.x),
+        f64::from(site.y),
+        f64::from(site.x),
+        f64::from(site.y),
+    );
+    let id = format!("gather-fish-{}-{}", ctx.now_ms, colony.stockpiles.len() + 1);
+    colony.stockpiles.push(stockpiles::Stockpile {
+        id: id.clone(),
+        rect,
+        accepts: std::iter::once(stockpiles::ResourceKind::Food).collect(),
+        contents: entities::Resources::default(),
+    });
+    colony.gather_spots.push(stockpiles::GatherSpot {
+        stockpile_id: id,
+        kind: stockpiles::ResourceKind::Food,
+        expires_at_ms: i64::MAX,
+        purpose: stockpiles::GatherSpotPurpose::Fishing,
     });
     reconcile_colony_stockpiles(colony);
     colony.last_player_activity_at = Some(ctx.now_ms);
@@ -2484,6 +2578,10 @@ fn stockpile_snapshot(
             .map(|spot| proto::GatherSpotSnapshot {
                 kind: sim_to_proto_resource_kind(spot.kind),
                 expires_at_ms: spot.expires_at_ms,
+                purpose: match spot.purpose {
+                    stockpiles::GatherSpotPurpose::General => proto::GatherSpotPurpose::General,
+                    stockpiles::GatherSpotPurpose::Fishing => proto::GatherSpotPurpose::Fishing,
+                },
             }),
     }
 }
@@ -2563,6 +2661,7 @@ fn cat_snapshot(
 fn sim_to_proto_labor(labor: Labor) -> proto::Labor {
     match labor {
         Labor::Hunt => proto::Labor::Hunt,
+        Labor::Fishing => proto::Labor::Fishing,
         Labor::Build => proto::Labor::Build,
         Labor::Ritual => proto::Labor::Ritual,
         Labor::Fight => proto::Labor::Fight,
@@ -2586,6 +2685,7 @@ fn sim_to_proto_labor(labor: Labor) -> proto::Labor {
 fn proto_to_sim_labor(labor: proto::Labor) -> Labor {
     match labor {
         proto::Labor::Hunt => Labor::Hunt,
+        proto::Labor::Fishing => Labor::Fishing,
         proto::Labor::Build => Labor::Build,
         proto::Labor::Ritual => Labor::Ritual,
         proto::Labor::Fight => Labor::Fight,
@@ -3294,6 +3394,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::SupplyFood | JobKind::LeaderPlanHunt | JobKind::HuntExpedition => {
             Some(TaskType::Hunt)
         }
+        JobKind::Fish => Some(TaskType::Fish),
         JobKind::SupplyWater | JobKind::FetchWater => Some(TaskType::FetchWater),
         JobKind::LeaderPlanHouse | JobKind::BuildHouse | JobKind::Quarry => Some(TaskType::Build),
         JobKind::GatherLogs => Some(TaskType::Build),
@@ -3540,6 +3641,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::Ritual => JobKind::Ritual,
         proto::JobKind::Quarry => JobKind::Quarry,
         proto::JobKind::GatherLogs => JobKind::GatherLogs,
+        proto::JobKind::Fish => JobKind::Fish,
         proto::JobKind::ForageFibre => JobKind::ForageFibre,
         proto::JobKind::Explore => JobKind::Explore,
         proto::JobKind::FetchWater => JobKind::FetchWater,
@@ -3561,6 +3663,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::Ritual => proto::JobKind::Ritual,
         JobKind::Quarry => proto::JobKind::Quarry,
         JobKind::GatherLogs => proto::JobKind::GatherLogs,
+        JobKind::Fish => proto::JobKind::Fish,
         JobKind::ForageFibre => proto::JobKind::ForageFibre,
         JobKind::Explore => proto::JobKind::Explore,
         JobKind::FetchWater => proto::JobKind::FetchWater,
@@ -3733,7 +3836,9 @@ fn sim_to_proto_threat_band(band: threat::ThreatBand) -> proto::ThreatBand {
 mod tests {
     use super::*;
     use crate::village_layout::VILLAGE_ANCHOR;
-    use crate::world_tick::{BuildingRuntime, TraderRuntime, found_colony, new_world};
+    use crate::world_tick::{
+        BuildingRuntime, TraderRuntime, found_colony, new_world, stockpile_placement_error,
+    };
 
     fn ctx() -> ActionCtx {
         ActionCtx {
@@ -6259,5 +6364,151 @@ mod tests {
             &ctx(),
         );
         assert!(!result.ok);
+    }
+
+    fn prepare_fishing_shore(world: &mut WorldState) -> (TilePos, TilePos) {
+        let colony = &world.colonies[0];
+        let bank = colony
+            .world_tiles
+            .keys()
+            .copied()
+            .find(|bank| {
+                colony.revealed_tiles.contains(bank)
+                    && stockpile_placement_error(
+                        colony,
+                        zones::ZoneRect {
+                            x1: bank.x,
+                            y1: bank.y,
+                            x2: bank.x,
+                            y2: bank.y,
+                        },
+                        world.world_seed,
+                        false,
+                    )
+                    .is_none()
+                    && colony.world_tiles.contains_key(&TilePos {
+                        x: bank.x,
+                        y: bank.y - 1,
+                    })
+            })
+            .expect("founding reveal has a clear tile with a mapped neighbor");
+        let water = TilePos {
+            x: bank.x,
+            y: bank.y - 1,
+        };
+        let colony = &mut world.colonies[0];
+        colony.revealed_tiles.insert(water);
+        let water_tile = colony.world_tiles.get_mut(&water).unwrap();
+        water_tile.tile_type = TileType::River;
+        water_tile.resources.water = 100;
+        (bank, water)
+    }
+
+    #[test]
+    fn fishing_designation_is_spatial_typed_durable_and_visible_in_snapshot() {
+        let mut world = world_with_one_colony();
+        let inland = open_gather_point(&world);
+        let before = world.colonies[0].clone();
+        let rejected = apply_action(
+            &mut world,
+            &proto::ClientAction::DesignateFishingSpot {
+                session_id: "sess_1".to_owned(),
+                nickname: "Angler".to_owned(),
+                sig: "signed".to_owned(),
+                at: inland,
+            },
+            &ctx(),
+        );
+        assert!(!rejected.ok, "inland fishing must be rejected");
+        assert_eq!(world.colonies[0], before, "rejection is atomic");
+
+        let (bank, water) = prepare_fishing_shore(&mut world);
+        let designated = apply_action(
+            &mut world,
+            &proto::ClientAction::DesignateFishingSpot {
+                session_id: "sess_1".to_owned(),
+                nickname: "Angler".to_owned(),
+                sig: "signed".to_owned(),
+                at: proto::TilePoint {
+                    x: water.x,
+                    y: water.y,
+                },
+            },
+            &ctx(),
+        );
+        assert!(
+            designated.ok,
+            "water click resolves to its clear bank: {designated:?}"
+        );
+        let colony = &world.colonies[0];
+        let spot = colony.gather_spots.last().unwrap();
+        assert_eq!(spot.purpose, stockpiles::GatherSpotPurpose::Fishing);
+        assert_eq!(spot.kind, stockpiles::ResourceKind::Food);
+        assert_eq!(spot.expires_at_ms, i64::MAX);
+        let pile = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == spot.stockpile_id)
+            .unwrap();
+        assert_eq!((pile.rect.x1, pile.rect.y1), (bank.x, bank.y));
+        assert_eq!(pile.rect.x1, pile.rect.x2);
+        assert_eq!(pile.rect.y1, pile.rect.y2);
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let visible = snapshot.colonies[0]
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == spot.stockpile_id)
+            .unwrap()
+            .gather_spot
+            .as_ref()
+            .unwrap();
+        assert_eq!(visible.purpose, proto::GatherSpotPurpose::Fishing);
+    }
+
+    #[test]
+    fn manual_fishing_requires_a_site_and_honors_exact_labor_preference() {
+        let mut world = world_with_one_colony();
+        let request = |world: &mut WorldState| {
+            apply_action(
+                world,
+                &proto::ClientAction::RequestJob {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Angler".to_owned(),
+                    sig: "signed".to_owned(),
+                    kind: proto::JobKind::Fish,
+                },
+                &ctx(),
+            )
+        };
+        assert!(!request(&mut world).ok);
+        let (bank, _) = prepare_fishing_shore(&mut world);
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::DesignateFishingSpot {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Angler".to_owned(),
+                    sig: "signed".to_owned(),
+                    at: proto::TilePoint {
+                        x: bank.x,
+                        y: bank.y
+                    },
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        let preferred_id = world.colonies[0].cats[3].id.clone();
+        world.colonies[0].cats[3]
+            .preferred_labors
+            .insert(Labor::Fishing);
+        assert!(request(&mut world).ok);
+        let job = world.colonies[0]
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::Fish)
+            .unwrap();
+        assert_eq!(job.assigned_cat.as_deref(), Some(preferred_id.as_str()));
     }
 }

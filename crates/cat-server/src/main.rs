@@ -1010,6 +1010,9 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::DesignateGatherSpot {
             session_id, sig, ..
         }
+        | ClientAction::DesignateFishingSpot {
+            session_id, sig, ..
+        }
         | ClientAction::RemoveGatherSpot {
             session_id, sig, ..
         }
@@ -1831,6 +1834,12 @@ mod tests {
                 b: TilePoint { x: 8, y: 8 },
                 kind: ResourceKind::Materials,
             },
+            ClientAction::DesignateFishingSpot {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: "invalid".to_owned(),
+                at: TilePoint { x: 8, y: 8 },
+            },
             ClientAction::RemoveGatherSpot {
                 session_id: signed.session_id.clone(),
                 nickname: "Tester".to_owned(),
@@ -1900,6 +1909,84 @@ mod tests {
         assert!(world.colonies[0].officers.is_empty());
         assert_eq!(world.colonies[0].stockpiles.len(), 1);
         assert!(world.colonies[0].gather_spots.is_empty());
+    }
+
+    #[tokio::test]
+    async fn authenticated_player_can_designate_a_shore_and_order_physical_fishing() {
+        let state = build_state(1_000_000);
+        let (mut connection, signed) = authenticated_connection(&state);
+        let bank = {
+            let mut world = state.world.lock().await;
+            let seed = world.world_seed;
+            let colony = &mut world.colonies[0];
+            let bank = colony
+                .world_tiles
+                .keys()
+                .copied()
+                .find(|site| {
+                    colony.revealed_tiles.contains(site)
+                        && cat_sim::world_tick::stockpile_placement_error(
+                            colony,
+                            cat_sim::zones::ZoneRect {
+                                x1: site.x,
+                                y1: site.y,
+                                x2: site.x,
+                                y2: site.y,
+                            },
+                            seed,
+                            false,
+                        )
+                        .is_none()
+                        && colony
+                            .world_tiles
+                            .contains_key(&cat_sim::world_tick::TilePos {
+                                x: site.x,
+                                y: site.y - 1,
+                            })
+                })
+                .expect("founding map has a clear bank fixture");
+            let water = cat_sim::world_tick::TilePos {
+                x: bank.x,
+                y: bank.y - 1,
+            };
+            colony.revealed_tiles.insert(water);
+            let tile = colony.world_tiles.get_mut(&water).unwrap();
+            tile.tile_type = cat_sim::types::TileType::River;
+            tile.resources.water = 100;
+            bank
+        };
+        let designation = ClientAction::DesignateFishingSpot {
+            session_id: signed.session_id.clone(),
+            nickname: "Angler".to_owned(),
+            sig: signed.sig.clone(),
+            at: TilePoint {
+                x: bank.x,
+                y: bank.y,
+            },
+        };
+        let result = send_action(&state, &mut connection, &designation).await;
+        assert!(result.result.ok, "{result:?}");
+
+        let request = ClientAction::RequestJob {
+            session_id: signed.session_id,
+            nickname: "Angler".to_owned(),
+            sig: signed.sig,
+            kind: cat_protocol::JobKind::Fish,
+        };
+        let result = send_action(&state, &mut connection, &request).await;
+        assert!(result.result.ok, "{result:?}");
+
+        let world = state.world.lock().await;
+        assert!(
+            world.colonies[0]
+                .gather_spots
+                .iter()
+                .any(|spot| { spot.purpose == cat_sim::stockpiles::GatherSpotPurpose::Fishing })
+        );
+        assert!(world.colonies[0].jobs.iter().any(|job| {
+            job.kind == cat_sim::types::JobKind::Fish
+                && job.requested_by == cat_sim::world_tick::JobRequester::Player
+        }));
     }
 
     #[tokio::test]
@@ -2105,6 +2192,7 @@ mod tests {
                 stockpile_id: "auth-gather".to_owned(),
                 kind: SimResourceKind::Food,
                 expires_at_ms: 2_000_000,
+                purpose: cat_sim::stockpiles::GatherSpotPurpose::General,
             });
         }
         {

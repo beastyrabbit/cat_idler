@@ -12,11 +12,14 @@ pub struct UpgradeLevels {
     pub resilience: f64,
 }
 
-pub const BASE_JOB_SECONDS: [(JobKind, f64); 16] = [
+pub const BASE_JOB_SECONDS: [(JobKind, f64); 17] = [
     (JobKind::SupplyFood, 20.0),
     (JobKind::SupplyWater, 15.0),
     (JobKind::LeaderPlanHunt, 30.0 * 60.0),
     (JobKind::HuntExpedition, 8.0 * 60.0 * 60.0),
+    // P16/P17 fishing: a bounded shoreline shift. Physical travel and three
+    // conserved cargo trips make the wall clock longer than this work timer.
+    (JobKind::Fish, 45.0 * 60.0),
     (JobKind::LeaderPlanHouse, 20.0 * 60.0 * 60.0),
     (JobKind::BuildHouse, 8.0 * 60.0 * 60.0),
     (JobKind::Ritual, 6.0 * 60.0 * 60.0),
@@ -214,6 +217,7 @@ mod tests {
             (JobKind::SupplyWater, 15.0),
             (JobKind::LeaderPlanHunt, 1_800.0),
             (JobKind::HuntExpedition, 28_800.0),
+            (JobKind::Fish, 2_700.0),
             (JobKind::LeaderPlanHouse, 72_000.0),
             (JobKind::BuildHouse, 28_800.0),
             (JobKind::Ritual, 21_600.0),

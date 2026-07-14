@@ -25,7 +25,7 @@ use cat_sim::{
     zones::ZoneRect,
 };
 
-const EXPECTED_ACTIONS: [&str; 38] = [
+const EXPECTED_ACTIONS: [&str; 39] = [
     "advance_time",
     "assign_officer",
     "assign_worker",
@@ -39,6 +39,7 @@ const EXPECTED_ACTIONS: [&str; 38] = [
     "defend_raid",
     "designate_farm",
     "designate_gather_spot",
+    "designate_fishing_spot",
     "designate_stockpile",
     "dispatch_scout",
     "edit_production_queue",
@@ -103,6 +104,7 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::DesignateStockpile { .. } => "designate_stockpile",
         proto::ClientAction::RemoveStockpile { .. } => "remove_stockpile",
         proto::ClientAction::DesignateGatherSpot { .. } => "designate_gather_spot",
+        proto::ClientAction::DesignateFishingSpot { .. } => "designate_fishing_spot",
         proto::ClientAction::RemoveGatherSpot { .. } => "remove_gather_spot",
         proto::ClientAction::SellGoods { .. } => "sell_goods",
         proto::ClientAction::BuyResource { .. } => "buy_resource",
@@ -985,6 +987,60 @@ fn run_action_campaign() -> WorldState {
             .stockpiles
             .iter()
             .all(|pile| pile.id != gather_id)
+    );
+
+    // Fishing is a typed, durable shoreline designation rather than a generic
+    // rectangular gather zone. Turn one mapped neighbor into water so this broad
+    // action campaign remains independent of the generated seed's river layout.
+    let fishing_bank = TilePos {
+        x: gather_rect.x1,
+        y: gather_rect.y1,
+    };
+    let water = [
+        TilePos {
+            x: fishing_bank.x,
+            y: fishing_bank.y - 1,
+        },
+        TilePos {
+            x: fishing_bank.x + 1,
+            y: fishing_bank.y,
+        },
+        TilePos {
+            x: fishing_bank.x,
+            y: fishing_bank.y + 1,
+        },
+        TilePos {
+            x: fishing_bank.x - 1,
+            y: fishing_bank.y,
+        },
+    ]
+    .into_iter()
+    .find(|tile| world.colonies[0].world_tiles.contains_key(tile))
+    .expect("mapped neighbor beside fishing bank");
+    world.colonies[0].revealed_tiles.insert(water);
+    world.colonies[0]
+        .world_tiles
+        .get_mut(&water)
+        .unwrap()
+        .tile_type = TileType::River;
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::DesignateFishingSpot {
+            session_id,
+            nickname,
+            sig,
+            at: proto::TilePoint {
+                x: water.x,
+                y: water.y,
+            },
+        },
+        &ctx(7_350),
+    );
+    assert_eq!(
+        world.colonies[0].gather_spots.last().unwrap().purpose,
+        cat_sim::stockpiles::GatherSpotPurpose::Fishing
     );
 
     // Lay one observable road tile on a known non-water, unpaved world tile.

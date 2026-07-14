@@ -40,6 +40,7 @@ pub fn get_optimal_cat_for_task(
     let requires_outside = matches!(
         task_type,
         TaskType::Hunt
+            | TaskType::Fish
             | TaskType::GatherHerbs
             | TaskType::FetchWater
             | TaskType::Explore

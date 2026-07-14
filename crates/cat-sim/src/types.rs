@@ -163,6 +163,7 @@ define_wire_enum! {
 define_wire_enum! {
     pub enum TaskType {
         Hunt => "hunt",
+        Fish => "fish",
         GatherHerbs => "gather_herbs",
         FetchWater => "fetch_water",
         Clean => "clean",
@@ -198,6 +199,7 @@ define_wire_enum! {
         Ritual => "ritual",
         Quarry => "quarry",
         GatherLogs => "gather_logs",
+        Fish => "fish",
         ForageFibre => "forage_fibre",
         Explore => "explore",
         FetchWater => "fetch_water",
@@ -349,6 +351,7 @@ mod tests {
     fn task_type_wire_literals_round_trip() {
         let cases = [
             (TaskType::Hunt, "hunt"),
+            (TaskType::Fish, "fish"),
             (TaskType::GatherHerbs, "gather_herbs"),
             (TaskType::FetchWater, "fetch_water"),
             (TaskType::Clean, "clean"),
@@ -392,6 +395,7 @@ mod tests {
             (JobKind::Ritual, "ritual"),
             (JobKind::Quarry, "quarry"),
             (JobKind::GatherLogs, "gather_logs"),
+            (JobKind::Fish, "fish"),
             (JobKind::ForageFibre, "forage_fibre"),
             (JobKind::Explore, "explore"),
             (JobKind::FetchWater, "fetch_water"),

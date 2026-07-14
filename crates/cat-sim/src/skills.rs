@@ -30,6 +30,7 @@ pub const SKILL_GAIN_PER_WORK_HOUR: f64 = 1.0;
 #[serde(rename_all = "snake_case")]
 pub enum Labor {
     Hunt,
+    Fishing,
     Build,
     Ritual,
     Fight,
@@ -52,6 +53,7 @@ pub enum Labor {
 impl Labor {
     pub const ALL: &'static [Self] = &[
         Self::Hunt,
+        Self::Fishing,
         Self::Build,
         Self::Ritual,
         Self::Fight,
@@ -78,6 +80,7 @@ impl Labor {
     pub fn for_job_kind(kind: JobKind) -> Option<Self> {
         match kind {
             JobKind::HuntExpedition => Some(Self::Hunt),
+            JobKind::Fish => Some(Self::Fishing),
             JobKind::BuildHouse => Some(Self::Build),
             JobKind::Ritual => Some(Self::Ritual),
             JobKind::Quarry => Some(Self::Quarry),
@@ -152,6 +155,7 @@ mod tests {
             let mapped = Labor::for_job_kind(*kind);
             match kind {
                 JobKind::HuntExpedition => assert_eq!(mapped, Some(Labor::Hunt)),
+                JobKind::Fish => assert_eq!(mapped, Some(Labor::Fishing)),
                 JobKind::BuildHouse => assert_eq!(mapped, Some(Labor::Build)),
                 JobKind::Ritual => assert_eq!(mapped, Some(Labor::Ritual)),
                 JobKind::Quarry => assert_eq!(mapped, Some(Labor::Quarry)),

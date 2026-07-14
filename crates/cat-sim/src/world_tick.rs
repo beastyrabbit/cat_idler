@@ -82,7 +82,7 @@ use crate::{
     },
     smithy::{MetalForgeOptions, SmithyOptions, advance_metal_forge, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
-    stockpiles::{self, GatherSpot, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
+    stockpiles::{self, GatherSpot, GatherSpotPurpose, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
     storage::{
         StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
     },
@@ -1547,6 +1547,9 @@ const EVENT_KEEP: usize = 2_000;
 const MAX_PATH_DECAY_PER_TICK: u32 = 2;
 const QUARRY_TOTAL_YIELD: f64 = 15.0;
 const LOGGING_TOTAL_YIELD: f64 = 15.0;
+/// One shoreline shift yields twelve food before skill/haul upgrades, split over
+/// three physical trips into the designated fishing gather spot.
+const FISHING_TOTAL_YIELD: f64 = 12.0;
 const FIBRE_FORAGE_YIELD: f64 = 1.0;
 const ROAD_MATERIALS_RESERVE: f64 = 30.0;
 const ROAD_MAX_PAVE_PER_BATCH: i32 = 6;
@@ -3953,6 +3956,7 @@ fn phase_15_assign_promoted_job_destinations(
     let food_tiles = food_tiles_near_village(colony);
     let quarry_site = quarry_sites_near_village(colony).into_iter().next();
     let logging_site = first_logging_site_if_needed(colony, &active_indices, world_seed);
+    let fishing_site = fishing_sites(colony).into_iter().next();
     let water_site = water_sites_near_village(colony).into_iter().next();
     // Snapshot the active player zones (phase 10 already dropped expired ones) so hunt
     // targeting can be steered toward gather rects and away from avoid rects.
@@ -4028,10 +4032,10 @@ fn phase_15_assign_promoted_job_destinations(
             roll: roll.value,
             site: construction_site,
             expansion_site,
-            quarry_site: if job.kind == JobKind::GatherLogs {
-                logging_site
-            } else {
-                quarry_site
+            quarry_site: match job.kind {
+                JobKind::GatherLogs => logging_site,
+                JobKind::Fish => fishing_site,
+                _ => quarry_site,
             },
             water_site,
             explore_site,
@@ -4047,6 +4051,7 @@ fn phase_15_assign_promoted_job_destinations(
             JobKind::HuntExpedition
             | JobKind::Quarry
             | JobKind::GatherLogs
+            | JobKind::Fish
             | JobKind::FetchWater => JobMetadata::Hauling {
                 site: Some(site),
                 total_yield: None,
@@ -4131,6 +4136,7 @@ fn phase_15_assign_promoted_job_destinations(
                 JobKind::HuntExpedition
                     | JobKind::Quarry
                     | JobKind::GatherLogs
+                    | JobKind::Fish
                     | JobKind::FetchWater
             ) && let Some(cat_pos) = colony
                 .cats
@@ -4205,7 +4211,11 @@ fn phase_17_legacy_emergency_hunt(colony: &mut ColonyRuntime, gate: TickGate, po
     if colony.resources.food >= policy.config.food_emergency_threshold {
         return;
     }
-    if has_conflicting_active_job(colony, JobKind::LeaderPlanHunt) {
+    if has_conflicting_active_job(colony, JobKind::LeaderPlanHunt)
+        || active_or_queued_jobs(colony)
+            .iter()
+            .any(|job| job.kind == JobKind::Fish)
+    {
         return;
     }
     if !can_take_policy_action(colony, policy) {
@@ -4220,10 +4230,15 @@ fn phase_17_legacy_emergency_hunt(colony: &mut ColonyRuntime, gate: TickGate, po
     }) else {
         return;
     };
+    let kind = if has_fishing_site(colony) {
+        JobKind::Fish
+    } else {
+        JobKind::LeaderPlanHunt
+    };
     queue_job(
         colony,
         gate.processed_through,
-        JobKind::LeaderPlanHunt,
+        kind,
         Some(cat_id),
         JobMetadata::None,
     );
@@ -4434,7 +4449,7 @@ fn phase_17b_water_reserve_preemption(colony: &mut ColonyRuntime, gate: TickGate
             .iter()
             .enumerate()
             .filter(|(_, job)| {
-                job.kind == JobKind::HuntExpedition
+                matches!(job.kind, JobKind::HuntExpedition | JobKind::Fish)
                     && matches!(job.status, JobStatus::Active | JobStatus::Queued)
                     && job.requested_by == JobRequester::Leader
                     && job
@@ -4603,7 +4618,8 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         .map(|cat| crate::life_sim::workforce_weight(get_life_stage(cat.age_hours)))
         .sum::<f64>();
 
-    let active_hunts = count_jobs(&active_jobs, JobKind::HuntExpedition);
+    let active_hunts = count_jobs(&active_jobs, JobKind::HuntExpedition)
+        .saturating_add(count_jobs(&active_jobs, JobKind::Fish));
     let active_quarries = count_jobs(&active_jobs, JobKind::Quarry);
     let active_scouts = count_jobs(&active_jobs, JobKind::Explore);
     let active_water_fetchers = count_jobs(&active_jobs, JobKind::FetchWater);
@@ -4818,12 +4834,15 @@ fn phase_19_leader_cancellations(
     for decision in &plan.decisions {
         match decision {
             LeaderDecision::CancelHunts => {
-                let cancelled = cancel_jobs(
+                let cancelled_hunts = cancel_jobs(
                     colony,
                     gate.processed_through,
                     JobKind::HuntExpedition,
                     true,
                 );
+                let cancelled_fishing =
+                    cancel_jobs(colony, gate.processed_through, JobKind::Fish, true);
+                let cancelled = cancelled_hunts.saturating_add(cancelled_fishing);
                 if cancelled > 0 {
                     append_event(
                         colony,
@@ -4984,10 +5003,15 @@ fn phase_20_leader_labor_assignments_and_staffing(
 
         match assignment.goal {
             LaborGoalKind::Hunt => {
+                let kind = if has_fishing_site(colony) {
+                    JobKind::Fish
+                } else {
+                    JobKind::HuntExpedition
+                };
                 queue_job(
                     colony,
                     gate.processed_through,
-                    JobKind::HuntExpedition,
+                    kind,
                     Some(assignment.cat_id),
                     JobMetadata::None,
                 );
@@ -7319,6 +7343,14 @@ fn phase_29_due_completion_gathering_explore_expansion(
                 CarryingKind::Logs,
                 world_seed,
             ),
+            JobKind::Fish => complete_fixed_yield_job(
+                colony,
+                &job,
+                gate,
+                FISHING_TOTAL_YIELD,
+                CarryingKind::Food,
+                world_seed,
+            ),
             JobKind::ForageFibre => complete_fibre_forage(colony, &job, gate),
             JobKind::FetchWater => complete_fixed_yield_job(
                 colony,
@@ -7424,6 +7456,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
                 | JobKind::Ritual
                 | JobKind::Quarry
                 | JobKind::GatherLogs
+                | JobKind::Fish
                 | JobKind::ForageFibre
                 | JobKind::Explore
                 | JobKind::FetchWater
@@ -7468,6 +7501,7 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
                     JobKind::HuntExpedition
                         | JobKind::Quarry
                         | JobKind::GatherLogs
+                        | JobKind::Fish
                         | JobKind::FetchWater
                 )
                 && job.assigned_cat.is_some()
@@ -8637,6 +8671,7 @@ fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64, world_se
             stockpile_id: id,
             kind,
             expires_at_ms: now_ms + stockpiles::GATHER_SPOT_TTL_MS,
+            purpose: GatherSpotPurpose::General,
         });
     }
     reconcile_colony_stockpiles(colony);
@@ -9494,7 +9529,10 @@ fn has_inbound_critical_relief(
             })
         })
     };
-    (!food_needed || carries(CarryingKind::Food) || active_job(JobKind::HuntExpedition))
+    (!food_needed
+        || carries(CarryingKind::Food)
+        || active_job(JobKind::HuntExpedition)
+        || active_job(JobKind::Fish))
         && (!water_needed || carries(CarryingKind::Water) || active_job(JobKind::FetchWater))
 }
 
@@ -10575,6 +10613,7 @@ fn automated_job_role(colony: &ColonyRuntime, job: &JobRuntime) -> Option<Office
         },
         JobKind::LeaderPlanHunt
         | JobKind::HuntExpedition
+        | JobKind::Fish
         | JobKind::FetchWater
         | JobKind::ForageFibre => Some(OfficerRole::Farmer),
         JobKind::Quarry | JobKind::GatherLogs => Some(OfficerRole::Forester),
@@ -11200,7 +11239,11 @@ fn queue_job_requested_by(
     let base_duration_ms = (duration_seconds * 1000.0) as i64;
     let duration_ms = if matches!(
         kind,
-        JobKind::BuildHouse | JobKind::Quarry | JobKind::GatherLogs | JobKind::HaulGatherSpot
+        JobKind::BuildHouse
+            | JobKind::Quarry
+            | JobKind::GatherLogs
+            | JobKind::Fish
+            | JobKind::HaulGatherSpot
     ) {
         productive_duration_ms(base_duration_ms, colony.resources.tools)
     } else {
@@ -11249,6 +11292,7 @@ fn queue_job_requested_by(
 fn task_for_job(kind: JobKind) -> Option<TaskType> {
     match kind {
         JobKind::HuntExpedition | JobKind::LeaderPlanHunt => Some(TaskType::Hunt),
+        JobKind::Fish => Some(TaskType::Fish),
         JobKind::FetchWater => Some(TaskType::FetchWater),
         JobKind::Quarry | JobKind::GatherLogs | JobKind::BuildHouse | JobKind::LeaderPlanHouse => {
             Some(TaskType::Build)
@@ -12738,12 +12782,34 @@ pub fn can_plan_building_at(
         .is_some_and(|route| has_officer(colony, OfficerRole::Steward) || route.is_empty())
 }
 
-fn tile_has_water(tile: Option<&WorldTileRuntime>) -> bool {
+pub(crate) fn tile_has_water(tile: Option<&WorldTileRuntime>) -> bool {
     tile.is_some_and(|tile| {
         tile.tile_type == TileType::River
             || tile.overlay_feature.as_deref() == Some("river")
             || tile.resources.water > 0
     })
+}
+
+/// A fishing worker stands on mapped, permanently revealed land and reaches an
+/// orthogonally adjacent water tile. The bank itself remains walkable; fishing
+/// never grants cats generic water traversal.
+#[must_use]
+pub(crate) fn is_valid_fishing_shore(colony: &ColonyRuntime, site: TilePos) -> bool {
+    colony.revealed_tiles.contains(&site)
+        && colony
+            .world_tiles
+            .get(&site)
+            .is_some_and(|tile| !tile_has_water(Some(tile)))
+        && [(0, -1), (1, 0), (0, 1), (-1, 0)]
+            .into_iter()
+            .map(|(dx, dy)| TilePos {
+                x: site.x + dx,
+                y: site.y + dy,
+            })
+            .any(|water| {
+                colony.revealed_tiles.contains(&water)
+                    && tile_has_water(colony.world_tiles.get(&water))
+            })
 }
 
 /// Whether a field/farm may be sown on this ground (P17: relaxed from
@@ -12915,6 +12981,37 @@ fn water_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
         .collect::<Vec<_>>();
     sites.sort_by_key(|site| cheb_from_anchor(colony.anchor, *site));
     sites.into_iter().map(tile_pos_to_world).collect()
+}
+
+fn fishing_sites(colony: &ColonyRuntime) -> Vec<WorldPos> {
+    let mut sites = colony
+        .gather_spots
+        .iter()
+        .filter(|spot| spot.purpose == GatherSpotPurpose::Fishing)
+        .filter_map(|spot| {
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == spot.stockpile_id)
+                .map(|pile| {
+                    let (x, y) = pile.center();
+                    TilePos {
+                        x: x.round() as i32,
+                        y: y.round() as i32,
+                    }
+                })
+        })
+        .filter(|site| is_valid_fishing_shore(colony, *site))
+        .collect::<Vec<_>>();
+    sites.sort_by_key(|site| (cheb_from_anchor(colony.anchor, *site), site.y, site.x));
+    sites.into_iter().map(tile_pos_to_world).collect()
+}
+
+/// Whether a currently designated, persisted fishing workplace remains valid.
+/// Action validation and officer dispatch share this exact predicate.
+#[must_use]
+pub fn has_fishing_site(colony: &ColonyRuntime) -> bool {
+    !fishing_sites(colony).is_empty()
 }
 
 fn tile_is_explored(colony: &ColonyRuntime, tile: &WorldTileRuntime) -> bool {
@@ -13798,7 +13895,11 @@ fn return_assigned_cat(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickG
         )
     } else if matches!(
         job.kind,
-        JobKind::HuntExpedition | JobKind::Quarry | JobKind::GatherLogs | JobKind::FetchWater
+        JobKind::HuntExpedition
+            | JobKind::Quarry
+            | JobKind::GatherLogs
+            | JobKind::Fish
+            | JobKind::FetchWater
     ) {
         // The completing gatherer carries its final trip's yield home; route it to the pile
         // that yield belongs in (nearest designated pile accepting it), falling back to the
@@ -13903,6 +14004,7 @@ fn total_yield_for_job(
             (skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD) * mult * haul_mult).floor()
         }
         JobKind::GatherLogs => skill_scaled_yield(cat, job.kind, LOGGING_TOTAL_YIELD) * haul_mult,
+        JobKind::Fish => skill_scaled_yield(cat, job.kind, FISHING_TOTAL_YIELD) * haul_mult,
         JobKind::HuntExpedition => hunt_yield_for(cat, colony),
         _ => 0.0,
     }
@@ -14964,6 +15066,7 @@ fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str, now_ms: i64) ->
                 JobKind::HuntExpedition
                     | JobKind::Quarry
                     | JobKind::GatherLogs
+                    | JobKind::Fish
                     | JobKind::FetchWater
             )
         {
@@ -18441,6 +18544,7 @@ mod tests {
             stockpile_id: "gather-1".to_owned(),
             kind: ResourceKind::Food,
             expires_at_ms: 1_000_000,
+            purpose: GatherSpotPurpose::General,
         });
 
         let gate = production_gate(1, 1_000);
@@ -18499,6 +18603,7 @@ mod tests {
             stockpile_id: "gather-1".to_owned(),
             kind: ResourceKind::Food,
             expires_at_ms: 1_000_000,
+            purpose: GatherSpotPurpose::General,
         });
         colony.jobs.push(JobRuntime {
             id: "job-mover".to_owned(),
@@ -18597,6 +18702,7 @@ mod tests {
             stockpile_id: "gather-1".to_owned(),
             kind: ResourceKind::Food,
             expires_at_ms: 10_000,
+            purpose: GatherSpotPurpose::General,
         });
         colony.jobs.push(JobRuntime {
             id: "job-mover".to_owned(),
@@ -18815,6 +18921,7 @@ mod tests {
                 stockpile_id: id,
                 kind: ResourceKind::Food,
                 expires_at_ms: i64::MAX,
+                purpose: GatherSpotPurpose::General,
             });
         }
         assert_eq!(colony.gather_spots.len(), MAX_GATHER_SPOTS);
@@ -18851,6 +18958,7 @@ mod tests {
             stockpile_id: "gather-manual".to_owned(),
             kind: ResourceKind::Materials,
             expires_at_ms: i64::MAX,
+            purpose: GatherSpotPurpose::General,
         });
         colony.jobs.extend(quarry_pair_at(site));
 
@@ -32430,5 +32538,279 @@ mod tests {
              food/game-hour) at population {population} — fields stopped being a supplement \
              and food went trivial"
         );
+    }
+
+    fn fixture_fishing_bank(world: &mut WorldState) -> TilePos {
+        let seed = world.world_seed;
+        if let Some(site) = world.colonies[0].world_tiles.keys().copied().find(|site| {
+            is_valid_fishing_shore(&world.colonies[0], *site)
+                && stockpile_placement_error(
+                    &world.colonies[0],
+                    tile_rect(site.x, site.y),
+                    seed,
+                    false,
+                )
+                .is_none()
+        }) {
+            return site;
+        }
+        let bank = world.colonies[0]
+            .world_tiles
+            .keys()
+            .copied()
+            .find(|site| {
+                world.colonies[0].revealed_tiles.contains(site)
+                    && stockpile_placement_error(
+                        &world.colonies[0],
+                        tile_rect(site.x, site.y),
+                        seed,
+                        false,
+                    )
+                    .is_none()
+                    && world.colonies[0].world_tiles.contains_key(&TilePos {
+                        x: site.x,
+                        y: site.y - 1,
+                    })
+            })
+            .expect("fixture has clear mapped ground for a fishing bank");
+        let water = TilePos {
+            x: bank.x,
+            y: bank.y - 1,
+        };
+        let colony = &mut world.colonies[0];
+        colony.revealed_tiles.insert(water);
+        let tile = colony.world_tiles.get_mut(&water).unwrap();
+        tile.tile_type = TileType::River;
+        tile.resources.water = 100;
+        bank
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct FishingOutcome {
+        colony: ColonyRuntime,
+        worker_id: String,
+        saw_cargo: bool,
+        saw_site: bool,
+    }
+
+    fn run_fishing_campaign(seed: u32, farmer_automated: bool) -> FishingOutcome {
+        let start = 10_000;
+        let mut world = new_world(seed);
+        world
+            .colonies
+            .push(found_colony(seed, "colony-1", start, seed));
+        if farmer_automated {
+            establish_office(&mut world.colonies[0], OfficerRole::Farmer);
+        }
+        {
+            let colony = &mut world.colonies[0];
+            colony.jobs.clear();
+            for cat in &mut colony.cats {
+                cat.activity = CatActivity::Idle;
+                cat.current_task = None;
+                cat.destination = None;
+                cat.carrying = None;
+            }
+            for pile in &mut colony.stockpiles {
+                pile.contents.food = 0.0;
+            }
+            colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.is_shrine())
+                .unwrap()
+                .contents
+                .food = 1.0;
+            reconcile_colony_stockpiles(colony);
+        }
+        let bank = fixture_fishing_bank(&mut world);
+        let action_ctx = ActionCtx {
+            session_id: "signed-session".to_owned(),
+            player_id: "angler-player".to_owned(),
+            colony_id: "colony-1".to_owned(),
+            now_ms: start,
+        };
+        let designated = apply_action(
+            &mut world,
+            &proto::ClientAction::DesignateFishingSpot {
+                session_id: action_ctx.session_id.clone(),
+                nickname: "Angler".to_owned(),
+                sig: "server-verified-signature".to_owned(),
+                at: proto::TilePoint {
+                    x: bank.x,
+                    y: bank.y,
+                },
+            },
+            &action_ctx,
+        );
+        assert!(designated.ok, "seed {seed}: {designated:?}");
+        let fishing_pile_id = world.colonies[0]
+            .gather_spots
+            .iter()
+            .find(|spot| spot.purpose == GatherSpotPurpose::Fishing)
+            .unwrap()
+            .stockpile_id
+            .clone();
+
+        if !farmer_automated {
+            world.colonies[0].cats[4]
+                .preferred_labors
+                .insert(Labor::Fishing);
+            let requested = apply_action(
+                &mut world,
+                &proto::ClientAction::RequestJob {
+                    session_id: action_ctx.session_id.clone(),
+                    nickname: "Angler".to_owned(),
+                    sig: "server-verified-signature".to_owned(),
+                    kind: proto::JobKind::Fish,
+                },
+                &action_ctx,
+            );
+            assert!(requested.ok, "seed {seed}: {requested:?}");
+        } else {
+            // The designation is the setup input; from this point the colony is
+            // explicitly unattended so the Farmer may exercise its own policy.
+            world.colonies[0].last_player_activity_at = None;
+        }
+
+        let mut worker_id = None;
+        let mut saw_cargo = false;
+        let mut saw_site = false;
+        for second in 1..=3_600_i64 {
+            let reports = world_tick(&mut world, start + second * 1_000);
+            assert_eq!(
+                reports[0].reset_reason, None,
+                "seed {seed}, second {second}"
+            );
+            let colony = &world.colonies[0];
+            if worker_id.is_none() {
+                worker_id = colony
+                    .jobs
+                    .iter()
+                    .find(|job| job.kind == JobKind::Fish)
+                    .and_then(|job| job.assigned_cat.clone());
+            }
+            if let Some(id) = worker_id.as_deref()
+                && let Some(cat) = colony.cats.iter().find(|cat| cat.id == id)
+            {
+                saw_cargo |= cat
+                    .carrying
+                    .as_ref()
+                    .is_some_and(|cargo| cargo.kind == CarryingKind::Food);
+                let at = position_to_world(colony.anchor, cat.position);
+                let site = tile_pos_to_world(bank);
+                saw_site |= (at.x - site.x).powi(2) + (at.y - site.y).powi(2) < 0.25;
+            }
+            let pile_food = colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == fishing_pile_id)
+                .unwrap()
+                .contents
+                .food;
+            saw_cargo |= pile_food > 0.0;
+            let stored_food: f64 = colony
+                .stockpiles
+                .iter()
+                .map(|pile| pile.contents.food)
+                .sum();
+            assert!(
+                (stored_food - colony.resources.food).abs() <= 1e-9,
+                "seed {seed}, second {second}: cargo was credited before a physical deposit"
+            );
+            let done = colony.jobs.iter().any(|job| {
+                job.kind == JobKind::Fish
+                    && job.status == JobStatus::Completed
+                    && job.completed_at.is_some()
+            });
+            if done && pile_food >= FISHING_TOTAL_YIELD {
+                break;
+            }
+        }
+        let colony = &world.colonies[0];
+        let worker_id = colony
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::Fish && job.status == JobStatus::Completed)
+            .and_then(|job| job.assigned_cat.clone())
+            .or(worker_id)
+            .expect("fishing job was never staffed");
+        let worker = colony.cats.iter().find(|cat| cat.id == worker_id).unwrap();
+        let pile_food = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == fishing_pile_id)
+            .unwrap()
+            .contents
+            .food;
+        assert!(
+            pile_food >= FISHING_TOTAL_YIELD,
+            "seed {seed}: no delivered catch; pile={pile_food} food={} jobs={:?} worker={worker:?}",
+            colony.resources.food,
+            colony
+                .jobs
+                .iter()
+                .filter(|job| job.kind == JobKind::Fish)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            saw_cargo && saw_site,
+            "seed {seed}: fishing was not physically observed; automated={farmer_automated} cargo={saw_cargo} site={saw_site}"
+        );
+        assert!(worker.skills.get(&Labor::Fishing).copied().unwrap_or(0.0) > 0.0);
+        assert!(worker.skills.get(&Labor::Haul).copied().unwrap_or(0.0) > 0.0);
+        FishingOutcome {
+            colony: colony.clone(),
+            worker_id,
+            saw_cargo,
+            saw_site,
+        }
+    }
+
+    #[test]
+    fn physical_fishing_runs_guided_and_unattended_deterministically_across_seeds() {
+        for seed in [7, 42, 2024] {
+            let guided = run_fishing_campaign(seed, false);
+            let guided_twin = run_fishing_campaign(seed, false);
+            assert_eq!(guided, guided_twin, "guided seed {seed}");
+            let unattended = run_fishing_campaign(seed, true);
+            let unattended_twin = run_fishing_campaign(seed, true);
+            assert_eq!(unattended, unattended_twin, "unattended seed {seed}");
+        }
+    }
+
+    #[test]
+    fn dying_fisher_salvages_exact_cargo_and_cancels_the_job() {
+        let mut cat = survival_cat(CatNeeds {
+            hunger: 100.0,
+            thirst: 0.0,
+            rest: 100.0,
+            health: 5.0,
+        });
+        cat.carrying = Some(Carrying {
+            kind: CarryingKind::Food,
+            amount: 4.0,
+            job_ended_at: 0,
+            source_gather_spot: None,
+        });
+        let mut colony = survival_colony(cat, 5.0, 0.0);
+        colony.jobs.push(JobRuntime {
+            id: "fish-fatal".to_owned(),
+            kind: JobKind::Fish,
+            status: JobStatus::Active,
+            assigned_cat: Some("cat-1".to_owned()),
+            ..JobRuntime::default()
+        });
+
+        phase_25_survival_deaths_and_carried_yield_salvage(
+            &mut colony,
+            production_gate(1_200, 1_200_000),
+            normal_policy(),
+        );
+
+        assert_eq!(colony.cats[0].death_time, Some(1_200_000));
+        assert_eq!(colony.cats[0].carrying, None);
+        assert_eq!(colony.resources.food, 9.0);
+        assert_eq!(colony.jobs[0].status, JobStatus::Cancelled);
     }
 }

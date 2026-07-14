@@ -26,11 +26,11 @@ use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage, PrimaryWindow};
 use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
     CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
-    FarmStage, FootprintSize, GateSide, ItemStackSnapshot, JobKind, Labor, OfficerRole,
-    ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts, ResourceCapacities,
-    ResourceKind, RoleXp, ScoutMission, ScoutResource, Specialization, StockLedgerSnapshot,
-    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderVisitState, VillageKind,
-    VillageScale, WorldSnapshot, ZoneKind,
+    FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemStackSnapshot, JobKind, Labor,
+    OfficerRole, ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts,
+    ResourceCapacities, ResourceKind, RoleXp, ScoutMission, ScoutResource, Specialization,
+    StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer,
+    TraderVisitState, VillageKind, VillageScale, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -785,6 +785,7 @@ enum ToolMode {
     Stockpile,
     Farm,
     GatherSpot,
+    FishingSpot,
     Road,
     Building,
 }
@@ -797,6 +798,7 @@ enum PaintKind {
     Stockpile,
     Farm,
     GatherSpot,
+    FishingSpot,
     Road,
 }
 
@@ -809,6 +811,7 @@ impl ToolMode {
             Self::Stockpile => "Stockpile",
             Self::Farm => "Farm",
             Self::GatherSpot => "Gather spot",
+            Self::FishingSpot => "Fishing spot",
             Self::Road => "Road",
             Self::Building => "Building",
         }
@@ -823,6 +826,7 @@ impl ToolMode {
             Self::Stockpile => Some(PaintKind::Stockpile),
             Self::Farm => Some(PaintKind::Farm),
             Self::GatherSpot => Some(PaintKind::GatherSpot),
+            Self::FishingSpot => Some(PaintKind::FishingSpot),
             Self::Road => Some(PaintKind::Road),
             Self::Building => None,
         }
@@ -1828,8 +1832,9 @@ const CAT_NEEDS: [(NeedKind, &str); 4] = [
     (NeedKind::Rest, "rest"),
     (NeedKind::Health, "health"),
 ];
-const ALL_LABORS: [Labor; 18] = [
+const ALL_LABORS: [Labor; 19] = [
     Labor::Hunt,
+    Labor::Fishing,
     Labor::Build,
     Labor::Ritual,
     Labor::Fight,
@@ -2598,6 +2603,7 @@ enum ButtonAction {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OrderAction {
     Hunt,
+    Fish,
     FetchWater,
     Quarry,
     GatherLogs,
@@ -2616,8 +2622,9 @@ enum OrderAction {
 
 impl OrderAction {
     #[cfg(test)]
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::Hunt,
+        Self::Fish,
         Self::FetchWater,
         Self::Quarry,
         Self::GatherLogs,
@@ -2633,8 +2640,9 @@ impl OrderAction {
         Self::TrainSelected,
         Self::DefendRaid,
     ];
-    const JOBS: [Self; 7] = [
+    const JOBS: [Self; 8] = [
         Self::Hunt,
+        Self::Fish,
         Self::FetchWater,
         Self::Quarry,
         Self::GatherLogs,
@@ -2655,6 +2663,7 @@ impl OrderAction {
     const fn label(self) -> &'static str {
         match self {
             Self::Hunt => "Hunt",
+            Self::Fish => "Fish shore",
             Self::FetchWater => "Fetch water",
             Self::Quarry => "Quarry",
             Self::GatherLogs => "Gather logs",
@@ -4094,6 +4103,7 @@ fn spawn_bottom_bar(commands: &mut Commands) {
                             ToolMode::Stockpile,
                             ToolMode::Farm,
                             ToolMode::GatherSpot,
+                            ToolMode::FishingSpot,
                             ToolMode::Road,
                             ToolMode::Building,
                         ] {
@@ -5353,6 +5363,7 @@ fn render_zones(
 /// Gather-spot flag: a teal banner (distinct from pile/accept tints) on a wood
 /// pole, carrying the spot's resource icon — marks a temporary gather drop.
 const GATHER_FLAG_COLOR: Color = Color::srgb(0.24, 0.60, 0.52);
+const FISHING_FLAG_COLOR: Color = Color::srgb(0.18, 0.68, 0.88);
 const GATHER_POLE_COLOR: Color = Color::srgb(0.34, 0.25, 0.16);
 
 #[allow(clippy::type_complexity)]
@@ -5464,7 +5475,14 @@ fn render_stockpiles(
                 StockpileVis,
             ));
             commands.spawn((
-                Sprite::from_color(GATHER_FLAG_COLOR, Vec2::splat(TILE * 0.66)),
+                Sprite::from_color(
+                    if gs.purpose == GatherSpotPurpose::Fishing {
+                        FISHING_FLAG_COLOR
+                    } else {
+                        GATHER_FLAG_COLOR
+                    },
+                    Vec2::splat(TILE * 0.66),
+                ),
                 Transform::from_xyz(cx, flag_y + TILE * 0.45, ysort_z(cy) + 3.1),
                 StockpileVis,
             ));
@@ -5509,10 +5527,10 @@ fn update_remove_panel(
             node.display = Display::Flex;
             let total = resource_total(&pile.contents);
             let dominant = dominant_resource(&pile.contents).map_or("empty", resource_kind_name);
-            let title = if pile.gather_spot.is_some() {
-                "Gather spot"
-            } else {
-                "Stockpile"
+            let title = match pile.gather_spot.as_ref().map(|spot| spot.purpose) {
+                Some(GatherSpotPurpose::Fishing) => "Fishing shore",
+                Some(GatherSpotPurpose::General) => "Gather spot",
+                None => "Stockpile",
             };
             text.0 = format!("{title}\n{dominant} {}", total.round() as i64);
         }
@@ -5814,6 +5832,7 @@ fn build_order_action(
     };
     Ok(match action {
         OrderAction::Hunt => request(JobKind::HuntExpedition),
+        OrderAction::Fish => request(JobKind::Fish),
         OrderAction::FetchWater => request(JobKind::FetchWater),
         OrderAction::Quarry => request(JobKind::Quarry),
         OrderAction::GatherLogs => request(JobKind::GatherLogs),
@@ -5991,6 +6010,7 @@ fn handle_boost_button(
 fn labor_name(labor: Labor) -> &'static str {
     match labor {
         Labor::Hunt => "hunt",
+        Labor::Fishing => "fishing",
         Labor::Build => "build",
         Labor::Ritual => "ritual",
         Labor::Fight => "fight",
@@ -7312,6 +7332,12 @@ fn zone_paint(
                 a,
                 b,
                 kind: gather_kind,
+            },
+            PaintKind::FishingSpot => ClientAction::DesignateFishingSpot {
+                session_id: session.session_id.clone(),
+                nickname: "Desktop Cat".to_string(),
+                sig: session.sig.clone(),
+                at: a,
             },
             PaintKind::Road => ClientAction::BuildRoad {
                 session_id: session.session_id.clone(),
@@ -8911,6 +8937,7 @@ fn paint_preview_color(kind: PaintKind) -> Color {
         PaintKind::Stockpile => Color::srgba(0.85, 0.60, 0.25, 0.45),
         PaintKind::Farm => Color::srgba(0.55, 0.80, 0.25, 0.45),
         PaintKind::GatherSpot => Color::srgba(0.35, 0.70, 0.85, 0.45),
+        PaintKind::FishingSpot => Color::srgba(0.20, 0.72, 0.90, 0.55),
         PaintKind::Road => Color::srgba(0.70, 0.68, 0.62, 0.55),
     }
 }
@@ -9421,6 +9448,7 @@ fn cat_skills_line(skills: &BTreeMap<Labor, f64>, legacy: &RoleXp) -> String {
 fn labor_label(labor: Labor) -> &'static str {
     match labor {
         Labor::Hunt => "hunt",
+        Labor::Fishing => "fish",
         Labor::Build => "build",
         Labor::Ritual => "ritual",
         Labor::Fight => "fight",
@@ -9734,6 +9762,12 @@ mod tests {
                 session_id: "session-1".to_owned(),
                 nickname: "Desktop Cat".to_owned(),
                 sig: "signed".to_owned(),
+                kind: JobKind::Fish,
+            },
+            ClientAction::RequestJob {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
                 kind: JobKind::FetchWater,
             },
             ClientAction::RequestJob {
@@ -9909,6 +9943,13 @@ mod tests {
         assert_eq!(kind, GATHER_KINDS[0]);
         assert_eq!(ToolMode::Building.paint_kind(), None);
         assert_eq!(ToolMode::Building.label(), "Building");
+        assert_eq!(
+            ToolMode::FishingSpot.paint_kind(),
+            Some(PaintKind::FishingSpot)
+        );
+        assert_eq!(ToolMode::FishingSpot.label(), "Fishing spot");
+        assert_eq!(labor_name(Labor::Fishing), "fishing");
+        assert_eq!(labor_label(Labor::Fishing), "fish");
         assert_eq!(
             build_exact_building_action(
                 &signed_session("builder-session"),

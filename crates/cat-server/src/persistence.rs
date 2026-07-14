@@ -2488,6 +2488,7 @@ mod tests {
                 stockpile_id: "gather-1".to_owned(),
                 kind: cat_sim::stockpiles::ResourceKind::Water,
                 expires_at_ms: 1_500_000,
+                purpose: cat_sim::stockpiles::GatherSpotPurpose::General,
             });
         world.colonies[0].farms.push(FarmPlot {
             id: "farm-a".to_owned(),
@@ -2515,9 +2516,51 @@ mod tests {
             },
             ..JobRuntime::default()
         });
+        world.colonies[0]
+            .stockpiles
+            .push(cat_sim::stockpiles::Stockpile {
+                id: "fishing-shore-1".to_owned(),
+                rect: ZoneRect {
+                    x1: 31,
+                    y1: 30,
+                    x2: 31,
+                    y2: 30,
+                },
+                accepts: [cat_sim::stockpiles::ResourceKind::Food]
+                    .into_iter()
+                    .collect(),
+                contents: cat_sim::entities::Resources::default(),
+            });
+        world.colonies[0]
+            .gather_spots
+            .push(cat_sim::stockpiles::GatherSpot {
+                stockpile_id: "fishing-shore-1".to_owned(),
+                kind: cat_sim::stockpiles::ResourceKind::Food,
+                expires_at_ms: i64::MAX,
+                purpose: cat_sim::stockpiles::GatherSpotPurpose::Fishing,
+            });
+        let fisher_id = world.colonies[0].cats[1].id.clone();
+        world.colonies[0].jobs.push(JobRuntime {
+            id: "job-fishing-restart".to_owned(),
+            kind: JobKind::Fish,
+            status: JobStatus::Active,
+            assigned_cat: Some(fisher_id),
+            created_at: 900_000,
+            started_at: Some(900_000),
+            ends_at: Some(3_600_000),
+            duration_ms: 2_700_000,
+            metadata: JobMetadata::Hauling {
+                site: Some(TilePos { x: 31, y: 30 }),
+                total_yield: None,
+                trips_done: 0,
+                next_trip_at: None,
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        });
 
         save_world(&conn, &world).expect("save world");
-        let loaded = load_world(&conn)
+        let mut loaded = load_world(&conn)
             .expect("load world")
             .expect("world should exist");
 
@@ -2542,6 +2585,12 @@ mod tests {
             loaded.colonies[0].stock_ledger,
             world.colonies[0].stock_ledger
         );
+        assert_eq!(
+            world_tick(&mut loaded, 1_001_000),
+            world_tick(&mut world, 1_001_000),
+            "an active fisher follows the same post-restart tick"
+        );
+        assert_eq!(loaded, world, "restart does not fork fishing trajectory");
     }
 
     #[test]
@@ -3141,6 +3190,7 @@ mod tests {
             stockpile_id: "gather-audit".to_owned(),
             kind: ResourceKind::Water,
             expires_at_ms: 5_600_000,
+            purpose: cat_sim::stockpiles::GatherSpotPurpose::General,
         });
         colony.farms.push(FarmPlot {
             id: "farm-audit".to_owned(),

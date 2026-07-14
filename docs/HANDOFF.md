@@ -71,7 +71,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
 1. **Finish the physical economy.** The finite founding storehouse and complete physical
    logs→Sawmill→lumber route are verified, including station-local ledgers, transit reservation,
    delivery-before-credit, death conservation, restart persistence, and the live inspector. Apply
-   that contract to every other workshop and farm, and complete recipes/materials. All 18
+   that contract to every other workshop and farm, and complete recipes/materials. All 19
    maintained labor skills now have truthful gain sources, bounded effects, persistence, and
    inspector visibility. Signed per-cat preferences and the Sawmill's real editable queue are live;
    extend the generic queue control as physical recipes land. Preserve the verified tool
@@ -93,7 +93,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
    workshops, research, rituals, defense, and expansion manual while their office is vacant.
 4. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
    outside-the-wall agricultural territory subset are live; finish their integrated framebuffer
-   campaign, replace rail/shipping multipliers with built routes/vehicles, restore fishing, and
+   campaign, replace rail/shipping multipliers with built routes/vehicles, and
    complete the remaining WASM visual/interaction validation for the maintained Adventure skin.
 5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,

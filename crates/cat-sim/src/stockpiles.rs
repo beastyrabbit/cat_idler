@@ -65,6 +65,18 @@ pub struct GatherSpot {
     /// whatever it still holds back into the shrine reservoir (same as a manual
     /// [`crate::stockpiles`] removal — never lost, just re-routed).
     pub expires_at_ms: i64,
+    /// Ordinary resource drop point or a designated shoreline fishing workplace.
+    /// Default preserves every pre-fishing JSON save.
+    #[serde(default)]
+    pub purpose: GatherSpotPurpose,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatherSpotPurpose {
+    #[default]
+    General,
+    Fishing,
 }
 
 impl GatherSpot {
@@ -699,6 +711,7 @@ mod tests {
             stockpile_id: "gather-1".to_owned(),
             kind: ResourceKind::Food,
             expires_at_ms: 10_000,
+            purpose: GatherSpotPurpose::General,
         };
         assert!(!spot.is_expired(9_999));
         assert!(spot.is_expired(10_000));
@@ -711,6 +724,7 @@ mod tests {
             stockpile_id: "gather-1".to_owned(),
             kind: ResourceKind::Materials,
             expires_at_ms: 42,
+            purpose: GatherSpotPurpose::General,
         };
         let json = serde_json::to_value(&spot).unwrap();
         assert_eq!(json["stockpileId"], serde_json::json!("gather-1"));
