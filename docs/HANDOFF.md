@@ -26,12 +26,14 @@ Verified foundations include:
 - the native and browser Bevy clients, bounded world streaming, reconnect/action feedback, and a
   same-origin non-root production image with `/health`, `/ready`, compression, and Origin checks;
 - atomic placement/reservations/scaffold recovery; label-free roofed homes and explicit open
-  compositions for all 25 current protocol building variants (the prior 24 are framebuffer-proven;
-  Accounting Tent is code-reachable and still needs an integrated capture); exterior crop/logging
-  production with distinct Mill and Sawmill stations;
+  compositions for all 25 current protocol building variants, including an integrated legal
+  Accounting Tent that retains all three founding Dens; exterior crop/logging production with
+  distinct Mill and Sawmill stations, persisted outside-wall agriculture, and an accepted
+  before/during/after staged-wall cutover;
 - exact founding fog plus signed resource/general scouting whose provisional knowledge commits
   only on physical shrine return, including restart-safe in-flight notebooks and responsive
-  controls at 1024×768 through 1920×1080;
+  controls at 1024×768 through 1920×1080. Optimized browser and signed fresh-native campaigns both
+  prove permanent growth from the exact 289-tile founding baseline;
 - a complete 500-node research runtime and full-page searchable/filterable/pannable client ledger.
   Every study can be purchased with research points and persists; a Loremaster may complete at
   most one affordable full-catalog node per rolling real-life day. Typed modeled effects are live,
@@ -83,32 +85,15 @@ so a correct scout route cannot conceal a missing founding dispatch.
    and atomic scalar barter into physical meeting, item trade, and routes. Deterministic
    knowledge-blind scout search is verified; preserve its physical-observation and shrine-return
    contracts as shared-world depth grows.
-3. **Close the baseline founding Leader presentation.** A true fresh 48-hour live-cadence run exposed
-   eight repeated collapses because strict officer filtering and vacancy cleanup removed primitive
-   food/scout work. The Leader now retains deficit-scaled Hunt/FetchWater/Scout jobs capped at
-   six/two/one at the 15-cat founding population and scaled proportionally thereafter. Three
-   seeds now pass exact 48-hour one-second campaigns with byte-identical twins, no resets or
-   deaths, completed Leader work, permanent fog growth, and no specialist leakage; the 30-cat
-   communal campaign also passes. Optimized browser founding is verified through Explore,
-   shrine return, and permanent reveal growth; complete only the matching fresh native flow. Keep farms,
-   workshops, research, rituals, defense, and expansion manual while their office is vacant.
-4. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
-   outside-the-wall agricultural territory subset are live; finish their integrated framebuffer
-   campaign and replace rail/shipping multipliers with built routes/vehicles. Fine-biome factors
-   now drive both A* route choice and physical per-tile travel through a shared derived chunk
-   cache, with exact road/soft-obstacle composition and tick-partition determinism. Seeds 7, 42,
-   and 20240712 pass four live-cadence passive game-hours as byte-identical twins (fog 289→459,
-   414, and 474; no deaths/resets), and all 11 signed guided/manual campaign cases pass. The first
-   physical fishing route now catches a distinct fresh-Fish material from persisted, finite water habitats:
-   catch succeeds only while working on the designated reachable bank, depletes the shared habitat,
-   and replenishes deterministically at 0.5 fish per game-hour up to 24. Removing and repainting the
-   shore cannot reset it. Manual and Farmer routing, storage headroom, cancellation/death salvage,
-   SQLite restart, client habitat visibility, and three-seed guided/unattended deterministic twins
-   are verified (the campaign remains fixture-assisted rather than a world-generation acceptance
-   test). The maintained Adventure skin and research ledger pass the optimized WASM
-   visual/interaction campaign; finish the integrated native Accounting Tent and staged
-   wall/agricultural captures.
-5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
+3. **Close remaining world-system gaps.** Baseline Leader hunt/water/scout survival, optimized
+   browser and signed-native shrine-return fog, staged closed-perimeter growth, integrated
+   Accounting Tent, and persisted outside-wall agriculture are verified. Fine-biome factors now
+   drive A* and physical per-tile travel through one cached truth, with road/obstacle composition
+   and tick-partition determinism. Finite fresh-Fish habitats deplete only on physical catches,
+   replenish at 0.5 fish per game-hour up to 24, survive repaint/restart, and pass guided plus
+   unattended twins. Preserve those contracts while replacing rail/shipping multipliers with
+   built routes/vehicles and extending physical logistics to the remaining workshops.
+4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality
    workflow is committed; its first pushed run is still unverified. Transfer-weight optimization

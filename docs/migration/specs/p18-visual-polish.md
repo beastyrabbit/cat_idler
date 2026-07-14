@@ -3,8 +3,9 @@
 > **Living target spec.** Label-free roofed homes, distinct open stations, and the maintained
 > Adventure 9-patch/button/progress/minimap/cursor skin are native-framebuffer verified at
 > 1024×768, 1280×800, and 1920×1080. Optimized WASM visual interaction is also verified at those
-> supported bounds. The integrated Accounting Tent and staged wall/agricultural native captures
-> stay open in [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+> supported bounds. A legal integrated Accounting Tent plus staged wall/agricultural native
+> sequence close the remaining world-composition gate in
+> [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User (2026-07-10): (1) workshops should look like DF-Steam craft-stations — find a good asset or
 compose one; (2) the whole UI needs an overhaul, big inspiration from how DF Steam looks now.

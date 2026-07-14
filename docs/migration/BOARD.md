@@ -37,11 +37,11 @@ codex, plus a Claude review for high-value slices) signs off.
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
 | P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven specialist manual/officer domains, a narrow founding Leader Hunt/FetchWater/Scout safety floor, all 19 maintained skill gain/effect/UI paths, role gates, active shrine faucets, useful tools/costs, finite storage, and complete physical logging/fishing routes are verified through exact 48-hour personal/communal campaigns; other physical chains/recipes remain in progress |
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, signed manual orders, exact building/farm/gather/road/governance controls, durable per-cat typed labor preferences, the physical Sawmill's editable add/remove/reorder/repeat/pause queue, the purchasable 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; extend the generic queue UI as broader physical recipes land |
-| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code; integrated before/during/after wall framebuffers remain |
-| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns, with browser/native visual confirmation and broader physical stations remaining |
+| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code and accepted before/during/after native framebuffers |
+| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns with optimized-browser and signed-native shrine-return confirmation; broader physical stations remain |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, and physical shoreline fishing are verified; broader physical farm/production work remains in progress |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, exterior plots, finite persisted fish habitats, and cached fine-biome path/movement costs are live; rail/shipping are global multipliers rather than built routes/vehicles |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone; all 25 current protocol variants have tested residential/open-station compositions, with the prior 24 plus Mill/Sawmill/crop stages framebuffer-verified; Accounting Tent is snapshot-reachable but still needs an integrated in-world capture. The Adventure skin and research ledger are exact-size native- and optimized-WASM-framebuffer verified; staged wall/agricultural native captures also remain |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done — persistent map plaques are gone; all 25 protocol variants have tested residential/open-station compositions, including a legal integrated Accounting Tent. The Adventure skin, research ledger, staged wall cutover, and exterior agriculture are native-framebuffer verified; optimized-WASM interaction is verified at all supported bounds |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — planks/blocks/tools, grain/flour/food, logs/lumber, fibre/cloth, hide/leather, ore/metal, finite fresh Fish, protected useful tools, material trade goods, visiting traders, and coin are live; recipe/material breadth, broader physical local inventories, and complete controls remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
@@ -604,8 +604,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   1×1 rock occupancy, soft-obstacle path costs, and disjoint authored-stone/traffic-dirt roads.
 - **Staged expansion:** persisted exterior agricultural claims are excluded from wall derivation;
   a replacement perimeter is built segment by segment while the old closed enclosure remains
-  authoritative, then all edges and the one south gate cut over atomically. Integrated
-  before/during/after framebuffers remain the final visual gate.
+  authoritative, then all edges and the one south gate cut over atomically. Accepted native
+  framebuffers show the complete old perimeter, one amber prospective face, retired shared edge,
+  completed E/S/W outer faces, sole final south gate, and the same exterior 3×3 farm throughout.
 
 ### P15 — Playtest-feedback backlog (spec: `docs/migration/specs/p15-playtest-feedback.md`)
 - Fog of war is verified: the exact 13×13 founding claim plus two-tile halo starts visible;
@@ -615,11 +616,11 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Scout targeting follows deterministic knowledge-blind wander legs with bounded alternate-heading
   retries. Targets remain absent until physically observed; missions change direction, give up, and
   return under survey/deadline/route exhaustion while preserving the shrine notebook contract.
-- **In close-out:** the founding Leader now retains deficit-scaled Hunt/FetchWater/Scout allocation
+- **Verified baseline:** the founding Leader now retains deficit-scaled Hunt/FetchWater/Scout allocation
   capped at six/two/one at 15 cats and scaled proportionally thereafter; vacancy cleanup preserves
   no more than those physical trips. Three personal seeds and the 30-cat communal village pass
-  exact 48-hour one-second campaigns with fog growth and no research/ritual leakage. Native/browser
-  founding confirmation remains.
+  exact 48-hour one-second campaigns with fog growth and no research/ritual leakage. Optimized
+  browser and signed fresh-native captures both confirm physical shrine return and permanent fog growth.
 - **Failing baseline preserved:** a fresh personal village suffered eight deterministic
   unattended-collapse resets in 48 hours because the same strict filter removed primitive food
   work. This remains the accepted before-fix comparison for the verified repair.
@@ -681,8 +682,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   the research ledger's clipped edge-pan state is also inspected at the supported width bounds.
 - Persistent map-name plaques are removed. All 25 current protocol building variants have an
   explicit residential/open/infrastructure treatment. The prior 24 variants, Mill/Sawmill, and
-  crop stages are framebuffer-verified; Accounting Tent is snapshot-reachable with a tested open
-  layout, while its integrated in-world capture remains.
+  crop stages are framebuffer-verified; a legal integrated Accounting Tent retains all three
+  founding Dens and renders as a separate open ledger/desk station. The staged wall/agricultural
+  sequence is accepted at native resolution.
 
 ### P19 — Item/material economy (spec: `docs/migration/specs/p19-items-materials-trade.md`)
 - Slice 1: item/material data model + per-colony item store; workshop crafting chains

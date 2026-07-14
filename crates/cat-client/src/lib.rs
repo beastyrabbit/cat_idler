@@ -141,8 +141,13 @@ fn grid_to_world(x: i32, y: i32) -> Vec2 {
 
 /// Draw depth for a standing sprite from its base (bottom/front-edge) world y:
 /// lower on the map (more negative y) → larger z → drawn in front.
-fn ysort_z(base_world_y: f32) -> f32 {
-    Z_YSORT_BASE - base_world_y * Z_YSORT_SCALE
+fn ysort_z(base_world_y: f32, origin_world_y: f32) -> f32 {
+    (Z_YSORT_BASE - (base_world_y - origin_world_y) * Z_YSORT_SCALE)
+        .clamp(Z_BUILDING_FLOOR + 10.0, Z_FOG - 10.0)
+}
+
+fn ysort_origin(anchor: TilePoint) -> f32 {
+    grid_to_world(anchor.x.saturating_add(1), anchor.y.saturating_add(1)).y
 }
 
 // ---- Corner minimap (pure coordinate mapping — unit-tested) ----
@@ -852,7 +857,7 @@ struct WorldRender {
 }
 
 /// Pixel-art terrain + nature texture handles, loaded once at startup.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Default)]
 struct TerrainArt {
     grass: Handle<Image>,
     grass_var: Handle<Image>,
@@ -2075,9 +2080,17 @@ struct HudFooterText;
 /// Marker for one deterministic terrain/decor visual, used to unload a chunk.
 #[derive(Component, Clone, Copy)]
 struct TerrainVisual(ChunkKey);
-/// A procedural nature/resource decoration keyed by its terrain tile. Unlike
-/// the ground sprite, this is hidden inside the selected village's permanent
-/// founding wall core.
+/// Natural ground identity retained so same-seed village selection and claim
+/// expansion can restyle an already-streamed tile without chunk eviction.
+#[derive(Component, Clone)]
+struct TerrainGround {
+    x: i32,
+    y: i32,
+    natural_image: Handle<Image>,
+    natural_color: Color,
+}
+/// A procedural nature/resource decoration keyed by its terrain tile. It is
+/// hidden on cleared settlement ground and until its full footprint is known.
 #[derive(Component, Clone, Copy)]
 struct TerrainDecoration {
     x: i32,
@@ -2859,7 +2872,11 @@ pub fn run() {
                         .after(poll_ws)
                         .after(ensure_presence),
                     spawn_terrain.after(camera_controls),
-                    sync_terrain_decoration_visibility.after(spawn_terrain),
+                    (
+                        sync_terrain_ground_surface,
+                        sync_terrain_decoration_visibility,
+                    )
+                        .after(spawn_terrain),
                     render_roads,
                     render_fog.after(spawn_terrain),
                     render_buildings,
@@ -4618,7 +4635,11 @@ fn spawn_terrain(
     };
     let seed = world.world_seed;
     // `reconcile_village_selection` keeps the actively viewed village first.
-    let village_anchor = world.colonies.first().map(|colony| colony.anchor);
+    let selected_colony = world.colonies.first();
+    let village_anchor = selected_colony.map(|colony| colony.anchor);
+    let depth_origin = village_anchor.map_or(0.0, ysort_origin);
+    let revealed = selected_colony.map(|colony| revealed_lookup(&colony.revealed_tiles));
+    let settlement_tiles = selected_colony.map(settlement_tile_lookup);
     let Ok(camera) = camera.single() else {
         return;
     };
@@ -4666,8 +4687,11 @@ fn spawn_terrain(
     for tile in &tiles {
         let p = grid_to_world(tile.x, tile.y);
         let chunk = chunk_for_tile(tile.x, tile.y);
-        let is_water = tile.river.is_some() || is_water_biome(tile.climate_biome);
-        let ground = if is_water {
+        let cleared_settlement = settlement_tiles
+            .as_ref()
+            .is_some_and(|tiles| tiles.contains(&(tile.x, tile.y)));
+        let surface = terrain_surface(tile, cleared_settlement);
+        let natural_image = if terrain_surface(tile, false) == TerrainSurface::Water {
             if is_shore(tile.x, tile.y, &water) {
                 art.water_edge.clone()
             } else {
@@ -4676,6 +4700,12 @@ fn spawn_terrain(
         } else {
             art.ground(ground_texture(tile))
         };
+        let natural_color = biome_tint(tile.climate_biome);
+        let (ground, color) = if surface == TerrainSurface::ClearedMeadow {
+            (art.ground(GroundTexture::Grass), biome_tint(Biome::Meadow))
+        } else {
+            (natural_image.clone(), natural_color)
+        };
         // Multiply the base tile by the biome tint so ~26 climate biomes read as
         // distinct ground (forest darker green, desert sandy, snow pale, ocean
         // deep blue) without needing a unique sprite per biome.
@@ -4683,17 +4713,23 @@ fn spawn_terrain(
             Sprite {
                 image: ground,
                 custom_size: Some(Vec2::splat(TILE)),
-                color: biome_tint(tile.climate_biome),
+                color,
                 ..default()
             },
             Transform::from_xyz(p.x, p.y, Z_TERRAIN),
             TerrainVisual(chunk),
+            TerrainGround {
+                x: tile.x,
+                y: tile.y,
+                natural_image,
+                natural_color,
+            },
         ));
 
         // Per-biome decoration density: forests dense with trees, plains open,
         // desert/tundra bare — driven by the biome's density table rather than
         // the coarse BiomeRole `decoration` field.
-        let decoration = if is_water {
+        let decoration = if surface != TerrainSurface::Natural {
             None
         } else {
             derive_biome_decoration(tile.x, tile.y, seed, tile.climate_biome)
@@ -4720,7 +4756,7 @@ fn spawn_terrain(
                         ..default()
                     },
                     Anchor::CENTER,
-                    Transform::from_xyz(center.x, center.y, ysort_z(center.y)),
+                    Transform::from_xyz(center.x, center.y, ysort_z(center.y, depth_origin)),
                     TerrainVisual(chunk),
                     TerrainDecoration {
                         x: tile.x,
@@ -4728,7 +4764,15 @@ fn spawn_terrain(
                         role,
                     },
                     if village_anchor.is_none_or(|anchor| {
-                        procedural_decoration_visible(anchor, tile.x, tile.y, role)
+                        procedural_decoration_visible(
+                            anchor,
+                            settlement_tiles.as_ref(),
+                            tile.x,
+                            tile.y,
+                            role,
+                        ) && revealed.as_ref().is_none_or(|revealed| {
+                            decoration_is_revealed(revealed, tile.x, tile.y, role)
+                        })
                     }) {
                         Visibility::Inherited
                     } else {
@@ -4747,7 +4791,7 @@ fn spawn_terrain(
                         ..default()
                     },
                     Anchor::BOTTOM_CENTER,
-                    Transform::from_xyz(p.x, base_y, ysort_z(base_y)),
+                    Transform::from_xyz(p.x, base_y, ysort_z(base_y, depth_origin)),
                     TerrainVisual(chunk),
                     TerrainDecoration {
                         x: tile.x,
@@ -4755,7 +4799,15 @@ fn spawn_terrain(
                         role,
                     },
                     if village_anchor.is_none_or(|anchor| {
-                        procedural_decoration_visible(anchor, tile.x, tile.y, role)
+                        procedural_decoration_visible(
+                            anchor,
+                            settlement_tiles.as_ref(),
+                            tile.x,
+                            tile.y,
+                            role,
+                        ) && revealed.as_ref().is_none_or(|revealed| {
+                            decoration_is_revealed(revealed, tile.x, tile.y, role)
+                        })
                     }) {
                         Visibility::Inherited
                     } else {
@@ -4774,6 +4826,42 @@ fn spawn_terrain(
     );
 }
 
+fn apply_terrain_ground_surface(
+    ground: &TerrainGround,
+    settlement_tiles: &HashSet<(i32, i32)>,
+    art: &TerrainArt,
+    sprite: &mut Sprite,
+) {
+    if settlement_tiles.contains(&(ground.x, ground.y)) {
+        sprite.image = art.ground(GroundTexture::Grass);
+        sprite.color = biome_tint(Biome::Meadow);
+    } else {
+        sprite.image = ground.natural_image.clone();
+        sprite.color = ground.natural_color;
+    }
+}
+
+/// Restyle already-streamed ground when the selected same-seed village changes
+/// or a new settlement claim becomes authoritative. Chunk membership alone is
+/// not a sufficient invalidation key because all villages share one world seed.
+fn sync_terrain_ground_surface(
+    latest: Res<LatestSnapshot>,
+    art: Option<Res<TerrainArt>>,
+    mut ground: Query<(&TerrainGround, &mut Sprite)>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
+    else {
+        return;
+    };
+    let settlement_tiles = settlement_tile_lookup(colony);
+    for (tile, mut sprite) in &mut ground {
+        apply_terrain_ground_surface(tile, &settlement_tiles, &art, &mut sprite);
+    }
+}
+
 /// Re-evaluate already-streamed decorations whenever the snapshot changes.
 /// This matters both when a claim expands and when the village selector swaps a
 /// reordered shared-world snapshot's active colony into slot zero.
@@ -4787,8 +4875,17 @@ fn sync_terrain_decoration_visibility(
     let Some(colony) = latest.0.as_ref().and_then(|world| world.colonies.first()) else {
         return;
     };
+    let revealed = revealed_lookup(&colony.revealed_tiles);
+    let settlement_tiles = settlement_tile_lookup(colony);
     for (tile, mut visibility) in &mut decorations {
-        *visibility = if procedural_decoration_visible(colony.anchor, tile.x, tile.y, tile.role) {
+        *visibility = if procedural_decoration_visible(
+            colony.anchor,
+            Some(&settlement_tiles),
+            tile.x,
+            tile.y,
+            tile.role,
+        ) && decoration_is_revealed(&revealed, tile.x, tile.y, tile.role)
+        {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -4796,15 +4893,47 @@ fn sync_terrain_decoration_visibility(
     }
 }
 
-/// Ground remains visible everywhere. Procedural nature/resource props clear
-/// only inside the fixed founding wall core; expanded claimed farm/resource
-/// territory beyond that core deliberately retains its wilderness props.
-fn procedural_decoration_visible(anchor: TilePoint, x: i32, y: i32, role: DecorationRole) -> bool {
+/// Active settlement claims render as authoritatively cleared meadow and hide
+/// procedural props. Agricultural claims are excluded deliberately: farms and
+/// future rural work remain exterior territory rather than moving the wall.
+fn settlement_tile_lookup(colony: &ColonySnapshot) -> HashSet<(i32, i32)> {
+    let agricultural = revealed_lookup(&colony.agricultural_tiles);
+    colony
+        .claimed_tiles
+        .iter()
+        .map(|tile| (tile.x, tile.y))
+        .filter(|tile| !agricultural.contains(tile))
+        .collect()
+}
+
+fn procedural_decoration_visible(
+    anchor: TilePoint,
+    settlement_tiles: Option<&HashSet<(i32, i32)>>,
+    x: i32,
+    y: i32,
+    role: DecorationRole,
+) -> bool {
     let center_x = anchor.x.saturating_add(1);
     let center_y = anchor.y.saturating_add(1);
     decoration_footprint(x, y, role).into_iter().all(|tile| {
         tile.x.abs_diff(center_x).max(tile.y.abs_diff(center_y)) > VILLAGE_INTERIOR_RADIUS
+            && settlement_tiles.is_none_or(|settlement| !settlement.contains(&(tile.x, tile.y)))
     })
+}
+
+/// A multi-tile wilderness prop appears only after its complete physical
+/// footprint is permanently known. This is independent of the fog overlay's Z
+/// ordering, so a distant personal-village coordinate can never leak tree or
+/// rock silhouettes through undiscovered black fog.
+fn decoration_is_revealed(
+    revealed: &HashSet<(i32, i32)>,
+    x: i32,
+    y: i32,
+    role: DecorationRole,
+) -> bool {
+    decoration_footprint(x, y, role)
+        .into_iter()
+        .all(|tile| revealed.contains(&(tile.x, tile.y)))
 }
 
 fn chunk_for_tile(x: i32, y: i32) -> ChunkKey {
@@ -4894,6 +5023,28 @@ fn ground_texture(tile: &TerrainTile) -> GroundTexture {
         // deterministic variant sprinkle to break up expanses.
         _ if (tile.x + tile.y).rem_euclid(5) == 0 => GroundTexture::GrassVar,
         _ => GroundTexture::Grass,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TerrainSurface {
+    ClearedMeadow,
+    Water,
+    Natural,
+}
+
+/// The authoritative settlement stamp wins over deterministic climate art.
+/// Founding and settlement expansion clear runtime water/deposits/biomes; the
+/// client must therefore not redraw generated snow, rock, or river inside the
+/// active (non-agricultural) wall merely because the infinite terrain generator
+/// would have placed it there.
+fn terrain_surface(tile: &TerrainTile, cleared_settlement: bool) -> TerrainSurface {
+    if cleared_settlement {
+        TerrainSurface::ClearedMeadow
+    } else if tile.river.is_some() || is_water_biome(tile.climate_biome) {
+        TerrainSurface::Water
+    } else {
+        TerrainSurface::Natural
     }
 }
 
@@ -5113,6 +5264,7 @@ fn render_buildings(
     else {
         return;
     };
+    let depth_origin = ysort_origin(colony.anchor);
     for building in &colony.buildings {
         // Walls are rendered by render_village_boundary. True residences retain
         // a roof; every workplace/civic/supply destination exposes a tiled floor
@@ -5143,7 +5295,7 @@ fn render_buildings(
                     Transform::from_xyz(
                         layout.facade_base.x,
                         layout.facade_base.y,
-                        ysort_z(layout.facade_base.y) + 0.2,
+                        ysort_z(layout.facade_base.y, depth_origin) + 0.2,
                     ),
                     BuildingSprite,
                     RoofedBuildingSprite,
@@ -5156,18 +5308,24 @@ fn render_buildings(
                 building.footprint,
                 station,
                 complete,
+                depth_origin,
             ),
         }
     }
     for farm in &colony.farms {
-        spawn_farm_plot(&mut commands, &art, farm);
+        spawn_farm_plot(&mut commands, &art, farm, depth_origin);
     }
 }
 
 /// Render every designated farm as an exposed soil rectangle with one crop per
 /// tile at its live growth stage. Crop-specific tint distinguishes catnip,
 /// grain, and herbs without adding persistent map labels.
-fn spawn_farm_plot(commands: &mut Commands, art: &BuildingArt, farm: &cat_protocol::FarmSnapshot) {
+fn spawn_farm_plot(
+    commands: &mut Commands,
+    art: &BuildingArt,
+    farm: &cat_protocol::FarmSnapshot,
+    depth_origin: f32,
+) {
     let (x0, x1) = (farm.x1.min(farm.x2), farm.x1.max(farm.x2));
     let (y0, y1) = (farm.y1.min(farm.y2), farm.y1.max(farm.y2));
     let crop_prop = farm_stage_prop(farm.stage);
@@ -5210,7 +5368,7 @@ fn spawn_farm_plot(commands: &mut Commands, art: &BuildingArt, farm: &cat_protoc
                 Transform::from_xyz(
                     geometry.center.x,
                     geometry.center.y,
-                    ysort_z(geometry.base_y) + 0.2,
+                    ysort_z(geometry.base_y, depth_origin) + 0.2,
                 ),
                 BuildingSprite,
                 FarmPlotSprite,
@@ -5271,6 +5429,7 @@ fn spawn_open_station(
     footprint: FootprintSize,
     station: &StationLayout,
     complete: bool,
+    depth_origin: f32,
 ) {
     spawn_station_floor(commands, art, nw, footprint, station.floor, complete);
     let tint = construction_tint(complete);
@@ -5286,7 +5445,7 @@ fn spawn_open_station(
             Transform::from_xyz(
                 geometry.center.x,
                 geometry.center.y,
-                ysort_z(geometry.base_y) + 0.2,
+                ysort_z(geometry.base_y, depth_origin) + 0.2,
             ),
             BuildingSprite,
             StationPropSprite,
@@ -5312,6 +5471,7 @@ fn render_walls(
     else {
         return;
     };
+    let depth_origin = ysort_origin(colony.anchor);
     let gate_edge = colony
         .village_gate
         .map(|g| ((g.x, g.y), gate_side_to_wall(g.side)));
@@ -5359,7 +5519,7 @@ fn render_walls(
                 custom_size: Some(Vec2::splat(TILE)),
                 ..default()
             },
-            Transform::from_xyz(pos.x, pos.y, ysort_z(pos.y))
+            Transform::from_xyz(pos.x, pos.y, ysort_z(pos.y, depth_origin))
                 .with_rotation(Quat::from_rotation_z(rot)),
             WallVis,
         ));
@@ -5374,7 +5534,7 @@ fn render_walls(
                 custom_size: Some(Vec2::splat(TILE)),
                 ..default()
             },
-            Transform::from_xyz(pos.x, pos.y, ysort_z(pos.y) + 0.1)
+            Transform::from_xyz(pos.x, pos.y, ysort_z(pos.y, depth_origin) + 0.1)
                 .with_rotation(Quat::from_rotation_z(rot)),
             WallVis,
         ));
@@ -5438,6 +5598,7 @@ fn render_stockpiles(
     else {
         return;
     };
+    let depth_origin = ysort_origin(colony.anchor);
     for pile in &colony.stockpiles {
         let is_shrine = is_seeded_store(&pile.id);
         let (x0, x1) = (pile.x1.min(pile.x2), pile.x1.max(pile.x2));
@@ -5462,7 +5623,7 @@ fn render_stockpiles(
                         custom_size: Some(Vec2::splat(pile_scale(total))),
                         ..default()
                     },
-                    Transform::from_xyz(cx, cy, ysort_z(cy) + 2.0),
+                    Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 2.0),
                     StockpileVis,
                 ));
             }
@@ -5501,7 +5662,7 @@ fn render_stockpiles(
                     custom_size: Some(Vec2::splat(pile_scale(total))),
                     ..default()
                 },
-                Transform::from_xyz(cx, cy, ysort_z(cy)),
+                Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin)),
                 StockpileVis,
             ));
         }
@@ -5512,7 +5673,11 @@ fn render_stockpiles(
                 ..default()
             },
             TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
-            Transform::from_xyz(cx, cy - h / 2.0 - TILE * 0.25, ysort_z(cy) + 0.5),
+            Transform::from_xyz(
+                cx,
+                cy - h / 2.0 - TILE * 0.25,
+                ysort_z(cy, depth_origin) + 0.5,
+            ),
             StockpileVis,
         ));
 
@@ -5524,7 +5689,7 @@ fn render_stockpiles(
             let flag_y = cy + h / 2.0 + TILE * 0.5;
             commands.spawn((
                 Sprite::from_color(GATHER_POLE_COLOR, Vec2::new(TILE * 0.14, TILE)),
-                Transform::from_xyz(cx, flag_y, ysort_z(cy) + 3.0),
+                Transform::from_xyz(cx, flag_y, ysort_z(cy, depth_origin) + 3.0),
                 StockpileVis,
             ));
             commands.spawn((
@@ -5536,7 +5701,7 @@ fn render_stockpiles(
                     },
                     Vec2::splat(TILE * 0.66),
                 ),
-                Transform::from_xyz(cx, flag_y + TILE * 0.45, ysort_z(cy) + 3.1),
+                Transform::from_xyz(cx, flag_y + TILE * 0.45, ysort_z(cy, depth_origin) + 3.1),
                 StockpileVis,
             ));
             commands.spawn((
@@ -5545,7 +5710,7 @@ fn render_stockpiles(
                     custom_size: Some(Vec2::splat(TILE * 0.46)),
                     ..default()
                 },
-                Transform::from_xyz(cx, flag_y + TILE * 0.45, ysort_z(cy) + 3.2),
+                Transform::from_xyz(cx, flag_y + TILE * 0.45, ysort_z(cy, depth_origin) + 3.2),
                 StockpileVis,
             ));
         }
@@ -6395,6 +6560,7 @@ fn sync_cats(
     else {
         return;
     };
+    let depth_origin = ysort_origin(colony.anchor);
     // Overlays are cheap and their state (hat/carry/selection) changes; rebuild.
     for entity in &overlays {
         commands.entity(entity).despawn();
@@ -6433,7 +6599,7 @@ fn sync_cats(
                         ..default()
                     },
                     Anchor::BOTTOM_CENTER,
-                    Transform::from_xyz(target.x, target.y, ysort_z(target.y)),
+                    Transform::from_xyz(target.x, target.y, ysort_z(target.y, depth_origin)),
                     CatBody(cat.id.clone()),
                     MoveTarget(target),
                     AnimSprite {
@@ -6525,6 +6691,7 @@ fn sync_raiders(
     else {
         return;
     };
+    let depth_origin = ysort_origin(colony.anchor);
     let mut live = HashSet::new();
     for raider in &colony.raiders {
         live.insert(raider.id.clone());
@@ -6553,7 +6720,7 @@ fn sync_raiders(
                         ..default()
                     },
                     Anchor::BOTTOM_CENTER,
-                    Transform::from_xyz(target.x, target.y, ysort_z(target.y)),
+                    Transform::from_xyz(target.x, target.y, ysort_z(target.y, depth_origin)),
                     RaiderBody,
                     MoveTarget(target),
                     AnimSprite { group, moving },
@@ -6588,6 +6755,7 @@ fn sync_trader(
     else {
         return;
     };
+    let depth_origin = ysort_origin(colony.anchor);
     match &colony.trader {
         Some(trader) => {
             let target = body_base(trader.position.x, trader.position.y);
@@ -6613,7 +6781,7 @@ fn sync_trader(
                         ..default()
                     },
                     Anchor::BOTTOM_CENTER,
-                    Transform::from_xyz(target.x, target.y, ysort_z(target.y)),
+                    Transform::from_xyz(target.x, target.y, ysort_z(target.y, depth_origin)),
                     TraderBody,
                     MoveTarget(target),
                     AnimSprite {
@@ -6648,15 +6816,24 @@ fn lift_trader_above_fog(mut trader: Query<&mut Transform, With<TraderBody>>) {
 /// Walk every persistent body toward its target each frame at a constant speed
 /// (so it strides tile-to-tile, never teleporting), and flag it moving while
 /// it's still en route.
-fn move_bodies(time: Res<Time>, mut bodies: Query<(&mut Transform, &MoveTarget, &mut AnimSprite)>) {
+fn move_bodies(
+    time: Res<Time>,
+    latest: Res<LatestSnapshot>,
+    mut bodies: Query<(&mut Transform, &MoveTarget, &mut AnimSprite)>,
+) {
     let step = BODY_WALK_SPEED * time.delta_secs();
+    let depth_origin = latest
+        .0
+        .as_ref()
+        .and_then(|world| world.colonies.first())
+        .map_or(0.0, |colony| ysort_origin(colony.anchor));
     for (mut transform, target, mut anim) in &mut bodies {
         let current = transform.translation.truncate();
         let next = walk_step(current, target.0, step, BODY_MAX_LAG);
         transform.translation.x = next.x;
         transform.translation.y = next.y;
         // Re-sort by the body's live base y so it layers as it walks.
-        transform.translation.z = ysort_z(next.y);
+        transform.translation.z = ysort_z(next.y, depth_origin);
         anim.moving = is_moving(current, target.0, BODY_MOVE_EPS);
     }
 }
@@ -6667,15 +6844,15 @@ fn follow_overlays(
     bodies: Query<(&CatBody, &Transform), Without<FollowCat>>,
     mut overlays: Query<(&FollowCat, &mut Transform)>,
 ) {
-    let positions: HashMap<&str, Vec2> = bodies
+    let positions: HashMap<&str, Vec3> = bodies
         .iter()
-        .map(|(body, transform)| (body.0.as_str(), transform.translation.truncate()))
+        .map(|(body, transform)| (body.0.as_str(), transform.translation))
         .collect();
     for (follow, mut transform) in &mut overlays {
         if let Some(pos) = positions.get(follow.id.as_str()) {
             transform.translation.x = pos.x + follow.offset.x;
             transform.translation.y = pos.y + follow.offset.y;
-            transform.translation.z = ysort_z(pos.y) + follow.offset.z;
+            transform.translation.z = pos.z + follow.offset.z;
         }
     }
 }
@@ -10735,37 +10912,85 @@ mod tests {
     }
 
     #[test]
-    fn procedural_decor_is_hidden_only_inside_the_selected_village_walls() {
+    fn procedural_decor_respects_selected_village_and_exterior_agriculture() {
         let mut snapshot = village_world(&["alpha", "beta"]);
         snapshot.colonies[0].anchor = TilePoint { x: 50, y: 50 };
         snapshot.colonies[0].claimed_tiles = vec![TilePoint { x: 50, y: 50 }];
         snapshot.colonies[1].anchor = TilePoint { x: -20, y: -20 };
-        // The second tile is expanded claimed territory outside the permanent
-        // wall core: a farm/work site there must keep its wilderness decor.
+        // Ordinary expansion becomes cleared settlement; the farther tile is
+        // agricultural territory and must remain exterior wilderness.
         snapshot.colonies[1].claimed_tiles =
             vec![TilePoint { x: -14, y: -20 }, TilePoint { x: -12, y: -20 }];
+        snapshot.colonies[1].agricultural_tiles = vec![TilePoint { x: -12, y: -20 }];
         let mut selection = VillageSelection {
             selected_id: Some("beta".to_owned()),
             join_required: false,
         };
 
         reconcile_village_selection(&mut snapshot, &mut selection, true);
-        let anchor = snapshot.colonies[0].anchor;
+        let colony = &snapshot.colonies[0];
+        let anchor = colony.anchor;
+        let settlement = settlement_tile_lookup(colony);
         let rock = DecorationRole::Rock {
             size: RockSize::Small,
             resource: false,
         };
 
-        assert!(!procedural_decoration_visible(anchor, -20, -20, rock));
-        assert!(!procedural_decoration_visible(anchor, -14, -20, rock));
-        assert!(procedural_decoration_visible(anchor, -12, -20, rock));
-        assert!(procedural_decoration_visible(anchor, 50, 50, rock));
+        assert!(!procedural_decoration_visible(
+            anchor,
+            Some(&settlement),
+            -20,
+            -20,
+            rock
+        ));
+        assert!(!procedural_decoration_visible(
+            anchor,
+            Some(&settlement),
+            -14,
+            -20,
+            rock
+        ));
+        assert!(procedural_decoration_visible(
+            anchor,
+            Some(&settlement),
+            -12,
+            -20,
+            rock
+        ));
+        assert!(procedural_decoration_visible(
+            anchor,
+            Some(&settlement),
+            50,
+            50,
+            rock
+        ));
 
         let tree = DecorationRole::Tree { species: 0 };
         assert!(
-            !procedural_decoration_visible(anchor, -13, -20, tree),
+            !procedural_decoration_visible(anchor, Some(&settlement), -13, -20, tree),
             "a 2x3 canopy that overhangs the wall is cleared as one object"
         );
+    }
+
+    #[test]
+    fn wilderness_props_never_reveal_an_undiscovered_footprint() {
+        let rock = DecorationRole::Rock {
+            size: RockSize::Small,
+            resource: false,
+        };
+        let tree = DecorationRole::Tree { species: 0 };
+        let mut revealed = HashSet::from([(20, 30)]);
+
+        assert!(decoration_is_revealed(&revealed, 20, 30, rock));
+        assert!(!decoration_is_revealed(&revealed, 21, 30, rock));
+        assert!(
+            !decoration_is_revealed(&revealed, 20, 30, tree),
+            "one known root tile must not leak a 2x3 canopy into black fog"
+        );
+        for tile in decoration_footprint(20, 30, tree) {
+            revealed.insert((tile.x, tile.y));
+        }
+        assert!(decoration_is_revealed(&revealed, 20, 30, tree));
     }
 
     #[test]
@@ -11721,11 +11946,16 @@ mod tests {
     #[test]
     fn ysort_puts_lower_sprites_in_front() {
         // Lower on the map = more negative world y = larger z (drawn in front).
-        let higher = ysort_z(0.0);
-        let lower = ysort_z(-100.0);
+        let higher = ysort_z(0.0, 0.0);
+        let lower = ysort_z(-100.0, 0.0);
         assert!(lower > higher);
         // Monotonic in screen depth.
-        assert!(ysort_z(-200.0) > ysort_z(-100.0));
+        assert!(ysort_z(-200.0, 0.0) > ysort_z(-100.0, 0.0));
+
+        let distant_origin = grid_to_world(-2_009, 6_103).y;
+        let distant = ysort_z(distant_origin - TILE * 8.0, distant_origin);
+        assert!(distant > Z_BUILDING_FLOOR);
+        assert!(distant < Z_FOG, "personal-village sprites stay below fog");
     }
 
     fn climate_tile(biome: BiomeRole, climate_biome: Biome, x: i32, y: i32) -> TerrainTile {
@@ -11801,6 +12031,44 @@ mod tests {
         assert_eq!(
             ground_texture(&climate_tile(BiomeRole::Grassland, Biome::Plains, 2, 4)),
             GroundTexture::Grass
+        );
+    }
+
+    #[test]
+    fn authoritative_settlement_clear_overrides_generated_water_and_snow() {
+        let lake = climate_tile(BiomeRole::Lowland, Biome::Lake, -714, 3_270);
+        let snow = climate_tile(BiomeRole::Grassland, Biome::SnowyPlains, -713, 3_270);
+
+        assert_eq!(terrain_surface(&lake, false), TerrainSurface::Water);
+        assert_eq!(terrain_surface(&snow, false), TerrainSurface::Natural);
+        assert_eq!(terrain_surface(&lake, true), TerrainSurface::ClearedMeadow);
+        assert_eq!(terrain_surface(&snow, true), TerrainSurface::ClearedMeadow);
+    }
+
+    #[test]
+    fn streamed_ground_resyncs_on_claim_and_same_seed_selection_changes() {
+        let tile = TerrainGround {
+            x: 40,
+            y: -20,
+            natural_image: Handle::default(),
+            natural_color: Color::srgb(0.8, 0.2, 0.1),
+        };
+        let art = TerrainArt::default();
+        let mut sprite = Sprite::default();
+        let mut settlement = HashSet::new();
+
+        apply_terrain_ground_surface(&tile, &settlement, &art, &mut sprite);
+        assert_eq!(sprite.color, tile.natural_color);
+
+        settlement.insert((tile.x, tile.y));
+        apply_terrain_ground_surface(&tile, &settlement, &art, &mut sprite);
+        assert_eq!(sprite.color, biome_tint(Biome::Meadow));
+
+        settlement.clear();
+        apply_terrain_ground_surface(&tile, &settlement, &art, &mut sprite);
+        assert_eq!(
+            sprite.color, tile.natural_color,
+            "selecting a same-seed village without this claim restores nature"
         );
     }
 
