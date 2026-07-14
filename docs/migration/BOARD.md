@@ -39,7 +39,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, signed manual orders, exact building/farm/gather/road/governance controls, durable per-cat typed labor preferences, the physical Sawmill's editable add/remove/reorder/repeat/pause queue, the purchasable 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; extend the generic queue UI as broader physical recipes land |
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code and accepted before/during/after native framebuffers |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns with optimized-browser and signed-native shrine-return confirmation; broader physical stations remain |
-| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, and physical shoreline fishing are verified; broader physical farm/production work remains in progress |
+| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, physical farm labor, and physical shoreline fishing are verified; broader physical production work remains in progress |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, exterior plots, finite persisted fish habitats, and cached fine-biome path/movement costs are live; rail/shipping are global multipliers rather than built routes/vehicles |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done — persistent map plaques are gone; all 25 protocol variants have tested residential/open-station compositions, including a legal integrated Accounting Tent. The Adventure skin, research ledger, staged wall cutover, and exterior agriculture are native-framebuffer verified; optimized-WASM interaction is verified at all supported bounds |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — planks/blocks/tools, grain/flour/food, logs/lumber, fibre/cloth, hide/leather, ore/metal, finite fresh Fish, protected useful tools, material trade goods, visiting traders, and coin are live; recipe/material breadth, broader physical local inventories, and complete controls remain |
@@ -575,15 +575,17 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   and the rolling daily legacy-Loremaster timestamp persist.
 - **P12.3 spatial stockpiles** — founding seeds a finite general storehouse; designated containers
   determine real capacity, legacy shrine stores migrate into them, and persisted transit ledgers
-  reserve carried cargo without blocking the map. The complete Sawmill route now uses this model;
-  remaining workshop and farm chains still need conversion.
+  reserve carried cargo without blocking the map. The complete Sawmill and exterior-farm routes
+  now use this model; remaining workshop chains still need conversion.
 - **P12.4a/b workshop chains + Accountant direction** — workshop crafting covers
   planks/blocks/tools, exterior catnip/grain/herb plots, logging, Mill grain→flour→food, Sawmill
   logs→lumber, fibre/hide→cloth/leather, and ore→metal. A staffed Accounting Tent keeps the
   aggregate ledger exact; tools give a bounded construction/crafting/quarrying/hauling bonus and
   repeated building costs escalate per type. Sawmill workers now path
   stockpile→station→stockpile with persisted local input/output, a real queue, and no aggregate
-  lumber credit before delivery. Other workshops still use colony-global resources.
+  lumber credit before delivery. Exterior farms likewise require physical plot work, bounded
+  harvest baskets, local handoff, and final finite-storage delivery. Other workshops still use
+  colony-global resources.
 - **P12.6 logistics** — general/limited stockpile designation, signed manual shrine orders, and
   Steward gather-spot automation landed. Population-relative tithe and carried-offering gates are
   reachable across five unattended seeds without consuming protected reserves. Tithes, rituals,
@@ -705,8 +707,8 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Remaining breadth includes bone/gem/clay/metal item variants, finished functional
   tool/weapon/armor chains, broader physical local inventories, and reachable exact client
   controls for every chain.
-- Physical-economy follow-ups remain explicit: farms and all non-Sawmill stations need the
-  station-local carry/work/delivery contract; the Accountant must visit and refresh individual
+- Physical-economy follow-ups remain explicit: all non-Sawmill stations need the station-local
+  carry/work/delivery contract; the Accountant must visit and refresh individual
   piles; climate resource hints must become real fine-biome sources; and registry-only research
   payloads need runtime consumers. P16's older founding-stockpile numbers also need one canonical
   decision and exact aggregate/physical-pile tests.

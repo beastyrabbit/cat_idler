@@ -54,7 +54,12 @@ Verified foundations include:
 - the complete founding lifecycle: exactly 15 adult cats in three five-bed Dens, slow
   reserved-bed breeding, prosperity migration with a 36-game-hour unhoused probation,
   240/288-game-hour old-age thresholds, atomic extinction recovery, and physical emergency
-  water fetching.
+  water fetching;
+- physical exterior farming: a living assigned cat walks through the retained village gate,
+  plants, tends, harvests bounded baskets into a local handoff, and returns crop cargo to finite
+  storage before aggregate credit. Farmer automation and signed manual assignment share this
+  route; vacancy, blocked storage, death, restart, skill gain, and moved-gate reachability are
+  covered without free crop mutation.
 
 The founding/housing integration replaced the archived five-cat loop and passed its full
 simulation, protocol, server, client, persistence, guided-action, determinism, and framebuffer
@@ -72,9 +77,10 @@ so a correct scout route cannot conceal a missing founding dispatch.
 
 1. **Finish the physical economy.** The finite founding storehouse and complete physical
    logs→Sawmill→lumber route are verified, including station-local ledgers, transit reservation,
-   delivery-before-credit, death conservation, restart persistence, and the live inspector. Apply
-   that contract to every other workshop and farm, make the Accountant physically visit and count
-   individual piles, and complete recipes/materials. All 19
+   delivery-before-credit, death conservation, restart persistence, and the live inspector.
+   Exterior farming now follows the same physical truth through plot work, bounded baskets, local
+   handoff, and storage delivery. Apply that contract to every remaining workshop, make the
+   Accountant physically visit and count individual piles, and complete recipes/materials. All 19
    maintained labor skills now have truthful gain sources, bounded effects, persistence, and
    inspector visibility. Signed per-cat preferences and the Sawmill's real editable queue are live;
    extend the generic queue control as physical recipes land. Preserve the verified tool
