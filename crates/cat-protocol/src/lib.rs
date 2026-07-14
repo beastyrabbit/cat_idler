@@ -42,6 +42,14 @@ pub enum VillageKind {
     Personal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VillageScale {
+    #[default]
+    Personal,
+    Communal,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VillageCapabilities {
@@ -69,6 +77,8 @@ pub struct VillageSummary {
     pub id: String,
     pub name: String,
     pub kind: VillageKind,
+    #[serde(default)]
+    pub scale: VillageScale,
     pub anchor: TilePoint,
     #[serde(default)]
     pub capabilities: VillageCapabilities,
@@ -97,6 +107,10 @@ pub struct ColonySnapshot {
     /// carried the shared global village.
     #[serde(default)]
     pub kind: VillageKind,
+    /// Mechanical founding scale. The canonical shared hub is `communal`; ordinary
+    /// player-founded villages and legacy snapshots default to `personal`.
+    #[serde(default)]
+    pub scale: VillageScale,
     /// Audience-specific permissions. The server overwrites this while
     /// projecting a snapshot and never serializes ownership identifiers.
     #[serde(default)]
@@ -1820,6 +1834,7 @@ mod tests {
             .and_then(serde_json::Value::as_object_mut)
             .expect("colony object");
         colony.remove("kind");
+        colony.remove("scale");
         colony.remove("capabilities");
 
         let decoded: WorldSnapshot =
@@ -1829,6 +1844,7 @@ mod tests {
         assert!(decoded.known_villages.is_empty());
         assert!(decoded.village_trade_offers.is_empty());
         assert_eq!(decoded.colonies[0].kind, VillageKind::Global);
+        assert_eq!(decoded.colonies[0].scale, VillageScale::Personal);
         assert_eq!(
             decoded.colonies[0].capabilities,
             VillageCapabilities::default()
@@ -1931,6 +1947,7 @@ mod tests {
                 id: "colony_1".to_string(),
                 name: "Global Colony".to_string(),
                 kind: VillageKind::Global,
+                scale: VillageScale::Communal,
                 capabilities: VillageCapabilities::default(),
                 status: ColonyStatus::Thriving,
                 resources: ResourceAmounts {

@@ -22,8 +22,8 @@ use cat_sim::{
     world_tick::{
         BuildingRuntime, ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime,
         EventKind, EventLog, JobMetadata, JobRequester, JobRuntime, ProductionQueueEntry,
-        RaiderRuntime, TilePos, VillageKind, VoteRuntime, WorldState, WorldTileRuntime,
-        ZoneRuntime, default_production_queue, founding_revealed_tiles,
+        RaiderRuntime, TilePos, VillageKind, VillageScale, VoteRuntime, WorldState,
+        WorldTileRuntime, ZoneRuntime, default_production_queue, founding_revealed_tiles,
     },
     zones::{ZoneKind, ZoneRect},
 };
@@ -68,6 +68,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             lastAttack INTEGER NOT NULL DEFAULT 0,
             worldSeed INTEGER,
             isGlobal INTEGER,
+            foundingScale TEXT,
             runNumber INTEGER,
             runStartedAt INTEGER,
             lastPlayerActivityAt INTEGER,
@@ -275,6 +276,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
 fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
     const ADDITIONS: &[(&str, &str, &str)] = &[
         ("colonies", "isGlobal", "INTEGER"),
+        ("colonies", "foundingScale", "TEXT"),
         ("colonies", "upgradeLevels", "TEXT"),
         ("colonies", "officers", "TEXT"),
         ("colonies", "stockpiles", "TEXT"),
@@ -418,7 +420,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
 
     let mut stmt = conn.prepare(
         "SELECT id, name, leaderId, status, resources, createdAt, lastTick,
-                worldSeed, isGlobal, ownerPlayerId, runNumber, runStartedAt, lastPlayerActivityAt,
+                worldSeed, isGlobal, foundingScale, ownerPlayerId, runNumber, runStartedAt, lastPlayerActivityAt,
                 lastLoremasterUnlockAt, lastTitheAt, lastOfferingAt,
                 automationTier, globalUpgradePoints, upgradeTree, upgradeLevels,
                 ritualRequestedAt, criticalSince, claimedTiles, agriculturalTiles, revealedTiles, provisionalTiles,
@@ -470,12 +472,12 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             stockpiles, farms, gatherSpots, stockLedger, coin, items, woodCraftProgress,
             stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
             anchorX, anchorY, migrationState, migrationDepartures, isGlobal, ownerPlayerId,
-            knownVillageIds, villageTradeOffers
+            knownVillageIds, villageTradeOffers, foundingScale
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
             ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
-            ?48, ?49, ?50, ?51, ?52, ?53
+            ?48, ?49, ?50, ?51, ?52, ?53, ?54
         )",
         params![
             colony.id,
@@ -531,6 +533,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.owner_player_id,
             serde_json::to_string(&colony.known_village_ids).map_err(to_sql_json)?,
             serde_json::to_string(&colony.village_trade_offers).map_err(to_sql_json)?,
+            village_scale_str(colony.scale),
         ],
     )?;
 
@@ -604,6 +607,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         } else {
             VillageKind::Personal
         },
+        scale: parse_village_scale(row.get::<_, Option<String>>("foundingScale")?.as_deref())?,
         owner_player_id: row.get("ownerPlayerId")?,
         known_village_ids: known_village_ids_json
             .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
@@ -1671,6 +1675,25 @@ fn parse_scout_mission(raw: &str) -> cat_sim::world_tick::ScoutMission {
     }
 }
 
+fn village_scale_str(scale: VillageScale) -> &'static str {
+    match scale {
+        VillageScale::Personal => "personal",
+        VillageScale::Communal => "communal",
+    }
+}
+
+fn parse_village_scale(raw: Option<&str>) -> rusqlite::Result<VillageScale> {
+    match raw {
+        None | Some("personal") => Ok(VillageScale::Personal),
+        Some("communal") => Ok(VillageScale::Communal),
+        Some(other) => Err(rusqlite::Error::InvalidColumnType(
+            0,
+            format!("unknown foundingScale {other}"),
+            Type::Text,
+        )),
+    }
+}
+
 fn colony_status_str(status: ColonyStatus) -> &'static str {
     match status {
         ColonyStatus::Starting => "starting",
@@ -1800,7 +1823,7 @@ mod tests {
         migration::ProbationaryMigrant,
         world_tick::{
             RaidPhase, ScoutMission, ScoutResource, found_colony, found_colony_at,
-            founding_revealed_tiles, new_world, world_tick,
+            found_global_colony, founding_revealed_tiles, new_world, world_tick,
         },
     };
 
@@ -1842,6 +1865,37 @@ mod tests {
             });
             colony.officers.insert(role, colony.cats[index].id.clone());
         }
+    }
+
+    #[test]
+    fn communal_and_personal_founding_scales_round_trip_without_capacity_leaks() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(9_999);
+        let global = found_global_colony(world.world_seed, "colony-1", 10_000, 1);
+        let mut personal = found_colony_at(
+            world.world_seed,
+            "personal",
+            10_000,
+            2,
+            TilePos { x: 102, y: 54 },
+        );
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+        world.colonies = vec![global, personal];
+
+        save_world(&conn, &world).expect("save");
+        let loaded = load_world(&conn).expect("load").expect("world");
+        assert_eq!(loaded.colonies[0].scale, VillageScale::Communal);
+        assert_eq!(loaded.colonies[1].scale, VillageScale::Personal);
+        assert_eq!(loaded.colonies[0].cats.len(), 30);
+        assert_eq!(loaded.colonies[1].cats.len(), 15);
+        assert_eq!(loaded.colonies[0].buildings.len(), 16);
+        assert_eq!(loaded.colonies[1].buildings.len(), 7);
+        assert_ne!(
+            loaded.colonies[0].stockpiles[0].contents.food,
+            loaded.colonies[1].stockpiles[0].contents.food
+        );
+        assert_eq!(loaded.colonies, world.colonies);
     }
 
     #[test]
@@ -2244,6 +2298,7 @@ mod tests {
             ("colonies", "migrationState"),
             ("colonies", "migrationDepartures"),
             ("colonies", "isGlobal"),
+            ("colonies", "foundingScale"),
             ("colonies", "ownerPlayerId"),
             ("colonies", "knownVillageIds"),
             ("colonies", "villageTradeOffers"),
@@ -2270,6 +2325,7 @@ mod tests {
             ("colonies", "migrationState"),
             ("colonies", "migrationDepartures"),
             ("colonies", "isGlobal"),
+            ("colonies", "foundingScale"),
             ("colonies", "ownerPlayerId"),
             ("colonies", "knownVillageIds"),
             ("colonies", "villageTradeOffers"),

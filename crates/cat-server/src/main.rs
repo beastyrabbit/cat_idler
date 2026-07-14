@@ -31,7 +31,9 @@ use cat_protocol::{
 };
 use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
-    world_tick::{TilePos, VillageKind, WorldState, found_colony, new_world, world_tick},
+    world_tick::{
+        TilePos, VillageKind, VillageScale, WorldState, found_global_colony, new_world, world_tick,
+    },
 };
 use hosting::ServerConfig;
 use identity::{SignedSession, issue_session, signed_session, verify_session};
@@ -87,6 +89,7 @@ struct VillageDirectoryEntry {
     name: String,
     anchor: TilePos,
     kind: VillageKind,
+    scale: VillageScale,
     owner_player_id: Option<String>,
     known_village_ids: BTreeSet<String>,
 }
@@ -102,6 +105,7 @@ fn village_directory(world: &WorldState) -> BTreeMap<String, VillageDirectoryEnt
                     name: colony.name.clone(),
                     anchor: colony.anchor,
                     kind: colony.kind,
+                    scale: colony.scale,
                     owner_player_id: colony.owner_player_id.clone(),
                     known_village_ids: colony.known_village_ids.clone(),
                 },
@@ -260,7 +264,7 @@ fn is_fingerprinted_asset(path: &str) -> bool {
 
 fn starter_world(now_ms: i64) -> WorldState {
     let mut world = new_world(WORLD_SEED);
-    world.colonies.push(found_colony(
+    world.colonies.push(found_global_colony(
         WORLD_SEED,
         STARTER_COLONY_ID,
         now_ms,
@@ -655,6 +659,10 @@ fn project_snapshot(
                     kind: match entry.kind {
                         VillageKind::Global => ProtocolVillageKind::Global,
                         VillageKind::Personal => ProtocolVillageKind::Personal,
+                    },
+                    scale: match entry.scale {
+                        VillageScale::Personal => cat_protocol::VillageScale::Personal,
+                        VillageScale::Communal => cat_protocol::VillageScale::Communal,
                     },
                     anchor: cat_protocol::TilePoint {
                         x: entry.anchor.x,
@@ -1082,6 +1090,7 @@ mod tests {
         AccelerationPreset, ClientAction, CropKind, OfficerRole, ResourceKind, ScoutMission,
         TilePoint,
     };
+    use cat_sim::world_tick::found_colony;
     use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
     use tower::ServiceExt;
 
@@ -2386,6 +2395,34 @@ mod tests {
         let mut second = ConnectionContext::new("second".to_owned(), STARTER_COLONY_ID.to_owned());
         second.identity = Some(second_identity.clone());
 
+        // The shared hub is genuinely communal: two unrelated signed players can
+        // independently guide its economy before either founds a private village.
+        for (connection, identity, kind) in [
+            (
+                &mut first,
+                &first_identity,
+                cat_protocol::JobKind::SupplyFood,
+            ),
+            (
+                &mut second,
+                &second_identity,
+                cat_protocol::JobKind::SupplyWater,
+            ),
+        ] {
+            let requested = send_action(
+                &state,
+                connection,
+                &ClientAction::RequestJob {
+                    session_id: identity.session_id.clone(),
+                    nickname: "Commons Helper".to_owned(),
+                    sig: identity.sig.clone(),
+                    kind,
+                },
+            )
+            .await;
+            assert!(requested.result.ok, "signed communal request was denied");
+        }
+
         let first_found = send_action(
             &state,
             &mut first,
@@ -2409,6 +2446,63 @@ mod tests {
         .await;
         let second_id = second_found.result.colony_id.expect("second village");
         assert_ne!(first_id, second_id);
+
+        {
+            let world = state.world.lock().await;
+            let global = world
+                .colonies
+                .iter()
+                .find(|colony| colony.kind == VillageKind::Global)
+                .expect("canonical communal village");
+            assert_eq!(global.scale, VillageScale::Communal);
+            assert_eq!(global.owner_player_id, None);
+            assert_eq!(global.jobs.len(), 2);
+            assert_eq!(
+                global
+                    .cats
+                    .iter()
+                    .filter(|cat| cat.death_time.is_none())
+                    .count(),
+                30
+            );
+            assert_eq!(
+                global
+                    .buildings
+                    .iter()
+                    .filter(|building| {
+                        building.building_type == cat_sim::types::BuildingType::Den
+                    })
+                    .count(),
+                6
+            );
+            for id in [&first_id, &second_id] {
+                let personal = world
+                    .colonies
+                    .iter()
+                    .find(|colony| colony.id == *id)
+                    .expect("signed personal village");
+                assert_eq!(personal.scale, VillageScale::Personal);
+                assert_eq!(
+                    personal
+                        .cats
+                        .iter()
+                        .filter(|cat| cat.death_time.is_none())
+                        .count(),
+                    15
+                );
+                assert_eq!(
+                    personal
+                        .buildings
+                        .iter()
+                        .filter(|building| {
+                            building.building_type == cat_sim::types::BuildingType::Den
+                        })
+                        .count(),
+                    3
+                );
+                assert_ne!(personal.stockpiles[0].rect, global.stockpiles[0].rect);
+            }
+        }
 
         // Model completed shrine-return exploration without bypassing any action
         // authorization: contact itself is simulation state, while both trade

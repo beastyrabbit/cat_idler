@@ -34,9 +34,9 @@ use crate::{
     world_tick::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, ScoutMission, ScoutResource, TilePos,
-        TradeDirection, VillageKind, VillageTradeOffer, VoteRuntime, WorldState, ZoneRuntime,
-        found_colony, found_colony_at, has_frontier, has_logging_site, has_quarry_site,
-        has_water_site, inside_village_interior, migration_game_minute_at,
+        TradeDirection, VillageKind, VillageScale, VillageTradeOffer, VoteRuntime, WorldState,
+        ZoneRuntime, found_colony_at, found_global_colony, has_frontier, has_logging_site,
+        has_quarry_site, has_water_site, inside_village_interior, migration_game_minute_at,
         reconcile_colony_stockpiles, release_role_automation, tile_is_occupied, world_tick,
     },
     zones,
@@ -356,7 +356,7 @@ fn ensure_colony(world: &mut WorldState, now_ms: i64) {
     if world.colonies.is_empty() {
         world
             .colonies
-            .push(found_colony(world.world_seed, "colony-1", now_ms, 1));
+            .push(found_global_colony(world.world_seed, "colony-1", now_ms, 1));
     }
 }
 
@@ -2218,6 +2218,10 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             VillageKind::Global => proto::VillageKind::Global,
             VillageKind::Personal => proto::VillageKind::Personal,
         },
+        scale: match colony.scale {
+            VillageScale::Personal => proto::VillageScale::Personal,
+            VillageScale::Communal => proto::VillageScale::Communal,
+        },
         capabilities: proto::VillageCapabilities::default(),
         status: sim_to_proto_colony_status(colony.status),
         resources: resources_snapshot(&colony.resources),
@@ -2340,7 +2344,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 under_construction: entry.newly_built,
             })
             .collect(),
-        village_radius: village_ring_radius(colony.buildings.len() as i32) as u32,
+        village_radius: snapshot_village_radius(colony),
         anchor: proto::TilePoint {
             x: colony.anchor.x,
             y: colony.anchor.y,
@@ -3202,6 +3206,16 @@ fn village_level(colony: &ColonyRuntime) -> u32 {
     housing::village_level(&housing_buildings(colony))
 }
 
+fn snapshot_village_radius(colony: &ColonyRuntime) -> u32 {
+    let dynamic_radius = village_ring_radius(colony.buildings.len() as i32) as u32;
+    match colony.scale {
+        // Keep the authored communal parcel framed from first connection. Ordinary
+        // villages retain the established building-ring camera behavior exactly.
+        VillageScale::Communal => dynamic_radius.max(9),
+        VillageScale::Personal => dynamic_radius,
+    }
+}
+
 fn claimed_area(colony: &ColonyRuntime) -> village_area::VillageArea {
     let tiles = colony
         .claimed_tiles
@@ -3719,7 +3733,7 @@ fn sim_to_proto_threat_band(band: threat::ThreatBand) -> proto::ThreatBand {
 mod tests {
     use super::*;
     use crate::village_layout::VILLAGE_ANCHOR;
-    use crate::world_tick::{BuildingRuntime, TraderRuntime};
+    use crate::world_tick::{BuildingRuntime, TraderRuntime, found_colony, new_world};
 
     fn ctx() -> ActionCtx {
         ActionCtx {
@@ -4580,6 +4594,30 @@ mod tests {
         let colony = &snap.colonies[0];
         assert_eq!(colony.cats.len(), world.colonies[0].cats.len());
         assert_eq!(colony.resources.food, world.colonies[0].resources.food);
+    }
+
+    #[test]
+    fn snapshot_exposes_communal_scale_radius_and_census_distinction() {
+        let mut world = new_world(4_242);
+        let global = found_global_colony(4_242, "colony-1", 1_000, 1);
+        let mut personal = found_colony_at(4_242, "personal", 1_000, 2, TilePos { x: 102, y: 54 });
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+        world.colonies = vec![global, personal];
+
+        let snapshot = build_snapshot(&world, 1_000, 2);
+        let global = &snapshot.colonies[0];
+        let personal = &snapshot.colonies[1];
+        assert_eq!(global.kind, proto::VillageKind::Global);
+        assert_eq!(global.scale, proto::VillageScale::Communal);
+        assert_eq!(global.housing.population, 30);
+        assert_eq!(global.housing.capacity, 30);
+        assert_eq!(global.village_radius, 9);
+        assert_eq!(personal.kind, proto::VillageKind::Personal);
+        assert_eq!(personal.scale, proto::VillageScale::Personal);
+        assert_eq!(personal.housing.population, 15);
+        assert_eq!(personal.housing.capacity, 15);
+        assert_eq!(personal.village_radius, 4);
     }
 
     fn idle_worker_cat(id: &str, colony_id: &str, name: &str) -> Cat {

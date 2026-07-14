@@ -137,6 +137,14 @@ pub enum VillageKind {
     Personal,
 }
 
+/// Durable founding contract, independent from who may control the village.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VillageScale {
+    #[default]
+    Personal,
+    Communal,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WorldState {
     pub world_seed: u32,
@@ -164,6 +172,7 @@ pub struct ColonyRuntime {
     pub id: ColonyId,
     pub name: String,
     pub kind: VillageKind,
+    pub scale: VillageScale,
     /// Stable player identity controlling a personal village. `None` is valid
     /// for the global village and for quarantined legacy personal rows only.
     pub owner_player_id: Option<PlayerId>,
@@ -1558,8 +1567,11 @@ const VILLAGE_ANCHOR_TILE: TilePos = TilePos {
     y: VILLAGE_ANCHOR.y,
 };
 
-/// Fixed founding roster: three five-bed dens begin fully occupied by adult cats.
-const STARTER_CAT_COUNT: usize = 15;
+/// Ordinary personal founding roster: three five-bed dens begin fully occupied by adults.
+const PERSONAL_STARTER_CAT_COUNT: usize = 15;
+/// The ownerless communal village is a genuine shared settlement rather than a second
+/// private foothold: six five-bed dens begin occupied by thirty adults.
+const GLOBAL_STARTER_CAT_COUNT: usize = 30;
 /// Starter cats are spread across the early adult band (kitten 0–6 / young 6–24 /
 /// adult 24–240 / elder 240+ game-hours) so all fifteen can work at full weight
 /// from day one and none is near the elder mortality curve.
@@ -1568,7 +1580,24 @@ const STARTER_AGE_MAX_HOURS: f64 = 42.0;
 /// Half-width (from the shrine's centre tile) of the fixed founding village's claimed
 /// square. Sized so the fixed blueprint — shrine + 3 dens + 3 workshops — fits with a
 /// one-tile margin to the wall for the ring road out to each gate/edge.
-const VILLAGE_START_RADIUS: i32 = 6;
+const PERSONAL_VILLAGE_START_RADIUS: i32 = 6;
+/// The communal parcel is visibly and mechanically larger while retaining the same
+/// clear-interior, one-south-gate and shrine-road invariants as an ordinary founding.
+const GLOBAL_VILLAGE_START_RADIUS: i32 = 9;
+
+const fn founding_cat_count(scale: VillageScale) -> usize {
+    match scale {
+        VillageScale::Communal => GLOBAL_STARTER_CAT_COUNT,
+        VillageScale::Personal => PERSONAL_STARTER_CAT_COUNT,
+    }
+}
+
+const fn founding_radius(scale: VillageScale) -> i32 {
+    match scale {
+        VillageScale::Communal => GLOBAL_VILLAGE_START_RADIUS,
+        VillageScale::Personal => PERSONAL_VILLAGE_START_RADIUS,
+    }
+}
 
 /// Whether `tile` lies inside the founding settlement's permanent wall ring. Farms
 /// and wild resource decorations belong to claimed territory beyond this core, never
@@ -1576,7 +1605,7 @@ const VILLAGE_START_RADIUS: i32 = 6;
 #[must_use]
 pub fn inside_village_interior(colony: &ColonyRuntime, tile: TilePos) -> bool {
     let center = shrine_center_tile(colony.anchor);
-    (tile.x - center.x).abs().max((tile.y - center.y).abs()) <= VILLAGE_START_RADIUS
+    (tile.x - center.x).abs().max((tile.y - center.y).abs()) <= founding_radius(colony.scale)
 }
 /// Fog-of-war founding reveal: the whole claimed village starts revealed, plus a halo
 /// of this Chebyshev radius around the anchor (covers the adjacent water source).
@@ -1613,6 +1642,7 @@ impl Default for ColonyRuntime {
             id: String::new(),
             name: String::new(),
             kind: VillageKind::Global,
+            scale: VillageScale::Personal,
             owner_player_id: None,
             known_village_ids: BTreeSet::new(),
             village_trade_offers: BTreeMap::new(),
@@ -1760,9 +1790,34 @@ pub fn found_colony(
     now_ms: i64,
     seed: u32,
 ) -> ColonyRuntime {
-    // The single founding colony (colony 0) always sits on the canonical anchor, so its
-    // whole blueprint/roads/reveal/terrain are byte-identical to the pre-multi-village code.
-    found_colony_at(world_seed, colony_id, now_ms, seed, VILLAGE_ANCHOR_TILE)
+    found_colony_with_kind(
+        world_seed,
+        colony_id,
+        now_ms,
+        seed,
+        VILLAGE_ANCHOR_TILE,
+        VillageKind::Global,
+        VillageScale::Personal,
+    )
+}
+
+/// Create the one canonical, ownerless shared hub with its larger communal blueprint.
+#[must_use]
+pub fn found_global_colony(
+    world_seed: u32,
+    colony_id: impl Into<ColonyId>,
+    now_ms: i64,
+    seed: u32,
+) -> ColonyRuntime {
+    found_colony_with_kind(
+        world_seed,
+        colony_id,
+        now_ms,
+        seed,
+        VILLAGE_ANCHOR_TILE,
+        VillageKind::Global,
+        VillageScale::Communal,
+    )
 }
 
 /// Found a colony whose village anchor is `anchor` (world tile of the shrine footprint's
@@ -1777,17 +1832,43 @@ pub fn found_colony_at(
     seed: u32,
     anchor: TilePos,
 ) -> ColonyRuntime {
+    found_colony_with_kind(
+        world_seed,
+        colony_id,
+        now_ms,
+        seed,
+        anchor,
+        VillageKind::Global,
+        VillageScale::Personal,
+    )
+}
+
+fn found_colony_with_kind(
+    world_seed: u32,
+    colony_id: impl Into<ColonyId>,
+    now_ms: i64,
+    seed: u32,
+    anchor: TilePos,
+    kind: VillageKind,
+    scale: VillageScale,
+) -> ColonyRuntime {
     let colony_id = colony_id.into();
     let mut colony = ColonyRuntime {
         id: colony_id.clone(),
-        name: format!("Colony {colony_id}"),
+        name: if scale == VillageScale::Communal {
+            "The Grand Commons".to_owned()
+        } else {
+            format!("Colony {colony_id}")
+        },
+        kind,
+        scale,
         status: ColonyStatus::Starting,
-        resources: starting_resources(),
-        cats: create_starter_cats(&colony_id, now_ms, seed),
+        resources: starting_resources(scale),
+        cats: create_starter_cats(&colony_id, now_ms, seed, scale),
         anchor,
-        buildings: starter_buildings(anchor, world_seed),
+        buildings: starter_buildings(anchor, world_seed, scale),
         world_tiles: starter_world_tiles(anchor, world_seed),
-        claimed_tiles: founding_claimed_tiles(anchor),
+        claimed_tiles: founding_claimed_tiles(anchor, founding_radius(scale)),
         run_number: 1,
         run_started_at: now_ms,
         created_at: now_ms,
@@ -1905,7 +1986,7 @@ fn lattice_ring_candidates(base: TilePos, ring: i32) -> Vec<TilePos> {
 pub fn founding_revealed_tiles(anchor: TilePos, claimed: &[TilePos]) -> BTreeSet<TilePos> {
     let fallback;
     let claimed = if claimed.is_empty() {
-        fallback = founding_claimed_tiles(anchor);
+        fallback = founding_claimed_tiles(anchor, PERSONAL_VILLAGE_START_RADIUS);
         fallback.as_slice()
     } else {
         claimed
@@ -1933,18 +2014,23 @@ fn reveal_founding_area(colony: &mut ColonyRuntime) {
     ));
 }
 
-fn starting_resources() -> Resources {
+fn starting_resources(scale_kind: VillageScale) -> Resources {
     // P16 pre-filled general stockpile. `materials` stands in for the "50 wood + 10
     // stone" of the blueprint until the P12.4b wood/stone chains land; food seeds the
     // colony while the first hunts and the nearby water source come online.
+    let scale = if scale_kind == VillageScale::Communal {
+        2.0
+    } else {
+        1.0
+    };
     Resources {
-        food: 50.0,
-        water: 100.0,
-        herbs: 16.0,
+        food: 50.0 * scale,
+        water: 100.0 * scale,
+        herbs: 16.0 * scale,
         catnip: 0.0,
         grain: 0.0,
         flour: 0.0,
-        materials: 60.0,
+        materials: 60.0 * scale,
         refined: 0.0,
         weapons: 0.0,
         armor: 0.0,
@@ -1953,10 +2039,10 @@ fn starting_resources() -> Resources {
         // The old exact 6/6 boundary let a founding Field spend first on some
         // seeds, permanently starving the throughput tool meant to help build it.
         // Later output still comes from the raw benches.
-        planks: 10.0,
+        planks: 10.0 * scale,
         logs: 0.0,
         lumber: 0.0,
-        blocks: 10.0,
+        blocks: 10.0 * scale,
         tools: 0.0,
         // Clothing chain (P16/P19 slice) — also empty at founding; fibre trickles in
         // passively and hide is a hunt byproduct.
@@ -1972,8 +2058,8 @@ fn starting_resources() -> Resources {
     }
 }
 
-fn create_starter_cats(colony_id: &str, now_ms: i64, seed: u32) -> Vec<Cat> {
-    create_starter_cats_with_id_prefix(colony_id, colony_id, now_ms, seed)
+fn create_starter_cats(colony_id: &str, now_ms: i64, seed: u32, scale: VillageScale) -> Vec<Cat> {
+    create_starter_cats_with_id_prefix(colony_id, colony_id, now_ms, seed, scale)
 }
 
 /// [`create_starter_cats`] with an explicit cat-id prefix. The founding call keeps the
@@ -1985,11 +2071,13 @@ fn create_starter_cats_with_id_prefix(
     id_prefix: &str,
     now_ms: i64,
     seed: u32,
+    scale: VillageScale,
 ) -> Vec<Cat> {
-    let names = starter_names();
+    let count = founding_cat_count(scale);
+    let names = starter_names(count);
     let mut rolls = SeededRollSource::new(seed);
 
-    (0..STARTER_CAT_COUNT)
+    (0..count)
         .map(|index| {
             let spot = starter_cat_spot(index);
             Cat {
@@ -2026,7 +2114,7 @@ fn create_starter_cats_with_id_prefix(
                 activity: CatActivity::Idle,
                 is_pregnant: false,
                 pregnancy_due_time: None,
-                age_hours: starter_age_hours(index),
+                age_hours: starter_age_hours(index, count),
                 pregnancy_due_age_hours: None,
                 pregnancy_mate_id: None,
                 sprite_params: starter_sprite_params(&mut rolls),
@@ -2040,13 +2128,13 @@ fn create_starter_cats_with_id_prefix(
         .collect()
 }
 
-fn starter_names() -> Vec<String> {
+fn starter_names(count: usize) -> Vec<String> {
     let mut names = ["Whiskers", "Shadow", "Luna", "Max", "Bella"]
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
     let mut seed = 424_242;
-    while names.len() < STARTER_CAT_COUNT {
+    while names.len() < count {
         let name = generate_starter_name(seed);
         seed += 1;
         if !names.contains(&name) {
@@ -2084,9 +2172,9 @@ fn starter_cat_spot(index: usize) -> GridPos {
     spots[index % spots.len()]
 }
 
-fn starter_age_hours(index: usize) -> f64 {
+fn starter_age_hours(index: usize, count: usize) -> f64 {
     let span = STARTER_AGE_MAX_HOURS - STARTER_AGE_MIN_HOURS;
-    let denom = (STARTER_CAT_COUNT - 1).max(1) as f64;
+    let denom = (count - 1).max(1) as f64;
     STARTER_AGE_MIN_HOURS + ((index as f64 / denom) * span).round()
 }
 
@@ -2146,7 +2234,7 @@ const fn shrine_center_tile(anchor: TilePos) -> TilePos {
 ///                              [ Shrine 6..8 ]
 ///   Den(2,9)          Den(5,9)   ·road·   StonePrep(9,9)
 /// ```
-const STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 7] = [
+const PERSONAL_STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 7] = [
     (BuildingType::Shrine, 6, 6, 1),
     (BuildingType::Woodworking, 2, 2, 1),
     (BuildingType::Den, 5, 2, 1),
@@ -2156,14 +2244,45 @@ const STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 7] = [
     (BuildingType::StonePrep, 9, 9, 1),
 ];
 
-fn starter_buildings(anchor: TilePos, _world_seed: u32) -> Vec<BuildingRuntime> {
+/// Larger ownerless hub: six homes, two copies of each founding production yard,
+/// plus a granary, research hut and barracks. The central row/column remain clear so
+/// the authored cross reaches the one south gate and every yard gets a road branch.
+const GLOBAL_STARTER_BLUEPRINT: [(BuildingType, i32, i32, u32); 16] = [
+    (BuildingType::Shrine, 6, 6, 1),
+    (BuildingType::Woodworking, -1, -1, 1),
+    (BuildingType::Den, 3, -1, 1),
+    (BuildingType::WoodCutter, 10, -1, 1),
+    (BuildingType::Den, 14, -1, 1),
+    (BuildingType::ResearchHut, -1, 3, 1),
+    (BuildingType::StonePrep, 10, 3, 1),
+    (BuildingType::Barracks, 14, 3, 1),
+    (BuildingType::Woodworking, -1, 10, 1),
+    (BuildingType::Den, 3, 10, 1),
+    (BuildingType::WoodCutter, 10, 10, 1),
+    (BuildingType::Den, 14, 10, 1),
+    (BuildingType::FoodStorage, -1, 14, 1),
+    (BuildingType::Den, 3, 14, 1),
+    (BuildingType::StonePrep, 10, 14, 1),
+    (BuildingType::Den, 14, 14, 1),
+];
+
+fn starter_buildings(
+    anchor: TilePos,
+    _world_seed: u32,
+    scale: VillageScale,
+) -> Vec<BuildingRuntime> {
     // The blueprint is authored at [`VILLAGE_ANCHOR`]; a colony founded elsewhere shifts
     // every footprint by the same delta so the whole layout rides its own anchor. Colony 0
     // (anchor == VILLAGE_ANCHOR) shifts by zero and is byte-identical.
     let dx = anchor.x - VILLAGE_ANCHOR.x;
     let dy = anchor.y - VILLAGE_ANCHOR.y;
-    STARTER_BLUEPRINT
-        .into_iter()
+    let blueprint: &[(BuildingType, i32, i32, u32)] = match scale {
+        VillageScale::Communal => &GLOBAL_STARTER_BLUEPRINT,
+        VillageScale::Personal => &PERSONAL_STARTER_BLUEPRINT,
+    };
+    blueprint
+        .iter()
+        .copied()
         .enumerate()
         .map(|(index, (building_type, x, y, level))| {
             let (x, y) = (x + dx, y + dy);
@@ -2192,15 +2311,20 @@ fn starter_buildings(anchor: TilePos, _world_seed: u32) -> Vec<BuildingRuntime> 
 /// The stone-road tiles of the founding cross: the shrine's centre row/column extended
 /// out to each wall (N/S/E/W), skipping the shrine's own footprint. New construction
 /// treats these authored roads as reserved infrastructure and never reclaims them.
+#[cfg(test)]
 fn founding_road_tiles(anchor: TilePos) -> Vec<TilePos> {
+    founding_road_tiles_for_radius(anchor, PERSONAL_VILLAGE_START_RADIUS)
+}
+
+fn founding_road_tiles_for_radius(anchor: TilePos, radius: i32) -> Vec<TilePos> {
     let center = shrine_center_tile(anchor);
     let (shrine_w, shrine_h) = footprint_for(BuildingType::Shrine);
     let shrine_min_x = anchor.x;
     let shrine_max_x = anchor.x + shrine_w - 1;
     let shrine_min_y = anchor.y;
     let shrine_max_y = anchor.y + shrine_h - 1;
-    let lo = -VILLAGE_START_RADIUS;
-    let hi = VILLAGE_START_RADIUS;
+    let lo = -radius;
+    let hi = radius;
 
     let mut tiles = Vec::new();
     for d in lo..=hi {
@@ -2223,7 +2347,7 @@ fn founding_road_tiles(anchor: TilePos) -> Vec<TilePos> {
 /// sure a reachable water source remains (carving a deterministic pond if not).
 fn stamp_founding_roads_and_water(colony: &mut ColonyRuntime) {
     let anchor = colony.anchor;
-    let roads = founding_road_tiles(anchor);
+    let roads = founding_road_tiles_for_radius(anchor, founding_radius(colony.scale));
     let mut blocked: HashSet<TilePos> = colony
         .buildings
         .iter()
@@ -2254,7 +2378,8 @@ fn stamp_founding_roads_and_water(colony: &mut ColonyRuntime) {
     let has_reachable_water = colony.world_tiles.values().any(|tile| {
         tile_has_water(Some(tile))
             && !colony.claimed_tiles.contains(&tile.pos)
-            && cheb_from_anchor(anchor, tile.pos) <= VILLAGE_START_RADIUS + 2
+            && cheb_from_anchor(anchor, tile.pos)
+                <= founding_radius(colony.scale) + FOUNDING_REVEAL_RADIUS
             && !blocked.contains(&tile.pos)
     });
     if !has_reachable_water && let Some(pos) = founding_pond_site(colony, &blocked) {
@@ -2320,7 +2445,8 @@ fn founding_pond_site(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Opt
         .filter(|pos| {
             !blocked.contains(pos)
                 && !colony.claimed_tiles.contains(pos)
-                && cheb_from_anchor(colony.anchor, *pos) <= VILLAGE_START_RADIUS + 2
+                && cheb_from_anchor(colony.anchor, *pos)
+                    <= founding_radius(colony.scale) + FOUNDING_REVEAL_RADIUS
                 && colony
                     .world_tiles
                     .get(pos)
@@ -2331,11 +2457,11 @@ fn founding_pond_site(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Opt
     candidates.into_iter().next()
 }
 
-fn founding_claimed_tiles(anchor: TilePos) -> Vec<TilePos> {
+fn founding_claimed_tiles(anchor: TilePos, radius: i32) -> Vec<TilePos> {
     let center = shrine_center_tile(anchor);
     let mut tiles = Vec::new();
-    for dy in -VILLAGE_START_RADIUS..=VILLAGE_START_RADIUS {
-        for dx in -VILLAGE_START_RADIUS..=VILLAGE_START_RADIUS {
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
             tiles.push(TilePos {
                 x: center.x + dx,
                 y: center.y + dy,
@@ -7095,7 +7221,8 @@ fn respawn_starter_roster(colony: &mut ColonyRuntime, now_ms: i64) {
         .unwrap_or(0)
         .wrapping_add(colony.run_number.wrapping_mul(1_000_003));
     let id_prefix = format!("{}-run{}", colony.id, colony.run_number);
-    let roster = create_starter_cats_with_id_prefix(&colony.id, &id_prefix, now_ms, seed);
+    let roster =
+        create_starter_cats_with_id_prefix(&colony.id, &id_prefix, now_ms, seed, colony.scale);
     colony.cats.extend(roster);
 }
 
@@ -9498,7 +9625,7 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
         cat.activity = CatActivity::Idle;
     }
 
-    colony.resources = starting_resources_with_blessings(blessings);
+    colony.resources = starting_resources_with_blessings(colony.scale, blessings);
     // Drop player piles; the end-of-tick reconcile reseeds the shrine reservoir.
     colony.stockpiles.clear();
     // P16: every gather spot's underlying pile just got dropped above, so drop their
@@ -9570,13 +9697,13 @@ fn try_repair_founding_housing_core(colony: &mut ColonyRuntime) -> bool {
     // shapes `founding_revealed_tiles` already accepts. Preserve any sparse authored
     // tiles rather than replacing them.
     if colony.claimed_tiles.is_empty() {
-        colony.claimed_tiles = founding_claimed_tiles(colony.anchor);
+        colony.claimed_tiles = founding_claimed_tiles(colony.anchor, founding_radius(colony.scale));
         for (pos, tile) in starter_world_tiles(colony.anchor, placement_seed) {
             colony.world_tiles.entry(pos).or_insert(tile);
         }
         reveal_founding_area(colony);
     }
-    let authored = starter_buildings(colony.anchor, 0);
+    let authored = starter_buildings(colony.anchor, 0, colony.scale);
     if !colony
         .buildings
         .iter()
@@ -9596,20 +9723,66 @@ fn try_repair_founding_housing_core(colony: &mut ColonyRuntime) -> bool {
     // new road hub. Reattach the existing gate before validating den access routes.
     let _ = connect_current_gate_to_shrine(colony, placement_seed);
 
-    let missing_dens = 3usize.saturating_sub(
+    let required_dens: usize = match colony.scale {
+        VillageScale::Communal => 6,
+        VillageScale::Personal => 3,
+    };
+    let missing_dens = required_dens.saturating_sub(
         colony
             .buildings
             .iter()
             .filter(|building| building.is_complete && building.building_type == BuildingType::Den)
             .count(),
     );
-    for den in authored
-        .into_iter()
+    let missing_den_buildings = authored
+        .iter()
         .filter(|building| building.building_type == BuildingType::Den)
+        .filter(|building| {
+            !colony
+                .buildings
+                .iter()
+                .any(|existing| existing.id == building.id)
+        })
         .take(missing_dens)
-    {
+        .cloned()
+        .collect::<Vec<_>>();
+    for den in missing_den_buildings {
         if !add_repaired_core_building(colony, &den, placement_seed) {
             return false;
+        }
+    }
+    if colony.scale == VillageScale::Communal {
+        for (building_type, required) in [
+            (BuildingType::WoodCutter, 2_usize),
+            (BuildingType::StonePrep, 2),
+            (BuildingType::Woodworking, 2),
+            (BuildingType::FoodStorage, 1),
+            (BuildingType::ResearchHut, 1),
+            (BuildingType::Barracks, 1),
+        ] {
+            let present = colony
+                .buildings
+                .iter()
+                .filter(|building| building.is_complete && building.building_type == building_type)
+                .count();
+            let missing = required.saturating_sub(present);
+            let missing_buildings = authored
+                .iter()
+                .filter(|building| building.building_type == building_type)
+                .filter(|building| {
+                    !colony
+                        .buildings
+                        .iter()
+                        .any(|existing| existing.id == building.id)
+                })
+                .take(missing)
+                .cloned()
+                .collect::<Vec<_>>();
+            for building in missing_buildings {
+                if !add_repaired_core_building(colony, &building, placement_seed) {
+                    return false;
+                }
+            }
         }
     }
     // Emergency parcels can enlarge the claim and therefore move the canonical
@@ -9626,7 +9799,7 @@ fn try_repair_founding_housing_core(colony: &mut ColonyRuntime) -> bool {
             .iter()
             .filter(|building| building.is_complete && building.building_type == BuildingType::Den)
             .count()
-            >= 3;
+            >= required_dens;
     has_core && village_exterior_is_road_connected(colony, placement_seed)
 }
 
@@ -9987,22 +10160,28 @@ fn orthogonal_repair_corridor(start: TilePos, end: TilePos) -> Vec<TilePos> {
     out
 }
 
-fn starting_resources_with_blessings(blessings: f64) -> Resources {
+fn starting_resources_with_blessings(scale: VillageScale, blessings: f64) -> Resources {
+    // Preserve the established personal-colony reset package exactly. The communal
+    // hub gets the same per-capita runway for its doubled founding census.
+    let multiplier = match scale {
+        VillageScale::Communal => 2.0,
+        VillageScale::Personal => 1.0,
+    };
     Resources {
-        food: 150.0,
-        water: 100.0,
-        herbs: 16.0,
+        food: 150.0 * multiplier,
+        water: 100.0 * multiplier,
+        herbs: 16.0 * multiplier,
         catnip: 0.0,
         grain: 0.0,
         flour: 0.0,
-        materials: 24.0,
+        materials: 24.0 * multiplier,
         refined: 0.0,
         weapons: 0.0,
         armor: 0.0,
-        planks: 6.0,
+        planks: 6.0 * multiplier,
         logs: 0.0,
         lumber: 0.0,
-        blocks: 6.0,
+        blocks: 6.0 * multiplier,
         tools: 0.0,
         fibre: 0.0,
         hide: 0.0,
@@ -13783,11 +13962,19 @@ fn general_storehouse_rect(colony: &ColonyRuntime) -> ZoneRect {
     // A compact 2x2 pile west of the east gate road, clear of every founding building
     // and the shrine cross. It is a physical stockpile (not a storage-capacity building),
     // so it preserves the exact three-house/three-workshop founding economy.
-    ZoneRect {
-        x1: colony.anchor.x + 5,
-        y1: colony.anchor.y - 1,
-        x2: colony.anchor.x + 6,
-        y2: colony.anchor.y,
+    match colony.scale {
+        VillageScale::Personal => ZoneRect {
+            x1: colony.anchor.x + 5,
+            y1: colony.anchor.y - 1,
+            x2: colony.anchor.x + 6,
+            y2: colony.anchor.y,
+        },
+        VillageScale::Communal => ZoneRect {
+            x1: colony.anchor.x + 8,
+            y1: colony.anchor.y + 2,
+            x2: colony.anchor.x + 9,
+            y2: colony.anchor.y + 3,
+        },
     }
 }
 
@@ -14754,6 +14941,9 @@ mod tests {
         storage::BASE_CAPACITY,
     };
     use cat_protocol as proto;
+
+    const STARTER_CAT_COUNT: usize = PERSONAL_STARTER_CAT_COUNT;
+    const VILLAGE_START_RADIUS: i32 = PERSONAL_VILLAGE_START_RADIUS;
 
     /// Test-only establishment step for mature colonies. The production founding claim is
     /// deliberately too small to contain an exterior Field, so long-running officer fixtures
@@ -17239,7 +17429,10 @@ mod tests {
             }]
         );
         let colony = &world.colonies[0];
-        assert_eq!(colony.resources, starting_resources_with_blessings(7.0));
+        assert_eq!(
+            colony.resources,
+            starting_resources_with_blessings(VillageScale::Personal, 7.0)
+        );
         assert!(colony.jobs.is_empty());
         assert!(colony.raiders.is_empty());
         assert_eq!(colony.active_raid, None);
@@ -27781,6 +27974,169 @@ mod tests {
     // --- P16: fixed founding village blueprint --------------------------------
 
     #[test]
+    fn canonical_communal_village_is_larger_than_a_personal_founding() {
+        let global = found_global_colony(4242, "colony-1", 1_000, 4242);
+        let site = select_founding_site(4242, &[global.anchor]);
+        let mut personal = found_colony_at(4242, "personal", 1_000, 7, site);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+
+        assert_eq!(global.kind, VillageKind::Global);
+        assert_eq!(global.scale, VillageScale::Communal);
+        assert_eq!(global.owner_player_id, None);
+        assert_eq!(alive_cats(&global.cats).count(), 30);
+        assert_eq!(colony_housing_capacity(&global), 30.0);
+        assert_eq!(global.claimed_tiles.len(), 19 * 19);
+        assert_eq!(global.revealed_tiles.len(), 23 * 23);
+        assert_eq!(global.buildings.len(), 16);
+
+        assert_eq!(personal.kind, VillageKind::Personal);
+        assert_eq!(personal.scale, VillageScale::Personal);
+        assert_eq!(alive_cats(&personal.cats).count(), 15);
+        assert_eq!(colony_housing_capacity(&personal), 15.0);
+        assert_eq!(personal.claimed_tiles.len(), 13 * 13);
+        assert_eq!(personal.revealed_tiles.len(), 17 * 17);
+        assert_eq!(personal.buildings.len(), 7);
+
+        for (building_type, global_count, personal_count) in [
+            (BuildingType::Den, 6, 3),
+            (BuildingType::WoodCutter, 2, 1),
+            (BuildingType::StonePrep, 2, 1),
+            (BuildingType::Woodworking, 2, 1),
+            (BuildingType::FoodStorage, 1, 0),
+            (BuildingType::ResearchHut, 1, 0),
+            (BuildingType::Barracks, 1, 0),
+        ] {
+            assert_eq!(
+                global
+                    .buildings
+                    .iter()
+                    .filter(|building| building.building_type == building_type)
+                    .count(),
+                global_count,
+                "global {building_type:?} count",
+            );
+            assert_eq!(
+                personal
+                    .buildings
+                    .iter()
+                    .filter(|building| building.building_type == building_type)
+                    .count(),
+                personal_count,
+                "personal {building_type:?} count",
+            );
+        }
+
+        assert_eq!(global.resources.food, personal.resources.food * 2.0);
+        assert_eq!(global.resources.water, personal.resources.water * 2.0);
+        assert_eq!(
+            global.resources.materials,
+            personal.resources.materials * 2.0
+        );
+        assert_eq!(global.stockpiles.len(), 1);
+        assert_eq!(personal.stockpiles.len(), 1);
+        assert_eq!(global.stockpiles[0].capacity(), Some(360.0));
+        assert_eq!(personal.stockpiles[0].capacity(), Some(360.0));
+        assert_ne!(global.stockpiles[0].rect, personal.stockpiles[0].rect);
+        assert_one_closed_south_gate(&global);
+        assert_one_closed_south_gate(&personal);
+        assert!(village_exterior_is_road_connected(&global, 4242));
+        assert!(village_exterior_is_road_connected(&personal, 4242));
+    }
+
+    #[test]
+    fn extinction_restores_each_persisted_founding_scale_deterministically() {
+        let make_world = || {
+            let mut world = new_world(8888);
+            let mut global = found_global_colony(8888, "colony-1", 1_000, 11);
+            global
+                .buildings
+                .retain(|building| building.building_type != BuildingType::Barracks);
+            for cat in &mut global.cats {
+                cat.death_time = Some(1_500);
+            }
+            let site = select_founding_site(8888, &[global.anchor]);
+            let mut personal = found_colony_at(8888, "personal", 1_000, 22, site);
+            personal.kind = VillageKind::Personal;
+            personal.owner_player_id = Some("owner".to_owned());
+            for cat in &mut personal.cats {
+                cat.death_time = Some(1_500);
+            }
+            world.colonies = vec![global, personal];
+            world
+        };
+        let mut left = make_world();
+        let mut right = make_world();
+        let left_reports = world_tick(&mut left, 2_000);
+        let right_reports = world_tick(&mut right, 2_000);
+        assert_eq!(left_reports, right_reports);
+        assert_eq!(left, right);
+
+        let global = left
+            .colonies
+            .iter()
+            .find(|colony| colony.kind == VillageKind::Global)
+            .unwrap();
+        let personal = left
+            .colonies
+            .iter()
+            .find(|colony| colony.kind == VillageKind::Personal)
+            .unwrap();
+        assert_eq!(alive_cats(&global.cats).count(), 30);
+        assert_eq!(colony_housing_capacity(global), 30.0);
+        assert!(global.buildings.iter().any(|building| {
+            building.is_complete && building.building_type == BuildingType::Barracks
+        }));
+        assert_eq!(
+            global.resources,
+            starting_resources_with_blessings(VillageScale::Communal, 0.0)
+        );
+        assert_eq!(alive_cats(&personal.cats).count(), 15);
+        assert_eq!(colony_housing_capacity(personal), 15.0);
+        assert_eq!(
+            personal.resources,
+            starting_resources_with_blessings(VillageScale::Personal, 0.0)
+        );
+        assert_eq!(personal.owner_player_id.as_deref(), Some("owner"));
+    }
+
+    #[test]
+    fn staffed_communal_blueprint_is_deterministic_and_viable_unattended() {
+        const TICK_MS: i64 = 5 * 60_000;
+        const HORIZON_TICKS: i64 = 48 * 60 / 5;
+        let make_world = || {
+            let mut world = new_world(7_777);
+            world
+                .colonies
+                .push(found_global_colony(7_777, "colony-1", 10_000, 7_777));
+            // A shared settlement still follows the exact-control contract: players
+            // establish its offices, after which this campaign supplies no further input.
+            establish_all_offices(&mut world.colonies[0]);
+            world
+        };
+        let mut left = make_world();
+        let mut right = make_world();
+
+        for step in 1..=HORIZON_TICKS {
+            let now_ms = 10_000 + step * TICK_MS;
+            let left_reports = world_tick(&mut left, now_ms);
+            let right_reports = world_tick(&mut right, now_ms);
+            assert_eq!(left_reports, right_reports, "report drift at tick {step}");
+            assert_eq!(left, right, "world drift at tick {step}");
+            assert_eq!(left_reports[0].reset_reason, None, "reset at tick {step}");
+            assert!(
+                alive_cats(&left.colonies[0].cats).count() >= GLOBAL_STARTER_CAT_COUNT,
+                "communal hub lost its founding census at tick {step}"
+            );
+        }
+
+        let colony = &left.colonies[0];
+        assert_eq!(colony.scale, VillageScale::Communal);
+        assert!(colony_housing_capacity(colony) >= GLOBAL_STARTER_CAT_COUNT as f64);
+        assert_eq!(colony.run_number, 1);
+    }
+
+    #[test]
     fn founding_starts_with_fifteen_unique_adult_cats_and_three_five_bed_dens() {
         let colony = found_colony(4242, "colony-1", 1_000, 4242);
         assert_eq!(alive_cats(&colony.cats).count(), 15);
@@ -28389,7 +28745,7 @@ mod tests {
     fn extinction_core_repair_expands_a_densely_occupied_claim_without_underhousing() {
         let seed = 4242;
         let mut colony = found_colony(seed, "colony-1", 0, seed);
-        let authored = starter_buildings(colony.anchor, seed);
+        let authored = starter_buildings(colony.anchor, seed, colony.scale);
         let shrine_pos = authored
             .iter()
             .find(|building| building.building_type == BuildingType::Shrine)

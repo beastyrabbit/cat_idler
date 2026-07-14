@@ -30,7 +30,7 @@ use cat_protocol::{
     ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts, ResourceCapacities,
     ResourceKind, RoleXp, ScoutMission, ScoutResource, Specialization, StockLedgerSnapshot,
     StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderVisitState, VillageKind,
-    WorldSnapshot, ZoneKind,
+    VillageScale, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -2270,11 +2270,18 @@ fn census_bar(count: u32, max: u32, width: usize) -> String {
 /// Render the census as a fixed block of `CENSUS_LINES` display lines — a DF-style
 /// "units" readout: population + leader + averages, a life-stage breakdown with
 /// bars, a specialization breakdown, and a recent births/deaths line.
-fn census_report_lines(c: &Census) -> Vec<String> {
+fn census_report_lines(c: &Census, scale: VillageScale) -> Vec<String> {
     let stage_max = c.kittens.max(c.young).max(c.adults).max(c.elders);
     let leader = c.leader.as_deref().unwrap_or("(vacant)");
     vec![
-        format!("Population: {}", c.total),
+        format!(
+            "{} population: {}",
+            match scale {
+                VillageScale::Communal => "Communal",
+                VillageScale::Personal => "Personal",
+            },
+            c.total
+        ),
         format!("Leader: {leader}"),
         format!(
             "Avg age: {:.0}h    ★ Boosted: {}",
@@ -7973,7 +7980,7 @@ fn update_village_selector(
 
 fn village_group_label(kind: VillageKind, is_owner: bool) -> &'static str {
     match (kind, is_owner) {
-        (VillageKind::Global, _) => "Global",
+        (VillageKind::Global, _) => "Grand Commons",
         (VillageKind::Personal, true) => "My Village",
         (VillageKind::Personal, false) => "Known",
     }
@@ -8261,7 +8268,7 @@ fn update_census(
                 &c.events,
                 c.leader.as_ref().map(|l| l.name.as_str()),
             );
-            census_report_lines(&census)
+            census_report_lines(&census, c.scale)
         });
     for (line, mut text) in &mut lines {
         text.0 = report.get(line.0).cloned().unwrap_or_default();
@@ -10406,7 +10413,10 @@ mod tests {
 
     #[test]
     fn village_selector_labels_global_owned_and_known_villages() {
-        assert_eq!(village_group_label(VillageKind::Global, false), "Global");
+        assert_eq!(
+            village_group_label(VillageKind::Global, false),
+            "Grand Commons"
+        );
         assert_eq!(
             village_group_label(VillageKind::Personal, true),
             "My Village"
@@ -10474,6 +10484,7 @@ mod tests {
             id: "beta".to_owned(),
             name: "River Paws".to_owned(),
             kind: VillageKind::Personal,
+            scale: VillageScale::Personal,
             anchor: TilePoint { x: 100, y: 6 },
             capabilities: Default::default(),
         });
@@ -10858,15 +10869,16 @@ mod tests {
             &[],
             Some("Bella"),
         );
-        let lines = census_report_lines(&c);
+        let lines = census_report_lines(&c, VillageScale::Communal);
         assert_eq!(lines.len(), CENSUS_LINES);
-        assert_eq!(lines[0], "Population: 2");
+        assert_eq!(lines[0], "Communal population: 2");
         assert_eq!(lines[1], "Leader: Bella");
         assert!(lines[2].contains("★ Boosted: 1"));
         assert_eq!(lines[3], "Expecting: 1");
         // A vacant seat renders a placeholder rather than dropping the line.
-        let vacant = census_report_lines(&colony_census(&[], &[], None));
+        let vacant = census_report_lines(&colony_census(&[], &[], None), VillageScale::Personal);
         assert_eq!(vacant.len(), CENSUS_LINES);
+        assert_eq!(vacant[0], "Personal population: 0");
         assert_eq!(vacant[1], "Leader: (vacant)");
         assert_eq!(vacant[3], "Expecting: 0");
     }
