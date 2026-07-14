@@ -78,11 +78,22 @@ fn provision_mature_fixture_land(colony: &mut cat_sim::world_tick::ColonyRuntime
     for pos in &extension {
         if (pos.x >= 14 || pos.y >= 14)
             && let Some(tile) = colony.world_tiles.get_mut(pos)
+            && tile.resources.water == 0
         {
-            tile.tile_type = TileType::Field;
+            // This is claimed mature-settlement land, so provision it with the same
+            // authoritative clearing marker as a completed expansion. Merely changing
+            // the visible tile type leaves climate-generated 2x3 tree footprints live
+            // under the exact spatial occupancy model.
+            tile.tile_type = TileType::Meadow;
             tile.overlay_feature = None;
+            tile.resources.food = 0;
+            tile.resources.herbs = 0;
             tile.resources.water = 0;
+            tile.max_resources.food = 0;
+            tile.max_resources.herbs = 0;
             tile.danger_level = 0.0;
+            tile.path_wear = 0;
+            tile.last_depleted = 1;
         }
     }
     colony.claimed_tiles.extend(extension.iter().copied());
