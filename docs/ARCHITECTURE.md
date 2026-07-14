@@ -157,8 +157,9 @@ maintained product behavior rather than migration:
   management stay manual while vacant. Three personal seeds pass exact 48-hour one-second
   campaigns and byte-identical twins, and the 30-cat communal 48-hour campaign is green.
 - **Spatial, transport, and visual completeness.** Exact tree/rock occupancy, visible road
-  surfaces, persisted exterior agricultural claims, and staged outer-wall construction with an
-  atomic one-gate cutover are live. Real rail/ship/fishing routes and remaining integrated
+  surfaces, persisted exterior agricultural claims, staged outer-wall construction with an
+  atomic one-gate cutover, and persisted finite-water-habitat fishing routes are live. Real
+  rail/ship routes and remaining integrated
   wall/menu/WASM skin captures remain incomplete. Accounting
   Tent is snapshot-reachable and has an explicit open-station client composition; the maintained
   Adventure panel, button, progress, minimap, and cursor foundation is native-framebuffer verified.

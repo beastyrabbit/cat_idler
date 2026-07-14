@@ -109,6 +109,7 @@ mod tests {
     fn resources(food: f64, water: f64) -> Resources {
         Resources {
             food,
+            fish: 0.0,
             water,
             herbs: 0.0,
             catnip: 0.0,

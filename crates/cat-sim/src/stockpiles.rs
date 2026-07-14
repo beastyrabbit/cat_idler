@@ -71,6 +71,21 @@ pub struct GatherSpot {
     pub purpose: GatherSpotPurpose,
 }
 
+/// Persisted ecology attached to one designated shoreline workplace.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FishPopulation {
+    pub stock: f64,
+    pub capacity: f64,
+    pub last_replenished_at_ms: i64,
+}
+
+/// Two baseline 12-unit fishing shifts before a fresh habitat is exhausted.
+pub const FISH_POPULATION_CAPACITY: f64 = 24.0;
+/// One existing 12-unit fishing shift replenishes per game-day. This keeps a
+/// shoreline useful without letting one designation replace farms and hunts.
+pub const FISH_REPLENISH_PER_GAME_HOUR: f64 = 0.5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GatherSpotPurpose {
@@ -106,6 +121,7 @@ pub const MAX_GATHER_SPOTS: usize = 6;
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     Food,
+    Fish,
     Water,
     Herbs,
     Catnip,
@@ -133,6 +149,7 @@ impl ResourceKind {
     /// Every resource kind, in a stable order (deterministic reconcile / iteration).
     pub const ALL: &'static [Self] = &[
         Self::Food,
+        Self::Fish,
         Self::Water,
         Self::Herbs,
         Self::Catnip,
@@ -162,6 +179,7 @@ impl ResourceKind {
 pub fn resource_amount(resources: &Resources, kind: ResourceKind) -> f64 {
     match kind {
         ResourceKind::Food => resources.food,
+        ResourceKind::Fish => resources.fish,
         ResourceKind::Water => resources.water,
         ResourceKind::Herbs => resources.herbs,
         ResourceKind::Catnip => resources.catnip,
@@ -190,6 +208,7 @@ pub fn resource_amount(resources: &Resources, kind: ResourceKind) -> f64 {
 pub fn set_resource(resources: &mut Resources, kind: ResourceKind, value: f64) {
     match kind {
         ResourceKind::Food => resources.food = value,
+        ResourceKind::Fish => resources.fish = value,
         ResourceKind::Water => resources.water = value,
         ResourceKind::Herbs => resources.herbs = value,
         ResourceKind::Catnip => resources.catnip = value,

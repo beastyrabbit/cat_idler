@@ -7,6 +7,9 @@ use crate::types::BuildingType;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct StorageCapacities {
     pub food: f64,
+    /// Fresh fish shares the food-storage tier but remains separately visible.
+    #[serde(default)]
+    pub fish: f64,
     pub water: f64,
     pub herbs: f64,
     /// Farm and mill chain resources.
@@ -50,6 +53,7 @@ impl StorageCapacities {
         let multiplier = multiplier.max(0.0);
         Self {
             food: self.food * multiplier,
+            fish: self.fish * multiplier,
             water: self.water * multiplier,
             herbs: self.herbs * multiplier,
             catnip: self.catnip * multiplier,
@@ -108,6 +112,7 @@ impl StorageBuilding {
 /// Base capacity every settlement starts with, before any storehouses.
 pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     food: 200.0,
+    fish: 200.0,
     water: 200.0,
     herbs: 100.0,
     catnip: 100.0,
@@ -163,6 +168,7 @@ pub fn storage_capacities(buildings: &[StorageBuilding], storage_mult: f64) -> S
         match building.building_type {
             BuildingType::FoodStorage => {
                 caps.food += GRANARY_BONUS.food * level * mult;
+                caps.fish += GRANARY_BONUS.food * level * mult;
                 caps.herbs += GRANARY_BONUS.herbs * level * mult;
                 caps.materials += GRANARY_BONUS.materials * level * mult;
                 caps.refined += GRANARY_BONUS.refined * level * mult;
@@ -251,6 +257,7 @@ mod tests {
 
     fn assert_caps_bits(actual: StorageCapacities, expected: StorageCapacities, label: &str) {
         assert_f64_bits(actual.food, expected.food, &format!("{label} food"));
+        assert_f64_bits(actual.fish, expected.fish, &format!("{label} fish"));
         assert_f64_bits(actual.water, expected.water, &format!("{label} water"));
         assert_f64_bits(actual.herbs, expected.herbs, &format!("{label} herbs"));
         assert_f64_bits(actual.catnip, expected.catnip, &format!("{label} catnip"));
@@ -295,6 +302,7 @@ mod tests {
             BASE_CAPACITY,
             StorageCapacities {
                 food: 200.0,
+                fish: 200.0,
                 water: 200.0,
                 herbs: 100.0,
                 catnip: 100.0,
@@ -371,6 +379,7 @@ mod tests {
             ]),
             StorageCapacities {
                 food: 1_400.0,
+                fish: 1_400.0,
                 water: 400.0,
                 herbs: 400.0,
                 catnip: 100.0,
@@ -419,6 +428,7 @@ mod tests {
             ),
             StorageCapacities {
                 food: 700.0,
+                fish: 700.0,
                 water: 700.0,
                 herbs: 225.0,
                 catnip: 100.0,
@@ -463,6 +473,7 @@ mod tests {
             ]),
             StorageCapacities {
                 food: 600.0,
+                fish: 600.0,
                 water: 400.0,
                 herbs: 200.0,
                 catnip: 100.0,

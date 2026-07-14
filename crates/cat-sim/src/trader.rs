@@ -88,6 +88,7 @@ pub fn trader_buy_price(item: Item, count: u32) -> f64 {
 pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
     match kind {
         ResourceKind::Food
+        | ResourceKind::Fish
         | ResourceKind::Water
         | ResourceKind::Herbs
         | ResourceKind::Catnip

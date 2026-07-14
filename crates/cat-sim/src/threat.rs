@@ -68,7 +68,7 @@ where
 
 impl ThreatStores for Resources {
     fn food(&self) -> f64 {
-        self.food
+        self.food + self.fish
     }
 
     fn water(&self) -> f64 {
@@ -362,6 +362,7 @@ mod tests {
         assert_eq!(
             colony_wealth(Resources {
                 food: 10.0,
+                fish: 0.0,
                 water: 20.0,
                 herbs: 30.0,
                 catnip: 0.0,

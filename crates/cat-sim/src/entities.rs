@@ -48,6 +48,10 @@ pub enum CatActivity {
 pub enum CarryingKind {
     #[serde(rename = "food")]
     Food,
+    /// Fresh fish caught from a finite shoreline habitat. It remains a distinct
+    /// raw food material in storage instead of becoming generic food in transit.
+    #[serde(rename = "fish")]
+    Fish,
     #[serde(rename = "blessings")]
     Blessings,
     #[serde(rename = "materials")]
@@ -69,6 +73,10 @@ pub enum CarryingKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Resources {
     pub food: f64,
+    /// Fresh fish from finite shoreline habitats. Cats eat this before generic
+    /// stored food; keeping it distinct makes ecological depletion visible.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fish: f64,
     pub water: f64,
     pub herbs: f64,
     /// Harvested catnip from visible farm plots.
@@ -325,6 +333,7 @@ mod tests {
             status: ColonyStatus::Thriving,
             resources: Resources {
                 food: 10.0,
+                fish: 17.0,
                 water: 11.0,
                 herbs: 12.0,
                 catnip: 27.0,

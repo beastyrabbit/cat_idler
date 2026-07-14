@@ -2988,6 +2988,7 @@ fn primary_window_for_platform(is_web: bool) -> Window {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum HudRes {
     Food,
+    Fish,
     Water,
     Catnip,
     Grain,
@@ -3006,8 +3007,9 @@ enum HudRes {
 }
 
 /// The HUD resources, in display order (refinement tier grouped after refined).
-const HUD_RESOURCES: [HudRes; 16] = [
+const HUD_RESOURCES: [HudRes; 17] = [
     HudRes::Food,
+    HudRes::Fish,
     HudRes::Water,
     HudRes::Catnip,
     HudRes::Grain,
@@ -3062,7 +3064,7 @@ impl IconArt {
 
     fn get(&self, kind: HudRes) -> Handle<Image> {
         match kind {
-            HudRes::Food => self.food.clone(),
+            HudRes::Food | HudRes::Fish => self.food.clone(),
             HudRes::Water => self.water.clone(),
             HudRes::Catnip => self.herbs.clone(),
             HudRes::Grain | HudRes::Flour => self.food.clone(),
@@ -3117,6 +3119,7 @@ struct HudResource(HudRes);
 fn hud_res_of(kind: ResourceKind) -> HudRes {
     match kind {
         ResourceKind::Food => HudRes::Food,
+        ResourceKind::Fish => HudRes::Fish,
         ResourceKind::Water => HudRes::Water,
         ResourceKind::Herbs => HudRes::Herbs,
         ResourceKind::Catnip => HudRes::Catnip,
@@ -3143,6 +3146,7 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
 fn resource_icon_tint(kind: HudRes) -> Color {
     match kind {
         HudRes::Food => Color::srgb(0.87, 0.35, 0.26),
+        HudRes::Fish => Color::srgb(0.28, 0.68, 0.82),
         HudRes::Water => Color::srgb(0.36, 0.62, 0.93),
         HudRes::Catnip => Color::srgb(0.66, 0.48, 0.82),
         HudRes::Grain => Color::srgb(0.88, 0.68, 0.26),
@@ -3166,6 +3170,7 @@ fn resource_icon_tint(kind: HudRes) -> Color {
 fn hud_resource_value(kind: HudRes, r: &ResourceAmounts, cap: &ResourceCapacities) -> String {
     match kind {
         HudRes::Food => format!("{:.0} / {:.0}", r.food, cap.food),
+        HudRes::Fish => format!("{:.0} / {:.0}", r.fish, cap.fish),
         HudRes::Water => format!("{:.0} / {:.0}", r.water, cap.water),
         HudRes::Catnip => format!("{:.0} / {:.0}", r.catnip, cap.catnip),
         HudRes::Grain => format!("{:.0} / {:.0}", r.grain, cap.grain),
@@ -5580,7 +5585,21 @@ fn update_remove_panel(
                 Some(GatherSpotPurpose::General) => "Gather spot",
                 None => "Stockpile",
             };
-            text.0 = format!("{title}\n{dominant} {}", total.round() as i64);
+            text.0 = pile
+                .gather_spot
+                .as_ref()
+                .and_then(|spot| spot.fish_population)
+                .map_or_else(
+                    || format!("{title}\n{dominant} {}", total.round() as i64),
+                    |population| {
+                        format!(
+                            "{title}\nfresh fish {}\nhabitat {:.1} / {:.0}",
+                            total.round() as i64,
+                            population.stock,
+                            population.capacity
+                        )
+                    },
+                );
         }
         (_, Some(farm)) => {
             node.display = Display::Flex;
@@ -7198,18 +7217,35 @@ fn building_tooltip(building: &BuildingSnapshot) -> String {
 
 /// Compact hover text for a stockpile: what it accepts + rough contents.
 fn stockpile_tooltip(pile: &StockpileSnapshot) -> String {
-    let title = if pile.id == GENERAL_STOREHOUSE_ID {
+    let title = if pile
+        .gather_spot
+        .as_ref()
+        .is_some_and(|spot| spot.purpose == GatherSpotPurpose::Fishing)
+    {
+        "Fishing shore"
+    } else if pile.id == GENERAL_STOREHOUSE_ID {
         "Village storehouse"
     } else if pile.id == SHRINE_STOCKPILE_ID {
         "Legacy shrine store"
     } else {
         "Stockpile"
     };
-    format!(
+    let mut tooltip = format!(
         "{title}\naccepts {accepts}\ncontents ~{total:.0}",
         accepts = accepts_label(&pile.accepts),
         total = resource_total(&pile.contents),
-    )
+    );
+    if let Some(population) = pile
+        .gather_spot
+        .as_ref()
+        .and_then(|spot| spot.fish_population)
+    {
+        tooltip.push_str(&format!(
+            "\nhabitat {:.1} / {:.0}",
+            population.stock, population.capacity
+        ));
+    }
+    tooltip
 }
 
 /// Toolbar tool-mode toggles: set the active mode, tint buttons by state, and
@@ -7727,8 +7763,9 @@ fn is_discovered_trade_target(
             .any(|village| village.id == target_id)
 }
 
-const VILLAGE_TRADE_KINDS: [ResourceKind; 19] = [
+const VILLAGE_TRADE_KINDS: [ResourceKind; 20] = [
     ResourceKind::Food,
+    ResourceKind::Fish,
     ResourceKind::Water,
     ResourceKind::Herbs,
     ResourceKind::Catnip,
@@ -7757,6 +7794,7 @@ fn trade_resource_label(kind: ResourceKind) -> String {
 fn trade_resource_short_label(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::Food => "food",
+        ResourceKind::Fish => "fish",
         ResourceKind::Water => "water",
         ResourceKind::Herbs => "herbs",
         ResourceKind::Catnip => "nip",
@@ -8275,8 +8313,10 @@ fn ledger_hud_text(ledger: &StockLedgerSnapshot) -> String {
 /// in the compact always-on survival HUD.
 fn production_stores_text(resources: &ResourceAmounts) -> String {
     format!(
-        "Production stores: fibre {:.0} · hide {:.0} · cloth {:.0} · leather {:.0}\n\
+        "Fresh fish {:.0}\n\
+         Production stores: fibre {:.0} · hide {:.0} · cloth {:.0} · leather {:.0}\n\
          Ore & metal: ore {:.0} · metal {:.0}",
+        resources.fish,
         resources.fibre,
         resources.hide,
         resources.cloth,
@@ -9159,6 +9199,7 @@ fn officer_holder_name(colony: &ColonySnapshot, role: OfficerRole) -> Option<&st
 /// Sum of the storable goods held in a stockpile (blessings excluded).
 fn resource_total(c: &ResourceAmounts) -> f64 {
     c.food
+        + c.fish
         + c.water
         + c.herbs
         + c.catnip
@@ -9182,6 +9223,7 @@ fn resource_total(c: &ResourceAmounts) -> f64 {
 fn dominant_resource(c: &ResourceAmounts) -> Option<ResourceKind> {
     [
         (ResourceKind::Food, c.food),
+        (ResourceKind::Fish, c.fish),
         (ResourceKind::Water, c.water),
         (ResourceKind::Herbs, c.herbs),
         (ResourceKind::Catnip, c.catnip),
@@ -9210,6 +9252,7 @@ fn dominant_resource(c: &ResourceAmounts) -> Option<ResourceKind> {
 fn pile_prop(kind: ResourceKind) -> PropTexture {
     match kind {
         ResourceKind::Food => PropTexture::Sack,
+        ResourceKind::Fish => PropTexture::Sack,
         ResourceKind::Water => PropTexture::Barrel,
         ResourceKind::Herbs => PropTexture::Haystack,
         ResourceKind::Catnip | ResourceKind::Grain | ResourceKind::Flour => PropTexture::Sack,
@@ -9236,6 +9279,7 @@ fn pile_scale(total: f64) -> f32 {
 fn resource_kind_name(kind: ResourceKind) -> &'static str {
     match kind {
         ResourceKind::Food => "food",
+        ResourceKind::Fish => "fish",
         ResourceKind::Water => "water",
         ResourceKind::Herbs => "herbs",
         ResourceKind::Catnip => "catnip",
@@ -9750,6 +9794,7 @@ fn atlas_index(group: usize, frame: usize) -> usize {
 fn carrying_color(kind: CarryingKind) -> Color {
     match kind {
         CarryingKind::Food => Color::srgb(0.95, 0.55, 0.25),
+        CarryingKind::Fish => Color::srgb(0.28, 0.68, 0.82),
         CarryingKind::Water => Color::srgb(0.35, 0.65, 0.95),
         CarryingKind::Materials => Color::srgb(0.70, 0.55, 0.35),
         CarryingKind::Blessings => Color::srgb(0.95, 0.85, 0.40),
@@ -10620,7 +10665,7 @@ mod tests {
         cycle_village_trade_draft(&mut draft, VillageTradeDraftField::RequestedKind);
         cycle_village_trade_draft(&mut draft, VillageTradeDraftField::RequestedAmount);
 
-        assert_eq!(draft.offered_kind, ResourceKind::Water);
+        assert_eq!(draft.offered_kind, ResourceKind::Fish);
         assert_eq!(draft.offered_amount, 10.0);
         assert_eq!(draft.requested_kind, ResourceKind::Refined);
         assert_eq!(draft.requested_amount, 10.0);
@@ -11354,6 +11399,7 @@ mod tests {
     fn amounts(food: f64, materials: f64, refined: f64) -> ResourceAmounts {
         ResourceAmounts {
             food,
+            fish: 0.0,
             water: 0.0,
             herbs: 0.0,
             catnip: 0.0,
@@ -12047,7 +12093,7 @@ mod tests {
             .iter()
             .map(|k| resource_icon_tint(*k))
             .collect();
-        assert_eq!(tints.len(), 16);
+        assert_eq!(tints.len(), 17);
         assert_ne!(
             resource_icon_tint(HudRes::Food),
             resource_icon_tint(HudRes::Water)
@@ -12071,6 +12117,7 @@ mod tests {
     fn hud_resource_value_formats_caps_and_bare_values() {
         let r = ResourceAmounts {
             food: 150.0,
+            fish: 8.0,
             water: 100.0,
             herbs: 16.0,
             catnip: 3.0,
@@ -12095,6 +12142,7 @@ mod tests {
         };
         let cap = ResourceCapacities {
             food: 200.0,
+            fish: 200.0,
             water: 200.0,
             herbs: 100.0,
             catnip: 50.0,
@@ -12117,6 +12165,7 @@ mod tests {
             metal: 100.0,
         };
         assert_eq!(hud_resource_value(HudRes::Food, &r, &cap), "150 / 200");
+        assert_eq!(hud_resource_value(HudRes::Fish, &r, &cap), "8 / 200");
         assert_eq!(hud_resource_value(HudRes::Grain, &r, &cap), "14 / 100");
         assert_eq!(hud_resource_value(HudRes::Flour, &r, &cap), "6 / 100");
         assert_eq!(hud_resource_value(HudRes::Logs, &r, &cap), "9 / 100");
@@ -12140,6 +12189,7 @@ mod tests {
             accepts: vec![ResourceKind::Food],
             contents: ResourceAmounts {
                 food: 12.0,
+                fish: 0.0,
                 water: 0.0,
                 herbs: 0.0,
                 catnip: 0.0,
@@ -12168,6 +12218,30 @@ mod tests {
         assert!(tip.contains("Stockpile"));
         assert!(tip.contains("food only"));
         assert!(tip.contains("~12"));
+
+        let mut fishing_contents = pile.contents;
+        fishing_contents.food = 0.0;
+        fishing_contents.fish = 3.0;
+        let fishing = StockpileSnapshot {
+            id: "fishing-shore".to_owned(),
+            accepts: vec![ResourceKind::Fish],
+            contents: fishing_contents,
+            gather_spot: Some(cat_protocol::GatherSpotSnapshot {
+                kind: ResourceKind::Fish,
+                expires_at_ms: i64::MAX,
+                purpose: GatherSpotPurpose::Fishing,
+                fish_population: Some(cat_protocol::FishPopulationSnapshot {
+                    stock: 7.5,
+                    capacity: 24.0,
+                    last_replenished_at_ms: 123,
+                }),
+            }),
+            ..pile.clone()
+        };
+        let fishing_tip = stockpile_tooltip(&fishing);
+        assert!(fishing_tip.contains("Fishing shore"));
+        assert!(fishing_tip.contains("fish only"));
+        assert!(fishing_tip.contains("habitat 7.5 / 24"));
 
         let storehouse = StockpileSnapshot {
             id: GENERAL_STOREHOUSE_ID.to_string(),
@@ -12304,6 +12378,7 @@ mod tests {
     fn ledger_hud_text_marks_freshness() {
         let reported = ResourceAmounts {
             food: 148.0,
+            fish: 2.0,
             water: 100.0,
             herbs: 16.0,
             catnip: 0.0,

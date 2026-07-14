@@ -56,7 +56,7 @@ impl FoodWaterHerbs for ColonyResources {
 
 impl FoodWater for Resources {
     fn food(&self) -> f64 {
-        self.food
+        self.food + self.fish
     }
 
     fn water(&self) -> f64 {

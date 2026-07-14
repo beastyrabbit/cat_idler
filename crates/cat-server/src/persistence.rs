@@ -15,7 +15,7 @@ use cat_sim::{
     migration::MigrationState,
     officers::OfficerRole,
     skills::Labor,
-    stockpiles::{GatherSpot, Stockpile},
+    stockpiles::{FishPopulation, GatherSpot, Stockpile},
     types::{BuildingType, CatSpecialization, JobKind, JobStatus, TaskType, TileType},
     upgrade_tree::{UpgradeTreeState, create_upgrade_tree_state},
     world_gen::TileResources,
@@ -112,7 +112,8 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             migrationDepartures INTEGER,
             ownerPlayerId TEXT,
             knownVillageIds TEXT,
-            villageTradeOffers TEXT
+            villageTradeOffers TEXT,
+            fishHabitats TEXT
         );
 
         CREATE TABLE IF NOT EXISTS cats (
@@ -282,6 +283,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "stockpiles", "TEXT"),
         ("colonies", "farms", "TEXT"),
         ("colonies", "gatherSpots", "TEXT"),
+        ("colonies", "fishHabitats", "TEXT"),
         ("colonies", "stockLedger", "TEXT"),
         ("colonies", "revealedTiles", "TEXT"),
         ("colonies", "agriculturalTiles", "TEXT"),
@@ -429,7 +431,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, farms, gatherSpots,
                 stockLedger, coin, items, woodCraftProgress, stoneCraftProgress,
                 clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY,
-                migrationState, migrationDepartures, knownVillageIds, villageTradeOffers
+                migrationState, migrationDepartures, knownVillageIds, villageTradeOffers, fishHabitats
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -472,12 +474,12 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             stockpiles, farms, gatherSpots, stockLedger, coin, items, woodCraftProgress,
             stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
             anchorX, anchorY, migrationState, migrationDepartures, isGlobal, ownerPlayerId,
-            knownVillageIds, villageTradeOffers, foundingScale
+            knownVillageIds, villageTradeOffers, foundingScale, fishHabitats
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
             ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
-            ?48, ?49, ?50, ?51, ?52, ?53, ?54
+            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55
         )",
         params![
             colony.id,
@@ -534,6 +536,14 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             serde_json::to_string(&colony.known_village_ids).map_err(to_sql_json)?,
             serde_json::to_string(&colony.village_trade_offers).map_err(to_sql_json)?,
             village_scale_str(colony.scale),
+            serde_json::to_string(
+                &colony
+                    .fish_habitats
+                    .iter()
+                    .map(|(tile, population)| (tile.x, tile.y, *population))
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(to_sql_json)?,
         ],
     )?;
 
@@ -586,6 +596,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let migration_state_json: Option<String> = row.get("migrationState")?;
     let known_village_ids_json: Option<String> = row.get("knownVillageIds")?;
     let village_trade_offers_json: Option<String> = row.get("villageTradeOffers")?;
+    let fish_habitats_json: Option<String> = row.get("fishHabitats")?;
     let anchor = TilePos {
         x: row.get::<_, Option<i32>>("anchorX")?.unwrap_or(6),
         y: row.get::<_, Option<i32>>("anchorY")?.unwrap_or(6),
@@ -667,6 +678,19 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .unwrap_or_default(),
         gather_spots: gather_spots_json
             .map(|raw| serde_json::from_str::<Vec<GatherSpot>>(&raw).map_err(from_sql_json))
+            .transpose()?
+            .unwrap_or_default(),
+        fish_habitats: fish_habitats_json
+            .map(|raw| {
+                serde_json::from_str::<Vec<(i32, i32, FishPopulation)>>(&raw)
+                    .map(|entries| {
+                        entries
+                            .into_iter()
+                            .map(|(x, y, population)| (TilePos { x, y }, population))
+                            .collect()
+                    })
+                    .map_err(from_sql_json)
+            })
             .transpose()?
             .unwrap_or_default(),
         stock_ledger: stock_ledger_json
@@ -2412,6 +2436,7 @@ mod tests {
             .colonies
             .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
         world.colonies[0].resources.food = 123.5;
+        world.colonies[0].resources.fish = 8.75;
         world.colonies[0].resources.water = 87.25;
         // P16/P19 clothing chain slice: the new resource fields must round-trip too —
         // `resources` persists as a single JSON blob column, so this exercises the
@@ -2575,7 +2600,7 @@ mod tests {
                     x2: fishing_site.x,
                     y2: fishing_site.y,
                 },
-                accepts: [cat_sim::stockpiles::ResourceKind::Food]
+                accepts: [cat_sim::stockpiles::ResourceKind::Fish]
                     .into_iter()
                     .collect(),
                 contents: cat_sim::entities::Resources::default(),
@@ -2584,10 +2609,18 @@ mod tests {
             .gather_spots
             .push(cat_sim::stockpiles::GatherSpot {
                 stockpile_id: "fishing-shore-1".to_owned(),
-                kind: cat_sim::stockpiles::ResourceKind::Food,
+                kind: cat_sim::stockpiles::ResourceKind::Fish,
                 expires_at_ms: i64::MAX,
                 purpose: cat_sim::stockpiles::GatherSpotPurpose::Fishing,
             });
+        world.colonies[0].fish_habitats.insert(
+            fishing_water,
+            cat_sim::stockpiles::FishPopulation {
+                stock: 7.25,
+                capacity: cat_sim::stockpiles::FISH_POPULATION_CAPACITY,
+                last_replenished_at_ms: 1_234_567,
+            },
+        );
         let fisher_id = world.colonies[0].cats[1].id.clone();
         world.colonies[0].jobs.push(JobRuntime {
             id: "job-fishing-restart".to_owned(),
@@ -2617,6 +2650,7 @@ mod tests {
         assert_eq!(loaded.colonies.len(), 1);
         assert_eq!(loaded.colonies[0].resources, world.colonies[0].resources);
         assert_eq!(loaded.colonies[0].resources.fibre, 6.0);
+        assert_eq!(loaded.colonies[0].resources.fish, 8.75);
         assert_eq!(loaded.colonies[0].resources.hide, 4.5);
         assert_eq!(loaded.colonies[0].resources.cloth, 2.5);
         assert_eq!(loaded.colonies[0].resources.leather, 1.5);
@@ -2629,6 +2663,10 @@ mod tests {
         assert_eq!(
             loaded.colonies[0].gather_spots,
             world.colonies[0].gather_spots
+        );
+        assert_eq!(
+            loaded.colonies[0].fish_habitats,
+            world.colonies[0].fish_habitats
         );
         assert_eq!(
             loaded.colonies[0].stock_ledger,
@@ -3126,6 +3164,7 @@ mod tests {
         colony.status = ColonyStatus::Thriving;
         colony.resources = Resources {
             food: 11.0,
+            fish: 11.5,
             water: 12.0,
             herbs: 13.0,
             catnip: 13.1,

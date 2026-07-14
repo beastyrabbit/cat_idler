@@ -95,13 +95,15 @@ so a correct scout route cannot conceal a missing founding dispatch.
 4. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
    outside-the-wall agricultural territory subset are live; finish their integrated framebuffer
    campaign and replace rail/shipping multipliers with built routes/vehicles. The first physical
-   fishing route is verified for timer, capacity, removal, reachability, preferences, persistence,
-   real general-storehouse-footprint delivery (never village-anchor credit), and fixture-assisted
-   guided/unattended determinism (the campaign is not a world-generation acceptance test); replace
-   its current permanent generic-food faucet with a finite fish
-   source/material and replenishment rule. The maintained Adventure skin and research ledger now
-   pass the optimized WASM visual/interaction campaign; finish the integrated native Accounting
-   Tent and staged wall/agricultural captures.
+   fishing route now catches a distinct fresh-Fish material from persisted, finite water habitats:
+   catch succeeds only while working on the designated reachable bank, depletes the shared habitat,
+   and replenishes deterministically at 0.5 fish per game-hour up to 24. Removing and repainting the
+   shore cannot reset it. Manual and Farmer routing, storage headroom, cancellation/death salvage,
+   SQLite restart, client habitat visibility, and three-seed guided/unattended deterministic twins
+   are verified (the campaign remains fixture-assisted rather than a world-generation acceptance
+   test). The maintained Adventure skin and research ledger pass the optimized WASM
+   visual/interaction campaign; finish the integrated native Accounting Tent and staged
+   wall/agricultural captures.
 5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

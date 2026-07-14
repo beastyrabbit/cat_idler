@@ -40,9 +40,9 @@ codex, plus a Claude review for high-value slices) signs off.
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code; integrated before/during/after wall framebuffers remain |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns, with browser/native visual confirmation and broader physical stations remaining |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, and physical shoreline fishing are verified; broader physical farm/production work remains in progress |
-| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fishing still uses a permanent generic-Food source, fine-biome movement is unused, and rail/shipping are global multipliers rather than built routes/vehicles |
+| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, exterior plots, and finite persisted fish habitats are live; fine-biome movement is unused, and rail/shipping are global multipliers rather than built routes/vehicles |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone; all 25 current protocol variants have tested residential/open-station compositions, with the prior 24 plus Mill/Sawmill/crop stages framebuffer-verified; Accounting Tent is snapshot-reachable but still needs an integrated in-world capture. The Adventure skin and research ledger are exact-size native- and optimized-WASM-framebuffer verified; staged wall/agricultural native captures also remain |
-| P19 | Item/material economy: crafting chains, traders, coin | in progress — planks/blocks/tools, grain/flour/food, logs/lumber, fibre/cloth, hide/leather, ore/metal, protected useful tools, material trade goods, visiting traders, and coin are live; fishing lacks a finite fish material/source, and recipe/material breadth, broader physical local inventories, and complete controls remain |
+| P19 | Item/material economy: crafting chains, traders, coin | in progress — planks/blocks/tools, grain/flour/food, logs/lumber, fibre/cloth, hide/leather, ore/metal, finite fresh Fish, protected useful tools, material trade goods, visiting traders, and coin are live; recipe/material breadth, broader physical local inventories, and complete controls remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
 format fell out of active use for day-to-day tracking — the per-slice specs live in
@@ -658,11 +658,12 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   a `Smelter` building refining ore → metal bars, metal-bars-for-better-gear via
   `smithy::advance_metal_forge`).
 - The physical fishing route is verified with persisted player-designated shore tiles,
-  worker travel/work/return, finite cargo transfers, Fishing/Haul skills, Farmer automation,
-  signed controls, restart/death coverage, actual general-storehouse-footprint delivery with no
-  village-anchor credit, and fixture-assisted guided/unattended campaigns
-  (not a world-generation acceptance test). It still creates
-  generic Food from a permanent source; finite fish stock/material and replenishment remain open.
+  worker travel/work/return, finite fresh-Fish cargo transfers, Fishing/Haul skills, Farmer
+  automation, signed controls, restart/death conservation, actual general-storehouse-footprint
+  delivery with no village-anchor credit, and fixture-assisted guided/unattended campaigns
+  (not a world-generation acceptance test). Each canonical water habitat starts with at most 24
+  fish and replenishes deterministically by 0.5 per game-hour; only a successful on-site catch
+  depletes it, and removing/repainting its designation cannot refill it.
   Transport upgrade flags still need real routes and vehicles:
   fine-biome movement factors are unused, rail has no tracks/trains, and shipping has no vessels.
 

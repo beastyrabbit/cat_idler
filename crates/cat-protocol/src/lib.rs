@@ -300,6 +300,17 @@ pub struct GatherSpotSnapshot {
     /// work/drop points; legacy and ordinary gather spots default to `general`.
     #[serde(default)]
     pub purpose: GatherSpotPurpose,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fish_population: Option<FishPopulationSnapshot>,
+}
+
+/// Visible finite ecology for a fishing designation.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FishPopulationSnapshot {
+    pub stock: f64,
+    pub capacity: f64,
+    pub last_replenished_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -314,6 +325,7 @@ pub enum GatherSpotPurpose {
 #[serde(rename_all = "snake_case")]
 pub enum ResourceKind {
     Food,
+    Fish,
     Water,
     Herbs,
     Catnip,
@@ -350,6 +362,8 @@ pub enum ColonyStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceAmounts {
     pub food: f64,
+    #[serde(default)]
+    pub fish: f64,
     pub water: f64,
     pub herbs: f64,
     #[serde(default)]
@@ -402,6 +416,8 @@ pub struct StorageSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceCapacities {
     pub food: f64,
+    #[serde(default)]
+    pub fish: f64,
     pub water: f64,
     pub herbs: f64,
     #[serde(default)]
@@ -591,6 +607,7 @@ pub struct Carrying {
 #[serde(rename_all = "snake_case")]
 pub enum CarryingKind {
     Food,
+    Fish,
     Blessings,
     Materials,
     Logs,
@@ -1976,6 +1993,7 @@ mod tests {
                 status: ColonyStatus::Thriving,
                 resources: ResourceAmounts {
                     food: 50.0,
+                    fish: 0.0,
                     water: 40.0,
                     herbs: 5.0,
                     catnip: 0.0,
@@ -2001,6 +2019,7 @@ mod tests {
                 storage: StorageSnapshot {
                     capacities: ResourceCapacities {
                         food: 200.0,
+                        fish: 200.0,
                         water: 200.0,
                         herbs: 100.0,
                         catnip: 100.0,
@@ -2855,5 +2874,28 @@ mod tests {
         let old = json!({ "kind": "food", "expiresAtMs": 99 });
         let spot: GatherSpotSnapshot = serde_json::from_value(old).expect("legacy gather spot");
         assert_eq!(spot.purpose, GatherSpotPurpose::General);
+        assert_eq!(spot.fish_population, None);
+
+        let fishery = GatherSpotSnapshot {
+            kind: ResourceKind::Fish,
+            expires_at_ms: i64::MAX,
+            purpose: GatherSpotPurpose::Fishing,
+            fish_population: Some(FishPopulationSnapshot {
+                stock: 7.5,
+                capacity: 24.0,
+                last_replenished_at_ms: 123,
+            }),
+        };
+        let wire = serde_json::to_value(fishery).unwrap();
+        assert_eq!(wire["kind"], json!("fish"));
+        assert_eq!(wire["fishPopulation"]["stock"], json!(7.5));
+        assert_eq!(
+            serde_json::from_value::<GatherSpotSnapshot>(wire).unwrap(),
+            fishery
+        );
+        assert_eq!(
+            serde_json::to_value(CarryingKind::Fish).unwrap(),
+            json!("fish")
+        );
     }
 }

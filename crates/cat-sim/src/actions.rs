@@ -404,6 +404,9 @@ fn request_job(
     if kind == JobKind::Fish && !crate::world_tick::has_fishing_site(colony) {
         return fail("Designate a revealed shoreline fishing spot first.");
     }
+    if kind == JobKind::Fish && !crate::world_tick::has_fishable_stock(colony) {
+        return fail("The designated fish habitat is depleted and replenishing.");
+    }
     if kind == JobKind::Quarry && !has_quarry_site(colony) {
         return fail("No explored quarry site is available.");
     }
@@ -1638,15 +1641,25 @@ fn designate_fishing_spot(
         f64::from(site.y),
     );
     let id = format!("gather-fish-{}-{}", ctx.now_ms, colony.stockpiles.len() + 1);
+    let habitat = crate::world_tick::fishing_habitat_tile(colony, site)
+        .expect("a validated fishing shore has adjacent water");
+    colony
+        .fish_habitats
+        .entry(habitat)
+        .or_insert(stockpiles::FishPopulation {
+            stock: stockpiles::FISH_POPULATION_CAPACITY,
+            capacity: stockpiles::FISH_POPULATION_CAPACITY,
+            last_replenished_at_ms: ctx.now_ms,
+        });
     colony.stockpiles.push(stockpiles::Stockpile {
         id: id.clone(),
         rect,
-        accepts: std::iter::once(stockpiles::ResourceKind::Food).collect(),
+        accepts: std::iter::once(stockpiles::ResourceKind::Fish).collect(),
         contents: entities::Resources::default(),
     });
     colony.gather_spots.push(stockpiles::GatherSpot {
         stockpile_id: id,
-        kind: stockpiles::ResourceKind::Food,
+        kind: stockpiles::ResourceKind::Fish,
         expires_at_ms: i64::MAX,
         purpose: stockpiles::GatherSpotPurpose::Fishing,
     });
@@ -2197,6 +2210,7 @@ fn trade_would_overflow(
             .scaled(effects.storage_capacity_mult);
     let capacity = match kind {
         stockpiles::ResourceKind::Food => Some(capacities.food),
+        stockpiles::ResourceKind::Fish => Some(capacities.fish),
         stockpiles::ResourceKind::Water => Some(capacities.water),
         stockpiles::ResourceKind::Herbs => Some(capacities.herbs),
         stockpiles::ResourceKind::Catnip => Some(capacities.catnip),
@@ -2337,6 +2351,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         storage: proto::StorageSnapshot {
             capacities: proto::ResourceCapacities {
                 food: caps.food,
+                fish: caps.fish,
                 water: caps.water,
                 herbs: caps.herbs,
                 catnip: caps.catnip,
@@ -2467,7 +2482,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .stockpiles
             .iter()
             .filter(|pile| !pile.is_station_local())
-            .map(|pile| stockpile_snapshot(pile, &colony.gather_spots))
+            .map(|pile| stockpile_snapshot(pile, colony))
             .collect(),
         farms: colony
             .farms
@@ -2573,7 +2588,7 @@ fn stock_ledger_snapshot(colony: &ColonyRuntime) -> proto::StockLedgerSnapshot {
 
 fn stockpile_snapshot(
     pile: &stockpiles::Stockpile,
-    gather_spots: &[stockpiles::GatherSpot],
+    colony: &ColonyRuntime,
 ) -> proto::StockpileSnapshot {
     proto::StockpileSnapshot {
         id: pile.id.clone(),
@@ -2587,7 +2602,8 @@ fn stockpile_snapshot(
             .map(|kind| sim_to_proto_resource_kind(*kind))
             .collect(),
         contents: resources_snapshot(&pile.contents),
-        gather_spot: gather_spots
+        gather_spot: colony
+            .gather_spots
             .iter()
             .find(|spot| spot.stockpile_id == pile.id)
             .map(|spot| proto::GatherSpotSnapshot {
@@ -2597,6 +2613,22 @@ fn stockpile_snapshot(
                     stockpiles::GatherSpotPurpose::General => proto::GatherSpotPurpose::General,
                     stockpiles::GatherSpotPurpose::Fishing => proto::GatherSpotPurpose::Fishing,
                 },
+                fish_population: (spot.purpose == stockpiles::GatherSpotPurpose::Fishing)
+                    .then(|| {
+                        let (x, y) = pile.center();
+                        let shore = TilePos {
+                            x: x.round() as i32,
+                            y: y.round() as i32,
+                        };
+                        crate::world_tick::fishing_habitat_tile(colony, shore)
+                            .and_then(|water| colony.fish_habitats.get(&water))
+                            .map(|population| proto::FishPopulationSnapshot {
+                                stock: population.stock,
+                                capacity: population.capacity,
+                                last_replenished_at_ms: population.last_replenished_at_ms,
+                            })
+                    })
+                    .flatten(),
             }),
     }
 }
@@ -3369,6 +3401,7 @@ fn election_candidates(alive_cats: &[&Cat]) -> Vec<proto::ElectionCandidate> {
 fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts {
     proto::ResourceAmounts {
         food: resources.food,
+        fish: resources.fish,
         water: resources.water,
         herbs: resources.herbs,
         catnip: resources.catnip,
@@ -3580,6 +3613,7 @@ fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::Resource
     use stockpiles::ResourceKind;
     match kind {
         proto::ResourceKind::Food => ResourceKind::Food,
+        proto::ResourceKind::Fish => ResourceKind::Fish,
         proto::ResourceKind::Water => ResourceKind::Water,
         proto::ResourceKind::Herbs => ResourceKind::Herbs,
         proto::ResourceKind::Catnip => ResourceKind::Catnip,
@@ -3608,6 +3642,7 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
     use stockpiles::ResourceKind;
     match kind {
         ResourceKind::Food => proto::ResourceKind::Food,
+        ResourceKind::Fish => proto::ResourceKind::Fish,
         ResourceKind::Water => proto::ResourceKind::Water,
         ResourceKind::Herbs => proto::ResourceKind::Herbs,
         ResourceKind::Catnip => proto::ResourceKind::Catnip,
@@ -3828,6 +3863,7 @@ fn sim_to_proto_specialization(specialization: CatSpecialization) -> proto::Spec
 fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKind {
     match kind {
         entities::CarryingKind::Food => proto::CarryingKind::Food,
+        entities::CarryingKind::Fish => proto::CarryingKind::Fish,
         entities::CarryingKind::Blessings => proto::CarryingKind::Blessings,
         entities::CarryingKind::Materials => proto::CarryingKind::Materials,
         entities::CarryingKind::Logs => proto::CarryingKind::Logs,
@@ -6535,7 +6571,7 @@ mod tests {
         let colony = &world.colonies[0];
         let spot = colony.gather_spots.last().unwrap();
         assert_eq!(spot.purpose, stockpiles::GatherSpotPurpose::Fishing);
-        assert_eq!(spot.kind, stockpiles::ResourceKind::Food);
+        assert_eq!(spot.kind, stockpiles::ResourceKind::Fish);
         assert_eq!(spot.expires_at_ms, i64::MAX);
         let pile = colony
             .stockpiles
@@ -6556,6 +6592,11 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(visible.purpose, proto::GatherSpotPurpose::Fishing);
+        assert_eq!(visible.kind, proto::ResourceKind::Fish);
+        assert_eq!(
+            visible.fish_population.unwrap().stock,
+            stockpiles::FISH_POPULATION_CAPACITY
+        );
     }
 
     #[test]
@@ -6602,6 +6643,56 @@ mod tests {
             .find(|job| job.kind == JobKind::Fish)
             .unwrap();
         assert_eq!(job.assigned_cat.as_deref(), Some(preferred_id.as_str()));
+    }
+
+    #[test]
+    fn manual_fishing_rejects_a_depleted_habitat_until_it_replenishes() {
+        let mut world = world_with_one_colony();
+        let (bank, water) = prepare_fishing_shore(&mut world);
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::DesignateFishingSpot {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Angler".to_owned(),
+                    sig: "signed".to_owned(),
+                    at: proto::TilePoint {
+                        x: bank.x,
+                        y: bank.y,
+                    },
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        world.colonies[0]
+            .fish_habitats
+            .get_mut(&water)
+            .expect("designation creates its canonical habitat")
+            .stock = 0.0;
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::RequestJob {
+                session_id: "sess_1".to_owned(),
+                nickname: "Angler".to_owned(),
+                sig: "signed".to_owned(),
+                kind: proto::JobKind::Fish,
+            },
+            &ctx(),
+        );
+
+        assert!(!result.ok);
+        assert_eq!(
+            result.message.as_deref(),
+            Some("The designated fish habitat is depleted and replenishing.")
+        );
+        assert!(
+            world.colonies[0]
+                .jobs
+                .iter()
+                .all(|job| job.kind != JobKind::Fish)
+        );
     }
 
     #[test]
@@ -6801,7 +6892,7 @@ mod tests {
             y: f64::from(bank.y),
         });
         worker.carrying = Some(entities::Carrying {
-            kind: entities::CarryingKind::Food,
+            kind: entities::CarryingKind::Fish,
             amount: 4.0,
             job_ended_at: ctx().now_ms,
             source_gather_spot: None,
