@@ -1,8 +1,10 @@
 # P15 — Playtest feedback backlog (user, 2026-07-10)
 
 > **Living feedback spec.** Movement smoothing, the booster, infinite-map streaming, and
-> shrine-return scouting and secure global/personal villages are verified. Exact player controls,
-> richer inspectors, and complete visible roads remain open in
+> shrine-return scouting, visible authored/traffic roads, exact footprints/depth, and secure
+> global/personal village foundations are verified. Coordinate placement, selectable/removable
+> designations, election controls, station-local inspectors/queues, physical shared-world depth,
+> and the scout-search mismatch remain open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Captured from live `cargo dev` playtesting. Triaged; "already there" notes from a code survey.
@@ -16,13 +18,14 @@ Captured from live `cargo dev` playtesting. Triaged; "already there" notes from 
   little behind the sim is fine). Walk-anim only while moving; idle-frame when arrived. User wants
   it "realistic": cats always walk one tile to the next, never jump. (Sim already walks every tile
   internally; this is purely the client render. If a fast cat lags badly, cap the max lag.)
-- **Too many idle cats.** User: nearly every cat should normally have a job; idle should be rare.
-  Sim: raise job saturation (leader director / job generation keeps cats busy — "more jobs than
-  cats"). Today ~16 jobs / 20 cats leaves several idle.
-- **Food storage & shrine overlap.** Sim placement is now non-overlapping (P14.1 footprints), but
-  the client still draws buildings as point sprites — fix with the footprint render (P14.5).
-- **"2.5D but not really."** Add proper **y-sort depth** (sprites layer by base-y so cats pass
-  behind buildings/trees) + footprint render → a convincing layered top-down. (P14.5 + depth.)
+- **Enough useful work.** The current founding is 15 cats, and strict vacant offices deliberately
+  wait for player orders rather than silently filling every paw. Guided and staged-officer
+  campaigns prove the ownership model; future playtests should judge whether each stage still
+  offers more useful work than labor without treating intentional manual vacancies as an AI bug.
+- **Food storage & shrine overlap — resolved.** Exact multi-tile footprints, reservations, and
+  client footprint rendering prevent the old point-sprite overlap.
+- **"2.5D but not really" — resolved.** Base-y depth sorting and exact footprints make cats pass
+  behind buildings and trees while preserving the flat top-down view.
 
 ## Controls (client)
 - **Middle-drag = pan map** (keep as-is). **Right-click = select building.**
@@ -45,24 +48,29 @@ Two-tier inspector, driven by the cursor:
   sim/protocol addition alongside the workshop/production work (P12.4b).
 
 ## Features (sequence)
-- **Roads visible.** Sim paves wear-trails (`roads.rs`) but roads aren't in the snapshot or
-  rendered. Expose paved tiles + render (part of P14.4 road/accessibility).
-- **Workshops + production chains + routes.** Discussed but not built — P12.4b (new-resource
-  chains: mill/clothier/sawmill + grain/fibre/cloth/lumber) + the visible haul routes between
-  them. Bigger card.
+- **Roads visible — resolved.** Authored stone and traffic-formed dirt are disjoint snapshot
+  surfaces with distinct rendering and 175%/105% movement effects; forbidden terrain cannot form
+  dirt paths.
+- **Workshops + production chains + routes — partial.** Mill/Sawmill, grain→flour→food,
+  logs→lumber, fibre/hide→cloth/leather, ore→metal, and useful tools are live. Workers still do not
+  walk to their assigned station, and station inputs/outputs/queues remain colony-global rather
+  than physical local haul routes.
 - **Fog of war + scout-driven discovery (detailed 2026-07-10).** The keystone exploration loop:
   - **World starts tiny** — only ~2 tiles outside the village are revealed at founding; everything
     beyond is fog.
   - **Deficit-driven scouting** — the leader notices a resource gap ("missing ~5 wood spots") and
     dispatches a **scout** to find it (extends the existing `scout` leader goal + explore job).
-  - **Random-walk search** — the scout wanders a random direction for a while, changes direction,
-    repeats, until it finds the needed resource tiles (or gives up), then heads back.
+  - **Random-walk search — open mismatch.** The desired scout wanders a deterministic direction
+    for a while, changes direction, repeats until it finds the resource (or gives up), then heads
+    back. The current runtime instead generates a bounded hidden area and selects the nearest useful
+    unrevealed target. Preserve this as an explicit design decision; shrine-return delivery being
+    correct does not make oracle target selection equivalent to searching.
   - **Provisional vs committed reveal** — while the scout is out, fog lifts only *partially/dimly*
     around it; the discovery is **fully committed to the map only when the scout returns to the
     shrine** (knowledge delivered on arrival). So the shrine is the map's "known world" ledger.
   - Reuses: `reveal_and_wear_walked_tiles`, explorer reveal radius, the leader director scout goal,
-    and the shrine-arrival pattern. Adds: tiny initial reveal, deficit→scout trigger, random-walk
-    scout behavior, and the two-tier (provisional-while-out / committed-on-return) reveal state.
+    and the shrine-arrival pattern. Tiny initial reveal, deficit→scout trigger, and two-tier
+    provisional/committed knowledge are verified; random-walk scout behavior is not.
 - **Cat booster.** Look at a cat → give it a boost that makes it more likely to be picked for
   jobs/roles. New per-cat "priority/boost" (sim) + inspector button (client). Pairs with the
   matchCatsToSlots fit scoring.
@@ -83,5 +91,6 @@ Two-tier inspector, driven by the cursor:
 ## Existing foundations (verify before extending)
 - Cat movement, chunked-infinite terrain, authoritative multi-colony state, and term elections
   exist in the sim. Shrine-return fog/scouting plus usable global/personal founding, ownership,
-  discovery, and barter are verified. Election controls and several richer inspection/road paths
-  remain product work; authoritative data structures alone are not completion.
+  discovery, barter, and visible roads are verified. Election controls, exact designation tools,
+  and station-local inspection/queues remain product work; authoritative data structures alone are
+  not completion.

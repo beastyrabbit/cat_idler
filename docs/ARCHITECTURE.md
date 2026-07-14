@@ -117,30 +117,40 @@ farm/logging production with Mill/Sawmill, label-free open stations, selected-vi
 the 500-study client ledger, and a responsive blocking-pool server tick. The remaining work is
 maintained product behavior rather than migration:
 
-- **Officer/manual split.** Assignable roles exist, but the leader director still automates
-  categories whose office is vacant, contrary to `GAME_VISION.md`.
+- **Officer/manual split.** The seven maintained offices now own distinct automation categories;
+  vacant offices are manual-only, and appointment requires both the researched unlock and a
+  completed role station. Signed client paths cover basic farm/gather/road designation, staffing,
+  military, ritual, shrine, and production orders. Exact coordinate building placement,
+  selectable farm/gather variants, election/vote controls, designation removal, and station
+  production queues remain open.
 - **Physical work and production breadth.** Workshop staffing is an id assignment rather than
-  station travel; inputs/outputs still draw on colony-global resources, skills cover only four
-  legacy labors, and many recipes/material variants are absent.
+  station travel; inputs/outputs still draw on colony-global resources, the shrine remains the
+  fallback reservoir instead of the specified general storehouse, skills lack complete
+  mill/farm/research gain-and-effect paths, and many recipes/material variants are absent. Tools
+  now improve construction, crafting, quarrying, and hauling, and repeated building costs escalate
+  per type, but neither closes the local-logistics gap.
 - **Multi-village product model.** One canonical communal village and one personal village per
   stable signed identity are live. Ownership and selection persist; foreign private state stays
   server-filtered; explicit returned-scout delivery (never generic reveal state) creates mutual
   summary contact; configurable signed propose/accept/cancel actions perform capped atomic direct
   barter. Whole-world SQLite replacement is transactional, and colony-local runtime ids receive a
   storage-only colony namespace so simultaneous settlements cannot collide in legacy global-key
-  tables.
+  tables. The communal village is not yet mechanically larger than a personal founding, however;
+  each colony owns a duplicate mutable terrain map, meeting is a delivered summary rather than a
+  physical encounter, and direct barter swaps scalar resources without caravans or item stacks.
 - **Durable native identity.** The native client keeps its HMAC bearer and selected village in a
   mode-0600 file replaced through a synced same-directory temporary file and atomic rename; WASM
   uses the corresponding local-storage record.
-- **Research and manual controls.** The generated 500-node catalog/ledger is read-only, and most
-  typed protocol actions have no usable exact client tool. The 15-adult/three-Den founding,
-  reserved-bed pregnancy, prosperity migration/probation, aging, extinction recovery, and
-  physical emergency-water lifecycle is complete and must remain intact while those controls
-  are added.
-- **Spatial, transport, and visual completeness.** Full tree/rock occupancy, staged wall growth,
-  visible traffic dirt roads, real rail/ship/fishing routes, remaining menu/WASM skin states, and
-  Accounting Tent reachability remain incomplete. The maintained Adventure panel, button,
-  progress, minimap, and cursor foundation is native-framebuffer verified.
+- **Research and scouting depth.** Players can spend research points on the original 24 live
+  nodes, and a Loremaster may complete at most one of those nodes per rolling real-life day. The
+  other 476 generated catalog nodes remain read-only and effectless. Resource scouts preserve the
+  shrine-return knowledge contract but currently select the nearest useful hidden terrain target
+  rather than performing the deterministic random-walk search described by the P15 feedback spec.
+- **Spatial, transport, and visual completeness.** Exact tree/rock occupancy and visible road
+  surfaces are verified. Staged wall growth, a separate claimed agricultural-territory model,
+  real rail/ship/fishing routes, and remaining menu/WASM skin states remain incomplete. Accounting
+  Tent is snapshot-reachable and has an explicit open-station client composition; the maintained
+  Adventure panel, button, progress, minimap, and cursor foundation is native-framebuffer verified.
 
 The evidence and completion tests for each gap live in `docs/IMPLEMENTATION_AUDIT.md`.
 

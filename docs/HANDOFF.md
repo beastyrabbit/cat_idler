@@ -26,13 +26,23 @@ Verified foundations include:
 - the native and browser Bevy clients, bounded world streaming, reconnect/action feedback, and a
   same-origin non-root production image with `/health`, `/ready`, compression, and Origin checks;
 - atomic placement/reservations/scaffold recovery; label-free roofed homes and explicit open
-  compositions for the 24 current protocol building variants; exterior crop/logging production
-  with distinct Mill and Sawmill stations;
+  compositions for all 25 current protocol building variants (the prior 24 are framebuffer-proven;
+  Accounting Tent is code-reachable and still needs an integrated capture); exterior crop/logging
+  production with distinct Mill and Sawmill stations;
 - exact founding fog plus signed resource/general scouting whose provisional knowledge commits
   only on physical shrine return, including restart-safe in-flight notebooks and responsive
   controls at 1024×768 through 1920×1080;
 - a pure 500-node research catalog and full-page searchable/filterable/pannable client ledger.
-  Generated studies honestly remain read-only until their live effects are implemented;
+  Players can spend research points on the original 24 live nodes and a Loremaster may complete
+  at most one of those nodes per rolling real-life day. The other 476 generated studies honestly
+  remain read-only until their live effects are implemented;
+- strict manual-to-officer ownership across Steward, Accountant, Forester, Farmer, Captain,
+  Loremaster, and Cloth Leader: a vacant office leaves its category manual, appointment requires
+  the matching researched and completed role station, and signed client controls cover the
+  basic manual work paths. Manual raid clicks deal exactly one hit. Reachable tithes and carried
+  offerings produce blessings; tools improve construction, crafting, quarrying, and hauling;
+  repeated buildings have escalating type-local costs, and the Accounting Tent is live in the
+  snapshot and client;
 - one canonical communal village plus one owner-only personal village per stable signed identity,
   with deterministic distant viable sites, secure selected-village routing, restart-safe
   ownership and selection, explicit returned-scout discovery, summary-only foreign contact,
@@ -53,23 +63,28 @@ playtest harness:
 
 ## NEXT STEPS (maintained backlog, in rough priority order)
 
-1. **Make the intended player loop real.** Finish vacant-role manual ownership, role-building
-   gates, exact placement/farm/gather/road/staffing/military/ritual/election controls, and the
-   manual-raid single-damage fix. Exercise every path with signed `ClientAction`s, not fixture
-   mutation.
+1. **Finish the remaining exact player tools.** The seven-role manual/officer split, role-station
+   gates, staffing, farm/gather/road tools, military/ritual orders, and raid single-hit behavior are
+   verified. Add coordinate-selectable building placement, selectable farm crops and gather
+   resources, client election/vote/vote-kick and clear/remove designation controls, and real
+   production queues. Exercise each addition with signed `ClientAction`s, not fixture mutation.
 2. **Finish the physical economy.** Route workers and carried inputs/outputs through local
    stations and stockpiles, seed the intended storehouse reservoir, extend skills to maintained
-   labors, make tools deliberately useful or explicitly input-only, complete recipes/materials,
-   and add upgrade-gated escalating building costs. Keep tithe/offering reachability and
-   research pacing in the same balance campaigns.
-3. **Integrate the larger product models.** Wire purchases/effects/persistence and the daily
-   leader choice for the 500-study catalog. Preserve the now-verified multi-village, founding,
-   housing, migration, aging, reset, and physical emergency-water contracts while doing so.
-4. **Close world and presentation gaps.** Finish staged closed-perimeter wall growth and an
+   labors, and complete recipes/materials. Preserve the now-verified tool productivity,
+   type-local escalating costs, shrine faucets, and research pacing in balance campaigns.
+3. **Integrate the generated research model.** The original 24 nodes support direct
+   research-point purchases and one-per-real-day Loremaster automation. Wire purchase,
+   persistence, prerequisites, and typed runtime effects for the other 476 generated studies.
+4. **Deepen the shared world.** Make the communal village mechanically larger than a personal
+   founding. Replace per-colony duplicated mutable terrain with an authoritative shared spatial
+   model where appropriate, then turn summary contact and atomic scalar barter into physical
+   meeting, item trade, and routes. Decide whether scouts should genuinely search by deterministic
+   random walk; current targeting selects the nearest useful hidden tile from generated terrain.
+5. **Close world and presentation gaps.** Finish staged closed-perimeter wall growth and an
    explicit outside-the-wall agricultural territory model, replace rail/shipping multipliers
-   with built routes/vehicles, restore fishing, make Accounting Tent snapshot-reachable, and
-   complete the remaining WASM visual/interaction validation for the maintained Adventure skin.
-5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
+   with built routes/vehicles, restore fishing, and complete the remaining WASM visual/interaction
+   validation for the maintained Adventure skin.
+6. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality
    workflow is committed; its first pushed run is still unverified. Transfer-weight optimization

@@ -35,14 +35,14 @@ codex, plus a Claude review for high-value slices) signs off.
 | P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
 | P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh`; a same-origin combined server/WASM image, compression, health/readiness probes, exact Origin checks, and deployment instructions are verified. Native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Transfer-weight optimization remains optional. See `docs/migration/WASM.md` |
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
-| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — farming/logging/Mill/Sawmill and spatial container actions are verified; skills cover only four legacy labors, officers remain additive, the shrine is still the all-resource fallback, and physical local workshop logistics/broader recipes/escalating costs remain |
-| P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, the full-page 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; complete manual work controls and live generated-study purchases remain |
+| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven strict manual/officer domains, role-station/unlock gates, active shrine faucets, useful tools, escalating costs, Accounting Tent, farming/logging/processing chains, and spatial container actions are verified; the shrine is still the all-resource fallback, and physical local workshop logistics, all-labor skills, and broader recipes remain |
+| P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, signed basic manual orders, the full-page 500-study ledger, legacy research-point purchase, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; coordinate building placement, selectable farm/gather variants, removal/election/queue tools, and live generated-study purchases remain |
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, linked expansion, scaffold recovery, rendered 2×3 tree/1×1 rock occupancy, and exact dirt/stone road surfaces are verified; wall expansion is not staged outer-before-inner |
-| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster and resource/general shrine-return scouting are verified, including restart-safe in-flight notebooks and responsive controls; the richer manual inspector/control surface remains partial |
-| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, reserved-bed pregnancy, migration that leaves the last real family vacancy, prosperity migration/36-hour probation, aging, deterministic reset, physical emergency water, authoritative interior clearing, exterior water, and exact authored/traffic roads are verified; gather spots and the outside-wall agricultural territory model remain |
+| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, and resource/general shrine-return scouting are verified, including restart-safe in-flight notebooks and responsive controls; scout routing still uses nearest-hidden-target oracle selection instead of the specified random walk, and exact placement/election plus station-local inspector/queue paths remain partial |
+| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, reserved-bed pregnancy, migration that leaves the last real family vacancy, prosperity migration/36-hour probation, aging, deterministic reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, and manual/Steward gather-spot movement are verified; selectable gather variants/removal and the outside-wall agricultural territory model remain |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fine-biome movement is unused, rail/shipping are global multipliers rather than built routes/vehicles, and fishing is absent |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current protocol variants have framebuffer-verified residential/open-station compositions, including Mill/Sawmill and crop stages; the Adventure sliced-panel/button/progress/cursor skin is exact-size native-framebuffer verified and the release WASM bundle builds; Accounting Tent is not snapshot-reachable and WASM visual interaction remains |
-| P19 | Item/material economy: crafting chains, traders, coin | in progress — base item/trade slices shipped; recipe/resource breadth and guided reachability remain |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone; all 25 current protocol variants have tested residential/open-station compositions, with the prior 24 plus Mill/Sawmill/crop stages framebuffer-verified; Accounting Tent is snapshot-reachable but still needs an integrated in-world capture. The Adventure skin is exact-size native-framebuffer verified, the release WASM bundle builds, and WASM visual interaction remains |
+| P19 | Item/material economy: crafting chains, traders, coin | in progress — planks/blocks/tools, grain/flour/food, logs/lumber, fibre/cloth, hide/leather, ore/metal, protected useful tools, material trade goods, visiting traders, and coin are live; recipe/material breadth, physical local inventories, fishing, and complete controls remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
 format fell out of active use for day-to-day tracking — the per-slice specs live in
@@ -565,26 +565,31 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - **P12.1 skills** — proficiency/XP persists and is exposed for the four legacy labors
   (Hunter, Architect, Ritualist, Warrior). Mill, Farm, Research, and other maintained labors do
   not yet have complete gain/effect/UI paths.
-- **P12.2 officers** — assignable officer roles as an additive automation layer (steward/etc.),
-  `AssignOfficer`/`UnassignOfficer` actions. Not a full split of the leader director into
-  per-role automation — most labor allocation still runs through the single director (tracked
-  as a known gap in `docs/ARCHITECTURE.md`).
+- **P12.2 officers** — Steward, Accountant, Forester, Farmer, Captain, Loremaster, and Cloth
+  Leader have strict automation ownership. Vacancies are manual-only; appointment requires the
+  matching researched unlock and completed role station; assignment, replacement, automation
+  provenance, and the rolling daily legacy-Loremaster timestamp persist.
 - **P12.3 spatial stockpiles** — designated containers are places in the world, but the shrine
   remains the all-resource fallback reservoir; the specified seeded general storehouse/local
   capacity model and physical hauling contract are not complete.
 - **P12.4a/b workshop chains + Accountant direction** — workshop crafting covers
-  planks/blocks/tools, exterior catnip/grain/herb plots, logging, Mill grain→flour→food, and
-  Sawmill logs→lumber. Workers do not path to their station and inputs/outputs still use
-  colony-global resources; the Accountant role and station-local ledgers/queues are absent.
-- **P12.6 logistics** — general/limited stockpile designation, shrine offering mechanics, and
-  Steward gather-spot automation landed. Organic tithe/offering gates are not reliably reachable
-  in unattended play, and the local physical logistics promised by the spec remain open.
+  planks/blocks/tools, exterior catnip/grain/herb plots, logging, Mill grain→flour→food, Sawmill
+  logs→lumber, fibre/hide→cloth/leather, and ore→metal. A staffed Accounting Tent keeps the
+  aggregate ledger exact; tools give a bounded construction/crafting/quarrying/hauling bonus and
+  repeated building costs escalate per type. Workers still do not path to their station and
+  inputs/outputs use colony-global resources; station-local ledgers/queues remain absent.
+- **P12.6 logistics** — general/limited stockpile designation, signed manual shrine orders, and
+  Steward gather-spot automation landed. Population-relative tithe and carried-offering gates are
+  reachable across five unattended seeds without consuming protected reserves. The seeded general
+  storehouse and local physical logistics promised by the spec remain open.
 
 ### P13 — Client UI for P12
 - Spatial stockpile designation + render (`b3d28fb`).
-- Officer assignment UI (`e32e32d`).
+- Seven-role appointment/vacate UI and a manual-orders sheet with basic farm/gather/road, staffing,
+  resource, building, military, ritual, shrine, hauling, and research actions.
 - Crop/timber HUD state, visible farm growth stages, and distinct roofless Mill/Sawmill stations.
-- A full-page 500-study ledger with dependencies, filter/search/pan/zoom. Generated studies are
+- A full-page 500-study ledger with dependencies, filter/search/pan/zoom. The original 24 nodes
+  support research-point purchases and daily Loremaster automation; the other 476 studies are
   visibly read-only pending runtime purchase/effect/persistence integration.
 
 ### P14 — Spatial placement (spec: `docs/migration/specs/p14-spatial-placement.md`)
@@ -600,6 +605,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   ordinary walkers never reveal; signed resource/general scouts carry dim provisional knowledge
   and commit it only on physical shrine return. Death/cancellation drops notes, SQLite restarts
   preserve them, and the first wood scout has a deterministic three-live-minute bound.
+- Scout targeting currently materializes a bounded hidden search area and chooses the nearest
+  useful target; it does not implement this spec's deterministic random-walk search and remains an
+  explicit design/implementation decision.
 - Cat booster: a per-cat priority flag that biases the leader's job/role matcher, plus an
   inspector toggle and on-map priority marker.
 - Control rebind + building inspector (real inbound-haul readout); smooth cat/raider movement
@@ -643,30 +651,34 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   ring; and pointer/interact/pressed/target/disabled custom cursors. Native own-framebuffer
   captures are verified at exact 1024×768, 1280×800, and 1920×1080 sizes, and the release WASM
   bundle builds; WASM visual interaction remains in the final campaign.
-- Persistent map-name plaques are removed. All 24 current protocol building variants have an
-  explicit residential/open/infrastructure treatment; Mill/Sawmill and crop stages are
-  framebuffer-verified. Accounting Tent is not snapshot-reachable, so this is not an
-  all-maintained-buildings completion claim.
+- Persistent map-name plaques are removed. All 25 current protocol building variants have an
+  explicit residential/open/infrastructure treatment. The prior 24 variants, Mill/Sawmill, and
+  crop stages are framebuffer-verified; Accounting Tent is snapshot-reachable with a tested open
+  layout, while its integrated in-world capture remains.
 
 ### P19 — Item/material economy (spec: `docs/migration/specs/p19-items-materials-trade.md`)
 - Slice 1: item/material data model + per-colony item store; workshop crafting chains
   (planks/blocks/tools).
 - Slice 1b: workshops go live — auto-staffing + wired resources + build cost.
-- Production extension: logging + Sawmill (`logs→lumber`) and crop plots + Mill
-  (`grain→flour→food`), with lumber-first construction and persistence.
+- Production extension: logging + Sawmill (`logs→lumber`), crop plots + Mill
+  (`grain→flour→food`), fibre/hide→cloth/leather, and ore→metal, with lumber-first construction,
+  protected useful tools, type-local escalating costs, and persistence.
 - Slice 2: workshops craft material-variant trade goods.
 - Slice 3/4: visiting traders + a coin economy + sell/buy actions; the client renders the
   visiting trader (merchant cat + minimap mark), a goods/inventory panel, item glyphs, and an
   always-visible HUD treasury total.
-- Remaining breadth includes bone/gem/clay/metal variants, finished tool/weapon/armor chains,
-  physical local inventories, fishing, and reachable client controls for every chain.
+- Remaining breadth includes bone/gem/clay/metal item variants, finished functional
+  tool/weapon/armor chains, physical local inventories, fishing, and reachable exact client
+  controls for every chain.
 
 ### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)
 - **Multi-village founding and contact**: one communal global village; deterministic distant
   owner-only personal sites; restart-persistent secure socket routing; explicit returned-scout
   discovery provenance; summary-only foreign contact; configurable signed direct barter capped at
   32 open source offers; transactional whole-world persistence; and storage-scoped child ids for
-  simultaneous villages.
+  simultaneous villages. The global village still uses the personal 15-cat founding blueprint,
+  each colony owns duplicated mutable terrain, and meeting/trade remain summary/scalar operations
+  rather than physical shared-map encounters or caravans.
 - **Top-down building interiors**: cutaway (no-roof) interiors, then a second slice adding
   textured floors + furnace/altar props (`546d852`, `4b6a375`).
 - **Life-sim breeding wired into the tick loop** — population is a loop, not a fixed roster
