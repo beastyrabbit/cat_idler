@@ -550,9 +550,13 @@ mod tests {
         let mut cat = cat;
         cat.gain_skill(Labor::Hunt, 3.0);
         cat.gain_skill(Labor::FetchWater, 1.5);
+        cat.gain_skill(Labor::Metalwork, 4.0);
+        cat.gain_skill(Labor::Scout, 2.0);
         let wire = serde_json::to_value(&cat).expect("serialize");
         assert_eq!(wire["skills"]["hunt"], serde_json::json!(3.0));
         assert_eq!(wire["skills"]["fetch_water"], serde_json::json!(1.5));
+        assert_eq!(wire["skills"]["metalwork"], serde_json::json!(4.0));
+        assert_eq!(wire["skills"]["scout"], serde_json::json!(2.0));
         let back: Cat = serde_json::from_value(wire).expect("round-trip");
         assert_eq!(back.skills, cat.skills);
     }

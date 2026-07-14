@@ -2414,6 +2414,11 @@ fn cat_snapshot(
             ritualist: cat.role_xp.ritualist,
             warrior: cat.role_xp.warrior,
         },
+        skills: cat
+            .skills
+            .iter()
+            .map(|(labor, xp)| (sim_to_proto_labor(*labor), *xp))
+            .collect(),
         stats: proto::CatStats {
             leadership: cat.stats.leadership,
         },
@@ -2435,6 +2440,29 @@ fn cat_snapshot(
         pregnant: cat.is_pregnant,
         housing_status,
         probation_remaining_game_minutes,
+    }
+}
+
+fn sim_to_proto_labor(labor: Labor) -> proto::Labor {
+    match labor {
+        Labor::Hunt => proto::Labor::Hunt,
+        Labor::Build => proto::Labor::Build,
+        Labor::Ritual => proto::Labor::Ritual,
+        Labor::Fight => proto::Labor::Fight,
+        Labor::Train => proto::Labor::Train,
+        Labor::Quarry => proto::Labor::Quarry,
+        Labor::Woodcut => proto::Labor::Woodcut,
+        Labor::Forage => proto::Labor::Forage,
+        Labor::FetchWater => proto::Labor::FetchWater,
+        Labor::Mill => proto::Labor::Mill,
+        Labor::Process => proto::Labor::Process,
+        Labor::Craft => proto::Labor::Craft,
+        Labor::Textile => proto::Labor::Textile,
+        Labor::Metalwork => proto::Labor::Metalwork,
+        Labor::Farm => proto::Labor::Farm,
+        Labor::Haul => proto::Labor::Haul,
+        Labor::Research => proto::Labor::Research,
+        Labor::Scout => proto::Labor::Scout,
     }
 }
 

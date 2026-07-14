@@ -26,10 +26,10 @@ use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage, PrimaryWindow};
 use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
     CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
-    FarmStage, FootprintSize, GateSide, ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus,
-    ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp, ScoutMission, ScoutResource,
-    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderVisitState, VillageKind, WorldSnapshot, ZoneKind,
+    FarmStage, FootprintSize, GateSide, ItemStackSnapshot, JobKind, Labor, OfficerRole,
+    RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp, ScoutMission,
+    ScoutResource, Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint,
+    TraderBuyOffer, TraderSellOffer, TraderVisitState, VillageKind, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -40,7 +40,7 @@ use cat_sim::terrain_gen::{
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
 use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 #[cfg(all(not(target_arch = "wasm32"), unix))]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(not(target_arch = "wasm32"))]
@@ -9033,21 +9033,52 @@ fn inspector_text(cat: &CatSnapshot) -> String {
         x = cat.position.x,
         y = cat.position.y,
         activity = activity_name(cat.activity),
-        skills = cat_skills_line(&cat.role_xp),
+        skills = cat_skills_line(&cat.skills, &cat.role_xp),
         lead = cat.stats.leadership,
         housing = housing,
     )
 }
 
 /// One-line summary of a cat's role experience (skills).
-fn cat_skills_line(xp: &RoleXp) -> String {
-    format!(
-        "hunt {h:.0} build {b:.0} ritual {r:.0} war {w:.0}",
-        h = xp.hunter,
-        b = xp.architect,
-        r = xp.ritualist,
-        w = xp.warrior,
-    )
+fn cat_skills_line(skills: &BTreeMap<Labor, f64>, legacy: &RoleXp) -> String {
+    if skills.is_empty() {
+        return format!(
+            "hunt {h:.0} build {b:.0} ritual {r:.0} war {w:.0}",
+            h = legacy.hunter,
+            b = legacy.architect,
+            r = legacy.ritualist,
+            w = legacy.warrior,
+        );
+    }
+    skills
+        .iter()
+        .filter(|(_, xp)| **xp > 0.0)
+        .map(|(labor, xp)| format!("{} {:.1}", labor_label(*labor), xp))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn labor_label(labor: Labor) -> &'static str {
+    match labor {
+        Labor::Hunt => "hunt",
+        Labor::Build => "build",
+        Labor::Ritual => "ritual",
+        Labor::Fight => "fight",
+        Labor::Train => "train",
+        Labor::Quarry => "quarry",
+        Labor::Woodcut => "woodcut",
+        Labor::Forage => "forage",
+        Labor::FetchWater => "water",
+        Labor::Mill => "mill",
+        Labor::Process => "process",
+        Labor::Craft => "craft",
+        Labor::Textile => "textile",
+        Labor::Metalwork => "metal",
+        Labor::Farm => "farm",
+        Labor::Haul => "haul",
+        Labor::Research => "research",
+        Labor::Scout => "scout",
+    }
 }
 
 // ---- pure building sprite / label helpers (unit-tested) ----
@@ -10304,6 +10335,7 @@ mod tests {
                 ritualist: 0.0,
                 warrior: 0.0,
             },
+            skills: BTreeMap::new(),
             stats: CatStats { leadership: 0.0 },
             death_time: None,
             parent_ids: Vec::new(),
@@ -11903,8 +11935,22 @@ mod tests {
             ritualist: 0.0,
             warrior: 1.0,
         };
-        let line = cat_skills_line(&xp);
+        let line = cat_skills_line(&BTreeMap::new(), &xp);
         assert!(line.contains("hunt 12"));
         assert!(line.contains("build 3"));
+
+        let practiced = BTreeMap::from([
+            (Labor::Haul, 2.5),
+            (Labor::Metalwork, 7.0),
+            (Labor::Scout, 1.0),
+        ]);
+        let line = cat_skills_line(&practiced, &xp);
+        assert!(line.contains("haul 2.5"));
+        assert!(line.contains("metal 7.0"));
+        assert!(line.contains("scout 1.0"));
+        assert!(
+            !line.contains("hunt 12"),
+            "real labor map replaces legacy summary"
+        );
     }
 }

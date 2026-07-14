@@ -443,6 +443,10 @@ pub struct CatSnapshot {
     pub current_task: Option<String>,
     pub assigned_building_id: Option<String>,
     pub role_xp: RoleXp,
+    /// Persisted, truthful per-labor proficiency. Empty/absent for legacy
+    /// snapshots and cats that have not completed labor yet.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skills: BTreeMap<Labor, f64>,
     pub stats: CatStats,
     pub death_time: Option<i64>,
     /// Known parent cat ids (mother/father), in `Cat::parent_ids` order, omitting any
@@ -473,6 +477,29 @@ pub struct CatSnapshot {
     /// `None` for permanent residents and legacy snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probation_remaining_game_minutes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Labor {
+    Hunt,
+    Build,
+    Ritual,
+    Fight,
+    Train,
+    Quarry,
+    Woodcut,
+    Forage,
+    FetchWater,
+    Mill,
+    Process,
+    Craft,
+    Textile,
+    Metalwork,
+    Farm,
+    Haul,
+    Research,
+    Scout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1867,6 +1894,7 @@ mod tests {
                         ritualist: 0.0,
                         warrior: 0.0,
                     },
+                    skills: BTreeMap::from([(Labor::Hunt, 1.0)]),
                     stats: CatStats { leadership: 9.0 },
                     death_time: None,
                     parent_ids: vec!["cat_0".to_string()],
@@ -2566,5 +2594,64 @@ mod tests {
             serde_json::from_value::<ClientAction>(legacy).expect("legacy payload"),
             ClientAction::PlanBuilding { site: None, .. }
         ));
+    }
+
+    #[test]
+    fn labor_skill_map_is_typed_and_legacy_optional() {
+        let skills = BTreeMap::from([
+            (Labor::Haul, 2.5),
+            (Labor::Metalwork, 7.0),
+            (Labor::Scout, 1.0),
+        ]);
+        let encoded = serde_json::to_value(&skills).expect("skills serialize");
+        assert_eq!(encoded["haul"], json!(2.5));
+        assert_eq!(encoded["metalwork"], json!(7.0));
+        assert_eq!(encoded["scout"], json!(1.0));
+        assert_eq!(
+            serde_json::from_value::<BTreeMap<Labor, f64>>(encoded).unwrap(),
+            skills
+        );
+
+        let mut legacy = serde_json::to_value(CatSnapshot {
+            id: "legacy".to_owned(),
+            name: "Legacy".to_owned(),
+            position: MapPosition {
+                map: MapName::Colony,
+                x: 0,
+                y: 0,
+            },
+            activity: CatActivity::Idle,
+            destination: None,
+            carrying: None,
+            specialization: None,
+            age_hours: 10.0,
+            needs: CatNeeds {
+                hunger: 0.0,
+                thirst: 0.0,
+                rest: 0.0,
+                health: 100.0,
+            },
+            current_task: None,
+            assigned_building_id: None,
+            role_xp: RoleXp {
+                hunter: 0.0,
+                architect: 0.0,
+                ritualist: 0.0,
+                warrior: 0.0,
+            },
+            skills: BTreeMap::new(),
+            stats: CatStats { leadership: 0.0 },
+            death_time: None,
+            parent_ids: Vec::new(),
+            parents: Vec::new(),
+            boosted: false,
+            pregnant: false,
+            housing_status: CatHousingStatus::Housed,
+            probation_remaining_game_minutes: None,
+        })
+        .unwrap();
+        legacy.as_object_mut().unwrap().remove("skills");
+        let decoded: CatSnapshot = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.skills.is_empty());
     }
 }

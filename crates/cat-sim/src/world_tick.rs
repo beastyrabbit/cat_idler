@@ -77,7 +77,9 @@ use crate::{
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{self, RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::should_deposit,
-    skills::{HAUL_SKILL_GAIN, Labor, SKILL_GAIN_PER_JOB},
+    skills::{
+        HAUL_SKILL_GAIN, Labor, SKILL_GAIN_PER_JOB, SKILL_GAIN_PER_WORK_HOUR, work_rate_multiplier,
+    },
     smithy::{MetalForgeOptions, SmithyOptions, advance_metal_forge, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
     stockpiles::{self, GatherSpot, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
@@ -5475,15 +5477,32 @@ fn advance_designated_farms(
     world_seed: u32,
     production_elapsed: f64,
 ) {
-    let has_farmer_work = colony.buildings.iter().any(|building| {
-        building.building_type == BuildingType::Field
-            && building.construction_progress >= 100
-            && assigned_worker(colony, &building.id).is_some()
-    });
+    let farmer_worker_ids = colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.building_type == BuildingType::Field && building.construction_progress >= 100
+        })
+        .filter_map(|building| assigned_worker(colony, &building.id).map(|cat| cat.id.clone()))
+        .collect::<BTreeSet<_>>();
+    let has_farmer_work = !farmer_worker_ids.is_empty();
+    let farmer_skill = if farmer_worker_ids.is_empty() {
+        0.0
+    } else {
+        farmer_worker_ids
+            .iter()
+            .filter_map(|id| colony.cats.iter().find(|cat| cat.id == *id))
+            .map(|cat| cat.skill(Labor::Farm))
+            .sum::<f64>()
+            / farmer_worker_ids.len() as f64
+    };
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let field_modifiers = effects.building(BuildingType::Field.as_str());
-    let production_elapsed = production_elapsed * field_modifiers.output_mult
-        / field_modifiers.cycle_time_mult.max(f64::EPSILON);
+    let production_elapsed = skilled_station_elapsed(
+        production_elapsed * field_modifiers.output_mult
+            / field_modifiers.cycle_time_mult.max(f64::EPSILON),
+        farmer_skill,
+    );
     let caps = storage_caps(colony);
 
     for index in 0..colony.farms.len() {
@@ -5521,6 +5540,12 @@ fn advance_designated_farms(
             y: (plot.rect.y1 + plot.rect.y2) / 2,
         };
         route_output_to_nearest_pile(colony, crop_kind, step.amount_produced, site);
+        let xp_each = SKILL_GAIN_PER_JOB / farmer_worker_ids.len().max(1) as f64;
+        for worker_id in &farmer_worker_ids {
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == *worker_id) {
+                cat.gain_skill(Labor::Farm, xp_each);
+            }
+        }
         append_event(
             colony,
             gate.processed_through,
@@ -5619,9 +5644,13 @@ fn advance_raw_material_benches(
                 raw_materials_available
             };
             let worker = assigned_worker(colony, &building_id);
+            let skilled_elapsed = skilled_station_elapsed(
+                production_elapsed,
+                worker.map_or(0.0, |cat| cat.skill(Labor::Process)),
+            );
             let step = advance_workshop(
                 colony.buildings[building_index].production_progress,
-                production_elapsed,
+                skilled_elapsed,
                 WorkshopOptions {
                     has_worker: worker.is_some(),
                     worker_is_architect: worker.is_some_and(|cat| {
@@ -5661,6 +5690,12 @@ fn advance_raw_material_benches(
                 );
             }
             colony.buildings[building_index].production_progress = step.next_progress;
+            grant_building_skill(
+                colony,
+                &building_id,
+                Labor::Process,
+                step.refined_produced * SKILL_GAIN_PER_JOB,
+            );
         }
     }
 }
@@ -5767,6 +5802,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
             productive_elapsed(building_elapsed, colony.resources.tools);
         match building_type {
             BuildingType::Field => {
+                let worker_skill = assigned_worker_skill(colony, &building_id, Labor::Farm);
                 if assigned_worker(colony, &building_id).is_none() {
                     continue;
                 }
@@ -5782,14 +5818,26 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 )
                 .properties()
                 .fertility;
-                colony.resources.food += field_yield(building_elapsed) * fertility;
+                colony.resources.food +=
+                    field_yield(skilled_station_elapsed(building_elapsed, worker_skill))
+                        * fertility;
+                grant_building_skill(
+                    colony,
+                    &building_id,
+                    Labor::Farm,
+                    production_elapsed / 3600.0 * SKILL_GAIN_PER_WORK_HOUR,
+                );
             }
             BuildingType::Mill => {
                 let worker = assigned_worker(colony, &building_id);
+                let skilled_elapsed = skilled_station_elapsed(
+                    building_elapsed,
+                    worker.map_or(0.0, |cat| cat.skill(Labor::Mill)),
+                );
                 let caps = storage_caps(colony);
                 let step = advance_mill(
                     colony.buildings[building_index].production_progress,
-                    building_elapsed,
+                    skilled_elapsed,
                     MillOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -5832,6 +5880,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                             step.food_produced,
                         ),
                     );
+                    let cycles = step.grain_used / crate::processing::MILL_GRAIN_PER_CYCLE
+                        + step.flour_used / crate::processing::MILL_FLOUR_PER_FOOD_CYCLE;
+                    grant_building_skill(
+                        colony,
+                        &building_id,
+                        Labor::Mill,
+                        cycles * SKILL_GAIN_PER_JOB,
+                    );
                 }
             }
             BuildingType::Sawmill => {
@@ -5841,10 +5897,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
             }
             BuildingType::Workshop => {
                 let worker = assigned_worker(colony, &building_id);
+                let skilled_elapsed = skilled_station_elapsed(
+                    building_crafting_elapsed,
+                    worker.map_or(0.0, |cat| cat.skill(Labor::Process)),
+                );
                 let (spendable_materials, _) = spendable_production_materials(colony);
                 let step = advance_workshop(
                     colony.buildings[building_index].production_progress,
-                    building_crafting_elapsed,
+                    skilled_elapsed,
                     WorkshopOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -5882,15 +5942,25 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                             }
                         ),
                     );
+                    grant_building_skill(
+                        colony,
+                        &building_id,
+                        Labor::Process,
+                        step.refined_produced * SKILL_GAIN_PER_JOB,
+                    );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
             }
             BuildingType::Smithy => {
                 let worker = assigned_worker(colony, &building_id);
+                let skilled_elapsed = skilled_station_elapsed(
+                    building_crafting_elapsed,
+                    worker.map_or(0.0, |cat| cat.skill(Labor::Metalwork)),
+                );
                 let (spendable_materials, _) = spendable_production_materials(colony);
                 let step = advance_smithy(
                     colony.buildings[building_index].production_progress,
-                    building_crafting_elapsed,
+                    skilled_elapsed,
                     SmithyOptions {
                         has_worker: worker.is_some(),
                         worker_is_fast: worker.is_some_and(|cat| {
@@ -5937,6 +6007,12 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                             step.armor_produced,
                         ),
                     );
+                    grant_building_skill(
+                        colony,
+                        &building_id,
+                        Labor::Metalwork,
+                        (step.weapons_produced + step.armor_produced) * SKILL_GAIN_PER_JOB,
+                    );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
 
@@ -5951,7 +6027,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let forge_worker = assigned_worker(colony, &building_id);
                 let forge_step = advance_metal_forge(
                     colony.metal_forge_progress,
-                    building_crafting_elapsed,
+                    skilled_elapsed,
                     MetalForgeOptions {
                         has_worker: forge_worker.is_some(),
                         worker_is_fast: forge_worker.is_some_and(|cat| {
@@ -5994,6 +6070,13 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                             forge_step.armor_produced,
                         ),
                     );
+                    grant_building_skill(
+                        colony,
+                        &building_id,
+                        Labor::Metalwork,
+                        (forge_step.weapons_produced + forge_step.armor_produced)
+                            * SKILL_GAIN_PER_JOB,
+                    );
                 }
             }
             BuildingType::WoodCutter => {}
@@ -6009,7 +6092,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
                 let craft_step = advance_craft(
                     colony.stone_craft_progress,
-                    building_crafting_elapsed,
+                    skilled_station_elapsed(building_crafting_elapsed, craft_skill),
                     CraftOptions {
                         has_worker: craft_has_worker,
                         worker_is_architect: craft_is_architect,
@@ -6026,7 +6109,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         gate,
                         &STONE_TRADE_RECIPE,
                         craft_skill,
-                        craft_worker_id,
+                        craft_worker_id.map(|id| (id, Labor::Craft)),
                         craft_step.items_produced,
                         "stone-prep shop",
                     );
@@ -6035,9 +6118,12 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
             BuildingType::Woodworking => {
                 // P12.4b: planks + blocks → tools (twin-input crafter).
                 let worker = assigned_worker(colony, &building_id);
+                let craft_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Craft));
+                let skilled_elapsed =
+                    skilled_station_elapsed(building_crafting_elapsed, craft_skill);
                 let step = advance_woodworking(
                     colony.buildings[building_index].production_progress,
-                    building_crafting_elapsed,
+                    skilled_elapsed,
                     WoodworkingOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -6063,6 +6149,12 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                             if step.tools_produced == 1.0 { "" } else { "s" }
                         ),
                     );
+                    grant_building_skill(
+                        colony,
+                        &building_id,
+                        Labor::Craft,
+                        step.tools_produced * SKILL_GAIN_PER_JOB,
+                    );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
 
@@ -6079,7 +6171,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
                 let craft_step = advance_craft(
                     colony.wood_craft_progress,
-                    building_crafting_elapsed,
+                    skilled_station_elapsed(building_crafting_elapsed, craft_skill),
                     CraftOptions {
                         has_worker: craft_has_worker,
                         worker_is_architect: craft_is_architect,
@@ -6096,7 +6188,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         gate,
                         &WOOD_TRADE_RECIPE,
                         craft_skill,
-                        craft_worker_id,
+                        craft_worker_id.map(|id| (id, Labor::Craft)),
                         craft_step.items_produced,
                         "woodworkers",
                     );
@@ -6109,9 +6201,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 // the mountains (mountaineering) and quarried them (`credit_quarry_ore`),
                 // so a colony without either input simply never runs a cycle here.
                 let worker = assigned_worker(colony, &building_id);
+                let metal_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Metalwork));
                 let step = advance_workshop(
                     colony.buildings[building_index].production_progress,
-                    crafting_elapsed,
+                    skilled_station_elapsed(crafting_elapsed, metal_skill),
                     WorkshopOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -6138,6 +6231,12 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                             }
                         ),
                     );
+                    grant_building_skill(
+                        colony,
+                        &building_id,
+                        Labor::Metalwork,
+                        step.refined_produced * SKILL_GAIN_PER_JOB,
+                    );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
             }
@@ -6146,9 +6245,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 // refinement-workshop cadence as the wood-cutter/stone-prep benches
                 // (`advance_workshop` is generic over which resource it refines).
                 let worker = assigned_worker(colony, &building_id);
+                let textile_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Textile));
                 let step = advance_workshop(
                     colony.buildings[building_index].production_progress,
-                    crafting_elapsed,
+                    skilled_station_elapsed(crafting_elapsed, textile_skill),
                     WorkshopOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -6170,6 +6270,12 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                             step.materials_used, step.refined_produced,
                         ),
                     );
+                    grant_building_skill(
+                        colony,
+                        &building_id,
+                        Labor::Textile,
+                        step.refined_produced * SKILL_GAIN_PER_JOB,
+                    );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
 
@@ -6181,11 +6287,11 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let craft_has_worker = craft_worker.is_some();
                 let craft_is_architect = craft_worker
                     .is_some_and(|cat| cat.specialization == Some(CatSpecialization::Architect));
-                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Craft));
+                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Textile));
                 let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
                 let craft_step = advance_craft(
                     colony.clothier_craft_progress,
-                    crafting_elapsed,
+                    skilled_station_elapsed(crafting_elapsed, craft_skill),
                     CraftOptions {
                         has_worker: craft_has_worker,
                         worker_is_architect: craft_is_architect,
@@ -6202,7 +6308,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         gate,
                         &CLOTH_TRADE_RECIPE,
                         craft_skill,
-                        craft_worker_id,
+                        craft_worker_id.map(|id| (id, Labor::Textile)),
                         craft_step.items_produced,
                         "clothier",
                     );
@@ -6212,9 +6318,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 // P16/P19 clothing chain slice: raw hide → leather, same refinement
                 // cadence as the clothier above.
                 let worker = assigned_worker(colony, &building_id);
+                let textile_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Textile));
                 let step = advance_workshop(
                     colony.buildings[building_index].production_progress,
-                    crafting_elapsed,
+                    skilled_station_elapsed(crafting_elapsed, textile_skill),
                     WorkshopOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -6235,6 +6342,12 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                             step.materials_used, step.refined_produced,
                         ),
                     );
+                    grant_building_skill(
+                        colony,
+                        &building_id,
+                        Labor::Textile,
+                        step.refined_produced * SKILL_GAIN_PER_JOB,
+                    );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
 
@@ -6243,11 +6356,11 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let craft_has_worker = craft_worker.is_some();
                 let craft_is_architect = craft_worker
                     .is_some_and(|cat| cat.specialization == Some(CatSpecialization::Architect));
-                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Craft));
+                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Textile));
                 let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
                 let craft_step = advance_craft(
                     colony.tannery_craft_progress,
-                    crafting_elapsed,
+                    skilled_station_elapsed(crafting_elapsed, craft_skill),
                     CraftOptions {
                         has_worker: craft_has_worker,
                         worker_is_architect: craft_is_architect,
@@ -6264,7 +6377,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         gate,
                         &LEATHER_TRADE_RECIPE,
                         craft_skill,
-                        craft_worker_id,
+                        craft_worker_id.map(|id| (id, Labor::Textile)),
                         craft_step.items_produced,
                         "tannery",
                     );
@@ -6383,7 +6496,7 @@ fn credit_trade_craft(
     gate: TickGate,
     recipe: &crate::recipes::CraftRecipe,
     craft_skill: f64,
-    craft_worker_id: Option<CatId>,
+    craft_worker: Option<(CatId, Labor)>,
     items_produced: u32,
     bench_label: &str,
 ) {
@@ -6391,13 +6504,13 @@ fn credit_trade_craft(
     let quality = craft_quality_from_skill(craft_skill);
     let item = Item::new(kind, recipe.material, quality);
     colony.add_item(item, items_produced);
-    if let Some(id) = craft_worker_id
+    if let Some((id, labor)) = craft_worker
         && let Some(idx) = colony
             .cats
             .iter()
             .position(|cat| cat.id == id && cat.death_time.is_none())
     {
-        colony.cats[idx].gain_skill(Labor::Craft, SKILL_GAIN_PER_JOB);
+        colony.cats[idx].gain_skill(labor, f64::from(items_produced) * SKILL_GAIN_PER_JOB);
     }
     append_event(
         colony,
@@ -6451,14 +6564,24 @@ const LOREMASTER_UNLOCK_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
 fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
     let research_workforce = research_workforce(colony);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let elapsed_game_sec = gate.elapsed_sec as f64 * normalize_time_scale(colony);
     let gained = points_per_tick_for(
         research_workforce,
-        gate.elapsed_sec as f64 * normalize_time_scale(colony),
+        elapsed_game_sec,
         effects.research_rate_mult,
     );
 
     if gained > 0.0 {
         colony.upgrade_tree = accrue_research(&colony.upgrade_tree, gained);
+        let worker_ids = research_worker_ids(colony);
+        for worker_id in worker_ids {
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == worker_id) {
+                cat.gain_skill(
+                    Labor::Research,
+                    elapsed_game_sec / 3600.0 * SKILL_GAIN_PER_WORK_HOUR,
+                );
+            }
+        }
     }
 
     if !has_officer(colony, OfficerRole::Loremaster)
@@ -7047,8 +7170,20 @@ fn phase_29_due_completion_gathering_explore_expansion(
             // Knowledge is deliberately not narrated or committed here. The
             // completed scout must still walk home and physically touch the
             // shrine; phase 34 performs the delivery.
-            JobKind::Explore => {}
-            JobKind::ExpandVillage => complete_village_expansion(colony, &job, gate, world_seed),
+            JobKind::Explore => {
+                if let Some(cat_index) = assigned_alive_cat_index(colony, &job) {
+                    colony.cats[cat_index].gain_skill(Labor::Scout, SKILL_GAIN_PER_JOB);
+                }
+            }
+            JobKind::ExpandVillage => {
+                let claimed_before = colony.claimed_tiles.len();
+                complete_village_expansion(colony, &job, gate, world_seed);
+                if colony.claimed_tiles.len() > claimed_before
+                    && let Some(cat_index) = assigned_alive_cat_index(colony, &job)
+                {
+                    colony.cats[cat_index].gain_skill(Labor::Build, SKILL_GAIN_PER_JOB);
+                }
+            }
             _ => {}
         }
     }
@@ -7719,6 +7854,25 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         let standing_tile_pos = world_pos_to_tile(world_pos);
         let standing_tile = colony.world_tiles.get(&standing_tile_pos);
         let scout_speed_factor = scout_travel_speed_factor(colony, &cat_id, current_task, activity);
+        let labor_speed_factor = if colony.cats[cat_index].carrying.is_some()
+            || current_task == Some(TaskType::Build)
+                && colony.jobs.iter().any(|job| {
+                    job.kind == JobKind::HaulGatherSpot
+                        && job.assigned_cat.as_deref() == Some(cat_id.as_str())
+                        && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                }) {
+            work_rate_multiplier(colony.cats[cat_index].skill(Labor::Haul))
+        } else if current_task == Some(TaskType::Explore)
+            || colony.jobs.iter().any(|job| {
+                job.kind == JobKind::Explore
+                    && job.assigned_cat.as_deref() == Some(cat_id.as_str())
+                    && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+            })
+        {
+            work_rate_multiplier(colony.cats[cat_index].skill(Labor::Scout))
+        } else {
+            1.0
+        };
         // Per-cat effective rate: base × terrain surface (the tile the cat is on)
         // × per-cat gait × life-stage gait. This desyncs the herd — cats on slow
         // ground or with a slow gait fall behind instead of stepping in unison.
@@ -7761,6 +7915,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             * soft_obstacle_mult
             * rail_mult
             * scout_speed_factor
+            * labor_speed_factor
             * effects.move_speed_mult;
 
         let route = find_path(
@@ -9918,6 +10073,15 @@ fn resolve_active_raid(
         .sum::<f64>();
     let outcome = resolve_raid(muster.total_power, raider_power, next_raid_roll());
 
+    // Every mustered cat completed the fight, regardless of the outcome. Keep the
+    // legacy warrior role-XP reward below (winner + warrior only), while the general
+    // labor track truthfully records combat for militia and hunters too.
+    for mustered in &muster.per_cat {
+        if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == mustered.id) {
+            cat.gain_skill(Labor::Fight, WARRIOR_XP_PER_RAID);
+        }
+    }
+
     colony.resources.weapons = (colony.resources.weapons - f64::from(muster.weapons_used)).max(0.0);
     colony.resources.armor = (colony.resources.armor - f64::from(muster.armor_used)).max(0.0);
 
@@ -9987,11 +10151,19 @@ fn raid_combatants(colony: &ColonyRuntime) -> Vec<MusterCombatant> {
                 attack: cat.stats.attack,
                 defense: cat.stats.defense,
                 specialization: cat.specialization,
-                warrior_xp: cat.role_xp.warrior,
+                warrior_xp: effective_combat_xp(cat.role_xp.warrior, cat.skill(Labor::Fight)),
                 life_stage: Some(stage),
             })
         })
         .collect()
+}
+
+/// Feed the existing combat curve a bounded continuous-skill contribution while
+/// preserving legacy role XP exactly. The added equivalent XP approaches 36, so
+/// Fight skill can add at most six trade levels (60% power) and never runs away.
+fn effective_combat_xp(role_xp: f64, fight_skill: f64) -> f64 {
+    let bounded = (crate::life_sim::trade_yield_multiplier(fight_skill) - 1.0) / 0.4;
+    role_xp + bounded.clamp(0.0, 1.0) * 36.0
 }
 
 fn weakest_mustered_victim(mustered: &[crate::warriors::MusteredCat]) -> Option<CatId> {
@@ -12749,6 +12921,35 @@ fn assigned_worker<'a>(colony: &'a ColonyRuntime, building_id: &str) -> Option<&
         .find(|cat| cat.id == assigned_cat && cat.death_time.is_none())
 }
 
+fn assigned_worker_skill(colony: &ColonyRuntime, building_id: &str, labor: Labor) -> f64 {
+    assigned_worker(colony, building_id).map_or(0.0, |cat| cat.skill(labor))
+}
+
+fn skilled_station_elapsed(base_elapsed: f64, skill: f64) -> f64 {
+    base_elapsed * work_rate_multiplier(skill)
+}
+
+fn grant_building_skill(colony: &mut ColonyRuntime, building_id: &str, labor: Labor, amount: f64) {
+    if !amount.is_finite() || amount <= 0.0 {
+        return;
+    }
+    let Some(cat_id) = colony
+        .buildings
+        .iter()
+        .find(|building| building.id == building_id)
+        .and_then(|building| building.assigned_cat.clone())
+    else {
+        return;
+    };
+    if let Some(cat) = colony
+        .cats
+        .iter_mut()
+        .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+    {
+        cat.gain_skill(labor, amount);
+    }
+}
+
 /// Stage-weighted count of cats actively staffing a completed research building
 /// (research hut or school — both contribute identically). Each staffed building
 /// contributes its assigned cat's [`life_sim::workforce_weight`] — the same
@@ -12757,6 +12958,17 @@ fn assigned_worker<'a>(colony: &'a ColonyRuntime, building_id: &str) -> Option<&
 /// [`phase_24_research`]'s point accrual; a colony with no staffed hut/school yields 0.0 and
 /// is byte-identical to the pre-wiring behaviour.
 fn research_workforce(colony: &ColonyRuntime) -> f64 {
+    research_worker_ids(colony)
+        .into_iter()
+        .filter_map(|cat_id| colony.cats.iter().find(|cat| cat.id == cat_id))
+        .map(|cat| {
+            crate::life_sim::workforce_weight(get_life_stage(cat.age_hours))
+                * crate::life_sim::trade_yield_multiplier(cat.skill(Labor::Research))
+        })
+        .sum()
+}
+
+fn research_worker_ids(colony: &ColonyRuntime) -> Vec<CatId> {
     colony
         .buildings
         .iter()
@@ -12767,15 +12979,11 @@ fn research_workforce(colony: &ColonyRuntime) -> f64 {
             ) && building.construction_progress >= 100
         })
         .filter_map(|building| building.assigned_cat.as_deref())
-        .filter_map(|cat_id| {
-            colony
-                .cats
-                .iter()
-                .find(|cat| cat.id == cat_id && cat.death_time.is_none())
-        })
+        .filter_map(|cat_id| colony.cats.iter().find(|cat| cat.id == cat_id))
+        .filter(|cat| cat.death_time.is_none())
         .filter(|cat| can_work(get_life_stage(cat.age_hours)))
-        .map(|cat| crate::life_sim::workforce_weight(get_life_stage(cat.age_hours)))
-        .sum()
+        .map(|cat| cat.id.clone())
+        .collect()
 }
 
 fn due_active_jobs(colony: &ColonyRuntime, gate: TickGate) -> Vec<JobRuntime> {
@@ -12877,9 +13085,12 @@ fn complete_fibre_forage(colony: &mut ColonyRuntime, job: &JobRuntime, _gate: Ti
         return;
     };
     let cap = storage_caps(colony).fibre;
-    let reward = FIBRE_FORAGE_YIELD.min((cap - colony.resources.fibre).max(0.0));
+    let reward = skill_scaled_yield(&colony.cats[cat_index], job.kind, FIBRE_FORAGE_YIELD)
+        .min((cap - colony.resources.fibre).max(0.0));
     colony.resources.fibre += reward;
-    colony.cats[cat_index].gain_skill(Labor::Hunt, SKILL_GAIN_PER_JOB);
+    if reward > 0.0 {
+        colony.cats[cat_index].gain_skill(Labor::Forage, SKILL_GAIN_PER_JOB);
+    }
 }
 
 /// Fraction of a completed quarry's materials reward that also comes back as raw ore,
@@ -13218,7 +13429,7 @@ fn complete_warrior_training(colony: &mut ColonyRuntime, job: &JobRuntime, _: Ti
     let cat = &mut colony.cats[cat_index];
     cat.specialization = Some(CatSpecialization::Warrior);
     cat.role_xp.warrior += 1.0;
-    cat.gain_skill(Labor::Fight, SKILL_GAIN_PER_JOB);
+    cat.gain_skill(Labor::Train, SKILL_GAIN_PER_JOB);
     cat.stats.attack = (cat.stats.attack + 3.0).min(100.0);
     cat.stats.defense = (cat.stats.defense + 3.0).min(100.0);
     cat.activity = CatActivity::Idle;
@@ -13717,6 +13928,10 @@ fn advance_physical_sawmill(
         return;
     }
     colony.cats[cat_index].activity = CatActivity::Working;
+    let skilled_elapsed = skilled_station_elapsed(
+        production_elapsed,
+        colony.cats[cat_index].skill(Labor::Process),
+    );
     let output_headroom = colony
         .stockpiles
         .iter()
@@ -13725,7 +13940,7 @@ fn advance_physical_sawmill(
         .map_or(0.0, |capacity| (capacity - output_amount).max(0.0));
     let step = advance_sawmill(
         building.production_progress,
-        production_elapsed,
+        skilled_elapsed,
         SawmillOptions {
             has_worker: true,
             worker_is_architect: colony.cats[cat_index].specialization
@@ -13765,6 +13980,12 @@ fn advance_physical_sawmill(
             "The sawmill cut {} delivered logs into {} lumber awaiting haulage.",
             step.logs_used, step.lumber_produced,
         ),
+    );
+    grant_building_skill(
+        colony,
+        &building.id,
+        Labor::Process,
+        step.lumber_produced / crate::processing::SAWMILL_LUMBER_PER_CYCLE * SKILL_GAIN_PER_JOB,
     );
 }
 
@@ -16252,6 +16473,53 @@ mod tests {
     }
 
     #[test]
+    fn scouting_and_training_gain_only_when_the_work_completes() {
+        let scout_job = JobRuntime {
+            id: "scout-skill".to_owned(),
+            kind: JobKind::Explore,
+            status: JobStatus::Active,
+            assigned_cat: Some("scout".to_owned()),
+            started_at: Some(0),
+            ends_at: Some(1_000),
+            metadata: JobMetadata::Scout {
+                mission: ScoutMission::Explore,
+                target: Some(pos(8, 8)),
+                destination: Some(pos(8, 8)),
+                accepted: true,
+                found: true,
+            },
+            ..JobRuntime::default()
+        };
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![adult_idle_cat("scout", "colony-1")],
+            jobs: vec![scout_job],
+            ..ColonyRuntime::default()
+        };
+        phase_29_due_completion_gathering_explore_expansion(
+            &mut colony,
+            production_gate(1, 999),
+            123,
+        );
+        assert_eq!(colony.cats[0].skill(Labor::Scout), 0.0);
+        phase_29_due_completion_gathering_explore_expansion(
+            &mut colony,
+            production_gate(1, 1_000),
+            123,
+        );
+        assert_eq!(colony.cats[0].skill(Labor::Scout), SKILL_GAIN_PER_JOB);
+
+        let training = JobRuntime {
+            assigned_cat: Some("scout".to_owned()),
+            kind: JobKind::TrainWarrior,
+            ..JobRuntime::default()
+        };
+        complete_warrior_training(&mut colony, &training, production_gate(1, 2_000));
+        assert_eq!(colony.cats[0].skill(Labor::Train), SKILL_GAIN_PER_JOB);
+        assert_eq!(colony.cats[0].skill(Labor::Fight), 0.0);
+    }
+
+    #[test]
     fn movement_advances_toward_destination_and_wears_traversed_tiles() {
         let mut cat = adult_idle_cat("walker", "colony-1");
         cat.position = Position {
@@ -16451,6 +16719,28 @@ mod tests {
         );
         assert!(raided.colonies[0].active_raid.is_none());
         assert!(raided.colonies[0].raiders.is_empty());
+        assert_eq!(
+            raided.colonies[0].cats[0].skill(Labor::Fight),
+            WARRIOR_XP_PER_RAID,
+            "a real resolved muster trains combat skill"
+        );
+        assert_eq!(
+            peaceful.colonies[0].cats[0].skill(Labor::Fight),
+            0.0,
+            "peaceful time cannot fabricate combat xp"
+        );
+    }
+
+    #[test]
+    fn fight_skill_power_contribution_is_monotonic_and_bounded() {
+        let novice = effective_combat_xp(0.0, 0.0);
+        let practiced = effective_combat_xp(0.0, 30.0);
+        let expert = effective_combat_xp(0.0, 1_000_000.0);
+        assert_eq!(novice, 0.0);
+        assert!(practiced > novice);
+        assert!(expert > practiced);
+        assert!(expert <= 36.0);
+        assert_eq!(effective_combat_xp(100.0, 0.0), 100.0);
     }
 
     /// Reachability guard: threat pressure crossing the threshold fires a raid.
@@ -18527,6 +18817,184 @@ mod tests {
     }
 
     #[test]
+    fn staffed_production_and_research_train_the_truthful_labor_only() {
+        let cases = [
+            (
+                BuildingType::Mill,
+                Resources {
+                    grain: 4.0,
+                    ..Resources::default()
+                },
+                Labor::Mill,
+            ),
+            (
+                BuildingType::Sawmill,
+                Resources {
+                    logs: 5.0,
+                    ..Resources::default()
+                },
+                Labor::Process,
+            ),
+            (
+                BuildingType::Workshop,
+                Resources {
+                    materials: 50.0,
+                    ..Resources::default()
+                },
+                Labor::Process,
+            ),
+            (
+                BuildingType::Woodworking,
+                Resources {
+                    planks: 30.0,
+                    blocks: 30.0,
+                    ..Resources::default()
+                },
+                Labor::Craft,
+            ),
+            (
+                BuildingType::Smelter,
+                Resources {
+                    ore: 5.0,
+                    ..Resources::default()
+                },
+                Labor::Metalwork,
+            ),
+            (
+                BuildingType::Clothier,
+                Resources {
+                    fibre: 5.0,
+                    ..Resources::default()
+                },
+                Labor::Textile,
+            ),
+        ];
+
+        for (building, resources, expected) in cases {
+            let mut colony = chain_colony(building, resources, true);
+            if building == BuildingType::Sawmill {
+                // Physical sawmill work cannot complete until its worker has hauled real
+                // logs from a stockpile into the station-local input store.
+                place_chain_worker_at_seeded_store(&mut colony);
+                phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+                let inbound = colony.cats[0].carrying.clone().expect("logs in flight");
+                let work_point = station_work_point(&colony.buildings[0]);
+                colony.cats[0].position = position_from_world(work_point);
+                credit_carrying(&mut colony, &inbound, work_point);
+                colony.cats[0].carrying = None;
+                phase_23_production(&mut colony, production_gate(30, 60_000), 123);
+            } else {
+                phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+            }
+            assert!(
+                colony.cats[0].skill(expected) > 0.0,
+                "{building:?} completed work without {expected:?} xp"
+            );
+            assert_eq!(
+                colony.cats[0].skills.len(),
+                1,
+                "{building:?} trained unrelated labors: {:?}",
+                colony.cats[0].skills
+            );
+        }
+
+        let mut field = chain_colony(BuildingType::Field, Resources::default(), true);
+        phase_23_production(&mut field, production_gate(30, 30_000), 123);
+        assert!(field.resources.food > 0.0);
+        assert!(field.cats[0].skill(Labor::Farm) > 0.0);
+
+        let mut research = chain_colony(BuildingType::ResearchHut, Resources::default(), true);
+        phase_24_research(&mut research, production_gate(60, 60_000));
+        assert!(research.upgrade_tree.research_points > 0.0);
+        assert!(research.cats[0].skill(Labor::Research) > 0.0);
+    }
+
+    #[test]
+    fn no_worker_or_no_completed_work_grants_no_station_xp() {
+        let mut unstaffed = chain_colony(
+            BuildingType::Workshop,
+            Resources {
+                materials: 50.0,
+                ..Resources::default()
+            },
+            false,
+        );
+        phase_23_production(&mut unstaffed, production_gate(600, 600_000), 123);
+        assert!(unstaffed.cats[0].skills.is_empty());
+
+        let mut blocked = chain_colony(BuildingType::Mill, Resources::default(), true);
+        phase_23_production(&mut blocked, production_gate(600, 600_000), 123);
+        assert!(blocked.cats[0].skills.is_empty());
+
+        let mut unstaffed_research =
+            chain_colony(BuildingType::ResearchHut, Resources::default(), false);
+        phase_24_research(&mut unstaffed_research, production_gate(600, 600_000));
+        assert!(unstaffed_research.cats[0].skills.is_empty());
+        assert_eq!(unstaffed_research.upgrade_tree.research_points, 0.0);
+    }
+
+    #[test]
+    fn station_skill_monotonically_speeds_work_with_a_bounded_rate() {
+        let make = |skill| {
+            let mut colony = chain_colony(
+                BuildingType::Workshop,
+                Resources {
+                    materials: 50.0,
+                    ..Resources::default()
+                },
+                true,
+            );
+            colony.buildings[0].production_progress = 598.7;
+            colony.cats[0].gain_skill(Labor::Process, skill);
+            colony
+        };
+        let mut novice = make(0.0);
+        let mut practiced = make(30.0);
+        let mut expert = make(1_000_000.0);
+        phase_23_production(&mut novice, production_gate(1, 1_000), 123);
+        phase_23_production(&mut practiced, production_gate(1, 1_000), 123);
+        phase_23_production(&mut expert, production_gate(1, 1_000), 123);
+        assert_eq!(novice.resources.refined, 0.0);
+        assert_eq!(practiced.resources.refined, 0.0);
+        assert_eq!(expert.resources.refined, 1.0);
+        assert!(
+            expert.buildings[0].production_progress <= 598.7 + 4.0 / 3.0,
+            "expert work rate exceeded the 4/3 bound"
+        );
+    }
+
+    #[test]
+    fn manual_and_officer_staffed_work_share_one_deterministic_skill_path() {
+        let base = chain_colony(
+            BuildingType::Workshop,
+            Resources {
+                materials: 50.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        let mut manual = base.clone();
+        let mut officer = base;
+        officer
+            .officers
+            .insert(OfficerRole::Steward, "crafter".to_owned());
+        officer.buildings[0].automated_by = Some(OfficerRole::Steward);
+
+        phase_23_production(&mut manual, production_gate(30, 30_000), 123);
+        phase_23_production(&mut officer, production_gate(30, 30_000), 123);
+
+        assert_eq!(manual.resources, officer.resources);
+        assert_eq!(manual.cats[0].skills, officer.cats[0].skills);
+        assert_eq!(manual.cats[0].skill(Labor::Process), SKILL_GAIN_PER_JOB);
+
+        let mut twin = manual.clone();
+        phase_23_production(&mut manual, production_gate(30, 60_000), 123);
+        phase_23_production(&mut twin, production_gate(30, 60_000), 123);
+        assert_eq!(manual.cats[0].skills, twin.cats[0].skills);
+        assert_eq!(manual.resources, twin.resources);
+    }
+
+    #[test]
     fn two_raw_benches_share_one_five_material_cycle_in_stable_scarcity_order() {
         let run = |order: [BuildingType; 2]| {
             let mut colony = ColonyRuntime {
@@ -19645,9 +20113,9 @@ mod tests {
             item.kind
         );
 
-        // The assigned worker's Craft skill is trained the first time it's used.
+        // Both the tools recipe and the trade-good recipe completed truthfully.
         let worker = colony.cats.iter().find(|cat| cat.id == "crafter").unwrap();
-        assert_eq!(worker.skill(Labor::Craft), SKILL_GAIN_PER_JOB);
+        assert_eq!(worker.skill(Labor::Craft), 2.0 * SKILL_GAIN_PER_JOB);
     }
 
     #[test]
@@ -19867,9 +20335,10 @@ mod tests {
         assert_eq!(*count, 1);
         assert_eq!(item.kind, ItemKind::Clothing);
 
-        // The assigned worker's Craft skill is trained the first time it's used.
+        // Both weaving and clothing craft train the textile labor.
         let worker = colony.cats.iter().find(|cat| cat.id == "crafter").unwrap();
-        assert_eq!(worker.skill(Labor::Craft), SKILL_GAIN_PER_JOB);
+        assert_eq!(worker.skill(Labor::Textile), 2.0 * SKILL_GAIN_PER_JOB);
+        assert_eq!(worker.skill(Labor::Craft), 0.0);
     }
 
     #[test]
@@ -19942,7 +20411,7 @@ mod tests {
                 },
                 true,
             );
-            colony.cats[0].gain_skill(Labor::Craft, craft_skill);
+            colony.cats[0].gain_skill(Labor::Textile, craft_skill);
             colony.clothier_craft_progress = 890.0;
             phase_23_production(&mut colony, production_gate(30, 30_000), 123);
             colony
@@ -23240,15 +23709,24 @@ mod tests {
             colony.upgrade_tree.owned_node_ids,
         );
 
-        // Unstaffing the school (but leaving the hut staffed) drops the workforce by exactly
-        // one — the dead/absent scholar guard applies per-building, not colony-wide.
+        // Unstaffing the school leaves only the hut scholar. That scholar has now
+        // truthfully gained Research skill, so its bounded yield multiplier is part
+        // of workforce rather than pretending every practiced cat remains exactly 1.0.
         for building in &mut colony.buildings {
             if building.building_type == BuildingType::School {
                 building.assigned_cat = None;
             }
         }
+        let expected = crate::life_sim::trade_yield_multiplier(
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == second_scholar)
+                .unwrap()
+                .skill(Labor::Research),
+        );
         assert!(
-            (research_workforce(&colony) - 1.0).abs() < 1e-9,
+            (research_workforce(&colony) - expected).abs() < 1e-9,
             "unstaffing the school must leave only the research hut's researcher"
         );
     }
