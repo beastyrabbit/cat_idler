@@ -1552,6 +1552,17 @@ mod tests {
                 .map(|node| node.prerequisites.len())
                 .sum::<usize>()
         );
+        let viewport = world
+            .query_filtered::<&Node, With<ResearchViewport>>()
+            .single(&world)
+            .expect("research ledger should have one viewport");
+        assert_eq!(viewport.overflow, Overflow::clip());
+        assert!(
+            world
+                .query_filtered::<&Node, With<ResearchCard>>()
+                .iter(&world)
+                .all(|node| node.overflow == Overflow::clip())
+        );
     }
 
     #[test]

@@ -1212,12 +1212,15 @@ const UI_GAP_TIGHT: f32 = 3.0;
 const UI_RADIUS: f32 = 6.0;
 const UI_BORDER_W: f32 = 2.5;
 const UI_BTN_H: f32 = 30.0;
-/// Three button lines (tools + two wrapped action lines), their row gaps,
-/// panel padding/frame, and the bar's 10px screen margin at 1024px.
-const NARROW_BOTTOM_BAR_FOOTPRINT: f32 = 3.0 * UI_BTN_H + 4.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
-/// Bottom-corner overlays clear the whole narrow toolbar plus breathing room,
-/// not only its first row of controls.
-const BOTTOM_OVERLAY_CLEARANCE: f32 = NARROW_BOTTOM_BAR_FOOTPRINT + UI_GAP;
+/// Wide windows fit the toolbar in three button lines (one wrapped tool row and
+/// two action lines), including row gaps, frame padding, and screen margin.
+const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = 3.0 * UI_BTN_H + 4.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
+/// At the supported 1024px floor both toolbar groups wrap, producing four
+/// button lines. Corner overlays must clear the real footprint, not the wide
+/// approximation, or they cover the first row of controls.
+const NARROW_BOTTOM_BAR_FOOTPRINT: f32 = 4.0 * UI_BTN_H + 5.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
+const NARROW_LAYOUT_MAX_WIDTH: f32 = 1100.0;
+const BOTTOM_OVERLAY_CLEARANCE: f32 = WIDE_BOTTOM_BAR_FOOTPRINT + UI_GAP;
 /// Eight two-column resource rows remain readable at this compact height and
 /// leave room for Dispatches above the narrow wrapped toolbar.
 const HUD_RESOURCE_PILL_HEIGHT: f32 = 20.0;
@@ -1679,10 +1682,10 @@ fn adventure_cursor_icon(kind: AdventureCursorKind, art: &AdventureUiArt) -> Cur
             AdventureCursorKind::Target => "public/images/game/ui/cursor/target.png",
             AdventureCursorKind::Disabled => "public/images/game/ui/cursor/disabled.png",
         };
-        return CursorIcon::Custom(CustomCursor::Url(CustomCursorUrl {
+        CursorIcon::Custom(CustomCursor::Url(CustomCursorUrl {
             url: url.to_owned(),
             hotspot: adventure_cursor_hotspot(kind),
-        }));
+        }))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2917,7 +2920,7 @@ pub fn run() {
                         toggle_orders,
                         update_officers_panel,
                         update_orders_panel,
-                        update_dispatches_panel,
+                        update_bottom_overlays,
                         handle_order_buttons,
                         handle_order_building_cycle,
                         update_governance_controls,
@@ -5745,19 +5748,43 @@ fn update_orders_panel(
     }
 }
 
-fn update_dispatches_panel(
-    orders: Res<OrdersUi>,
-    mut panel: Query<&mut Node, With<DispatchesPanel>>,
-) {
-    if !orders.is_changed() {
-        return;
+fn bottom_overlay_clearance(window_width: f32) -> f32 {
+    let footprint = if window_width <= NARROW_LAYOUT_MAX_WIDTH {
+        NARROW_BOTTOM_BAR_FOOTPRINT
+    } else {
+        WIDE_BOTTOM_BAR_FOOTPRINT
+    };
+    footprint + UI_GAP
+}
+
+fn dispatches_display(window_width: f32, orders_visible: bool) -> Display {
+    if orders_visible || window_width <= NARROW_LAYOUT_MAX_WIDTH {
+        Display::None
+    } else {
+        Display::Flex
     }
-    if let Ok(mut node) = panel.single_mut() {
-        node.display = if orders.visible {
-            Display::None
-        } else {
-            Display::Flex
-        };
+}
+
+fn update_bottom_overlays(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    orders: Res<OrdersUi>,
+    mut dispatches: Query<&mut Node, (With<DispatchesPanel>, Without<MinimapPanel>)>,
+    mut minimap: Query<&mut Node, (With<MinimapPanel>, Without<DispatchesPanel>)>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let width = window.width();
+    let clearance = bottom_overlay_clearance(width);
+    if let Ok(mut node) = dispatches.single_mut() {
+        node.bottom = Val::Px(clearance);
+        // The compact always-on HUD already carries the newest announcement.
+        // At 1024px, hide the larger duplicate feed so every wrapped toolbar
+        // row remains usable; the full Log panel stays available via L/click.
+        node.display = dispatches_display(width, orders.visible);
+    }
+    if let Ok(mut node) = minimap.single_mut() {
+        node.bottom = Val::Px(clearance);
     }
 }
 
@@ -10311,9 +10338,15 @@ mod tests {
         assert_eq!(row.flex_wrap, FlexWrap::Wrap);
         assert_eq!(row.justify_content, JustifyContent::Center);
         assert_eq!(row.row_gap, Val::Px(UI_GAP));
-        assert_eq!(NARROW_BOTTOM_BAR_FOOTPRINT, 129.0);
+        assert_eq!(WIDE_BOTTOM_BAR_FOOTPRINT, 129.0);
+        assert_eq!(NARROW_BOTTOM_BAR_FOOTPRINT, 165.0);
         assert_eq!(BOTTOM_OVERLAY_CLEARANCE, 135.0);
-        const { assert!(BOTTOM_OVERLAY_CLEARANCE > NARROW_BOTTOM_BAR_FOOTPRINT) };
+        assert_eq!(bottom_overlay_clearance(1024.0), 171.0);
+        assert_eq!(bottom_overlay_clearance(1280.0), 135.0);
+        assert_eq!(dispatches_display(1024.0, false), Display::None);
+        assert_eq!(dispatches_display(1280.0, false), Display::Flex);
+        assert_eq!(dispatches_display(1280.0, true), Display::None);
+        const { assert!(NARROW_BOTTOM_BAR_FOOTPRINT > WIDE_BOTTOM_BAR_FOOTPRINT) };
         const { assert!(HUD_RESOURCE_PILL_HEIGHT <= 20.0) };
     }
 
