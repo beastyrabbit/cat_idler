@@ -79,8 +79,8 @@ playtest harness:
 3. **Deepen the shared world.** Make the communal village mechanically larger than a personal
    founding. Replace per-colony duplicated mutable terrain with an authoritative shared spatial
    model where appropriate, then turn summary contact and atomic scalar barter into physical
-   meeting, item trade, and routes. Decide whether scouts should genuinely search by deterministic
-   random walk; current targeting selects the nearest useful hidden tile from generated terrain.
+   meeting, item trade, and routes. Deterministic knowledge-blind scout search is now verified;
+   preserve its physical-observation and shrine-return contracts as shared-world depth grows.
 4. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
    outside-the-wall agricultural territory subset are live; finish their integrated framebuffer
    campaign, replace rail/shipping multipliers with built routes/vehicles, restore fishing, and

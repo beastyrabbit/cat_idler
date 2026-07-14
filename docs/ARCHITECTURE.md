@@ -143,9 +143,9 @@ maintained product behavior rather than migration:
   uses the corresponding local-storage record.
 - **Research and scouting depth.** Players can spend research points on all 500 studies, and a
   Loremaster may complete at most one affordable full-catalog node per rolling real-life day.
-  Typed modeled effects and future-content unlock registries persist. Resource scouts preserve the
-  shrine-return knowledge contract but currently select the nearest useful hidden terrain target
-  rather than performing the deterministic random-walk search described by the P15 feedback spec.
+  Typed modeled effects and future-content unlock registries persist. Resource/general scouts now
+  preserve the shrine-return knowledge contract while following deterministic knowledge-blind
+  wander legs that only recognize targets after physical observation.
 - **Spatial, transport, and visual completeness.** Exact tree/rock occupancy, visible road
   surfaces, persisted exterior agricultural claims, and staged outer-wall construction with an
   atomic one-gate cutover are live. Real rail/ship/fishing routes and remaining integrated
