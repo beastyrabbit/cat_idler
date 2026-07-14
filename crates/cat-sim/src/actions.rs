@@ -13,7 +13,7 @@ use crate::{
     farming::{self, FarmPlot, FarmStage},
     housing::{self, HousingBuilding},
     idle_engine, idle_rules,
-    items::{Item, ItemKind, Material},
+    items::{Item, ItemKind, ItemStore, Material, item_weight_grams, item_workshop_id},
     leader_director::{
         OFFERING_MATERIALS_AMOUNT, OFFERING_MATERIALS_RESERVE, TITHE_FOOD_AMOUNT,
         TITHE_FOOD_RESERVE_FLOOR, TITHE_FOOD_RESERVE_PER_CAT, TITHE_REFINED_AMOUNT,
@@ -285,6 +285,9 @@ pub fn apply_action(
         } => with_colony(world, ctx, |colony| {
             sell_goods(colony, kind, material, *quality, *count, ctx)
         }),
+        proto::ClientAction::RepairItem { item_id, .. } => {
+            with_colony(world, ctx, |colony| repair_item(colony, item_id, ctx))
+        }
         proto::ClientAction::BuyResource {
             resource, amount, ..
         } => with_colony(world, ctx, |colony| {
@@ -1961,13 +1964,26 @@ fn sell_goods(
         return fail("Unknown item material.");
     };
     let item = Item::new(item_kind, item_material, quality);
-    if colony.items.get(&item).copied().unwrap_or(0) < count {
+    if colony.items.pristine_count(item) < count {
         return fail("Not enough goods.");
+    }
+    if count > trader::max_item_units_per_load(item) {
+        return fail("That load is too heavy for one caravan transfer.");
+    }
+    let functional_kind = functional_resource_for_item(item);
+    if let Some(kind) = functional_kind
+        && visible_resource_amount(colony, kind) + f64::EPSILON < f64::from(count)
+    {
+        return fail("The identified equipment is not in player-visible storage.");
     }
 
     let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let payout = trader::trader_buy_price(item, count) * effects.trade_value_mult;
-    let removed = colony.remove_item(item, count);
+    if let Some(kind) = functional_kind {
+        let removed_physical = deduct_visible_resource(colony, kind, f64::from(count));
+        debug_assert!(removed_physical, "checked physical availability above");
+    }
+    let removed = colony.items.remove_pristine(item, count);
     debug_assert!(removed, "checked availability above");
     colony.coin += payout;
     colony.last_player_activity_at = Some(ctx.now_ms);
@@ -1976,6 +1992,123 @@ fn sell_goods(
         ctx.now_ms,
         EventKind::Trade(TradeDirection::Sell),
         format!("The leader sold {count} {material} {kind} to the trader for {payout} coin."),
+    );
+    ok()
+}
+
+fn functional_resource_for_item(item: Item) -> Option<stockpiles::ResourceKind> {
+    match item.kind {
+        ItemKind::Tool => Some(stockpiles::ResourceKind::Tools),
+        ItemKind::Weapon => Some(stockpiles::ResourceKind::Weapons),
+        ItemKind::Armor => Some(stockpiles::ResourceKind::Armor),
+        _ => None,
+    }
+}
+
+fn repair_recipe(item: Item) -> (BuildingType, stockpiles::ResourceKind) {
+    let building = match item_workshop_id(item) {
+        "woodworking" => BuildingType::Woodworking,
+        "smithy" => BuildingType::Smithy,
+        "clothier" => BuildingType::Clothier,
+        "tannery" => BuildingType::Tannery,
+        _ => BuildingType::StonePrep,
+    };
+    let resource = match item.material {
+        Material::Wood => stockpiles::ResourceKind::Planks,
+        Material::Stone | Material::Clay | Material::Gem | Material::Bone => {
+            stockpiles::ResourceKind::Blocks
+        }
+        Material::Metal => stockpiles::ResourceKind::Metal,
+        Material::Fibre => stockpiles::ResourceKind::Cloth,
+        Material::Leather => stockpiles::ResourceKind::Leather,
+    };
+    (building, resource)
+}
+
+fn visible_resource_amount(colony: &ColonyRuntime, kind: stockpiles::ResourceKind) -> f64 {
+    colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+        .map(|pile| stockpiles::resource_amount(&pile.contents, kind))
+        .sum()
+}
+
+fn deduct_visible_resource(
+    colony: &mut ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    amount: f64,
+) -> bool {
+    if amount <= 0.0 {
+        return true;
+    }
+    if stockpiles::resource_amount(&colony.resources, kind) + f64::EPSILON < amount
+        || visible_resource_amount(colony, kind) + f64::EPSILON < amount
+    {
+        return false;
+    }
+    let mut indices = colony
+        .stockpiles
+        .iter()
+        .enumerate()
+        .filter(|(_, pile)| !pile.is_station_local())
+        .map(|(index, pile)| (pile.id.clone(), index))
+        .collect::<Vec<_>>();
+    indices.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut remaining = amount;
+    for (_, index) in indices {
+        let available = stockpiles::resource_amount(&colony.stockpiles[index].contents, kind);
+        let taken = available.min(remaining);
+        stockpiles::add_resource(&mut colony.stockpiles[index].contents, kind, -taken);
+        remaining -= taken;
+        if remaining <= f64::EPSILON {
+            break;
+        }
+    }
+    stockpiles::add_resource(&mut colony.resources, kind, -amount);
+    true
+}
+
+/// Signed, finite repair at the item's existing production workshop. The station must
+/// be complete and have a living assigned worker, whether assigned manually or by its
+/// officer. One real material is removed from visible stock before condition changes.
+fn repair_item(colony: &mut ColonyRuntime, item_id: &str, ctx: &ActionCtx) -> proto::ActionResult {
+    let Some(instance) = colony.items.instance(item_id).cloned() else {
+        return fail("Unknown item.");
+    };
+    if instance.is_pristine() {
+        return fail("That item does not need repair.");
+    }
+    let (building_type, resource_kind) = repair_recipe(instance.item);
+    let staffed = colony.buildings.iter().any(|building| {
+        building.building_type == building_type
+            && building.is_complete
+            && building.construction_progress >= 100
+            && building.assigned_cat.as_deref().is_some_and(|cat_id| {
+                colony
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+            })
+    });
+    if !staffed {
+        return fail("The appropriate workshop needs a living assigned worker.");
+    }
+    if !deduct_visible_resource(colony, resource_kind, 1.0) {
+        return fail("The repair material must be in player-visible storage.");
+    }
+    let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let durability_mult = effects
+        .building(item_workshop_id(instance.item))
+        .durability_mult;
+    let repaired = colony.items.repair(item_id, durability_mult);
+    debug_assert!(repaired, "validated damaged item above");
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::Production,
+        format!("The workshop repaired {item_id} with one {resource_kind:?}."),
     );
     ok()
 }
@@ -2766,13 +2899,20 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
     let buy_offers = if is_trading {
         colony
             .items
-            .iter()
-            .map(|(item, &count)| proto::TraderBuyOffer {
-                kind: item.kind.as_str().to_owned(),
-                material: item.material.as_str().to_owned(),
-                quality: item.quality,
-                available: count,
-                unit_price: trader::trader_buy_price(*item, 1),
+            .keys()
+            .filter_map(|item| {
+                let available = colony
+                    .items
+                    .pristine_count(*item)
+                    .min(trader::max_item_units_per_load(*item));
+                (available > 0).then(|| proto::TraderBuyOffer {
+                    kind: item.kind.as_str().to_owned(),
+                    material: item.material.as_str().to_owned(),
+                    quality: item.quality,
+                    available,
+                    unit_price: trader::trader_buy_price(*item, 1),
+                    unit_weight_grams: item_weight_grams(*item),
+                })
             })
             .collect()
     } else {
@@ -2815,7 +2955,7 @@ fn sim_to_proto_trader_state(state: trader::TraderState) -> proto::TraderVisitSt
 
 /// Builds the item-stack snapshot list from the colony's item store, in the store's
 /// own (deterministic `BTreeMap`) order.
-fn items_snapshot(items: &BTreeMap<Item, u32>) -> Vec<proto::ItemStackSnapshot> {
+fn items_snapshot(items: &ItemStore) -> Vec<proto::ItemStackSnapshot> {
     items
         .iter()
         .map(|(item, &count)| proto::ItemStackSnapshot {
@@ -2824,6 +2964,17 @@ fn items_snapshot(items: &BTreeMap<Item, u32>) -> Vec<proto::ItemStackSnapshot> 
             quality: item.quality,
             count,
             value: item.value(),
+            unit_weight_grams: item_weight_grams(*item),
+            instances: items
+                .instances()
+                .filter(|instance| instance.item == *item)
+                .map(|instance| proto::ItemInstanceSnapshot {
+                    id: instance.id.clone(),
+                    durability: instance.durability,
+                    max_durability: instance.max_durability,
+                    broken: instance.is_broken(),
+                })
+                .collect(),
         })
         .collect()
 }
@@ -3393,7 +3544,10 @@ fn queue_job(
         kind,
         JobKind::BuildHouse | JobKind::Quarry | JobKind::GatherLogs | JobKind::HaulGatherSpot
     ) {
-        productive_duration_ms(base_duration_ms, colony.resources.tools)
+        productive_duration_ms(
+            base_duration_ms,
+            crate::world_tick::usable_tool_stock(colony),
+        )
     } else {
         base_duration_ms
     };
@@ -6905,6 +7059,139 @@ mod tests {
         );
         assert!(!res.ok);
         assert_eq!(world.colonies[0].coin, 0.0);
+    }
+
+    fn seed_visible_resource(
+        colony: &mut ColonyRuntime,
+        kind: stockpiles::ResourceKind,
+        amount: f64,
+    ) {
+        stockpiles::add_resource(&mut colony.resources, kind, amount);
+        let pile = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| !pile.is_station_local())
+            .expect("founding colony has visible storage");
+        stockpiles::add_resource(&mut pile.contents, kind, amount);
+    }
+
+    #[test]
+    fn damaged_goods_stay_visible_but_traders_accept_only_pristine_load_bounded_units() {
+        let mut world = world_with_one_colony();
+        let mug = Item::new(ItemKind::Mug, Material::Wood, 1);
+        world.colonies[0].add_item(mug, 2);
+        world.colonies[0].items.wear(ItemKind::Mug, 1);
+        world.colonies[0].trader = Some(trading_trader());
+
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let offer = &snapshot.colonies[0].trader.as_ref().unwrap().buy_offers[0];
+        assert_eq!(
+            offer.available, 1,
+            "damaged item remains in Goods, not the offer"
+        );
+        assert_eq!(snapshot.colonies[0].items[0].count, 2);
+        assert!(!apply_action(&mut world, &sell_goods_action("mug", "wood", 1, 2), &ctx()).ok);
+        assert!(apply_action(&mut world, &sell_goods_action("mug", "wood", 1, 1), &ctx()).ok);
+        assert_eq!(world.colonies[0].items.get(&mug), Some(&1));
+        assert_eq!(world.colonies[0].items.pristine_count(mug), 0);
+
+        let furniture = Item::new(ItemKind::Furniture, Material::Stone, 0);
+        world.colonies[0].add_item(furniture, 2);
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let heavy_offer = snapshot.colonies[0]
+            .trader
+            .as_ref()
+            .unwrap()
+            .buy_offers
+            .iter()
+            .find(|offer| offer.kind == "furniture")
+            .unwrap();
+        assert_eq!(
+            heavy_offer.available, 1,
+            "20kg caravan load caps heavy units"
+        );
+        assert!(
+            !apply_action(
+                &mut world,
+                &sell_goods_action("furniture", "stone", 0, 2),
+                &ctx(),
+            )
+            .ok
+        );
+    }
+
+    #[test]
+    fn signed_repair_requires_a_living_worker_and_spends_one_visible_material() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        let worker_id = colony.cats[0].id.clone();
+        colony.buildings.push(BuildingRuntime {
+            id: "repair-bench".to_owned(),
+            building_type: BuildingType::Woodworking,
+            is_complete: true,
+            construction_progress: 100,
+            assigned_cat: Some(worker_id.clone()),
+            ..BuildingRuntime::default()
+        });
+        let tool = Item::new(ItemKind::Tool, Material::Wood, 1);
+        colony.add_crafted_item(tool, 1);
+        let item_id = colony.items.instances().next().unwrap().id.clone();
+        colony.items.wear(ItemKind::Tool, 1);
+        let damaged = colony.items.instance(&item_id).unwrap().durability;
+        let planks_before = colony.resources.planks;
+        seed_visible_resource(colony, stockpiles::ResourceKind::Planks, 1.0);
+        colony.cats[0].death_time = Some(ctx().now_ms - 1);
+
+        let action = proto::ClientAction::RepairItem {
+            session_id: "sess_1".to_owned(),
+            nickname: "Guest".to_owned(),
+            sig: "signed".to_owned(),
+            item_id: item_id.clone(),
+        };
+        let denied = apply_action(&mut world, &action, &ctx());
+        assert!(!denied.ok);
+        assert_eq!(
+            world.colonies[0]
+                .items
+                .instance(&item_id)
+                .unwrap()
+                .durability,
+            damaged
+        );
+        assert_eq!(world.colonies[0].resources.planks, planks_before + 1.0);
+
+        world.colonies[0].cats[0].death_time = None;
+        let repaired = apply_action(&mut world, &action, &ctx());
+        assert!(repaired.ok, "{:?}", repaired.message);
+        assert!(
+            world.colonies[0]
+                .items
+                .instance(&item_id)
+                .unwrap()
+                .is_pristine()
+        );
+        assert_eq!(world.colonies[0].resources.planks, planks_before);
+    }
+
+    #[test]
+    fn selling_identified_equipment_removes_its_physical_stack_and_identity_together() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        let tool = Item::new(ItemKind::Tool, Material::Wood, 1);
+        colony.add_crafted_item(tool, 1);
+        let tools_before = colony.resources.tools;
+        let visible_tools_before = visible_resource_amount(colony, stockpiles::ResourceKind::Tools);
+        seed_visible_resource(colony, stockpiles::ResourceKind::Tools, 1.0);
+        colony.trader = Some(trading_trader());
+
+        let result = apply_action(&mut world, &sell_goods_action("tool", "wood", 1, 1), &ctx());
+        assert!(result.ok, "{:?}", result.message);
+        assert!(world.colonies[0].items.get(&tool).is_none());
+        assert_eq!(world.colonies[0].resources.tools, tools_before);
+        assert_eq!(
+            visible_resource_amount(&world.colonies[0], stockpiles::ResourceKind::Tools),
+            visible_tools_before
+        );
     }
 
     #[test]

@@ -26,7 +26,7 @@ use cat_sim::{
     zones::ZoneRect,
 };
 
-const EXPECTED_ACTIONS: [&str; 39] = [
+const EXPECTED_ACTIONS: [&str; 40] = [
     "advance_time",
     "assign_officer",
     "assign_worker",
@@ -57,6 +57,7 @@ const EXPECTED_ACTIONS: [&str; 39] = [
     "research_node",
     "request_job",
     "request_vote_kick",
+    "repair_item",
     "sell_goods",
     "set_cat_labor_preference",
     "set_test_acceleration",
@@ -112,6 +113,7 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::BoostCat { .. } => "boost_cat",
         proto::ClientAction::SetCatLaborPreference { .. } => "set_cat_labor_preference",
         proto::ClientAction::EditProductionQueue { .. } => "edit_production_queue",
+        proto::ClientAction::RepairItem { .. } => "repair_item",
     }
 }
 
@@ -1261,6 +1263,68 @@ fn run_action_campaign() -> WorldState {
     assert_eq!(world.colonies[0].resources.food, food_before + 2.0);
     assert_eq!(world.colonies[0].coin, 97.0);
 
+    // Repair is an exact signed action against a finite item id. A real, living
+    // manually assigned worker and one visible plank are both required.
+    reset_workers(&mut world);
+    let repair_bench_id = "campaign-repair-bench".to_owned();
+    world.colonies[0].buildings.push(complete_building(
+        repair_bench_id.clone(),
+        BuildingType::Woodworking,
+    ));
+    let repairer_id = world.colonies[0].cats[0].id.clone();
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::AssignWorker {
+            session_id,
+            nickname,
+            sig,
+            cat_id: repairer_id,
+            building_id: Some(repair_bench_id),
+        },
+        &ctx(8_450),
+    );
+    let tool = Item::new(ItemKind::Tool, Material::Wood, 1);
+    world.colonies[0].add_crafted_item(tool, 1);
+    let tool_id = world.colonies[0]
+        .items
+        .instances()
+        .find(|instance| instance.item == tool)
+        .expect("finite tool")
+        .id
+        .clone();
+    world.colonies[0].items.wear(ItemKind::Tool, 1);
+    let planks_before_repair = world.colonies[0].resources.planks;
+    world.colonies[0].resources.planks += 1.0;
+    world.colonies[0]
+        .stockpiles
+        .iter_mut()
+        .find(|pile| !pile.is_station_local())
+        .expect("founding village has visible storage")
+        .contents
+        .planks += 1.0;
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::RepairItem {
+            session_id,
+            nickname,
+            sig,
+            item_id: tool_id.clone(),
+        },
+        &ctx(8_500),
+    );
+    assert!(
+        world.colonies[0]
+            .items
+            .instance(&tool_id)
+            .unwrap()
+            .is_pristine()
+    );
+    assert_eq!(world.colonies[0].resources.planks, planks_before_repair);
+
     let expected: BTreeSet<&str> = EXPECTED_ACTIONS.into_iter().collect();
     assert_eq!(coverage, expected, "the campaign missed an action variant");
     assert_eq!(coverage.len(), EXPECTED_ACTIONS.len());
@@ -1429,7 +1493,7 @@ fn every_player_action_mutates_its_feature_and_the_campaign_is_deterministic() {
         .map(|colony| colony.id.as_str())
         .collect();
     assert_eq!(colony_ids.len(), 2, "village ids are distinct");
-    assert_eq!(first.colonies[0].items.values().sum::<u32>(), 1);
+    assert_eq!(first.colonies[0].items.values().sum::<u32>(), 2);
     assert_eq!(first.colonies[0].coin, 97.0);
 }
 

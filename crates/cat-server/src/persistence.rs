@@ -10,7 +10,7 @@ use cat_sim::{
     biomes::MaxResources,
     entities::{Carrying, Cat, CatActivity, ColonyStatus, Position, Resources, RoleXp},
     farming::FarmPlot,
-    items::Item,
+    items::ItemStore,
     ledger::StockLedger,
     migration::MigrationState,
     officers::OfficerRole,
@@ -733,7 +733,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         // trinkets/clothing on every restart was silent state loss, not a deferred
         // slice.
         items: items_json
-            .map(|raw| serde_json::from_str::<BTreeMap<Item, u32>>(&raw).map_err(from_sql_json))
+            .map(|raw| serde_json::from_str::<ItemStore>(&raw).map_err(from_sql_json))
             .transpose()?
             .unwrap_or_default(),
         // Bench trade-craft cycle timers: persisted alongside `items` for the same
@@ -2045,6 +2045,54 @@ mod tests {
             loaded.colonies[1].stockpiles[0].contents.food
         );
         assert_eq!(loaded.colonies, world.colonies);
+    }
+
+    #[test]
+    fn legacy_stack_items_migrate_to_finite_units_and_condition_survives_restart() {
+        use cat_sim::items::{Item, ItemKind, Material};
+
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(7_711);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "legacy-items", 10_000, 1));
+        save_world(&conn, &world).expect("save baseline");
+        conn.execute(
+            "UPDATE colonies SET items = ?1 WHERE id = ?2",
+            params![r#"{"mug:wood:1":2}"#, "legacy-items"],
+        )
+        .expect("install legacy item map");
+
+        let mut migrated = load_world(&conn).expect("load").expect("world");
+        let item = Item::new(ItemKind::Mug, Material::Wood, 1);
+        assert_eq!(migrated.colonies[0].items.get(&item), Some(&2));
+        assert_eq!(migrated.colonies[0].items.instances().count(), 2);
+        let first_id = migrated.colonies[0]
+            .items
+            .instances()
+            .next()
+            .unwrap()
+            .id
+            .clone();
+        migrated.colonies[0].items.wear(ItemKind::Mug, 1);
+        let damaged = migrated.colonies[0]
+            .items
+            .instance(&first_id)
+            .unwrap()
+            .durability;
+
+        save_world(&conn, &migrated).expect("save migrated finite ledger");
+        let restarted = load_world(&conn).expect("reload").expect("world");
+        assert_eq!(restarted.colonies[0].items, migrated.colonies[0].items);
+        assert_eq!(
+            restarted.colonies[0]
+                .items
+                .instance(&first_id)
+                .unwrap()
+                .durability,
+            damaged,
+            "stable identity and current condition survive SQLite restart"
+        );
     }
 
     #[test]
@@ -3917,10 +3965,11 @@ mod tests {
         colony.stock_ledger = StockLedger::counted(&colony.resources, 5_500_000);
         colony
             .items
-            .insert(Item::new(ItemKind::Mug, Material::Wood, 2), 7);
+            .add(Item::new(ItemKind::Mug, Material::Wood, 2), 7, 1.0);
         colony
             .items
-            .insert(Item::new(ItemKind::Clothing, Material::Leather, 4), 1);
+            .add(Item::new(ItemKind::Clothing, Material::Leather, 4), 1, 1.0);
+        colony.items.wear(ItemKind::Mug, 2);
 
         // --- jobs / buildings / events / zones / elections / votes / raiders -------
         let mover_cat_id = colony.cats[2].id.clone();

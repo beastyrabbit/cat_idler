@@ -1,14 +1,15 @@
-//! DF-scale cat-themed item/material economy — data model only (P19 slice 1).
+//! DF-scale cat-themed item/material economy (P19).
 //!
 //! Per `docs/migration/specs/p19-items-materials-trade.md`: a compact `ItemKind ×
 //! Material` model gives DF-like breadth ("a wooden mug OR a stone mug") without an
-//! exploding item list. This module is pure and additive: it does not touch the core
-//! survival [`crate::entities::Resources`] struct (food/water/materials/planks/…),
-//! which stays fast and untouched. The colony item store (`ColonyRuntime::items` in
-//! [`crate::world_tick`]) is inert this slice — nothing produces or consumes items yet;
-//! that lands in slice 2 (material-variant workshop recipes).
+//! exploding item list. The finite item ledger adds stable unit identity, weight, and
+//! condition alongside the fast aggregate survival [`crate::entities::Resources`]
+//! store. Workshops create real units, truthful work wears functional equipment,
+//! broken units remain physical, and staffed workshops can repair them.
 
 use std::collections::BTreeMap;
+
+use std::ops::Deref;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -202,8 +203,8 @@ pub fn item_value(kind: ItemKind, material: Material, quality: u8) -> u32 {
 ///
 /// Serializes as a single compact wire string (`"kind:material:quality"`, e.g.
 /// `"weapon:metal:3"`) rather than a `{kind, material, quality}` object, so a
-/// `BTreeMap<Item, u32>` still round-trips as a plain JSON object (`serde_json` map
-/// keys must serialize to strings; a struct key would not).
+/// Legacy `BTreeMap<Item, u32>` saves used these compact strings as JSON object keys;
+/// [`ItemStore`] still accepts that representation during migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Item {
     pub kind: ItemKind,
@@ -273,31 +274,381 @@ impl<'de> Deserialize<'de> for Item {
     }
 }
 
-/// Adds `count` of `item` to `store` (saturating; a no-op for `count == 0`).
-pub fn add_item(store: &mut BTreeMap<Item, u32>, item: Item, count: u32) {
-    if count == 0 {
-        return;
+/// Stable unit weight in grams. The three factors are all integer percentages, so
+/// snapshots, trader limits, and deterministic twins never depend on floating-point
+/// rounding. Better workmanship trims waste without changing the material identity.
+#[must_use]
+pub fn item_weight_grams(item: Item) -> u32 {
+    let kind_grams = match item.kind {
+        ItemKind::Mug => 400_u64,
+        ItemKind::Bowl => 500,
+        ItemKind::Furniture => 8_000,
+        ItemKind::Tool => 2_500,
+        ItemKind::Weapon => 3_000,
+        ItemKind::Armor => 6_000,
+        ItemKind::Clothing => 800,
+        ItemKind::Trinket => 300,
+        ItemKind::Toy => 500,
+    };
+    let material_pct = match item.material {
+        Material::Fibre => 40_u64,
+        Material::Leather => 70,
+        Material::Gem => 80,
+        Material::Bone => 90,
+        Material::Wood => 100,
+        Material::Clay => 120,
+        Material::Metal => 150,
+        Material::Stone => 180,
+    };
+    let quality_pct = [110_u64, 105, 100, 95, 90][item.quality.min(MAX_QUALITY) as usize];
+    ((kind_grams * material_pct * quality_pct) / 10_000)
+        .max(1)
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+/// Base maximum durability before workshop research. Material and quality both
+/// matter: a fine metal tool survives far more real work than a crude wooden one.
+#[must_use]
+pub fn item_base_max_durability(item: Item) -> u32 {
+    let kind = match item.kind {
+        ItemKind::Mug | ItemKind::Bowl => 8_u64,
+        ItemKind::Furniture => 18,
+        ItemKind::Tool => 6,
+        ItemKind::Weapon => 8,
+        ItemKind::Armor => 10,
+        ItemKind::Clothing => 7,
+        ItemKind::Trinket => 6,
+        ItemKind::Toy => 5,
+    };
+    let material_pct = match item.material {
+        Material::Fibre => 55_u64,
+        Material::Clay => 70,
+        Material::Wood => 100,
+        Material::Leather => 120,
+        Material::Bone => 130,
+        Material::Stone => 155,
+        Material::Metal => 220,
+        Material::Gem => 180,
+    };
+    let quality_pct = [75_u64, 100, 125, 150, 200][item.quality.min(MAX_QUALITY) as usize];
+    ((kind * material_pct * quality_pct) / 10_000)
+        .max(1)
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
+/// Apply the owning workshop's resolved durability research to one item's stable
+/// base. Flooring is deliberate: research must cross a whole-use boundary before it
+/// grants another use, and identical ownership always produces identical equipment.
+#[must_use]
+pub fn item_max_durability(item: Item, durability_mult: f64) -> u32 {
+    let multiplier = if durability_mult.is_finite() {
+        durability_mult.max(0.0)
+    } else {
+        1.0
+    };
+    (f64::from(item_base_max_durability(item)) * multiplier)
+        .floor()
+        .max(1.0) as u32
+}
+
+/// Research/repair owner for an item. This is the exact existing production bench
+/// that makes or maintains the modeled material; no separate maintenance building is
+/// invented for this slice.
+#[must_use]
+pub const fn item_workshop_id(item: Item) -> &'static str {
+    match item.kind {
+        ItemKind::Tool => "woodworking",
+        ItemKind::Weapon | ItemKind::Armor => "smithy",
+        _ => match item.material {
+            Material::Wood => "woodworking",
+            Material::Stone | Material::Clay | Material::Gem | Material::Bone => "stone_prep",
+            Material::Metal => "smithy",
+            Material::Fibre => "clothier",
+            Material::Leather => "tannery",
+        },
     }
-    let entry = store.entry(item).or_insert(0);
-    *entry = entry.saturating_add(count);
+}
+
+/// One physical item with stable colony-local identity and independently persisted
+/// condition. Broken items remain in this ledger with `durability == 0`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemInstance {
+    pub id: String,
+    pub item: Item,
+    pub durability: u32,
+    pub max_durability: u32,
+}
+
+impl ItemInstance {
+    #[must_use]
+    pub const fn is_broken(&self) -> bool {
+        self.durability == 0
+    }
+
+    #[must_use]
+    pub const fn is_pristine(&self) -> bool {
+        self.durability == self.max_durability
+    }
+}
+
+/// Per-colony finite item inventory. `stacks` remains the deterministic aggregate
+/// view used by existing recipes and tests; `instances` is the authoritative unit
+/// ledger. Deref preserves the established read-only `BTreeMap<Item, u32>` API.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ItemStore {
+    stacks: BTreeMap<Item, u32>,
+    instances: BTreeMap<String, ItemInstance>,
+    next_serial: u64,
+}
+
+impl Deref for ItemStore {
+    type Target = BTreeMap<Item, u32>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.stacks
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ItemStoreRef<'a> {
+    next_serial: u64,
+    instances: Vec<&'a ItemInstance>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ItemStoreOwned {
+    #[serde(default)]
+    next_serial: u64,
+    #[serde(default)]
+    instances: Vec<ItemInstance>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ItemStoreWire {
+    Current(ItemStoreOwned),
+    Legacy(BTreeMap<Item, u32>),
+}
+
+impl Serialize for ItemStore {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        ItemStoreRef {
+            next_serial: self.next_serial,
+            instances: self.instances.values().collect(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ItemStore {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match ItemStoreWire::deserialize(deserializer)? {
+            ItemStoreWire::Current(state) => {
+                let mut store = Self {
+                    next_serial: state.next_serial,
+                    ..Self::default()
+                };
+                for mut instance in state.instances {
+                    instance.max_durability = instance.max_durability.max(1);
+                    instance.durability = instance.durability.min(instance.max_durability);
+                    store.next_serial = store.next_serial.max(serial_from_id(&instance.id));
+                    store.instances.insert(instance.id.clone(), instance);
+                }
+                store.rebuild_stacks();
+                Ok(store)
+            }
+            ItemStoreWire::Legacy(stacks) => {
+                let mut store = Self::default();
+                for (item, count) in stacks {
+                    store.add(item, count, 1.0);
+                }
+                Ok(store)
+            }
+        }
+    }
+}
+
+fn serial_from_id(id: &str) -> u64 {
+    id.strip_prefix("item-")
+        .and_then(|serial| serial.parse().ok())
+        .unwrap_or(0)
+}
+
+impl ItemStore {
+    fn rebuild_stacks(&mut self) {
+        self.stacks.clear();
+        for instance in self.instances.values() {
+            let entry = self.stacks.entry(instance.item).or_insert(0);
+            *entry = entry.saturating_add(1);
+        }
+    }
+
+    /// Add newly crafted units at full condition, with the workshop's resolved
+    /// durability research captured in their maximum durability.
+    pub fn add(&mut self, item: Item, count: u32, durability_mult: f64) {
+        for _ in 0..count {
+            self.next_serial = self.next_serial.saturating_add(1);
+            let id = format!("item-{:016}", self.next_serial);
+            let max_durability = item_max_durability(item, durability_mult);
+            self.instances.insert(
+                id.clone(),
+                ItemInstance {
+                    id,
+                    item,
+                    durability: max_durability,
+                    max_durability,
+                },
+            );
+        }
+        if count > 0 {
+            let entry = self.stacks.entry(item).or_insert(0);
+            *entry = entry.saturating_add(count);
+        }
+    }
+
+    /// Remove deterministic units regardless of condition (legacy aggregate API).
+    pub fn remove(&mut self, item: Item, count: u32) -> bool {
+        if self.stacks.get(&item).copied().unwrap_or(0) < count {
+            return false;
+        }
+        let ids = self
+            .instances
+            .iter()
+            .filter(|(_, instance)| instance.item == item)
+            .map(|(id, _)| id.clone())
+            .take(count as usize)
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.instances.remove(&id);
+        }
+        self.decrement_stack(item, count);
+        true
+    }
+
+    /// Remove only pristine units for trader sale. Damaged/broken goods remain
+    /// physical and must be repaired before a caravan accepts them.
+    pub fn remove_pristine(&mut self, item: Item, count: u32) -> bool {
+        let ids = self
+            .instances
+            .iter()
+            .filter(|(_, instance)| instance.item == item && instance.is_pristine())
+            .map(|(id, _)| id.clone())
+            .take(count as usize)
+            .collect::<Vec<_>>();
+        if ids.len() != count as usize {
+            return false;
+        }
+        for id in ids {
+            self.instances.remove(&id);
+        }
+        self.decrement_stack(item, count);
+        true
+    }
+
+    fn decrement_stack(&mut self, item: Item, count: u32) {
+        let remaining = self
+            .stacks
+            .get(&item)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(count);
+        if remaining == 0 {
+            self.stacks.remove(&item);
+        } else {
+            self.stacks.insert(item, remaining);
+        }
+    }
+
+    pub fn instances(&self) -> impl Iterator<Item = &ItemInstance> {
+        self.instances.values()
+    }
+
+    #[must_use]
+    pub fn instance(&self, id: &str) -> Option<&ItemInstance> {
+        self.instances.get(id)
+    }
+
+    #[must_use]
+    pub fn count_kind(&self, kind: ItemKind) -> u32 {
+        self.instances
+            .values()
+            .filter(|instance| instance.item.kind == kind)
+            .count() as u32
+    }
+
+    #[must_use]
+    pub fn usable_count(&self, kind: ItemKind) -> u32 {
+        self.instances
+            .values()
+            .filter(|instance| instance.item.kind == kind && !instance.is_broken())
+            .count() as u32
+    }
+
+    #[must_use]
+    pub fn pristine_count(&self, item: Item) -> u32 {
+        self.instances
+            .values()
+            .filter(|instance| instance.item == item && instance.is_pristine())
+            .count() as u32
+    }
+
+    /// Apply one point of truthful use to up to `count` intact units, in stable id
+    /// order. Returns the ids that crossed the broken boundary during this use.
+    pub fn wear(&mut self, kind: ItemKind, count: u32) -> Vec<String> {
+        let ids = self
+            .instances
+            .iter()
+            .filter(|(_, instance)| instance.item.kind == kind && !instance.is_broken())
+            .map(|(id, _)| id.clone())
+            .take(count as usize)
+            .collect::<Vec<_>>();
+        let mut broken = Vec::new();
+        for id in ids {
+            let instance = self.instances.get_mut(&id).expect("selected item exists");
+            instance.durability = instance.durability.saturating_sub(1);
+            if instance.is_broken() {
+                broken.push(id);
+            }
+        }
+        broken
+    }
+
+    /// Restore a damaged unit, updating its maximum to current workshop research.
+    pub fn repair(&mut self, id: &str, durability_mult: f64) -> bool {
+        let Some(instance) = self.instances.get_mut(id) else {
+            return false;
+        };
+        if instance.is_pristine() {
+            return false;
+        }
+        instance.max_durability = item_max_durability(instance.item, durability_mult);
+        instance.durability = instance.max_durability;
+        true
+    }
+}
+
+/// Adds `count` of `item` to `store` (saturating; a no-op for `count == 0`).
+pub fn add_item(store: &mut ItemStore, item: Item, count: u32) {
+    store.add(item, count, 1.0);
 }
 
 /// Removes `count` of `item` from `store`. Fails (returns `false`, store left
 /// untouched) if `store` holds fewer than `count`. On success, drops the entry
 /// entirely once its count reaches zero (keeps the map compact for
 /// `BTreeMap::is_empty` / `skip_serializing_if` checks).
-pub fn remove_item(store: &mut BTreeMap<Item, u32>, item: Item, count: u32) -> bool {
-    let have = store.get(&item).copied().unwrap_or(0);
-    if have < count {
-        return false;
-    }
-    let remaining = have - count;
-    if remaining == 0 {
-        store.remove(&item);
-    } else {
-        store.insert(item, remaining);
-    }
-    true
+pub fn remove_item(store: &mut ItemStore, item: Item, count: u32) -> bool {
+    store.remove(item, count)
 }
 
 #[cfg(test)]
@@ -429,7 +780,7 @@ mod tests {
 
     #[test]
     fn add_item_accumulates_counts() {
-        let mut store = BTreeMap::new();
+        let mut store = ItemStore::default();
         let mug = Item::new(ItemKind::Mug, Material::Wood, 1);
         add_item(&mut store, mug, 3);
         add_item(&mut store, mug, 2);
@@ -438,14 +789,14 @@ mod tests {
 
     #[test]
     fn add_item_zero_count_is_a_no_op() {
-        let mut store: BTreeMap<Item, u32> = BTreeMap::new();
+        let mut store = ItemStore::default();
         add_item(&mut store, Item::new(ItemKind::Mug, Material::Wood, 1), 0);
         assert!(store.is_empty());
     }
 
     #[test]
     fn remove_item_fails_when_insufficient_and_leaves_store_untouched() {
-        let mut store = BTreeMap::new();
+        let mut store = ItemStore::default();
         let mug = Item::new(ItemKind::Mug, Material::Wood, 1);
         add_item(&mut store, mug, 2);
 
@@ -455,7 +806,7 @@ mod tests {
 
     #[test]
     fn remove_item_succeeds_and_drops_the_entry_at_zero() {
-        let mut store = BTreeMap::new();
+        let mut store = ItemStore::default();
         let mug = Item::new(ItemKind::Mug, Material::Wood, 1);
         add_item(&mut store, mug, 5);
 
@@ -469,7 +820,7 @@ mod tests {
 
     #[test]
     fn remove_item_from_a_missing_item_fails_unless_count_is_zero() {
-        let mut store: BTreeMap<Item, u32> = BTreeMap::new();
+        let mut store = ItemStore::default();
         let mug = Item::new(ItemKind::Mug, Material::Wood, 1);
         assert!(!remove_item(&mut store, mug, 1));
         assert!(remove_item(&mut store, mug, 0));
@@ -477,7 +828,7 @@ mod tests {
 
     #[test]
     fn btreemap_store_iterates_in_stable_deterministic_order() {
-        let mut store = BTreeMap::new();
+        let mut store = ItemStore::default();
         add_item(
             &mut store,
             Item::new(ItemKind::Weapon, Material::Metal, 2),
@@ -489,7 +840,7 @@ mod tests {
         let order_a: Vec<Item> = store.keys().copied().collect();
         // Rebuild from scratch in a different insertion order — BTreeMap sorts by Ord,
         // so iteration order is independent of insertion order.
-        let mut store_b = BTreeMap::new();
+        let mut store_b = ItemStore::default();
         add_item(
             &mut store_b,
             Item::new(ItemKind::Mug, Material::Stone, 1),
@@ -517,8 +868,8 @@ mod tests {
     }
 
     #[test]
-    fn item_store_round_trips_through_json_as_a_plain_object() {
-        let mut store = BTreeMap::new();
+    fn item_store_round_trips_unit_identity_and_accepts_legacy_stack_json() {
+        let mut store = ItemStore::default();
         add_item(
             &mut store,
             Item::new(ItemKind::Weapon, Material::Metal, 3),
@@ -527,10 +878,65 @@ mod tests {
         add_item(&mut store, Item::new(ItemKind::Mug, Material::Wood, 1), 5);
 
         let json = serde_json::to_value(&store).unwrap();
-        assert_eq!(json["weapon:metal:3"], serde_json::json!(2));
-        assert_eq!(json["mug:wood:1"], serde_json::json!(5));
+        assert_eq!(json["nextSerial"], serde_json::json!(7));
+        assert_eq!(json["instances"].as_array().unwrap().len(), 7);
 
-        let back: BTreeMap<Item, u32> = serde_json::from_value(json).unwrap();
+        let back: ItemStore = serde_json::from_value(json).unwrap();
         assert_eq!(back, store);
+
+        let legacy = serde_json::json!({"weapon:metal:3": 2, "mug:wood:1": 5});
+        let migrated: ItemStore = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            migrated.get(&Item::new(ItemKind::Weapon, Material::Metal, 3)),
+            Some(&2)
+        );
+        assert_eq!(migrated.instances().count(), 7);
+    }
+
+    #[test]
+    fn weight_durability_wear_break_and_repair_are_stable_per_unit() {
+        let crude_wood = Item::new(ItemKind::Tool, Material::Wood, 0);
+        let fine_metal = Item::new(ItemKind::Tool, Material::Metal, 2);
+        assert!(item_weight_grams(fine_metal) > item_weight_grams(crude_wood));
+        assert!(item_base_max_durability(fine_metal) > item_base_max_durability(crude_wood));
+
+        let mut store = ItemStore::default();
+        store.add(crude_wood, 1, 1.5);
+        let id = store.instances().next().unwrap().id.clone();
+        let researched_max = store.instance(&id).unwrap().max_durability;
+        assert_eq!(
+            researched_max,
+            item_max_durability(crude_wood, 1.5),
+            "research is captured in the unit maximum"
+        );
+        for _ in 0..researched_max {
+            store.wear(ItemKind::Tool, 1);
+        }
+        assert!(store.instance(&id).unwrap().is_broken());
+        assert_eq!(store.usable_count(ItemKind::Tool), 0);
+        assert_eq!(store.get(&crude_wood), Some(&1), "broken remains physical");
+        assert!(store.repair(&id, 1.5));
+        assert!(store.instance(&id).unwrap().is_pristine());
+    }
+
+    #[test]
+    fn every_kind_material_quality_has_nonzero_stable_weight_and_durability() {
+        for &kind in ItemKind::ALL {
+            for &material in Material::ALL {
+                let mut previous_durability = 0;
+                let mut previous_weight = u32::MAX;
+                for quality in 0..=MAX_QUALITY {
+                    let item = Item::new(kind, material, quality);
+                    let weight = item_weight_grams(item);
+                    let durability = item_base_max_durability(item);
+                    assert!(weight > 0, "{item:?}");
+                    assert!(durability > 0, "{item:?}");
+                    assert!(durability >= previous_durability, "{item:?}");
+                    assert!(weight <= previous_weight, "{item:?}");
+                    previous_durability = durability;
+                    previous_weight = weight;
+                }
+            }
+        }
     }
 }

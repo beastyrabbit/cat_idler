@@ -25,9 +25,7 @@
 //! - [`LEATHER_TRADE_RECIPE`]: Tannery bench, [`crate::items::Material::Leather`], spends
 //!   leather, kinds: Clothing.
 
-use std::collections::BTreeMap;
-
-use crate::items::{Item, ItemKind, MAX_QUALITY, Material};
+use crate::items::{ItemKind, ItemStore, MAX_QUALITY, Material};
 use crate::life_sim::trade_level;
 use crate::production::ARCHITECT_SPEED;
 
@@ -171,7 +169,7 @@ pub fn advance_craft(
 /// need to simulate cycle-by-cycle, which isn't worth the complexity for a rare edge —
 /// rotation still advances correctly on the next tick from the updated store count).
 #[must_use]
-pub fn next_trade_kind(items: &BTreeMap<Item, u32>, recipe: &CraftRecipe) -> ItemKind {
+pub fn next_trade_kind(items: &ItemStore, recipe: &CraftRecipe) -> ItemKind {
     let crafted_so_far: u32 = items
         .iter()
         .filter(|(item, _count)| {
@@ -207,6 +205,7 @@ pub fn craft_quality_from_skill(skill_xp: f64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::items::{Item, add_item};
 
     fn options(
         has_worker: bool,
@@ -253,7 +252,7 @@ mod tests {
         assert_eq!(step.items_produced, 1);
         assert_eq!(step.intermediate_used, 1.0);
         assert_eq!(
-            next_trade_kind(&BTreeMap::new(), &CLOTH_TRADE_RECIPE),
+            next_trade_kind(&ItemStore::default(), &CLOTH_TRADE_RECIPE),
             ItemKind::Clothing
         );
 
@@ -275,7 +274,7 @@ mod tests {
         assert_eq!(step.items_produced, 1);
         assert_eq!(step.intermediate_used, 1.0);
         assert_eq!(
-            next_trade_kind(&BTreeMap::new(), &LEATHER_TRADE_RECIPE),
+            next_trade_kind(&ItemStore::default(), &LEATHER_TRADE_RECIPE),
             ItemKind::Clothing
         );
     }
@@ -356,32 +355,40 @@ mod tests {
 
     #[test]
     fn next_trade_kind_rotates_deterministically_by_crafted_count() {
-        let mut store: BTreeMap<Item, u32> = BTreeMap::new();
+        let mut store = ItemStore::default();
         assert_eq!(next_trade_kind(&store, &WOOD_TRADE_RECIPE), ItemKind::Mug);
 
-        store.insert(Item::new(ItemKind::Mug, Material::Wood, 0), 1);
+        add_item(&mut store, Item::new(ItemKind::Mug, Material::Wood, 0), 1);
         assert_eq!(next_trade_kind(&store, &WOOD_TRADE_RECIPE), ItemKind::Bowl);
 
-        store.insert(Item::new(ItemKind::Bowl, Material::Wood, 2), 1);
+        add_item(&mut store, Item::new(ItemKind::Bowl, Material::Wood, 2), 1);
         assert_eq!(
             next_trade_kind(&store, &WOOD_TRADE_RECIPE),
             ItemKind::Furniture
         );
 
-        store.insert(Item::new(ItemKind::Furniture, Material::Wood, 1), 1);
+        add_item(
+            &mut store,
+            Item::new(ItemKind::Furniture, Material::Wood, 1),
+            1,
+        );
         assert_eq!(next_trade_kind(&store, &WOOD_TRADE_RECIPE), ItemKind::Toy);
 
-        store.insert(Item::new(ItemKind::Toy, Material::Wood, 3), 1);
+        add_item(&mut store, Item::new(ItemKind::Toy, Material::Wood, 3), 1);
         // Wraps back around after all four kinds are represented once.
         assert_eq!(next_trade_kind(&store, &WOOD_TRADE_RECIPE), ItemKind::Mug);
     }
 
     #[test]
     fn next_trade_kind_ignores_other_materials_and_non_recipe_kinds() {
-        let mut store: BTreeMap<Item, u32> = BTreeMap::new();
+        let mut store = ItemStore::default();
         // Stone mugs/weapons must not shift the wood rotation.
-        store.insert(Item::new(ItemKind::Mug, Material::Stone, 0), 5);
-        store.insert(Item::new(ItemKind::Weapon, Material::Wood, 0), 5);
+        add_item(&mut store, Item::new(ItemKind::Mug, Material::Stone, 0), 5);
+        add_item(
+            &mut store,
+            Item::new(ItemKind::Weapon, Material::Wood, 0),
+            5,
+        );
         assert_eq!(next_trade_kind(&store, &WOOD_TRADE_RECIPE), ItemKind::Mug);
     }
 

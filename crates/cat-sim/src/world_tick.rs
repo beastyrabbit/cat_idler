@@ -29,7 +29,7 @@ use crate::{
     },
     idle_engine,
     idle_rules::{self, consumption_for_tick},
-    items::{self, Item},
+    items::{self, Item, ItemKind, ItemStore, Material},
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         BASELINE_HUNT_MAX_SLOTS, BASELINE_SCOUT_MAX_SLOTS, BASELINE_WATER_MAX_SLOTS, CatBrief,
@@ -256,13 +256,11 @@ pub struct ColonyRuntime {
     /// Tent keeps it exact each tick, otherwise it recounts on an interval. Never affects the
     /// true `resources`.
     pub stock_ledger: StockLedger,
-    /// DF-scale item/material economy store (P19 slice 1). Distinct `(kind, material,
-    /// quality)` stacks with their held count — additive alongside `resources`, which
-    /// stays the fast, untouched source of truth for the core survival goods. Empty for
-    /// every colony this slice: nothing produces or consumes items yet (that lands in
-    /// slice 2's material-variant workshop recipes). `BTreeMap` keeps snapshot/iteration
-    /// order deterministic.
-    pub items: BTreeMap<Item, u32>,
+    /// DF-scale finite item ledger (P19). Distinct `(kind, material, quality)` stacks
+    /// retain stable per-unit identity and condition. Functional tool/weapon/armor
+    /// counts mirror their physical `resources` piles; broken units remain present but
+    /// do not contribute. Deterministic maps keep save and snapshot order stable.
+    pub items: ItemStore,
     /// Woodworking bench's trade-craft cycle timer (P19 slice 2) — carries fractional
     /// progress toward [`crate::recipes::WOOD_TRADE_RECIPE`]'s cycle, entirely separate
     /// from `BuildingRuntime::production_progress` (which the bench's *functional*
@@ -1946,7 +1944,7 @@ impl Default for ColonyRuntime {
             gather_spots: Vec::new(),
             fish_habitats: BTreeMap::new(),
             stock_ledger: StockLedger::default(),
-            items: BTreeMap::new(),
+            items: ItemStore::default(),
             wood_craft_progress: 0.0,
             stone_craft_progress: 0.0,
             clothier_craft_progress: 0.0,
@@ -2025,10 +2023,45 @@ impl ColonyRuntime {
         items::add_item(&mut self.items, item, count);
     }
 
+    /// Credit newly crafted finite units with the durability modifier owned by the
+    /// exact workshop that made them.
+    pub fn add_crafted_item(&mut self, item: Item, count: u32) {
+        let effects = resolve_effects(self.upgrade_tree.owned_node_ids.iter());
+        let durability_mult = effects
+            .building(items::item_workshop_id(item))
+            .durability_mult;
+        self.items.add(item, count, durability_mult);
+    }
+
     /// Removes `count` of `item` from the colony's item store. Returns `false` (store
     /// left untouched) if the store holds fewer than `count`.
     pub fn remove_item(&mut self, item: Item, count: u32) -> bool {
         items::remove_item(&mut self.items, item, count)
+    }
+}
+
+/// Aggregate resources remain the physical-location ledger. Identified items are the
+/// condition authority; any excess aggregate count belongs to a legacy save and keeps
+/// its old usable behavior until ordinary consumption removes it.
+fn usable_functional_stock(colony: &ColonyRuntime, kind: ItemKind, aggregate: f64) -> f64 {
+    let identified = f64::from(colony.items.count_kind(kind));
+    let usable_identified = f64::from(colony.items.usable_count(kind));
+    (aggregate.max(0.0) - identified).max(0.0) + usable_identified
+}
+
+pub(crate) fn usable_tool_stock(colony: &ColonyRuntime) -> f64 {
+    usable_functional_stock(colony, ItemKind::Tool, colony.resources.tools)
+}
+
+fn wear_functional_items(colony: &mut ColonyRuntime, kind: ItemKind, count: u32, now_ms: i64) {
+    let broken = colony.items.wear(kind, count);
+    for id in broken {
+        append_event(
+            colony,
+            now_ms,
+            EventKind::Production,
+            format!("{id} wore out and needs workshop repair."),
+        );
     }
 }
 
@@ -7018,6 +7051,7 @@ fn advance_raw_material_benches(
     gate: TickGate,
     production_elapsed: f64,
     offering_materials_reserve: f64,
+    tools_contributed: bool,
 ) {
     let priority =
         raw_material_staffing_priority(&colony.resources, construction_material_reserve(colony));
@@ -7072,6 +7106,14 @@ fn advance_raw_material_benches(
                 },
             );
             if step.refined_produced > 0.0 {
+                if tools_contributed {
+                    wear_functional_items(
+                        colony,
+                        ItemKind::Tool,
+                        step.refined_produced as u32,
+                        gate.processed_through,
+                    );
+                }
                 colony.resources.materials =
                     (colony.resources.materials - step.materials_used).max(0.0);
                 let (noun, source) = match bench_type {
@@ -7192,11 +7234,18 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         * research_effects.production_rate_mult;
     ensure_farmer_plots(colony, world_seed, gate.processed_through);
     advance_designated_farms(colony, gate, world_seed, production_elapsed);
-    let crafting_elapsed = productive_elapsed(production_elapsed, colony.resources.tools);
+    let productive_tools = usable_tool_stock(colony);
+    let crafting_elapsed = productive_elapsed(production_elapsed, productive_tools);
     // Production follows the physical worker, regardless of who assigned it. A
     // Forester owns automatic staffing above; a player may always staff the same
     // bench manually while that office is vacant.
-    advance_raw_material_benches(colony, gate, crafting_elapsed, offering_materials_reserve);
+    advance_raw_material_benches(
+        colony,
+        gate,
+        crafting_elapsed,
+        offering_materials_reserve,
+        productive_tools >= 1.0,
+    );
     let building_ids = colony
         .buildings
         .iter()
@@ -7211,8 +7260,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         let modifiers = research_effects.building(building_type.as_str());
         let building_elapsed = production_elapsed * modifiers.output_mult
             / modifiers.cycle_time_mult.max(f64::EPSILON);
-        let building_crafting_elapsed =
-            productive_elapsed(building_elapsed, colony.resources.tools);
+        let building_crafting_elapsed = productive_elapsed(building_elapsed, productive_tools);
         match building_type {
             BuildingType::Field => {
                 // The Field is a role station, not an invisible food faucet. Its worker
@@ -7246,6 +7294,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     },
                 );
                 if step.refined_produced > 0.0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            step.refined_produced as u32,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.materials =
                         (colony.resources.materials - step.materials_used).max(0.0);
                     colony.resources.refined += step.refined_produced;
@@ -7285,10 +7341,9 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
             }
             BuildingType::Smithy => {
                 let worker = assigned_worker(colony, &building_id);
-                let skilled_elapsed = skilled_station_elapsed(
-                    building_crafting_elapsed,
-                    worker.map_or(0.0, |cat| cat.skill(Labor::Metalwork)),
-                );
+                let metalwork_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Metalwork));
+                let skilled_elapsed =
+                    skilled_station_elapsed(building_crafting_elapsed, metalwork_skill);
                 let (spendable_materials, _) = spendable_production_materials(colony);
                 let step = advance_smithy(
                     colony.buildings[building_index].production_progress,
@@ -7303,12 +7358,29 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     },
                 );
                 if step.weapons_produced > 0.0 || step.armor_produced > 0.0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            step.weapons_produced as u32,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.refined =
                         (colony.resources.refined - step.refined_used).max(0.0);
                     colony.resources.materials =
                         (colony.resources.materials - step.materials_used).max(0.0);
                     colony.resources.weapons += step.weapons_produced;
                     colony.resources.armor += step.armor_produced;
+                    let quality = craft_quality_from_skill(metalwork_skill);
+                    colony.add_crafted_item(
+                        Item::new(ItemKind::Weapon, Material::Metal, quality),
+                        step.weapons_produced as u32,
+                    );
+                    colony.add_crafted_item(
+                        Item::new(ItemKind::Armor, Material::Metal, quality),
+                        step.armor_produced as u32,
+                    );
                     // Route the forged gear to the nearest accepting stockpile to the smithy
                     // (P12.4a) — pile-only, `resources` unchanged, shrine fallback with no piles.
                     let site = colony.buildings[building_index].position;
@@ -7357,6 +7429,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 // floors to zero cycles, so this is a strict no-op and the smithy's
                 // forged-gear output stays byte-identical to before this chain existed.
                 let forge_worker = assigned_worker(colony, &building_id);
+                let forge_skill = forge_worker.map_or(0.0, |cat| cat.skill(Labor::Metalwork));
                 let forge_step = advance_metal_forge(
                     colony.metal_forge_progress,
                     skilled_elapsed,
@@ -7370,10 +7443,27 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 );
                 colony.metal_forge_progress = forge_step.next_progress;
                 if forge_step.weapons_produced > 0.0 || forge_step.armor_produced > 0.0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            forge_step.weapons_produced as u32,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.metal =
                         (colony.resources.metal - forge_step.metal_used).max(0.0);
                     colony.resources.weapons += forge_step.weapons_produced;
                     colony.resources.armor += forge_step.armor_produced;
+                    let quality = craft_quality_from_skill(forge_skill);
+                    colony.add_crafted_item(
+                        Item::new(ItemKind::Weapon, Material::Metal, quality),
+                        forge_step.weapons_produced as u32,
+                    );
+                    colony.add_crafted_item(
+                        Item::new(ItemKind::Armor, Material::Metal, quality),
+                        forge_step.armor_produced as u32,
+                    );
                     let site = colony.buildings[building_index].position;
                     route_output_to_nearest_pile(
                         colony,
@@ -7434,6 +7524,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 );
                 colony.stone_craft_progress = craft_step.next_progress;
                 if craft_step.items_produced > 0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            craft_step.items_produced,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.blocks =
                         (colony.resources.blocks - craft_step.intermediate_used).max(0.0);
                     credit_trade_craft(
@@ -7468,9 +7566,25 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     },
                 );
                 if step.tools_produced > 0.0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            step.tools_produced as u32,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.planks = (colony.resources.planks - step.planks_used).max(0.0);
                     colony.resources.blocks = (colony.resources.blocks - step.blocks_used).max(0.0);
                     colony.resources.tools += step.tools_produced;
+                    colony.add_crafted_item(
+                        Item::new(
+                            ItemKind::Tool,
+                            Material::Wood,
+                            craft_quality_from_skill(craft_skill),
+                        ),
+                        step.tools_produced as u32,
+                    );
                     append_event(
                         colony,
                         gate.processed_through,
@@ -7513,6 +7627,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 );
                 colony.wood_craft_progress = craft_step.next_progress;
                 if craft_step.items_produced > 0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            craft_step.items_produced,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.planks =
                         (colony.resources.planks - craft_step.intermediate_used).max(0.0);
                     credit_trade_craft(
@@ -7546,6 +7668,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     },
                 );
                 if step.refined_produced > 0.0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            step.refined_produced as u32,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.ore = (colony.resources.ore - step.materials_used).max(0.0);
                     colony.resources.metal += step.refined_produced;
                     append_event(
@@ -7590,6 +7720,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     },
                 );
                 if step.refined_produced > 0.0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            step.refined_produced as u32,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.fibre =
                         (colony.resources.fibre - step.materials_used).max(0.0);
                     colony.resources.cloth += step.refined_produced;
@@ -7633,6 +7771,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 );
                 colony.clothier_craft_progress = craft_step.next_progress;
                 if craft_step.items_produced > 0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            craft_step.items_produced,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.cloth =
                         (colony.resources.cloth - craft_step.intermediate_used).max(0.0);
                     credit_trade_craft(
@@ -7663,6 +7809,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     },
                 );
                 if step.refined_produced > 0.0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            step.refined_produced as u32,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.hide = (colony.resources.hide - step.materials_used).max(0.0);
                     colony.resources.leather += step.refined_produced;
                     append_event(
@@ -7702,6 +7856,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 );
                 colony.tannery_craft_progress = craft_step.next_progress;
                 if craft_step.items_produced > 0 {
+                    if productive_tools >= 1.0 {
+                        wear_functional_items(
+                            colony,
+                            ItemKind::Tool,
+                            craft_step.items_produced,
+                            gate.processed_through,
+                        );
+                    }
                     colony.resources.leather =
                         (colony.resources.leather - craft_step.intermediate_used).max(0.0);
                     credit_trade_craft(
@@ -7829,7 +7991,7 @@ fn credit_trade_craft(
     let kind = next_trade_kind(&colony.items, recipe);
     let quality = craft_quality_from_skill(craft_skill);
     let item = Item::new(kind, recipe.material, quality);
-    colony.add_item(item, items_produced);
+    colony.add_crafted_item(item, items_produced);
     if let Some((id, labor)) = craft_worker
         && let Some(idx) = colony
             .cats
@@ -9047,6 +9209,8 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
 ) {
     let due_jobs = due_active_jobs(colony, gate);
     let mut interrupted_jobs = HashSet::new();
+    let tools_contributed = usable_tool_stock(colony) >= 1.0;
+    let mut completed_tool_uses = 0_u32;
 
     for job in &due_jobs {
         if job.kind == JobKind::BuildHouse && assigned_alive_cat_index(colony, job).is_none() {
@@ -9113,12 +9277,27 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
             stored.status = JobStatus::Completed;
             stored.completed_at = Some(gate.processed_through);
         }
+        if tools_contributed
+            && matches!(
+                job.kind,
+                JobKind::BuildHouse
+                    | JobKind::Quarry
+                    | JobKind::GatherLogs
+                    | JobKind::Fish
+                    | JobKind::HaulGatherSpot
+            )
+        {
+            completed_tool_uses = completed_tool_uses.saturating_add(1);
+        }
         append_event(
             colony,
             gate.processed_through,
             EventKind::JobCompleted,
             format!("Completed {}.", job.kind.as_str().replace('_', " ")),
         );
+    }
+    for _ in 0..completed_tool_uses {
+        wear_functional_items(colony, ItemKind::Tool, 1, gate.processed_through);
     }
 }
 
@@ -12039,6 +12218,12 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     }
 
     colony.resources = starting_resources_with_blessings(colony.scale, blessings);
+    // Crafted equipment is banked physical wealth like the rest of the item ledger.
+    // Re-seed its aggregate pile counts so a reset cannot leave durable identities
+    // contributing from nowhere (or stranded outside player-visible storage).
+    colony.resources.tools += f64::from(colony.items.count_kind(ItemKind::Tool));
+    colony.resources.weapons += f64::from(colony.items.count_kind(ItemKind::Weapon));
+    colony.resources.armor += f64::from(colony.items.count_kind(ItemKind::Armor));
     // Drop player piles; the end-of-tick reconcile reseeds the shrine reservoir.
     colony.stockpiles.clear();
     colony.stock_ledger = StockLedger::default();
@@ -12681,8 +12866,8 @@ fn resolve_active_raid(
     let muster = muster_defense(
         &combatants,
         DefenseStock {
-            weapons: colony.resources.weapons,
-            armor: colony.resources.armor,
+            weapons: usable_functional_stock(colony, ItemKind::Weapon, colony.resources.weapons),
+            armor: usable_functional_stock(colony, ItemKind::Armor, colony.resources.armor),
         },
         CombatModifiers {
             combat_power_mult: effects.combat_power_mult,
@@ -12706,8 +12891,32 @@ fn resolve_active_raid(
         }
     }
 
-    colony.resources.weapons = (colony.resources.weapons - f64::from(muster.weapons_used)).max(0.0);
-    colony.resources.armor = (colony.resources.armor - f64::from(muster.armor_used)).max(0.0);
+    let identified_weapons_used = muster
+        .weapons_used
+        .min(colony.items.usable_count(ItemKind::Weapon));
+    let identified_armor_used = muster
+        .armor_used
+        .min(colony.items.usable_count(ItemKind::Armor));
+    wear_functional_items(
+        colony,
+        ItemKind::Weapon,
+        identified_weapons_used,
+        gate.processed_through,
+    );
+    wear_functional_items(
+        colony,
+        ItemKind::Armor,
+        identified_armor_used,
+        gate.processed_through,
+    );
+    // Identified durable gear remains physical after battle. Only legacy aggregate
+    // gear with no unit ledger retains the old one-use consumption behavior.
+    colony.resources.weapons = (colony.resources.weapons
+        - f64::from(muster.weapons_used.saturating_sub(identified_weapons_used)))
+    .max(0.0);
+    colony.resources.armor = (colony.resources.armor
+        - f64::from(muster.armor_used.saturating_sub(identified_armor_used)))
+    .max(0.0);
 
     if outcome.defenders_win {
         for mustered in &muster.per_cat {
@@ -13690,7 +13899,7 @@ fn queue_job_requested_by(
             | JobKind::Fish
             | JobKind::HaulGatherSpot
     ) {
-        productive_duration_ms(base_duration_ms, colony.resources.tools)
+        productive_duration_ms(base_duration_ms, usable_tool_stock(colony))
     } else {
         base_duration_ms
     };
@@ -26266,6 +26475,171 @@ mod tests {
     }
 
     #[test]
+    fn completed_work_truthfully_wears_a_finite_tool_until_it_breaks() {
+        let tool = Item::new(ItemKind::Tool, Material::Wood, 0);
+        let mut colony = chain_colony(
+            BuildingType::Workshop,
+            Resources {
+                materials: 200.0,
+                tools: 1.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.add_crafted_item(tool, 1);
+        let tool_id = colony.items.instances().next().unwrap().id.clone();
+        let max_durability = colony.items.instance(&tool_id).unwrap().max_durability;
+        assert!(usable_tool_stock(&colony) >= 1.0);
+
+        for use_index in 0..max_durability {
+            colony.buildings[0].production_progress = 590.0;
+            phase_23_production(
+                &mut colony,
+                production_gate(30, i64::from(use_index + 1) * 30_000),
+                123,
+            );
+            assert_eq!(
+                colony.items.instance(&tool_id).unwrap().durability,
+                max_durability - use_index - 1,
+                "one completed production cycle causes exactly one use of wear"
+            );
+        }
+
+        assert!(colony.items.instance(&tool_id).unwrap().is_broken());
+        assert_eq!(colony.items.get(&tool), Some(&1), "broken remains physical");
+        assert_eq!(colony.resources.tools, 1.0, "physical pile count remains");
+        assert_eq!(usable_tool_stock(&colony), 0.0, "broken stops contributing");
+        assert_eq!(
+            productive_elapsed(30.0, usable_tool_stock(&colony)),
+            30.0,
+            "a broken tool grants no productivity acceleration"
+        );
+    }
+
+    #[test]
+    fn woodworking_durability_research_changes_created_and_repaired_maximums() {
+        let tool = Item::new(ItemKind::Tool, Material::Wood, 2);
+        let mut baseline = ColonyRuntime::default();
+        baseline.add_crafted_item(tool, 1);
+        let baseline_max = baseline.items.instances().next().unwrap().max_durability;
+
+        let mut researched = ColonyRuntime::default();
+        researched
+            .upgrade_tree
+            .owned_node_ids
+            .push("woodworking_foundations".to_owned());
+        researched.add_crafted_item(tool, 1);
+        let instance = researched.items.instances().next().unwrap();
+        assert!(
+            instance.max_durability > baseline_max,
+            "the existing durability research payload must be observable on real items"
+        );
+    }
+
+    #[test]
+    fn signed_guided_item_campaign_creates_uses_breaks_and_repairs_deterministically() {
+        fn run() -> WorldState {
+            let mut colony = chain_colony(
+                BuildingType::Woodworking,
+                Resources {
+                    materials: 200.0,
+                    planks: 50.0,
+                    blocks: 50.0,
+                    ..Resources::default()
+                },
+                false,
+            );
+            colony.buildings.push(BuildingRuntime {
+                id: "guided-workshop".to_owned(),
+                building_type: BuildingType::Workshop,
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 590.0,
+                ..BuildingRuntime::default()
+            });
+            let cat_id = colony.cats[0].id.clone();
+            let mut world = WorldState {
+                world_seed: 123,
+                colonies: vec![colony],
+            };
+            let action_ctx = |now_ms| ActionCtx {
+                session_id: "guided-items-session".to_owned(),
+                player_id: "guided-items-player".to_owned(),
+                colony_id: "colony-1".to_owned(),
+                now_ms,
+            };
+            let assign = |building_id: &str| proto::ClientAction::AssignWorker {
+                session_id: "guided-items-session".to_owned(),
+                nickname: "Playtester".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: cat_id.clone(),
+                building_id: Some(building_id.to_owned()),
+            };
+
+            assert!(apply_action(&mut world, &assign("chain-1"), &action_ctx(1_000)).ok);
+            phase_23_production(&mut world.colonies[0], production_gate(30, 30_000), 123);
+            let tool_id = world.colonies[0]
+                .items
+                .instances()
+                .find(|instance| instance.item.kind == ItemKind::Tool)
+                .expect("guided woodworking produced a finite tool")
+                .id
+                .clone();
+            let max_durability = world.colonies[0]
+                .items
+                .instance(&tool_id)
+                .unwrap()
+                .max_durability;
+
+            assert!(apply_action(&mut world, &assign("guided-workshop"), &action_ctx(31_000),).ok);
+            for use_index in 0..max_durability {
+                let workshop = world.colonies[0]
+                    .buildings
+                    .iter_mut()
+                    .find(|building| building.id == "guided-workshop")
+                    .unwrap();
+                workshop.production_progress = 590.0;
+                phase_23_production(
+                    &mut world.colonies[0],
+                    production_gate(30, 60_000 + i64::from(use_index) * 30_000),
+                    123,
+                );
+            }
+            assert!(
+                world.colonies[0]
+                    .items
+                    .instance(&tool_id)
+                    .unwrap()
+                    .is_broken()
+            );
+
+            assert!(apply_action(&mut world, &assign("chain-1"), &action_ctx(200_000)).ok);
+            let repair = proto::ClientAction::RepairItem {
+                session_id: "guided-items-session".to_owned(),
+                nickname: "Playtester".to_owned(),
+                sig: "signed".to_owned(),
+                item_id: tool_id.clone(),
+            };
+            assert!(apply_action(&mut world, &repair, &action_ctx(201_000)).ok);
+            assert!(
+                world.colonies[0]
+                    .items
+                    .instance(&tool_id)
+                    .unwrap()
+                    .is_pristine()
+            );
+            world
+        }
+
+        let left = run();
+        let right = run();
+        assert_eq!(
+            left, right,
+            "the signed item campaign must be bit-deterministic"
+        );
+    }
+
+    #[test]
     fn raw_benches_preserve_the_reachable_offering_threshold_after_tool_bootstrap() {
         let mut colony = chain_colony(
             BuildingType::WoodCutter,
@@ -26469,7 +26843,7 @@ mod tests {
         let wood_items: Vec<(&Item, &u32)> = colony
             .items
             .iter()
-            .filter(|(item, _)| item.material == Material::Wood)
+            .filter(|(item, _)| item.material == Material::Wood && item.kind != ItemKind::Tool)
             .collect();
         assert_eq!(
             wood_items.len(),
@@ -27492,6 +27866,39 @@ mod tests {
         assert!(
             colony.trader.is_none(),
             "a mid-visit trader does not survive a collapse cleanly"
+        );
+    }
+
+    #[test]
+    fn finite_equipment_identity_and_condition_survive_reset_with_physical_piles() {
+        let mut colony = trader_test_colony(1);
+        for item in [
+            Item::new(ItemKind::Tool, Material::Wood, 0),
+            Item::new(ItemKind::Weapon, Material::Metal, 1),
+            Item::new(ItemKind::Armor, Material::Metal, 1),
+        ] {
+            colony.add_crafted_item(item, 1);
+        }
+        colony.items.wear(ItemKind::Tool, 1);
+        let expected_items = colony.items.clone();
+
+        reset_run(&mut colony, 5_000, RunResetReason::AllCatsDead);
+        assert_eq!(
+            colony.items, expected_items,
+            "banked finite identities survive"
+        );
+        assert_eq!(colony.resources.tools, 1.0);
+        assert_eq!(colony.resources.weapons, 1.0);
+        assert_eq!(colony.resources.armor, 1.0);
+        reconcile_colony_stockpiles(&mut colony);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .map(|pile| pile.contents.tools)
+                .sum::<f64>(),
+            1.0,
+            "the retained tool is restored to player-visible storage"
         );
     }
 

@@ -19,7 +19,7 @@
 //! tick sequence, same trader schedule, always.)
 
 use crate::{
-    items::{Item, item_value},
+    items::{Item, item_value, item_weight_grams},
     stockpiles::ResourceKind,
 };
 
@@ -55,6 +55,16 @@ pub const TRADER_BUY_PRICE_PCT: u32 = 60;
 /// Percent of a resource's [`resource_unit_price`] the trader charges when it *sells*
 /// that resource to the colony (its markup).
 pub const TRADER_SELL_PRICE_PCT: u32 = 150;
+
+/// Maximum finished-goods weight accepted in one signed sale. Items do not yet
+/// have a physical wagon-haul job, so the existing caravan transaction is the honest
+/// load seam: a player may make multiple bounded loads while the trader is present.
+pub const TRADER_ITEM_LOAD_LIMIT_GRAMS: u32 = 20_000;
+
+#[must_use]
+pub fn max_item_units_per_load(item: Item) -> u32 {
+    TRADER_ITEM_LOAD_LIMIT_GRAMS / item_weight_grams(item).max(1)
+}
 
 /// A visiting trader's lifecycle state, in visit order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

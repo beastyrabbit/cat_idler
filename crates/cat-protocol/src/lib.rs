@@ -240,6 +240,9 @@ pub struct TraderBuyOffer {
     pub available: u32,
     /// Coin the trader pays per unit.
     pub unit_price: f64,
+    /// Physical unit weight used by the caravan's bounded per-action load.
+    #[serde(default)]
+    pub unit_weight_grams: u32,
 }
 
 /// One resource kind the trader will sell to the colony, and at what coin-per-unit price.
@@ -263,6 +266,21 @@ pub struct ItemStackSnapshot {
     pub quality: u8,
     pub count: u32,
     pub value: u32,
+    /// Stable physical unit weight; total stack weight is `count * unit_weight_grams`.
+    #[serde(default)]
+    pub unit_weight_grams: u32,
+    /// Finite units and their independently persisted condition.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<ItemInstanceSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemInstanceSnapshot {
+    pub id: String,
+    pub durability: u32,
+    pub max_durability: u32,
+    pub broken: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1570,6 +1588,13 @@ pub enum ClientAction {
         quality: u8,
         count: u32,
     },
+    /// Repair one finite item at its appropriate completed, staffed workshop.
+    RepairItem {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        item_id: String,
+    },
     /// Buy `amount` of `resource` from the visiting trader with coin (P19 slice 3). Only
     /// valid while a trader is present, `Trading`, and stocks that resource kind.
     BuyResource {
@@ -1853,6 +1878,32 @@ mod tests {
     }
 
     #[test]
+    fn repair_item_action_round_trips_with_stable_item_identity() {
+        let action = ClientAction::RepairItem {
+            session_id: "session_1".to_string(),
+            nickname: "Guest Cat".to_string(),
+            sig: "signed".to_string(),
+            item_id: "item-0000000000000042".to_string(),
+        };
+
+        let encoded = serde_json::to_value(&action).expect("serialize action");
+        assert_eq!(
+            encoded,
+            json!({
+                "action": "repairItem",
+                "sessionId": "session_1",
+                "nickname": "Guest Cat",
+                "sig": "signed",
+                "itemId": "item-0000000000000042"
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(encoded).expect("deserialize action"),
+            action
+        );
+    }
+
+    #[test]
     fn buy_resource_action_round_trips_with_route_field_names() {
         let action = ClientAction::BuyResource {
             session_id: "session_1".to_string(),
@@ -1891,6 +1942,7 @@ mod tests {
                 quality: 1,
                 available: 3,
                 unit_price: 2.4,
+                unit_weight_grams: 420,
             }],
             sell_offers: vec![TraderSellOffer {
                 resource: ResourceKind::Food,
@@ -2725,6 +2777,13 @@ mod tests {
             quality: 3,
             count: 2,
             value: 130,
+            unit_weight_grams: 4_275,
+            instances: vec![ItemInstanceSnapshot {
+                id: "item-1".to_owned(),
+                durability: 0,
+                max_durability: 26,
+                broken: true,
+            }],
         };
         let encoded = serde_json::to_value(&stack).expect("serialize");
         assert_eq!(
@@ -2734,7 +2793,14 @@ mod tests {
                 "material": "metal",
                 "quality": 3,
                 "count": 2,
-                "value": 130
+                "value": 130,
+                "unitWeightGrams": 4275,
+                "instances": [{
+                    "id": "item-1",
+                    "durability": 0,
+                    "maxDurability": 26,
+                    "broken": true
+                }]
             })
         );
         let back: ItemStackSnapshot = serde_json::from_value(encoded).expect("deserialize");
@@ -2765,6 +2831,8 @@ mod tests {
             quality: 1,
             count: 5,
             value: 4,
+            unit_weight_grams: 420,
+            instances: Vec::new(),
         });
         let encoded = serde_json::to_value(&snap).expect("serialize");
         assert_eq!(encoded["colonies"][0]["items"][0]["kind"], json!("mug"));

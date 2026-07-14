@@ -2173,6 +2173,9 @@ struct GoodsLine(usize);
 /// The per-kind glyph node for a goods line (tinted by material).
 #[derive(Component, Clone, Copy)]
 struct GoodsLineIcon(usize);
+/// Repair affordance for a damaged finite item in one goods row.
+#[derive(Component, Clone, Copy)]
+struct RepairGoodsButton(usize);
 /// The treasury-total line at the top of the goods panel.
 #[derive(Component)]
 struct GoodsTreasury;
@@ -2491,17 +2494,72 @@ fn capitalize_word(word: &str) -> String {
     }
 }
 
-/// One goods line: `Fine Wood Mug x3 - 12g ea (36g)`, quality + material + kind,
-/// per-unit value and the stack subtotal.
+fn item_weight_label(weight_grams: u32) -> String {
+    if weight_grams >= 1_000 {
+        format!("{:.1}kg", f64::from(weight_grams) / 1_000.0)
+    } else {
+        format!("{weight_grams}g")
+    }
+}
+
+fn item_condition_label(stack: &ItemStackSnapshot) -> String {
+    if stack.instances.is_empty() {
+        return "legacy stock".to_string();
+    }
+    let broken = stack.instances.iter().filter(|item| item.broken).count();
+    let damaged = stack
+        .instances
+        .iter()
+        .filter(|item| item.durability < item.max_durability)
+        .count();
+    let min = stack
+        .instances
+        .iter()
+        .map(|item| item.durability)
+        .min()
+        .unwrap_or_default();
+    let max = stack
+        .instances
+        .iter()
+        .map(|item| item.max_durability)
+        .max()
+        .unwrap_or_default();
+    if damaged == 0 {
+        format!("condition {max}/{max}")
+    } else if broken == 0 {
+        format!("condition {min}-{max}/{max} · {damaged} damaged")
+    } else {
+        format!("condition {min}-{max}/{max} · {damaged} damaged · {broken} broken")
+    }
+}
+
+fn first_damaged_item_id(stack: &ItemStackSnapshot) -> Option<&str> {
+    stack
+        .instances
+        .iter()
+        .find(|item| item.durability < item.max_durability)
+        .map(|item| item.id.as_str())
+}
+
+fn sorted_items(colony: Option<&ColonySnapshot>) -> Vec<ItemStackSnapshot> {
+    let mut items = colony.map(|c| c.items.clone()).unwrap_or_default();
+    items.sort_by_key(|stack| std::cmp::Reverse(stack.count * stack.value));
+    items
+}
+
+/// One compact goods line: value, physical weight, and the condition range of
+/// its finite units. Broken items stay visible instead of disappearing.
 fn item_label(stack: &ItemStackSnapshot) -> String {
     format!(
-        "{band} {material} {kind} x{count} - {value}g ea ({subtotal}g)",
+        "{band} {material} {kind} x{count} · {value}g ea ({subtotal}g) · {weight} ea · {condition}",
         band = quality_band(stack.quality),
         material = capitalize_word(&stack.material),
         kind = capitalize_word(&stack.kind),
         count = stack.count,
         value = stack.value,
         subtotal = stack.count * stack.value,
+        weight = item_weight_label(stack.unit_weight_grams),
+        condition = item_condition_label(stack),
     )
 }
 
@@ -2515,12 +2573,13 @@ fn treasury_total(items: &[ItemStackSnapshot]) -> u32 {
 /// A sell-offer line: `Fine Wood Mug x3 - 8g ea` (the trader buys from you).
 fn sell_offer_label(offer: &TraderBuyOffer) -> String {
     format!(
-        "{band} {material} {kind} x{avail} - {price:.0}g ea",
+        "{band} {material} {kind} x{avail} · {price:.0}g ea · {weight} ea",
         band = quality_band(offer.quality),
         material = capitalize_word(&offer.material),
         kind = capitalize_word(&offer.kind),
         avail = offer.available,
         price = offer.unit_price,
+        weight = item_weight_label(offer.unit_weight_grams),
     )
 }
 
@@ -2969,6 +3028,7 @@ pub fn run() {
                     update_announcements,
                     toggle_goods,
                     update_goods,
+                    handle_goods_repair_buttons,
                     update_trade_menu,
                     handle_trade_buttons,
                     update_boost_button,
@@ -3712,7 +3772,7 @@ fn setup(
             Node {
                 left: Val::Px(456.0),
                 top: Val::Px(60.0),
-                ..ui_panel_node(Val::Px(500.0))
+                ..ui_panel_node(Val::Px(560.0))
             },
             GlobalZIndex(80),
             ui_panel_frame(),
@@ -3793,7 +3853,19 @@ fn setup(
                             ImageNode::new(icons.goods.clone()),
                             GoodsLineIcon(i),
                         ));
-                        row.spawn((ui_text("", FS_BODY, UI_INK), GoodsLine(i)));
+                        row.spawn((
+                            Node {
+                                flex_grow: 1.0,
+                                ..default()
+                            },
+                            children![(ui_text("", FS_BODY, UI_INK), GoodsLine(i))],
+                        ));
+                        row.spawn((
+                            ui_button_small(),
+                            RepairGoodsButton(i),
+                            KitDisabled { disabled: true },
+                            children![ui_text("Repair", FS_SMALL, UI_INK)],
+                        ));
                     });
                 }
             });
@@ -8880,15 +8952,30 @@ fn update_census(
 
 /// Show/hide the goods panel and repaint its treasury total + item lines (most
 /// valuable stack first), with a tidy empty state when there are no goods yet.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn update_goods(
     latest: Res<LatestSnapshot>,
     ui: Res<GoodsUi>,
+    session: Res<Session>,
     icons: Res<IconArt>,
-    mut panel: Query<&mut Node, (With<GoodsPanel>, Without<GoodsLineIcon>)>,
+    mut panel: Query<
+        &mut Node,
+        (
+            With<GoodsPanel>,
+            Without<GoodsLineIcon>,
+            Without<RepairGoodsButton>,
+        ),
+    >,
     mut treasury: Query<&mut Text, (With<GoodsTreasury>, Without<GoodsLine>)>,
     mut lines: Query<(&GoodsLine, &mut Text), Without<GoodsTreasury>>,
-    mut icon_nodes: Query<(&GoodsLineIcon, &mut Node, &mut ImageNode), Without<GoodsPanel>>,
+    mut icon_nodes: Query<
+        (&GoodsLineIcon, &mut Node, &mut ImageNode),
+        (Without<GoodsPanel>, Without<RepairGoodsButton>),
+    >,
+    mut repair_buttons: Query<
+        (&RepairGoodsButton, &mut Node, &mut KitDisabled),
+        (Without<GoodsPanel>, Without<GoodsLineIcon>),
+    >,
 ) {
     if let Ok(mut node) = panel.single_mut() {
         node.display = if ui.visible {
@@ -8897,13 +8984,11 @@ fn update_goods(
             Display::None
         };
     }
-    if !ui.visible || (!latest.is_changed() && !ui.is_changed()) {
+    if !ui.visible || (!latest.is_changed() && !ui.is_changed() && !session.is_changed()) {
         return;
     }
     let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
-    let mut items = colony.map(|c| c.items.clone()).unwrap_or_default();
-    // Most valuable stack first.
-    items.sort_by_key(|s| std::cmp::Reverse(s.count * s.value));
+    let items = sorted_items(colony);
 
     if let Ok(mut text) = treasury.single_mut() {
         text.0 = colony.map_or_else(
@@ -8944,6 +9029,47 @@ fn update_goods(
         } else {
             node.display = Display::None;
         }
+    }
+    for (button, mut node, mut disabled) in &mut repair_buttons {
+        let repairable = items
+            .get(button.0)
+            .and_then(first_damaged_item_id)
+            .is_some();
+        node.display = if repairable {
+            Display::Flex
+        } else {
+            Display::None
+        };
+        disabled.disabled = !session.ready;
+    }
+}
+
+/// Repair the first damaged finite unit in the visible stack. Stable item ids
+/// make this exact even when several otherwise-identical items share a row.
+fn handle_goods_repair_buttons(
+    latest: Res<LatestSnapshot>,
+    session: Res<Session>,
+    mut outgoing: ResMut<OutgoingActions>,
+    buttons: Query<(&Interaction, &RepairGoodsButton), Changed<Interaction>>,
+) {
+    if !session.ready {
+        return;
+    }
+    let colony = latest.0.as_ref().and_then(|world| world.colonies.first());
+    let items = sorted_items(colony);
+    for (interaction, button) in &buttons {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let Some(item_id) = items.get(button.0).and_then(first_damaged_item_id) else {
+            continue;
+        };
+        outgoing.0.push(ClientAction::RepairItem {
+            session_id: session.session_id.clone(),
+            nickname: "Desktop Cat".to_string(),
+            sig: session.sig.clone(),
+            item_id: item_id.to_string(),
+        });
     }
 }
 
@@ -12754,12 +12880,37 @@ mod tests {
             quality: 2,
             count: 3,
             value: 12,
+            unit_weight_grams: 420,
+            instances: vec![
+                cat_protocol::ItemInstanceSnapshot {
+                    id: "item-1".to_string(),
+                    durability: 2,
+                    max_durability: 6,
+                    broken: false,
+                },
+                cat_protocol::ItemInstanceSnapshot {
+                    id: "item-2".to_string(),
+                    durability: 0,
+                    max_durability: 6,
+                    broken: true,
+                },
+                cat_protocol::ItemInstanceSnapshot {
+                    id: "item-3".to_string(),
+                    durability: 6,
+                    max_durability: 6,
+                    broken: false,
+                },
+            ],
         };
         let label = item_label(&mug);
         assert!(label.contains("Fine Wood Mug"));
         assert!(label.contains("x3"));
         assert!(label.contains("12g"));
         assert!(label.contains("(36g)")); // count * value subtotal
+        assert!(label.contains("420g ea"));
+        assert!(label.contains("2 damaged"));
+        assert!(label.contains("1 broken"));
+        assert_eq!(first_damaged_item_id(&mug), Some("item-1"));
 
         let bowl = ItemStackSnapshot {
             kind: "bowl".to_string(),
@@ -12767,6 +12918,8 @@ mod tests {
             quality: 1,
             count: 2,
             value: 5,
+            unit_weight_grams: 3_500,
+            instances: Vec::new(),
         };
         // Treasury sums count*value across stacks: 3*12 + 2*5 = 46.
         assert_eq!(treasury_total(&[mug.clone(), bowl]), 46);
@@ -12778,6 +12931,41 @@ mod tests {
     }
 
     #[test]
+    fn goods_repair_button_dispatches_the_exact_damaged_item_identity() {
+        let mut snapshot = village_world(&["alpha"]);
+        snapshot.colonies[0].items.push(ItemStackSnapshot {
+            kind: "tool".to_owned(),
+            material: "wood".to_owned(),
+            quality: 1,
+            count: 1,
+            value: 10,
+            unit_weight_grams: 2_625,
+            instances: vec![cat_protocol::ItemInstanceSnapshot {
+                id: "item-0000000000000042".to_owned(),
+                durability: 2,
+                max_durability: 6,
+                broken: false,
+            }],
+        });
+        let mut app = App::new();
+        app.insert_resource(signed_session("repair-session"))
+            .insert_resource(LatestSnapshot(Some(snapshot)))
+            .insert_resource(OutgoingActions::default())
+            .add_systems(Update, handle_goods_repair_buttons);
+        app.world_mut()
+            .spawn((Interaction::Pressed, RepairGoodsButton(0)));
+        app.update();
+
+        assert!(matches!(
+            app.world().resource::<OutgoingActions>().0.as_slice(),
+            [ClientAction::RepairItem { session_id, sig, item_id, .. }]
+                if session_id == "repair-session"
+                    && sig == "signed"
+                    && item_id == "item-0000000000000042"
+        ));
+    }
+
+    #[test]
     fn trade_offer_labels_affordability_and_coin() {
         let sell = TraderBuyOffer {
             kind: "mug".to_string(),
@@ -12785,11 +12973,13 @@ mod tests {
             quality: 2,
             available: 3,
             unit_price: 8.0,
+            unit_weight_grams: 420,
         };
         let label = sell_offer_label(&sell);
         assert!(label.contains("Fine Wood Mug"));
         assert!(label.contains("x3"));
         assert!(label.contains("8g ea"));
+        assert!(label.contains("420g ea"));
 
         let buy = TraderSellOffer {
             resource: ResourceKind::Food,

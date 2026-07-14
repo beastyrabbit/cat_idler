@@ -977,6 +977,9 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::SellGoods {
             session_id, sig, ..
         }
+        | ClientAction::RepairItem {
+            session_id, sig, ..
+        }
         | ClientAction::BuyResource {
             session_id, sig, ..
         }
