@@ -89,7 +89,8 @@ so a correct scout route cannot conceal a missing founding dispatch.
    six/two/one at the 15-cat founding population and scaled proportionally thereafter. Three
    seeds now pass exact 48-hour one-second campaigns with byte-identical twins, no resets or
    deaths, completed Leader work, permanent fog growth, and no specialist leakage; the 30-cat
-   communal campaign also passes. Complete only the native/browser founding visual flow. Keep farms,
+   communal campaign also passes. Optimized browser founding is verified through Explore,
+   shrine return, and permanent reveal growth; complete only the matching fresh native flow. Keep farms,
    workshops, research, rituals, defense, and expansion manual while their office is vacant.
 4. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
    outside-the-wall agricultural territory subset are live; finish their integrated framebuffer
@@ -98,8 +99,9 @@ so a correct scout route cannot conceal a missing founding dispatch.
    real general-storehouse-footprint delivery (never village-anchor credit), and fixture-assisted
    guided/unattended determinism (the campaign is not a world-generation acceptance test); replace
    its current permanent generic-food faucet with a finite fish
-   source/material and replenishment rule. Complete the remaining WASM visual/interaction
-   validation for the maintained Adventure skin.
+   source/material and replenishment rule. The maintained Adventure skin and research ledger now
+   pass the optimized WASM visual/interaction campaign; finish the integrated native Accounting
+   Tent and staged wall/agricultural captures.
 5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

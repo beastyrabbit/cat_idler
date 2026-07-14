@@ -34,10 +34,11 @@ the browser). Method: `trunk serve --release` over the release bundle + a local
   (`AssetMetaCheck::Never` on the client `AssetPlugin`; the game ships no `.meta`
   sidecars) and the favicon 404 is gone (a pixel-cat `favicon.png` is bundled +
   linked). No WebGL/wgpu errors, no wasm panic.
-- **Bundle size: wasm ~28 MB raw / ~8 MB gzipped** + 104 KB JS glue + ~2.5 MB
-  assets. `index.html` requests `data-wasm-opt="z"`; the `-Oz` pass on the ~28 MB
-  module runs in ~2–3 min on this machine (needs `wasm-opt`/binaryen on `PATH`;
-  trunk silently skips it otherwise). 8 MB gzipped is the transfer cost — heavy
+- **Bundle size: wasm 29,730,887 bytes raw / 9,087,074 bytes with gzip `-9` /
+  5,444,134 bytes with Brotli quality 11** + JS glue + ~2.9 MB assets.
+  `index.html` requests `data-wasm-opt="z"`; the `-Oz` pass on the raw module
+  takes several minutes on this machine (needs `wasm-opt`/binaryen on `PATH`;
+  trunk silently skips it otherwise). The gzip transfer remains heavy
   but workable; atlasing / an asset manifest would cut the ~40-PNG fetch count for
   a real deploy.
 
@@ -93,7 +94,8 @@ WebSocket backend, so the SSE-less WS transport works unchanged in the browser.
 - **WebGL2 parity** — verified in-browser: the sprite atlas and the whole UI kit
   render unchanged on WebGL2. (No `RenderAssetUsages`/texture-format tweaks
   needed.)
-- **Bundle size** — measured: ~28 MB raw / ~8 MB gzipped with `-Oz`. Workable.
+- **Bundle size** — measured from the verified artifact: 29,730,887 bytes raw,
+  9,087,074 bytes gzip `-9`, and 5,444,134 bytes Brotli quality 11. Workable.
 - **WS URL** — `cat-web` derives `ws(s)://<host>/ws` from the page location when
   `CAT_SERVER_URL` isn't baked, so a same-origin deploy needs no code change.
 - **Assets** — the `copy-dir` link resolves `public/images/...` at the served
@@ -109,7 +111,7 @@ restricted exactly. See `docs/DEPLOYMENT.md` for the build/run/reverse-proxy rec
 
 ## Remaining optional optimization
 
-- **Transfer weight** — 8 MB gzipped is heavy for a game; atlasing or an asset
+- **Transfer weight** — 9.1 MB gzip / 5.4 MB Brotli is heavy for a game; atlasing or an asset
   manifest would cut the ~40-PNG fetch count. Optional optimization, not a
   blocker.
 - **Threads / atomics** — we run single-threaded on wasm (no `multi_threaded`);

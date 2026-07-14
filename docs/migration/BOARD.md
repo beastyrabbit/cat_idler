@@ -41,7 +41,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns, with browser/native visual confirmation and broader physical stations remaining |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, and physical shoreline fishing are verified; broader physical farm/production work remains in progress |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fishing still uses a permanent generic-Food source, fine-biome movement is unused, and rail/shipping are global multipliers rather than built routes/vehicles |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone; all 25 current protocol variants have tested residential/open-station compositions, with the prior 24 plus Mill/Sawmill/crop stages framebuffer-verified; Accounting Tent is snapshot-reachable but still needs an integrated in-world capture. The Adventure skin is exact-size native-framebuffer verified, the release WASM bundle builds, and WASM visual interaction remains |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone; all 25 current protocol variants have tested residential/open-station compositions, with the prior 24 plus Mill/Sawmill/crop stages framebuffer-verified; Accounting Tent is snapshot-reachable but still needs an integrated in-world capture. The Adventure skin and research ledger are exact-size native- and optimized-WASM-framebuffer verified; staged wall/agricultural native captures also remain |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — planks/blocks/tools, grain/flour/food, logs/lumber, fibre/cloth, hide/leather, ore/metal, protected useful tools, material trade goods, visiting traders, and coin are live; fishing lacks a finite fish material/source, and recipe/material breadth, broader physical local inventories, and complete controls remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
@@ -669,9 +669,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 ### P18 — Visual polish (spec: `docs/migration/specs/p18-visual-polish.md`)
 - The maintained Adventure art is live through Bevy sliced images: parchment, dark, and ornate
   panels; button interaction/disabled states; progress bars; resource medallions; the minimap
-  ring; and pointer/interact/pressed/target/disabled custom cursors. Native own-framebuffer
-  captures are verified at exact 1024×768, 1280×800, and 1920×1080 sizes, and the release WASM
-  bundle builds; WASM visual interaction remains in the final campaign.
+  ring; and pointer/interact/pressed/target/disabled custom cursors. Native and optimized-WASM
+  captures are verified at exact 1024×768, 1280×800, and 1920×1080 sizes. A fresh personal
+  browser village completed Explore and shrine return, growing permanent reveal from 289 to 394;
+  the research ledger's clipped edge-pan state is also inspected at the supported width bounds.
 - Persistent map-name plaques are removed. All 25 current protocol building variants have an
   explicit residential/open/infrastructure treatment. The prior 24 variants, Mill/Sawmill, and
   crop stages are framebuffer-verified; Accounting Tent is snapshot-reachable with a tested open

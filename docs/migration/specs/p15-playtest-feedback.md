@@ -68,7 +68,7 @@ Two-tier inspector, driven by the cursor:
     production, research, rituals, or defense.
     The allocation/vacancy-cleanup fix passes three personal seeds and the 30-cat communal village
     through exact 48-hour one-second campaigns with fog growth and no specialist leakage; complete
-    the native/browser founding confirmation.
+    the fresh native founding confirmation; the optimized browser path is verified.
   - **Random-walk search — verified.** A scout follows deterministic knowledge-blind wander legs,
     changes direction with bounded route retries, recognizes a resource only after physical
     observation, and returns after success, survey/deadline exhaustion, or giving up. No hidden
