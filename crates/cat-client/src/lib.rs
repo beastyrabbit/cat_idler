@@ -10465,6 +10465,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
         CarryingKind::Fish => Color::srgb(0.28, 0.68, 0.82),
         CarryingKind::Water => Color::srgb(0.35, 0.65, 0.95),
         CarryingKind::Materials => Color::srgb(0.70, 0.55, 0.35),
+        CarryingKind::Refined => Color::srgb(0.78, 0.73, 0.62),
         CarryingKind::Blessings => Color::srgb(0.95, 0.85, 0.40),
         CarryingKind::Logs => Color::srgb(0.45, 0.29, 0.17),
         CarryingKind::Lumber | CarryingKind::Planks => Color::srgb(0.70, 0.47, 0.25),
@@ -10474,6 +10475,8 @@ fn carrying_color(kind: CarryingKind) -> Color {
         CarryingKind::Grain => Color::srgb(0.96, 0.78, 0.34),
         CarryingKind::Flour => Color::srgb(0.94, 0.91, 0.77),
         CarryingKind::Herbs => Color::srgb(0.55, 0.88, 0.48),
+        CarryingKind::Ore => Color::srgb(0.42, 0.36, 0.32),
+        CarryingKind::Metal => Color::srgb(0.68, 0.72, 0.78),
     }
 }
 
@@ -13571,6 +13574,71 @@ mod tests {
             carrying_color(CarryingKind::Grain),
             "flour and grain cargo must remain visually distinct"
         );
+        for (building_type, recipe, input_kind, output_kind, carrying_kind) in [
+            (
+                BuildingType::Workshop,
+                "materials_to_refined",
+                ResourceKind::Materials,
+                ResourceKind::Refined,
+                CarryingKind::Refined,
+            ),
+            (
+                BuildingType::Smelter,
+                "ore_to_metal",
+                ResourceKind::Ore,
+                ResourceKind::Metal,
+                CarryingKind::Metal,
+            ),
+        ] {
+            let mut refiner = workshop.clone();
+            refiner.id = format!("{building_type:?}-inspector");
+            refiner.building_type = building_type;
+            refiner.production_output = Some(resource_kind_name(output_kind).to_owned());
+            refiner.input_inventory = vec![ResourceStackSnapshot {
+                kind: input_kind,
+                amount: 5.0,
+            }];
+            refiner.output_inventory = vec![ResourceStackSnapshot {
+                kind: output_kind,
+                amount: 1.0,
+            }];
+            refiner.inbound_cargo = refiner.input_inventory.clone();
+            refiner.outbound_cargo = refiner.output_inventory.clone();
+            refiner.production_queue = vec![cat_protocol::ProductionQueueEntrySnapshot {
+                recipe_id: recipe.to_owned(),
+                repeat: true,
+            }];
+            refiner.available_recipes = vec![recipe.to_owned()];
+            let text = building_inspector_text(&refiner, colony);
+            assert!(text.contains(&format!(
+                "local input: {} 5.0",
+                resource_kind_name(input_kind)
+            )));
+            assert!(text.contains(&format!(
+                "local output: {} 1.0",
+                resource_kind_name(output_kind)
+            )));
+            assert!(text.contains(&format!("queue: {recipe}*")));
+            assert!(matches!(
+                station_queue_action(
+                    &signed_session("refiner-queue-session"),
+                    &refiner,
+                    0,
+                    StationQueueButton::Add,
+                ),
+                Some(ClientAction::EditProductionQueue {
+                    edit: ProductionQueueEdit::Add {
+                        recipe_id,
+                        repeat: true,
+                    },
+                    ..
+                }) if recipe_id == recipe
+            ));
+            assert_ne!(
+                carrying_color(carrying_kind),
+                carrying_color(CarryingKind::Materials)
+            );
+        }
         // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);
         assert!(den_text.contains("under construction 40%"));

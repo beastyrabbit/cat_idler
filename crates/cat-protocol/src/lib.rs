@@ -712,6 +712,7 @@ pub enum CarryingKind {
     Fish,
     Blessings,
     Materials,
+    Refined,
     Logs,
     Lumber,
     Planks,
@@ -722,6 +723,8 @@ pub enum CarryingKind {
     Grain,
     Flour,
     Herbs,
+    Ore,
+    Metal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -2934,6 +2937,29 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CarryingKind::Flour).unwrap(),
             json!("flour")
+        );
+    }
+
+    #[test]
+    fn physical_refiner_carrying_kinds_round_trip_with_additive_wire_literals() {
+        for (kind, literal) in [
+            (CarryingKind::Refined, "refined"),
+            (CarryingKind::Ore, "ore"),
+            (CarryingKind::Metal, "metal"),
+        ] {
+            let encoded = serde_json::to_value(kind).expect("serialize carrying kind");
+            assert_eq!(encoded, json!(literal));
+            assert_eq!(
+                serde_json::from_value::<CarryingKind>(encoded).expect("round trip"),
+                kind
+            );
+        }
+
+        // Existing carrying literals remain unchanged when the additive refiner
+        // variants are introduced.
+        assert_eq!(
+            serde_json::from_value::<CarryingKind>(json!("materials")).unwrap(),
+            CarryingKind::Materials
         );
     }
 

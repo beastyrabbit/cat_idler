@@ -56,6 +56,9 @@ pub enum CarryingKind {
     Blessings,
     #[serde(rename = "materials")]
     Materials,
+    /// Finished generic workshop goods moving from the station to storage.
+    #[serde(rename = "refined")]
+    Refined,
     #[serde(rename = "logs")]
     Logs,
     #[serde(rename = "lumber")]
@@ -77,6 +80,12 @@ pub enum CarryingKind {
     Flour,
     #[serde(rename = "herbs")]
     Herbs,
+    /// Mountain ore moving into a Smelter's local input ledger.
+    #[serde(rename = "ore")]
+    Ore,
+    /// Smelted bars moving from a Smelter to physical storage.
+    #[serde(rename = "metal")]
+    Metal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

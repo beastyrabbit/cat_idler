@@ -177,6 +177,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             productionQueue TEXT,
             productionPaused INTEGER NOT NULL DEFAULT 0,
             productionQueueInitialized INTEGER NOT NULL DEFAULT 0,
+            physicalRefinerQueueInitialized INTEGER NOT NULL DEFAULT 0,
             -- Buildings are colony-scoped: type-derived ids (e.g. "shrine") are
             -- only unique within a colony, so the key is (colonyId, id).
             PRIMARY KEY (colonyId, id)
@@ -322,6 +323,11 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
             "productionQueueInitialized",
             "INTEGER NOT NULL DEFAULT 0",
         ),
+        (
+            "buildings",
+            "physicalRefinerQueueInitialized",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
     ];
     for (table, column, decl) in ADDITIONS {
         if !column_exists(conn, table, column)? {
@@ -362,6 +368,32 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         "UPDATE buildings
          SET productionQueueInitialized = 1
          WHERE productionQueueInitialized = 0",
+        [],
+    )?;
+    // Workshop and Smelter became editable physical stations after the original
+    // queue migration had already marked every legacy building initialized. A
+    // dedicated one-shot marker seeds their real repeating recipes without ever
+    // repopulating a queue the player deliberately clears afterward.
+    if column_exists(conn, "buildings", "type")? {
+        for building_type in [BuildingType::Workshop, BuildingType::Smelter] {
+            conn.execute(
+                "UPDATE buildings
+                 SET productionQueue = ?1
+                 WHERE type = ?2
+                   AND physicalRefinerQueueInitialized = 0
+                   AND (productionQueue IS NULL OR productionQueue = '[]')",
+                params![
+                    serde_json::to_string(&default_production_queue(building_type))
+                        .map_err(to_sql_json)?,
+                    building_type.as_str(),
+                ],
+            )?;
+        }
+    }
+    conn.execute(
+        "UPDATE buildings
+         SET physicalRefinerQueueInitialized = 1
+         WHERE physicalRefinerQueueInitialized = 0",
         [],
     )?;
     Ok(())
@@ -1022,8 +1054,9 @@ fn save_building(
         "INSERT INTO buildings (
             id, colonyId, type, level, position, constructionProgress,
             productionProgress, isComplete, assignedCatId, automatedOfficerRole,
-            productionQueue, productionPaused, productionQueueInitialized
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1)",
+            productionQueue, productionPaused, productionQueueInitialized,
+            physicalRefinerQueueInitialized
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -2270,6 +2303,66 @@ mod tests {
     }
 
     #[test]
+    fn legacy_refiner_queues_initialize_once_and_player_cleared_empty_stays_empty() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        init_schema(&conn).expect("schema");
+        for (id, building_type) in [
+            ("legacy-workshop", BuildingType::Workshop),
+            ("legacy-smelter", BuildingType::Smelter),
+        ] {
+            conn.execute(
+                "INSERT INTO buildings (
+                    id, colonyId, type, level, position, constructionProgress,
+                    productionProgress, isComplete, productionQueue, productionPaused,
+                    productionQueueInitialized, physicalRefinerQueueInitialized
+                 ) VALUES (?1, 'colony-1', ?2, 1, '{}', 100, 0, 1, '[]', 0, 1, 0)",
+                params![id, building_type.as_str()],
+            )
+            .expect("legacy refiner row");
+        }
+        conn.execute_batch("ALTER TABLE buildings DROP COLUMN physicalRefinerQueueInitialized;")
+            .expect("simulate pre-physical-refiner schema");
+
+        migrate_add_missing_columns(&conn).expect("one-time refiner queue migration");
+        for (id, building_type) in [
+            ("legacy-workshop", BuildingType::Workshop),
+            ("legacy-smelter", BuildingType::Smelter),
+        ] {
+            let (queue, initialized): (String, i64) = conn
+                .query_row(
+                    "SELECT productionQueue, physicalRefinerQueueInitialized
+                     FROM buildings WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
+                default_production_queue(building_type)
+            );
+            assert_eq!(initialized, 1);
+        }
+
+        conn.execute(
+            "UPDATE buildings SET productionQueue = '[]' WHERE id = 'legacy-workshop'",
+            [],
+        )
+        .expect("player clears Workshop queue");
+        migrate_add_missing_columns(&conn).expect("idempotent restart");
+        let cleared: String = conn
+            .query_row(
+                "SELECT productionQueue FROM buildings WHERE id = 'legacy-workshop'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            cleared, "[]",
+            "initialized empty queue remains player-owned"
+        );
+    }
+
+    #[test]
     fn mill_local_inventories_and_both_haul_directions_resume_exactly_after_restart() {
         let conn = open_database(":memory:").expect("database");
         let mut world = new_world(6_414);
@@ -2401,6 +2494,238 @@ mod tests {
                 .source_gather_spot
                 .as_deref(),
             Some(format!("station-out|{building_id}|{general_id}").as_str())
+        );
+    }
+
+    #[test]
+    fn physical_refiner_local_ledgers_queues_and_haul_markers_resume_exactly_after_restart() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(7_717);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 7_717);
+        let general_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap()
+            .id
+            .clone();
+        let workshop_id = "restart-workshop";
+        let smelter_id = "restart-smelter";
+        colony.buildings.extend([
+            BuildingRuntime {
+                id: workshop_id.to_owned(),
+                building_type: BuildingType::Workshop,
+                position: TilePos { x: 18, y: 18 },
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 317.5,
+                assigned_cat: Some(colony.cats[0].id.clone()),
+                production_queue: vec![ProductionQueueEntry {
+                    recipe_id: cat_sim::world_tick::WORKSHOP_RECIPE_ID.to_owned(),
+                    repeat: false,
+                }],
+                production_paused: true,
+                ..BuildingRuntime::default()
+            },
+            BuildingRuntime {
+                id: smelter_id.to_owned(),
+                building_type: BuildingType::Smelter,
+                position: TilePos { x: 24, y: 18 },
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 499.25,
+                assigned_cat: Some(colony.cats[1].id.clone()),
+                production_queue: vec![ProductionQueueEntry {
+                    recipe_id: cat_sim::world_tick::SMELTER_RECIPE_ID.to_owned(),
+                    repeat: true,
+                }],
+                ..BuildingRuntime::default()
+            },
+        ]);
+        let rect = ZoneRect {
+            x1: 18,
+            y1: 18,
+            x2: 20,
+            y2: 20,
+        };
+        let workshop_input = cat_sim::stockpiles::station_input_id(workshop_id);
+        let workshop_output = cat_sim::stockpiles::station_output_id(workshop_id);
+        let workshop_transit = cat_sim::stockpiles::station_transit_id(workshop_id);
+        let smelter_input = cat_sim::stockpiles::station_input_id(smelter_id);
+        let smelter_output = cat_sim::stockpiles::station_output_id(smelter_id);
+        let orphan_output = cat_sim::stockpiles::station_output_id("demolished-smelter");
+        for (id, accepts, contents) in [
+            (
+                workshop_input.clone(),
+                [cat_sim::stockpiles::ResourceKind::Materials]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    materials: 5.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                workshop_output.clone(),
+                [cat_sim::stockpiles::ResourceKind::Refined]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    refined: 1.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                workshop_transit.clone(),
+                [cat_sim::stockpiles::ResourceKind::Materials]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    materials: 2.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                smelter_input.clone(),
+                [cat_sim::stockpiles::ResourceKind::Ore]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    ore: 5.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                smelter_output.clone(),
+                [cat_sim::stockpiles::ResourceKind::Metal]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    metal: 1.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                orphan_output.clone(),
+                [cat_sim::stockpiles::ResourceKind::Metal]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    metal: 2.0,
+                    ..Resources::default()
+                },
+            ),
+        ] {
+            colony.stockpiles.push(Stockpile {
+                id,
+                rect,
+                accepts,
+                contents,
+            });
+        }
+        colony.cats[0].carrying = Some(Carrying {
+            kind: CarryingKind::Materials,
+            amount: 2.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(format!("station-in|{workshop_id}|{workshop_transit}")),
+        });
+        colony.cats[1].carrying = Some(Carrying {
+            kind: CarryingKind::Metal,
+            amount: 1.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(format!("station-out|{smelter_id}|{general_id}")),
+        });
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save refiner stages");
+        let restarted = load_world(&conn).expect("load").expect("world");
+        let colony = &restarted.colonies[0];
+        for (id, kind, amount) in [
+            (
+                workshop_input.as_str(),
+                cat_sim::stockpiles::ResourceKind::Materials,
+                5.0,
+            ),
+            (
+                workshop_output.as_str(),
+                cat_sim::stockpiles::ResourceKind::Refined,
+                1.0,
+            ),
+            (
+                workshop_transit.as_str(),
+                cat_sim::stockpiles::ResourceKind::Materials,
+                2.0,
+            ),
+            (
+                smelter_input.as_str(),
+                cat_sim::stockpiles::ResourceKind::Ore,
+                5.0,
+            ),
+            (
+                smelter_output.as_str(),
+                cat_sim::stockpiles::ResourceKind::Metal,
+                1.0,
+            ),
+            (
+                orphan_output.as_str(),
+                cat_sim::stockpiles::ResourceKind::Metal,
+                2.0,
+            ),
+        ] {
+            let pile = colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == id)
+                .expect("local ledger persisted");
+            assert_eq!(
+                cat_sim::stockpiles::resource_amount(&pile.contents, kind),
+                amount
+            );
+        }
+        let workshop = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == workshop_id)
+            .unwrap();
+        assert_eq!(workshop.production_progress, 317.5);
+        assert_eq!(
+            workshop.production_queue,
+            vec![ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::WORKSHOP_RECIPE_ID.to_owned(),
+                repeat: false,
+            }]
+        );
+        assert!(workshop.production_paused);
+        let smelter = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == smelter_id)
+            .unwrap();
+        assert_eq!(smelter.production_progress, 499.25);
+        assert_eq!(
+            smelter.production_queue,
+            vec![ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::SMELTER_RECIPE_ID.to_owned(),
+                repeat: true,
+            }]
+        );
+        assert_eq!(
+            colony.cats[0]
+                .carrying
+                .as_ref()
+                .unwrap()
+                .source_gather_spot
+                .as_deref(),
+            Some(format!("station-in|{workshop_id}|{workshop_transit}").as_str())
+        );
+        assert_eq!(
+            colony.cats[1]
+                .carrying
+                .as_ref()
+                .unwrap()
+                .source_gather_spot
+                .as_deref(),
+            Some(format!("station-out|{smelter_id}|{general_id}").as_str())
         );
     }
 
@@ -2798,6 +3123,7 @@ mod tests {
             ("cats", "boosted"),
             ("buildings", "automatedOfficerRole"),
             ("buildings", "productionQueueInitialized"),
+            ("buildings", "physicalRefinerQueueInitialized"),
         ] {
             assert!(!column_exists(&conn, table, column).unwrap());
         }
@@ -2826,6 +3152,7 @@ mod tests {
             ("cats", "boosted"),
             ("buildings", "automatedOfficerRole"),
             ("buildings", "productionQueueInitialized"),
+            ("buildings", "physicalRefinerQueueInitialized"),
         ] {
             assert!(
                 column_exists(&conn, table, column).unwrap(),

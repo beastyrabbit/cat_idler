@@ -4393,6 +4393,7 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Fish => proto::CarryingKind::Fish,
         entities::CarryingKind::Blessings => proto::CarryingKind::Blessings,
         entities::CarryingKind::Materials => proto::CarryingKind::Materials,
+        entities::CarryingKind::Refined => proto::CarryingKind::Refined,
         entities::CarryingKind::Logs => proto::CarryingKind::Logs,
         entities::CarryingKind::Lumber => proto::CarryingKind::Lumber,
         entities::CarryingKind::Planks => proto::CarryingKind::Planks,
@@ -4403,6 +4404,8 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Grain => proto::CarryingKind::Grain,
         entities::CarryingKind::Flour => proto::CarryingKind::Flour,
         entities::CarryingKind::Herbs => proto::CarryingKind::Herbs,
+        entities::CarryingKind::Ore => proto::CarryingKind::Ore,
+        entities::CarryingKind::Metal => proto::CarryingKind::Metal,
     }
 }
 
@@ -7530,6 +7533,59 @@ mod tests {
                 .unwrap()
                 .available_recipes,
             vec![crate::world_tick::SAWMILL_RECIPE_ID.to_owned()]
+        );
+
+        for (id, building_type, recipe_id) in [
+            (
+                "workshop-player",
+                BuildingType::Workshop,
+                crate::world_tick::WORKSHOP_RECIPE_ID,
+            ),
+            (
+                "smelter-player",
+                BuildingType::Smelter,
+                crate::world_tick::SMELTER_RECIPE_ID,
+            ),
+        ] {
+            world.colonies[0].buildings.push(BuildingRuntime {
+                id: id.to_owned(),
+                building_type,
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: Vec::new(),
+                ..BuildingRuntime::default()
+            });
+            assert!(apply_action(&mut world, &queue_add(id, recipe_id), &ctx()).ok);
+            assert_eq!(
+                world.colonies[0]
+                    .buildings
+                    .iter()
+                    .find(|building| building.id == id)
+                    .unwrap()
+                    .production_queue,
+                vec![crate::world_tick::ProductionQueueEntry {
+                    recipe_id: recipe_id.to_owned(),
+                    repeat: true,
+                }]
+            );
+        }
+        assert!(
+            !apply_action(
+                &mut world,
+                &queue_add("workshop-player", crate::world_tick::SMELTER_RECIPE_ID),
+                &ctx(),
+            )
+            .ok,
+            "Smelter recipe cannot cross into a Workshop"
+        );
+        assert!(
+            !apply_action(
+                &mut world,
+                &queue_add("smelter-player", crate::world_tick::WORKSHOP_RECIPE_ID),
+                &ctx(),
+            )
+            .ok,
+            "Workshop recipe cannot cross into a Smelter"
         );
     }
 
