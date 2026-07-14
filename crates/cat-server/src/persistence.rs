@@ -2516,15 +2516,64 @@ mod tests {
             },
             ..JobRuntime::default()
         });
+        let fishing_site = {
+            let seed = world.world_seed;
+            let colony = &world.colonies[0];
+            colony
+                .world_tiles
+                .keys()
+                .copied()
+                .find(|site| {
+                    let water = TilePos {
+                        x: site.x,
+                        y: site.y - 1,
+                    };
+                    if !colony.revealed_tiles.contains(site)
+                        || !colony.world_tiles.contains_key(&water)
+                        || cat_sim::world_tick::stockpile_placement_error(
+                            colony,
+                            ZoneRect {
+                                x1: site.x,
+                                y1: site.y,
+                                x2: site.x,
+                                y2: site.y,
+                            },
+                            seed,
+                            false,
+                        )
+                        .is_some()
+                    {
+                        return false;
+                    }
+                    let mut projected = colony.clone();
+                    projected.revealed_tiles.insert(water);
+                    let tile = projected.world_tiles.get_mut(&water).unwrap();
+                    tile.tile_type = cat_sim::types::TileType::River;
+                    tile.resources.water = 100;
+                    cat_sim::world_tick::is_reachable_fishing_shore(&projected, *site, seed)
+                })
+                .expect("round-trip fixture has a reachable clear bank")
+        };
+        let fishing_water = TilePos {
+            x: fishing_site.x,
+            y: fishing_site.y - 1,
+        };
+        world.colonies[0].revealed_tiles.insert(fishing_water);
+        let water_tile = world.colonies[0]
+            .world_tiles
+            .get_mut(&fishing_water)
+            .unwrap();
+        water_tile.tile_type = cat_sim::types::TileType::River;
+        water_tile.resources.water = 100;
         world.colonies[0]
             .stockpiles
             .push(cat_sim::stockpiles::Stockpile {
                 id: "fishing-shore-1".to_owned(),
                 rect: ZoneRect {
-                    x1: 31,
-                    y1: 30,
-                    x2: 31,
-                    y2: 30,
+                    x1: fishing_site.x,
+                    y1: fishing_site.y,
+                    x2: fishing_site.x,
+                    y2: fishing_site.y,
                 },
                 accepts: [cat_sim::stockpiles::ResourceKind::Food]
                     .into_iter()
@@ -2550,7 +2599,7 @@ mod tests {
             ends_at: Some(3_600_000),
             duration_ms: 2_700_000,
             metadata: JobMetadata::Hauling {
-                site: Some(TilePos { x: 31, y: 30 }),
+                site: Some(fishing_site),
                 total_yield: None,
                 trips_done: 0,
                 next_trip_at: None,

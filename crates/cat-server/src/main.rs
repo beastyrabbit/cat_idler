@@ -1943,6 +1943,18 @@ mod tests {
                                 x: site.x,
                                 y: site.y - 1,
                             })
+                        && {
+                            let water = cat_sim::world_tick::TilePos {
+                                x: site.x,
+                                y: site.y - 1,
+                            };
+                            let mut projected = colony.clone();
+                            projected.revealed_tiles.insert(water);
+                            let tile = projected.world_tiles.get_mut(&water).unwrap();
+                            tile.tile_type = cat_sim::types::TileType::River;
+                            tile.resources.water = 100;
+                            cat_sim::world_tick::is_reachable_fishing_shore(&projected, *site, seed)
+                        }
                 })
                 .expect("founding map has a clear bank fixture");
             let water = cat_sim::world_tick::TilePos {

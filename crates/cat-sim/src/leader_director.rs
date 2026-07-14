@@ -184,6 +184,10 @@ pub fn survival_score(fill_ratio: f64, amount: f64, drain_per_tick: f64) -> f64 
 #[serde(rename_all = "snake_case")]
 pub enum LaborGoalKind {
     Hunt,
+    /// A Farmer food-relief slot resolved to a designated shoreline fishery.
+    /// The director itself still emits `Hunt`; the world layer substitutes this
+    /// typed goal before matching so worker fit uses Fishing, not Hunt.
+    Fish,
     FetchWater,
     Quarry,
     Scout,
@@ -215,6 +219,10 @@ pub fn goal_skill(kind: LaborGoalKind) -> GoalSkill {
         LaborGoalKind::Hunt => GoalSkill {
             skill: GoalStat::Hunting,
             prefer_specialization: Some(CatSpecialization::Hunter),
+        },
+        LaborGoalKind::Fish => GoalSkill {
+            skill: GoalStat::Hunting,
+            prefer_specialization: None,
         },
         LaborGoalKind::FetchWater => GoalSkill {
             skill: GoalStat::Hunting,
@@ -253,7 +261,9 @@ pub fn goal_skill(kind: LaborGoalKind) -> GoalSkill {
 #[must_use]
 pub fn officer_role_for(kind: LaborGoalKind) -> OfficerRole {
     match kind {
-        LaborGoalKind::Hunt | LaborGoalKind::FetchWater => OfficerRole::Farmer,
+        LaborGoalKind::Hunt | LaborGoalKind::Fish | LaborGoalKind::FetchWater => {
+            OfficerRole::Farmer
+        }
         LaborGoalKind::Quarry => OfficerRole::Forester,
         LaborGoalKind::TrainWarrior | LaborGoalKind::AssignSmithy => OfficerRole::Captain,
         LaborGoalKind::AssignResearch | LaborGoalKind::Scout => OfficerRole::Loremaster,
@@ -344,6 +354,7 @@ const LABOR_PREFERENCE_FIT_MULTIPLIER: f64 = 2.0;
 const fn labor_for_goal(goal: LaborGoalKind) -> Labor {
     match goal {
         LaborGoalKind::Hunt => Labor::Hunt,
+        LaborGoalKind::Fish => Labor::Fishing,
         LaborGoalKind::FetchWater => Labor::FetchWater,
         LaborGoalKind::Quarry => Labor::Quarry,
         LaborGoalKind::Scout => Labor::Scout,
@@ -695,7 +706,7 @@ pub fn plan_leader_actions(snapshot: &LeaderSnapshot) -> Vec<LeaderDecision> {
     }
 
     decisions.extend(plan.slots.iter().map(|slot| match slot.goal {
-        LaborGoalKind::Hunt => LeaderDecision::Hunt { count: slot.count },
+        LaborGoalKind::Hunt | LaborGoalKind::Fish => LeaderDecision::Hunt { count: slot.count },
         LaborGoalKind::FetchWater => LeaderDecision::FetchWater { count: slot.count },
         LaborGoalKind::Quarry => LeaderDecision::Quarry { count: slot.count },
         LaborGoalKind::Scout => LeaderDecision::Scout { count: slot.count },
@@ -889,7 +900,7 @@ fn able_cats(snapshot: &LeaderSnapshot) -> u32 {
 fn goal_order(kind: LaborGoalKind) -> usize {
     match kind {
         LaborGoalKind::FetchWater => 0,
-        LaborGoalKind::Hunt => 1,
+        LaborGoalKind::Hunt | LaborGoalKind::Fish => 1,
         LaborGoalKind::Quarry => 2,
         LaborGoalKind::TrainWarrior => 3,
         LaborGoalKind::AssignSmithy => 4,

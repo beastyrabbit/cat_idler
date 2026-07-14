@@ -1477,6 +1477,20 @@ fn remove_stockpile(
     ) {
         return fail("The seeded village storehouse cannot be removed.");
     }
+    if colony
+        .gather_spots
+        .iter()
+        .any(|spot| spot.stockpile_id == stockpile_id)
+    {
+        return fail("Use the gather-spot removal control for this typed pile.");
+    }
+    if colony
+        .stockpiles
+        .iter()
+        .any(|pile| pile.id == stockpile_id && pile.is_station_local())
+    {
+        return fail("Station-local storage cannot be removed directly.");
+    }
     colony
         .stockpiles
         .retain(|pile| pile.id != stockpile_id || pile.is_shrine());
@@ -1600,7 +1614,7 @@ fn designate_fishing_spot(
         .collect();
     }
     let site = candidates.into_iter().find(|site| {
-        crate::world_tick::is_valid_fishing_shore(colony, *site)
+        crate::world_tick::is_reachable_fishing_shore(colony, *site, world_seed)
             && crate::world_tick::stockpile_placement_error(
                 colony,
                 zones::normalize_rect(
@@ -1659,6 +1673,7 @@ fn remove_gather_spot(
     {
         return fail("Unknown gather spot.");
     }
+    crate::world_tick::cancel_fishing_jobs_for_spot(colony, stockpile_id, ctx.now_ms);
     colony
         .gather_spots
         .retain(|spot| spot.stockpile_id != stockpile_id);
@@ -5512,6 +5527,67 @@ mod tests {
         assert!(noop.ok, "unknown id is a no-op");
     }
 
+    #[test]
+    fn remove_stockpile_cannot_bypass_typed_or_station_local_cleanup() {
+        let mut world = world_with_one_colony();
+        let (bank, _) = prepare_fishing_shore(&mut world);
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::DesignateFishingSpot {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Angler".to_owned(),
+                    sig: "signed".to_owned(),
+                    at: proto::TilePoint {
+                        x: bank.x,
+                        y: bank.y,
+                    },
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        let fishing_id = world.colonies[0].gather_spots[0].stockpile_id.clone();
+        let before = world.colonies[0].clone();
+        let typed = apply_action(
+            &mut world,
+            &proto::ClientAction::RemoveStockpile {
+                session_id: "sess_1".to_owned(),
+                nickname: "Angler".to_owned(),
+                sig: "signed".to_owned(),
+                stockpile_id: fishing_id,
+            },
+            &ctx(),
+        );
+        assert!(!typed.ok);
+        assert_eq!(world.colonies[0], before);
+
+        let station_id = stockpiles::station_input_id("fixture-sawmill");
+        world.colonies[0].stockpiles.push(stockpiles::Stockpile {
+            id: station_id.clone(),
+            rect: zones::normalize_rect(30.0, 30.0, 30.0, 30.0),
+            accepts: std::iter::once(stockpiles::ResourceKind::Logs).collect(),
+            contents: entities::Resources::default(),
+        });
+        let station = apply_action(
+            &mut world,
+            &proto::ClientAction::RemoveStockpile {
+                session_id: "sess_1".to_owned(),
+                nickname: "Angler".to_owned(),
+                sig: "signed".to_owned(),
+                stockpile_id: station_id.clone(),
+            },
+            &ctx(),
+        );
+        assert!(!station.ok);
+        assert!(
+            world.colonies[0]
+                .stockpiles
+                .iter()
+                .any(|pile| pile.id == station_id)
+        );
+    }
+
     fn designate_gather_action(
         a: proto::TilePoint,
         b: proto::TilePoint,
@@ -6390,6 +6466,22 @@ mod tests {
                         x: bank.x,
                         y: bank.y - 1,
                     })
+                    && {
+                        let water = TilePos {
+                            x: bank.x,
+                            y: bank.y - 1,
+                        };
+                        let mut projected = colony.clone();
+                        projected.revealed_tiles.insert(water);
+                        let tile = projected.world_tiles.get_mut(&water).unwrap();
+                        tile.tile_type = TileType::River;
+                        tile.resources.water = 100;
+                        crate::world_tick::is_reachable_fishing_shore(
+                            &projected,
+                            *bank,
+                            world.world_seed,
+                        )
+                    }
             })
             .expect("founding reveal has a clear tile with a mapped neighbor");
         let water = TilePos {
@@ -6510,5 +6602,244 @@ mod tests {
             .find(|job| job.kind == JobKind::Fish)
             .unwrap();
         assert_eq!(job.assigned_cat.as_deref(), Some(preferred_id.as_str()));
+    }
+
+    #[test]
+    fn fishing_designation_rejects_a_clear_but_unreachable_bank() {
+        let mut world = world_with_one_colony();
+        let bank = TilePos {
+            x: world.colonies[0].anchor.x + 30,
+            y: world.colonies[0].anchor.y + 30,
+        };
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let pos = TilePos {
+                    x: bank.x + dx,
+                    y: bank.y + dy,
+                };
+                let mut tile = crate::world_tick::fresh_ground_tile(pos);
+                if dx == 0 && dy == -1 {
+                    tile.tile_type = TileType::River;
+                    tile.resources.water = 100;
+                } else if dx != 0 || dy != 0 {
+                    tile.tile_type = TileType::Mountains;
+                }
+                world.colonies[0].world_tiles.insert(pos, tile);
+                world.colonies[0].revealed_tiles.insert(pos);
+            }
+        }
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::DesignateFishingSpot {
+                session_id: "sess_1".to_owned(),
+                nickname: "Angler".to_owned(),
+                sig: "signed".to_owned(),
+                at: proto::TilePoint {
+                    x: bank.x,
+                    y: bank.y,
+                },
+            },
+            &ctx(),
+        );
+
+        assert!(!result.ok);
+        assert!(
+            world.colonies[0]
+                .gather_spots
+                .iter()
+                .all(|spot| spot.purpose != stockpiles::GatherSpotPurpose::Fishing)
+        );
+    }
+
+    #[test]
+    fn removing_fishing_spot_cancels_its_job_and_releases_worker() {
+        let mut world = world_with_one_colony();
+        let (bank, _) = prepare_fishing_shore(&mut world);
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::DesignateFishingSpot {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Angler".to_owned(),
+                    sig: "signed".to_owned(),
+                    at: proto::TilePoint {
+                        x: bank.x,
+                        y: bank.y
+                    },
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::RequestJob {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Angler".to_owned(),
+                    sig: "signed".to_owned(),
+                    kind: proto::JobKind::Fish,
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        let spot_id = world.colonies[0]
+            .gather_spots
+            .iter()
+            .find(|spot| spot.purpose == stockpiles::GatherSpotPurpose::Fishing)
+            .unwrap()
+            .stockpile_id
+            .clone();
+        let worker_id = world.colonies[0]
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::Fish)
+            .unwrap()
+            .assigned_cat
+            .clone()
+            .unwrap();
+
+        let removed = apply_action(
+            &mut world,
+            &proto::ClientAction::RemoveGatherSpot {
+                session_id: "sess_1".to_owned(),
+                nickname: "Angler".to_owned(),
+                sig: "signed".to_owned(),
+                stockpile_id: spot_id,
+            },
+            &ctx(),
+        );
+
+        assert!(removed.ok);
+        let job = world.colonies[0]
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::Fish)
+            .unwrap();
+        assert_eq!(job.status, JobStatus::Cancelled);
+        let worker = world.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id == worker_id)
+            .unwrap();
+        assert_eq!(worker.activity, CatActivity::Idle);
+        assert_eq!(worker.destination, None);
+        assert_eq!(worker.current_task, None);
+    }
+
+    #[test]
+    fn removing_fishing_spot_preserves_and_retargets_earned_cargo() {
+        let mut world = world_with_one_colony();
+        let (bank, _) = prepare_fishing_shore(&mut world);
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::DesignateFishingSpot {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Angler".to_owned(),
+                    sig: "signed".to_owned(),
+                    at: proto::TilePoint {
+                        x: bank.x,
+                        y: bank.y,
+                    },
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::RequestJob {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Angler".to_owned(),
+                    sig: "signed".to_owned(),
+                    kind: proto::JobKind::Fish,
+                },
+                &ctx(),
+            )
+            .ok
+        );
+        let spot_id = world.colonies[0]
+            .gather_spots
+            .iter()
+            .find(|spot| spot.purpose == stockpiles::GatherSpotPurpose::Fishing)
+            .unwrap()
+            .stockpile_id
+            .clone();
+        let job_index = world.colonies[0]
+            .jobs
+            .iter()
+            .position(|job| job.kind == JobKind::Fish)
+            .unwrap();
+        let worker_id = world.colonies[0].jobs[job_index]
+            .assigned_cat
+            .clone()
+            .unwrap();
+        // A final fishing trip marks the job complete before its carrier reaches
+        // storage; removing the typed pile must still find and retarget it.
+        world.colonies[0].jobs[job_index].status = JobStatus::Completed;
+        world.colonies[0].jobs[job_index].metadata = JobMetadata::Hauling {
+            site: Some(bank),
+            total_yield: Some(12.0),
+            trips_done: 1,
+            next_trip_at: None,
+            accepted: true,
+        };
+        let worker = world.colonies[0]
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == worker_id)
+            .unwrap();
+        worker.activity = CatActivity::Returning;
+        worker.current_task = Some(TaskType::Fish);
+        worker.destination = Some(Position {
+            map: MapType::World,
+            x: f64::from(bank.x),
+            y: f64::from(bank.y),
+        });
+        worker.carrying = Some(entities::Carrying {
+            kind: entities::CarryingKind::Food,
+            amount: 4.0,
+            job_ended_at: ctx().now_ms,
+            source_gather_spot: None,
+        });
+
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::RemoveGatherSpot {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Angler".to_owned(),
+                    sig: "signed".to_owned(),
+                    stockpile_id: spot_id,
+                },
+                &ctx(),
+            )
+            .ok
+        );
+
+        let worker = world.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id == worker_id)
+            .unwrap();
+        assert_eq!(worker.carrying.as_ref().unwrap().amount, 4.0);
+        assert_eq!(worker.activity, CatActivity::Returning);
+        assert_eq!(worker.current_task, None);
+        assert_ne!(
+            worker.destination,
+            Some(Position {
+                map: MapType::World,
+                x: f64::from(bank.x),
+                y: f64::from(bank.y),
+            })
+        );
+        assert_eq!(
+            world.colonies[0].jobs[job_index].status,
+            JobStatus::Cancelled
+        );
     }
 }

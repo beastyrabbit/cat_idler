@@ -446,8 +446,11 @@ pub fn deposit_index(
             best = Some((idx, dist));
         }
     }
-    best.map(|(idx, _)| idx)
-        .or_else(|| stockpiles.iter().position(Stockpile::is_shrine))
+    best.map(|(idx, _)| idx).or_else(|| {
+        stockpiles
+            .iter()
+            .position(|pile| pile.is_shrine() && pile.has_headroom(kind))
+    })
 }
 
 /// Like [`deposit_index`], but skips every pile whose id is in `gather_spot_ids` — used
@@ -480,8 +483,11 @@ pub fn village_deposit_index(
             best = Some((idx, dist));
         }
     }
-    best.map(|(idx, _)| idx)
-        .or_else(|| stockpiles.iter().position(Stockpile::is_shrine))
+    best.map(|(idx, _)| idx).or_else(|| {
+        stockpiles
+            .iter()
+            .position(|pile| pile.is_shrine() && pile.has_headroom(kind))
+    })
 }
 
 /// Restore the invariant: set the finite storehouse to `resources − sum(other physical piles)` per
