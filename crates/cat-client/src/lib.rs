@@ -1348,6 +1348,18 @@ fn ui_panel_node(width: Val) -> Node {
     }
 }
 
+/// The cat inspector must not inherit the generic panel's clipped overflow.
+/// Bevy 0.19 can leak that dynamically-shown scissor into the world pass,
+/// blacking out everything outside a narrow central strip.
+fn cat_inspector_panel_node() -> Node {
+    Node {
+        right: Val::Px(10.0),
+        top: Val::Px(60.0),
+        overflow: Overflow::visible(),
+        ..ui_panel_node(Val::Px(300.0))
+    }
+}
+
 /// The visual layer of a panel: a real sliced Adventure parchment frame. The
 /// solid fallback is visible only while the texture is loading.
 fn ui_panel_frame() -> impl Bundle {
@@ -3719,11 +3731,7 @@ fn setup(
     // of "Appoint <role>" buttons that make the selected cat that officer.
     commands
         .spawn((
-            Node {
-                right: Val::Px(10.0),
-                top: Val::Px(60.0),
-                ..ui_panel_node(Val::Px(300.0))
-            },
+            cat_inspector_panel_node(),
             ui_panel_frame(),
             InspectorPanel,
             WorldInputBlocker,
@@ -12363,5 +12371,13 @@ mod tests {
             !line.contains("hunt 12"),
             "real labor map replaces legacy summary"
         );
+    }
+
+    #[test]
+    fn cat_inspector_does_not_clip_the_world_render() {
+        let node = cat_inspector_panel_node();
+        assert_eq!(node.position_type, PositionType::Absolute);
+        assert_eq!(node.width, Val::Px(300.0));
+        assert_eq!(node.overflow, Overflow::visible());
     }
 }
