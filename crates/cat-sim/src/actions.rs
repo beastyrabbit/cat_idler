@@ -2347,7 +2347,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         },
         capabilities: proto::VillageCapabilities::default(),
         status: sim_to_proto_colony_status(colony.status),
-        resources: resources_snapshot(&colony.resources),
+        resources: colony_resources_snapshot(colony),
         storage: proto::StorageSnapshot {
             capacities: proto::ResourceCapacities {
                 food: caps.food,
@@ -3424,6 +3424,15 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
         metal: resources.metal,
         blessings: resources.blessings,
     }
+}
+
+/// Player-facing colony resources project the canonical spendable blessing bank. Blessings
+/// never occupy physical stockpiles, so per-pile and Accountant-ledger snapshots continue to
+/// report their real (normally zero) `Resources::blessings` field without double-counting it.
+fn colony_resources_snapshot(colony: &ColonyRuntime) -> proto::ResourceAmounts {
+    let mut resources = resources_snapshot(&colony.resources);
+    resources.blessings = colony.global_upgrade_points;
+    resources
 }
 
 fn idle_upgrade_levels(upgrades: &crate::world_tick::UpgradeLevels) -> idle_engine::UpgradeLevels {

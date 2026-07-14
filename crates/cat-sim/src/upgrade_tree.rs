@@ -71,6 +71,28 @@ impl EffectKey {
             Self::WaterCarryCapacity => "waterCarryCapacity",
         }
     }
+
+    /// Runtime systems that consume this resolved scalar effect.
+    ///
+    /// Keep this match exhaustive: adding a legacy scalar effect must name at least one
+    /// truthful gameplay path instead of stopping at catalog resolution. Planned string-keyed
+    /// unlock registries and per-building future modifiers are intentionally outside this map.
+    #[must_use]
+    pub const fn runtime_consumers(self) -> &'static [&'static str] {
+        match self {
+            Self::HuntYieldMult => &["physical hunt load"],
+            Self::GatherYieldMult => &["explicit fibre forage"],
+            Self::MaterialYieldMult => &["physical logging load", "physical quarry load"],
+            Self::FarmYieldMult => &["field and farm-plot harvest"],
+            Self::MoveSpeedMult => &["cat world movement"],
+            Self::CombatPowerMult => &["raid combat power"],
+            Self::DefenseMult => &["raid defense power"],
+            Self::ResearchRateMult => &["staffed research accrual"],
+            Self::StoragePerLevelMult => &["legacy storage-building capacity"],
+            Self::HousingPerDen => &["den housing capacity"],
+            Self::WaterCarryCapacity => &["physical water-fetch load"],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1387,6 +1409,33 @@ mod tests {
         assert!(resolved.unlocked_buildings.contains("research_hut"));
         assert!(resolved.unlocked_buildings.contains("smithy"));
         assert!(resolved.unlocked_jobs.contains("research"));
+    }
+
+    #[test]
+    fn every_resolved_legacy_scalar_effect_names_a_truthful_runtime_consumer() {
+        for key in EffectKey::ALL {
+            assert!(
+                !key.runtime_consumers().is_empty(),
+                "{} resolves from research but has no runtime consumer",
+                key.as_str()
+            );
+            assert!(
+                key.runtime_consumers()
+                    .iter()
+                    .all(|consumer| !consumer.trim().is_empty()),
+                "{} has a blank runtime consumer",
+                key.as_str()
+            );
+        }
+
+        assert_eq!(
+            EffectKey::GatherYieldMult.runtime_consumers(),
+            ["explicit fibre forage"]
+        );
+        assert_eq!(
+            EffectKey::MaterialYieldMult.runtime_consumers(),
+            ["physical logging load", "physical quarry load"]
+        );
     }
 
     #[test]

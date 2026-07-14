@@ -3031,7 +3031,13 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
         0.0
     };
     let housing_cap = colony_housing_capacity(colony);
-    let blessings = colony.resources.blessings;
+    // Blessings are the current spendable god-currency balance. Tithes, rituals, and
+    // physically delivered offerings all credit `global_upgrade_points`, and god purchases
+    // debit that same balance. The archived web game accidentally read the unrelated legacy
+    // `resources.blessings` field here, leaving every live shrine faucet disconnected from
+    // fertility. Do not introduce a second lifetime-earned counter: spending blessings is an
+    // intentional trade-off that immediately lowers the conception bonus.
+    let blessings = fertility_blessing_balance(colony);
     let probationary = probationary_ids(colony);
     let population = f64::from(permanent_alive_population(colony));
     let pregnant_count = alive_cats(&colony.cats)
@@ -3108,6 +3114,11 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
         // from filling every spare bed at once and keeps migration visibly faster.
         break;
     }
+}
+
+#[must_use]
+fn fertility_blessing_balance(colony: &ColonyRuntime) -> f64 {
+    colony.global_upgrade_points
 }
 
 /// A cat that died of old age in phase 6 pass 1, snapshotted before the pass's
@@ -13962,8 +13973,10 @@ fn complete_fixed_yield_job(
     let (site, total_yield, trips_done) = hauling_metadata(job);
     // Reuse the total cached by an earlier haul trip so skill scaling is applied once;
     // otherwise scale the base constant by this cat's labor skill here.
-    let scaled_total =
-        total_yield.unwrap_or_else(|| skill_scaled_yield(&colony.cats[cat_index], job.kind, total));
+    let scaled_total = total_yield.unwrap_or_else(|| {
+        debug_assert_eq!(total, base_yield_for_job(job.kind));
+        total_yield_for_job(colony, job, cat_index, world_seed)
+    });
     let reward = remaining_yield(scaled_total, HUNT_TRIP_COUNT, trips_done as i32);
     if job.kind == JobKind::Quarry {
         credit_quarry_ore(colony, site, reward, world_seed);
@@ -14024,8 +14037,10 @@ fn complete_fibre_forage(colony: &mut ColonyRuntime, job: &JobRuntime, _gate: Ti
         return;
     };
     let cap = storage_caps(colony).fibre;
-    let reward = skill_scaled_yield(&colony.cats[cat_index], job.kind, FIBRE_FORAGE_YIELD)
-        .min((cap - colony.resources.fibre).max(0.0));
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let reward = (skill_scaled_yield(&colony.cats[cat_index], job.kind, FIBRE_FORAGE_YIELD)
+        * effects.gather_yield_mult.max(0.0))
+    .min((cap - colony.resources.fibre).max(0.0));
     colony.resources.fibre += reward;
     if reward > 0.0 {
         colony.cats[cat_index].gain_skill(Labor::Forage, SKILL_GAIN_PER_JOB);
@@ -14495,11 +14510,28 @@ fn total_yield_for_job(
             let mult = hauling_metadata(job).0.map_or(1.0, |site| {
                 quarry_yield_multiplier(colony, world_seed, site)
             });
-            (skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD) * mult * haul_mult).floor()
+            (skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD)
+                * mult
+                * effects.material_yield_mult.max(0.0)
+                * haul_mult)
+                .floor()
         }
-        JobKind::GatherLogs => skill_scaled_yield(cat, job.kind, LOGGING_TOTAL_YIELD) * haul_mult,
+        JobKind::GatherLogs => {
+            skill_scaled_yield(cat, job.kind, LOGGING_TOTAL_YIELD)
+                * effects.material_yield_mult.max(0.0)
+                * haul_mult
+        }
         JobKind::Fish => skill_scaled_yield(cat, job.kind, FISHING_TOTAL_YIELD) * haul_mult,
         JobKind::HuntExpedition => hunt_yield_for(cat, colony),
+        _ => 0.0,
+    }
+}
+
+fn base_yield_for_job(kind: JobKind) -> f64 {
+    match kind {
+        JobKind::Quarry => QUARRY_TOTAL_YIELD,
+        JobKind::GatherLogs => LOGGING_TOTAL_YIELD,
+        JobKind::FetchWater => WATER_TOTAL_YIELD,
         _ => 0.0,
     }
 }
@@ -15614,7 +15646,7 @@ fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str, now_ms: i64) ->
 mod tests {
     use super::*;
     use crate::{
-        actions::{ActionCtx, apply_action},
+        actions::{ActionCtx, apply_action, build_snapshot},
         entities::{CatActivity, CatNeeds, CatStats, MapType},
         items::{ItemKind, MAX_QUALITY, Material},
         storage::BASE_CAPACITY,
@@ -17365,6 +17397,165 @@ mod tests {
         let twin_yield =
             total_yield_for_job(&colony, &quarry_job_at(trickle_site, "miner"), 0, seed);
         assert_eq!(trickle_yield.to_bits(), twin_yield.to_bits());
+    }
+
+    #[test]
+    fn resolved_gather_and_material_effects_scale_only_their_truthful_physical_loads() {
+        let seed = 42;
+        let mountain = pos(200, 573);
+        assert_eq!(
+            tile_climate_biome(seed, mountain.x, mountain.y)
+                .properties()
+                .mining,
+            Mining::Full
+        );
+        let cat = adult_idle_cat("worker", "colony-1");
+        let control = ColonyRuntime {
+            cats: vec![cat.clone()],
+            ..ColonyRuntime::default()
+        };
+
+        let mut forage_upgrade = control.clone();
+        forage_upgrade
+            .upgrade_tree
+            .owned_node_ids
+            .push("foraging_lore".to_owned());
+        let forage_job = JobRuntime {
+            kind: JobKind::ForageFibre,
+            assigned_cat: Some(cat.id.clone()),
+            ..JobRuntime::default()
+        };
+        let mut forage_control = control.clone();
+        complete_fibre_forage(&mut forage_control, &forage_job, production_gate(1, 1_000));
+        complete_fibre_forage(&mut forage_upgrade, &forage_job, production_gate(1, 1_000));
+        assert_eq!(forage_control.resources.fibre, FIBRE_FORAGE_YIELD);
+        assert_eq!(forage_upgrade.resources.fibre, FIBRE_FORAGE_YIELD * 1.15);
+
+        let quarry = quarry_job_at(mountain, &cat.id);
+        let mut logging = quarry.clone();
+        logging.id = "logging-1".to_owned();
+        logging.kind = JobKind::GatherLogs;
+        let control_quarry = total_yield_for_job(&control, &quarry, 0, seed);
+        let control_logging = total_yield_for_job(&control, &logging, 0, seed);
+
+        // `foraging_lore` does not silently increase stone or timber. The Sawmill node's
+        // material effect owns both explicit material-extraction paths: logs and quarry stone.
+        assert_eq!(
+            total_yield_for_job(&forage_upgrade, &quarry, 0, seed),
+            control_quarry
+        );
+        assert_eq!(
+            total_yield_for_job(&forage_upgrade, &logging, 0, seed),
+            control_logging
+        );
+        let mut material_upgrade = control.clone();
+        material_upgrade
+            .upgrade_tree
+            .owned_node_ids
+            .push("sawmill".to_owned());
+        assert_eq!(
+            total_yield_for_job(&material_upgrade, &quarry, 0, seed),
+            (control_quarry * 1.2).floor()
+        );
+        assert_eq!(
+            total_yield_for_job(&material_upgrade, &logging, 0, seed),
+            control_logging * 1.2
+        );
+
+        assert_eq!(
+            quarry.ends_at, logging.ends_at,
+            "yield research must not alter completion timing"
+        );
+        assert_eq!(
+            total_yield_for_job(&material_upgrade, &quarry, 0, seed).to_bits(),
+            total_yield_for_job(&material_upgrade.clone(), &quarry, 0, seed).to_bits(),
+            "same upgrade state and seed must resolve byte-identical loads"
+        );
+    }
+
+    #[test]
+    fn material_yield_campaign_preserves_trip_splitting_and_completion_time() {
+        fn run(seed: u32, upgraded: bool) -> (f64, f64, i64, JobMetadata) {
+            let site = pos(200, 573);
+            let mut cat = adult_idle_cat("logger", "colony-1");
+            cat.activity = CatActivity::Working;
+            cat.position = position_from_world(tile_pos_to_world(site));
+            let mut quarry = quarry_job_at(site, &cat.id);
+            quarry.started_at = Some(0);
+            quarry.ends_at = Some(9_000);
+            quarry.duration_ms = 9_000;
+            quarry.metadata = JobMetadata::Hauling {
+                site: Some(site),
+                total_yield: None,
+                trips_done: 0,
+                next_trip_at: Some(3_000),
+                accepted: true,
+            };
+            let mut logging = quarry.clone();
+            logging.id = "logging-1".to_owned();
+            logging.kind = JobKind::GatherLogs;
+            let mut colony = ColonyRuntime {
+                id: "colony-1".to_owned(),
+                cats: vec![
+                    cat.clone(),
+                    Cat {
+                        id: "miner".to_owned(),
+                        activity: CatActivity::Working,
+                        ..cat
+                    },
+                ],
+                jobs: vec![
+                    logging,
+                    JobRuntime {
+                        assigned_cat: Some("miner".to_owned()),
+                        ..quarry
+                    },
+                ],
+                test_rng_seed: Some(seed),
+                ..ColonyRuntime::default()
+            };
+            if upgraded {
+                colony
+                    .upgrade_tree
+                    .owned_node_ids
+                    .push("sawmill".to_owned());
+            }
+
+            let completion_at = colony.jobs[0].ends_at.expect("fixed completion");
+            phase_31_mid_job_hauling(&mut colony, production_gate(1, 3_000), seed);
+            let logging_load = colony.cats[0]
+                .carrying
+                .as_ref()
+                .expect("logger carries a real trip")
+                .amount;
+            let quarry_load = colony.cats[1]
+                .carrying
+                .as_ref()
+                .expect("miner carries a real trip")
+                .amount;
+            (
+                logging_load,
+                quarry_load,
+                completion_at,
+                colony.jobs[0].metadata.clone(),
+            )
+        }
+
+        let control = run(42, false);
+        let upgraded = run(42, true);
+        let twin = run(42, true);
+        assert!(upgraded.0 > control.0, "logging trip must carry the bonus");
+        assert!(upgraded.1 > control.1, "quarry trip must carry the bonus");
+        assert_eq!(upgraded.2, control.2, "completion time stays exact");
+        assert_eq!(upgraded, twin, "campaign must be deterministic");
+        assert!(matches!(
+            upgraded.3,
+            JobMetadata::Hauling {
+                total_yield: Some(total),
+                trips_done: 1,
+                ..
+            } if total == LOGGING_TOTAL_YIELD * 1.2
+        ));
     }
 
     #[test]
@@ -32283,6 +32474,46 @@ mod tests {
         }
     }
 
+    fn shrine_action_ctx(now_ms: i64) -> ActionCtx {
+        ActionCtx {
+            session_id: "shrine-session".to_owned(),
+            player_id: "shrine-player".to_owned(),
+            colony_id: "colony-1".to_owned(),
+            now_ms,
+        }
+    }
+
+    fn signed_shrine_action(action: &str, node_id: Option<&str>) -> proto::ClientAction {
+        let session_id = "shrine-session".to_owned();
+        let nickname = "Shrine Tester".to_owned();
+        let sig = "pure-sim".to_owned();
+        match action {
+            "tithe" => proto::ClientAction::OfferTithe {
+                session_id,
+                nickname,
+                sig,
+            },
+            "materials" => proto::ClientAction::OfferMaterials {
+                session_id,
+                nickname,
+                sig,
+            },
+            "unlock" => proto::ClientAction::UnlockNode {
+                session_id,
+                nickname,
+                sig,
+                node_id: node_id.expect("unlock action needs a node").to_owned(),
+            },
+            "research" => proto::ClientAction::ResearchNode {
+                session_id,
+                nickname,
+                sig,
+                node_id: node_id.expect("research action needs a node").to_owned(),
+            },
+            _ => panic!("unknown shrine action {action}"),
+        }
+    }
+
     fn offering_job(colony: &ColonyRuntime) -> JobRuntime {
         JobRuntime {
             id: "job-offering-1".to_owned(),
@@ -32306,6 +32537,140 @@ mod tests {
         TickPolicy {
             config: crate::policy::config_for_tier(crate::types::PolicyTier::Excellent),
         }
+    }
+
+    #[test]
+    fn action_shrine_faucets_feed_spendable_fertility_balance_once_and_reset_preserves_it() {
+        let mut colony = offering_colony(30.0);
+        colony.resources.food = 200.0;
+        colony.resources.refined = 10.0;
+        // Prove the archived duplicate scalar is not the fertility input or HUD balance.
+        colony.resources.blessings = 100.0;
+        colony.global_upgrade_points = 5.0;
+        colony.buildings.push(BuildingRuntime {
+            id: "shrine".to_owned(),
+            building_type: BuildingType::Shrine,
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        });
+        let mut world = WorldState {
+            world_seed: 7,
+            colonies: vec![colony],
+        };
+
+        let chance_at_five =
+            conception_probability(None, fertility_blessing_balance(&world.colonies[0]), 1.0);
+        assert_eq!(
+            chance_at_five,
+            conception_probability(None, 5.0, 1.0),
+            "fertility reads the spendable balance, not resources.blessings"
+        );
+
+        let result = apply_action(
+            &mut world,
+            &signed_shrine_action("tithe", None),
+            &shrine_action_ctx(1_000),
+        );
+        assert!(result.ok, "signed tithe failed: {:?}", result.message);
+        assert_eq!(world.colonies[0].global_upgrade_points, 7.0);
+        let chance_after_tithe =
+            conception_probability(None, fertility_blessing_balance(&world.colonies[0]), 1.0);
+        assert!(chance_after_tithe > chance_at_five);
+
+        let result = apply_action(
+            &mut world,
+            &signed_shrine_action("materials", None),
+            &shrine_action_ctx(2_000),
+        );
+        assert!(result.ok, "signed offering failed: {:?}", result.message);
+        assert_eq!(
+            world.colonies[0].global_upgrade_points, 7.0,
+            "dispatch cannot credit a blessing before physical shrine delivery"
+        );
+        let offering = world.colonies[0]
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::CarryOffering)
+            .expect("action queued a material offering")
+            .clone();
+        complete_offering(
+            &mut world.colonies[0],
+            &offering,
+            production_gate(60, 2_402_000),
+        );
+        let gate = production_gate(1, 2_403_000);
+        let mut movement = phase_32_movement_setup_and_village_expansion_queue(
+            &mut world.colonies[0],
+            gate,
+            reliable_policy(),
+            world.world_seed,
+        );
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut world.colonies[0],
+            gate,
+            &mut movement,
+        );
+        assert_eq!(world.colonies[0].global_upgrade_points, 8.0);
+        assert_eq!(world.colonies[0].cats[0].carrying, None);
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut world.colonies[0],
+            gate,
+            &mut movement,
+        );
+        assert_eq!(
+            world.colonies[0].global_upgrade_points, 8.0,
+            "a delivered offering must not be credited twice"
+        );
+
+        let before_spend =
+            conception_probability(None, fertility_blessing_balance(&world.colonies[0]), 1.0);
+        let result = apply_action(
+            &mut world,
+            &signed_shrine_action("unlock", Some("research_hut")),
+            &shrine_action_ctx(3_000),
+        );
+        assert!(result.ok, "blessing purchase failed: {:?}", result.message);
+        assert_eq!(world.colonies[0].global_upgrade_points, 3.0);
+        let after_spend =
+            conception_probability(None, fertility_blessing_balance(&world.colonies[0]), 1.0);
+        assert_eq!(after_spend, conception_probability(None, 3.0, 1.0));
+        assert!(after_spend < before_spend);
+
+        world.colonies[0].upgrade_tree.research_points = 5.0;
+        let result = apply_action(
+            &mut world,
+            &signed_shrine_action("research", Some("basic_tools")),
+            &shrine_action_ctx(4_000),
+        );
+        assert!(
+            result.ok,
+            "cat research purchase failed: {:?}",
+            result.message
+        );
+        assert_eq!(world.colonies[0].upgrade_tree.research_points, 0.0);
+        assert_eq!(world.colonies[0].global_upgrade_points, 3.0);
+        assert_eq!(
+            conception_probability(None, fertility_blessing_balance(&world.colonies[0]), 1.0),
+            after_spend,
+            "cat research points are a distinct currency"
+        );
+
+        let snapshot = build_snapshot(&world, 4_000, 1);
+        assert_eq!(snapshot.colonies[0].resources.blessings, 3.0);
+        assert_eq!(snapshot.colonies[0].research.blessings, 3.0);
+
+        for cat in &mut world.colonies[0].cats {
+            cat.death_time = Some(5_000);
+        }
+        let mut twin = world.colonies[0].clone();
+        reset_run(&mut world.colonies[0], 5_000, RunResetReason::AllCatsDead);
+        reset_run(&mut twin, 5_000, RunResetReason::AllCatsDead);
+        assert_eq!(world.colonies[0], twin, "reset must remain deterministic");
+        assert_eq!(world.colonies[0].global_upgrade_points, 3.0);
+        let snapshot = build_snapshot(&world, 5_000, 2);
+        assert_eq!(snapshot.colonies[0].resources.blessings, 3.0);
+        assert_eq!(snapshot.colonies[0].research.blessings, 3.0);
     }
 
     #[test]

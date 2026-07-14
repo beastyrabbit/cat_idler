@@ -565,7 +565,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - **P12.1 skills** — proficiency/XP persists for all 19 maintained labors. Only truthful work
   accrues continuous or completed-cycle XP; bounded effects apply to production, movement,
   research, and combat; protocol and the cat inspector expose the typed map while accepting
-  legacy four-role snapshots.
+  legacy four-role snapshots. The original Foraging Lore and Sawmill yield effects now reach
+  explicit fibre forage and the physical logging/quarry loads respectively, before ordinary
+  trip splitting and capacity checks and without changing completion timing.
 - **P12.2 officers** — Steward, Accountant, Forester, Farmer, Captain, Loremaster, and Cloth
   Leader have strict specialist automation ownership. Beyond the founding Leader's bounded
   hunt/water/scout safety floor, vacancies are manual-only. Appointment requires the matching
@@ -584,9 +586,12 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   lumber credit before delivery. Other workshops still use colony-global resources.
 - **P12.6 logistics** — general/limited stockpile designation, signed manual shrine orders, and
   Steward gather-spot automation landed. Population-relative tithe and carried-offering gates are
-  reachable across five unattended seeds without consuming protected reserves. The seeded finite
-  general storehouse and complete physical Sawmill route are verified; other production chains
-  still need the same local hauling contract.
+  reachable across five unattended seeds without consuming protected reserves. Tithes, rituals,
+  and delivered offerings feed the one spendable blessing balance used by fertility and instant
+  god purchases; spending lowers the fertility bonus, cat research points remain separate, reset
+  preserves the remainder, and HUD/research snapshots agree without stockpile double-counting. The
+  seeded finite general storehouse and complete physical Sawmill route are verified; other
+  production chains still need the same local hauling contract.
 
 ### P13 — Client UI for P12
 - Spatial stockpile designation + render (`b3d28fb`).
