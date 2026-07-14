@@ -22,7 +22,11 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Anchor;
 use bevy::sprite::{BorderRect, SliceScaleMode, TextureSlicer};
 use bevy::ui::{InteractionDisabled, RelativeCursorPosition, VisualBox, widget::NodeImageMode};
-use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage, PrimaryWindow};
+#[cfg(not(target_arch = "wasm32"))]
+use bevy::window::CustomCursorImage;
+#[cfg(target_arch = "wasm32")]
+use bevy::window::CustomCursorUrl;
+use bevy::window::{CursorIcon, CustomCursor, PrimaryWindow};
 use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
     CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
@@ -1235,10 +1239,15 @@ struct AdventureUiArt {
     banner: Handle<Image>,
     icon_frame: Handle<Image>,
     minimap_ring: Handle<Image>,
+    #[cfg(not(target_arch = "wasm32"))]
     cursor_pointer: Handle<Image>,
+    #[cfg(not(target_arch = "wasm32"))]
     cursor_interact: Handle<Image>,
+    #[cfg(not(target_arch = "wasm32"))]
     cursor_pressed: Handle<Image>,
+    #[cfg(not(target_arch = "wasm32"))]
     cursor_target: Handle<Image>,
+    #[cfg(not(target_arch = "wasm32"))]
     cursor_disabled: Handle<Image>,
 }
 
@@ -1258,10 +1267,15 @@ impl AdventureUiArt {
             banner: assets.load("public/images/game/ui/banner.png"),
             icon_frame: assets.load("public/images/game/ui/icon-frame.png"),
             minimap_ring: assets.load("public/images/game/ui/minimap-ring.png"),
+            #[cfg(not(target_arch = "wasm32"))]
             cursor_pointer: assets.load("public/images/game/ui/cursor/pointer.png"),
+            #[cfg(not(target_arch = "wasm32"))]
             cursor_interact: assets.load("public/images/game/ui/cursor/interact.png"),
+            #[cfg(not(target_arch = "wasm32"))]
             cursor_pressed: assets.load("public/images/game/ui/cursor/pressed.png"),
+            #[cfg(not(target_arch = "wasm32"))]
             cursor_target: assets.load("public/images/game/ui/cursor/target.png"),
+            #[cfg(not(target_arch = "wasm32"))]
             cursor_disabled: assets.load("public/images/game/ui/cursor/disabled.png"),
         }
     }
@@ -1655,6 +1669,23 @@ fn adventure_cursor_hotspot(kind: AdventureCursorKind) -> (u16, u16) {
 }
 
 fn adventure_cursor_icon(kind: AdventureCursorKind, art: &AdventureUiArt) -> CursorIcon {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = art;
+        let url = match kind {
+            AdventureCursorKind::Pointer => "public/images/game/ui/cursor/pointer.png",
+            AdventureCursorKind::Interact => "public/images/game/ui/cursor/interact.png",
+            AdventureCursorKind::Pressed => "public/images/game/ui/cursor/pressed.png",
+            AdventureCursorKind::Target => "public/images/game/ui/cursor/target.png",
+            AdventureCursorKind::Disabled => "public/images/game/ui/cursor/disabled.png",
+        };
+        return CursorIcon::Custom(CustomCursor::Url(CustomCursorUrl {
+            url: url.to_owned(),
+            hotspot: adventure_cursor_hotspot(kind),
+        }));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     let handle = match kind {
         AdventureCursorKind::Pointer => art.cursor_pointer.clone(),
         AdventureCursorKind::Interact => art.cursor_interact.clone(),
@@ -1662,11 +1693,14 @@ fn adventure_cursor_icon(kind: AdventureCursorKind, art: &AdventureUiArt) -> Cur
         AdventureCursorKind::Target => art.cursor_target.clone(),
         AdventureCursorKind::Disabled => art.cursor_disabled.clone(),
     };
-    CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {
-        handle,
-        hotspot: adventure_cursor_hotspot(kind),
-        ..default()
-    }))
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        CursorIcon::Custom(CustomCursor::Image(CustomCursorImage {
+            handle,
+            hotspot: adventure_cursor_hotspot(kind),
+            ..default()
+        }))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2773,12 +2807,7 @@ pub fn run() {
                 // upscaled to TILE; the default linear filter blurs it.
                 .set(bevy::image::ImagePlugin::default_nearest())
                 .set(WindowPlugin {
-                    primary_window: Some(Window {
-                        title: "Idle Cat Forest".to_string(),
-                        resolution: bevy::window::WindowResolution::new(1024, 768)
-                            .with_scale_factor_override(1.0),
-                        ..default()
-                    }),
+                    primary_window: Some(primary_window_for_platform(cfg!(target_arch = "wasm32"))),
                     ..default()
                 }),
         )
@@ -2933,6 +2962,22 @@ pub fn run() {
             ),
         )
         .run();
+}
+
+/// Configure the game window for either a native surface or the browser canvas.
+///
+/// Winit keeps the web canvas at the requested 1024×768 size unless
+/// `fit_canvas_to_parent` is enabled. The browser client must follow the viewport
+/// so the same responsive HUD layouts exercised natively are actually reachable
+/// in WASM; native windows retain their intentional 1024×768 startup size.
+fn primary_window_for_platform(is_web: bool) -> Window {
+    Window {
+        title: "Idle Cat Forest".to_string(),
+        resolution: bevy::window::WindowResolution::new(1024, 768).with_scale_factor_override(1.0),
+        canvas: is_web.then(|| "#cat-game".to_owned()),
+        fit_canvas_to_parent: is_web,
+        ..default()
+    }
 }
 
 /// The resources shown in the HUD readout. Its own enum (not `proto::ResourceKind`,
@@ -5626,10 +5671,11 @@ fn build_remove_action(
 /// Toggle the officers panel with the `O` key.
 fn toggle_officers(
     keys: Res<ButtonInput<KeyCode>>,
+    tree: Res<UpgradeTreeUi>,
     mut ui: ResMut<OfficersUi>,
     mut orders: ResMut<OrdersUi>,
 ) {
-    if keys.just_pressed(OFFICERS_SHORTCUT) {
+    if keys.just_pressed(OFFICERS_SHORTCUT) && !tree.visible {
         ui.visible = !ui.visible;
         if ui.visible {
             orders.visible = false;
@@ -5639,10 +5685,11 @@ fn toggle_officers(
 
 fn toggle_orders(
     keys: Res<ButtonInput<KeyCode>>,
+    tree: Res<UpgradeTreeUi>,
     mut ui: ResMut<OrdersUi>,
     mut officers: ResMut<OfficersUi>,
 ) {
-    if keys.just_pressed(ORDERS_SHORTCUT) {
+    if keys.just_pressed(ORDERS_SHORTCUT) && !tree.visible {
         ui.visible = !ui.visible;
         if ui.visible {
             officers.visible = false;
@@ -6913,6 +6960,9 @@ fn close_inspectors_on_esc(
     mut trade: ResMut<TradeUi>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
+        if tree.captures_text_input() {
+            return;
+        }
         cat.selected = None;
         building.selected = None;
         stockpile.selected = None;
@@ -8220,7 +8270,8 @@ fn toggle_announcements(
     mut tree: ResMut<UpgradeTreeUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
-    if keys.just_pressed(KeyCode::KeyL) || clicked {
+    let shortcut_pressed = keys.just_pressed(KeyCode::KeyL) && !tree.visible;
+    if shortcut_pressed || clicked {
         ui.visible = !ui.visible;
         if ui.visible {
             goods.visible = false;
@@ -8242,7 +8293,8 @@ fn toggle_goods(
     mut tree: ResMut<UpgradeTreeUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
-    if keys.just_pressed(KeyCode::KeyG) || clicked {
+    let shortcut_pressed = keys.just_pressed(KeyCode::KeyG) && !tree.visible;
+    if shortcut_pressed || clicked {
         ui.visible = !ui.visible;
         if ui.visible {
             announce.visible = false;
@@ -8264,7 +8316,8 @@ fn toggle_census(
     mut tree: ResMut<UpgradeTreeUi>,
 ) {
     let clicked = button.iter().any(|i| *i == Interaction::Pressed);
-    if keys.just_pressed(KeyCode::KeyC) || clicked {
+    let shortcut_pressed = keys.just_pressed(KeyCode::KeyC) && !tree.visible;
+    if shortcut_pressed || clicked {
         ui.visible = !ui.visible;
         if ui.visible {
             goods.visible = false;
@@ -8550,8 +8603,12 @@ fn update_announcements(
 }
 
 /// Toggle the corner minimap with the `M` key.
-fn toggle_minimap(keys: Res<ButtonInput<KeyCode>>, mut ui: ResMut<MinimapUi>) {
-    if keys.just_pressed(KeyCode::KeyM) {
+fn toggle_minimap(
+    keys: Res<ButtonInput<KeyCode>>,
+    tree: Res<UpgradeTreeUi>,
+    mut ui: ResMut<MinimapUi>,
+) {
+    if keys.just_pressed(KeyCode::KeyM) && !tree.visible {
         ui.visible = !ui.visible;
     }
 }
@@ -9696,6 +9753,17 @@ mod tests {
             presence_sent: true,
             ready: true,
         }
+    }
+
+    #[test]
+    fn browser_window_follows_parent_while_native_keeps_requested_size() {
+        let browser = primary_window_for_platform(true);
+        let native = primary_window_for_platform(false);
+
+        assert!(browser.fit_canvas_to_parent);
+        assert!(!native.fit_canvas_to_parent);
+        assert_eq!(browser.resolution.physical_width(), 1024);
+        assert_eq!(browser.resolution.physical_height(), 768);
     }
 
     #[test]

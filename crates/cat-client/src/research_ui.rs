@@ -308,6 +308,12 @@ impl Default for UpgradeTreeUi {
     }
 }
 
+impl UpgradeTreeUi {
+    pub(super) fn captures_text_input(&self) -> bool {
+        self.visible && self.search_active
+    }
+}
+
 #[derive(Component)]
 pub(super) struct ResearchRoot;
 #[derive(Component)]
@@ -760,7 +766,8 @@ pub(super) fn toggle_upgrade_tree(
     let toggle_clicked = button
         .iter()
         .any(|interaction| *interaction == Interaction::Pressed);
-    if keys.just_pressed(KeyCode::KeyU) || toggle_clicked || close_clicked {
+    let shortcut_pressed = keys.just_pressed(KeyCode::KeyU) && !ui.search_active;
+    if shortcut_pressed || toggle_clicked || close_clicked {
         ui.visible = !ui.visible;
         ui.search_active = false;
         if ui.visible {
@@ -868,16 +875,28 @@ pub(super) fn research_keyboard_input(
     mut ui: ResMut<UpgradeTreeUi>,
 ) {
     if !ui.visible {
+        keyboard.clear();
         return;
     }
+    let was_search_active = ui.search_active;
     if keys.just_pressed(KeyCode::Slash) {
         ui.search_active = true;
         ui.filter_dirty = true;
     }
     if ui.search_active {
         let old_query = ui.query.clone();
+        // The reader is intentionally idle while the ledger is closed. When `/`
+        // activates search, discard older shortcut events (notably the `U` that
+        // opened the ledger) and begin text entry after the activating slash.
+        let mut accepts_text = was_search_active;
         for event in keyboard.read() {
             if event.state != ButtonState::Pressed {
+                continue;
+            }
+            if !accepts_text {
+                if event.key_code == KeyCode::Slash {
+                    accepts_text = true;
+                }
                 continue;
             }
             match event.key_code {
@@ -919,6 +938,9 @@ pub(super) fn research_keyboard_input(
     } else if keys.just_pressed(KeyCode::Escape) && !ui.query.is_empty() {
         ui.query.clear();
         ui.filter_dirty = true;
+        keyboard.clear();
+    } else {
+        keyboard.clear();
     }
 }
 
@@ -1308,6 +1330,18 @@ pub(super) fn handle_research_purchase(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ledger_captures_global_shortcuts_only_while_search_is_active() {
+        let mut ui = UpgradeTreeUi::default();
+        assert!(!ui.captures_text_input());
+        ui.visible = true;
+        assert!(!ui.captures_text_input());
+        ui.search_active = true;
+        assert!(ui.captures_text_input());
+        ui.visible = false;
+        assert!(!ui.captures_text_input());
+    }
     use bevy::ecs::world::CommandQueue;
     use cat_protocol::ResearchSnapshot;
     use cat_sim::research_catalog::{RESEARCH_NODE_COUNT, ResearchCategory, research_catalog};

@@ -26,7 +26,7 @@
         background: #0f1613;
         overflow: hidden;
       }
-      /* Bevy/winit appends its own canvas to <body>. */
+      /* Bevy/winit renders into the explicitly configured game canvas. */
       canvas {
         display: block;
         width: 100vw;
@@ -34,5 +34,5 @@
       }
     </style>
   </head>
-  <body></body>
+  <body><canvas id="cat-game" tabindex="0" aria-label="Idle Cat Forest"></canvas></body>
 </html>
