@@ -68,6 +68,12 @@ pub enum CarryingKind {
     Tools,
     #[serde(rename = "water")]
     Water,
+    #[serde(rename = "catnip")]
+    Catnip,
+    #[serde(rename = "grain")]
+    Grain,
+    #[serde(rename = "herbs")]
+    Herbs,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

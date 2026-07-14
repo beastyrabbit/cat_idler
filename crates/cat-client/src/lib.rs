@@ -5878,7 +5878,36 @@ fn update_remove_panel(
         }
         (_, Some(farm)) => {
             node.display = Display::Flex;
-            text.0 = format!("{} farm\n{:?}", crop_label(farm.crop), farm.stage);
+            let worker = farm.worker_id.as_deref().unwrap_or("none");
+            let input = if farm.input_inventory.is_empty() {
+                "none".to_owned()
+            } else {
+                farm.input_inventory
+                    .iter()
+                    .map(|stack| format!("{} {:.1}", resource_kind_name(stack.kind), stack.amount))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let output = if farm.output_inventory.is_empty() {
+                "none".to_owned()
+            } else {
+                farm.output_inventory
+                    .iter()
+                    .map(|stack| format!("{} {:.1}", resource_kind_name(stack.kind), stack.amount))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            text.0 = format!(
+                "{} farm\n{:?} · {:?}\nworker: {}\ntravel: {}\ninput: {}\noutput: {}\nblocked: {}",
+                crop_label(farm.crop),
+                farm.stage,
+                farm.work_phase,
+                worker,
+                farm.worker_travel.as_deref().unwrap_or("none"),
+                input,
+                output,
+                farm.block_reason.as_deref().unwrap_or("none"),
+            );
         }
         (None, None) => {
             node.display = Display::None;
@@ -10166,6 +10195,9 @@ fn carrying_color(kind: CarryingKind) -> Color {
         CarryingKind::Lumber | CarryingKind::Planks => Color::srgb(0.70, 0.47, 0.25),
         CarryingKind::Blocks => Color::srgb(0.58, 0.60, 0.64),
         CarryingKind::Tools => Color::srgb(0.76, 0.78, 0.84),
+        CarryingKind::Catnip => Color::srgb(0.78, 0.60, 0.92),
+        CarryingKind::Grain => Color::srgb(0.96, 0.78, 0.34),
+        CarryingKind::Herbs => Color::srgb(0.55, 0.88, 0.48),
     }
 }
 

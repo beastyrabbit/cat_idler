@@ -86,7 +86,7 @@ pub const BUILDING_COSTS: [(BuildingType, u32); 25] = [
     (BuildingType::Sawmill, 25),
 ];
 
-pub const TASK_TO_SKILL: [(TaskType, &str); 13] = [
+pub const TASK_TO_SKILL: [(TaskType, &str); 14] = [
     (TaskType::Hunt, "hunting"),
     (TaskType::Fish, "hunting"),
     (TaskType::GatherHerbs, "medicine"),
@@ -100,6 +100,9 @@ pub const TASK_TO_SKILL: [(TaskType, &str); 13] = [
     (TaskType::Patrol, "attack"),
     (TaskType::Teach, "leadership"),
     (TaskType::Rest, "defense"),
+    // Rust-only physical farm activity; continuous proficiency lives in Labor::Farm,
+    // while this legacy primary-stat lookup uses building dexterity.
+    (TaskType::Farm, "building"),
 ];
 
 #[must_use]
@@ -238,6 +241,7 @@ mod tests {
             (TaskType::Patrol, "attack"),
             (TaskType::Teach, "leadership"),
             (TaskType::Rest, "defense"),
+            (TaskType::Farm, "building"),
         ];
 
         assert_eq!(TASK_TO_SKILL.len(), TaskType::ALL.len());

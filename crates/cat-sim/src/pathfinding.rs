@@ -1,6 +1,6 @@
 //! A* pathfinding ported from `lib/game/pathfinding.ts`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::movement::{
     DIRT_ROAD_SPEED_MULT, ROAD_BUILT_SPEED_MULT, SOFT_OBSTACLE_SPEED_MULT, SURFACE_FACTOR_GRASSLAND,
@@ -393,6 +393,125 @@ pub fn find_path<G: WalkGrid + ?Sized>(
     None
 }
 
+/// Return whether every goal belongs to the start's reachable component.
+///
+/// Topology validators often need connectivity truth for many workstations under one
+/// projected fence layout. Running A* once per goal repeats the same search; this bounded
+/// breadth-first traversal visits each tile at most once and preserves [`find_path`]'s hard
+/// obstacle and fence semantics.
+#[must_use]
+pub fn all_reachable<G: WalkGrid + ?Sized>(
+    start: WorldPos,
+    goals: &[WorldPos],
+    grid: &G,
+    options: FindPathOptions,
+) -> bool {
+    if goals.is_empty() {
+        return true;
+    }
+
+    let reachable = reachable_component(start, goals, grid, options);
+    goals.iter().all(|goal| {
+        reachable.contains(&TilePos {
+            x: js_round_to_i32(goal.x),
+            y: js_round_to_i32(goal.y),
+        })
+    })
+}
+
+/// Build the bounded component needed to answer a batch of reachability queries.
+#[must_use]
+pub fn reachable_component<G: WalkGrid + ?Sized>(
+    start: WorldPos,
+    goals: &[WorldPos],
+    grid: &G,
+    options: FindPathOptions,
+) -> HashSet<TilePos> {
+    if goals.is_empty() {
+        return HashSet::from([TilePos {
+            x: js_round_to_i32(start.x),
+            y: js_round_to_i32(start.y),
+        }]);
+    }
+
+    let start = (js_round_to_i32(start.x), js_round_to_i32(start.y));
+    let mut remaining = goals
+        .iter()
+        .map(|goal| (js_round_to_i32(goal.x), js_round_to_i32(goal.y)))
+        .collect::<HashSet<_>>();
+    remaining.remove(&start);
+    if remaining.is_empty() {
+        return HashSet::from([TilePos {
+            x: start.0,
+            y: start.1,
+        }]);
+    }
+
+    let min_x = remaining
+        .iter()
+        .map(|(x, _)| *x)
+        .chain(std::iter::once(start.0))
+        .min()
+        .expect("the start makes the search bounds non-empty")
+        - options.margin;
+    let max_x = remaining
+        .iter()
+        .map(|(x, _)| *x)
+        .chain(std::iter::once(start.0))
+        .max()
+        .expect("the start makes the search bounds non-empty")
+        + options.margin;
+    let min_y = remaining
+        .iter()
+        .map(|(_, y)| *y)
+        .chain(std::iter::once(start.1))
+        .min()
+        .expect("the start makes the search bounds non-empty")
+        - options.margin;
+    let max_y = remaining
+        .iter()
+        .map(|(_, y)| *y)
+        .chain(std::iter::once(start.1))
+        .max()
+        .expect("the start makes the search bounds non-empty")
+        + options.margin;
+
+    let mut frontier = VecDeque::from([start]);
+    let mut visited = HashSet::from([start]);
+    let mut expansions = 0_usize;
+    while let Some((x, y)) = frontier.pop_front() {
+        expansions += 1;
+        if expansions > options.max_expansions {
+            break;
+        }
+
+        for (dx, dy) in NEIGHBOURS {
+            let next = (x + dx, y + dy);
+            if next.0 < min_x || next.0 > max_x || next.1 < min_y || next.1 > max_y {
+                continue;
+            }
+            let is_goal = remaining.contains(&next);
+            if !is_goal && grid.is_blocked(next.0, next.1) {
+                continue;
+            }
+            if cliff_blocks_step(grid, x, y, next.0, next.1)
+                || grid.fence_blocks_step(x, y, next.0, next.1)
+                || !visited.insert(next)
+            {
+                continue;
+            }
+            remaining.remove(&next);
+            if remaining.is_empty() {
+                frontier.clear();
+                break;
+            }
+            frontier.push_back(next);
+        }
+    }
+
+    visited.into_iter().map(|(x, y)| TilePos { x, y }).collect()
+}
+
 impl WalkGrid for ColonyWalkGrid<'_> {
     fn is_blocked(&self, x: i32, y: i32) -> bool {
         if self.area.is_none() && self.on_legacy_fence(x, y) && !self.is_legacy_gate(x, y) {
@@ -710,7 +829,7 @@ mod tests {
         GatePlacement, MIN_STEP_COST, MOUNTAIN_COST, OPEN_COST, ROAD_COST, ROAD_WEAR_THRESHOLD,
         SURFACE_FACTOR_GRASSLAND, SoftObstacleField, TilePos, VillageArea, WATER_COST,
         WORN_PATH_COST, WalkGrid, WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType,
-        WorldPos, build_colony_walk_grid, cliff_blocks_step, find_path, tile_cost,
+        WorldPos, all_reachable, build_colony_walk_grid, cliff_blocks_step, find_path, tile_cost,
     };
 
     #[derive(Debug, Deserialize)]
@@ -894,6 +1013,43 @@ mod tests {
         assert_eq!(fixture.source, "lib/game/pathfinding.ts");
         assert_eq!(fixture.path_cases.len(), 21);
         assert_eq!(fixture.colony_path_cases.len(), 3);
+    }
+
+    #[test]
+    fn multi_goal_reachability_checks_the_shared_component_once() {
+        let grid = TestGrid {
+            blocked: HashSet::new(),
+            costs: HashMap::new(),
+            roads: HashSet::new(),
+        };
+        assert!(all_reachable(
+            WorldPos { x: 0.0, y: 0.0 },
+            &[
+                WorldPos { x: 4.0, y: 0.0 },
+                WorldPos { x: -2.0, y: 3.0 },
+                WorldPos { x: 0.0, y: 0.0 },
+            ],
+            &grid,
+            FindPathOptions::default(),
+        ));
+    }
+
+    #[test]
+    fn multi_goal_reachability_rejects_one_isolated_destination() {
+        let grid = TestGrid {
+            blocked: ["2,0", "3,1", "3,-1", "4,0"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            costs: HashMap::new(),
+            roads: HashSet::new(),
+        };
+        assert!(!all_reachable(
+            WorldPos { x: 0.0, y: 0.0 },
+            &[WorldPos { x: 1.0, y: 0.0 }, WorldPos { x: 3.0, y: 0.0 },],
+            &grid,
+            FindPathOptions::default(),
+        ));
     }
 
     #[test]

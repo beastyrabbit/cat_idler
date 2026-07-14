@@ -5,14 +5,19 @@ use std::collections::BTreeSet;
 use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
-    entities::Resources,
+    entities::{MapType, Position, Resources},
+    stockpiles::{ResourceKind, Stockpile},
     terrain_gen::{
         DecorationRole, WORLD_TERRAIN_OPTIONS, derive_biome_decoration, generate_terrain_chunk,
-        tile_climate_biome,
     },
     types::{BuildingType, TileType},
+    upgrade_tree,
     world_gen::tile_to_chunk,
-    world_tick::{BuildingRuntime, TilePos, WorldState, found_colony, tile_is_occupied},
+    world_tick::{
+        BuildingRuntime, ColonyRuntime, JobMetadata, TilePos, WorldState, footprint_for,
+        found_colony,
+    },
+    zones::ZoneRect,
 };
 
 const START_MS: i64 = 1_000;
@@ -52,6 +57,169 @@ fn apply_ok(world: &mut WorldState, action: proto::ClientAction, now_ms: i64) {
     assert!(result.ok, "{action:?} failed: {:?}", result.message);
 }
 
+fn try_action(world: &mut WorldState, action: proto::ClientAction, now_ms: i64) -> bool {
+    apply_action(world, &action, &ctx(now_ms)).ok
+}
+
+/// Press the placement UI over deterministic claimed candidates before falling back to the
+/// compatibility auto-site request. An explicit legal site reserves its scaffold atomically;
+/// this is also how a role-vacant player supplies the otherwise-manual road-placement choice.
+fn try_plan_at_claimed_site(
+    world: &mut WorldState,
+    building_type: proto::BuildingType,
+    now_ms: i64,
+) -> bool {
+    let mut sites = world.colonies[0].claimed_tiles.to_vec();
+    sites.sort_by_key(|tile| (tile.y, tile.x));
+    for site in sites {
+        let (session_id, nickname, sig) = signed();
+        let action = proto::ClientAction::PlanBuilding {
+            session_id,
+            nickname,
+            sig,
+            building_type,
+            site: Some(proto::TilePoint {
+                x: site.x,
+                y: site.y,
+            }),
+        };
+        let result = apply_action(world, &action, &ctx(now_ms));
+        if result.ok {
+            return true;
+        }
+        if result.message.as_deref() == Some("That request is already in progress.") {
+            return false;
+        }
+    }
+    let (session_id, nickname, sig) = signed();
+    try_action(
+        world,
+        proto::ClientAction::PlanBuilding {
+            session_id,
+            nickname,
+            sig,
+            building_type,
+            site: None,
+        },
+        now_ms,
+    )
+}
+
+/// Lay the manual access road to a queued site-less construction reservation using only
+/// signed `BuildRoad` actions. This makes the strict vacant-Steward dependency explicit in
+/// the campaign instead of mutating a road overlay behind the action boundary.
+fn try_pave_reserved_build_access(
+    world: &mut WorldState,
+    building_type: BuildingType,
+    now_ms: i64,
+) -> bool {
+    let Some(site) = world.colonies[0]
+        .jobs
+        .iter()
+        .find_map(|job| match job.metadata {
+            JobMetadata::Construction {
+                building_type: candidate,
+                building_id: None,
+                site: Some(site),
+                ..
+            } if candidate == building_type => Some(site),
+            _ => None,
+        })
+    else {
+        return false;
+    };
+    let (width, height) = footprint_for(building_type);
+    let footprint = (site.y..site.y + height)
+        .flat_map(|y| (site.x..site.x + width).map(move |x| TilePos { x, y }))
+        .collect::<BTreeSet<_>>();
+    let mut entrances = BTreeSet::new();
+    for x in site.x..site.x + width {
+        entrances.insert(TilePos { x, y: site.y - 1 });
+        entrances.insert(TilePos {
+            x,
+            y: site.y + height,
+        });
+    }
+    for y in site.y..site.y + height {
+        entrances.insert(TilePos { x: site.x - 1, y });
+        entrances.insert(TilePos {
+            x: site.x + width,
+            y,
+        });
+    }
+    let roads = world.colonies[0]
+        .world_tiles
+        .values()
+        .filter(|tile| tile.overlay_feature.as_deref() == Some("road_built"))
+        .map(|tile| tile.pos)
+        .collect::<Vec<_>>();
+    let mut pairs = roads
+        .into_iter()
+        .flat_map(|road| {
+            entrances
+                .iter()
+                .copied()
+                .map(move |entrance| (road, entrance))
+        })
+        .filter(|(road, entrance)| {
+            (road.x - entrance.x).abs() + (road.y - entrance.y).abs() <= 24
+                && horizontal_then_vertical_path(*road, *entrance)
+                    .iter()
+                    .all(|tile| !footprint.contains(tile))
+        })
+        .collect::<Vec<_>>();
+    pairs.sort_by_key(|(road, entrance)| {
+        (
+            (road.x - entrance.x).abs() + (road.y - entrance.y).abs(),
+            entrance.y,
+            entrance.x,
+            road.y,
+            road.x,
+        )
+    });
+    for (road, entrance) in pairs {
+        let (session_id, nickname, sig) = signed();
+        if try_action(
+            world,
+            proto::ClientAction::BuildRoad {
+                session_id,
+                nickname,
+                sig,
+                a: proto::TilePoint {
+                    x: road.x,
+                    y: road.y,
+                },
+                b: proto::TilePoint {
+                    x: entrance.x,
+                    y: entrance.y,
+                },
+            },
+            now_ms,
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+fn horizontal_then_vertical_path(a: TilePos, b: TilePos) -> Vec<TilePos> {
+    let mut path = Vec::new();
+    let x_step = (b.x - a.x).signum();
+    let mut x = a.x;
+    while x != b.x {
+        path.push(TilePos { x, y: a.y });
+        x += x_step;
+    }
+    path.push(TilePos { x: b.x, y: a.y });
+    let y_step = (b.y - a.y).signum();
+    let mut y = a.y + y_step;
+    while y_step != 0 && y != b.y + y_step {
+        path.push(TilePos { x: b.x, y });
+        y += y_step;
+    }
+    path
+}
+
 fn signed() -> (String, String, String) {
     (
         "guided-session".to_owned(),
@@ -84,60 +252,64 @@ fn advance_at_player_cadence(world: &mut WorldState, now_ms: &mut i64, seconds: 
     }
 }
 
-fn generated_sites(seed: u32) -> (TilePos, TilePos, TilePos) {
-    let mut farm = None;
+fn generated_sites(seed: u32, colony: &ColonyRuntime) -> (TilePos, TilePos, TilePos) {
+    let max_x = colony
+        .claimed_tiles
+        .iter()
+        .map(|tile| tile.x)
+        .max()
+        .expect("founding claim");
+    let max_y = colony
+        .claimed_tiles
+        .iter()
+        .map(|tile| tile.y)
+        .max()
+        .expect("founding claim");
+    // A completed two-tile eastward claim expansion: the inner tile touches the old
+    // settlement boundary and the parcel stays clear of the authored N/S gate road.
+    let farm = Some((
+        TilePos {
+            x: max_x + 1,
+            y: max_y,
+        },
+        TilePos {
+            x: max_x + 2,
+            y: max_y,
+        },
+    ));
     let mut forest = None;
-    let mut fertile = BTreeSet::new();
-    for chunk_y in -12..=12 {
-        for chunk_x in -12..=12 {
-            for tile in
-                generate_terrain_chunk(chunk_x, chunk_y, i64::from(seed), WORLD_TERRAIN_OPTIONS)
-            {
-                if farm.is_none()
-                    && tile.x.abs().max(tile.y.abs()) > 6
-                    && tile.climate_biome.properties().fertility >= 1.0
-                    && tile.river.is_none()
-                    && !matches!(
-                        derive_biome_decoration(
-                            tile.x,
-                            tile.y,
-                            i64::from(seed),
-                            tile.climate_biome,
-                        ),
-                        Some(DecorationRole::Tree { .. })
-                    )
+    // Search outward from the founding region. Chunk-coordinate order used to begin at
+    // (-12,-12), creating an artificial 140-tile guided expansion and making every
+    // movement tick exercise a huge pathfinding envelope.
+    for radius in 0_i32..=12 {
+        for chunk_y in -radius..=radius {
+            for chunk_x in -radius..=radius {
+                if chunk_x.abs().max(chunk_y.abs()) != radius {
+                    continue;
+                }
+                for tile in
+                    generate_terrain_chunk(chunk_x, chunk_y, i64::from(seed), WORLD_TERRAIN_OPTIONS)
                 {
-                    let site = TilePos {
-                        x: tile.x,
-                        y: tile.y,
-                    };
-                    fertile.insert(site);
-                    let left = TilePos {
-                        x: site.x - 1,
-                        y: site.y,
-                    };
-                    if fertile.contains(&left) {
-                        farm = Some((left, site));
+                    if forest.is_none()
+                        && tile.x.abs().max(tile.y.abs()) > 16
+                        && matches!(
+                            derive_biome_decoration(
+                                tile.x,
+                                tile.y,
+                                i64::from(seed),
+                                tile.climate_biome,
+                            ),
+                            Some(DecorationRole::Tree { .. })
+                        )
+                    {
+                        forest = Some(TilePos {
+                            x: tile.x,
+                            y: tile.y,
+                        });
                     }
-                }
-                if forest.is_none()
-                    && matches!(
-                        derive_biome_decoration(
-                            tile.x,
-                            tile.y,
-                            i64::from(seed),
-                            tile.climate_biome,
-                        ),
-                        Some(DecorationRole::Tree { .. })
-                    )
-                {
-                    forest = Some(TilePos {
-                        x: tile.x,
-                        y: tile.y,
-                    });
-                }
-                if let (Some((farm_a, farm_b)), Some(forest)) = (farm, forest) {
-                    return (farm_a, farm_b, forest);
+                    if let (Some((farm_a, farm_b)), Some(forest)) = (farm, forest) {
+                        return (farm_a, farm_b, forest);
+                    }
                 }
             }
         }
@@ -165,7 +337,6 @@ fn run_guided_campaign(seed: u32) -> WorldState {
             seed.wrapping_add(17),
         )],
     };
-    let (farm_a, farm_b, forest_site) = generated_sites(seed);
     let colony = &mut world.colonies[0];
 
     // Exercise the real 15-cat founding roster. Twelve cats remain available for
@@ -232,6 +403,8 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         ),
     ]);
 
+    let (farm_a, farm_b, forest_site) = generated_sites(seed, colony);
+
     // Model a player-expanded claim and an explored forest source.
     let mut farm_tile = colony
         .world_tiles
@@ -250,16 +423,54 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     farm_tile.overlay_feature = None;
     colony.world_tiles.insert(farm_a, farm_tile.clone());
     farm_tile.pos = farm_b;
-    colony.world_tiles.insert(farm_b, farm_tile);
-    colony.claimed_tiles.extend([farm_a, farm_b]);
+    colony.world_tiles.insert(farm_b, farm_tile.clone());
+    let farm_handoff = TilePos {
+        x: farm_a.x,
+        y: farm_a.y - 1,
+    };
+    farm_tile.pos = farm_handoff;
+    // The local basket handoff is already-cleared exterior ground. Its explicit stump
+    // marker suppresses any deterministic tree/rock decoration generated underneath.
+    farm_tile.overlay_feature = Some("stump".to_owned());
+    colony.world_tiles.insert(farm_handoff, farm_tile);
+    // Model the completed compact expansion that made this edge parcel claimable. Its
+    // center row extends the authored east road to the relocated gate; the farm occupies
+    // the outer row without covering that required road approach.
+    let mut cleared_expansion_tile = colony.world_tiles[&farm_a].clone();
+    cleared_expansion_tile.overlay_feature = Some("stump".to_owned());
+    let road_y = colony
+        .world_tiles
+        .values()
+        .find(|tile| {
+            tile.pos.x == farm_a.x - 1 && tile.overlay_feature.as_deref() == Some("road_built")
+        })
+        .map(|tile| tile.pos.y)
+        .expect("authored east road reaches the founding boundary");
+    let claim_min_y = colony
+        .claimed_tiles
+        .iter()
+        .map(|tile| tile.y)
+        .min()
+        .expect("founding claim");
+    let outer_road_x = farm_b.x + 2;
+    for x in farm_a.x..=outer_road_x {
+        for y in claim_min_y..=farm_a.y {
+            let site = TilePos { x, y };
+            if !colony.claimed_tiles.contains(&site) {
+                colony.claimed_tiles.push(site);
+            }
+            colony.revealed_tiles.insert(site);
+            let mut tile = cleared_expansion_tile.clone();
+            tile.pos = site;
+            if y == road_y {
+                tile.overlay_feature = Some("road_built".to_owned());
+                tile.path_wear = 100;
+            }
+            colony.world_tiles.insert(site, tile);
+        }
+    }
     for farm_site in [farm_a, farm_b] {
-        assert!(!tile_is_occupied(colony, farm_site, seed));
-        assert!(
-            tile_climate_biome(seed, farm_site.x, farm_site.y)
-                .properties()
-                .fertility
-                >= 1.0
-        );
+        assert_eq!(colony.world_tiles[&farm_site].tile_type, TileType::Field);
     }
 
     let mut forest_tile = colony
@@ -307,6 +518,12 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     let miller_id = colony.cats[1].id.clone();
     let sawyer_id = colony.cats[2].id.clone();
     let steward_id = colony.cats[3].id.clone();
+    let field_worker_id = colony.cats[4].id.clone();
+    colony.cats[4].position = Position {
+        map: MapType::World,
+        x: f64::from(farm_a.x),
+        y: f64::from(farm_a.y),
+    };
     let crop = choose_crop(&colony.resources);
     assert_eq!(
         crop,
@@ -360,6 +577,7 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     for (cat_id, building_id) in [
         (miller_id.clone(), "guided-mill"),
         (sawyer_id.clone(), "guided-sawmill"),
+        (field_worker_id, "guided-field"),
     ] {
         let (session_id, nickname, sig) = signed();
         apply_ok(
@@ -398,6 +616,7 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         build_snapshot(&world, START_MS, 1).colonies[0].farms.len(),
         1
     );
+    let player_plot_id = world.colonies[0].farms[0].id.clone();
 
     let (session_id, nickname, sig) = signed();
     apply_ok(
@@ -425,8 +644,15 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         colony
             .events
             .iter()
-            .any(|event| event.message.contains("farmers harvested")),
-        "the designated grain crop harvested"
+            .any(|event| event.message.contains("farmer harvested")),
+        "the designated grain crop harvested: farms={:?}, fields={:?}, officers={:?}",
+        colony.farms,
+        colony
+            .buildings
+            .iter()
+            .filter(|building| building.building_type == BuildingType::Field)
+            .collect::<Vec<_>>(),
+        colony.officers,
     );
     assert!(
         colony.events.iter().any(|event| {
@@ -455,7 +681,7 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     // Guide the processing cats off their benches through the same action a real
     // client uses. This freezes lumber production while the construction spend is
     // observed, without mutating jobs or assignments behind the action boundary.
-    let mut action_at = after_processing_ms;
+    let action_at = after_processing_ms;
     for cat_id in [miller_id, sawyer_id] {
         let (session_id, nickname, sig) = signed();
         apply_ok(
@@ -471,87 +697,49 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         );
     }
 
-    // Submit one real PlanBuilding request as soon as a naturally available cat
-    // can take it. Existing survival work is allowed to finish normally.
-    let mut plan_accepted = false;
-    let mut buildings_before = 0;
-    let mut lumber_before = 0.0;
-    let mut legacy_planks_before = 0.0;
-    for _ in 0..120 {
+    // Clearing is intentionally blocked while harvested produce is still on the plot,
+    // in a farmer's basket, or in the local handoff. Keep advancing the signed guided
+    // run until the Steward has physically drained a between-harvest window.
+    let mut clear_at = action_at + 1_000;
+    let mut cleared = false;
+    for _ in 0..180 {
         let (session_id, nickname, sig) = signed();
-        let action = proto::ClientAction::PlanBuilding {
-            session_id,
-            nickname,
-            sig,
-            building_type: proto::BuildingType::Den,
-            site: None,
-        };
-        let result = apply_action(&mut world, &action, &ctx(action_at));
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::ClearFarm {
+                session_id,
+                nickname,
+                sig,
+                plot_id: player_plot_id.clone(),
+            },
+            &ctx(clear_at),
+        );
         if result.ok {
-            let colony = &world.colonies[0];
-            buildings_before = colony.buildings.len();
-            lumber_before = colony.resources.lumber;
-            legacy_planks_before = colony.resources.planks;
-            plan_accepted = true;
+            cleared = true;
             break;
         }
-        assert!(
-            matches!(
-                result.message.as_deref(),
-                Some("No available worker.") | Some("That request is already in progress.")
-            ),
-            "unexpected PlanBuilding rejection: {:?}",
-            result.message
+        assert_eq!(
+            result.message.as_deref(),
+            Some("This farm still has produce awaiting delivery.")
         );
         apply_ok(
             &mut world,
             proto::ClientAction::AdvanceTime { seconds: 60 },
-            action_at,
+            clear_at,
         );
-        action_at += 60_000;
+        clear_at += 60_000;
     }
     assert!(
-        plan_accepted,
-        "a guided build must become publicly reachable"
+        cleared,
+        "the Steward eventually drains a clearable farm window"
     );
-
-    // The spatial-invariant layer may reserve a future footprint and perform
-    // several visible, linked frontier expansions before the scaffold can be
-    // committed. Drive that real public path rather than assuming the old
-    // immediate-breakground behavior.
-    let mut breakground_at = action_at;
-    for _ in 0..96 {
-        apply_ok(
-            &mut world,
-            proto::ClientAction::AdvanceTime { seconds: 300 },
-            breakground_at,
-        );
-        breakground_at += 300_000;
-        if world.colonies[0].buildings.len() > buildings_before {
-            break;
-        }
-    }
-    let colony = &world.colonies[0];
     assert!(
-        colony.buildings.len() > buildings_before,
-        "the guided plan eventually commits one spatially legal scaffold"
+        world.colonies[0]
+            .farms
+            .iter()
+            .all(|plot| plot.id != player_plot_id),
+        "the signed clear action removes the player-selected plot"
     );
-    assert_eq!(colony.resources.lumber, lumber_before - 2.0);
-    assert_eq!(colony.resources.planks, legacy_planks_before);
-
-    let plot_id = colony.farms[0].id.clone();
-    let (session_id, nickname, sig) = signed();
-    apply_ok(
-        &mut world,
-        proto::ClientAction::ClearFarm {
-            session_id,
-            nickname,
-            sig,
-            plot_id,
-        },
-        breakground_at + 1_000,
-    );
-    assert!(world.colonies[0].farms.is_empty());
     world
 }
 
@@ -562,4 +750,547 @@ fn guided_farming_forestry_processing_campaign_is_multi_seed_and_deterministic()
         let second = run_guided_campaign(seed);
         assert_eq!(first, second, "seed {seed} must replay bit-for-bit");
     }
+}
+
+fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
+    const STEP_SECONDS: u64 = 15 * 60;
+    const MAX_STEPS: usize = 2_400;
+    let mut world = WorldState {
+        world_seed: seed,
+        colonies: vec![found_colony(seed, "colony-1", START_MS, seed)],
+    };
+    let founding_reveal = world.colonies[0].revealed_tiles.len();
+    let mut now_ms = START_MS;
+    let mut manual_access_road_built = false;
+
+    for step in 0..MAX_STEPS {
+        let colony = &world.colonies[0];
+        if colony
+            .events
+            .iter()
+            .any(|event| event.message.contains("farmer harvested"))
+        {
+            assert!(colony.revealed_tiles.len() > founding_reveal);
+            assert!(
+                manual_access_road_built
+                    && colony
+                        .events
+                        .iter()
+                        .any(|event| event.message.contains("A paved road was laid")),
+                "the player must visibly solve the vacant-Steward access-road dependency"
+            );
+            return world;
+        }
+
+        // Submit progression before survival errands so the player's architect is not
+        // accidentally consumed by a fresh quarry/scout order on the same decision tick.
+        // Every mutation below crosses the signed action boundary; state is only inspected
+        // to decide which button a real player would press next.
+        let research_hut_complete = world.colonies[0].buildings.iter().any(|building| {
+            building.building_type == BuildingType::ResearchHut && building.is_complete
+        });
+        if !research_hut_complete {
+            let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::ResearchHut, now_ms);
+            manual_access_road_built |=
+                try_pave_reserved_build_access(&mut world, BuildingType::ResearchHut, now_ms);
+        }
+
+        if !upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, "research_hut") {
+            let (session_id, nickname, sig) = signed();
+            let _ = try_action(
+                &mut world,
+                proto::ClientAction::OfferTithe {
+                    session_id,
+                    nickname,
+                    sig,
+                },
+                now_ms,
+            );
+            let (session_id, nickname, sig) = signed();
+            let _ = try_action(
+                &mut world,
+                proto::ClientAction::UnlockNode {
+                    session_id,
+                    nickname,
+                    sig,
+                    node_id: "research_hut".to_owned(),
+                },
+                now_ms,
+            );
+        }
+
+        // Staff each completed research hut manually. Assigned cats are skipped so this
+        // does not silently steal a worker from one of the founding material benches.
+        for building_id in world.colonies[0]
+            .buildings
+            .iter()
+            .filter(|building| {
+                building.building_type == BuildingType::ResearchHut
+                    && building.is_complete
+                    && building.assigned_cat.is_none()
+            })
+            .map(|building| building.id.clone())
+            .collect::<Vec<_>>()
+        {
+            let assigned = world.colonies[0]
+                .buildings
+                .iter()
+                .filter_map(|building| building.assigned_cat.clone())
+                .collect::<BTreeSet<_>>();
+            for cat_id in world.colonies[0]
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none() && !assigned.contains(&cat.id))
+                .map(|cat| cat.id.clone())
+                .collect::<Vec<_>>()
+            {
+                let (session_id, nickname, sig) = signed();
+                if try_action(
+                    &mut world,
+                    proto::ClientAction::AssignWorker {
+                        session_id,
+                        nickname,
+                        sig,
+                        cat_id,
+                        building_id: Some(building_id.clone()),
+                    },
+                    now_ms,
+                ) {
+                    break;
+                }
+            }
+        }
+
+        for node_id in ["basic_tools", "water_carriers", "irrigation"] {
+            let (session_id, nickname, sig) = signed();
+            let _ = try_action(
+                &mut world,
+                proto::ClientAction::ResearchNode {
+                    session_id,
+                    nickname,
+                    sig,
+                    node_id: node_id.to_owned(),
+                },
+                now_ms,
+            );
+        }
+        let basic_tools = upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, "basic_tools");
+        let workshop_complete = world.colonies[0].buildings.iter().any(|building| {
+            building.building_type == BuildingType::Workshop && building.is_complete
+        });
+        if basic_tools && !workshop_complete {
+            let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::Workshop, now_ms);
+            manual_access_road_built |=
+                try_pave_reserved_build_access(&mut world, BuildingType::Workshop, now_ms);
+        }
+        if basic_tools && workshop_complete {
+            for cat_id in world.colonies[0]
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none())
+                .map(|cat| cat.id.clone())
+                .collect::<Vec<_>>()
+            {
+                let (session_id, nickname, sig) = signed();
+                if try_action(
+                    &mut world,
+                    proto::ClientAction::AssignOfficer {
+                        session_id,
+                        nickname,
+                        sig,
+                        role: proto::OfficerRole::Steward,
+                        cat_id,
+                    },
+                    now_ms,
+                ) {
+                    break;
+                }
+            }
+        }
+
+        let complete_non_shrine = world.colonies[0]
+            .buildings
+            .iter()
+            .filter(|building| {
+                building.is_complete && building.building_type != BuildingType::Shrine
+            })
+            .count();
+        if world.colonies[0]
+            .officers
+            .contains_key(&cat_sim::officers::OfficerRole::Steward)
+            && complete_non_shrine < 20
+        {
+            let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::FoodStorage, now_ms);
+            manual_access_road_built |=
+                try_pave_reserved_build_access(&mut world, BuildingType::FoodStorage, now_ms);
+        }
+
+        if upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, "irrigation")
+            && complete_non_shrine >= 20
+        {
+            let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::Field, now_ms);
+            manual_access_road_built |=
+                try_pave_reserved_build_access(&mut world, BuildingType::Field, now_ms);
+        }
+
+        let completed_fields = world.colonies[0]
+            .buildings
+            .iter()
+            .filter(|building| {
+                building.building_type == BuildingType::Field && building.is_complete
+            })
+            .map(|building| (building.id.clone(), building.assigned_cat.is_none()))
+            .collect::<Vec<_>>();
+        for (building_id, needs_worker) in completed_fields {
+            if needs_worker {
+                let assigned = world.colonies[0]
+                    .buildings
+                    .iter()
+                    .filter_map(|building| building.assigned_cat.clone())
+                    .collect::<BTreeSet<_>>();
+                for cat_id in world.colonies[0]
+                    .cats
+                    .iter()
+                    .filter(|cat| cat.death_time.is_none() && !assigned.contains(&cat.id))
+                    .map(|cat| cat.id.clone())
+                    .collect::<Vec<_>>()
+                {
+                    let (session_id, nickname, sig) = signed();
+                    if try_action(
+                        &mut world,
+                        proto::ClientAction::AssignWorker {
+                            session_id,
+                            nickname,
+                            sig,
+                            cat_id,
+                            building_id: Some(building_id.clone()),
+                        },
+                        now_ms,
+                    ) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !world.colonies[0].farms.is_empty() {
+            // A plot already exists; the manually assigned Field worker will pick it up.
+        } else if !world.colonies[0].buildings.iter().any(|building| {
+            building.building_type == BuildingType::Field
+                && building.is_complete
+                && building.assigned_cat.is_some()
+        }) {
+            // Wait for the Field and its worker before painting agricultural ground.
+        } else {
+            let candidates = world.colonies[0].claimed_tiles.to_vec();
+            for tile in candidates {
+                let (session_id, nickname, sig) = signed();
+                if try_action(
+                    &mut world,
+                    proto::ClientAction::DesignateFarm {
+                        session_id,
+                        nickname,
+                        sig,
+                        a: proto::TilePoint {
+                            x: tile.x,
+                            y: tile.y,
+                        },
+                        b: proto::TilePoint {
+                            x: tile.x,
+                            y: tile.y,
+                        },
+                        crop: proto::CropKind::Grain,
+                    },
+                    now_ms,
+                ) {
+                    break;
+                }
+            }
+        }
+
+        // Keep the two founding refineries staffed through the same assignment UI. This
+        // supplies the planks/blocks consumed by the deliberately long building campaign.
+        for building_id in world.colonies[0]
+            .buildings
+            .iter()
+            .filter(|building| {
+                matches!(
+                    building.building_type,
+                    BuildingType::WoodCutter | BuildingType::StonePrep
+                ) && building.assigned_cat.is_none()
+            })
+            .map(|building| building.id.clone())
+            .collect::<Vec<_>>()
+        {
+            let assigned = world.colonies[0]
+                .buildings
+                .iter()
+                .filter_map(|building| building.assigned_cat.clone())
+                .collect::<BTreeSet<_>>();
+            for cat_id in world.colonies[0]
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none() && !assigned.contains(&cat.id))
+                .map(|cat| cat.id.clone())
+                .collect::<Vec<_>>()
+            {
+                let (session_id, nickname, sig) = signed();
+                if try_action(
+                    &mut world,
+                    proto::ClientAction::AssignWorker {
+                        session_id,
+                        nickname,
+                        sig,
+                        cat_id,
+                        building_id: Some(building_id.clone()),
+                    },
+                    now_ms,
+                ) {
+                    break;
+                }
+            }
+        }
+
+        let mut requested_jobs = Vec::new();
+        if world.colonies[0].resources.food < 80.0 {
+            requested_jobs.push(proto::JobKind::HuntExpedition);
+        }
+        if world.colonies[0].resources.water < 90.0 {
+            requested_jobs.push(proto::JobKind::FetchWater);
+        }
+        if world.colonies[0].resources.materials < 40.0 {
+            requested_jobs.push(proto::JobKind::Quarry);
+        }
+        for kind in requested_jobs {
+            let (session_id, nickname, sig) = signed();
+            let _ = try_action(
+                &mut world,
+                proto::ClientAction::RequestJob {
+                    session_id,
+                    nickname,
+                    sig,
+                    kind,
+                },
+                now_ms,
+            );
+        }
+        if step == 0 {
+            let (session_id, nickname, sig) = signed();
+            let _ = try_action(
+                &mut world,
+                proto::ClientAction::DispatchScout {
+                    session_id,
+                    nickname,
+                    sig,
+                    mission: proto::ScoutMission::Explore,
+                },
+                now_ms,
+            );
+        }
+
+        apply_ok(
+            &mut world,
+            proto::ClientAction::AdvanceTime {
+                seconds: STEP_SECONDS,
+            },
+            now_ms,
+        );
+        now_ms += i64::try_from(STEP_SECONDS * 1_000).expect("step fits i64");
+    }
+
+    let colony = &world.colonies[0];
+    panic!(
+        "no-cheat farm smoke timed out: alive={} food={} water={} blessings={} research={} owned={:?} buildings={:?} farms={:?}",
+        colony
+            .cats
+            .iter()
+            .filter(|cat| cat.death_time.is_none())
+            .count(),
+        colony.resources.food,
+        colony.resources.water,
+        colony.global_upgrade_points,
+        colony.upgrade_tree.research_points,
+        colony.upgrade_tree.owned_node_ids,
+        colony
+            .buildings
+            .iter()
+            .map(|building| (building.building_type, building.construction_progress))
+            .collect::<Vec<_>>(),
+        colony.farms,
+    );
+}
+
+#[test]
+fn no_cheat_player_guidance_reaches_a_physical_farm_harvest_deterministically() {
+    let first = run_no_cheat_player_farm_smoke(42);
+    let second = run_no_cheat_player_farm_smoke(42);
+    assert_eq!(first, second);
+}
+
+#[test]
+fn signed_manual_field_assignment_works_while_farmer_office_is_vacant() {
+    let seed = 42;
+    let mut world = WorldState {
+        world_seed: seed,
+        colonies: vec![found_colony(seed, "colony-1", START_MS, 59)],
+    };
+    let colony = &mut world.colonies[0];
+    let (farm_site, farm_neighbor, _) = generated_sites(seed, colony);
+    for cat in &mut colony.cats {
+        cat.age_hours = 8.0;
+    }
+    colony.cats.truncate(1);
+    colony.leader_id = Some(colony.cats[0].id.clone());
+    colony.resources.food = 1_000.0;
+    colony.resources.water = 1_000.0;
+    let mut tile = colony
+        .world_tiles
+        .values()
+        .next()
+        .expect("founding tile")
+        .clone();
+    tile.pos = farm_site;
+    tile.tile_type = TileType::Field;
+    tile.resources.food = 0;
+    tile.resources.herbs = 0;
+    tile.resources.water = 0;
+    tile.max_resources.food = 0;
+    tile.max_resources.herbs = 0;
+    tile.last_depleted = START_MS;
+    tile.overlay_feature = None;
+    colony.world_tiles.insert(farm_site, tile);
+    let mut neighbor = colony.world_tiles[&farm_site].clone();
+    neighbor.pos = farm_neighbor;
+    colony.world_tiles.insert(farm_neighbor, neighbor);
+    colony.claimed_tiles.extend([farm_site, farm_neighbor]);
+    colony.revealed_tiles.extend([farm_site, farm_neighbor]);
+    let mut cleared_path_tile = colony.world_tiles[&farm_site].clone();
+    cleared_path_tile.overlay_feature = Some("stump".to_owned());
+    let (min_x, max_x) = if colony.anchor.x <= farm_site.x {
+        (colony.anchor.x, farm_site.x)
+    } else {
+        (farm_site.x, colony.anchor.x)
+    };
+    let (min_y, max_y) = if colony.anchor.y <= farm_site.y {
+        (colony.anchor.y, farm_site.y)
+    } else {
+        (farm_site.y, colony.anchor.y)
+    };
+    let connected_claim = (min_x..=max_x)
+        .map(|x| TilePos {
+            x,
+            y: colony.anchor.y,
+        })
+        .chain((min_y..=max_y).map(|y| TilePos { x: farm_site.x, y }));
+    for site in connected_claim {
+        if !colony.claimed_tiles.contains(&site) {
+            colony.claimed_tiles.push(site);
+        }
+        colony.revealed_tiles.insert(site);
+        let mut path_tile = cleared_path_tile.clone();
+        path_tile.pos = site;
+        colony.world_tiles.insert(site, path_tile);
+    }
+    let worker_id = colony.cats[0].id.clone();
+    colony.cats[0].position = Position {
+        map: MapType::World,
+        x: f64::from(farm_site.x),
+        y: f64::from(farm_site.y),
+    };
+    assert!(colony.officers.is_empty());
+    colony.stockpiles.push(Stockpile {
+        id: "manual-survival-runway".to_owned(),
+        rect: ZoneRect {
+            x1: 30,
+            y1: 30,
+            x2: 33,
+            y2: 33,
+        },
+        accepts: [ResourceKind::Food, ResourceKind::Water]
+            .into_iter()
+            .collect(),
+        contents: Resources::default(),
+    });
+
+    let (session_id, nickname, sig) = signed();
+    apply_ok(
+        &mut world,
+        proto::ClientAction::DesignateFarm {
+            session_id,
+            nickname,
+            sig,
+            a: proto::TilePoint {
+                x: farm_site.x,
+                y: farm_site.y,
+            },
+            b: proto::TilePoint {
+                x: farm_site.x,
+                y: farm_site.y,
+            },
+            crop: proto::CropKind::Grain,
+        },
+        START_MS,
+    );
+    world.colonies[0].buildings.push(building(
+        "manual-field",
+        BuildingType::Field,
+        1,
+        TilePos {
+            x: farm_site.x + 10,
+            y: farm_site.y,
+        },
+    ));
+    let (session_id, nickname, sig) = signed();
+    apply_ok(
+        &mut world,
+        proto::ClientAction::AssignWorker {
+            session_id,
+            nickname,
+            sig,
+            cat_id: worker_id.clone(),
+            building_id: Some("manual-field".to_owned()),
+        },
+        START_MS,
+    );
+
+    let mut now = START_MS;
+    advance_at_player_cadence(&mut world, &mut now, 26 * 3_600);
+    let colony = &world.colonies[0];
+    assert!(
+        colony.officers.is_empty(),
+        "manual work never invents an officer"
+    );
+    assert!(
+        colony.resources.grain > 0.0,
+        "the manually assigned worker physically harvested and deposited grain; run={} assigned={:?} phase={:?} progress={} pending={} worker_alive={} events={:?}",
+        colony.run_number,
+        colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "manual-field")
+            .and_then(|building| building.assigned_cat.as_deref()),
+        colony.farms.first().map(|plot| plot.work_phase),
+        colony.farms.first().map_or(0.0, |plot| plot.growth_hours),
+        colony.farms.first().map_or(0.0, |plot| plot.pending_output),
+        colony
+            .cats
+            .iter()
+            .any(|cat| cat.id == worker_id && cat.death_time.is_none()),
+        colony
+            .events
+            .iter()
+            .rev()
+            .take(8)
+            .map(|event| event.message.as_str())
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        colony.cats[0]
+            .skills
+            .get(&cat_sim::skills::Labor::Farm)
+            .copied()
+            .unwrap_or(0.0)
+            > 0.0,
+        "actual plot work accrues Farm skill"
+    );
 }

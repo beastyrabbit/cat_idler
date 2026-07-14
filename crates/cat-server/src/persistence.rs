@@ -1844,6 +1844,7 @@ mod tests {
     use cat_protocol::{ClientAction, JobKind as ProtoJobKind};
     use cat_sim::{
         actions::apply_action,
+        entities::CarryingKind,
         migration::ProbationaryMigrant,
         world_tick::{
             RaidPhase, ScoutMission, ScoutResource, found_colony, found_colony_at,
@@ -2515,6 +2516,7 @@ mod tests {
                 expires_at_ms: 1_500_000,
                 purpose: cat_sim::stockpiles::GatherSpotPurpose::General,
             });
+        let farm_worker_id = world.colonies[0].cats[1].id.clone();
         world.colonies[0].farms.push(FarmPlot {
             id: "farm-a".to_owned(),
             rect: ZoneRect {
@@ -2526,8 +2528,61 @@ mod tests {
             crop: cat_sim::farming::CropKind::Grain,
             planted_at: 1_100_000,
             stage: cat_sim::farming::FarmStage::Growing,
+            worker_id: Some(farm_worker_id),
+            work_phase: cat_sim::farming::FarmWorkPhase::Tending,
+            pending_output: 0.0,
             growth_hours: 7.5,
+            fertility: 1.25,
         });
+        let farm_carrier_id = world.colonies[0].cats[2].id.clone();
+        let farm_gather_id = "farm-gather:farm-hauling".to_owned();
+        world.colonies[0]
+            .stockpiles
+            .push(cat_sim::stockpiles::Stockpile {
+                id: farm_gather_id.clone(),
+                rect: ZoneRect {
+                    x1: 13,
+                    y1: 10,
+                    x2: 13,
+                    y2: 10,
+                },
+                accepts: [cat_sim::stockpiles::ResourceKind::Grain]
+                    .into_iter()
+                    .collect(),
+                contents: Resources::default(),
+            });
+        world.colonies[0]
+            .gather_spots
+            .push(cat_sim::stockpiles::GatherSpot {
+                stockpile_id: farm_gather_id.clone(),
+                kind: cat_sim::stockpiles::ResourceKind::Grain,
+                expires_at_ms: i64::MAX,
+            });
+        world.colonies[0].farms.push(FarmPlot {
+            id: "farm-hauling".to_owned(),
+            rect: ZoneRect {
+                x1: 12,
+                y1: 10,
+                x2: 12,
+                y2: 10,
+            },
+            crop: cat_sim::farming::CropKind::Grain,
+            planted_at: 1_050_000,
+            stage: cat_sim::farming::FarmStage::Soil,
+            growth_hours: 0.0,
+            fertility: 0.8,
+            worker_id: Some(farm_carrier_id.clone()),
+            work_phase: cat_sim::farming::FarmWorkPhase::Hauling,
+            pending_output: 1.0,
+        });
+        world.colonies[0].cats[2].current_task = Some(TaskType::Farm);
+        world.colonies[0].cats[2].carrying = Some(Carrying {
+            kind: CarryingKind::Grain,
+            amount: 2.0,
+            job_ended_at: 1_100_000,
+            source_gather_spot: Some(format!("farm-out|farm-hauling|{farm_gather_id}")),
+        });
+        world.colonies[0].cats[2].activity = CatActivity::Traveling;
         let mover_cat_id = world.colonies[0].cats[0].id.clone();
         world.colonies[0].jobs.push(JobRuntime {
             id: "job-mover".to_owned(),
@@ -2678,6 +2733,110 @@ mod tests {
             "an active fisher follows the same post-restart tick"
         );
         assert_eq!(loaded, world, "restart does not fork fishing trajectory");
+    }
+
+    #[test]
+    fn restart_mid_farm_haul_delivers_crop_exactly_once_on_later_whole_ticks() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(42);
+        world
+            .colonies
+            .push(found_colony(42, "colony-1", 1_000_000, 42));
+        let colony = &mut world.colonies[0];
+        colony.last_tick = 1_000_000;
+        let carrier_id = colony.cats[0].id.clone();
+        let gather_id = "farm-gather:farm-restart".to_owned();
+        colony.stockpiles.push(cat_sim::stockpiles::Stockpile {
+            id: gather_id.clone(),
+            rect: ZoneRect {
+                x1: colony.anchor.x,
+                y1: colony.anchor.y,
+                x2: colony.anchor.x,
+                y2: colony.anchor.y,
+            },
+            accepts: [cat_sim::stockpiles::ResourceKind::Grain]
+                .into_iter()
+                .collect(),
+            contents: Resources::default(),
+        });
+        colony.gather_spots.push(cat_sim::stockpiles::GatherSpot {
+            stockpile_id: gather_id.clone(),
+            kind: cat_sim::stockpiles::ResourceKind::Grain,
+            expires_at_ms: i64::MAX,
+        });
+        colony.farms.push(FarmPlot {
+            id: "farm-restart".to_owned(),
+            rect: ZoneRect {
+                x1: colony.anchor.x + 2,
+                y1: colony.anchor.y,
+                x2: colony.anchor.x + 2,
+                y2: colony.anchor.y,
+            },
+            crop: cat_sim::farming::CropKind::Grain,
+            planted_at: 900_000,
+            stage: cat_sim::farming::FarmStage::Growing,
+            growth_hours: 6.0,
+            fertility: 1.0,
+            worker_id: None,
+            work_phase: cat_sim::farming::FarmWorkPhase::Hauling,
+            pending_output: 1.0,
+        });
+        let carrier = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == carrier_id)
+            .unwrap();
+        carrier.position = Position {
+            map: cat_sim::entities::MapType::World,
+            x: f64::from(colony.anchor.x),
+            y: f64::from(colony.anchor.y),
+        };
+        carrier.activity = CatActivity::Returning;
+        carrier.current_task = Some(TaskType::Farm);
+        carrier.destination = None;
+        carrier.carrying = Some(Carrying {
+            kind: CarryingKind::Grain,
+            amount: 2.0,
+            job_ended_at: 999_000,
+            source_gather_spot: Some(format!("farm-out|farm-restart|{gather_id}")),
+        });
+        let grain_before = colony.resources.grain;
+
+        save_world(&conn, &world).expect("save world");
+        let mut loaded = load_world(&conn)
+            .expect("load world")
+            .expect("world should exist");
+        let _ = world_tick(&mut loaded, 1_001_000);
+
+        let colony = &loaded.colonies[0];
+        assert_eq!(colony.resources.grain, grain_before + 2.0);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == gather_id)
+                .unwrap()
+                .contents
+                .grain,
+            2.0
+        );
+        assert!(
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == carrier_id)
+                .unwrap()
+                .carrying
+                .is_none()
+        );
+
+        let _ = world_tick(&mut loaded, 1_002_000);
+        assert_eq!(
+            loaded.colonies[0].resources.grain,
+            grain_before + 2.0,
+            "a restarted basket credits exactly once"
+        );
     }
 
     #[test]
@@ -3291,7 +3450,11 @@ mod tests {
             crop: cat_sim::farming::CropKind::Catnip,
             planted_at: 5_250_000,
             stage: cat_sim::farming::FarmStage::Mature,
+            worker_id: None,
+            work_phase: cat_sim::farming::FarmWorkPhase::WaitingForWorker,
+            pending_output: 0.0,
             growth_hours: 14.0,
+            fertility: 1.5,
         });
         colony.stock_ledger = StockLedger::counted(&colony.resources, 5_500_000);
         colony

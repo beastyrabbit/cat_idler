@@ -19,8 +19,9 @@ use cat_sim::{
     upgrade_tree::{self, UPGRADE_NODES},
     world_tick::{
         BuildingRuntime, ElectionKind, EventKind, RaidPhase, RaiderRuntime, TilePos, TraderRuntime,
-        WorldState, found_colony, new_world, road_path_attaches_to_shrine, road_placement_error,
-        stockpile_placement_error, tile_is_occupied, world_tick,
+        WorldState, building_is_road_connected_to_shrine, can_plan_building_at,
+        default_production_queue, found_colony, new_world, road_path_attaches_to_shrine,
+        road_placement_error, stockpile_placement_error, tile_is_occupied, world_tick,
     },
     zones::ZoneRect,
 };
@@ -835,6 +836,64 @@ fn run_action_campaign() -> WorldState {
         })
         .expect("campaign has fertile expansion ground");
     world.colonies[0].claimed_tiles.push(farm_pos);
+    world.colonies[0].revealed_tiles.insert(farm_pos);
+    let anchor = world.colonies[0].anchor;
+    let (min_x, max_x) = if anchor.x <= farm_pos.x {
+        (anchor.x, farm_pos.x)
+    } else {
+        (farm_pos.x, anchor.x)
+    };
+    let (min_y, max_y) = if anchor.y <= farm_pos.y {
+        (anchor.y, farm_pos.y)
+    } else {
+        (farm_pos.y, anchor.y)
+    };
+    let route_claim = (min_x..=max_x)
+        .map(|x| TilePos { x, y: anchor.y })
+        .chain((min_y..=max_y).map(|y| TilePos { x: farm_pos.x, y }));
+    for tile in route_claim {
+        if !world.colonies[0].claimed_tiles.contains(&tile) {
+            world.colonies[0].claimed_tiles.push(tile);
+        }
+        world.colonies[0].revealed_tiles.insert(tile);
+    }
+    let farm_neighbors = [
+        TilePos {
+            x: farm_pos.x - 1,
+            y: farm_pos.y,
+        },
+        TilePos {
+            x: farm_pos.x + 1,
+            y: farm_pos.y,
+        },
+        TilePos {
+            x: farm_pos.x,
+            y: farm_pos.y - 1,
+        },
+        TilePos {
+            x: farm_pos.x,
+            y: farm_pos.y + 1,
+        },
+    ];
+    for neighbor in farm_neighbors {
+        if world.colonies[0].world_tiles.contains_key(&neighbor) {
+            if !world.colonies[0].claimed_tiles.contains(&neighbor) {
+                world.colonies[0].claimed_tiles.push(neighbor);
+            }
+            world.colonies[0].revealed_tiles.insert(neighbor);
+        }
+    }
+    let handoff = farm_neighbors
+        .into_iter()
+        .find(|neighbor| world.colonies[0].world_tiles.contains_key(neighbor))
+        .expect("campaign farm has one mapped adjacent handoff");
+    let handoff_tile = world.colonies[0]
+        .world_tiles
+        .get_mut(&handoff)
+        .expect("selected mapped handoff");
+    handoff_tile.tile_type = TileType::Field;
+    handoff_tile.resources.water = 0;
+    handoff_tile.overlay_feature = Some("stump".to_owned());
     let (session_id, nickname, sig) = signed_fields();
     apply_ok(
         &mut world,
@@ -1384,31 +1443,29 @@ fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
     base.colonies
         .push(found_colony(seed, "colony-1", STARTED_AT, seed));
     // Migration is a prosperity mechanic, so begin from the smallest genuinely
-    // automated settlement rather than a role-vacant founding that intentionally
-    // waits for manual survival orders. Both later branches share this setup; the
-    // only difference under test remains the player's den order.
+    // automated settlement. Reuse two road-connected founding yards with identical
+    // footprints rather than fabricating buildings in the packed founding claim;
+    // the fourth den itself still has to travel through the signed production action.
     let holders = base.colonies[0]
         .cats
         .iter()
-        .take(5)
+        .take(3)
         .map(|cat| cat.id.clone())
         .collect::<Vec<_>>();
-    for (index, (building_type, node_id)) in [
-        (BuildingType::Workshop, "basic_tools"),
-        (BuildingType::Sawmill, "sawmill"),
-        (BuildingType::Field, "irrigation"),
-        (BuildingType::Barracks, "barracks"),
-        (BuildingType::ResearchHut, "research_hut"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut building = complete_building(format!("migration-office-{index}"), building_type);
-        building.position = TilePos {
-            x: 20 + i32::try_from(index).expect("small fixture index") * 4,
-            y: 20,
-        };
-        base.colonies[0].buildings.push(building);
+    base.colonies[0].resources.materials = 1_000.0;
+    base.colonies[0].resources.lumber = 100.0;
+    base.colonies[0].resources.blocks = 100.0;
+    base.colonies[0].resources.food = 300.0;
+    base.colonies[0].resources.water = 300.0;
+    for (from, building_type, node_id) in [
+        (
+            BuildingType::Woodworking,
+            BuildingType::Workshop,
+            "basic_tools",
+        ),
+        (BuildingType::WoodCutter, BuildingType::Sawmill, "sawmill"),
+        (BuildingType::StonePrep, BuildingType::Barracks, "barracks"),
+    ] {
         if !base.colonies[0]
             .upgrade_tree
             .owned_node_ids
@@ -1420,13 +1477,30 @@ fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
                 .owned_node_ids
                 .push(node_id.to_owned());
         }
+        let office = base.colonies[0]
+            .buildings
+            .iter_mut()
+            .find(|building| building.building_type == from)
+            .expect("founding blueprint contains the compatible office yard");
+        office.building_type = building_type;
+        office.production_queue = default_production_queue(building_type);
+    }
+    for office in base.colonies[0].buildings.iter().filter(|building| {
+        matches!(
+            building.building_type,
+            BuildingType::Workshop | BuildingType::Sawmill | BuildingType::Barracks
+        )
+    }) {
+        assert!(building_is_road_connected_to_shrine(
+            &base.colonies[0],
+            office,
+            seed,
+        ));
     }
     for (role, holder) in [
         OfficerRole::Steward,
         OfficerRole::Forester,
-        OfficerRole::Farmer,
         OfficerRole::Captain,
-        OfficerRole::Loremaster,
     ]
     .into_iter()
     .zip(holders)
@@ -1479,24 +1553,92 @@ fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
         .collect::<Vec<_>>();
     assert!(
         !first_cohort.is_empty(),
-        "organic prosperity produced no visitors by game hour {MAX_ARRIVAL_HOUR}"
+        "organic prosperity produced no visitors by game hour {MAX_ARRIVAL_HOUR}: pop={} food={:.2} water={:.2} construction=({:.2},{:.2},{:.2}) status={:?} critical={:?} raid={} migration={:?} migration_events={:?} events={:?}",
+        base.colonies[0]
+            .cats
+            .iter()
+            .filter(|cat| cat.death_time.is_none())
+            .count(),
+        base.colonies[0].resources.food,
+        base.colonies[0].resources.water,
+        base.colonies[0].resources.materials,
+        base.colonies[0].resources.blocks,
+        base.colonies[0].resources.lumber,
+        base.colonies[0].status,
+        base.colonies[0].critical_since,
+        base.colonies[0].active_raid.is_some(),
+        base.colonies[0].migration_state,
+        base.colonies[0]
+            .events
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                EventKind::MigrationArrived
+                    | EventKind::MigrationRetained
+                    | EventKind::MigrationDeparted
+            ))
+            .collect::<Vec<_>>(),
+        base.colonies[0]
+            .events
+            .iter()
+            .rev()
+            .take(8)
+            .collect::<Vec<_>>(),
     );
     assert_eq!(completed_beds(&base.colonies[0]), 15);
+
+    // The Steward was setup scaffolding used only to reach a real prosperity cohort.
+    // Vacate that office before the behavioral branch so the unchanged twin cannot
+    // silently answer the housing problem itself. Its road-connected 3x3 yard leaves
+    // an authored explicit site for the player's 2x3 den without inventing terrain.
+    let den_site = base.colonies[0]
+        .buildings
+        .iter()
+        .find(|building| building.building_type == BuildingType::Workshop)
+        .expect("migration setup has a Steward workshop")
+        .position;
+    base.colonies[0].officers.remove(&OfficerRole::Steward);
+    base.colonies[0]
+        .buildings
+        .retain(|building| building.building_type != BuildingType::Workshop);
+    let released_planners = base.colonies[0]
+        .jobs
+        .iter()
+        .filter(|job| job.kind == JobKind::LeaderPlanHouse)
+        .filter_map(|job| job.assigned_cat.clone())
+        .collect::<HashSet<_>>();
+    base.colonies[0]
+        .jobs
+        .retain(|job| job.kind != JobKind::LeaderPlanHouse);
+    for cat in &mut base.colonies[0].cats {
+        if released_planners.contains(&cat.id) {
+            cat.current_task = None;
+            cat.activity = CatActivity::Idle;
+            cat.destination = None;
+        }
+    }
+    assert!(
+        can_plan_building_at(&base.colonies[0], den_site, seed, BuildingType::Den),
+        "the retired setup yard must expose a legal explicit den footprint"
+    );
 
     let mut guided = base.clone();
     let mut unguided = base;
     let mut action_accepted_at = None;
+    let mut last_plan_error = None;
     for _ in 0..=48 {
-        let action = proto::ClientAction::PlanBuilding {
-            session_id: "guided-session".to_owned(),
-            nickname: "Playtester".to_owned(),
-            sig: "validated-at-server-boundary".to_owned(),
-            building_type: proto::BuildingType::Den,
-            site: None,
-        };
         let result = apply_action(
             &mut guided,
-            &action,
+            &proto::ClientAction::PlanBuilding {
+                session_id: "guided-session".to_owned(),
+                nickname: "Playtester".to_owned(),
+                sig: "validated-at-server-boundary".to_owned(),
+                building_type: proto::BuildingType::Den,
+                site: Some(proto::TilePoint {
+                    x: den_site.x,
+                    y: den_site.y,
+                }),
+            },
             &ActionCtx {
                 session_id: "guided-session".to_owned(),
                 player_id: "guided-player".to_owned(),
@@ -1504,7 +1646,11 @@ fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
                 now_ms: now,
             },
         );
-        if result.ok {
+        let accepted = result.ok;
+        if !accepted {
+            last_plan_error = result.message;
+        }
+        if accepted {
             action_accepted_at = Some(now);
             break;
         }
@@ -1512,7 +1658,14 @@ fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
         assert_eq!(world_tick(&mut guided, now)[0].reset_reason, None);
         assert_eq!(world_tick(&mut unguided, now)[0].reset_reason, None);
     }
-    let accepted_at = action_accepted_at.expect("a worker becomes available for the player's den");
+    let accepted_at = action_accepted_at.unwrap_or_else(|| {
+        panic!(
+            "the explicit fourth den never found a legal claimed site: last={last_plan_error:?} claim={} jobs={:?} events={:?}",
+            guided.colonies[0].claimed_tiles.len(),
+            guided.colonies[0].jobs.iter().map(|job| (job.kind, job.status, job.assigned_cat.as_deref())).collect::<Vec<_>>(),
+            guided.colonies[0].events.iter().rev().take(12).collect::<Vec<_>>(),
+        )
+    });
 
     let end_at = now + 45 * 3_600_000;
     while now < end_at {

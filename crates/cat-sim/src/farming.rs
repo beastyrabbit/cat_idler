@@ -20,6 +20,10 @@ pub const GROWING_AT_HOURS: f64 = 6.0;
 pub const MATURE_AT_HOURS: f64 = 12.0;
 pub const FLOWERING_AT_HOURS: f64 = 18.0;
 pub const HARVEST_AT_HOURS: f64 = 24.0;
+/// Maximum crop units one farmer can carry from a plot in one physical basket.
+/// Large plots therefore require repeated short trips and cannot teleport an entire
+/// 8x8 harvest through one cat.
+pub const FARM_BASKET_CAPACITY: f64 = 8.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -51,6 +55,20 @@ pub enum FarmStage {
     Flowering,
 }
 
+/// Persisted physical work state for one designated plot.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FarmWorkPhase {
+    #[default]
+    WaitingForWorker,
+    Traveling,
+    Planting,
+    Tending,
+    Harvesting,
+    Hauling,
+    OutputBlocked,
+}
+
 /// A persistent, visible farm designation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,6 +83,20 @@ pub struct FarmPlot {
     /// older saves have no plots, while hand-authored plot fixtures safely start at 0.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub growth_hours: f64,
+    /// Mean climate fertility validated for this footprint. Legacy rows use 0 and
+    /// deterministically populate it on their next farming tick.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub fertility: f64,
+    /// Living Field worker currently responsible for this plot. A worker is bound to
+    /// at most one plot at a time and physically visits it before work advances.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub work_phase: FarmWorkPhase,
+    /// Harvested produce still lying on the plot. It is intentionally absent from the
+    /// colony aggregate until a cat carries it into finite compatible storage.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pending_output: f64,
 }
 
 impl FarmPlot {
@@ -253,6 +285,10 @@ mod tests {
             planted_at: 1_000,
             stage: FarmStage::Soil,
             growth_hours: 0.0,
+            fertility: 1.0,
+            worker_id: None,
+            work_phase: FarmWorkPhase::WaitingForWorker,
+            pending_output: 0.0,
         }
     }
 

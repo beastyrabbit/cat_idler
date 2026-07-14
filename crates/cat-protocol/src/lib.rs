@@ -616,6 +616,9 @@ pub enum CarryingKind {
     Blocks,
     Tools,
     Water,
+    Catnip,
+    Grain,
+    Herbs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1045,6 +1048,19 @@ pub enum FarmStage {
     Flowering,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FarmWorkPhase {
+    #[default]
+    WaitingForWorker,
+    Traveling,
+    Planting,
+    Tending,
+    Harvesting,
+    Hauling,
+    OutputBlocked,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FarmSnapshot {
@@ -1059,6 +1075,20 @@ pub struct FarmSnapshot {
     /// Fertility-scaled hours worked in the current cycle, for progress UI.
     #[serde(default)]
     pub growth_hours: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub work_phase: FarmWorkPhase,
+    /// Current maintained crop model has no seed item; this remains empty until a
+    /// real recipe introduces one rather than fabricating an input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_inventory: Vec<ResourceStackSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_inventory: Vec<ResourceStackSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_travel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_reason: Option<String>,
 }
 
 /// A building's tile footprint size, in tiles.
@@ -2309,6 +2339,15 @@ mod tests {
             planted_at: 1_000,
             stage: FarmStage::Flowering,
             growth_hours: 23.5,
+            worker_id: Some("cat-1".to_owned()),
+            work_phase: FarmWorkPhase::Harvesting,
+            input_inventory: Vec::new(),
+            output_inventory: vec![ResourceStackSnapshot {
+                kind: ResourceKind::Herbs,
+                amount: 4.0,
+            }],
+            worker_travel: None,
+            block_reason: None,
         };
         let encoded = serde_json::to_value(&farm).expect("serialize farm snapshot");
         assert_eq!(encoded["crop"], json!("herb"));

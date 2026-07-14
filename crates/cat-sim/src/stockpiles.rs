@@ -58,8 +58,8 @@ pub struct GatherSpot {
     /// Id of the underlying [`Stockpile`] this record annotates.
     pub stockpile_id: String,
     /// The single resource this gather spot collects. Restricted to the resources a
-    /// gatherer job can actually carry (see `entities::CarryingKind`): food, water,
-    /// materials.
+    /// gatherer or farmer can actually carry (see `entities::CarryingKind`): food,
+    /// water, materials, logs, and the three maintained crops.
     pub kind: ResourceKind,
     /// Game-tick ms after which this gather spot expires and is cleared, folding
     /// whatever it still holds back into the shrine reservoir (same as a manual

@@ -175,6 +175,7 @@ define_wire_enum! {
         Patrol => "patrol",
         Teach => "teach",
         Rest => "rest",
+        Farm => "farm",
     }
 }
 
@@ -363,6 +364,7 @@ mod tests {
             (TaskType::Patrol, "patrol"),
             (TaskType::Teach, "teach"),
             (TaskType::Rest, "rest"),
+            (TaskType::Farm, "farm"),
         ];
 
         assert_wire_round_trip(&cases, TaskType::as_str);

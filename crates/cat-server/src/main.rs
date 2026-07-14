@@ -1475,31 +1475,29 @@ mod tests {
     }
 
     fn establish_campaign_core(colony: &mut cat_sim::world_tick::ColonyRuntime) {
-        for (index, (role, building_type, upgrade)) in [
+        colony.resources.materials = 1_000.0;
+        colony.resources.lumber = 100.0;
+        colony.resources.blocks = 100.0;
+        colony.resources.food = 300.0;
+        colony.resources.water = 300.0;
+        for (index, (role, from, building_type, upgrade)) in [
             (
                 cat_sim::officers::OfficerRole::Steward,
+                cat_sim::types::BuildingType::Woodworking,
                 cat_sim::types::BuildingType::Workshop,
                 "basic_tools",
             ),
             (
                 cat_sim::officers::OfficerRole::Forester,
+                cat_sim::types::BuildingType::WoodCutter,
                 cat_sim::types::BuildingType::Sawmill,
                 "sawmill",
             ),
             (
-                cat_sim::officers::OfficerRole::Farmer,
-                cat_sim::types::BuildingType::Field,
-                "irrigation",
-            ),
-            (
                 cat_sim::officers::OfficerRole::Captain,
+                cat_sim::types::BuildingType::StonePrep,
                 cat_sim::types::BuildingType::Barracks,
                 "barracks",
-            ),
-            (
-                cat_sim::officers::OfficerRole::Loremaster,
-                cat_sim::types::BuildingType::ResearchHut,
-                "research_hut",
             ),
         ]
         .into_iter()
@@ -1513,19 +1511,63 @@ mod tests {
             {
                 colony.upgrade_tree.owned_node_ids.push(upgrade.to_owned());
             }
-            colony.buildings.push(cat_sim::world_tick::BuildingRuntime {
-                id: format!("server-campaign-office-{index}"),
-                building_type,
-                position: cat_sim::world_tick::TilePos {
-                    x: colony.anchor.x + 12 + i32::try_from(index).expect("small fixture") * 3,
-                    y: colony.anchor.y + 12,
-                },
-                is_complete: true,
-                construction_progress: 100,
-                ..cat_sim::world_tick::BuildingRuntime::default()
-            });
+            let building = colony
+                .buildings
+                .iter_mut()
+                .find(|building| building.building_type == from)
+                .expect("founding blueprint contains the compatible office yard");
+            building.building_type = building_type;
+            building.production_queue =
+                cat_sim::world_tick::default_production_queue(building_type);
             colony.officers.insert(role, colony.cats[index].id.clone());
         }
+    }
+
+    fn prepare_authenticated_den_branch(
+        colony: &mut cat_sim::world_tick::ColonyRuntime,
+        world_seed: u32,
+    ) -> cat_sim::world_tick::TilePos {
+        let workshop = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == cat_sim::types::BuildingType::Workshop)
+            .expect("campaign setup has a Steward workshop");
+        let den_site = workshop.position;
+        let mut released = workshop
+            .assigned_cat
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        released.extend(
+            colony
+                .jobs
+                .iter()
+                .filter(|job| job.kind == cat_sim::types::JobKind::LeaderPlanHouse)
+                .filter_map(|job| job.assigned_cat.clone()),
+        );
+        colony
+            .officers
+            .remove(&cat_sim::officers::OfficerRole::Steward);
+        colony
+            .buildings
+            .retain(|building| building.building_type != cat_sim::types::BuildingType::Workshop);
+        colony
+            .jobs
+            .retain(|job| job.kind != cat_sim::types::JobKind::LeaderPlanHouse);
+        for cat in &mut colony.cats {
+            if released.contains(&cat.id) {
+                cat.current_task = None;
+                cat.activity = cat_sim::entities::CatActivity::Idle;
+                cat.destination = None;
+            }
+        }
+        assert!(cat_sim::world_tick::can_plan_building_at(
+            colony,
+            den_site,
+            world_seed,
+            cat_sim::types::BuildingType::Den,
+        ));
+        den_site
     }
 
     #[tokio::test]
@@ -1599,6 +1641,15 @@ mod tests {
 
             if guided_arrival_id.is_some() && !plan_sent {
                 assert_eq!(guided_arrival_id, unattended_arrival_id);
+                let guided_site = {
+                    let mut world = guided.world.lock().await;
+                    prepare_authenticated_den_branch(&mut world.colonies[0], SEED)
+                };
+                let unattended_site = {
+                    let mut world = unattended.world.lock().await;
+                    prepare_authenticated_den_branch(&mut world.colonies[0], SEED)
+                };
+                assert_eq!(guided_site, unattended_site);
                 let result = send_action(
                     &guided,
                     &mut connection,
@@ -1607,7 +1658,10 @@ mod tests {
                         nickname: "Builder Cat".to_owned(),
                         sig: sig.clone(),
                         building_type: cat_protocol::BuildingType::Den,
-                        site: None,
+                        site: Some(cat_protocol::TilePoint {
+                            x: guided_site.x,
+                            y: guided_site.y,
+                        }),
                     },
                 )
                 .await;

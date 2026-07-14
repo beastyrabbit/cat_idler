@@ -22,7 +22,7 @@ use crate::{
         Carrying, CarryingKind, Cat, CatActivity, CatNeeds, CatStats, ColonyStatus, MapType,
         Position, Resources, RoleXp,
     },
-    farming::{self, CropKind, FarmPlot},
+    farming::{self, CropKind, FarmPlot, FarmWorkPhase},
     genetics::{
         CatSpriteParams, RollSource, SeededRollSource, extract_genetic_traits, inherit_traits,
         traits_to_sprite_params,
@@ -58,7 +58,7 @@ use crate::{
     pathfinding::{
         self, ColonyGridParams, FindPathOptions, GatePlacement as PathGatePlacement,
         TilePos as PathTilePos, WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType,
-        build_colony_walk_grid, find_path,
+        build_colony_walk_grid, find_path, reachable_component,
     },
     policy::PolicyConfig,
     processing::{
@@ -67,7 +67,7 @@ use crate::{
     production::{
         FIELD_CATS_PER_FIELD, FIELD_MATERIAL_BUFFER, FIELD_MIN_COUNT, FIELD_STOCK_TARGET_RATIO,
         WORKSHOP_MATERIALS_PER_CYCLE, WoodworkingOptions, WorkshopOptions, advance_woodworking,
-        advance_workshop, field_yield,
+        advance_workshop,
     },
     productivity::{productive_duration_ms, productive_elapsed},
     recipes::{
@@ -639,6 +639,43 @@ struct DecorationAnchors {
 #[derive(Debug, Clone, Default)]
 pub struct DecorationCache {
     chunks: BTreeMap<(u32, i32, i32), DecorationAnchors>,
+    /// Failed Farmer auto-designations keyed by Field id and the authoritative rural
+    /// geometry signature they searched. This derived cache prevents a land-starved
+    /// Field from rebuilding occupancy indexes every tick; claim/reveal/farm/building
+    /// changes deterministically re-arm it. A loaded game may retry once after restart.
+    farm_designation_failures: BTreeMap<String, u64>,
+    farm_route_component: RefCell<Option<(u64, HashSet<PathTilePos>)>>,
+    #[cfg(test)]
+    farm_route_debug: FarmRouteDebug,
+    #[cfg(test)]
+    farm_route_component_traversals: std::cell::Cell<u64>,
+    #[cfg(test)]
+    farm_route_component_cache_hits: std::cell::Cell<u64>,
+    #[cfg(test)]
+    farm_route_queries: std::cell::Cell<u64>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+struct FarmRouteDebug {
+    designation_searches: u64,
+    designation_candidates: u64,
+    designation_gather_failures: u64,
+    designation_route_failures: u64,
+    movement_ticks: u64,
+    route_misses: u64,
+    consecutive_traveling: BTreeMap<String, u64>,
+    max_consecutive_traveling: u64,
+    completed_short_haul_routes: u64,
+    first_designated_at: Option<i64>,
+    active_work_seconds: f64,
+    at_plot_work_ticks: u64,
+    unique_worker_ids: BTreeSet<String>,
+    max_plots_per_worker: usize,
+    emergency_worker_preemptions: u64,
+    worker_releases: u64,
+    effective_growth_by_plot: BTreeMap<String, f64>,
+    harvests_by_plot: BTreeMap<String, u64>,
 }
 
 // A cache never changes authoritative simulation meaning. Treating two cache
@@ -725,11 +762,13 @@ struct SpatialOccupancyContext {
     water_tiles: HashSet<TilePos>,
     cleared_tree_tiles: HashSet<TilePos>,
     mountain_tiles: HashSet<TilePos>,
+    prepared_farm_tiles: HashSet<TilePos>,
     paved_road_tiles: HashSet<TilePos>,
     mapped_tiles: HashSet<TilePos>,
     shrine_tiles: HashSet<TilePos>,
     gate: Option<TilePos>,
     decoration_chunks: RefCell<BTreeMap<(i32, i32), DecorationAnchors>>,
+    farm_fertility_chunks: RefCell<BTreeMap<(i32, i32), HashMap<TilePos, f64>>>,
 }
 
 impl SpatialOccupancyContext {
@@ -777,6 +816,17 @@ impl SpatialOccupancyContext {
                 .filter_map(|(&pos, tile)| (tile.tile_type == TileType::Mountains).then_some(pos))
                 .collect()
         };
+        let prepared_farm_tiles = colony
+            .world_tiles
+            .iter()
+            .filter_map(|(&pos, tile)| {
+                matches!(
+                    tile.tile_type,
+                    TileType::Field | TileType::Meadow | TileType::Swamp
+                )
+                .then_some(pos)
+            })
+            .collect();
         let paved_road_tiles = colony
             .world_tiles
             .iter()
@@ -786,7 +836,7 @@ impl SpatialOccupancyContext {
             .collect();
         let mapped_tiles = colony.world_tiles.keys().copied().collect();
         let shrine_tiles = shrine_footprint_tiles(colony);
-        let gate = gate_placement_default(&claimed_area(colony)).map(|gate| TilePos {
+        let gate = retained_area_gate(colony).map(|gate| TilePos {
             x: gate.x,
             y: gate.y,
         });
@@ -801,12 +851,67 @@ impl SpatialOccupancyContext {
             water_tiles,
             cleared_tree_tiles,
             mountain_tiles,
+            prepared_farm_tiles,
             paved_road_tiles,
             mapped_tiles,
             shrine_tiles,
             gate,
             decoration_chunks: RefCell::new(BTreeMap::new()),
+            farm_fertility_chunks: RefCell::new(BTreeMap::new()),
         }
+    }
+
+    fn farm_fertility(&self, tile: TilePos) -> f64 {
+        if !self.mapped_tiles.contains(&tile) || self.water_tiles.contains(&tile) {
+            return 0.0;
+        }
+        let chunk = tile_to_chunk(tile.x, tile.y);
+        let key = (chunk.chunk_x, chunk.chunk_y);
+        let mut chunks = self.farm_fertility_chunks.borrow_mut();
+        let fertility = chunks.entry(key).or_insert_with(|| {
+            crate::terrain_gen::generate_terrain_chunk(
+                chunk.chunk_x,
+                chunk.chunk_y,
+                i64::from(self.world_seed),
+                crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+            )
+            .into_iter()
+            .map(|generated| {
+                (
+                    TilePos {
+                        x: generated.x,
+                        y: generated.y,
+                    },
+                    generated.climate_biome.properties().fertility,
+                )
+            })
+            .collect()
+        });
+        effective_farm_fertility(
+            true,
+            false,
+            self.prepared_farm_tiles.contains(&tile),
+            fertility.get(&tile).copied().unwrap_or_default(),
+        )
+    }
+
+    fn farmable_ground(&self, tile: TilePos) -> bool {
+        self.mapped_tiles.contains(&tile)
+            && !self.water_tiles.contains(&tile)
+            && (self.prepared_farm_tiles.contains(&tile) || self.farm_fertility(tile) > 0.0)
+    }
+
+    fn farm_rect_touches_claim_boundary(&self, rect: ZoneRect) -> bool {
+        farming::rect_tiles(rect).any(|tile| {
+            [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                .into_iter()
+                .any(|(dx, dy)| {
+                    !self.claimed.contains(&TilePos {
+                        x: tile.x + dx,
+                        y: tile.y + dy,
+                    })
+                })
+        })
     }
 
     fn has_stockpile(&self, tile: TilePos) -> bool {
@@ -869,6 +974,20 @@ impl SpatialOccupancyContext {
             || self.has_uncleared_rock(tile)
             || self.mountain_tiles.contains(&tile)
             || self.is_perimeter(tile)
+            || self.paved_road_tiles.contains(&tile)
+    }
+
+    fn farm_tile_is_occupied(&self, tile: TilePos) -> bool {
+        !tile_coordinates_supported(tile)
+            || !self.mapped_tiles.contains(&tile)
+            || self.building_tiles.contains(&tile)
+            || self.has_stockpile(tile)
+            || self.has_farm(tile)
+            || self.water_tiles.contains(&tile)
+            || self.has_uncleared_tree(tile)
+            || self.has_uncleared_rock(tile)
+            || self.mountain_tiles.contains(&tile)
+            // A boundary-connected farm deliberately replaces this wall segment.
             || self.paved_road_tiles.contains(&tile)
     }
 
@@ -1197,6 +1316,55 @@ fn tile_is_on_fence_perimeter(claimed: &HashSet<TilePos>, tile: TilePos) -> bool
 #[must_use]
 pub fn tile_is_occupied(colony: &ColonyRuntime, tile: TilePos, world_seed: u32) -> bool {
     SpatialOccupancyContext::new(colony, world_seed).tile_is_occupied(tile)
+}
+
+#[must_use]
+pub(crate) fn occupied_farm_tiles(
+    colony: &ColonyRuntime,
+    rect: ZoneRect,
+    world_seed: u32,
+) -> HashSet<TilePos> {
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    farming::rect_tiles(rect)
+        .map(|tile| TilePos {
+            x: tile.x,
+            y: tile.y,
+        })
+        .filter(|tile| occupancy.farm_tile_is_occupied(*tile))
+        .collect()
+}
+
+#[must_use]
+pub(crate) fn farm_rect_touches_claim_boundary(colony: &ColonyRuntime, rect: ZoneRect) -> bool {
+    farming::rect_tiles(rect).any(|tile| {
+        [
+            TilePos {
+                x: tile.x,
+                y: tile.y - 1,
+            },
+            TilePos {
+                x: tile.x + 1,
+                y: tile.y,
+            },
+            TilePos {
+                x: tile.x,
+                y: tile.y + 1,
+            },
+            TilePos {
+                x: tile.x - 1,
+                y: tile.y,
+            },
+        ]
+        .into_iter()
+        .any(|neighbor| !colony.claimed_tiles.contains(&neighbor))
+    })
+}
+
+fn all_farms_touch_claim_boundary(colony: &ColonyRuntime) -> bool {
+    colony
+        .farms
+        .iter()
+        .all(|plot| farm_rect_touches_claim_boundary(colony, plot.rect))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2496,7 +2664,7 @@ fn set_water_tile(colony: &mut ColonyRuntime, pos: TilePos) {
 /// reveal halo. The tile immediately outside the gate stays clear for arrivals;
 /// the pond sits beside that approach rather than inside the village.
 fn founding_pond_site(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Option<TilePos> {
-    let gate = gate_placement_default(&claimed_area(colony))?;
+    let gate = retained_area_gate(colony)?;
     let outside_y = gate.y + 1;
     let mut candidates: Vec<TilePos> = (-2_i32..=2)
         .filter(|offset| *offset != 0)
@@ -3831,9 +3999,10 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 // No valid claimed/access-connected site exists yet. Keep the
                 // job queued and reserve one deterministic future footprint for
                 // repeated, visibly completed village expansion work.
-                if reserved_site.is_none()
-                    && let Some(site) =
-                        next_expansion_building_site(colony, world_seed, scaffold_type)
+                let expansion_site = (reserved_site.is_none())
+                    .then(|| next_expansion_building_site(colony, world_seed, scaffold_type))
+                    .flatten();
+                if let Some(site) = expansion_site
                     && let JobMetadata::Construction { site: slot, .. } =
                         &mut colony.jobs[job_index].metadata
                 {
@@ -5787,12 +5956,195 @@ fn automated_ritual_ready(colony: &ColonyRuntime, now_ms: i64) -> bool {
 /// A completed Field staffed by a living cat supplies the colony-wide tending work.
 /// The player can assign that worker manually; a Farmer officer automates the same
 /// assignment. Without either, plots remain visible at their current stage.
+fn farm_crop_resource(crop: CropKind) -> ResourceKind {
+    match crop {
+        CropKind::Catnip => ResourceKind::Catnip,
+        CropKind::Grain => ResourceKind::Grain,
+        CropKind::Herb => ResourceKind::Herbs,
+    }
+}
+
+fn farm_crop_carrying(crop: CropKind) -> CarryingKind {
+    match crop {
+        CropKind::Catnip => CarryingKind::Catnip,
+        CropKind::Grain => CarryingKind::Grain,
+        CropKind::Herb => CarryingKind::Herbs,
+    }
+}
+
+/// Ensure one persistent, finite crop gather spot beside `plot`. This is a local handoff
+/// point, not a village warehouse: the farmer performs only bounded basket trips here;
+/// the existing Steward/manual `HaulGatherSpot` flow owns every longer haul.
+pub(crate) fn ensure_farm_gather_spot(
+    colony: &mut ColonyRuntime,
+    plot: &FarmPlot,
+    world_seed: u32,
+) -> Option<String> {
+    ensure_farm_gather_spot_with_context(colony, plot, world_seed, None, None)
+}
+
+pub(crate) fn ensure_farm_gather_spot_at(
+    colony: &mut ColonyRuntime,
+    plot: &FarmPlot,
+    world_seed: u32,
+    spot: TilePos,
+) -> Option<String> {
+    ensure_farm_gather_spot_with_context(colony, plot, world_seed, None, Some(spot))
+}
+
+pub(crate) fn legal_farm_gather_spots(
+    colony: &ColonyRuntime,
+    plot: &FarmPlot,
+    world_seed: u32,
+) -> Vec<TilePos> {
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    farm_gather_spot_candidates(colony, plot.rect, &occupancy)
+}
+
+fn ensure_farm_gather_spot_with_context(
+    colony: &mut ColonyRuntime,
+    plot: &FarmPlot,
+    world_seed: u32,
+    cached_occupancy: Option<&SpatialOccupancyContext>,
+    reserved_spot: Option<TilePos>,
+) -> Option<String> {
+    let id = farm_gather_spot_id(&plot.id);
+    let kind = farm_crop_resource(plot.crop);
+    let pile_exists = colony
+        .stockpiles
+        .iter()
+        .any(|pile| pile.id == id && pile.accepts.contains(&kind));
+    let record_exists = colony
+        .gather_spots
+        .iter()
+        .any(|spot| spot.stockpile_id == id && spot.kind == kind);
+    if pile_exists && record_exists {
+        if let Some(rect) = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == id)
+            .map(|pile| pile.rect)
+        {
+            for y in rect.y1..=rect.y2 {
+                for x in rect.x1..=rect.x2 {
+                    colony.agricultural_tiles.insert(TilePos { x, y });
+                }
+            }
+        }
+        return Some(id);
+    }
+    // A player may remove the local handoff while a plot is idle. Drop either stale half
+    // and recreate it only on legal, already-known ground.
+    colony.stockpiles.retain(|pile| pile.id != id);
+    colony.gather_spots.retain(|spot| spot.stockpile_id != id);
+
+    let owned_occupancy;
+    let occupancy = if let Some(cached) = cached_occupancy {
+        // Auto-designation passes the context built immediately before inserting this new
+        // plot. Its farm rectangles intentionally omit the plot itself; every candidate
+        // handoff is outside the plot perimeter, so the cache remains authoritative there.
+        cached
+    } else {
+        owned_occupancy = SpatialOccupancyContext::new(colony, world_seed);
+        &owned_occupancy
+    };
+    let spot = reserved_spot
+        .filter(|spot| farm_gather_spot_is_legal(colony, plot.rect, *spot, occupancy))
+        .or_else(|| farm_gather_spot_candidate(colony, plot.rect, occupancy))?;
+    colony.stockpiles.push(Stockpile {
+        id: id.clone(),
+        rect: ZoneRect {
+            x1: spot.x,
+            y1: spot.y,
+            x2: spot.x,
+            y2: spot.y,
+        },
+        accepts: std::iter::once(kind).collect(),
+        contents: Resources::default(),
+    });
+    colony.gather_spots.push(GatherSpot {
+        stockpile_id: id.clone(),
+        kind,
+        // Maintained farm handoffs persist with their plot; ClearFarm removes them.
+        expires_at_ms: i64::MAX,
+        purpose: GatherSpotPurpose::General,
+    });
+    colony.agricultural_tiles.insert(spot);
+    Some(id)
+}
+
+fn farm_gather_spot_candidate(
+    colony: &ColonyRuntime,
+    rect: ZoneRect,
+    occupancy: &SpatialOccupancyContext,
+) -> Option<TilePos> {
+    farm_gather_spot_candidates(colony, rect, occupancy)
+        .into_iter()
+        .next()
+}
+
+fn farm_gather_spot_candidates(
+    colony: &ColonyRuntime,
+    rect: ZoneRect,
+    occupancy: &SpatialOccupancyContext,
+) -> Vec<TilePos> {
+    let mut candidates = Vec::new();
+    for x in rect.x1..=rect.x2 {
+        candidates.push(TilePos { x, y: rect.y1 - 1 });
+        candidates.push(TilePos { x, y: rect.y2 + 1 });
+    }
+    for y in rect.y1..=rect.y2 {
+        candidates.push(TilePos { x: rect.x1 - 1, y });
+        candidates.push(TilePos { x: rect.x2 + 1, y });
+    }
+    candidates.sort_by_key(|tile| (cheb_from_anchor(colony.anchor, *tile), tile.x, tile.y));
+    candidates.dedup();
+    candidates
+        .into_iter()
+        .filter(|candidate| farm_gather_spot_is_legal(colony, rect, *candidate, occupancy))
+        .collect()
+}
+
+fn farm_gather_spot_is_legal(
+    colony: &ColonyRuntime,
+    rect: ZoneRect,
+    candidate: TilePos,
+    occupancy: &SpatialOccupancyContext,
+) -> bool {
+    let edge_adjacent = ((candidate.x >= rect.x1 && candidate.x <= rect.x2)
+        && matches!(candidate.y, y if y == rect.y1 - 1 || y == rect.y2 + 1))
+        || ((candidate.y >= rect.y1 && candidate.y <= rect.y2)
+            && matches!(candidate.x, x if x == rect.x1 - 1 || x == rect.x2 + 1));
+    edge_adjacent
+        && colony.claimed_tiles.contains(&candidate)
+        && colony.revealed_tiles.contains(&candidate)
+        && !inside_village_interior(colony, candidate)
+        && !occupancy.farm_tile_is_occupied(candidate)
+}
+
 fn advance_designated_farms(
     colony: &mut ColonyRuntime,
     gate: TickGate,
     world_seed: u32,
     production_elapsed: f64,
 ) {
+    if !has_officer(colony, OfficerRole::Farmer) {
+        let vacated = colony
+            .buildings
+            .iter_mut()
+            .filter(|building| {
+                building.building_type == BuildingType::Field
+                    && building.automated_by == Some(OfficerRole::Farmer)
+            })
+            .filter_map(|building| {
+                building.automated_by = None;
+                building.assigned_cat.take()
+            })
+            .collect::<BTreeSet<_>>();
+        for worker_id in vacated {
+            release_farm_worker(colony, &worker_id);
+        }
+    }
     let farmer_worker_ids = colony
         .buildings
         .iter()
@@ -5800,74 +6152,240 @@ fn advance_designated_farms(
             building.building_type == BuildingType::Field && building.construction_progress >= 100
         })
         .filter_map(|building| assigned_worker(colony, &building.id).map(|cat| cat.id.clone()))
-        .collect::<BTreeSet<_>>();
-    let has_farmer_work = !farmer_worker_ids.is_empty();
-    let farmer_skill = if farmer_worker_ids.is_empty() {
-        0.0
-    } else {
-        farmer_worker_ids
-            .iter()
-            .filter_map(|id| colony.cats.iter().find(|cat| cat.id == *id))
-            .map(|cat| cat.skill(Labor::Farm))
-            .sum::<f64>()
-            / farmer_worker_ids.len() as f64
-    };
+        .collect::<Vec<_>>();
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let field_modifiers = effects.building(BuildingType::Field.as_str());
-    let production_elapsed = skilled_station_elapsed(
-        production_elapsed * field_modifiers.output_mult
-            / field_modifiers.cycle_time_mult.max(f64::EPSILON),
-        farmer_skill,
-    );
-    let caps = storage_caps(colony);
+    let base_work_elapsed = production_elapsed * field_modifiers.output_mult
+        / field_modifiers.cycle_time_mult.max(f64::EPSILON);
+
+    // If a local handoff was removed during a basket trip, restore the uncredited crop
+    // immediately and cancel that route. Recreating a valid local spot below is safe; the
+    // old destination can never turn into a shrine fallback or duplicate delivery.
+    let orphaned_cargo = colony
+        .cats
+        .iter()
+        .enumerate()
+        .filter_map(|(cat_index, cat)| {
+            let cargo = cat.carrying.as_ref()?;
+            let (plot_id, pile_id) = parse_farm_cargo(cargo.source_gather_spot.as_deref())?;
+            (!colony.stockpiles.iter().any(|pile| pile.id == pile_id)).then_some((
+                cat_index,
+                plot_id.to_owned(),
+                cargo.amount,
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (cat_index, plot_id, amount) in orphaned_cargo {
+        if let Some(plot) = colony.farms.iter_mut().find(|plot| plot.id == plot_id) {
+            plot.pending_output += amount.max(0.0);
+            plot.work_phase = FarmWorkPhase::WaitingForWorker;
+        }
+        let cat = &mut colony.cats[cat_index];
+        cat.carrying = None;
+        cat.destination = None;
+        cat.current_task = None;
+        cat.activity = CatActivity::Idle;
+    }
+
+    // Preserve valid one-worker/one-plot bindings, then bind otherwise-free staffed
+    // Field workers in stable plot/building order. A vacant Farmer office never creates
+    // a Field assignment; a signed manual AssignWorker does, and follows this same path.
+    let eligible = farmer_worker_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let mut claimed_workers = BTreeSet::new();
+    let mut released_workers = BTreeSet::new();
+    for plot in &mut colony.farms {
+        let valid = plot.worker_id.as_ref().is_some_and(|worker_id| {
+            eligible.contains(worker_id) && claimed_workers.insert(worker_id.clone())
+        });
+        if !valid {
+            released_workers.extend(plot.worker_id.iter().cloned());
+            plot.worker_id = None;
+            plot.work_phase = FarmWorkPhase::WaitingForWorker;
+        }
+    }
+    for worker_id in released_workers {
+        release_farm_worker(colony, &worker_id);
+    }
+    claimed_workers = colony
+        .farms
+        .iter()
+        .filter_map(|plot| plot.worker_id.clone())
+        .collect();
+    for plot in &mut colony.farms {
+        if plot.worker_id.is_some() {
+            continue;
+        }
+        if let Some(worker_id) = farmer_worker_ids
+            .iter()
+            .find(|worker_id| !claimed_workers.contains(*worker_id))
+            .cloned()
+        {
+            claimed_workers.insert(worker_id.clone());
+            plot.worker_id = Some(worker_id);
+        }
+    }
+    #[cfg(test)]
+    {
+        let mut plots_per_worker = BTreeMap::<&str, usize>::new();
+        for worker_id in colony
+            .farms
+            .iter()
+            .filter_map(|plot| plot.worker_id.as_deref())
+        {
+            *plots_per_worker.entry(worker_id).or_default() += 1;
+        }
+        let max_bound = plots_per_worker.values().copied().max().unwrap_or_default();
+        colony
+            .decoration_cache
+            .farm_route_debug
+            .max_plots_per_worker = colony
+            .decoration_cache
+            .farm_route_debug
+            .max_plots_per_worker
+            .max(max_bound);
+    }
 
     for index in 0..colony.farms.len() {
         let plot = colony.farms[index].clone();
-        let crop_kind = match plot.crop {
-            CropKind::Catnip => ResourceKind::Catnip,
-            CropKind::Grain => ResourceKind::Grain,
-            CropKind::Herb => ResourceKind::Herbs,
+        let Some(worker_id) = plot.worker_id.as_deref() else {
+            continue;
         };
-        let resource_cap = match plot.crop {
-            CropKind::Catnip => caps.catnip,
-            CropKind::Grain => caps.grain,
-            CropKind::Herb => caps.herbs,
+        let Some(cat_index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == worker_id && cat.death_time.is_none())
+        else {
+            colony.farms[index].worker_id = None;
+            colony.farms[index].work_phase = FarmWorkPhase::WaitingForWorker;
+            continue;
         };
-        let current = stockpiles::resource_amount(&colony.resources, crop_kind);
-        let fertility = mean_farm_fertility(world_seed, plot.rect);
+        if colony.cats[cat_index].carrying.is_some() {
+            colony.farms[index].work_phase = FarmWorkPhase::Hauling;
+            continue;
+        }
+
+        let crop_kind = farm_crop_resource(plot.crop);
+        let carrying_kind = farm_crop_carrying(plot.crop);
+        let work_point = WorldPos {
+            x: f64::from(plot.rect.x1 + plot.rect.x2) / 2.0,
+            y: f64::from(plot.rect.y1 + plot.rect.y2) / 2.0,
+        };
+        let gather_spot_id = ensure_farm_gather_spot(colony, &plot, world_seed);
+
+        if plot.pending_output > 0.0 {
+            if !at_world_point(colony, cat_index, work_point) {
+                send_cat_to(colony, cat_index, work_point);
+                colony.cats[cat_index].current_task = Some(TaskType::Farm);
+                colony.farms[index].work_phase = FarmWorkPhase::Traveling;
+                continue;
+            }
+            let Some(destination_index) = gather_spot_id.as_deref().and_then(|id| {
+                colony
+                    .stockpiles
+                    .iter()
+                    .position(|pile| pile.id == id && pile.accepts.contains(&crop_kind))
+            }) else {
+                colony.cats[cat_index].activity = CatActivity::Working;
+                colony.cats[cat_index].current_task = Some(TaskType::Farm);
+                colony.farms[index].work_phase = FarmWorkPhase::OutputBlocked;
+                continue;
+            };
+            let destination_id = colony.stockpiles[destination_index].id.clone();
+            let (x, y) = colony.stockpiles[destination_index].center();
+            let amount = plot
+                .pending_output
+                .min(farming::FARM_BASKET_CAPACITY)
+                .min(colony.stockpiles[destination_index].headroom(crop_kind));
+            if amount <= 0.0 {
+                colony.farms[index].work_phase = FarmWorkPhase::OutputBlocked;
+                continue;
+            }
+            colony.farms[index].pending_output -= amount;
+            colony.farms[index].work_phase = FarmWorkPhase::Hauling;
+            colony.cats[cat_index].carrying = Some(Carrying {
+                kind: carrying_kind,
+                amount,
+                job_ended_at: gate.processed_through,
+                source_gather_spot: Some(farm_cargo_marker(&plot.id, &destination_id)),
+            });
+            colony.cats[cat_index].current_task = Some(TaskType::Farm);
+            send_cat_to(colony, cat_index, WorldPos { x, y });
+            continue;
+        }
+
+        if !at_world_point(colony, cat_index, work_point) {
+            send_cat_to(colony, cat_index, work_point);
+            colony.cats[cat_index].current_task = Some(TaskType::Farm);
+            colony.farms[index].work_phase = FarmWorkPhase::Traveling;
+            continue;
+        }
+
+        colony.cats[cat_index].activity = CatActivity::Working;
+        colony.cats[cat_index].current_task = Some(TaskType::Farm);
+        colony.farms[index].work_phase = if plot.growth_hours < farming::SPROUT_AT_HOURS {
+            FarmWorkPhase::Planting
+        } else if plot.growth_hours < farming::FLOWERING_AT_HOURS {
+            FarmWorkPhase::Tending
+        } else {
+            FarmWorkPhase::Harvesting
+        };
+        let fertility = if plot.fertility > 0.0 {
+            plot.fertility
+        } else {
+            let fertility = mean_farm_fertility(colony, world_seed, plot.rect);
+            colony.farms[index].fertility = fertility;
+            fertility
+        };
+        let skilled_elapsed =
+            skilled_station_elapsed(base_work_elapsed, colony.cats[cat_index].skill(Labor::Farm));
+        #[cfg(test)]
+        {
+            let debug = &mut colony.decoration_cache.farm_route_debug;
+            debug.active_work_seconds += skilled_elapsed;
+            debug.at_plot_work_ticks += 1;
+            debug.unique_worker_ids.insert(worker_id.to_owned());
+            *debug
+                .effective_growth_by_plot
+                .entry(plot.id.clone())
+                .or_default() += skilled_elapsed / 3600.0 * fertility;
+        }
+        let basket = plot.harvest_amount() * effects.farm_yield_mult.max(0.0);
         let step = farming::advance_farm(
             &plot,
-            production_elapsed,
+            skilled_elapsed,
             fertility,
-            has_farmer_work,
+            true,
             effects.farm_yield_mult,
-            (resource_cap - current).max(0.0),
+            basket,
         );
         colony.farms[index].growth_hours = step.next_growth_hours;
         colony.farms[index].stage = step.next_stage;
+        colony.cats[cat_index].gain_skill(
+            Labor::Farm,
+            base_work_elapsed / 3600.0 * SKILL_GAIN_PER_WORK_HOUR,
+        );
         if step.amount_produced <= 0.0 {
             continue;
         }
 
         colony.farms[index].planted_at = gate.processed_through;
-        stockpiles::add_resource(&mut colony.resources, crop_kind, step.amount_produced);
-        let site = TilePos {
-            x: (plot.rect.x1 + plot.rect.x2) / 2,
-            y: (plot.rect.y1 + plot.rect.y2) / 2,
-        };
-        route_output_to_nearest_pile(colony, crop_kind, step.amount_produced, site);
-        let xp_each = SKILL_GAIN_PER_JOB / farmer_worker_ids.len().max(1) as f64;
-        for worker_id in &farmer_worker_ids {
-            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == *worker_id) {
-                cat.gain_skill(Labor::Farm, xp_each);
-            }
+        colony.farms[index].pending_output += step.amount_produced;
+        colony.farms[index].work_phase = FarmWorkPhase::Harvesting;
+        #[cfg(test)]
+        {
+            *colony
+                .decoration_cache
+                .farm_route_debug
+                .harvests_by_plot
+                .entry(plot.id.clone())
+                .or_default() += u64::from(step.harvests);
         }
         append_event(
             colony,
             gate.processed_through,
             EventKind::Production,
             format!(
-                "The farmers harvested {} {} from {}.",
+                "A farmer harvested {} {} at {}, awaiting physical haulage.",
                 step.amount_produced,
                 match plot.crop {
                     CropKind::Catnip => "catnip",
@@ -5880,28 +6398,427 @@ fn advance_designated_farms(
     }
 }
 
-/// Mean fine-biome fertility for a farm rectangle, regenerating each touched terrain
-/// chunk only once. Calling `tile_climate_biome` per tile would regenerate the same
-/// 12×12 chunk up to 64 times per plot on every tick.
-fn mean_farm_fertility(world_seed: u32, rect: ZoneRect) -> f64 {
-    let chunks = farming::rect_tiles(rect)
-        .map(|tile| tile_to_chunk(tile.x, tile.y))
-        .map(|chunk| (chunk.chunk_x, chunk.chunk_y))
-        .collect::<BTreeSet<_>>();
-    let mut total = 0.0;
-    let mut count = 0_u32;
-    for (chunk_x, chunk_y) in chunks {
-        for tile in crate::terrain_gen::generate_terrain_chunk(
-            chunk_x,
-            chunk_y,
-            i64::from(world_seed),
-            crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
-        ) {
-            if tile.x >= rect.x1 && tile.x <= rect.x2 && tile.y >= rect.y1 && tile.y <= rect.y2 {
-                total += tile.climate_biome.properties().fertility;
-                count += 1;
+/// A maintained officer plot is balanced against the retired Field's three-food/hour
+/// faucet. A 5x5 plot yields 2.08 grain/hour at fertility 1 before climate and travel;
+/// hunting remains the complementary survival path instead of automatic farming exceeding
+/// the retired faucet by itself.
+/// Player-painted plots retain the full 8x8 maximum and use the same bounded baskets.
+const OFFICER_FARM_MAX_EDGE: i32 = 5;
+const OFFICER_FARM_SEARCH_RADIUS: i32 = 24;
+
+/// Stable FNV-1a signature of every authoritative fact that can make a failed Farmer
+/// designation legal without changing the Field itself. Terrain mutations that matter here
+/// happen through claim/reveal/farm/building actions, all represented below. The signature is
+/// a cache key only and never enters deterministic gameplay state or persistence.
+fn farm_designation_geometry_signature(colony: &ColonyRuntime, world_seed: u32) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn byte(hash: &mut u64, value: u8) {
+        *hash ^= u64::from(value);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    fn bytes(hash: &mut u64, values: &[u8]) {
+        for value in values {
+            byte(hash, *value);
+        }
+        byte(hash, 0xff);
+    }
+    fn tile(hash: &mut u64, value: TilePos) {
+        bytes(hash, &value.x.to_le_bytes());
+        bytes(hash, &value.y.to_le_bytes());
+    }
+
+    let mut hash = FNV_OFFSET;
+    bytes(&mut hash, &world_seed.to_le_bytes());
+    for claimed in &colony.claimed_tiles {
+        byte(&mut hash, b'c');
+        tile(&mut hash, *claimed);
+        // Only reveal state on already-claimed ground can change designation legality.
+        // A scout mapping unrelated wilderness must not re-arm every land-starved Field.
+        byte(&mut hash, u8::from(colony.revealed_tiles.contains(claimed)));
+    }
+    for agricultural in &colony.agricultural_tiles {
+        byte(&mut hash, b'a');
+        tile(&mut hash, *agricultural);
+    }
+    for plot in &colony.farms {
+        byte(&mut hash, b'f');
+        bytes(&mut hash, plot.id.as_bytes());
+        bytes(&mut hash, &plot.rect.x1.to_le_bytes());
+        bytes(&mut hash, &plot.rect.y1.to_le_bytes());
+        bytes(&mut hash, &plot.rect.x2.to_le_bytes());
+        bytes(&mut hash, &plot.rect.y2.to_le_bytes());
+    }
+    for building in colony
+        .buildings
+        .iter()
+        .filter(|building| building.construction_progress >= 100)
+    {
+        byte(&mut hash, b'b');
+        bytes(&mut hash, building.id.as_bytes());
+        bytes(&mut hash, building.building_type.as_str().as_bytes());
+        tile(&mut hash, building.position);
+    }
+    hash
+}
+
+/// A Farmer officer turns each completed Field station into one maintained exterior
+/// designation. It chooses the largest legal square, up to the balanced 5x5 officer size,
+/// by the signed paint tool, and falls back to smaller plots when the already-claimed land
+/// cannot fit it. The agricultural claim is deliberately excluded from settlement-wall
+/// derivation and the worker still performs every production and bounded-basket step.
+fn ensure_farmer_plots(colony: &mut ColonyRuntime, world_seed: u32, now_ms: i64) {
+    if !has_officer(colony, OfficerRole::Farmer) {
+        return;
+    }
+    let fields = colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.building_type == BuildingType::Field && building.construction_progress >= 100
+        })
+        .filter(|field| {
+            let plot_id = format!("officer-farm-{}", field.id);
+            !colony.farms.iter().any(|plot| plot.id == plot_id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        // The steady state must not rebuild the large spatial occupancy indexes every
+        // production tick when every Field already owns its designation.
+        return;
+    }
+    let initial_signature = farm_designation_geometry_signature(colony, world_seed);
+    if !colony.claimed_tiles.iter().copied().any(|tile| {
+        colony.revealed_tiles.contains(&tile)
+            && !inside_village_interior(colony, tile)
+            && tile_is_farmable(world_seed, tile, colony.world_tiles.get(&tile))
+    }) {
+        // Fogged or wholly interior claims cannot possibly host a plot. Avoid building
+        // occupancy/tree indexes every production tick until scouting/expansion changes
+        // that cheap precondition.
+        for field in fields {
+            colony
+                .decoration_cache
+                .farm_designation_failures
+                .insert(field.id, initial_signature);
+        }
+        return;
+    }
+    let existing_officer_plots = colony
+        .farms
+        .iter()
+        .filter(|plot| plot.id.starts_with("officer-farm-"))
+        .count();
+    for (field_index, field) in fields.into_iter().enumerate() {
+        let plot_id = format!("officer-farm-{}", field.id);
+        let geometry_signature = farm_designation_geometry_signature(colony, world_seed);
+        if colony
+            .decoration_cache
+            .farm_designation_failures
+            .get(&field.id)
+            == Some(&geometry_signature)
+        {
+            continue;
+        }
+        // Build one cached spatial index for this designation search. The colony may
+        // gain a plot between Fields in this same pass, so rebuilding per designation
+        // keeps overlap/terrain knowledge current without the old per-candidate cost.
+        #[cfg(test)]
+        {
+            colony
+                .decoration_cache
+                .farm_route_debug
+                .designation_searches += 1;
+        }
+        let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+        let current_area = claimed_area(colony);
+        let current_gate = retained_area_gate(colony);
+        let (width, height) = footprint_for(field.building_type);
+        let mut selected = None;
+        'size: for edge in (1_i32..=OFFICER_FARM_MAX_EDGE).rev() {
+            let mut candidates = Vec::new();
+            for radius in 1_i32..=OFFICER_FARM_SEARCH_RADIUS {
+                for y in (field.position.y - radius)..=(field.position.y + height - 1 + radius) {
+                    for x in (field.position.x - radius)..=(field.position.x + width - 1 + radius) {
+                        if x > field.position.x - radius
+                            && x < field.position.x + width - 1 + radius
+                            && y > field.position.y - radius
+                            && y < field.position.y + height - 1 + radius
+                        {
+                            continue;
+                        }
+                        // `(x, y)` is the deterministic center candidate. Even-sized plots
+                        // bias their extra half-tile east/south, matching rect anchor order.
+                        let rect = ZoneRect {
+                            x1: x - (edge - 1) / 2,
+                            y1: y - (edge - 1) / 2,
+                            x2: x - (edge - 1) / 2 + edge - 1,
+                            y2: y - (edge - 1) / 2 + edge - 1,
+                        };
+                        let tiles = farming::rect_tiles(rect)
+                            .map(|tile| TilePos {
+                                x: tile.x,
+                                y: tile.y,
+                            })
+                            .collect::<Vec<_>>();
+                        if tiles.iter().any(|tile| {
+                            !occupancy.claimed.contains(tile)
+                                || !colony.revealed_tiles.contains(tile)
+                                || inside_village_interior(colony, *tile)
+                                || !occupancy.farmable_ground(*tile)
+                        }) || tiles
+                            .iter()
+                            .any(|tile| occupancy.farm_tile_is_occupied(*tile))
+                            || colony
+                                .farms
+                                .iter()
+                                .any(|plot| farming::rects_overlap(plot.rect, rect))
+                        {
+                            continue;
+                        }
+                        // Agricultural parcels are outside the palisade, not fenced holes in
+                        // its middle. Keep the prospective plot connected to unclaimed exterior
+                        // ground so removing it from `claimed_area` forms a boundary notch and
+                        // cannot make every unrelated A* route search around an inner wall.
+                        if !occupancy.farm_rect_touches_claim_boundary(rect) {
+                            continue;
+                        }
+                        let Some(handoff) = farm_gather_spot_candidate(colony, rect, &occupancy)
+                        else {
+                            continue;
+                        };
+                        let mut projected_area = current_area.clone();
+                        for tile in tiles.iter().copied().chain(std::iter::once(handoff)) {
+                            projected_area.remove(&crate::village_area::key(tile.x, tile.y));
+                        }
+                        if !area_supports_gate(&projected_area, current_gate) {
+                            continue;
+                        }
+                        // Farms live outside the wall and are reached through its gate.
+                        // Prefer the largest legal boundary parcel nearest that opening;
+                        // selecting merely by distance from the Field can choose the far
+                        // side of a mature claim where mapped exterior does not connect.
+                        let gate = occupancy.gate.unwrap_or(field.position);
+                        let score = (
+                            (x - gate.x).abs() + (y - gate.y).abs(),
+                            (x - field.position.x).abs() + (y - field.position.y).abs(),
+                            y,
+                            x,
+                        );
+                        candidates.push((score, rect, handoff));
+                    }
+                }
+            }
+            candidates.sort_by_key(|candidate| candidate.0);
+            candidates.dedup_by(|left, right| left.1 == right.1);
+            // The exterior component is a cheap rejection filter only: it can prove a
+            // target is impossible from the outside gate, but its intentionally empty
+            // village area cannot prove the final palisade route. Exact projected routing
+            // below remains the sole acceptance condition.
+            let targets = candidates
+                .iter()
+                .flat_map(|(_, rect, handoff)| {
+                    [
+                        WorldPos {
+                            x: f64::from(rect.x1 + rect.x2) / 2.0,
+                            y: f64::from(rect.y1 + rect.y2) / 2.0,
+                        },
+                        tile_pos_to_world(*handoff),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let exterior = farm_designation_exterior_component(colony, world_seed, &targets);
+            // Validate the exact post-designation palisade for each sorted candidate. A
+            // batch exterior flood ignores the settlement wall by design and can therefore
+            // preaccept a parcel whose final shrine-to-gate route is blocked. The candidate
+            // list is hard-bounded here; the first exact success preserves deterministic
+            // nearest-gate ordering without reintroducing the former unbounded scan.
+            selected = candidates
+                .into_iter()
+                .filter(|(_, rect, handoff)| {
+                    let center = path_tile_for_world(WorldPos {
+                        x: f64::from(rect.x1 + rect.x2) / 2.0,
+                        y: f64::from(rect.y1 + rect.y2) / 2.0,
+                    });
+                    let handoff = path_tile_for_world(tile_pos_to_world(*handoff));
+                    exterior.contains(&center) && exterior.contains(&handoff)
+                })
+                .take(64)
+                .find_map(|(_, rect, handoff)| {
+                    let projected = farming::rect_tiles(rect)
+                        .map(|tile| TilePos {
+                            x: tile.x,
+                            y: tile.y,
+                        })
+                        .chain(std::iter::once(handoff))
+                        .collect::<Vec<_>>();
+                    let destinations = [
+                        WorldPos {
+                            x: f64::from(rect.x1 + rect.x2) / 2.0,
+                            y: f64::from(rect.y1 + rect.y2) / 2.0,
+                        },
+                        tile_pos_to_world(handoff),
+                    ];
+                    farm_routes_are_reachable_projected(
+                        colony,
+                        world_seed,
+                        village_anchor_world(colony.anchor),
+                        &destinations,
+                        &projected,
+                    )
+                    .then_some((rect, handoff))
+                });
+            if selected.is_some() {
+                break 'size;
             }
         }
+        let Some((rect, reserved_handoff)) = selected else {
+            colony
+                .decoration_cache
+                .farm_designation_failures
+                .insert(field.id, geometry_signature);
+            continue;
+        };
+        #[cfg(test)]
+        {
+            colony
+                .decoration_cache
+                .farm_route_debug
+                .designation_candidates += 1;
+        }
+        colony
+            .agricultural_tiles
+            .extend(farming::rect_tiles(rect).map(|tile| TilePos {
+                x: tile.x,
+                y: tile.y,
+            }));
+        colony.farms.push(FarmPlot {
+            id: plot_id,
+            rect,
+            crop: match (existing_officer_plots + field_index) % 3 {
+                0 => CropKind::Grain,
+                1 => CropKind::Catnip,
+                _ => CropKind::Herb,
+            },
+            planted_at: now_ms,
+            stage: farming::FarmStage::Soil,
+            growth_hours: 0.0,
+            fertility: mean_farm_fertility(colony, world_seed, rect),
+            worker_id: None,
+            work_phase: FarmWorkPhase::WaitingForWorker,
+            pending_output: 0.0,
+        });
+        #[cfg(test)]
+        {
+            colony
+                .decoration_cache
+                .farm_route_debug
+                .first_designated_at
+                .get_or_insert(now_ms);
+        }
+        let created = colony.farms.last().cloned().expect("farm was just pushed");
+        let gather_id = ensure_farm_gather_spot_with_context(
+            colony,
+            &created,
+            world_seed,
+            Some(&occupancy),
+            Some(reserved_handoff),
+        );
+        #[cfg(test)]
+        if gather_id.is_none() {
+            colony
+                .decoration_cache
+                .farm_route_debug
+                .designation_gather_failures += 1;
+        }
+        let final_route_reachable = village_exterior_is_road_connected(colony, world_seed)
+            && gather_id.as_deref().is_some_and(|gather_id| {
+                let gather = colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == gather_id)
+                    .map(|pile| WorldPos {
+                        x: f64::from(pile.rect.x1 + pile.rect.x2) / 2.0,
+                        y: f64::from(pile.rect.y1 + pile.rect.y2) / 2.0,
+                    });
+                gather.is_some_and(|gather| {
+                    farm_routes_are_reachable_projected(
+                        colony,
+                        world_seed,
+                        village_anchor_world(colony.anchor),
+                        &[
+                            WorldPos {
+                                x: f64::from(rect.x1 + rect.x2) / 2.0,
+                                y: f64::from(rect.y1 + rect.y2) / 2.0,
+                            },
+                            gather,
+                        ],
+                        &[],
+                    )
+                })
+            });
+        if !final_route_reachable {
+            #[cfg(test)]
+            {
+                colony
+                    .decoration_cache
+                    .farm_route_debug
+                    .designation_route_failures += 1;
+            }
+            if let Some(gather_id) = gather_id {
+                if let Some(rect) = colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == gather_id)
+                    .map(|pile| pile.rect)
+                {
+                    for y in rect.y1..=rect.y2 {
+                        for x in rect.x1..=rect.x2 {
+                            colony.agricultural_tiles.remove(&TilePos { x, y });
+                        }
+                    }
+                }
+                colony
+                    .gather_spots
+                    .retain(|spot| spot.stockpile_id != gather_id);
+                colony.stockpiles.retain(|pile| pile.id != gather_id);
+            }
+            colony.farms.pop();
+            for tile in farming::rect_tiles(rect) {
+                colony.agricultural_tiles.remove(&TilePos {
+                    x: tile.x,
+                    y: tile.y,
+                });
+            }
+            colony
+                .decoration_cache
+                .farm_designation_failures
+                .insert(field.id, geometry_signature);
+        } else {
+            colony
+                .decoration_cache
+                .farm_designation_failures
+                .remove(&field.id);
+        }
+    }
+}
+
+/// Mean canonical fertility for a newly designated farm rectangle. This runs once when a
+/// plot is created (or once for a legacy zero-fertility row), so querying at most 64 direct
+/// climate classifications is much cheaper than full decorated chunk generation and cannot
+/// become a per-tick cost.
+fn mean_farm_fertility(colony: &ColonyRuntime, world_seed: u32, rect: ZoneRect) -> f64 {
+    let mut total = 0.0;
+    let mut count = 0_u32;
+    for tile in farming::rect_tiles(rect) {
+        let pos = TilePos {
+            x: tile.x,
+            y: tile.y,
+        };
+        total += tile_farm_fertility(world_seed, pos, colony.world_tiles.get(&pos));
+        count += 1;
     }
     if count == 0 {
         0.0
@@ -6094,6 +7011,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     let production_elapsed = gate.elapsed_sec as f64
         * normalize_time_scale(colony)
         * research_effects.production_rate_mult;
+    ensure_farmer_plots(colony, world_seed, gate.processed_through);
     advance_designated_farms(colony, gate, world_seed, production_elapsed);
     let crafting_elapsed = productive_elapsed(production_elapsed, colony.resources.tools);
     // Production follows the physical worker, regardless of who assigned it. A
@@ -6118,31 +7036,9 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
             productive_elapsed(building_elapsed, colony.resources.tools);
         match building_type {
             BuildingType::Field => {
-                let worker_skill = assigned_worker_skill(colony, &building_id, Labor::Farm);
-                if assigned_worker(colony, &building_id).is_none() {
-                    continue;
-                }
-                // P17 crop fertility: the base `field_yield` curve is the "full 1.0
-                // fertility" rate; the fine per-tile climate biome under the field
-                // scales it (grass ~0.8x, marsh ~1.5x, …). `tile_is_farmable`
-                // already keeps fields off zero-fertility ground, so this is a
-                // pure rate multiplier, never a placement gate.
-                let fertility = crate::terrain_gen::tile_climate_biome(
-                    world_seed,
-                    colony.buildings[building_index].position.x,
-                    colony.buildings[building_index].position.y,
-                )
-                .properties()
-                .fertility;
-                colony.resources.food +=
-                    field_yield(skilled_station_elapsed(building_elapsed, worker_skill))
-                        * fertility;
-                grant_building_skill(
-                    colony,
-                    &building_id,
-                    Labor::Farm,
-                    production_elapsed / 3600.0 * SKILL_GAIN_PER_WORK_HOUR,
-                );
+                // The Field is a role station, not an invisible food faucet. Its worker
+                // is consumed by `advance_designated_farms`, which physically visits
+                // one exterior designation and hauls that plot's selected crop.
             }
             BuildingType::Mill => {
                 let worker = assigned_worker(colony, &building_id);
@@ -7979,6 +8875,26 @@ fn phase_32_movement_setup_and_village_expansion_queue(
             // deterministically reserves a fresh non-overlapping future site next tick.
             *site = None;
         }
+        let agricultural_target = blocked_construction_index.is_some_and(|index| {
+            matches!(
+                colony.jobs[index].metadata,
+                JobMetadata::Construction {
+                    building_type: BuildingType::Field,
+                    ..
+                }
+            )
+        });
+        let target = target.filter(|target| {
+            agricultural_target
+                || farm_routes_survive_staged_expansion(
+                    colony,
+                    TilePos {
+                        x: target.x,
+                        y: target.y,
+                    },
+                    world_seed,
+                )
+        });
         let blocked_builder = blocked_construction_index.and_then(|index| {
             colony.jobs[index].assigned_cat.as_ref().and_then(|cat_id| {
                 colony
@@ -8035,7 +8951,7 @@ fn phase_32_movement_setup_and_village_expansion_queue(
     }
 
     let area_gate = (!claimed_area.is_empty())
-        .then(|| gate_placement_default(&claimed_area))
+        .then(|| retained_area_gate(colony))
         .flatten();
     let gate_pos = movement_gate(colony.anchor, area_gate, ring_radius);
     let staged_wall_edges = staged_wall_fence_edges(colony);
@@ -8106,6 +9022,15 @@ fn phase_33_movement_deposits_and_no_destination_wander(
             }
 
             let remaining = credit_carrying(colony, &carrying, world_pos);
+            #[cfg(test)]
+            if remaining <= f64::EPSILON
+                && parse_farm_cargo(carrying.source_gather_spot.as_deref()).is_some()
+            {
+                colony
+                    .decoration_cache
+                    .farm_route_debug
+                    .completed_short_haul_routes += 1;
+            }
             // Only the rare Blessings deposit (ritual/offering payoff) is narrated —
             // ordinary Food/Materials/Water hauls fire once per single-cat trip
             // (hundreds per run) and would drown births/deaths/raids out of the
@@ -8274,6 +9199,25 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         .filter_map(|cat| cat.death_time.is_none().then_some(cat.id.clone()))
         .collect::<Vec<_>>();
 
+    #[cfg(test)]
+    {
+        let active_farm_travelers = colony
+            .cats
+            .iter()
+            .filter(|cat| {
+                cat.death_time.is_none()
+                    && cat.current_task == Some(TaskType::Farm)
+                    && cat.destination.is_some()
+            })
+            .map(|cat| cat.id.as_str())
+            .collect::<HashSet<_>>();
+        colony
+            .decoration_cache
+            .farm_route_debug
+            .consecutive_traveling
+            .retain(|cat_id, _| active_farm_travelers.contains(cat_id.as_str()));
+    }
+
     for cat_id in cat_ids {
         let Some(cat_index) = colony
             .cats
@@ -8320,14 +9264,44 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             * labor_speed_factor
             * effects.move_speed_mult;
 
-        let route = find_path(
-            pathfinding_pos(world_pos),
-            pathfinding_pos(destination),
-            &walk_grid,
-            FindPathOptions::default(),
-        );
         let crosses_fence = is_inside_movement_village(world_pos_to_tile(world_pos), movement)
             != is_inside_movement_village(world_pos_to_tile(destination), movement);
+        let route = if current_task == Some(TaskType::Farm) {
+            find_farm_path(
+                pathfinding_pos(world_pos),
+                pathfinding_pos(destination),
+                pathfinding_pos(tile_pos_to_world(movement.gate)),
+                crosses_fence,
+                &walk_grid,
+            )
+        } else {
+            find_path(
+                pathfinding_pos(world_pos),
+                pathfinding_pos(destination),
+                &walk_grid,
+                FindPathOptions::default(),
+            )
+        };
+        #[cfg(test)]
+        if current_task == Some(TaskType::Farm) {
+            let debug = &mut colony.decoration_cache.farm_route_debug;
+            debug.movement_ticks += 1;
+            if route.is_none() {
+                debug.route_misses += 1;
+            }
+            let consecutive = debug
+                .consecutive_traveling
+                .entry(cat_id.clone())
+                .and_modify(|ticks| *ticks += 1)
+                .or_insert(1);
+            debug.max_consecutive_traveling = debug.max_consecutive_traveling.max(*consecutive);
+        }
+        if route.is_none() && current_task == Some(TaskType::Farm) {
+            // Farm logistics never use the generic straight-line fallback: a removed
+            // bridge, closed staged wall, or newly impassable tile suspends the trip until
+            // a real A* route exists instead of letting a farmer walk through barriers.
+            continue;
+        }
         let at_gate = (world_pos.x - f64::from(movement.gate.x)).abs() < 1.0
             && (world_pos.y - f64::from(movement.gate.y)).abs() < 1.0;
         let waypoints = if let Some(route) = route.as_ref().filter(|route| route.len() > 2) {
@@ -8650,8 +9624,8 @@ fn cancel_fishing_job(
     }
 }
 
-/// The resource a mover carries for a gather spot of this kind — the only three
-/// resources a gatherer job can currently produce/carry (`entities::CarryingKind`).
+/// The resource a mover carries for a gather spot of this kind. Includes fishing,
+/// maintained gathering outputs, and all three physical farm crops.
 fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
     match kind {
         ResourceKind::Food => Some(CarryingKind::Food),
@@ -8659,10 +9633,10 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Water => Some(CarryingKind::Water),
         ResourceKind::Materials => Some(CarryingKind::Materials),
         ResourceKind::Logs => Some(CarryingKind::Logs),
-        ResourceKind::Herbs
-        | ResourceKind::Catnip
-        | ResourceKind::Grain
-        | ResourceKind::Flour
+        ResourceKind::Herbs => Some(CarryingKind::Herbs),
+        ResourceKind::Catnip => Some(CarryingKind::Catnip),
+        ResourceKind::Grain => Some(CarryingKind::Grain),
+        ResourceKind::Flour
         | ResourceKind::Refined
         | ResourceKind::Weapons
         | ResourceKind::Armor
@@ -8771,7 +9745,14 @@ fn complete_arrived_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) 
             colony.cats[cat_index].activity = CatActivity::Working;
             continue;
         };
-        let amount = available.min(colony.stockpiles[dest_index].headroom(kind));
+        let mut amount = available.min(colony.stockpiles[dest_index].headroom(kind));
+        // A maintained farm handoff can accumulate several harvests while its mover is
+        // away. Crop logistics still use physical baskets on the long leg: leave any
+        // excess at the handoff for a later trip instead of giving one cat an unlimited
+        // carrying capacity.
+        if is_farm_gather_spot_id(&stockpile_id) {
+            amount = amount.min(farming::FARM_BASKET_CAPACITY);
+        }
         if amount <= 0.0 {
             colony.cats[cat_index].activity = CatActivity::Working;
             continue;
@@ -8871,7 +9852,14 @@ fn tile_cheb_distance(a: TilePos, b: TilePos) -> i32 {
 /// identical to pre-this-feature behavior — whenever no site qualifies (including every
 /// colony with no Steward, since the caller only invokes this once one is appointed).
 fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64, world_seed: u32) {
-    if colony.gather_spots.len() >= MAX_GATHER_SPOTS {
+    let ordinary_spot_count = |colony: &ColonyRuntime| {
+        colony
+            .gather_spots
+            .iter()
+            .filter(|spot| !is_farm_gather_spot_id(&spot.stockpile_id))
+            .count()
+    };
+    if ordinary_spot_count(colony) >= MAX_GATHER_SPOTS {
         return;
     }
     let anchor = colony.anchor;
@@ -8933,7 +9921,7 @@ fn auto_designate_gather_spots(colony: &mut ColonyRuntime, now_ms: i64, world_se
     });
 
     for (kind, site, _) in candidates {
-        if colony.gather_spots.len() >= MAX_GATHER_SPOTS {
+        if ordinary_spot_count(colony) >= MAX_GATHER_SPOTS {
             break;
         }
         let mut spot_tiles = [
@@ -9029,7 +10017,25 @@ fn dispatch_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
         .map(|spot| spot.stockpile_id.clone())
         .collect();
 
+    // One Steward can coordinate one automatic crop long-haul at a time. Without this
+    // bound, four modest Fields can draft four additional movers every harvest and starve
+    // hunting/quarrying/woodworking despite the colony still having only one logistics
+    // office. Player-issued manual hauling remains independent of this automation bound.
+    let mut farm_mover_in_flight = colony.jobs.iter().any(|job| {
+        job.kind == JobKind::HaulGatherSpot
+            && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+            && matches!(
+                &job.metadata,
+                JobMetadata::GatherHaul { stockpile_id, .. }
+                    if is_farm_gather_spot_id(stockpile_id)
+            )
+    });
+
     for stockpile_id in due_spots {
+        let is_farm_handoff = is_farm_gather_spot_id(&stockpile_id);
+        if is_farm_handoff && farm_mover_in_flight {
+            continue;
+        }
         let Some(cat_id) = select_best_cat(colony, None) else {
             break;
         };
@@ -9044,6 +10050,7 @@ fn dispatch_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
                 accepted: false,
             },
         );
+        farm_mover_in_flight |= is_farm_handoff;
     }
 }
 
@@ -9282,24 +10289,131 @@ fn building_road_route_to_shrine_with_context(
     extra_blocked: &HashSet<TilePos>,
     occupancy: &SpatialOccupancyContext,
 ) -> Option<Vec<TilePos>> {
-    let entrances = building_entrance_candidates(building);
     let connected_network = occupancy.shrine_connected_road_tiles_excluding(extra_blocked);
-    let is_network = |pos: roads::RoadPos| {
-        let tile = TilePos { x: pos.x, y: pos.y };
-        connected_network.contains(&tile)
-    };
+    building_road_route_to_shrine_with_connected_network(
+        building,
+        extra_blocked,
+        occupancy,
+        &connected_network,
+    )
+}
+
+/// One reverse flood from the shrine-connected road network replaces an A* search for
+/// every otherwise-free building anchor. The parent of each reachable ground tile points
+/// one step toward the network. A candidate can therefore prove an exact route cheaply
+/// whenever that parent chain avoids its own footprint; only the rare footprint that cuts
+/// across the shared chain needs the ordinary bounded router as a fallback.
+struct SharedRoadReachability {
+    connected_network: HashSet<TilePos>,
+    parent_to_network: HashMap<TilePos, TilePos>,
+    distance_to_network: HashMap<TilePos, usize>,
+}
+
+impl SharedRoadReachability {
+    fn new(occupancy: &SpatialOccupancyContext) -> Self {
+        let connected_network = occupancy.shrine_connected_road_tiles_excluding(&HashSet::new());
+        let mut parent_to_network = HashMap::new();
+        let mut distance_to_network = connected_network
+            .iter()
+            .copied()
+            .map(|tile| (tile, 0))
+            .collect::<HashMap<_, _>>();
+        let mut queue = connected_network.iter().copied().collect::<VecDeque<_>>();
+        while let Some(current) = queue.pop_front() {
+            let distance = distance_to_network[&current];
+            for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+                let next = TilePos {
+                    x: current.x + dx,
+                    y: current.y + dy,
+                };
+                if distance_to_network.contains_key(&next) || occupancy.tile_is_occupied(next) {
+                    continue;
+                }
+                parent_to_network.insert(next, current);
+                distance_to_network.insert(next, distance + 1);
+                queue.push_back(next);
+            }
+        }
+        Self {
+            connected_network,
+            parent_to_network,
+            distance_to_network,
+        }
+    }
+
+    fn candidate_has_route(
+        &self,
+        building: &BuildingRuntime,
+        extra_blocked: &HashSet<TilePos>,
+        occupancy: &SpatialOccupancyContext,
+    ) -> bool {
+        // Match `candidate_building_road_route_with_context`: synthetic and legacy
+        // colonies without a shrine have no meaningful hub network to validate.
+        if occupancy.shrine_tiles.is_empty() {
+            return true;
+        }
+        let entrances = building_entrance_candidates(building);
+        if entrances
+            .iter()
+            .any(|entrance| self.connected_network.contains(entrance))
+        {
+            return true;
+        }
+        let Some(start) = entrances.iter().copied().find(|entrance| {
+            !extra_blocked.contains(entrance) && !occupancy.tile_is_occupied(*entrance)
+        }) else {
+            return false;
+        };
+        let Some(&distance) = self.distance_to_network.get(&start) else {
+            return false;
+        };
+        if distance > ACCESS_ROAD_MAX_EXPANSIONS {
+            return false;
+        }
+
+        let mut current = start;
+        let mut shared_chain_is_clear = true;
+        while !self.connected_network.contains(&current) {
+            let Some(&next) = self.parent_to_network.get(&current) else {
+                return false;
+            };
+            if extra_blocked.contains(&next) {
+                shared_chain_is_clear = false;
+                break;
+            }
+            current = next;
+        }
+        shared_chain_is_clear
+            || building_road_route_to_shrine_with_connected_network(
+                building,
+                extra_blocked,
+                occupancy,
+                &self.connected_network,
+            )
+            .is_some()
+    }
+}
+
+fn building_road_route_to_shrine_with_connected_network(
+    building: &BuildingRuntime,
+    extra_blocked: &HashSet<TilePos>,
+    occupancy: &SpatialOccupancyContext,
+    connected_network: &HashSet<TilePos>,
+) -> Option<Vec<TilePos>> {
+    let entrances = building_entrance_candidates(building);
+    let is_network =
+        |pos: roads::RoadPos| connected_network.contains(&TilePos { x: pos.x, y: pos.y });
     let is_blocked = |pos: roads::RoadPos| {
         let tile = TilePos { x: pos.x, y: pos.y };
         extra_blocked.contains(&tile) || occupancy.tile_is_occupied(tile)
     };
-    let road_entrances: Vec<roads::RoadPos> = entrances
+    let road_entrances = entrances
         .iter()
         .map(|tile| roads::RoadPos {
             x: tile.x,
             y: tile.y,
         })
-        .collect();
-
+        .collect::<Vec<_>>();
     roads::road_route_to_network(
         &road_entrances,
         is_blocked,
@@ -10246,7 +11360,8 @@ fn commit_repair_claim(
         .buildings
         .iter()
         .any(|building| building.building_type == BuildingType::Shrine && building.is_complete)
-        && !connect_current_gate_to_shrine_avoiding(&mut transaction, world_seed, &reserved)
+        && (!connect_current_gate_to_shrine_avoiding(&mut transaction, world_seed, &reserved)
+            || !all_farm_routes_reachable(&transaction, world_seed))
     {
         return false;
     }
@@ -10288,7 +11403,7 @@ fn emergency_repair_expansion_site_bounded(
     world_seed: u32,
     candidate_limit: usize,
 ) -> (Option<TilePos>, usize) {
-    let Some(gate) = gate_placement_default(&claimed_area(colony)) else {
+    let Some(gate) = retained_area_gate(colony) else {
         return (None, 0);
     };
     let candidate_limit = candidate_limit.min(RECOVERY_MAX_SITE_CANDIDATES);
@@ -10946,11 +12061,22 @@ fn baseline_leader_job_cap(kind: JobKind, population: usize) -> Option<usize> {
 /// Stop only work that was explicitly created by officer automation for `role`.
 /// Player-assigned buildings/jobs carry no automation provenance and survive a vacancy.
 pub(crate) fn release_role_automation(colony: &mut ColonyRuntime, role: OfficerRole, now_ms: i64) {
+    let farm_workers = colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.building_type == BuildingType::Field && building.automated_by == Some(role)
+        })
+        .filter_map(|building| building.assigned_cat.clone())
+        .collect::<BTreeSet<_>>();
     for building in &mut colony.buildings {
         if building.automated_by == Some(role) {
             building.assigned_cat = None;
             building.automated_by = None;
         }
+    }
+    for cat_id in farm_workers {
+        release_farm_worker(colony, &cat_id);
     }
 
     let mut preserved_hunts = 0usize;
@@ -11583,12 +12709,19 @@ fn queue_job_requested_by(
     };
 
     if let Some(cat_id) = assigned_cat.as_deref() {
+        let removed_from_field = colony.buildings.iter().any(|building| {
+            building.assigned_cat.as_deref() == Some(cat_id)
+                && building.building_type == BuildingType::Field
+        });
         for building in &mut colony.buildings {
             if building.assigned_cat.as_deref() == Some(cat_id)
                 && crate::production::building_staff_cap(building.building_type) > 0
             {
                 building.assigned_cat = None;
             }
+        }
+        if removed_from_field {
+            release_farm_worker(colony, cat_id);
         }
         if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
             cat.current_task = task_for_job(kind);
@@ -11978,6 +13111,26 @@ fn movement_pos(pos: pathfinding::WorldPos) -> WorldPos {
     WorldPos { x: pos.x, y: pos.y }
 }
 
+/// Find a farm logistics route without ever falling back to a straight line through a
+/// barrier. Cross-wall trips retry a failed bounded direct search as two real A* legs via
+/// the retained outside gate; the duplicate gate node is removed when concatenating.
+fn find_farm_path<G: pathfinding::WalkGrid + ?Sized>(
+    start: pathfinding::WorldPos,
+    destination: pathfinding::WorldPos,
+    outside_gate: pathfinding::WorldPos,
+    crosses_fence: bool,
+    grid: &G,
+) -> Option<Vec<pathfinding::WorldPos>> {
+    let direct = find_path(start, destination, grid, FindPathOptions::default());
+    if direct.is_some() || !crosses_fence {
+        return direct;
+    }
+    let mut to_gate = find_path(start, outside_gate, grid, FindPathOptions::default())?;
+    let from_gate = find_path(outside_gate, destination, grid, FindPathOptions::default())?;
+    to_gate.extend(from_gate.into_iter().skip(1));
+    Some(to_gate)
+}
+
 fn next_movement_roll(movement: &mut MovementPassContext) -> f64 {
     let roll = roll_seeded(f64::from(movement.movement_seed));
     movement.movement_seed = roll.next_seed;
@@ -12196,9 +13349,8 @@ fn scout_search_origin(colony: &ColonyRuntime) -> TilePos {
     if colony.claimed_tiles.is_empty() {
         return shrine_center_tile(colony.anchor);
     }
-    let area = claimed_area(colony);
     let ring_radius = village_ring_radius(colony.buildings.len() as i32);
-    movement_gate(colony.anchor, gate_placement_default(&area), ring_radius)
+    movement_gate(colony.anchor, retained_area_gate(colony), ring_radius)
 }
 
 fn tile_is_fog_frontier(colony: &ColonyRuntime, target: TilePos) -> bool {
@@ -12288,6 +13440,43 @@ fn claimed_area(colony: &ColonyRuntime) -> crate::village_area::VillageArea {
     from_tiles(&tiles)
 }
 
+fn full_claimed_area(colony: &ColonyRuntime) -> crate::village_area::VillageArea {
+    from_tiles(
+        &colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| GridPos {
+                x: tile.x,
+                y: tile.y,
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Agricultural paint changes which claimed tiles the palisade encloses, not where the
+/// settlement's established traffic gate lives. Expansion changes the full claim and may
+/// deliberately relocate it through the staged transaction checks.
+fn retained_area_gate(colony: &ColonyRuntime) -> Option<AreaGatePlacement> {
+    let gate = gate_placement_default(&full_claimed_area(colony));
+    if area_supports_gate(&claimed_area(colony), gate) {
+        gate
+    } else {
+        None
+    }
+}
+
+fn area_supports_gate(
+    area: &crate::village_area::VillageArea,
+    gate: Option<AreaGatePlacement>,
+) -> bool {
+    let Some(gate) = gate else {
+        return area.is_empty();
+    };
+    fence_perimeter(area, Some(gate))
+        .iter()
+        .any(|segment| segment.gate)
+}
+
 /// One authoritative wall edge exposed to snapshots. The retained enclosure is
 /// complete while an expansion is underway; `newly_built` marks only the finished
 /// segments of the prospective outer ring.
@@ -12309,19 +13498,46 @@ fn segment_key(segment: FenceSegment) -> (i32, i32, u8) {
 
 fn prospective_outer_wall_segments(colony: &ColonyRuntime, target: TilePos) -> Vec<FenceSegment> {
     let old_area = claimed_area(colony);
-    let old_geometry = fence_perimeter(&old_area, None)
+    let old_geometry = fence_perimeter(&old_area, retained_area_gate(colony))
         .into_iter()
         .map(segment_key)
         .collect::<HashSet<_>>();
     let mut projected = old_area;
     projected.insert(crate::village_area::key(target.x, target.y));
-    let gate = gate_placement_default(&projected);
+    let mut projected_full = full_claimed_area(colony);
+    projected_full.insert(crate::village_area::key(target.x, target.y));
+    let gate = gate_placement_default(&projected_full);
     let mut segments = fence_perimeter(&projected, gate)
         .into_iter()
         .filter(|segment| !segment.gate && !old_geometry.contains(&segment_key(*segment)))
         .collect::<Vec<_>>();
     segments.sort_by_key(|segment| segment_key(*segment));
     segments
+}
+
+fn farm_routes_survive_staged_expansion(
+    colony: &ColonyRuntime,
+    target: TilePos,
+    world_seed: u32,
+) -> bool {
+    if colony.farms.is_empty() {
+        return true;
+    }
+    let mut staged = colony.clone();
+    staged.jobs.push(JobRuntime {
+        id: "farm-route-expansion-projection".to_owned(),
+        kind: JobKind::ExpandVillage,
+        status: JobStatus::Active,
+        duration_ms: 1,
+        metadata: JobMetadata::Expansion {
+            target,
+            accepted: true,
+            source_build_job_id: None,
+            wall_work_ms: 1,
+        },
+        ..JobRuntime::default()
+    });
+    all_farm_routes_reachable(&staged, world_seed)
 }
 
 fn completed_outer_wall_segment_count(job: &JobRuntime, total: usize) -> usize {
@@ -12340,7 +13556,7 @@ fn completed_outer_wall_segment_count(job: &JobRuntime, total: usize) -> usize {
 #[must_use]
 pub fn effective_wall_segments(colony: &ColonyRuntime) -> Vec<EffectiveWallSegment> {
     let area = claimed_area(colony);
-    let gate = gate_placement_default(&area);
+    let gate = retained_area_gate(colony);
     let mut result = fence_perimeter(&area, gate)
         .into_iter()
         .filter(|segment| !segment.gate)
@@ -12835,6 +14051,7 @@ fn next_claimed_building_site(
 ) -> Option<TilePos> {
     let (w, h) = footprint_for(building_type);
     let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    let road_reachability = SharedRoadReachability::new(&occupancy);
     let reserved_tiles = reserved_construction_tiles(colony);
     // Fields/farms only take on fertile ground (grass/meadow/marsh). Rock, sand,
     // tundra, forest, and water are barren, so a field site must be farmable.
@@ -12858,8 +14075,23 @@ fn next_claimed_building_site(
                         !inside_village_interior(colony, *tile)
                             && tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
                     }))
-                && candidate_building_road_route_with_context(*anchor, building_type, &occupancy)
-                    .is_some()
+                && {
+                    let building = BuildingRuntime {
+                        id: String::new(),
+                        building_type,
+                        level: 1,
+                        position: *anchor,
+                        is_complete: false,
+                        construction_progress: 0,
+                        production_progress: 0.0,
+                        assigned_cat: None,
+                        automated_by: None,
+                        production_queue: default_production_queue(building_type),
+                        production_paused: false,
+                    };
+                    let blocked = tiles.iter().copied().collect::<HashSet<_>>();
+                    road_reachability.candidate_has_route(&building, &blocked, &occupancy)
+                }
         })
         .collect::<Vec<_>>();
     free.sort_by_key(|site| (site.y, site.x));
@@ -13043,9 +14275,15 @@ fn next_expansion_building_site(
                 projected.world_tiles.insert(tile, cleared);
             }
         }
+        if !all_farms_touch_claim_boundary(&projected) {
+            continue;
+        }
         let mut reserved = tiles.iter().copied().collect::<HashSet<_>>();
         reserved.extend(reserved_tiles.iter().copied());
         if !connect_current_gate_to_shrine_avoiding(&mut projected, world_seed, &reserved) {
+            continue;
+        }
+        if !all_farm_routes_reachable(&projected, world_seed) {
             continue;
         }
         if claimed_building_site_is_ready(&projected, anchor, world_seed, building_type) {
@@ -13083,7 +14321,11 @@ fn next_claim_toward_building_site(
             projected.world_tiles.insert(*target, cleared);
         }
         projected.claimed_tiles.push(*target);
-        connect_current_gate_to_shrine_avoiding(&mut projected, world_seed, &reserved)
+        all_farms_touch_claim_boundary(&projected)
+            && connect_current_gate_to_shrine_avoiding(&mut projected, world_seed, &reserved)
+            && all_farm_routes_reachable(&projected, world_seed)
+            && (building_type == BuildingType::Field
+                || farm_routes_survive_staged_expansion(colony, *target, world_seed))
     })
 }
 
@@ -13274,16 +14516,49 @@ pub fn is_reachable_fishing_shore(colony: &ColonyRuntime, site: TilePos, world_s
 /// river (including the synthetic starter pond stamped after generation, which
 /// the fine classifier never sees) is never farmable, and an unrevealed/absent
 /// tile is never farmable.
+pub(crate) fn tile_farm_fertility(
+    world_seed: u32,
+    pos: TilePos,
+    tile: Option<&WorldTileRuntime>,
+) -> f64 {
+    let Some(tile) = tile else {
+        return 0.0;
+    };
+    let fine_biome = crate::terrain_gen::tile_climate_biome(world_seed, pos.x, pos.y)
+        .properties()
+        .fertility;
+    effective_farm_fertility(
+        true,
+        tile_has_water(Some(tile)),
+        matches!(
+            tile.tile_type,
+            TileType::Field | TileType::Meadow | TileType::Swamp
+        ),
+        fine_biome,
+    )
+}
+
+fn effective_farm_fertility(mapped: bool, water: bool, prepared: bool, fine: f64) -> f64 {
+    if !mapped || water {
+        0.0
+    } else if prepared {
+        fine.max(1.0)
+    } else {
+        fine
+    }
+}
+
 fn tile_is_farmable(world_seed: u32, pos: TilePos, tile: Option<&WorldTileRuntime>) -> bool {
-    tile.is_some_and(|tile| {
-        !tile_has_water(Some(tile))
-            && (matches!(
-                tile.tile_type,
-                TileType::Field | TileType::Meadow | TileType::Swamp
-            ) || crate::terrain_gen::tile_climate_biome(world_seed, pos.x, pos.y)
-                .properties()
-                .farmable())
-    })
+    let Some(tile) = tile else {
+        return false;
+    };
+    if tile_has_water(Some(tile)) {
+        return false;
+    }
+    matches!(
+        tile.tile_type,
+        TileType::Field | TileType::Meadow | TileType::Swamp
+    ) || tile_farm_fertility(world_seed, pos, Some(tile)) > 0.0
 }
 
 fn job_has_destination_metadata(job: &JobRuntime) -> bool {
@@ -13735,6 +15010,16 @@ fn staff_reserved_raw_material_bench(colony: &mut ColonyRuntime, now_ms: i64) {
 /// Return only officer-owned Field/Mill workers to the labor pool during a food
 /// emergency. Explicit player staffing remains physical player state.
 fn release_automated_food_production_workers(colony: &mut ColonyRuntime) {
+    #[cfg(test)]
+    let farm_preemptions = colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.building_type == BuildingType::Field
+                && building.automated_by == Some(OfficerRole::Farmer)
+                && building.assigned_cat.is_some()
+        })
+        .count();
     for building in &mut colony.buildings {
         if matches!(
             building.building_type,
@@ -13744,6 +15029,13 @@ fn release_automated_food_production_workers(colony: &mut ColonyRuntime) {
             building.assigned_cat = None;
             building.automated_by = None;
         }
+    }
+    #[cfg(test)]
+    {
+        colony
+            .decoration_cache
+            .farm_route_debug
+            .emergency_worker_preemptions += farm_preemptions as u64;
     }
 }
 
@@ -13836,10 +15128,6 @@ fn assigned_worker<'a>(colony: &'a ColonyRuntime, building_id: &str) -> Option<&
         .cats
         .iter()
         .find(|cat| cat.id == assigned_cat && cat.death_time.is_none())
-}
-
-fn assigned_worker_skill(colony: &ColonyRuntime, building_id: &str, labor: Labor) -> f64 {
-    assigned_worker(colony, building_id).map_or(0.0, |cat| cat.skill(labor))
 }
 
 fn skilled_station_elapsed(base_elapsed: f64, skill: f64) -> f64 {
@@ -14150,11 +15438,38 @@ fn complete_village_expansion(
         || colony.claimed_tiles.contains(&target)
         || !is_adjacent_to_claimed(colony, target)
         || tile_has_water(colony.world_tiles.get(&target))
+        || colony.farms.iter().any(|plot| {
+            !farming::rect_tiles(plot.rect).any(|tile| {
+                [
+                    TilePos {
+                        x: tile.x,
+                        y: tile.y - 1,
+                    },
+                    TilePos {
+                        x: tile.x + 1,
+                        y: tile.y,
+                    },
+                    TilePos {
+                        x: tile.x,
+                        y: tile.y + 1,
+                    },
+                    TilePos {
+                        x: tile.x - 1,
+                        y: tile.y,
+                    },
+                ]
+                .into_iter()
+                .any(|neighbor| neighbor != target && !colony.claimed_tiles.contains(&neighbor))
+            })
+        })
     {
         restore_expansion_worker_to_construction(colony, job);
         return;
     }
-    let previous_tile = colony.world_tiles.get(&target).cloned();
+    // Claim, road and wall changes are one transaction. Route validation below may reject
+    // a gate relocation after the access-road planner has tentatively paved tiles, so keep
+    // the complete pre-expansion state rather than trying to undo only the target cell.
+    let before_expansion = colony.clone();
     // Settlement expansion clears the claimed cell itself, not only its rendered
     // prop. No forage, herb, water, mountain/ore terrain, tree, or rock remains
     // inside the new wall. Exterior farm/gather parcels use their own actions.
@@ -14176,18 +15491,14 @@ fn complete_village_expansion(
     if agricultural {
         colony.agricultural_tiles.insert(target);
     }
-    if !connect_current_gate_to_shrine_avoiding(colony, world_seed, &reserved_footprint) {
+    if !connect_current_gate_to_shrine_avoiding(colony, world_seed, &reserved_footprint)
+        || !all_farm_routes_reachable(colony, world_seed)
+    {
         // The prospective perimeter would put its sole gate somewhere that
         // cannot reach the shrine without crossing a hard occupant. Roll the
         // claim back completely; a later expansion plan can choose another
         // frontier tile. Existing persisted shapes remain untouched.
-        colony.claimed_tiles.pop();
-        colony.agricultural_tiles.remove(&target);
-        if let Some(previous_tile) = previous_tile {
-            colony.world_tiles.insert(target, previous_tile);
-        } else {
-            colony.world_tiles.remove(&target);
-        }
+        *colony = before_expansion;
         restore_expansion_worker_to_construction(colony, job);
         return;
     }
@@ -14658,6 +15969,8 @@ fn general_storehouse_rect(colony: &ColonyRuntime) -> ZoneRect {
 
 const STATION_IN_CARGO_PREFIX: &str = "station-in|";
 const STATION_OUT_CARGO_PREFIX: &str = "station-out|";
+const FARM_OUT_CARGO_PREFIX: &str = "farm-out|";
+const FARM_GATHER_SPOT_PREFIX: &str = "farm-gather:";
 
 fn station_cargo_marker(prefix: &str, building_id: &str, pile_id: &str) -> String {
     format!("{prefix}{building_id}|{pile_id}")
@@ -14674,6 +15987,73 @@ fn parse_station_cargo(marker: Option<&str>) -> Option<(&str, &str, &str)> {
     };
     let (building_id, pile_id) = rest.split_once('|')?;
     Some((direction, building_id, pile_id))
+}
+
+fn farm_cargo_marker(plot_id: &str, pile_id: &str) -> String {
+    format!("{FARM_OUT_CARGO_PREFIX}{plot_id}|{pile_id}")
+}
+
+fn parse_farm_cargo(marker: Option<&str>) -> Option<(&str, &str)> {
+    marker?.strip_prefix(FARM_OUT_CARGO_PREFIX)?.split_once('|')
+}
+
+#[must_use]
+pub(crate) fn farm_gather_spot_id(plot_id: &str) -> String {
+    format!("{FARM_GATHER_SPOT_PREFIX}{plot_id}")
+}
+
+#[must_use]
+pub(crate) fn is_farm_gather_spot_id(stockpile_id: &str) -> bool {
+    stockpile_id.starts_with(FARM_GATHER_SPOT_PREFIX)
+}
+
+/// Release every piece of transient farm ownership held by `cat_id`. Harvest cargo is
+/// restored to its plot before the cat is freed, so manual unassignment, officer vacancy,
+/// and emergency job preemption cannot lose or double-credit produce.
+pub(crate) fn release_farm_worker(colony: &mut ColonyRuntime, cat_id: &str) {
+    #[cfg(test)]
+    let was_bound = colony
+        .farms
+        .iter()
+        .any(|plot| plot.worker_id.as_deref() == Some(cat_id));
+    let farm_cargo = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id)
+        .and_then(|cat| cat.carrying.as_ref())
+        .and_then(|cargo| {
+            parse_farm_cargo(cargo.source_gather_spot.as_deref())
+                .map(|(plot_id, _)| (plot_id.to_owned(), cargo.amount))
+        });
+    if let Some((plot_id, amount)) = &farm_cargo
+        && let Some(plot) = colony
+            .farms
+            .iter_mut()
+            .find(|plot| plot.id == plot_id.as_str())
+    {
+        plot.pending_output += amount.max(0.0);
+        plot.work_phase = FarmWorkPhase::WaitingForWorker;
+    }
+    for plot in &mut colony.farms {
+        if plot.worker_id.as_deref() == Some(cat_id) {
+            plot.worker_id = None;
+            plot.work_phase = FarmWorkPhase::WaitingForWorker;
+        }
+    }
+    if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+        && (cat.current_task == Some(TaskType::Farm) || farm_cargo.is_some())
+    {
+        if farm_cargo.is_some() {
+            cat.carrying = None;
+        }
+        cat.current_task = None;
+        cat.destination = None;
+        cat.activity = CatActivity::Idle;
+    }
+    #[cfg(test)]
+    if was_bound {
+        colony.decoration_cache.farm_route_debug.worker_releases += 1;
+    }
 }
 
 fn station_store_rect(building: &BuildingRuntime) -> ZoneRect {
@@ -14717,6 +16097,454 @@ fn station_work_point(building: &BuildingRuntime) -> WorldPos {
 fn at_world_point(colony: &ColonyRuntime, cat_index: usize, target: WorldPos) -> bool {
     let current = position_to_world(colony.anchor, colony.cats[cat_index].position);
     (current.x - target.x).abs() <= 0.1 && (current.y - target.y).abs() <= 0.1
+}
+
+fn path_tile_for_world(pos: WorldPos) -> PathTilePos {
+    PathTilePos {
+        x: (pos.x + 0.5).floor() as i32,
+        y: (pos.y + 0.5).floor() as i32,
+    }
+}
+
+/// Build the current gate's mapped exterior component once for one auto-designation
+/// search. Candidate parcels are required to preserve that gate before this query, so every
+/// center/handoff is an O(1) membership check instead of another grid build and A* pair.
+fn farm_designation_exterior_component(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    targets: &[WorldPos],
+) -> HashSet<PathTilePos> {
+    if targets.is_empty() {
+        return HashSet::new();
+    }
+    let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+    let outside_gate = movement_gate(colony.anchor, retained_area_gate(colony), ring_radius);
+    let empty_area = pathfinding::VillageArea::new();
+    let staged_edges = staged_wall_fence_edges(colony);
+    let walk_tiles = colony
+        .world_tiles
+        .values()
+        .map(walk_tile_from_runtime)
+        .collect::<Vec<_>>();
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let surface_factors = movement_surface_factors(colony, world_seed);
+    let grid = build_colony_walk_grid(ColonyGridParams {
+        tiles: &walk_tiles,
+        anchor: PathTilePos {
+            x: colony.anchor.x,
+            y: colony.anchor.y,
+        },
+        ring_radius,
+        gate: PathTilePos {
+            x: outside_gate.x,
+            y: outside_gate.y,
+        },
+        area: Some(&empty_area),
+        area_gate: None,
+        extra_fence_edges: (!staged_edges.is_empty()).then_some(&staged_edges),
+        terrain: None,
+        mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
+        shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
+        soft_obstacles: None,
+        soft_obstacle_field: None,
+        surface_factors: Some(&surface_factors),
+    });
+    let targets = targets
+        .iter()
+        .copied()
+        .map(pathfinding_pos)
+        .collect::<Vec<_>>();
+    #[cfg(test)]
+    colony.decoration_cache.farm_route_component_traversals.set(
+        colony
+            .decoration_cache
+            .farm_route_component_traversals
+            .get()
+            + 1,
+    );
+    reachable_component(
+        pathfinding_pos(tile_pos_to_world(outside_gate)),
+        &targets,
+        &grid,
+        FindPathOptions {
+            max_expansions: pathfinding::DEFAULT_MAX_EXPANSIONS,
+            margin: 4,
+        },
+    )
+}
+
+/// Whether the maintained movement grid has a legal route between two farm logistics
+/// points. This uses the real retained/staged fences and hard terrain rules; buildings and
+/// decorations are soft obstacles, so omitting their cost-only fields cannot turn a blocked
+/// route into an open one.
+#[must_use]
+pub(crate) fn farm_route_is_reachable(
+    colony: &ColonyRuntime,
+    _world_seed: u32,
+    from: WorldPos,
+    to: WorldPos,
+) -> bool {
+    farm_route_is_reachable_projected(colony, _world_seed, from, to, &[])
+}
+
+#[must_use]
+pub(crate) fn farm_designation_route_is_reachable(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    from: WorldPos,
+    rect: ZoneRect,
+) -> bool {
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    let Some(handoff) = farm_gather_spot_candidate(colony, rect, &occupancy) else {
+        return false;
+    };
+    let projected = farming::rect_tiles(rect)
+        .map(|tile| TilePos {
+            x: tile.x,
+            y: tile.y,
+        })
+        .chain(std::iter::once(handoff))
+        .collect::<Vec<_>>();
+    let current_area = claimed_area(colony);
+    let mut projected_area = current_area.clone();
+    for tile in &projected {
+        projected_area.remove(&crate::village_area::key(tile.x, tile.y));
+    }
+    let retained_gate = retained_area_gate(colony);
+    if !area_supports_gate(&projected_area, retained_gate) {
+        return false;
+    }
+    let destinations = [
+        WorldPos {
+            x: f64::from(rect.x1 + rect.x2) / 2.0,
+            y: f64::from(rect.y1 + rect.y2) / 2.0,
+        },
+        tile_pos_to_world(handoff),
+    ];
+    let exterior = farm_designation_exterior_component(colony, world_seed, &destinations);
+    let outside_gate = movement_gate(
+        colony.anchor,
+        retained_gate,
+        village_ring_radius(colony.buildings.len() as i32),
+    );
+    let shrine_reaches_gate =
+        farm_route_is_reachable(colony, world_seed, from, tile_pos_to_world(outside_gate));
+    shrine_reaches_gate
+        && destinations
+            .iter()
+            .all(|destination| exterior.contains(&path_tile_for_world(*destination)))
+}
+
+/// Expansion transactions may move the settlement's sole gate even when every farm
+/// remains geometrically boundary-connected. Validate the exact post-transaction wall
+/// topology at planning/commit time so a formerly reachable exterior parcel or Field
+/// workstation cannot become a permanent island after the worker has already been assigned.
+fn all_farm_routes_reachable(colony: &ColonyRuntime, world_seed: u32) -> bool {
+    let shrine = village_anchor_world(colony.anchor);
+    let destinations = farm_logistics_destinations(colony);
+    if destinations.is_empty() {
+        return true;
+    }
+    farm_routes_are_reachable_projected(colony, world_seed, shrine, &destinations, &[])
+}
+
+fn farm_logistics_destinations(colony: &ColonyRuntime) -> Vec<WorldPos> {
+    let mut destinations = colony
+        .farms
+        .iter()
+        .map(|plot| WorldPos {
+            x: f64::from(plot.rect.x1 + plot.rect.x2) / 2.0,
+            y: f64::from(plot.rect.y1 + plot.rect.y2) / 2.0,
+        })
+        .collect::<Vec<_>>();
+
+    // Expansion may relocate the only gate. Preserve physical farm workers/cargo plus every
+    // Field handoff edge; unrelated expeditions cannot be cut off by a local wall change and
+    // must not enlarge this component search.
+    let relevant_workers = colony
+        .farms
+        .iter()
+        .filter_map(|plot| plot.worker_id.as_deref())
+        .collect::<BTreeSet<_>>();
+    destinations.extend(alive_cats(&colony.cats).filter_map(|cat| {
+        let carries_farm_crop = cat
+            .carrying
+            .as_ref()
+            .and_then(|cargo| parse_farm_cargo(cargo.source_gather_spot.as_deref()))
+            .is_some();
+        (relevant_workers.contains(cat.id.as_str()) || carries_farm_crop)
+            .then_some(position_to_world(colony.anchor, cat.position))
+    }));
+    destinations.extend(
+        colony
+            .buildings
+            .iter()
+            .filter(|building| {
+                building.building_type == BuildingType::Field
+                    && building.construction_progress >= 100
+            })
+            .flat_map(building_entrance_candidates)
+            .map(tile_pos_to_world),
+    );
+
+    destinations.sort_by(|left, right| {
+        left.x
+            .total_cmp(&right.x)
+            .then_with(|| left.y.total_cmp(&right.y))
+    });
+    destinations.dedup_by(|left, right| left.x == right.x && left.y == right.y);
+    destinations
+}
+
+fn farm_route_is_reachable_projected(
+    colony: &ColonyRuntime,
+    _world_seed: u32,
+    from: WorldPos,
+    to: WorldPos,
+    projected_agricultural: &[TilePos],
+) -> bool {
+    farm_routes_are_reachable_projected(
+        colony,
+        _world_seed,
+        from,
+        std::slice::from_ref(&to),
+        projected_agricultural,
+    )
+}
+
+fn farm_routes_are_reachable_projected(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    from: WorldPos,
+    destinations: &[WorldPos],
+    projected_agricultural: &[TilePos],
+) -> bool {
+    #[cfg(test)]
+    {
+        let query = colony.decoration_cache.farm_route_queries.get() + 1;
+        colony.decoration_cache.farm_route_queries.set(query);
+    }
+    let projected = projected_agricultural
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let area = from_tiles(
+        &colony
+            .claimed_tiles
+            .iter()
+            .filter(|tile| !colony.agricultural_tiles.contains(tile) && !projected.contains(tile))
+            .map(|tile| GridPos {
+                x: tile.x,
+                y: tile.y,
+            })
+            .collect::<Vec<_>>(),
+    );
+    let path_area = pathfinding_area(&area);
+    let retained_gate = retained_area_gate(colony);
+    let area_gate = retained_gate.map(pathfinding_gate);
+    let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+    let gate = movement_gate(colony.anchor, retained_gate, ring_radius);
+    let staged_edges = staged_wall_fence_edges(colony);
+    let walk_tiles = colony
+        .world_tiles
+        .values()
+        .map(walk_tile_from_runtime)
+        .collect::<Vec<_>>();
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let mut component_key = farm_designation_geometry_signature(colony, world_seed);
+    let mut mix = |bytes: &[u8]| {
+        for byte in bytes {
+            component_key ^= u64::from(*byte);
+            component_key = component_key.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        component_key ^= 0xff;
+        component_key = component_key.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    let mut projected_key = projected.iter().copied().collect::<Vec<_>>();
+    projected_key.sort_by_key(|tile| (tile.x, tile.y));
+    for tile in projected_key {
+        mix(&tile.x.to_le_bytes());
+        mix(&tile.y.to_le_bytes());
+    }
+    let mut staged_key = staged_edges.iter().copied().collect::<Vec<_>>();
+    staged_key.sort_by_key(|edge| (edge.ax, edge.ay, edge.bx, edge.by));
+    for edge in staged_key {
+        mix(&edge.ax.to_le_bytes());
+        mix(&edge.ay.to_le_bytes());
+        mix(&edge.bx.to_le_bytes());
+        mix(&edge.by.to_le_bytes());
+    }
+    mix(&gate.x.to_le_bytes());
+    mix(&gate.y.to_le_bytes());
+    mix(&[
+        u8::from(effects.unlocked_capabilities.contains("mountain_travel")),
+        u8::from(effects.unlocked_capabilities.contains("water_travel")),
+    ]);
+    for (tile, runtime) in &colony.world_tiles {
+        if tile_has_water(Some(runtime)) || runtime.tile_type == TileType::Mountains {
+            mix(&tile.x.to_le_bytes());
+            mix(&tile.y.to_le_bytes());
+            mix(&[u8::from(tile_has_water(Some(runtime)))]);
+        }
+    }
+    let surface_factors = movement_surface_factors(colony, world_seed);
+    let grid = build_colony_walk_grid(ColonyGridParams {
+        tiles: &walk_tiles,
+        anchor: PathTilePos {
+            x: colony.anchor.x,
+            y: colony.anchor.y,
+        },
+        ring_radius,
+        gate: PathTilePos {
+            x: gate.x,
+            y: gate.y,
+        },
+        area: (!path_area.is_empty()).then_some(&path_area),
+        area_gate,
+        extra_fence_edges: (!staged_edges.is_empty()).then_some(&staged_edges),
+        terrain: None,
+        mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
+        shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
+        soft_obstacles: None,
+        soft_obstacle_field: None,
+        surface_factors: Some(&surface_factors),
+    });
+    let destinations = destinations
+        .iter()
+        .copied()
+        .map(pathfinding_pos)
+        .collect::<Vec<_>>();
+    let outside_gate = pathfinding_pos(tile_pos_to_world(gate));
+    let gate_tile = colony.world_tiles.get(&gate);
+    if retained_gate.is_some()
+        && (tile_has_water(gate_tile) && !effects.unlocked_capabilities.contains("water_travel")
+            || gate_tile.is_some_and(|tile| tile.tile_type == TileType::Mountains)
+                && !effects.unlocked_capabilities.contains("mountain_travel"))
+    {
+        return false;
+    }
+    // Farms are exterior parcels. Validate the actual route shape explicitly:
+    // shrine/current position → retained outside gate → every farm logistics point. A
+    // bounded direct A* can miss that U-shaped detour even when both physical legs exist.
+    if find_path(
+        pathfinding_pos(from),
+        outside_gate,
+        &grid,
+        FindPathOptions::default(),
+    )
+    .is_none()
+    {
+        return false;
+    }
+    if destinations.len() <= 2 {
+        let reachable = destinations.iter().all(|destination| {
+            find_path(
+                outside_gate,
+                *destination,
+                &grid,
+                FindPathOptions::default(),
+            )
+            .is_some()
+        });
+        return reachable;
+    }
+    let destination_tiles = destinations
+        .iter()
+        .map(|destination| PathTilePos {
+            x: (destination.x + 0.5).floor() as i32,
+            y: (destination.y + 0.5).floor() as i32,
+        })
+        .collect::<Vec<_>>();
+    if let Some((_, component)) = colony
+        .decoration_cache
+        .farm_route_component
+        .borrow()
+        .as_ref()
+        .filter(|(key, _)| *key == component_key)
+    {
+        #[cfg(test)]
+        colony.decoration_cache.farm_route_component_cache_hits.set(
+            colony
+                .decoration_cache
+                .farm_route_component_cache_hits
+                .get()
+                + 1,
+        );
+        return destination_tiles
+            .iter()
+            .all(|destination| component.contains(destination));
+    }
+    let min_x = colony
+        .claimed_tiles
+        .iter()
+        .map(|tile| tile.x)
+        .min()
+        .unwrap_or(colony.anchor.x)
+        - 2;
+    let max_x = colony
+        .claimed_tiles
+        .iter()
+        .map(|tile| tile.x)
+        .max()
+        .unwrap_or(colony.anchor.x)
+        + 2;
+    let min_y = colony
+        .claimed_tiles
+        .iter()
+        .map(|tile| tile.y)
+        .min()
+        .unwrap_or(colony.anchor.y)
+        - 2;
+    let max_y = colony
+        .claimed_tiles
+        .iter()
+        .map(|tile| tile.y)
+        .max()
+        .unwrap_or(colony.anchor.y)
+        + 2;
+    let component_bounds = [
+        pathfinding::WorldPos {
+            x: f64::from(min_x),
+            y: f64::from(min_y),
+        },
+        pathfinding::WorldPos {
+            x: f64::from(max_x),
+            y: f64::from(min_y),
+        },
+        pathfinding::WorldPos {
+            x: f64::from(min_x),
+            y: f64::from(max_y),
+        },
+        pathfinding::WorldPos {
+            x: f64::from(max_x),
+            y: f64::from(max_y),
+        },
+    ];
+    let component = reachable_component(
+        outside_gate,
+        &component_bounds,
+        &grid,
+        FindPathOptions {
+            max_expansions: pathfinding::DEFAULT_MAX_EXPANSIONS,
+            margin: 0,
+        },
+    );
+    #[cfg(test)]
+    colony.decoration_cache.farm_route_component_traversals.set(
+        colony
+            .decoration_cache
+            .farm_route_component_traversals
+            .get()
+            + 1,
+    );
+    let reachable = destination_tiles
+        .iter()
+        .all(|destination| component.contains(destination));
+    colony
+        .decoration_cache
+        .farm_route_component
+        .replace(Some((component_key, component)));
+    reachable
 }
 
 fn send_cat_to(colony: &mut ColonyRuntime, cat_index: usize, target: WorldPos) {
@@ -15016,6 +16844,9 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
         CarryingKind::Blocks => Some(ResourceKind::Blocks),
         CarryingKind::Tools => Some(ResourceKind::Tools),
         CarryingKind::Water => Some(ResourceKind::Water),
+        CarryingKind::Catnip => Some(ResourceKind::Catnip),
+        CarryingKind::Grain => Some(ResourceKind::Grain),
+        CarryingKind::Herbs => Some(ResourceKind::Herbs),
         CarryingKind::Blessings => None,
     }
 }
@@ -15083,6 +16914,19 @@ fn haul_deposit_target(
     carrying: &Carrying,
     from_pos: WorldPos,
 ) -> WorldPos {
+    if let Some((_, pile_id)) = parse_farm_cargo(carrying.source_gather_spot.as_deref()) {
+        return colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id)
+            .map_or_else(
+                || village_anchor_world(colony.anchor),
+                |pile| {
+                    let (x, y) = pile.center();
+                    WorldPos { x, y }
+                },
+            );
+    }
     if let Some((direction, building_id, pile_id)) =
         parse_station_cargo(carrying.source_gather_spot.as_deref())
     {
@@ -15405,6 +17249,30 @@ fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
 /// accept. Returns the amount still physically carried; callers with a living
 /// carrier must retain and reroute it instead of clearing the stack.
 fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: WorldPos) -> f64 {
+    if let Some((plot_id, pile_id)) = parse_farm_cargo(carrying.source_gather_spot.as_deref()) {
+        let Some(kind) = carrying_resource_kind(carrying.kind) else {
+            return carrying.amount;
+        };
+        let delivered = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id)
+            .map_or(0.0, |pile| pile.headroom(kind).min(carrying.amount));
+        stockpiles::add_resource(&mut colony.resources, kind, delivered);
+        if let Some(destination) = colony.stockpiles.iter_mut().find(|pile| pile.id == pile_id) {
+            stockpiles::add_resource(&mut destination.contents, kind, delivered);
+        }
+        let remainder = carrying.amount - delivered;
+        if remainder > 0.0
+            && let Some(plot) = colony.farms.iter_mut().find(|plot| plot.id == plot_id)
+        {
+            plot.pending_output += remainder;
+            plot.work_phase = FarmWorkPhase::OutputBlocked;
+        }
+        // A farm's short-haul basket that cannot fit is returned to that same persisted
+        // plot backlog. Nothing remains in the carrier's paws for generic rerouting.
+        return 0.0;
+    }
     if let Some((direction, building_id, pile_id)) =
         parse_station_cargo(carrying.source_gather_spot.as_deref())
     {
@@ -15470,6 +17338,9 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         CarryingKind::Blocks => ResourceKind::Blocks,
         CarryingKind::Tools => ResourceKind::Tools,
         CarryingKind::Water => ResourceKind::Water,
+        CarryingKind::Catnip => ResourceKind::Catnip,
+        CarryingKind::Grain => ResourceKind::Grain,
+        CarryingKind::Herbs => ResourceKind::Herbs,
         CarryingKind::Blessings => {
             colony.global_upgrade_points += carrying.amount;
             return 0.0;
@@ -15536,6 +17407,14 @@ fn salvage_carried_cargo(
 /// removed from the station's uncredited output store. Returning either one avoids the
 /// generic salvage path crediting it a second time or teleporting it to its destination.
 fn salvage_station_cargo(colony: &mut ColonyRuntime, carrying: &Carrying, at: WorldPos) -> bool {
+    if let Some((plot_id, _)) = parse_farm_cargo(carrying.source_gather_spot.as_deref()) {
+        if let Some(plot) = colony.farms.iter_mut().find(|plot| plot.id == plot_id) {
+            plot.pending_output += carrying.amount;
+            plot.worker_id = None;
+            plot.work_phase = FarmWorkPhase::WaitingForWorker;
+        }
+        return true;
+    }
     let Some((direction, building_id, pile_id)) =
         parse_station_cargo(carrying.source_gather_spot.as_deref())
     else {
@@ -15606,6 +17485,9 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
         CarryingKind::Water => {
             format!("{cat_id} carried {} water to the shrine.", carrying.amount)
         }
+        CarryingKind::Catnip => format!("{cat_id} hauled {} catnip.", carrying.amount),
+        CarryingKind::Grain => format!("{cat_id} hauled {} grain.", carrying.amount),
+        CarryingKind::Herbs => format!("{cat_id} hauled {} herbs.", carrying.amount),
         CarryingKind::Blessings => {
             format!(
                 "{cat_id}'s ritual beamed {} blessings up to the players.",
@@ -19912,6 +21794,108 @@ mod tests {
     }
 
     #[test]
+    fn farm_handoff_mover_takes_one_bounded_basket_and_leaves_the_backlog() {
+        let gather_at = WorldPos { x: 30.0, y: 30.0 };
+        let gather_id = farm_gather_spot_id("basket-cap");
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![{
+                let mut cat = adult_idle_cat("mover", "colony-1");
+                cat.activity = CatActivity::Working;
+                cat.position = position_from_world(gather_at);
+                cat
+            }],
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        let mut spot_pile = designated_pile(&gather_id, tile_rect(30, 30), &[ResourceKind::Grain]);
+        spot_pile.contents.grain = farming::FARM_BASKET_CAPACITY * 2.5;
+        colony.stockpiles.push(spot_pile);
+        colony.resources.grain = farming::FARM_BASKET_CAPACITY * 2.5;
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: gather_id.clone(),
+            kind: ResourceKind::Grain,
+            expires_at_ms: i64::MAX,
+            purpose: GatherSpotPurpose::General,
+        });
+        colony.jobs.push(JobRuntime {
+            id: "job-farm-mover".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Active,
+            assigned_cat: Some("mover".to_owned()),
+            metadata: JobMetadata::GatherHaul {
+                stockpile_id: gather_id.clone(),
+                site: Some(world_pos_to_tile(gather_at)),
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        });
+
+        complete_arrived_gather_haul_movers(&mut colony, 5_000);
+
+        let carried = colony.cats[0].carrying.as_ref().unwrap();
+        assert_eq!(carried.kind, CarryingKind::Grain);
+        assert_eq!(carried.amount, farming::FARM_BASKET_CAPACITY);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == gather_id)
+                .unwrap()
+                .contents
+                .grain,
+            farming::FARM_BASKET_CAPACITY * 1.5
+        );
+        assert_eq!(
+            colony.resources.grain,
+            farming::FARM_BASKET_CAPACITY * 1.5,
+            "cargo in transit is absent from the aggregate until delivered"
+        );
+    }
+
+    #[test]
+    fn steward_automation_dispatches_only_one_farm_handoff_mover_at_a_time() {
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: (0..4)
+                .map(|index| adult_idle_cat(&format!("mover-{index}"), "colony-1"))
+                .collect(),
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        for index in 0..3 {
+            let id = farm_gather_spot_id(&format!("plot-{index}"));
+            let mut pile = designated_pile(&id, tile_rect(20 + index, 20), &[ResourceKind::Grain]);
+            pile.contents.grain = farming::FARM_BASKET_CAPACITY;
+            colony.stockpiles.push(pile);
+            colony.gather_spots.push(GatherSpot {
+                stockpile_id: id,
+                kind: ResourceKind::Grain,
+                expires_at_ms: i64::MAX,
+                purpose: GatherSpotPurpose::General,
+            });
+        }
+
+        dispatch_gather_haul_movers(&mut colony, 5_000);
+
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .filter(|job| {
+                    job.kind == JobKind::HaulGatherSpot
+                        && matches!(
+                            &job.metadata,
+                            JobMetadata::GatherHaul { stockpile_id, .. }
+                                if is_farm_gather_spot_id(stockpile_id)
+                        )
+                })
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn expired_gather_spot_is_cleared_folds_contents_back_and_cancels_its_mover() {
         let mut colony = ColonyRuntime {
             id: "colony-1".to_owned(),
@@ -20633,8 +22617,22 @@ mod tests {
         }
 
         let mut field = chain_colony(BuildingType::Field, Resources::default(), true);
+        field.farms.push(FarmPlot {
+            id: "skill-farm".to_owned(),
+            rect: tile_rect(12, 12),
+            crop: CropKind::Grain,
+            planted_at: 0,
+            stage: farming::FarmStage::Soil,
+            growth_hours: 0.0,
+            fertility: 1.0,
+            worker_id: None,
+            work_phase: FarmWorkPhase::WaitingForWorker,
+            pending_output: 0.0,
+        });
+        field.cats[0].position = position_from_world(WorldPos { x: 12.0, y: 12.0 });
         phase_23_production(&mut field, production_gate(30, 30_000), 123);
-        assert!(field.resources.food > 0.0);
+        assert!(field.farms[0].growth_hours > 0.0);
+        assert_eq!(field.resources.food, 0.0, "Field stations never mint food");
         assert!(field.cats[0].skill(Labor::Farm) > 0.0);
 
         let mut research = chain_colony(BuildingType::ResearchHut, Resources::default(), true);
@@ -20787,9 +22785,10 @@ mod tests {
     }
 
     #[test]
-    fn designated_farm_requires_a_living_field_worker_and_routes_a_whole_harvest() {
+    fn designated_farm_requires_a_living_field_worker_and_routes_a_harvest_basket() {
         let seed = 123;
         let site = TilePos { x: 12, y: 12 };
+        let gather_id = farm_gather_spot_id("farm-1");
         let fertility = crate::terrain_gen::tile_climate_biome(seed, site.x, site.y)
             .properties()
             .fertility;
@@ -20805,12 +22804,22 @@ mod tests {
                 planted_at: 0,
                 stage: farming::FarmStage::Soil,
                 growth_hours: 0.0,
+                fertility,
+                worker_id: None,
+                work_phase: FarmWorkPhase::WaitingForWorker,
+                pending_output: 0.0,
             }],
             stockpiles: vec![designated_pile(
-                "grain-pile",
-                tile_rect(site.x, site.y),
+                &gather_id,
+                tile_rect(site.x + 1, site.y),
                 &[ResourceKind::Grain],
             )],
+            gather_spots: vec![GatherSpot {
+                stockpile_id: gather_id,
+                kind: ResourceKind::Grain,
+                expires_at_ms: i64::MAX,
+                purpose: GatherSpotPurpose::General,
+            }],
             ..ColonyRuntime::default()
         };
         let elapsed = (farming::HARVEST_AT_HOURS / fertility * 3_600.0).ceil() as i64 + 1;
@@ -20818,6 +22827,7 @@ mod tests {
         phase_23_production(&mut colony, production_gate(elapsed, 1_000), seed);
         assert_eq!(colony.resources.grain, 0.0);
         assert_eq!(colony.farms[0].stage, farming::FarmStage::Soil);
+        assert_eq!(colony.farms[0].work_phase, FarmWorkPhase::WaitingForWorker);
 
         colony.buildings.push(BuildingRuntime {
             id: "field-1".to_owned(),
@@ -20832,12 +22842,854 @@ mod tests {
             production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
             production_paused: false,
         });
+        colony.cats[0].position = position_from_world(WorldPos {
+            x: f64::from(site.x),
+            y: f64::from(site.y),
+        });
         phase_23_production(&mut colony, production_gate(elapsed, 2_000), seed);
-        assert_eq!(colony.resources.grain, 2.0);
+        assert_eq!(colony.resources.grain, 0.0, "harvest is not early credit");
         assert!(colony.farms[0].growth_hours < 0.001);
+        assert_eq!(colony.farms[0].pending_output, 2.0);
+        assert_eq!(colony.farms[0].work_phase, FarmWorkPhase::Harvesting);
+
+        phase_23_production(&mut colony, production_gate(1, 3_000), seed);
+        assert_eq!(colony.resources.grain, 0.0, "cargo remains uncredited");
+        assert_eq!(
+            colony.cats[0].carrying.as_ref().unwrap().kind,
+            CarryingKind::Grain
+        );
+        colony.cats[0].position = position_from_world(WorldPos {
+            x: f64::from(site.x + 1),
+            y: f64::from(site.y),
+        });
+        let mut movement = haul_movement_ctx();
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut colony,
+            production_gate(1, 4_000),
+            &mut movement,
+        );
+        assert_eq!(colony.resources.grain, 2.0);
         assert_eq!(
             colony.stockpiles[0].contents.grain, 2.0,
-            "harvest is routed from the plot to its nearest accepting pile"
+            "harvest is routed only to the plot-local gather spot"
+        );
+    }
+
+    #[test]
+    fn dying_farm_carrier_returns_uncredited_crop_to_the_plot_without_duplication() {
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            farms: vec![FarmPlot {
+                id: "farm-death".to_owned(),
+                rect: tile_rect(12, 12),
+                crop: CropKind::Grain,
+                planted_at: 0,
+                stage: farming::FarmStage::Soil,
+                growth_hours: 0.0,
+                fertility: 1.0,
+                worker_id: Some("farmer".to_owned()),
+                work_phase: FarmWorkPhase::Hauling,
+                pending_output: 3.0,
+            }],
+            ..ColonyRuntime::default()
+        };
+        let cargo = Carrying {
+            kind: CarryingKind::Grain,
+            amount: 2.0,
+            job_ended_at: 1_000,
+            source_gather_spot: Some(farm_cargo_marker("farm-death", "grain-store")),
+        };
+
+        assert!(salvage_station_cargo(
+            &mut colony,
+            &cargo,
+            WorldPos { x: 13.0, y: 13.0 }
+        ));
+        assert_eq!(colony.resources.grain, 0.0);
+        assert_eq!(colony.farms[0].pending_output, 5.0);
+        assert_eq!(colony.farms[0].worker_id, None);
+        assert_eq!(colony.farms[0].work_phase, FarmWorkPhase::WaitingForWorker);
+    }
+
+    fn whole_tick_farm_fixture(seed: u32) -> (WorldState, CatId, TilePos) {
+        let mut colony = found_colony(seed, "colony-1", 10_000, seed);
+        provision_mature_claim(&mut colony, 16);
+        colony.jobs.clear();
+        colony.resources.food = 1_000.0;
+        colony.resources.water = 1_000.0;
+        let cat_id = colony.cats[0].id.clone();
+        let center = shrine_center_tile(colony.anchor);
+        let site = TilePos {
+            x: center.x + 10,
+            y: center.y + 2,
+        };
+        colony.cats[0].position = position_from_world(tile_pos_to_world(site));
+        colony.buildings.push(BuildingRuntime {
+            id: "whole-tick-field".to_owned(),
+            building_type: BuildingType::Field,
+            position: TilePos {
+                x: site.x - 3,
+                y: site.y,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            assigned_cat: Some(cat_id.clone()),
+            ..BuildingRuntime::default()
+        });
+        colony.farms.push(FarmPlot {
+            id: "whole-tick-farm".to_owned(),
+            rect: tile_rect(site.x, site.y),
+            crop: CropKind::Grain,
+            planted_at: 10_000,
+            stage: farming::FarmStage::Growing,
+            growth_hours: 6.0,
+            fertility: 1.0,
+            worker_id: Some(cat_id.clone()),
+            work_phase: FarmWorkPhase::Tending,
+            pending_output: 0.0,
+        });
+        colony.agricultural_tiles.insert(site);
+        colony.last_tick = 10_000;
+        (
+            WorldState {
+                world_seed: seed,
+                colonies: vec![colony],
+            },
+            cat_id,
+            site,
+        )
+    }
+
+    #[test]
+    fn whole_tick_farmer_vacancy_releases_task_activity_and_destination() {
+        let (mut world, cat_id, site) = whole_tick_farm_fixture(7);
+        let colony = &mut world.colonies[0];
+        let field = colony
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "whole-tick-field")
+            .unwrap();
+        field.automated_by = Some(OfficerRole::Farmer);
+        colony.officers.remove(&OfficerRole::Farmer);
+        let cat = colony.cats.iter_mut().find(|cat| cat.id == cat_id).unwrap();
+        cat.current_task = Some(TaskType::Farm);
+        cat.activity = CatActivity::Traveling;
+        cat.destination = Some(position_from_world(WorldPos {
+            x: f64::from(site.x + 1),
+            y: f64::from(site.y),
+        }));
+
+        let _ = world_tick(&mut world, 70_000);
+
+        let colony = &world.colonies[0];
+        let cat = colony.cats.iter().find(|cat| cat.id == cat_id).unwrap();
+        assert_eq!(cat.current_task, None);
+        assert_eq!(cat.activity, CatActivity::Idle);
+        assert_eq!(cat.destination, None);
+        assert_eq!(colony.farms[0].worker_id, None);
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == "whole-tick-field")
+                .unwrap()
+                .assigned_cat,
+            None
+        );
+    }
+
+    #[test]
+    fn whole_tick_food_emergency_preempts_farmer_without_stale_farm_state() {
+        let (mut world, cat_id, site) = whole_tick_farm_fixture(11);
+        let colony = &mut world.colonies[0];
+        colony.cats.truncate(2);
+        colony.leader_id = Some(cat_id.clone());
+        colony.resources.food = 0.0;
+        colony.resources.water = 1_000.0;
+        grant_fixture_node_chain(
+            &mut colony.upgrade_tree,
+            prerequisite_for(OfficerRole::Farmer).upgrade_node,
+        );
+        let farmer_officer_id = colony.cats[1].id.clone();
+        colony
+            .officers
+            .insert(OfficerRole::Farmer, farmer_officer_id);
+        let field = colony
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "whole-tick-field")
+            .unwrap();
+        field.automated_by = Some(OfficerRole::Farmer);
+        let cat = &mut colony.cats[0];
+        cat.current_task = Some(TaskType::Farm);
+        cat.activity = CatActivity::Working;
+        cat.destination = Some(position_from_world(tile_pos_to_world(site)));
+
+        let _ = world_tick(&mut world, 11_000);
+
+        let colony = &world.colonies[0];
+        let cat = &colony.cats[0];
+        assert_ne!(cat.current_task, Some(TaskType::Farm));
+        assert_eq!(colony.farms[0].worker_id, None);
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .any(|job| job.kind == JobKind::LeaderPlanHunt),
+            "food relief remains a real timed hunt chain: {:?}",
+            colony.jobs
+        );
+        assert_eq!(
+            cat.current_task, None,
+            "the former farmer is free to schedule"
+        );
+    }
+
+    #[test]
+    fn whole_tick_missing_farm_destination_restores_uncredited_cargo_conservatively() {
+        let (mut world, cat_id, site) = whole_tick_farm_fixture(13);
+        let colony = &mut world.colonies[0];
+        colony.farms[0].pending_output = 3.0;
+        colony.farms[0].work_phase = FarmWorkPhase::Hauling;
+        let missing = farm_gather_spot_id("whole-tick-farm");
+        let cat = colony.cats.iter_mut().find(|cat| cat.id == cat_id).unwrap();
+        cat.current_task = Some(TaskType::Farm);
+        cat.activity = CatActivity::Returning;
+        cat.destination = Some(position_from_world(WorldPos {
+            x: f64::from(site.x + 1),
+            y: f64::from(site.y),
+        }));
+        cat.carrying = Some(Carrying {
+            kind: CarryingKind::Grain,
+            amount: 2.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(farm_cargo_marker("whole-tick-farm", &missing)),
+        });
+
+        let _ = world_tick(&mut world, 11_000);
+
+        let colony = &world.colonies[0];
+        let in_flight = colony
+            .cats
+            .iter()
+            .filter_map(|cat| cat.carrying.as_ref())
+            .filter(|cargo| cargo.kind == CarryingKind::Grain)
+            .map(|cargo| cargo.amount)
+            .sum::<f64>();
+        let local = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| pile.id == missing)
+            .map(|pile| pile.contents.grain)
+            .sum::<f64>();
+        assert_eq!(colony.resources.grain, local);
+        assert_eq!(colony.farms[0].pending_output + in_flight + local, 5.0);
+    }
+
+    #[test]
+    fn whole_tick_farmer_never_falls_back_to_straight_line_through_a_barrier() {
+        let (mut world, cat_id, site) = whole_tick_farm_fixture(19);
+        let colony = &mut world.colonies[0];
+        let start = WorldPos {
+            x: f64::from(colony.anchor.x),
+            y: f64::from(colony.anchor.y),
+        };
+        colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == cat_id)
+            .unwrap()
+            .position = position_from_world(start);
+        let barrier_x = site.x - 2;
+        let min_y = colony.world_tiles.keys().map(|tile| tile.y).min().unwrap();
+        let max_y = colony.world_tiles.keys().map(|tile| tile.y).max().unwrap();
+        for y in min_y..=max_y {
+            if let Some(tile) = colony.world_tiles.get_mut(&TilePos { x: barrier_x, y }) {
+                tile.tile_type = TileType::River;
+                tile.resources.water = 999;
+                tile.overlay_feature = Some("river".to_owned());
+            }
+        }
+
+        let _ = world_tick(&mut world, 11_000);
+
+        let cat = world.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id == cat_id)
+            .unwrap();
+        assert_eq!(
+            position_to_world(world.colonies[0].anchor, cat.position),
+            start
+        );
+        assert_eq!(cat.current_task, Some(TaskType::Farm));
+        assert!(cat.destination.is_some(), "blocked route remains suspended");
+    }
+
+    #[test]
+    fn whole_tick_local_crop_waits_for_steward_or_manual_long_haul() {
+        let (mut world, _, site) = whole_tick_farm_fixture(23);
+        let gather_id = farm_gather_spot_id("whole-tick-farm");
+        {
+            let colony = &mut world.colonies[0];
+            let mut pile = designated_pile(
+                &gather_id,
+                tile_rect(site.x + 1, site.y),
+                &[ResourceKind::Grain],
+            );
+            pile.contents.grain = 8.0;
+            colony.stockpiles.push(pile);
+            colony.gather_spots.push(GatherSpot {
+                stockpile_id: gather_id.clone(),
+                kind: ResourceKind::Grain,
+                expires_at_ms: i64::MAX,
+                purpose: GatherSpotPurpose::General,
+            });
+            colony.resources.grain = 8.0;
+        }
+
+        let _ = world_tick(&mut world, 11_000);
+        assert!(
+            world.colonies[0]
+                .jobs
+                .iter()
+                .all(|job| job.kind != JobKind::HaulGatherSpot),
+            "Farmer never performs the long-haul mover role"
+        );
+
+        let colony = &mut world.colonies[0];
+        let steward = colony.cats[1].id.clone();
+        grant_fixture_node_chain(
+            &mut colony.upgrade_tree,
+            prerequisite_for(OfficerRole::Steward).upgrade_node,
+        );
+        if !colony.buildings.iter().any(|building| {
+            building.building_type == prerequisite_for(OfficerRole::Steward).building
+                && building.construction_progress >= 100
+        }) {
+            colony.buildings.push(BuildingRuntime {
+                id: "whole-tick-steward-workplace".to_owned(),
+                building_type: prerequisite_for(OfficerRole::Steward).building,
+                is_complete: true,
+                construction_progress: 100,
+                ..BuildingRuntime::default()
+            });
+        }
+        colony.officers.insert(OfficerRole::Steward, steward);
+        colony
+            .cats
+            .push(adult_idle_cat("whole-tick-steward-mover", "colony-1"));
+
+        let _ = world_tick(&mut world, 12_000);
+        assert!(
+            world.colonies[0].jobs.iter().any(|job| {
+                job.kind == JobKind::HaulGatherSpot
+                    && matches!(
+                        &job.metadata,
+                        JobMetadata::GatherHaul { stockpile_id, .. }
+                            if stockpile_id == &gather_id
+                    )
+            }),
+            "Steward dispatches the separate long-haul mover: officers={:?}, jobs={:?}",
+            world.colonies[0].officers,
+            world.colonies[0].jobs,
+        );
+    }
+
+    #[test]
+    fn whole_tick_farmer_death_restores_basket_without_aggregate_credit() {
+        let (mut world, cat_id, site) = whole_tick_farm_fixture(17);
+        let colony = &mut world.colonies[0];
+        colony.farms[0].pending_output = 3.0;
+        colony.farms[0].work_phase = FarmWorkPhase::Hauling;
+        let gather_id = farm_gather_spot_id("whole-tick-farm");
+        colony.stockpiles.push(designated_pile(
+            &gather_id,
+            tile_rect(site.x + 1, site.y),
+            &[ResourceKind::Grain],
+        ));
+        colony.gather_spots.push(GatherSpot {
+            stockpile_id: gather_id.clone(),
+            kind: ResourceKind::Grain,
+            expires_at_ms: i64::MAX,
+            purpose: GatherSpotPurpose::General,
+        });
+        colony.resources.food = 0.0;
+        colony.resources.water = 0.0;
+        let cat = colony.cats.iter_mut().find(|cat| cat.id == cat_id).unwrap();
+        cat.needs = CatNeeds {
+            hunger: 0.0,
+            thirst: 0.0,
+            rest: 100.0,
+            health: 0.01,
+        };
+        cat.current_task = Some(TaskType::Farm);
+        cat.activity = CatActivity::Returning;
+        cat.destination = Some(position_from_world(WorldPos {
+            x: f64::from(site.x + 1),
+            y: f64::from(site.y),
+        }));
+        cat.carrying = Some(Carrying {
+            kind: CarryingKind::Grain,
+            amount: 2.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(farm_cargo_marker("whole-tick-farm", &gather_id)),
+        });
+
+        let _ = world_tick(&mut world, 610_000);
+
+        let colony = &world.colonies[0];
+        let dead = colony.cats.iter().find(|cat| cat.id == cat_id).unwrap();
+        assert!(dead.death_time.is_some());
+        assert!(dead.carrying.is_none());
+        assert_eq!(colony.resources.grain, 0.0);
+        assert_eq!(colony.farms[0].pending_output, 5.0);
+        assert_eq!(colony.farms[0].worker_id, None);
+    }
+
+    #[test]
+    fn farm_haul_respects_partial_headroom_then_reports_full_storage() {
+        let site = TilePos { x: 12, y: 12 };
+        let gather_id = farm_gather_spot_id("farm-cap");
+        let mut pile = designated_pile(
+            &gather_id,
+            tile_rect(site.x + 1, site.y),
+            &[ResourceKind::Grain],
+        );
+        pile.contents.grain = stockpiles::STOCKPILE_TILE_CAPACITY - 1.0;
+        let mut cat = adult_idle_cat("farmer", "colony-1");
+        cat.position = position_from_world(tile_pos_to_world(site));
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                grain: stockpiles::STOCKPILE_TILE_CAPACITY - 1.0,
+                ..Resources::default()
+            },
+            cats: vec![cat],
+            buildings: vec![BuildingRuntime {
+                id: "field".to_owned(),
+                building_type: BuildingType::Field,
+                level: 1,
+                position: site,
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 0.0,
+                assigned_cat: Some("farmer".to_owned()),
+                automated_by: None,
+                production_queue: Vec::new(),
+                production_paused: false,
+            }],
+            farms: vec![FarmPlot {
+                id: "farm-cap".to_owned(),
+                rect: tile_rect(12, 12),
+                crop: CropKind::Grain,
+                planted_at: 0,
+                stage: farming::FarmStage::Soil,
+                growth_hours: 0.0,
+                fertility: 1.0,
+                worker_id: None,
+                work_phase: FarmWorkPhase::WaitingForWorker,
+                pending_output: 5.0,
+            }],
+            stockpiles: vec![pile],
+            gather_spots: vec![GatherSpot {
+                stockpile_id: gather_id,
+                kind: ResourceKind::Grain,
+                expires_at_ms: i64::MAX,
+                purpose: GatherSpotPurpose::General,
+            }],
+            ..ColonyRuntime::default()
+        };
+
+        advance_designated_farms(&mut colony, production_gate(1, 1_000), 123, 1.0);
+        assert_eq!(colony.farms[0].pending_output, 4.0);
+        assert_eq!(colony.cats[0].carrying.as_ref().unwrap().amount, 1.0);
+        colony.cats[0].position = position_from_world(WorldPos {
+            x: f64::from(site.x + 1),
+            y: f64::from(site.y),
+        });
+        let mut movement = haul_movement_ctx();
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut colony,
+            production_gate(1, 2_000),
+            &mut movement,
+        );
+        assert_eq!(colony.resources.grain, 40.0);
+        assert_eq!(colony.stockpiles[0].contents.grain, 40.0);
+
+        colony.cats[0].position = position_from_world(tile_pos_to_world(site));
+        advance_designated_farms(&mut colony, production_gate(1, 3_000), 123, 1.0);
+        assert!(colony.cats[0].carrying.is_none());
+        assert_eq!(colony.farms[0].pending_output, 4.0);
+        assert_eq!(colony.farms[0].work_phase, FarmWorkPhase::OutputBlocked);
+    }
+
+    #[test]
+    fn an_eight_by_eight_harvest_is_split_into_bounded_farmer_baskets() {
+        let gather_id = farm_gather_spot_id("farm-large");
+        let mut cat = adult_idle_cat("farmer", "colony-1");
+        cat.position = position_from_world(WorldPos { x: 15.5, y: 15.5 });
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![cat],
+            buildings: vec![BuildingRuntime {
+                id: "field".to_owned(),
+                building_type: BuildingType::Field,
+                is_complete: true,
+                construction_progress: 100,
+                assigned_cat: Some("farmer".to_owned()),
+                ..BuildingRuntime::default()
+            }],
+            farms: vec![FarmPlot {
+                id: "farm-large".to_owned(),
+                rect: ZoneRect {
+                    x1: 12,
+                    y1: 12,
+                    x2: 19,
+                    y2: 19,
+                },
+                crop: CropKind::Herb,
+                planted_at: 0,
+                stage: farming::FarmStage::Soil,
+                growth_hours: 0.0,
+                fertility: 1.0,
+                worker_id: None,
+                work_phase: FarmWorkPhase::WaitingForWorker,
+                pending_output: 128.0,
+            }],
+            stockpiles: vec![designated_pile(
+                &gather_id,
+                tile_rect(20, 15),
+                &[ResourceKind::Herbs],
+            )],
+            gather_spots: vec![GatherSpot {
+                stockpile_id: gather_id,
+                kind: ResourceKind::Herbs,
+                expires_at_ms: i64::MAX,
+                purpose: GatherSpotPurpose::General,
+            }],
+            ..ColonyRuntime::default()
+        };
+
+        advance_designated_farms(&mut colony, production_gate(1, 1_000), 123, 1.0);
+
+        assert_eq!(
+            colony.cats[0].carrying.as_ref().unwrap().amount,
+            farming::FARM_BASKET_CAPACITY
+        );
+        assert_eq!(
+            colony.farms[0].pending_output,
+            128.0 - farming::FARM_BASKET_CAPACITY
+        );
+        assert_eq!(colony.resources.herbs, 0.0, "basket remains uncredited");
+    }
+
+    #[test]
+    fn physical_farm_dispatch_is_deterministic_for_identical_colonies() {
+        let mut left = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![adult_idle_cat("farmer", "colony-1")],
+            buildings: vec![BuildingRuntime {
+                id: "field".to_owned(),
+                building_type: BuildingType::Field,
+                level: 1,
+                position: TilePos { x: 12, y: 12 },
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 0.0,
+                assigned_cat: Some("farmer".to_owned()),
+                automated_by: None,
+                production_queue: Vec::new(),
+                production_paused: false,
+            }],
+            farms: vec![FarmPlot {
+                id: "farm-determinism".to_owned(),
+                rect: tile_rect(12, 12),
+                crop: CropKind::Herb,
+                planted_at: 0,
+                stage: farming::FarmStage::Growing,
+                growth_hours: 8.0,
+                fertility: 1.0,
+                worker_id: None,
+                work_phase: FarmWorkPhase::WaitingForWorker,
+                pending_output: 0.0,
+            }],
+            ..ColonyRuntime::default()
+        };
+        left.cats[0].position = position_from_world(WorldPos { x: 12.0, y: 12.0 });
+        let mut right = left.clone();
+        for step in 1..=8 {
+            let gate = production_gate(900, i64::from(step) * 900_000);
+            advance_designated_farms(&mut left, gate, 987_654, 900.0);
+            advance_designated_farms(&mut right, gate, 987_654, 900.0);
+        }
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn appointed_farmer_creates_and_staffs_an_exterior_plot_but_vacancy_does_not() {
+        let seed = 424_242;
+        let mut automated = found_colony(seed, "colony-1", 1_000, seed);
+        establish_office(&mut automated, OfficerRole::Farmer);
+        assert!(automated.farms.is_empty());
+
+        let mut fogged = automated.clone();
+        let fogged_center = shrine_center_tile(fogged.anchor);
+        fogged.revealed_tiles.retain(|tile| {
+            (tile.x - fogged_center.x)
+                .abs()
+                .max((tile.y - fogged_center.y).abs())
+                <= VILLAGE_START_RADIUS
+        });
+        let claim_before = fogged.claimed_tiles.clone();
+        let reveal_before = fogged.revealed_tiles.clone();
+        phase_23_production(&mut fogged, production_gate(1, 1_500), seed);
+        assert!(
+            fogged.farms.is_empty(),
+            "Farmer cannot designate unrevealed exterior ground"
+        );
+        assert_eq!(
+            fogged.claimed_tiles, claim_before,
+            "no land is auto-claimed"
+        );
+        assert_eq!(
+            fogged.revealed_tiles, reveal_before,
+            "farm automation cannot bypass shrine-delivered fog"
+        );
+
+        let retained_gate_before = retained_area_gate(&automated).expect("founding gate");
+        let gate_rect = ZoneRect {
+            x1: retained_gate_before.x,
+            y1: retained_gate_before.y,
+            x2: retained_gate_before.x,
+            y2: retained_gate_before.y,
+        };
+        assert!(
+            !farm_designation_route_is_reachable(
+                &automated,
+                seed,
+                village_anchor_world(automated.anchor),
+                gate_rect,
+            ),
+            "a farm cannot consume the retained traffic-gate edge"
+        );
+        phase_23_production(&mut automated, production_gate(1, 2_000), seed);
+
+        assert_eq!(automated.farms.len(), 1);
+        let plot = &automated.farms[0];
+        assert_eq!(
+            plot.tiles(),
+            u32::try_from(OFFICER_FARM_MAX_EDGE * OFFICER_FARM_MAX_EDGE).unwrap(),
+            "a mature claimed meadow receives the full productive officer plot"
+        );
+        assert!(
+            farming::rect_tiles(plot.rect).all(|tile| automated.agricultural_tiles.contains(
+                &TilePos {
+                    x: tile.x,
+                    y: tile.y
+                }
+            )),
+            "officer plot remains exterior agricultural territory"
+        );
+        assert!(
+            farming::rect_tiles(plot.rect).all(|tile| {
+                let tile = TilePos {
+                    x: tile.x,
+                    y: tile.y,
+                };
+                automated.claimed_tiles.contains(&tile) && automated.revealed_tiles.contains(&tile)
+            }),
+            "officer plots use only already claimed and revealed land"
+        );
+        let local_id = farm_gather_spot_id(&plot.id);
+        assert!(
+            automated
+                .gather_spots
+                .iter()
+                .any(|spot| { spot.stockpile_id == local_id && spot.kind == ResourceKind::Grain }),
+            "the plot gets a finite local crop handoff"
+        );
+        let handoff = automated
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == local_id)
+            .expect("farm handoff")
+            .rect;
+        let dx = if handoff.x1 < plot.rect.x1 {
+            plot.rect.x1 - handoff.x1
+        } else if handoff.x1 > plot.rect.x2 {
+            handoff.x1 - plot.rect.x2
+        } else {
+            0
+        };
+        let dy = if handoff.y1 < plot.rect.y1 {
+            plot.rect.y1 - handoff.y1
+        } else if handoff.y1 > plot.rect.y2 {
+            handoff.y1 - plot.rect.y2
+        } else {
+            0
+        };
+        assert_eq!(
+            dx + dy,
+            1,
+            "the local basket handoff must share an edge, never only a fenced corner"
+        );
+        assert!(farm_route_is_reachable(
+            &automated,
+            seed,
+            WorldPos {
+                x: f64::from(plot.rect.x1 + plot.rect.x2) / 2.0,
+                y: f64::from(plot.rect.y1 + plot.rect.y2) / 2.0,
+            },
+            WorldPos {
+                x: f64::from(handoff.x1),
+                y: f64::from(handoff.y1),
+            },
+        ));
+        assert!(
+            plot.worker_id.is_some(),
+            "Farmer staffs a physical Field paw"
+        );
+        assert_eq!(
+            retained_area_gate(&automated),
+            Some(retained_gate_before),
+            "remote agricultural paint leaves the exact gate edge unchanged"
+        );
+        assert_eq!(
+            fence_perimeter(&claimed_area(&automated), Some(retained_gate_before))
+                .iter()
+                .filter(|segment| segment.gate)
+                .count(),
+            1,
+            "effective farm walls retain exactly one open traffic gate"
+        );
+        assert_eq!(
+            automated
+                .decoration_cache
+                .farm_route_component_traversals
+                .get(),
+            1,
+            "one auto-designation search builds one exterior component"
+        );
+        assert!(all_farm_routes_reachable(&automated, seed));
+        let expansion_component_traversals = automated
+            .decoration_cache
+            .farm_route_component_traversals
+            .get();
+        assert!(all_farm_routes_reachable(&automated, seed));
+        assert_eq!(
+            automated
+                .decoration_cache
+                .farm_route_component_traversals
+                .get(),
+            expansion_component_traversals,
+            "unchanged route geometry reuses its reachable component"
+        );
+        assert_eq!(
+            automated
+                .decoration_cache
+                .farm_route_component_cache_hits
+                .get(),
+            1
+        );
+
+        let mut vacant = automated.clone();
+        vacant.officers.remove(&OfficerRole::Farmer);
+        vacant.farms.clear();
+        for building in &mut vacant.buildings {
+            if building.building_type == BuildingType::Field {
+                building.assigned_cat = None;
+                building.automated_by = None;
+            }
+        }
+        phase_23_production(&mut vacant, production_gate(1, 3_000), seed);
+        assert!(
+            vacant.farms.is_empty(),
+            "vacancy cannot auto-designate a plot"
+        );
+        assert!(
+            vacant
+                .buildings
+                .iter()
+                .filter(|building| building.building_type == BuildingType::Field)
+                .all(|building| building.assigned_cat.is_none()),
+            "vacancy cannot auto-staff Field labor"
+        );
+    }
+
+    #[test]
+    fn failed_farmer_designation_is_cached_until_rural_geometry_changes() {
+        let seed = 424_243;
+        let mut colony = found_colony(seed, "colony-1", 1_000, seed);
+        establish_office(&mut colony, OfficerRole::Farmer);
+        ensure_farmer_plots(&mut colony, seed, 2_000);
+        assert_eq!(colony.farms.len(), 1);
+
+        let mut second_field = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == BuildingType::Field)
+            .cloned()
+            .unwrap();
+        second_field.id = "land-starved-field".to_owned();
+        second_field.assigned_cat = None;
+        second_field.automated_by = None;
+        colony.buildings.push(second_field);
+
+        let center = shrine_center_tile(colony.anchor);
+        colony.farms.push(FarmPlot {
+            id: "test-rural-blocker".to_owned(),
+            rect: ZoneRect {
+                x1: center.x - 16,
+                y1: center.y - 16,
+                x2: center.x + 16,
+                y2: center.y + 16,
+            },
+            crop: CropKind::Herb,
+            planted_at: 0,
+            stage: farming::FarmStage::Soil,
+            growth_hours: 0.0,
+            fertility: 1.0,
+            worker_id: None,
+            work_phase: FarmWorkPhase::WaitingForWorker,
+            pending_output: 0.0,
+        });
+
+        let before = colony
+            .decoration_cache
+            .farm_route_debug
+            .designation_searches;
+        ensure_farmer_plots(&mut colony, seed, 3_000);
+        let after_failure = colony
+            .decoration_cache
+            .farm_route_debug
+            .designation_searches;
+        assert_eq!(after_failure, before + 1);
+        assert!(
+            colony
+                .decoration_cache
+                .farm_designation_failures
+                .contains_key("land-starved-field")
+        );
+
+        ensure_farmer_plots(&mut colony, seed, 4_000);
+        assert_eq!(
+            colony
+                .decoration_cache
+                .farm_route_debug
+                .designation_searches,
+            after_failure,
+            "unchanged geometry must not rebuild occupancy or retry A*"
+        );
+
+        colony.farms.retain(|plot| plot.id != "test-rural-blocker");
+        ensure_farmer_plots(&mut colony, seed, 5_000);
+        assert!(
+            colony
+                .farms
+                .iter()
+                .any(|plot| plot.id == "officer-farm-land-starved-field"),
+            "clearing rural geometry re-arms the failed designation"
         );
     }
 
@@ -28654,7 +31506,7 @@ mod tests {
 
     fn assert_one_closed_south_gate(colony: &ColonyRuntime) {
         let area = claimed_area(colony);
-        let gate = gate_placement_default(&area).expect("walled settlement has a gate");
+        let gate = retained_area_gate(colony).expect("walled settlement has a gate");
         assert_eq!(
             gate.side,
             Side::S,
@@ -28684,6 +31536,7 @@ mod tests {
     fn staged_wall_growth_keeps_old_enclosure_until_outer_ring_is_complete() {
         let seed = 42;
         let (mut colony, target) = staged_expansion_fixture(seed);
+        let retained_gate_before = retained_area_gate(&colony);
         let old_area = claimed_area(&colony);
         let old_wall = fence_perimeter(&old_area, gate_placement_default(&old_area))
             .into_iter()
@@ -28700,6 +31553,7 @@ mod tests {
 
         phase_28b_advance_staged_wall_work(&mut colony, production_gate(1, 2_000));
         assert!(!colony.claimed_tiles.contains(&target));
+        assert_eq!(retained_area_gate(&colony), retained_gate_before);
         let during = effective_wall_segments(&colony);
         assert!(old_wall.iter().all(|edge| {
             during
@@ -28767,6 +31621,11 @@ mod tests {
         );
 
         assert!(colony.claimed_tiles.contains(&target));
+        assert_eq!(
+            retained_area_gate(&colony),
+            gate_placement_default(&full_claimed_area(&colony)),
+            "the effective gate cuts over only with the atomic claim mutation"
+        );
         assert_one_closed_south_gate(&colony);
         let final_geometry = effective_wall_segments(&colony)
             .into_iter()
@@ -28936,6 +31795,238 @@ mod tests {
         );
         assert_eq!(effective_wall_segments(&colony), before_wall);
         assert_one_closed_south_gate(&colony);
+    }
+
+    #[test]
+    fn settlement_expansion_cannot_turn_an_exterior_farm_into_an_inner_wall_hole() {
+        let seed = 92;
+        let (mut colony, target) = staged_expansion_fixture(seed);
+        let farm_tile = TilePos {
+            x: target.x,
+            y: target.y + 1,
+        };
+        colony.agricultural_tiles.insert(farm_tile);
+        colony.farms.push(FarmPlot {
+            id: "boundary-farm".to_owned(),
+            rect: tile_rect(farm_tile.x, farm_tile.y),
+            crop: CropKind::Grain,
+            planted_at: 0,
+            stage: farming::FarmStage::Soil,
+            growth_hours: 0.0,
+            fertility: 1.0,
+            worker_id: None,
+            work_phase: FarmWorkPhase::WaitingForWorker,
+            pending_output: 0.0,
+        });
+        assert!(farm_rect_touches_claim_boundary(
+            &colony,
+            tile_rect(farm_tile.x, farm_tile.y)
+        ));
+        let duration_ms = colony.jobs[0].duration_ms;
+        if let JobMetadata::Expansion { wall_work_ms, .. } = &mut colony.jobs[0].metadata {
+            *wall_work_ms = duration_ms;
+        }
+        let before_wall = effective_wall_segments(&colony);
+        let expansion = colony.jobs[0].clone();
+
+        complete_village_expansion(&mut colony, &expansion, production_gate(1, 4_000), seed);
+
+        assert!(
+            !colony.claimed_tiles.contains(&target),
+            "claiming the farm's last exterior neighbour would create an inner fence"
+        );
+        assert_eq!(effective_wall_segments(&colony), before_wall);
+        assert!(farm_rect_touches_claim_boundary(
+            &colony,
+            tile_rect(farm_tile.x, farm_tile.y)
+        ));
+    }
+
+    #[test]
+    fn settlement_expansion_rejects_a_gate_relocation_that_isolates_an_exterior_farm() {
+        let seed = 93;
+        let mut colony = found_colony(seed, "gate-relocation", 1_000, seed);
+        let center = shrine_center_tile(colony.anchor);
+        // Build the exterior parcel before deriving the retained gate. The full claim
+        // intentionally participates in gate placement even though agricultural ground
+        // is excluded from the palisade, so computing the gate first would make this
+        // fixture invalidate its own premise when the farm tile is appended.
+        let west_x = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.x)
+            .min()
+            .unwrap();
+        let farm_tile = TilePos {
+            x: west_x - 1,
+            y: center.y,
+        };
+        colony.claimed_tiles.push(farm_tile);
+        colony.revealed_tiles.insert(farm_tile);
+        colony.agricultural_tiles.insert(farm_tile);
+        let mut farm_ground = fresh_ground_tile(farm_tile);
+        farm_ground.tile_type = TileType::Meadow;
+        colony.world_tiles.insert(farm_tile, farm_ground);
+        colony.farms.push(FarmPlot {
+            id: "gate-route-farm".to_owned(),
+            rect: tile_rect(farm_tile.x, farm_tile.y),
+            crop: CropKind::Grain,
+            planted_at: 0,
+            stage: farming::FarmStage::Soil,
+            growth_hours: 0.0,
+            fertility: 1.0,
+            worker_id: None,
+            work_phase: FarmWorkPhase::WaitingForWorker,
+            pending_output: 0.0,
+        });
+        let old_gate = retained_area_gate(&colony).expect("the farm preserves a retained gate");
+        assert!(all_farm_routes_reachable(&colony, seed));
+
+        let mut east_x = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.x)
+            .max()
+            .unwrap();
+
+        // Grow a deterministic eastward tail until the very next tile moves the default
+        // south gate. This mirrors the irregular late-game claim geometry that exposed the
+        // campaign bug while keeping the regression small and independent of campaign RNG.
+        let (target, new_gate) = (0..32)
+            .find_map(|_| {
+                let target = TilePos {
+                    x: east_x + 1,
+                    y: center.y,
+                };
+                let mut projected = colony.clone();
+                projected.claimed_tiles.push(target);
+                let new_gate = retained_area_gate(&projected)?;
+                if new_gate != old_gate {
+                    Some((target, new_gate))
+                } else {
+                    colony.claimed_tiles.push(target);
+                    colony.revealed_tiles.insert(target);
+                    colony
+                        .world_tiles
+                        .entry(target)
+                        .or_insert_with(|| fresh_ground_tile(target));
+                    east_x += 1;
+                    assert_eq!(retained_area_gate(&colony), Some(old_gate));
+                    None
+                }
+            })
+            .expect("a bounded east tail moves the south gate");
+        colony
+            .world_tiles
+            .entry(target)
+            .or_insert_with(|| fresh_ground_tile(target));
+        assert_eq!(retained_area_gate(&colony), Some(old_gate));
+
+        let new_delta = side_delta(new_gate.side);
+        let blocked_new_exit = TilePos {
+            x: new_gate.x + new_delta.x,
+            y: new_gate.y + new_delta.y,
+        };
+        let blocked = colony
+            .world_tiles
+            .entry(blocked_new_exit)
+            .or_insert_with(|| fresh_ground_tile(blocked_new_exit));
+        blocked.tile_type = TileType::River;
+        blocked.resources.water = 999;
+        blocked.overlay_feature = Some("river".to_owned());
+
+        let mut projected = colony.clone();
+        projected.claimed_tiles.push(target);
+        assert!(all_farms_touch_claim_boundary(&projected));
+        assert_eq!(retained_area_gate(&projected), Some(new_gate));
+        assert!(!all_farm_routes_reachable(&projected, seed));
+
+        let expansion = JobRuntime {
+            id: "gate-moving-expansion".to_owned(),
+            kind: JobKind::ExpandVillage,
+            status: JobStatus::Active,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            duration_ms: 1,
+            metadata: JobMetadata::Expansion {
+                target,
+                accepted: true,
+                source_build_job_id: None,
+                wall_work_ms: 1,
+            },
+            ..JobRuntime::default()
+        };
+        let before = colony.clone();
+        complete_village_expansion(&mut colony, &expansion, production_gate(1, 4_000), seed);
+
+        assert!(!colony.claimed_tiles.contains(&target));
+        assert_eq!(
+            colony.world_tiles, before.world_tiles,
+            "rejected gate relocation must roll tentative access-road paving back"
+        );
+        assert!(all_farm_routes_reachable(&colony, seed));
+    }
+
+    struct SoleGateDetourGrid;
+
+    impl pathfinding::WalkGrid for SoleGateDetourGrid {
+        fn is_blocked(&self, _x: i32, _y: i32) -> bool {
+            false
+        }
+
+        fn cost(&self, _x: i32, _y: i32) -> f64 {
+            1.0
+        }
+
+        fn fence_blocks_step(&self, fx: i32, fy: i32, tx: i32, ty: i32) -> bool {
+            let crosses_palisade = fx == tx && ((fy == 0 && ty == 1) || (fy == 1 && ty == 0));
+            crosses_palisade && fx != 20
+        }
+    }
+
+    #[test]
+    fn farm_gate_detour_uses_two_astar_legs_and_one_gate_node() {
+        // Focused form of the seed-7 south-notch regression. Put the sole gate beyond the
+        // direct search's start/goal margin: a bounded direct A* cannot see it, while each
+        // physical leg can. The farm helper must concatenate those legs without inventing
+        // a straight-line fence crossing or duplicating the gate waypoint.
+        let start = pathfinding::WorldPos { x: 0.0, y: 0.0 };
+        let destination = pathfinding::WorldPos { x: 0.0, y: 2.0 };
+        let outside_gate = pathfinding::WorldPos { x: 20.0, y: 1.0 };
+        assert!(
+            find_path(
+                start,
+                destination,
+                &SoleGateDetourGrid,
+                FindPathOptions::default(),
+            )
+            .is_none(),
+            "the direct bounded search must reproduce the missed U-shaped detour"
+        );
+
+        let route = find_farm_path(start, destination, outside_gate, true, &SoleGateDetourGrid)
+            .expect("both real A* gate legs exist");
+        assert_eq!(route.first(), Some(&start));
+        assert_eq!(route.last(), Some(&destination));
+        assert_eq!(
+            route.iter().filter(|point| **point == outside_gate).count(),
+            1,
+            "the concatenated path contains the retained gate exactly once"
+        );
+        assert!(route.windows(2).all(|step| {
+            !pathfinding::WalkGrid::fence_blocks_step(
+                &SoleGateDetourGrid,
+                step[0].x.round() as i32,
+                step[0].y.round() as i32,
+                step[1].x.round() as i32,
+                step[1].y.round() as i32,
+            )
+        }));
+        assert!(route.windows(2).any(|step| {
+            step[0].x == 20.0
+                && step[1].x == 20.0
+                && ((step[0].y == 0.0 && step[1].y == 1.0)
+                    || (step[0].y == 1.0 && step[1].y == 0.0))
+        }));
     }
 
     #[test]
@@ -29136,6 +32227,127 @@ mod tests {
     }
 
     #[test]
+    fn prepared_ground_fertility_survives_mixed_barren_fine_biomes() {
+        let seed = 99;
+        let rect = (-384..384)
+            .step_by(5)
+            .flat_map(|y| (-384..384).step_by(5).map(move |x| (x, y)))
+            .map(|(x, y)| ZoneRect {
+                x1: x,
+                y1: y,
+                x2: x + 4,
+                y2: y + 4,
+            })
+            .find(|rect| {
+                let mut barren = false;
+                let mut fertile = false;
+                for tile in farming::rect_tiles(*rect) {
+                    let fine = crate::terrain_gen::tile_climate_biome(seed, tile.x, tile.y)
+                        .properties()
+                        .fertility;
+                    barren |= fine == 0.0;
+                    fertile |= fine > 0.0;
+                }
+                barren && fertile
+            })
+            .expect("seed 99 contains a mixed fine-biome 5x5 parcel");
+        let mut colony = ColonyRuntime::default();
+        for tile in farming::rect_tiles(rect) {
+            let tile = TilePos {
+                x: tile.x,
+                y: tile.y,
+            };
+            colony
+                .world_tiles
+                .insert(tile, typed_tile(tile.x, tile.y, TileType::Field));
+        }
+
+        let expected = farming::rect_tiles(rect)
+            .map(|tile| TilePos {
+                x: tile.x,
+                y: tile.y,
+            })
+            .map(|tile| tile_farm_fertility(seed, tile, colony.world_tiles.get(&tile)))
+            .sum::<f64>()
+            / f64::from(farming::rect_area(rect));
+        let actual = mean_farm_fertility(&colony, seed, rect);
+
+        assert_eq!(actual.to_bits(), expected.to_bits());
+        assert!(actual >= 1.0, "prepared land keeps its legacy baseline");
+        for tile in farming::rect_tiles(rect) {
+            let tile = TilePos {
+                x: tile.x,
+                y: tile.y,
+            };
+            assert!(
+                tile_farm_fertility(seed, tile, colony.world_tiles.get(&tile)) >= 1.0,
+                "fine-biome barren tile {tile:?} must not make prepared ground dormant"
+            );
+        }
+    }
+
+    #[test]
+    fn rich_fine_biome_fertility_exceeds_the_prepared_ground_baseline() {
+        let seed = 42;
+        let (tile, fine) = (0..600)
+            .flat_map(|y| [0, 40, 80, 120].map(move |x| TilePos { x, y }))
+            .find_map(|tile| {
+                let fertility = crate::terrain_gen::tile_climate_biome(seed, tile.x, tile.y)
+                    .properties()
+                    .fertility;
+                (fertility > 1.0).then_some((tile, fertility))
+            })
+            .expect("seed 42 contains a rich fine-biome tile");
+        let ordinary_ground = typed_tile(tile.x, tile.y, TileType::Forest);
+        let prepared_ground = typed_tile(tile.x, tile.y, TileType::Field);
+
+        assert_eq!(
+            tile_farm_fertility(seed, tile, Some(&ordinary_ground)),
+            fine
+        );
+        assert_eq!(
+            tile_farm_fertility(seed, tile, Some(&prepared_ground)),
+            fine,
+            "fine fertility above one remains a bonus on prepared ground"
+        );
+    }
+
+    #[test]
+    fn cached_auto_fertility_matches_direct_truth_across_chunks_and_ground_types() {
+        let seed = 42;
+        let mut colony = ColonyRuntime::default();
+        let samples = [
+            (TilePos { x: -25, y: -13 }, TileType::Field, false),
+            (TilePos { x: 0, y: 0 }, TileType::Forest, false),
+            (TilePos { x: 25, y: 37 }, TileType::Meadow, false),
+            (TilePos { x: 51, y: -26 }, TileType::Mountains, false),
+            (TilePos { x: -49, y: 48 }, TileType::Swamp, true),
+        ];
+        for (pos, tile_type, flooded) in samples {
+            let mut tile = typed_tile(pos.x, pos.y, tile_type);
+            if flooded {
+                tile.resources.water = 1;
+                tile.overlay_feature = Some("river".to_owned());
+            }
+            colony.world_tiles.insert(pos, tile);
+        }
+        let occupancy = SpatialOccupancyContext::new(&colony, seed);
+
+        for (pos, _, _) in samples {
+            assert_eq!(
+                occupancy.farm_fertility(pos).to_bits(),
+                tile_farm_fertility(seed, pos, colony.world_tiles.get(&pos)).to_bits(),
+                "cached auto fertility diverged from canonical truth at {pos:?}"
+            );
+        }
+        assert_eq!(
+            occupancy.farm_fertility(TilePos { x: 999, y: 999 }),
+            0.0,
+            "unmapped ground remains barren"
+        );
+    }
+
+    #[test]
     fn field_places_on_grass_and_is_rejected_on_barren_ground() {
         let seed = 42;
 
@@ -29241,10 +32453,12 @@ mod tests {
     }
 
     fn single_field_colony(field_pos: TilePos) -> ColonyRuntime {
-        ColonyRuntime {
+        let mut cat = adult_idle_cat("farmer", "fertility");
+        cat.position = position_from_world(tile_pos_to_world(field_pos));
+        let mut colony = ColonyRuntime {
             id: "fertility".to_owned(),
             resources: Resources::default(),
-            cats: vec![adult_idle_cat("farmer", "fertility")],
+            cats: vec![cat],
             buildings: vec![BuildingRuntime {
                 id: "field-1".to_owned(),
                 building_type: BuildingType::Field,
@@ -29258,8 +32472,41 @@ mod tests {
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
                 production_paused: false,
             }],
+            farms: vec![FarmPlot {
+                id: "fertility-plot".to_owned(),
+                rect: ZoneRect {
+                    x1: field_pos.x,
+                    y1: field_pos.y,
+                    x2: field_pos.x,
+                    y2: field_pos.y,
+                },
+                crop: CropKind::Grain,
+                planted_at: 0,
+                stage: farming::FarmStage::Soil,
+                growth_hours: 0.0,
+                fertility: 0.0,
+                worker_id: None,
+                work_phase: FarmWorkPhase::WaitingForWorker,
+                pending_output: 0.0,
+            }],
             ..ColonyRuntime::default()
+        };
+        // Physical farming needs known ground for both the worker and its finite local
+        // handoff. Mark this tiny synthetic parcel agricultural so it has no palisade,
+        // and use a non-prepared coarse tile: the fine climate fertility under test
+        // remains 0.8/1.0 instead of the prepared Field/Meadow floor of 1.0.
+        for y in (field_pos.y - 1)..=(field_pos.y + 1) {
+            for x in (field_pos.x - 1)..=(field_pos.x + 1) {
+                let tile = pos(x, y);
+                colony.claimed_tiles.push(tile);
+                colony.revealed_tiles.insert(tile);
+                colony.agricultural_tiles.insert(tile);
+                colony
+                    .world_tiles
+                    .insert(tile, typed_tile(x, y, TileType::Tundra));
+            }
         }
+        colony
     }
 
     #[test]
@@ -29311,22 +32558,30 @@ mod tests {
         phase_23_production(&mut low_colony, production_gate(3_600, 3_600_000), seed);
         phase_23_production(&mut high_colony, production_gate(3_600, 3_600_000), seed);
 
-        let base = field_yield(3_600.0);
+        assert_eq!(
+            low_colony.resources.grain, 0.0,
+            "crop work remains physical output until a completed haul"
+        );
+        assert_eq!(
+            high_colony.resources.grain, 0.0,
+            "fertility must not bypass the farmer basket and local handoff"
+        );
+
         assert!(
-            (low_colony.resources.food - base * low_fertility).abs() < 1e-9,
-            "low-fertility field yield should be base * {low_fertility}, got {}",
-            low_colony.resources.food
+            (low_colony.farms[0].growth_hours - low_fertility).abs() < 1e-9,
+            "low-fertility plot should bank {low_fertility} work-hours, got {}",
+            low_colony.farms[0].growth_hours
         );
         assert!(
-            (high_colony.resources.food - base * high_fertility).abs() < 1e-9,
-            "high-fertility field yield should be base * {high_fertility}, got {}",
-            high_colony.resources.food
+            (high_colony.farms[0].growth_hours - high_fertility).abs() < 1e-9,
+            "high-fertility plot should bank {high_fertility} work-hours, got {}",
+            high_colony.farms[0].growth_hours
         );
         assert!(
-            high_colony.resources.food > low_colony.resources.food,
+            high_colony.farms[0].growth_hours > low_colony.farms[0].growth_hours,
             "the high-fertility field ({}) must out-grow the low-fertility one ({})",
-            high_colony.resources.food,
-            low_colony.resources.food
+            high_colony.farms[0].growth_hours,
+            low_colony.farms[0].growth_hours
         );
         // Deterministic ratio: re-running produces byte-identical output.
         let mut high_colony_twin = single_field_colony(high_pos);
@@ -29336,8 +32591,8 @@ mod tests {
             seed,
         );
         assert_eq!(
-            high_colony.resources.food.to_bits(),
-            high_colony_twin.resources.food.to_bits(),
+            high_colony.farms[0].growth_hours.to_bits(),
+            high_colony_twin.farms[0].growth_hours.to_bits(),
             "field fertility scaling must be deterministic"
         );
     }
@@ -30491,6 +33746,10 @@ mod tests {
             planted_at: 17,
             stage: farming::FarmStage::Mature,
             growth_hours: 11.0,
+            fertility: 1.0,
+            worker_id: None,
+            work_phase: FarmWorkPhase::WaitingForWorker,
+            pending_output: 0.0,
         });
         for tile in farming::rect_tiles(farm_rect).map(|tile| TilePos {
             x: tile.x,
@@ -33669,15 +36928,30 @@ mod tests {
         completed_hunts: usize,
         first_retained_at: Option<i64>,
         first_birth_at: Option<i64>,
+        farm_designation_searches: u64,
+        farm_designation_candidates: u64,
+        farm_designation_gather_failures: u64,
+        farm_designation_route_failures: u64,
+        farm_movement_ticks: u64,
+        farm_route_misses: u64,
+        farm_max_consecutive_traveling: u64,
+        farm_completed_short_haul_routes: u64,
+        farm_pending_output: f64,
+        farm_first_designated_at: Option<i64>,
+        farm_active_work_hours: f64,
+        farm_at_plot_work_ticks: u64,
+        farm_unique_workers: usize,
+        farm_max_plots_per_worker: usize,
+        farm_emergency_worker_preemptions: u64,
+        farm_worker_releases: u64,
+        farm_max_effective_growth_hours: f64,
+        farm_effective_growth_by_plot: BTreeMap<String, f64>,
+        farm_harvests_by_plot: BTreeMap<String, u64>,
+        farm_route_component_traversals: u64,
+        farm_route_component_cache_hits: u64,
     }
 
-    /// Run a healthy six-den village through the founders' first complete senior
-    /// turnover. Events are counted on the tick they are emitted so the 2,000-entry
-    /// display-log cap cannot erase campaign evidence.
-    fn run_established_population_campaign(seed: u32) -> (WorldState, EstablishedCampaignEvidence) {
-        const TICK_MS: i64 = 15 * 60_000;
-        const HORIZON_HOURS: i64 = 300;
-
+    fn established_population_world(seed: u32) -> WorldState {
         let mut world = new_world(seed);
         let mut established = found_colony(seed, "colony-1", 10_000, seed);
         for extra_den in 1..=3 {
@@ -33699,7 +36973,62 @@ mod tests {
             });
         }
         establish_core_offices(&mut established);
+        // This is an established agriculture campaign, not a raw-field fixture. Physical
+        // Grain only becomes edible after the researched Mill recipe, so install that real
+        // chain instead of relying on the removed passive Field food faucet.
+        grant_fixture_node_chain(&mut established.upgrade_tree, "milling");
+        install_completed_fixture_building(
+            &mut established,
+            "established-population-mill",
+            BuildingType::Mill,
+        );
         world.colonies.push(established);
+        world
+    }
+
+    #[test]
+    fn passive_established_farming_has_bounded_routes_and_a_physical_harvest_by_48h() {
+        const TICK_MS: i64 = 15 * 60_000;
+        const HORIZON_TICKS: i64 = 48 * 60 / 15;
+        let seed = 99;
+        let mut world = established_population_world(seed);
+        for step in 1..=HORIZON_TICKS {
+            let reports = world_tick(&mut world, 10_000 + step * TICK_MS);
+            assert_eq!(
+                reports[0].reset_reason, None,
+                "passive reset at tick {step}"
+            );
+        }
+        let colony = &world.colonies[0];
+        let debug = &colony.decoration_cache.farm_route_debug;
+        let harvests = debug.harvests_by_plot.values().copied().sum::<u64>();
+        assert!(!colony.farms.is_empty());
+        assert!(harvests > 0, "a staffed established plot remained dormant");
+        assert!(debug.completed_short_haul_routes > 0);
+        assert_eq!(debug.route_misses, 0);
+        assert!(debug.max_consecutive_traveling <= 8);
+        assert!(debug.max_plots_per_worker <= 1);
+        assert!(
+            colony
+                .farms
+                .iter()
+                .all(|plot| plot.pending_output >= 0.0 && plot.pending_output.is_finite())
+        );
+        assert!(alive_cats(&colony.cats).all(|cat| {
+            cat.carrying.as_ref().is_none_or(|cargo| {
+                parse_farm_cargo(cargo.source_gather_spot.as_deref()).is_none()
+                    || cargo.amount > 0.0 && cargo.amount <= farming::FARM_BASKET_CAPACITY
+            })
+        }));
+    }
+
+    /// Run a healthy six-den village through the founders' first complete senior
+    /// turnover. Events are counted on the tick they are emitted so the 2,000-entry
+    /// display-log cap cannot erase campaign evidence.
+    fn run_established_population_campaign(seed: u32) -> (WorldState, EstablishedCampaignEvidence) {
+        const TICK_MS: i64 = 15 * 60_000;
+
+        let mut world = established_population_world(seed);
         let mut min_alive = STARTER_CAT_COUNT;
         let mut peak_alive = STARTER_CAT_COUNT;
         let mut births = 0;
@@ -33712,7 +37041,7 @@ mod tests {
         let mut completed_hunt_ids = BTreeSet::new();
         let mut first_retained_at = None;
         let mut first_birth_at = None;
-        let horizon_ticks = HORIZON_HOURS * 60 / 15;
+        let horizon_ticks = 300 * 60 / 15;
         for step in 1..=horizon_ticks {
             let now = 10_000 + step * TICK_MS;
             let before_tick = {
@@ -33830,6 +37159,98 @@ mod tests {
             completed_hunts: completed_hunt_ids.len(),
             first_retained_at,
             first_birth_at,
+            farm_designation_searches: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .designation_searches,
+            farm_designation_candidates: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .designation_candidates,
+            farm_designation_gather_failures: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .designation_gather_failures,
+            farm_designation_route_failures: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .designation_route_failures,
+            farm_movement_ticks: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .movement_ticks,
+            farm_route_misses: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .route_misses,
+            farm_max_consecutive_traveling: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .max_consecutive_traveling,
+            farm_completed_short_haul_routes: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .completed_short_haul_routes,
+            farm_pending_output: world.colonies[0]
+                .farms
+                .iter()
+                .map(|plot| plot.pending_output)
+                .sum(),
+            farm_first_designated_at: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .first_designated_at,
+            farm_active_work_hours: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .active_work_seconds
+                / 3600.0,
+            farm_at_plot_work_ticks: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .at_plot_work_ticks,
+            farm_unique_workers: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .unique_worker_ids
+                .len(),
+            farm_max_plots_per_worker: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .max_plots_per_worker,
+            farm_emergency_worker_preemptions: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .emergency_worker_preemptions,
+            farm_worker_releases: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .worker_releases,
+            farm_max_effective_growth_hours: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .effective_growth_by_plot
+                .values()
+                .copied()
+                .fold(0.0, f64::max),
+            farm_effective_growth_by_plot: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .effective_growth_by_plot
+                .clone(),
+            farm_harvests_by_plot: world.colonies[0]
+                .decoration_cache
+                .farm_route_debug
+                .harvests_by_plot
+                .clone(),
+            farm_route_component_traversals: world.colonies[0]
+                .decoration_cache
+                .farm_route_component_traversals
+                .get(),
+            farm_route_component_cache_hits: world.colonies[0]
+                .decoration_cache
+                .farm_route_component_cache_hits
+                .get(),
         };
         (world, evidence)
     }
@@ -33848,8 +37269,58 @@ mod tests {
             .filter(|job| job_building_type(job) == Some(BuildingType::Field))
             .map(|job| (&job.id, job.status, &job.assigned_cat, &job.metadata))
             .collect::<Vec<_>>();
+        let construction_cargo = alive_cats(&colony.cats)
+            .filter_map(|cat| {
+                cat.carrying.as_ref().and_then(|cargo| {
+                    matches!(
+                        cargo.kind,
+                        CarryingKind::Materials
+                            | CarryingKind::Lumber
+                            | CarryingKind::Planks
+                            | CarryingKind::Blocks
+                    )
+                    .then_some((&cat.id, cargo))
+                })
+            })
+            .collect::<Vec<_>>();
+        let station_inventory = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| pile.is_station_local())
+            .filter_map(|pile| {
+                let contents = ResourceKind::ALL
+                    .iter()
+                    .copied()
+                    .filter_map(|kind| {
+                        let amount = stockpiles::resource_amount(&pile.contents, kind);
+                        (amount > 0.0).then_some((kind, amount))
+                    })
+                    .collect::<Vec<_>>();
+                (!contents.is_empty()).then_some((&pile.id, contents))
+            })
+            .collect::<Vec<_>>();
+        let farm_states = colony
+            .farms
+            .iter()
+            .map(|plot| {
+                (
+                    &plot.id,
+                    plot.crop,
+                    plot.growth_hours,
+                    plot.work_phase,
+                    &plot.worker_id,
+                    plot.pending_output,
+                )
+            })
+            .collect::<Vec<_>>();
+        let field_staff = colony
+            .buildings
+            .iter()
+            .filter(|building| building.building_type == BuildingType::Field)
+            .map(|building| (&building.id, &building.assigned_cat, building.automated_by))
+            .collect::<Vec<_>>();
         let diagnostics = format!(
-            "seed {seed}: {evidence:?}, resources={:?}, status={:?}, pending={}, field_jobs={field_jobs:?}",
+            "seed {seed}: {evidence:?}, resources={:?}, status={:?}, pending={}, farm_states={farm_states:?}, field_staff={field_staff:?}, field_jobs={field_jobs:?}, construction_cargo={construction_cargo:?}, station_inventory={station_inventory:?}",
             colony.resources,
             colony.status,
             colony.migration_state.probationary_migrants.len(),
@@ -33899,6 +37370,38 @@ mod tests {
             evidence.completed_hunts > 0,
             "fields displaced hunting instead of supplementing it; {diagnostics}"
         );
+        assert_eq!(
+            evidence.farm_designation_gather_failures, 0,
+            "an accepted farm parcel could not create its local handoff; {diagnostics}"
+        );
+        assert_eq!(
+            evidence.farm_designation_route_failures, 0,
+            "projected route validation accepted an unreachable farm; {diagnostics}"
+        );
+        assert_eq!(
+            evidence.farm_route_misses, 0,
+            "a physical farm basket route became unreachable; {diagnostics}"
+        );
+        assert!(
+            evidence.farm_max_consecutive_traveling <= 8,
+            "a farmer spent too many consecutive movement passes in transit; {diagnostics}"
+        );
+        assert!(
+            evidence.farm_max_plots_per_worker <= 1,
+            "one physical farmer was bound to multiple plots; {diagnostics}"
+        );
+        for (plot_id, effective_hours) in &evidence.farm_effective_growth_by_plot {
+            if *effective_hours < farming::HARVEST_AT_HOURS {
+                continue;
+            }
+            assert!(
+                evidence
+                    .farm_harvests_by_plot
+                    .get(plot_id)
+                    .is_some_and(|harvests| *harvests > 0),
+                "plot {plot_id} received {effective_hours:.2} effective work-hours without a physical harvest; {diagnostics}"
+            );
+        }
         assert!(
             colony
                 .elections
@@ -33931,9 +37434,20 @@ mod tests {
         // not make a healthy invested village fail merely because its final tick
         // follows a field commission.
         let durable_field_wealth = evidence.max_completed_fields as f64 * 4.0;
+        // Phase 33 deposits before phase 34 movement. A carrier that physically reaches
+        // storage on the campaign's final movement pass therefore still holds its earned
+        // bucket until the next tick's deposit pass. Count that secured in-flight water
+        // for this arbitrary-endpoint prosperity guardrail; it remains absent from the
+        // aggregate resource total until the carrier actually arrives.
+        let secured_water = colony.resources.water
+            + alive_cats(&colony.cats)
+                .filter_map(|cat| cat.carrying.as_ref())
+                .filter(|cargo| cargo.kind == CarryingKind::Water)
+                .map(|cargo| cargo.amount.max(0.0))
+                .sum::<f64>();
         assert!(
             colony.resources.food >= 4.0 * alive
-                && colony.resources.water >= 5.0 * alive
+                && secured_water >= 5.0 * alive
                 && construction_wealth + durable_field_wealth >= (0.5 * alive).max(8.0),
             "campaign ended below the migration prosperity reserve; {diagnostics}"
         );
@@ -34075,7 +37589,7 @@ mod tests {
                 )
                 .properties()
                 .fertility;
-                field_yield(3_600.0) * fertility
+                crate::production::field_yield(3_600.0) * fertility
             })
             .sum();
         let consumption_per_hour = consumption_for_tick(
