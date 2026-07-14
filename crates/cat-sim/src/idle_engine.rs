@@ -12,7 +12,7 @@ pub struct UpgradeLevels {
     pub resilience: f64,
 }
 
-pub const BASE_JOB_SECONDS: [(JobKind, f64); 17] = [
+pub const BASE_JOB_SECONDS: [(JobKind, f64); 18] = [
     (JobKind::SupplyFood, 20.0),
     (JobKind::SupplyWater, 15.0),
     (JobKind::LeaderPlanHunt, 30.0 * 60.0),
@@ -30,9 +30,11 @@ pub const BASE_JOB_SECONDS: [(JobKind, f64); 17] = [
     (JobKind::FetchWater, 45.0 * 60.0),
     (JobKind::TrainWarrior, 3.0 * 60.0 * 60.0),
     (JobKind::ExpandVillage, 10.0 * 60.0),
-    // P12.6 (Rust-only, no TS predecessor): shorter than the labor-only Ritual
-    // (6h) because it is mostly a haul-to-shrine chore, not a full ceremony.
-    (JobKind::CarryOffering, 40.0 * 60.0),
+    // P12.6: CarryOffering is travel-controlled and completes on physical shrine
+    // delivery; this nominal value is only a bounded compatibility fallback.
+    (JobKind::CarryOffering, 5.0 * 60.0),
+    // The delivered goods then receive the former 40-minute offering ceremony.
+    (JobKind::PerformOffering, 40.0 * 60.0),
     // P16 (Rust-only, no TS predecessor): a gather-spot mover's "duration" is really
     // just a nominal travel buffer — the job completes as soon as the assigned cat
     // reaches the gather spot and picks up its cargo (see `world_tick`'s gather-spot
@@ -104,10 +106,9 @@ pub fn get_duration_seconds(
         }
     }
 
-    // CarryOffering shares Ritual's mastery/specialization curve (P12.6: it reuses
-    // and extends the ritual->blessing path), so the same upgrade investment speeds
-    // up both the labor-only ritual and the haul-then-ritual offering.
-    if matches!(kind, JobKind::Ritual | JobKind::CarryOffering) {
+    // Only the ceremony shares Ritual's mastery/specialization curve. Physical
+    // CarryOffering travel is governed by Haul skill and movement.
+    if matches!(kind, JobKind::Ritual | JobKind::PerformOffering) {
         multiplier *= js_max(0.4, 1.0 - upgrades.ritual_mastery * 0.12);
         if specialization == Some(CatSpecialization::Ritualist) {
             multiplier *= 0.6;
@@ -228,7 +229,8 @@ mod tests {
             (JobKind::FetchWater, 2_700.0),
             (JobKind::TrainWarrior, 10_800.0),
             (JobKind::ExpandVillage, 600.0),
-            (JobKind::CarryOffering, 2_400.0),
+            (JobKind::CarryOffering, 300.0),
+            (JobKind::PerformOffering, 2_400.0),
             (JobKind::HaulGatherSpot, 300.0),
         ];
 
@@ -370,12 +372,11 @@ mod tests {
             ),
             5_184.0,
         );
-        // P12.6: carry_offering shares Ritual's mastery/specialization curve exactly
-        // (same 0.4-floor mastery term x 0.6 Ritualist bonus), just applied to its
-        // own shorter 2,400s base.
+        // P12.6: only the perform_offering ceremony shares Ritual's mastery and
+        // specialization curve. The preceding carry is governed by physical travel.
         assert_f64_exact(
             get_duration_seconds(
-                JobKind::CarryOffering,
+                JobKind::PerformOffering,
                 Some(CatSpecialization::Ritualist),
                 UpgradeLevels {
                     ritual_mastery: 2.0,
@@ -387,7 +388,7 @@ mod tests {
         );
         assert_f64_exact(
             get_duration_seconds(
-                JobKind::CarryOffering,
+                JobKind::PerformOffering,
                 Some(CatSpecialization::Ritualist),
                 UpgradeLevels {
                     ritual_mastery: 6.0,

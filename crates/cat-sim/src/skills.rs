@@ -88,9 +88,10 @@ impl Labor {
             JobKind::ForageFibre => Some(Self::Forage),
             JobKind::FetchWater => Some(Self::FetchWater),
             JobKind::TrainWarrior => Some(Self::Train),
-            // P12.6: an offering is a ritual act (haul + perform at the shrine), so
-            // it trains the same Ritual labor as the pure-labor `ritual` job.
-            JobKind::CarryOffering => Some(Self::Ritual),
+            // P12.6 separates the physical delivery from the shrine ceremony so each
+            // stage trains the labor it actually performs.
+            JobKind::CarryOffering => Some(Self::Haul),
+            JobKind::PerformOffering => Some(Self::Ritual),
             // P16: a gather-spot mover is pure hauling, same labor as the mid-job haul
             // trips other gathering jobs already train (`HAUL_SKILL_GAIN`).
             JobKind::HaulGatherSpot => Some(Self::Haul),
@@ -163,7 +164,8 @@ mod tests {
                 JobKind::ForageFibre => assert_eq!(mapped, Some(Labor::Forage)),
                 JobKind::FetchWater => assert_eq!(mapped, Some(Labor::FetchWater)),
                 JobKind::TrainWarrior => assert_eq!(mapped, Some(Labor::Train)),
-                JobKind::CarryOffering => assert_eq!(mapped, Some(Labor::Ritual)),
+                JobKind::CarryOffering => assert_eq!(mapped, Some(Labor::Haul)),
+                JobKind::PerformOffering => assert_eq!(mapped, Some(Labor::Ritual)),
                 JobKind::HaulGatherSpot => assert_eq!(mapped, Some(Labor::Haul)),
                 JobKind::Explore => assert_eq!(mapped, Some(Labor::Scout)),
                 JobKind::ExpandVillage => assert_eq!(mapped, Some(Labor::Build)),

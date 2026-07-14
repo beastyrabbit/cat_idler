@@ -398,6 +398,23 @@ pub enum JobMetadata {
         site: Option<TilePos>,
         accepted: bool,
     },
+    /// Physical material offering delivery. `source_stockpile_id` identifies the next
+    /// visible pile to collect from; partial deliveries accumulate only in the persisted
+    /// station-local `escrow_id` at the shrine. `delivered` mirrors that escrow for
+    /// truthful phase inspection and deterministic restart recovery.
+    OfferingCarry {
+        source_stockpile_id: String,
+        site: Option<TilePos>,
+        accepted: bool,
+        escrow_id: String,
+        delivered: f64,
+    },
+    /// The second offering stage. The goods already exist in `escrow_id`; completion
+    /// consumes exactly `amount` there before producing any blessing.
+    OfferingRitual {
+        escrow_id: String,
+        amount: f64,
+    },
     /// A scout excursion keeps its purpose and resolved route in durable job
     /// metadata. The per-cat provisional reveal remains transient, but this is
     /// enough to restore the scout marker after a server restart.
@@ -4145,6 +4162,12 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 job.ends_at = None;
                 job.completed_at = None;
             }
+            if job.kind == JobKind::CarryOffering {
+                // A haul completes only through physical pickup and shrine arrival.
+                job.started_at = None;
+                job.ends_at = None;
+                job.completed_at = None;
+            }
             job.metadata = next_metadata;
         }
         if broke_ground
@@ -4280,6 +4303,20 @@ fn phase_15_assign_promoted_job_destinations(
             } => Some(tile_pos_to_world(site)),
             _ => None,
         };
+        let offering_source_site = match &job.metadata {
+            JobMetadata::OfferingCarry {
+                source_stockpile_id,
+                ..
+            } => colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == *source_stockpile_id)
+                .map(|pile| {
+                    let (x, y) = pile.center();
+                    WorldPos { x, y }
+                }),
+            _ => None,
+        };
         let expansion_site = match job.metadata {
             JobMetadata::Expansion { target, .. } => Some(tile_pos_to_world(target)),
             _ => None,
@@ -4330,7 +4367,7 @@ fn phase_15_assign_promoted_job_destinations(
             shrine: village_anchor_world(colony.anchor),
             food_tiles: hunt_tiles,
             roll: roll.value,
-            site: construction_site,
+            site: construction_site.or(offering_source_site),
             expansion_site,
             quarry_site: match job.kind {
                 JobKind::GatherLogs => logging_site,
@@ -4401,6 +4438,21 @@ fn phase_15_assign_promoted_job_destinations(
                     accepted: false,
                 },
             },
+            JobKind::CarryOffering => match colony.jobs[job_index].metadata.clone() {
+                JobMetadata::OfferingCarry {
+                    source_stockpile_id,
+                    escrow_id,
+                    delivered,
+                    ..
+                } => JobMetadata::OfferingCarry {
+                    source_stockpile_id,
+                    site: Some(site),
+                    accepted: false,
+                    escrow_id,
+                    delivered,
+                },
+                other => other,
+            },
             JobKind::BuildHouse => match colony.jobs[job_index].metadata.clone() {
                 JobMetadata::Construction {
                     phase,
@@ -4445,7 +4497,7 @@ fn phase_15_assign_promoted_job_destinations(
                 .map(|cat| position_to_world(colony.anchor, cat.position))
             {
                 haul_destination(colony, carrying_kind_for_job(job.kind), cat_pos)
-            } else if job.kind == JobKind::HaulGatherSpot {
+            } else if matches!(job.kind, JobKind::HaulGatherSpot | JobKind::CarryOffering) {
                 destination
             } else {
                 village_anchor_world(colony.anchor)
@@ -5030,7 +5082,10 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
                 .count() as u32,
         ),
         training_in_flight: Some(count_jobs(&active_jobs, JobKind::TrainWarrior)),
-        offering_in_flight: Some(count_jobs(&active_jobs, JobKind::CarryOffering)),
+        offering_in_flight: Some(
+            count_jobs(&active_jobs, JobKind::CarryOffering)
+                + count_jobs(&active_jobs, JobKind::PerformOffering),
+        ),
         threat_band: Some(current_threat_band),
         starving: Some(starving),
         officers: colony.officers.clone(),
@@ -5498,6 +5553,77 @@ const TITHE_COOLDOWN_MS: i64 = 24 * 3_600_000;
 /// Automated material rituals are a deliberate half-day cadence, not a continuous
 /// quarry-to-blessing conveyor. Manual player offerings remain resource-gated only.
 const OFFERING_COOLDOWN_MS: i64 = 12 * 3_600_000;
+const OFFERING_CARGO_PREFIX: &str = "offering-cargo:";
+
+/// Materials physically present in player-visible stores. Station input/output/transit
+/// and shrine escrow are excluded: an offering must start from goods the player can see.
+pub(crate) fn visible_offering_materials(colony: &ColonyRuntime) -> f64 {
+    colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+        .map(|pile| stockpiles::resource_amount(&pile.contents, ResourceKind::Materials))
+        .sum()
+}
+
+fn offering_source_stockpile(
+    colony: &ColonyRuntime,
+    from: WorldPos,
+) -> Option<(&Stockpile, TilePos)> {
+    colony
+        .stockpiles
+        .iter()
+        .filter(|pile| {
+            !pile.is_station_local()
+                && stockpiles::resource_amount(&pile.contents, ResourceKind::Materials)
+                    > f64::EPSILON
+        })
+        .map(|pile| {
+            let (x, y) = pile.center();
+            let distance = (x - from.x).powi(2) + (y - from.y).powi(2);
+            (
+                pile,
+                distance,
+                TilePos {
+                    x: x.round() as i32,
+                    y: y.round() as i32,
+                },
+            )
+        })
+        .min_by(|(left, left_distance, _), (right, right_distance, _)| {
+            left_distance
+                .total_cmp(right_distance)
+                .then_with(|| left.id.cmp(&right.id))
+        })
+        .map(|(pile, _, site)| (pile, site))
+}
+
+/// Build the durable first-stage offering metadata shared by player and officer dispatch.
+pub(crate) fn material_offering_metadata(
+    colony: &ColonyRuntime,
+    from: WorldPos,
+    now_ms: i64,
+) -> Option<JobMetadata> {
+    let (source, _) = offering_source_stockpile(colony, from)?;
+    Some(JobMetadata::OfferingCarry {
+        source_stockpile_id: source.id.clone(),
+        site: None,
+        accepted: false,
+        escrow_id: stockpiles::station_input_id(&format!(
+            "offering-{now_ms}-{}",
+            colony.jobs.len() + 1
+        )),
+        delivered: 0.0,
+    })
+}
+
+fn offering_cargo_marker(job_id: &str) -> String {
+    format!("{OFFERING_CARGO_PREFIX}{job_id}")
+}
+
+fn offering_cargo_job_id(marker: Option<&str>) -> Option<&str> {
+    marker?.strip_prefix(OFFERING_CARGO_PREFIX)
+}
 
 fn automated_offering_ready(colony: &ColonyRuntime, now_ms: i64) -> bool {
     colony
@@ -5873,12 +5999,23 @@ fn phase_21_leader_capital_decisions_and_tithe(
                         select_best_raw_material_worker(colony, Some(CatSpecialization::Ritualist))
                     });
                 if let Some(cat_id) = ritualist {
+                    let from = colony
+                        .cats
+                        .iter()
+                        .find(|cat| cat.id == cat_id)
+                        .map(|cat| position_to_world(colony.anchor, cat.position))
+                        .unwrap_or_else(|| village_anchor_world(colony.anchor));
+                    let Some(metadata) =
+                        material_offering_metadata(colony, from, gate.processed_through)
+                    else {
+                        continue;
+                    };
                     queue_job(
                         colony,
                         gate.processed_through,
                         JobKind::CarryOffering,
                         Some(cat_id),
-                        JobMetadata::None,
+                        metadata,
                     );
                 }
             }
@@ -6995,7 +7132,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     // that escrow before the ritualist reaches the shrine.
     let offering_in_flight = active_or_queued_jobs(colony)
         .iter()
-        .any(|job| job.kind == JobKind::CarryOffering);
+        .any(|job| matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering));
     let offering_materials_reserve = if offering_in_flight {
         OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
     } else {
@@ -7569,7 +7706,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
 fn spendable_production_materials(colony: &ColonyRuntime) -> (f64, f64) {
     let offering_in_flight = active_or_queued_jobs(colony)
         .iter()
-        .any(|job| job.kind == JobKind::CarryOffering);
+        .any(|job| matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering));
     let offering_materials_reserve = if offering_in_flight {
         OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
     } else {
@@ -8175,6 +8312,7 @@ fn remove_departing_migrant(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i6
     else {
         return;
     };
+    recover_offering_cargo_from_cat(colony, cat_id, now_ms);
     cancel_cat_jobs(colony, cat_id, now_ms);
     for job in &mut colony.jobs {
         if job.assigned_cat.as_deref() == Some(cat_id) {
@@ -8471,7 +8609,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
     gate: TickGate,
 ) {
     let due_jobs = due_active_jobs(colony, gate);
-    let mut interrupted_construction = HashSet::new();
+    let mut interrupted_jobs = HashSet::new();
 
     for job in &due_jobs {
         if job.kind == JobKind::BuildHouse && assigned_alive_cat_index(colony, job).is_none() {
@@ -8486,14 +8624,25 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
                 stored.ends_at = None;
                 stored.completed_at = None;
             }
-            interrupted_construction.insert(job.id.clone());
+            interrupted_jobs.insert(job.id.clone());
+            continue;
+        }
+        if job.kind == JobKind::PerformOffering && !complete_offering(colony, job, gate) {
+            if let Some(stored) = colony
+                .jobs
+                .iter_mut()
+                .find(|candidate| candidate.id == job.id)
+            {
+                stored.status = JobStatus::Cancelled;
+                stored.completed_at = Some(gate.processed_through);
+            }
+            interrupted_jobs.insert(job.id.clone());
             continue;
         }
         match job.kind {
             JobKind::BuildHouse => complete_build(colony, job, gate),
             JobKind::Ritual => complete_ritual(colony, job, gate),
             JobKind::TrainWarrior => complete_warrior_training(colony, job, gate),
-            JobKind::CarryOffering => complete_offering(colony, job, gate),
             _ => {}
         }
 
@@ -8509,14 +8658,14 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
                 | JobKind::Explore
                 | JobKind::FetchWater
                 | JobKind::ExpandVillage
-                | JobKind::CarryOffering
+                | JobKind::PerformOffering
         ) {
             return_assigned_cat(colony, job, gate);
         }
     }
 
     for job in due_jobs {
-        if interrupted_construction.contains(&job.id) {
+        if interrupted_jobs.contains(&job.id) {
             continue;
         }
         if let Some(stored) = colony
@@ -8945,6 +9094,8 @@ fn phase_33_movement_deposits_and_no_destination_wander(
     gate: TickGate,
     movement: &mut MovementPassContext,
 ) {
+    advance_material_offering_logistics(colony, gate.processed_through);
+
     let cat_ids = colony
         .cats
         .iter()
@@ -9089,6 +9240,396 @@ fn phase_33_movement_deposits_and_no_destination_wander(
     }
 }
 
+fn is_offering_escrow_id(id: &str) -> bool {
+    id.strip_prefix(stockpiles::STATION_INPUT_PREFIX)
+        .is_some_and(|suffix| suffix.starts_with("offering-"))
+}
+
+fn offering_escrow_amount(colony: &ColonyRuntime, escrow_id: &str) -> f64 {
+    colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == escrow_id)
+        .map_or(0.0, |pile| {
+            stockpiles::resource_amount(&pile.contents, ResourceKind::Materials)
+        })
+}
+
+fn ensure_offering_escrow(colony: &mut ColonyRuntime, escrow_id: &str) {
+    if colony.stockpiles.iter().any(|pile| pile.id == escrow_id) {
+        return;
+    }
+    colony.stockpiles.push(stockpiles::make_station_store(
+        escrow_id.to_owned(),
+        stockpiles::shrine_rect(colony.anchor.x, colony.anchor.y),
+        [ResourceKind::Materials],
+    ));
+}
+
+/// Return canceled/interrupted ritual escrow to visible storage without changing the
+/// aggregate ledger. If finite stores filled while the offering was out, the remainder
+/// stays in its persisted shrine escrow and retries on later ticks instead of vanishing.
+fn recover_orphaned_offering_escrows(colony: &mut ColonyRuntime) {
+    let live = colony
+        .jobs
+        .iter()
+        .filter(|job| matches!(job.status, JobStatus::Queued | JobStatus::Active))
+        .filter_map(|job| match &job.metadata {
+            JobMetadata::OfferingCarry { escrow_id, .. }
+            | JobMetadata::OfferingRitual { escrow_id, .. } => Some(escrow_id.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let orphaned = colony
+        .stockpiles
+        .iter()
+        .filter(|pile| is_offering_escrow_id(&pile.id) && !live.contains(&pile.id))
+        .map(|pile| pile.id.clone())
+        .collect::<Vec<_>>();
+
+    for escrow_id in orphaned {
+        loop {
+            let amount = offering_escrow_amount(colony, &escrow_id);
+            if amount <= f64::EPSILON {
+                colony.stockpiles.retain(|pile| pile.id != escrow_id);
+                break;
+            }
+            let from = village_anchor_world(colony.anchor);
+            let Some(destination) = nearest_output_pile(colony, ResourceKind::Materials, from)
+            else {
+                break;
+            };
+            let moved =
+                amount.min(colony.stockpiles[destination].headroom(ResourceKind::Materials));
+            if moved <= f64::EPSILON {
+                break;
+            }
+            if let Some(escrow) = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == escrow_id)
+            {
+                stockpiles::add_resource(&mut escrow.contents, ResourceKind::Materials, -moved);
+            }
+            stockpiles::add_resource(
+                &mut colony.stockpiles[destination].contents,
+                ResourceKind::Materials,
+                moved,
+            );
+        }
+    }
+}
+
+fn retarget_offering_source(
+    colony: &mut ColonyRuntime,
+    job_index: usize,
+    cat_index: usize,
+) -> bool {
+    let from = position_to_world(colony.anchor, colony.cats[cat_index].position);
+    let Some((source, site)) = offering_source_stockpile(colony, from) else {
+        colony.cats[cat_index].destination = None;
+        colony.cats[cat_index].activity = CatActivity::Idle;
+        return false;
+    };
+    let source_id = source.id.clone();
+    let JobMetadata::OfferingCarry {
+        escrow_id,
+        delivered,
+        ..
+    } = colony.jobs[job_index].metadata.clone()
+    else {
+        return false;
+    };
+    colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
+        source_stockpile_id: source_id,
+        site: Some(site),
+        accepted: false,
+        escrow_id,
+        delivered,
+    };
+    colony.cats[cat_index].destination = Some(position_from_world(tile_pos_to_world(site)));
+    colony.cats[cat_index].activity = CatActivity::Traveling;
+    colony.cats[cat_index].current_task = task_for_job(JobKind::CarryOffering);
+    true
+}
+
+fn offering_job_is_active(colony: &ColonyRuntime, job_id: &str) -> bool {
+    colony.jobs.iter().any(|job| {
+        job.id == job_id
+            && job.kind == JobKind::CarryOffering
+            && job.status == JobStatus::Active
+            && job.assigned_cat.as_deref().is_some_and(|cat_id| {
+                colony
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+            })
+    })
+}
+
+/// Advance the physical stockpile -> shrine -> ritual handoff. This owns no path query:
+/// it only updates exact endpoints, leaving the single shared phase-34 A* pass to move
+/// each cat. Goods leave aggregate+source only at pickup, re-enter aggregate in shrine
+/// escrow only at delivery, and cannot become blessings until PerformOffering completes.
+fn advance_material_offering_logistics(colony: &mut ColonyRuntime, now_ms: i64) {
+    const RETURN_MARKER: &str = "offering-return";
+
+    recover_orphaned_offering_escrows(colony);
+
+    // A canceled carrier owns real goods but no longer owns an offering. Convert its
+    // provenance to the ordinary already-debited mover path so it returns to storage.
+    for cat_index in 0..colony.cats.len() {
+        let job_id = colony.cats[cat_index]
+            .carrying
+            .as_ref()
+            .and_then(|carrying| offering_cargo_job_id(carrying.source_gather_spot.as_deref()))
+            .map(str::to_owned);
+        if job_id
+            .as_deref()
+            .is_some_and(|job_id| !offering_job_is_active(colony, job_id))
+            && colony.cats[cat_index].carrying.is_some()
+        {
+            colony.cats[cat_index]
+                .carrying
+                .as_mut()
+                .expect("checked above")
+                .source_gather_spot = Some(RETURN_MARKER.to_owned());
+            let from = position_to_world(colony.anchor, colony.cats[cat_index].position);
+            let carrying = colony.cats[cat_index]
+                .carrying
+                .as_ref()
+                .expect("checked above");
+            let destination = haul_deposit_target(colony, carrying, from);
+            colony.cats[cat_index].destination = Some(position_from_world(destination));
+            colony.cats[cat_index].activity = CatActivity::Returning;
+        }
+    }
+
+    let job_ids = colony
+        .jobs
+        .iter()
+        .filter(|job| job.kind == JobKind::CarryOffering && job.status == JobStatus::Active)
+        .map(|job| job.id.clone())
+        .collect::<Vec<_>>();
+
+    for job_id in job_ids {
+        let Some(job_index) = colony.jobs.iter().position(|job| job.id == job_id) else {
+            continue;
+        };
+        let Some(cat_id) = colony.jobs[job_index].assigned_cat.clone() else {
+            colony.jobs[job_index].status = JobStatus::Cancelled;
+            colony.jobs[job_index].completed_at = Some(now_ms);
+            continue;
+        };
+        let Some(cat_index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
+            colony.jobs[job_index].status = JobStatus::Cancelled;
+            colony.jobs[job_index].completed_at = Some(now_ms);
+            continue;
+        };
+
+        if !has_complete_building(colony, BuildingType::Shrine) {
+            colony.jobs[job_index].status = JobStatus::Cancelled;
+            colony.jobs[job_index].completed_at = Some(now_ms);
+            continue;
+        }
+
+        let metadata = colony.jobs[job_index].metadata.clone();
+        let JobMetadata::OfferingCarry {
+            source_stockpile_id,
+            site,
+            accepted,
+            escrow_id,
+            delivered,
+        } = metadata
+        else {
+            colony.jobs[job_index].status = JobStatus::Cancelled;
+            colony.jobs[job_index].completed_at = Some(now_ms);
+            continue;
+        };
+
+        let carrying_this_offering =
+            colony.cats[cat_index]
+                .carrying
+                .as_ref()
+                .is_some_and(|carrying| {
+                    offering_cargo_job_id(carrying.source_gather_spot.as_deref())
+                        == Some(job_id.as_str())
+                });
+        if carrying_this_offering {
+            let shrine = village_anchor_world(colony.anchor);
+            let at_shrine = is_at_shrine(
+                position_to_world(colony.anchor, colony.cats[cat_index].position),
+                shrine,
+            );
+            if !at_shrine {
+                colony.cats[cat_index].destination = Some(position_from_world(shrine));
+                colony.cats[cat_index].activity = CatActivity::Returning;
+                continue;
+            }
+
+            let carried = colony.cats[cat_index]
+                .carrying
+                .take()
+                .map_or(0.0, |carrying| carrying.amount.max(0.0));
+            let remaining_needed = (f64::from(OFFERING_MATERIALS_AMOUNT) - delivered).max(0.0);
+            let accepted_amount = carried.min(remaining_needed);
+            ensure_offering_escrow(colony, &escrow_id);
+            if let Some(escrow) = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == escrow_id)
+            {
+                stockpiles::add_resource(
+                    &mut escrow.contents,
+                    ResourceKind::Materials,
+                    accepted_amount,
+                );
+            }
+            stockpiles::add_resource(
+                &mut colony.resources,
+                ResourceKind::Materials,
+                accepted_amount,
+            );
+            let excess = (carried - accepted_amount).max(0.0);
+            if excess > f64::EPSILON {
+                let recovery_id = format!(
+                    "{}offering-recovery-{job_id}-{now_ms}",
+                    stockpiles::STATION_INPUT_PREFIX
+                );
+                ensure_offering_escrow(colony, &recovery_id);
+                if let Some(recovery) = colony
+                    .stockpiles
+                    .iter_mut()
+                    .find(|pile| pile.id == recovery_id)
+                {
+                    stockpiles::add_resource(
+                        &mut recovery.contents,
+                        ResourceKind::Materials,
+                        excess,
+                    );
+                }
+                stockpiles::add_resource(&mut colony.resources, ResourceKind::Materials, excess);
+            }
+            let delivered = delivered + accepted_amount;
+
+            if delivered + f64::EPSILON >= f64::from(OFFERING_MATERIALS_AMOUNT) {
+                let requester = colony.jobs[job_index].requested_by;
+                colony.jobs[job_index].status = JobStatus::Completed;
+                colony.jobs[job_index].completed_at = Some(now_ms);
+                colony.jobs[job_index].ends_at = Some(now_ms);
+                append_event(
+                    colony,
+                    now_ms,
+                    EventKind::JobCompleted,
+                    "Completed carry offering.",
+                );
+                queue_job_requested_by(
+                    colony,
+                    now_ms,
+                    JobKind::PerformOffering,
+                    requester,
+                    Some(cat_id.clone()),
+                    JobMetadata::OfferingRitual {
+                        escrow_id,
+                        amount: f64::from(OFFERING_MATERIALS_AMOUNT),
+                    },
+                );
+                if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                    cat.position = position_from_world(shrine);
+                    cat.destination = None;
+                    cat.activity = CatActivity::Working;
+                }
+            } else {
+                colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
+                    source_stockpile_id,
+                    site,
+                    accepted: false,
+                    escrow_id,
+                    delivered,
+                };
+                retarget_offering_source(colony, job_index, cat_index);
+            }
+            continue;
+        }
+
+        if colony.cats[cat_index].carrying.is_some() {
+            continue;
+        }
+        let at_source = site.is_some_and(|site| {
+            world_pos_to_tile(position_to_world(
+                colony.anchor,
+                colony.cats[cat_index].position,
+            )) == site
+        });
+        if accepted && at_source {
+            let remaining_needed = (f64::from(OFFERING_MATERIALS_AMOUNT) - delivered).max(0.0);
+            let available = colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == source_stockpile_id)
+                .map_or(0.0, |pile| {
+                    stockpiles::resource_amount(&pile.contents, ResourceKind::Materials)
+                });
+            let pickup = available.min(remaining_needed);
+            if pickup > f64::EPSILON
+                && colony.resources.materials + f64::EPSILON >= OFFERING_MATERIALS_RESERVE + pickup
+            {
+                if let Some(source) = colony
+                    .stockpiles
+                    .iter_mut()
+                    .find(|pile| pile.id == source_stockpile_id)
+                {
+                    stockpiles::add_resource(
+                        &mut source.contents,
+                        ResourceKind::Materials,
+                        -pickup,
+                    );
+                }
+                stockpiles::add_resource(&mut colony.resources, ResourceKind::Materials, -pickup);
+                colony.cats[cat_index].carrying = Some(Carrying {
+                    kind: CarryingKind::Materials,
+                    amount: pickup,
+                    job_ended_at: now_ms,
+                    source_gather_spot: Some(offering_cargo_marker(&job_id)),
+                });
+                let shrine = village_anchor_world(colony.anchor);
+                colony.cats[cat_index].destination = Some(position_from_world(shrine));
+                colony.cats[cat_index].activity = CatActivity::Returning;
+                colony.jobs[job_index].metadata = JobMetadata::OfferingCarry {
+                    source_stockpile_id,
+                    site: Some(world_pos_to_tile(shrine)),
+                    accepted: false,
+                    escrow_id,
+                    delivered,
+                };
+                continue;
+            }
+        }
+
+        if accepted && !at_source {
+            if let Some(site) = site {
+                colony.cats[cat_index].destination =
+                    Some(position_from_world(tile_pos_to_world(site)));
+                colony.cats[cat_index].activity = CatActivity::Traveling;
+            }
+            continue;
+        }
+
+        let source_still_valid = colony.stockpiles.iter().any(|pile| {
+            pile.id == source_stockpile_id
+                && stockpiles::resource_amount(&pile.contents, ResourceKind::Materials)
+                    > f64::EPSILON
+        });
+        if !source_still_valid || site.is_none() {
+            retarget_offering_source(colony, job_index, cat_index);
+        }
+    }
+}
+
 /// Phase 34: move cats, accept jobs on shrine arrival, reveal tiles, and apply
 /// path wear.
 fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
@@ -9221,7 +9762,17 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
 
         let crosses_fence = is_inside_movement_village(world_pos_to_tile(world_pos), movement)
             != is_inside_movement_village(world_pos_to_tile(destination), movement);
-        let route = if current_task == Some(TaskType::Farm) {
+        let offering_route_required = colony.jobs.iter().any(|job| {
+            job.kind == JobKind::CarryOffering
+                && job.status == JobStatus::Active
+                && job.assigned_cat.as_deref() == Some(cat_id.as_str())
+        }) || colony.cats[cat_index].carrying.as_ref().is_some_and(
+            |carrying| {
+                offering_cargo_job_id(carrying.source_gather_spot.as_deref())
+                    .is_some_and(|job_id| offering_job_is_active(colony, job_id))
+            },
+        );
+        let route = if current_task == Some(TaskType::Farm) || offering_route_required {
             find_farm_path(
                 pathfinding_pos(world_pos),
                 pathfinding_pos(destination),
@@ -9251,10 +9802,11 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                 .or_insert(1);
             debug.max_consecutive_traveling = debug.max_consecutive_traveling.max(*consecutive);
         }
-        if route.is_none() && current_task == Some(TaskType::Farm) {
-            // Farm logistics never use the generic straight-line fallback: a removed
-            // bridge, closed staged wall, or newly impassable tile suspends the trip until
-            // a real A* route exists instead of letting a farmer walk through barriers.
+        if route.is_none() && (current_task == Some(TaskType::Farm) || offering_route_required) {
+            // Physical farm and offering logistics never use the generic straight-line
+            // fallback: a removed bridge, closed staged wall, or newly impassable tile
+            // suspends the trip until a real A* route exists instead of letting a carrier
+            // walk through barriers.
             continue;
         }
         let at_gate = (world_pos.x - f64::from(movement.gate.x)).abs() < 1.0
@@ -11821,7 +12373,49 @@ fn random_alive_cat(colony: &ColonyRuntime, roll: f64) -> Option<CatId> {
     Some(alive[index].id.clone())
 }
 
+/// Restore an inbound offering stack before its carrier permanently leaves play.
+/// Normal storage receives whatever fits through the same finite-capacity path as a
+/// living return. Any remainder enters an orphaned shrine escrow (and therefore the
+/// aggregate ledger) so phase 33 can retry it later instead of deleting it.
+fn recover_offering_cargo_from_cat(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
+    let Some(cat_index) = colony.cats.iter().position(|cat| cat.id == cat_id) else {
+        return;
+    };
+    let is_offering_cargo = colony.cats[cat_index]
+        .carrying
+        .as_ref()
+        .is_some_and(|carrying| {
+            offering_cargo_job_id(carrying.source_gather_spot.as_deref()).is_some()
+        });
+    if !is_offering_cargo {
+        return;
+    }
+    let at = position_to_world(colony.anchor, colony.cats[cat_index].position);
+    let carrying = colony.cats[cat_index]
+        .carrying
+        .take()
+        .expect("offering cargo checked above");
+    let remaining = credit_carrying(colony, &carrying, at);
+    if remaining <= f64::EPSILON {
+        return;
+    }
+    let escrow_id = format!(
+        "{}offering-recovery-{cat_id}-{now_ms}",
+        stockpiles::STATION_INPUT_PREFIX
+    );
+    ensure_offering_escrow(colony, &escrow_id);
+    if let Some(escrow) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == escrow_id)
+    {
+        stockpiles::add_resource(&mut escrow.contents, ResourceKind::Materials, remaining);
+    }
+    stockpiles::add_resource(&mut colony.resources, ResourceKind::Materials, remaining);
+}
+
 fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
+    recover_offering_cargo_from_cat(colony, cat_id, now_ms);
     cancel_cat_jobs(colony, cat_id, now_ms);
     for building in &mut colony.buildings {
         if building.assigned_cat.as_deref() == Some(cat_id) {
@@ -11980,7 +12574,7 @@ fn automated_job_role(colony: &ColonyRuntime, job: &JobRuntime) -> Option<Office
         | JobKind::ForageFibre => Some(OfficerRole::Farmer),
         JobKind::Quarry | JobKind::GatherLogs => Some(OfficerRole::Forester),
         JobKind::TrainWarrior => Some(OfficerRole::Captain),
-        JobKind::Explore | JobKind::Ritual | JobKind::CarryOffering => {
+        JobKind::Explore | JobKind::Ritual | JobKind::CarryOffering | JobKind::PerformOffering => {
             Some(OfficerRole::Loremaster)
         }
         _ => None,
@@ -12720,7 +13314,8 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::ForageFibre => Some(TaskType::Hunt),
         JobKind::Explore | JobKind::ExpandVillage => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Patrol),
-        JobKind::Ritual | JobKind::CarryOffering => Some(TaskType::Rest),
+        JobKind::Ritual | JobKind::PerformOffering => Some(TaskType::Rest),
+        JobKind::CarryOffering => Some(TaskType::Build),
         JobKind::HaulGatherSpot => Some(TaskType::Build),
         JobKind::SupplyFood | JobKind::SupplyWater => None,
     }
@@ -13702,6 +14297,11 @@ fn unaccepted_active_job_site(colony: &ColonyRuntime, cat_id: &str) -> Option<(u
                 accepted: false,
                 ..
             } => Some((index, site)),
+            JobMetadata::OfferingCarry {
+                site: Some(site),
+                accepted: false,
+                ..
+            } => Some((index, site)),
             JobMetadata::Scout {
                 destination: Some(destination),
                 accepted: false,
@@ -13758,6 +14358,19 @@ fn accept_job(colony: &mut ColonyRuntime, job_index: usize, now_ms: i64) {
             stockpile_id,
             site,
             accepted: true,
+        },
+        JobMetadata::OfferingCarry {
+            source_stockpile_id,
+            site,
+            escrow_id,
+            delivered,
+            ..
+        } => JobMetadata::OfferingCarry {
+            source_stockpile_id,
+            site,
+            accepted: true,
+            escrow_id,
+            delivered,
         },
         JobMetadata::Scout {
             mission,
@@ -14526,6 +15139,9 @@ fn job_has_destination_metadata(job: &JobRuntime) -> bool {
         | JobMetadata::Site { .. }
         | JobMetadata::Expansion { accepted: _, .. } => true,
         JobMetadata::GatherHaul { site: Some(_), .. } => true,
+        JobMetadata::OfferingCarry { site: Some(_), .. } | JobMetadata::OfferingRitual { .. } => {
+            true
+        }
         JobMetadata::Scout {
             destination: Some(_),
             ..
@@ -14819,7 +15435,7 @@ fn runnable_raw_material_bench(colony: &ColonyRuntime) -> Option<BuildingId> {
     let target_blocks = build_reserve + crate::production::WOODWORKING_BLOCKS_PER_CYCLE;
     let offering_in_flight = active_or_queued_jobs(colony)
         .iter()
-        .any(|job| job.kind == JobKind::CarryOffering);
+        .any(|job| matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering));
     let offering_materials_reserve = if offering_in_flight {
         OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
     } else {
@@ -15152,6 +15768,10 @@ fn due_active_jobs(colony: &ColonyRuntime, gate: TickGate) -> Vec<JobRuntime> {
         .iter()
         .filter(|job| {
             job.status == JobStatus::Active
+                // CarryOffering is a physical route. It completes only after its
+                // conserved cargo touches the shrine; a wall-clock deadline from an
+                // old save or compatibility constructor must never teleport it.
+                && job.kind != JobKind::CarryOffering
                 && (job.kind != JobKind::Explore
                     || matches!(job.metadata, JobMetadata::Scout { found: true, .. }))
                 && job
@@ -15588,33 +16208,41 @@ fn complete_ritual(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate)
     });
 }
 
-/// Completes a `carry_offering` job (P12.6). Unlike [`complete_ritual`] (pure cat
-/// labor, no resource cost), an offering consumes a genuine hauled-and-banked
-/// surplus — [`OFFERING_MATERIALS_AMOUNT`] materials — converting it to blessings
-/// at the shrine. It reuses the Ritual->blessing carry/credit path unchanged
-/// (`CarryingKind::Blessings` -> the shared shrine-arrival `credit_carrying` ->
-/// `global_upgrade_points`), so no new shrine machinery is needed; only the
-/// resource draw is new. It draws only from `materials`, a resource `Tithe` never
-/// touches (Tithe only spends food/refined), so the two blessing faucets can never
-/// double-count the same surplus pool.
-///
-/// Defensively re-checks the balance here (not just at dispatch time in
-/// `direct_colony`): materials can be spent by other systems (a build, a craft
-/// bench) during the job's travel+duration, so the surplus that justified
-/// dispatch may have evaporated by completion. When that happens this performs no
-/// offering and produces no blessings — the cat simply returns empty-handed.
-/// Materials are never survival-critical (unlike food/water), so this can never
-/// starve the colony either way.
-fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
+/// Consume a completed physical shrine delivery and begin the ordinary blessing
+/// return leg. The aggregate ledger includes station input, so consumption removes
+/// the same amount from both the hidden offering escrow and `resources.materials`.
+/// A missing shrine, malformed job, short escrow, or second invocation produces
+/// nothing and lets phase 33 recover any orphaned escrow into visible storage.
+fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) -> bool {
     let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
-        return;
+        return false;
     };
-    if colony.resources.materials
-        < OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
-    {
-        return;
+    if !has_complete_building(colony, BuildingType::Shrine) {
+        return false;
     }
-    colony.resources.materials -= f64::from(OFFERING_MATERIALS_AMOUNT);
+    let JobMetadata::OfferingRitual { escrow_id, amount } = &job.metadata else {
+        return false;
+    };
+    let required = f64::from(OFFERING_MATERIALS_AMOUNT);
+    if !is_offering_escrow_id(escrow_id)
+        || (*amount - required).abs() > f64::EPSILON
+        || offering_escrow_amount(colony, escrow_id) + f64::EPSILON < *amount
+        || colony.resources.materials + f64::EPSILON < *amount
+    {
+        return false;
+    }
+    if let Some(escrow) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == *escrow_id)
+    {
+        stockpiles::add_resource(&mut escrow.contents, ResourceKind::Materials, -*amount);
+    }
+    stockpiles::add_resource(&mut colony.resources, ResourceKind::Materials, -*amount);
+    colony.stockpiles.retain(|pile| {
+        pile.id != *escrow_id
+            || stockpiles::resource_amount(&pile.contents, ResourceKind::Materials) > f64::EPSILON
+    });
     colony.last_offering_at = Some(gate.processed_through);
     let blessings = 1.0 + f64::from(colony.upgrade_levels.ritual_mastery / 3);
     let cat_id = colony.cats[cat_index].id.clone();
@@ -15640,6 +16268,7 @@ fn complete_offering(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGat
             "{cat_id} offered {OFFERING_MATERIALS_AMOUNT} materials at the shrine for blessings."
         ),
     );
+    true
 }
 
 fn complete_warrior_training(colony: &mut ColonyRuntime, job: &JobRuntime, _: TickGate) {
@@ -17127,6 +17756,11 @@ fn haul_deposit_target(
     carrying: &Carrying,
     from_pos: WorldPos,
 ) -> WorldPos {
+    if offering_cargo_job_id(carrying.source_gather_spot.as_deref())
+        .is_some_and(|job_id| offering_job_is_active(colony, job_id))
+    {
+        return village_anchor_world(colony.anchor);
+    }
     if let Some((_, pile_id)) = parse_farm_cargo(carrying.source_gather_spot.as_deref()) {
         return colony
             .stockpiles
@@ -36435,7 +37069,7 @@ mod tests {
     }
 
     fn offering_colony(materials: f64) -> ColonyRuntime {
-        ColonyRuntime {
+        let mut colony = ColonyRuntime {
             id: "colony-1".to_owned(),
             resources: Resources {
                 materials,
@@ -36444,7 +37078,9 @@ mod tests {
             cats: vec![ritualist_cat("cat-1")],
             test_rng_seed: Some(7),
             ..ColonyRuntime::default()
-        }
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        colony
     }
 
     fn shrine_action_ctx(now_ms: i64) -> ActionCtx {
@@ -36487,10 +37123,29 @@ mod tests {
         }
     }
 
-    fn offering_job(colony: &ColonyRuntime) -> JobRuntime {
+    fn offering_job(colony: &mut ColonyRuntime) -> JobRuntime {
+        let escrow_id = format!("{}offering-test", stockpiles::STATION_INPUT_PREFIX);
+        let amount = f64::from(OFFERING_MATERIALS_AMOUNT);
+        let source = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| {
+                !pile.is_station_local()
+                    && stockpiles::resource_amount(&pile.contents, ResourceKind::Materials)
+                        >= amount
+            })
+            .expect("fixture has a visible material source");
+        stockpiles::add_resource(&mut source.contents, ResourceKind::Materials, -amount);
+        ensure_offering_escrow(colony, &escrow_id);
+        let escrow = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == escrow_id)
+            .expect("offering escrow exists");
+        stockpiles::add_resource(&mut escrow.contents, ResourceKind::Materials, amount);
         JobRuntime {
             id: "job-offering-1".to_owned(),
-            kind: JobKind::CarryOffering,
+            kind: JobKind::PerformOffering,
             status: JobStatus::Active,
             requested_by: JobRequester::Leader,
             assigned_cat: Some(colony.cats[0].id.clone()),
@@ -36502,7 +37157,37 @@ mod tests {
             started_at: Some(0),
             ends_at: Some(2_400_000),
             completed_at: None,
-            metadata: JobMetadata::None,
+            metadata: JobMetadata::OfferingRitual { escrow_id, amount },
+        }
+    }
+
+    fn add_complete_shrine(colony: &mut ColonyRuntime) {
+        colony.buildings.push(BuildingRuntime {
+            id: "offering-shrine".to_owned(),
+            building_type: BuildingType::Shrine,
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        });
+    }
+
+    fn active_offering_carry(colony: &ColonyRuntime, source_id: &str, site: TilePos) -> JobRuntime {
+        JobRuntime {
+            id: "job-physical-offering".to_owned(),
+            kind: JobKind::CarryOffering,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Player,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            duration_ms: 300_000,
+            created_at: 1_000,
+            metadata: JobMetadata::OfferingCarry {
+                source_stockpile_id: source_id.to_owned(),
+                site: Some(site),
+                accepted: true,
+                escrow_id: stockpiles::station_input_id("offering-physical-test"),
+                delivered: 0.0,
+            },
+            ..JobRuntime::default()
         }
     }
 
@@ -36561,18 +37246,78 @@ mod tests {
             world.colonies[0].global_upgrade_points, 7.0,
             "dispatch cannot credit a blessing before physical shrine delivery"
         );
-        let offering = world.colonies[0]
+        let carry_index = world.colonies[0]
             .jobs
             .iter()
-            .find(|job| job.kind == JobKind::CarryOffering)
-            .expect("action queued a material offering")
-            .clone();
-        complete_offering(
+            .position(|job| job.kind == JobKind::CarryOffering)
+            .expect("action queued a material offering");
+        let materials_before_pickup = world.colonies[0].resources.materials;
+        phase_14_promote_queued_jobs_and_break_ground(
             &mut world.colonies[0],
-            &offering,
-            production_gate(60, 2_402_000),
+            production_gate(1, 2_001),
+            world.world_seed,
         );
-        let gate = production_gate(1, 2_403_000);
+        phase_15_assign_promoted_job_destinations(
+            &mut world.colonies[0],
+            production_gate(1, 2_001),
+            world.world_seed,
+        );
+        let source_site = match world.colonies[0].jobs[carry_index].metadata {
+            JobMetadata::OfferingCarry {
+                site: Some(site), ..
+            } => site,
+            ref metadata => panic!("expected physical source metadata, got {metadata:?}"),
+        };
+        world.colonies[0].cats[0].position = position_from_world(tile_pos_to_world(source_site));
+        accept_job(&mut world.colonies[0], carry_index, 2_002);
+        advance_material_offering_logistics(&mut world.colonies[0], 2_002);
+        assert_eq!(
+            world.colonies[0].resources.materials,
+            materials_before_pickup - f64::from(OFFERING_MATERIALS_AMOUNT),
+            "pickup debits both the visible pile and aggregate ledger"
+        );
+        assert_eq!(world.colonies[0].global_upgrade_points, 7.0);
+        assert_eq!(
+            world.colonies[0].cats[0]
+                .carrying
+                .as_ref()
+                .map(|cargo| cargo.kind),
+            Some(CarryingKind::Materials)
+        );
+
+        world.colonies[0].cats[0].position =
+            position_from_world(village_anchor_world(world.colonies[0].anchor));
+        advance_material_offering_logistics(&mut world.colonies[0], 2_003);
+        assert_eq!(
+            world.colonies[0].resources.materials, materials_before_pickup,
+            "shrine delivery persists the goods in escrow before ritual consumption"
+        );
+        assert_eq!(world.colonies[0].global_upgrade_points, 7.0);
+        let ritual_index = world.colonies[0]
+            .jobs
+            .iter()
+            .position(|job| job.kind == JobKind::PerformOffering)
+            .expect("delivery queued the ritual stage");
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut world.colonies[0],
+            production_gate(1, 2_004),
+            world.world_seed,
+        );
+        world.colonies[0].jobs[ritual_index].ends_at = Some(2_005);
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            &mut world.colonies[0],
+            production_gate(1, 2_005),
+        );
+        assert_eq!(
+            world.colonies[0].resources.materials,
+            materials_before_pickup - 10.0
+        );
+        assert_eq!(
+            world.colonies[0].global_upgrade_points, 7.0,
+            "ritual completion creates physical blessing cargo but does not credit it"
+        );
+
+        let gate = production_gate(1, 2_006);
         let mut movement = phase_32_movement_setup_and_village_expansion_queue(
             &mut world.colonies[0],
             gate,
@@ -36649,9 +37394,19 @@ mod tests {
     #[test]
     fn complete_offering_converts_surplus_materials_to_blessings_and_logs_an_event() {
         let mut colony = offering_colony(30.0);
-        let job = offering_job(&colony);
+        colony.buildings.push(BuildingRuntime {
+            building_type: BuildingType::Shrine,
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        });
+        let job = offering_job(&mut colony);
 
-        complete_offering(&mut colony, &job, production_gate(60, 2_400_000));
+        assert!(complete_offering(
+            &mut colony,
+            &job,
+            production_gate(60, 2_400_000)
+        ));
 
         assert_eq!(
             colony.resources.materials, 20.0,
@@ -36687,14 +37442,37 @@ mod tests {
     }
 
     #[test]
-    fn complete_offering_produces_no_blessings_when_the_surplus_evaporated_before_completion() {
-        // Materials dropped below OFFERING_MATERIALS_AMOUNT between dispatch and
-        // completion (e.g. spent on a build in the meantime). Survival guardrail:
-        // no offering, no blessings, no resource loss — the cat just returns.
+    fn complete_offering_produces_no_blessings_when_physical_escrow_is_short() {
         let mut colony = offering_colony(10.0);
-        let job = offering_job(&colony);
+        colony.buildings.push(BuildingRuntime {
+            building_type: BuildingType::Shrine,
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        });
+        let job = offering_job(&mut colony);
+        let escrow_id = match &job.metadata {
+            JobMetadata::OfferingRitual { escrow_id, .. } => escrow_id,
+            _ => unreachable!(),
+        };
+        let escrow = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == *escrow_id)
+            .expect("escrow exists");
+        stockpiles::add_resource(&mut escrow.contents, ResourceKind::Materials, -5.0);
+        let visible = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| !pile.is_station_local())
+            .expect("visible pile exists");
+        stockpiles::add_resource(&mut visible.contents, ResourceKind::Materials, 5.0);
 
-        complete_offering(&mut colony, &job, production_gate(60, 2_400_000));
+        assert!(!complete_offering(
+            &mut colony,
+            &job,
+            production_gate(60, 2_400_000)
+        ));
 
         assert_eq!(
             colony.resources.materials, 10.0,
@@ -36711,6 +37489,336 @@ mod tests {
                 .any(|event| { event.kind == EventKind::Offering }),
             "no offering_performed event should fire without a real surplus"
         );
+    }
+
+    #[test]
+    fn partial_physical_offering_retargets_two_visible_piles_before_ritual() {
+        let mut colony = offering_colony(30.0);
+        add_complete_shrine(&mut colony);
+        colony.stockpiles.clear();
+        let anchor = colony.anchor;
+        let mut first = designated_pile(
+            "offering-source-a",
+            ZoneRect {
+                x1: anchor.x + 2,
+                y1: anchor.y,
+                x2: anchor.x + 2,
+                y2: anchor.y,
+            },
+            &[ResourceKind::Materials],
+        );
+        first.contents.materials = 4.0;
+        let mut second = designated_pile(
+            "offering-source-b",
+            ZoneRect {
+                x1: anchor.x + 3,
+                y1: anchor.y,
+                x2: anchor.x + 3,
+                y2: anchor.y,
+            },
+            &[ResourceKind::Materials],
+        );
+        second.contents.materials = 6.0;
+        let mut reserve = designated_pile(
+            "offering-reserve",
+            ZoneRect {
+                x1: anchor.x + 30,
+                y1: anchor.y,
+                x2: anchor.x + 30,
+                y2: anchor.y,
+            },
+            &[ResourceKind::Materials],
+        );
+        reserve.contents.materials = 20.0;
+        colony.stockpiles.extend([first, second, reserve]);
+        let first_site = TilePos {
+            x: anchor.x + 2,
+            y: anchor.y,
+        };
+        colony.cats[0].position = position_from_world(tile_pos_to_world(first_site));
+        colony.jobs.push(active_offering_carry(
+            &colony,
+            "offering-source-a",
+            first_site,
+        ));
+
+        advance_material_offering_logistics(&mut colony, 2_000);
+        assert_eq!(colony.resources.materials, 26.0);
+        assert_eq!(
+            colony.cats[0].carrying.as_ref().map(|cargo| cargo.amount),
+            Some(4.0)
+        );
+        assert_eq!(colony.global_upgrade_points, 0.0);
+
+        colony.cats[0].position = position_from_world(village_anchor_world(anchor));
+        advance_material_offering_logistics(&mut colony, 3_000);
+        assert_eq!(colony.resources.materials, 30.0);
+        let carry_index = colony
+            .jobs
+            .iter()
+            .position(|job| job.id == "job-physical-offering")
+            .unwrap();
+        let second_site = match colony.jobs[carry_index].metadata {
+            JobMetadata::OfferingCarry {
+                ref source_stockpile_id,
+                site: Some(site),
+                delivered,
+                ..
+            } => {
+                assert_eq!(source_stockpile_id, "offering-source-b");
+                assert_eq!(delivered, 4.0);
+                site
+            }
+            ref metadata => panic!("expected retargeted carry, got {metadata:?}"),
+        };
+        colony.cats[0].position = position_from_world(tile_pos_to_world(second_site));
+        accept_job(&mut colony, carry_index, 3_001);
+        advance_material_offering_logistics(&mut colony, 3_001);
+        assert_eq!(colony.resources.materials, 24.0);
+        colony.cats[0].position = position_from_world(village_anchor_world(anchor));
+        advance_material_offering_logistics(&mut colony, 4_000);
+
+        assert_eq!(colony.resources.materials, 30.0);
+        assert!(colony.cats[0].carrying.is_none());
+        assert!(colony.jobs.iter().any(|job| {
+            job.kind == JobKind::PerformOffering && job.status == JobStatus::Queued
+        }));
+        assert_eq!(colony.global_upgrade_points, 0.0);
+    }
+
+    #[test]
+    fn cancelled_unassigned_and_dead_offering_carriers_restore_conserved_materials() {
+        for interruption in ["cancelled", "unassigned", "dead"] {
+            let mut colony = offering_colony(30.0);
+            add_complete_shrine(&mut colony);
+            let source_id = colony
+                .stockpiles
+                .iter()
+                .find(|pile| !pile.is_station_local() && pile.contents.materials >= 10.0)
+                .expect("fixture source")
+                .id
+                .clone();
+            let (x, y) = colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == source_id)
+                .unwrap()
+                .center();
+            let source_site = TilePos {
+                x: x.round() as i32,
+                y: y.round() as i32,
+            };
+            colony.cats[0].position = position_from_world(tile_pos_to_world(source_site));
+            colony
+                .jobs
+                .push(active_offering_carry(&colony, &source_id, source_site));
+            advance_material_offering_logistics(&mut colony, 2_000);
+            assert_eq!(colony.resources.materials, 20.0);
+
+            match interruption {
+                "cancelled" => colony.jobs[0].status = JobStatus::Cancelled,
+                "unassigned" => colony.jobs[0].assigned_cat = None,
+                "dead" => {
+                    let cat_id = colony.cats[0].id.clone();
+                    mark_cat_dead(&mut colony, &cat_id, 2_001);
+                }
+                _ => unreachable!(),
+            }
+            advance_material_offering_logistics(&mut colony, 2_002);
+            if interruption != "dead" {
+                let destination = colony.cats[0]
+                    .destination
+                    .expect("living interrupted carrier returns to storage");
+                colony.cats[0].position = destination;
+                let gate = production_gate(1, 2_003);
+                let mut movement = phase_32_movement_setup_and_village_expansion_queue(
+                    &mut colony,
+                    gate,
+                    reliable_policy(),
+                    7,
+                );
+                phase_33_movement_deposits_and_no_destination_wander(
+                    &mut colony,
+                    gate,
+                    &mut movement,
+                );
+            }
+
+            assert_eq!(
+                colony.resources.materials, 30.0,
+                "{interruption} carrier must conserve its picked-up stack"
+            );
+            assert_eq!(colony.global_upgrade_points, 0.0);
+            assert!(
+                colony
+                    .stockpiles
+                    .iter()
+                    .filter(|pile| !pile.is_station_local())
+                    .map(|pile| pile.contents.materials)
+                    .sum::<f64>()
+                    >= 30.0
+            );
+        }
+    }
+
+    #[test]
+    fn extinction_mid_offering_resets_transit_without_ghost_credit_deterministically() {
+        let mut colony = offering_colony(30.0);
+        add_complete_shrine(&mut colony);
+        let source = colony
+            .stockpiles
+            .iter()
+            .find(|pile| !pile.is_station_local() && pile.contents.materials >= 10.0)
+            .expect("fixture source");
+        let source_id = source.id.clone();
+        let (x, y) = source.center();
+        let source_site = TilePos {
+            x: x.round() as i32,
+            y: y.round() as i32,
+        };
+        colony.cats[0].position = position_from_world(tile_pos_to_world(source_site));
+        colony
+            .jobs
+            .push(active_offering_carry(&colony, &source_id, source_site));
+        advance_material_offering_logistics(&mut colony, 2_000);
+        assert_eq!(colony.resources.materials, 20.0);
+        assert!(colony.cats[0].carrying.is_some());
+
+        let mut twin = colony.clone();
+        for candidate in [&mut colony, &mut twin] {
+            let cat_id = candidate.cats[0].id.clone();
+            mark_cat_dead(candidate, &cat_id, 2_001);
+            reset_run(candidate, 2_002, RunResetReason::AllCatsDead);
+        }
+
+        assert_eq!(
+            colony, twin,
+            "mid-offering extinction must be deterministic"
+        );
+        assert_eq!(colony.global_upgrade_points, 0.0);
+        assert!(
+            colony.jobs.iter().all(|job| {
+                !matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering)
+            })
+        );
+        assert!(
+            colony
+                .stockpiles
+                .iter()
+                .all(|pile| !is_offering_escrow_id(&pile.id))
+        );
+        assert!(colony.cats.iter().all(|cat| cat.carrying.is_none()));
+    }
+
+    #[test]
+    fn removed_source_retargets_and_lost_shrine_cancels_without_loss() {
+        let mut colony = offering_colony(30.0);
+        add_complete_shrine(&mut colony);
+        let original_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| !pile.is_station_local())
+            .unwrap()
+            .id
+            .clone();
+        let original_site = {
+            let pile = colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == original_id)
+                .unwrap();
+            let (x, y) = pile.center();
+            TilePos {
+                x: x.round() as i32,
+                y: y.round() as i32,
+            }
+        };
+        let mut replacement = designated_pile(
+            "offering-replacement",
+            ZoneRect {
+                x1: colony.anchor.x + 5,
+                y1: colony.anchor.y,
+                x2: colony.anchor.x + 5,
+                y2: colony.anchor.y,
+            },
+            &[ResourceKind::Materials],
+        );
+        replacement.contents.materials = 30.0;
+        colony.stockpiles.push(replacement);
+        colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == original_id)
+            .unwrap()
+            .contents
+            .materials = 0.0;
+        colony.cats[0].position = position_from_world(tile_pos_to_world(original_site));
+        colony
+            .jobs
+            .push(active_offering_carry(&colony, &original_id, original_site));
+
+        advance_material_offering_logistics(&mut colony, 2_000);
+        assert_eq!(colony.resources.materials, 30.0);
+        let carry_index = colony.jobs.len() - 1;
+        let replacement_site = match &colony.jobs[carry_index].metadata {
+            JobMetadata::OfferingCarry {
+                source_stockpile_id,
+                site: Some(site),
+                accepted: false,
+                ..
+            } => {
+                assert_eq!(source_stockpile_id, "offering-replacement");
+                *site
+            }
+            metadata => panic!("source removal must retarget, got {metadata:?}"),
+        };
+        colony.cats[0].position = position_from_world(tile_pos_to_world(replacement_site));
+        accept_job(&mut colony, carry_index, 2_001);
+        advance_material_offering_logistics(&mut colony, 2_001);
+        assert_eq!(colony.resources.materials, 20.0);
+
+        colony
+            .buildings
+            .retain(|building| building.building_type != BuildingType::Shrine);
+        advance_material_offering_logistics(&mut colony, 2_002);
+        assert_eq!(colony.jobs[carry_index].status, JobStatus::Cancelled);
+        advance_material_offering_logistics(&mut colony, 2_003);
+        let destination = colony.cats[0]
+            .destination
+            .expect("cargo returns after shrine loss");
+        colony.cats[0].position = destination;
+        let gate = production_gate(1, 2_004);
+        let mut movement = phase_32_movement_setup_and_village_expansion_queue(
+            &mut colony,
+            gate,
+            reliable_policy(),
+            7,
+        );
+        phase_33_movement_deposits_and_no_destination_wander(&mut colony, gate, &mut movement);
+        assert_eq!(colony.resources.materials, 30.0);
+        assert_eq!(colony.global_upgrade_points, 0.0);
+    }
+
+    #[test]
+    fn cancelled_ritual_escrow_returns_to_visible_storage() {
+        let mut colony = offering_colony(30.0);
+        add_complete_shrine(&mut colony);
+        let mut ritual = offering_job(&mut colony);
+        ritual.status = JobStatus::Cancelled;
+        colony.jobs.push(ritual);
+        assert_eq!(visible_offering_materials(&colony), 20.0);
+
+        advance_material_offering_logistics(&mut colony, 2_000);
+
+        assert_eq!(colony.resources.materials, 30.0);
+        assert_eq!(visible_offering_materials(&colony), 30.0);
+        assert!(
+            colony
+                .stockpiles
+                .iter()
+                .all(|pile| !is_offering_escrow_id(&pile.id))
+        );
+        assert_eq!(colony.global_upgrade_points, 0.0);
     }
 
     #[test]
@@ -36875,11 +37983,13 @@ mod tests {
         establish_office(&mut right.colonies[0], OfficerRole::Loremaster);
         left.colonies[0].run_started_at = 10_000 - SHRINE_ESTABLISHMENT_MS;
         right.colonies[0].run_started_at = 10_000 - SHRINE_ESTABLISHMENT_MS;
+        left.colonies[0].resources.materials = 100.0;
+        right.colonies[0].resources.materials = 100.0;
+        reconcile_colony_stockpiles(&mut left.colonies[0]);
+        reconcile_colony_stockpiles(&mut right.colonies[0]);
 
         for step in 1..=60 {
             let now = 10_000 + i64::from(step) * 60_000;
-            left.colonies[0].resources.materials = 30.0;
-            right.colonies[0].resources.materials = 30.0;
             assert_eq!(world_tick(&mut left, now), world_tick(&mut right, now));
         }
 

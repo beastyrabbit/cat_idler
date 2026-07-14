@@ -1771,6 +1771,8 @@ struct SpriteSheets {
     hat_architect: Handle<Image>,
     hat_ritualist: Handle<Image>,
     hat_warrior: Handle<Image>,
+    carry_materials: Handle<Image>,
+    carry_blessings: Handle<Image>,
 }
 
 impl SpriteSheets {
@@ -1790,6 +1792,12 @@ impl SpriteSheets {
             hat_architect: assets.load("public/images/cats/hat-architect.png"),
             hat_ritualist: assets.load("public/images/cats/hat-ritualist.png"),
             hat_warrior: assets.load("public/images/cats/hat-warrior.png"),
+            carry_materials: assets.load(
+                carrying_icon_path(CarryingKind::Materials).expect("materials icon is mapped"),
+            ),
+            carry_blessings: assets.load(
+                carrying_icon_path(CarryingKind::Blessings).expect("blessings icon is mapped"),
+            ),
         }
     }
 
@@ -1799,6 +1807,14 @@ impl SpriteSheets {
             Specialization::Architect => self.hat_architect.clone(),
             Specialization::Ritualist => self.hat_ritualist.clone(),
             Specialization::Warrior => self.hat_warrior.clone(),
+        }
+    }
+
+    fn carrying_icon(&self, kind: CarryingKind) -> Option<Handle<Image>> {
+        match kind {
+            CarryingKind::Materials => Some(self.carry_materials.clone()),
+            CarryingKind::Blessings => Some(self.carry_blessings.clone()),
+            _ => None,
         }
     }
 }
@@ -6760,11 +6776,19 @@ fn sync_cats(
             );
         }
         if let Some(carrying) = &cat.carrying {
+            let sprite = sheets.carrying_icon(carrying.kind).map_or_else(
+                || Sprite::from_color(carrying_color(carrying.kind), Vec2::splat(TILE * 0.28)),
+                |image| Sprite {
+                    image,
+                    custom_size: Some(Vec2::splat(TILE * 0.42)),
+                    ..default()
+                },
+            );
             spawn_cat_overlay(
                 &mut commands,
                 &cat.id,
                 Vec3::new(TILE * 0.3, CAT_SIZE.y * 0.55, 0.6),
-                Sprite::from_color(carrying_color(carrying.kind), Vec2::splat(TILE * 0.28)),
+                sprite,
             );
         }
         // Boosted cats wear a bright gold star above the head so a priority pick
@@ -10189,6 +10213,14 @@ fn carrying_color(kind: CarryingKind) -> Color {
     }
 }
 
+fn carrying_icon_path(kind: CarryingKind) -> Option<&'static str> {
+    match kind {
+        CarryingKind::Materials => Some("public/images/game/icons/materials.png"),
+        CarryingKind::Blessings => Some("public/images/game/icons/blessings.png"),
+        _ => None,
+    }
+}
+
 fn zone_color(kind: ZoneKind) -> Color {
     match kind {
         ZoneKind::Avoid => Color::srgba(0.90, 0.25, 0.25, 0.28),
@@ -11810,6 +11842,19 @@ mod tests {
         assert_eq!(atlas_index(0, 3), 3);
         assert_eq!(atlas_index(1, 0), 4);
         assert_eq!(atlas_index(7, 3), 31); // last cell of a 32-cell sheet
+    }
+
+    #[test]
+    fn offering_cargo_uses_recognizable_resource_icons() {
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Materials),
+            Some("public/images/game/icons/materials.png")
+        );
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Blessings),
+            Some("public/images/game/icons/blessings.png")
+        );
+        assert_eq!(carrying_icon_path(CarryingKind::Food), None);
     }
 
     #[test]

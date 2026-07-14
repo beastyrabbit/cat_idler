@@ -39,9 +39,9 @@ use crate::{
         farm_gather_spot_id, farm_rect_touches_claim_boundary, farm_route_is_reachable,
         found_colony_at, found_global_colony, has_frontier, has_logging_site, has_quarry_site,
         has_water_site, inside_village_interior, is_farm_gather_spot_id, legal_farm_gather_spots,
-        migration_game_minute_at, occupied_farm_tiles, reconcile_colony_stockpiles,
-        release_farm_worker, release_role_automation, village_exterior_is_road_connected,
-        world_tick,
+        material_offering_metadata, migration_game_minute_at, occupied_farm_tiles,
+        reconcile_colony_stockpiles, release_farm_worker, release_role_automation,
+        village_exterior_is_road_connected, visible_offering_materials, world_tick,
     },
     zones,
 };
@@ -393,6 +393,7 @@ fn request_job(
             | JobKind::TrainWarrior
             | JobKind::ExpandVillage
             | JobKind::CarryOffering
+            | JobKind::PerformOffering
             | JobKind::HaulGatherSpot
             | JobKind::BuildHouse
     ) {
@@ -452,6 +453,9 @@ fn request_job(
     }
     if kind == JobKind::CarryOffering {
         return offer_materials(colony, ctx);
+    }
+    if kind == JobKind::PerformOffering {
+        return fail("An offering ritual begins only after physical shrine delivery.");
     }
     if kind == JobKind::HaulGatherSpot {
         return fail("Choose a gather spot to haul.");
@@ -1010,17 +1014,33 @@ fn offer_materials(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::Action
     }
     if colony.resources.materials
         < OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
+        || visible_offering_materials(colony) + f64::EPSILON < f64::from(OFFERING_MATERIALS_AMOUNT)
     {
-        return fail("Not enough surplus materials for an offering.");
+        return fail("Not enough physically stored surplus materials for an offering.");
     }
     if active_or_queued_jobs(colony)
         .iter()
-        .any(|job| job.kind == JobKind::CarryOffering)
+        .any(|job| matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering))
     {
         return fail("A material offering is already in progress.");
     }
     let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Ritualist)) else {
         return fail("No available ritualist.");
+    };
+    let from = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id)
+        .map(|cat| crate::movement::WorldPos {
+            x: cat.position.x + f64::from(colony.anchor.x),
+            y: cat.position.y + f64::from(colony.anchor.y),
+        })
+        .unwrap_or_else(|| crate::movement::WorldPos {
+            x: f64::from(colony.anchor.x),
+            y: f64::from(colony.anchor.y),
+        });
+    let Some(metadata) = material_offering_metadata(colony, from, ctx.now_ms) else {
+        return fail("No reachable physical material pile is available.");
     };
     queue_job(
         colony,
@@ -1028,7 +1048,7 @@ fn offer_materials(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::Action
         JobKind::CarryOffering,
         JobRequester::Player,
         Some(cat_id),
-        JobMetadata::None,
+        metadata,
     );
     colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
@@ -3688,7 +3708,8 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::LeaderPlanHouse | JobKind::BuildHouse | JobKind::Quarry => Some(TaskType::Build),
         JobKind::GatherLogs => Some(TaskType::Build),
         JobKind::ForageFibre => Some(TaskType::Hunt),
-        JobKind::Ritual | JobKind::CarryOffering => Some(TaskType::Guard),
+        JobKind::Ritual | JobKind::PerformOffering => Some(TaskType::Guard),
+        JobKind::CarryOffering => Some(TaskType::Build),
         JobKind::Explore => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Guard),
         JobKind::ExpandVillage => Some(TaskType::Patrol),
@@ -3994,6 +4015,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::TrainWarrior => JobKind::TrainWarrior,
         proto::JobKind::ExpandVillage => JobKind::ExpandVillage,
         proto::JobKind::CarryOffering => JobKind::CarryOffering,
+        proto::JobKind::PerformOffering => JobKind::PerformOffering,
         proto::JobKind::HaulGatherSpot => JobKind::HaulGatherSpot,
     }
 }
@@ -4016,6 +4038,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::TrainWarrior => proto::JobKind::TrainWarrior,
         JobKind::ExpandVillage => proto::JobKind::ExpandVillage,
         JobKind::CarryOffering => proto::JobKind::CarryOffering,
+        JobKind::PerformOffering => proto::JobKind::PerformOffering,
         JobKind::HaulGatherSpot => proto::JobKind::HaulGatherSpot,
     }
 }

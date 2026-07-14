@@ -207,6 +207,7 @@ define_wire_enum! {
         TrainWarrior => "train_warrior",
         ExpandVillage => "expand_village",
         CarryOffering => "carry_offering",
+        PerformOffering => "perform_offering",
         HaulGatherSpot => "haul_gather_spot",
     }
 }
@@ -404,6 +405,7 @@ mod tests {
             (JobKind::TrainWarrior, "train_warrior"),
             (JobKind::ExpandVillage, "expand_village"),
             (JobKind::CarryOffering, "carry_offering"),
+            (JobKind::PerformOffering, "perform_offering"),
             (JobKind::HaulGatherSpot, "haul_gather_spot"),
         ];
 

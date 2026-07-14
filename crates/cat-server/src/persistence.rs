@@ -1581,6 +1581,25 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
             "site": site.as_ref().map(tile_pos_json),
             "accepted": accepted,
         }),
+        JobMetadata::OfferingCarry {
+            source_stockpile_id,
+            site,
+            accepted,
+            escrow_id,
+            delivered,
+        } => json!({
+            "kind": "offeringCarry",
+            "sourceStockpileId": source_stockpile_id,
+            "site": site.as_ref().map(tile_pos_json),
+            "accepted": accepted,
+            "escrowId": escrow_id,
+            "delivered": delivered,
+        }),
+        JobMetadata::OfferingRitual { escrow_id, amount } => json!({
+            "kind": "offeringRitual",
+            "escrowId": escrow_id,
+            "amount": amount,
+        }),
         JobMetadata::Scout {
             mission,
             target,
@@ -1679,6 +1698,44 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
                 .get("accepted")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+        }),
+        Some("offeringCarry") => Ok(JobMetadata::OfferingCarry {
+            source_stockpile_id: value
+                .get("sourceStockpileId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            site: value
+                .get("site")
+                .filter(|site| !site.is_null())
+                .map(parse_tile_pos_value)
+                .transpose()?,
+            accepted: value
+                .get("accepted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            escrow_id: value
+                .get("escrowId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            delivered: value
+                .get("delivered")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                .max(0.0),
+        }),
+        Some("offeringRitual") => Ok(JobMetadata::OfferingRitual {
+            escrow_id: value
+                .get("escrowId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            amount: value
+                .get("amount")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                .max(0.0),
         }),
         Some("scout") => Ok(JobMetadata::Scout {
             mission: parse_scout_mission(
@@ -2260,6 +2317,96 @@ mod tests {
                 .as_deref(),
             Some(format!("station-out|{building_id}|{general_id}").as_str())
         );
+    }
+
+    #[test]
+    fn offering_inbound_cargo_and_ritual_escrow_resume_exactly_after_restart() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(9_191);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 9_191);
+        let source_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| !pile.is_station_local())
+            .expect("founded colony has visible storage")
+            .id
+            .clone();
+        let inbound_escrow = cat_sim::stockpiles::station_input_id("offering-inbound");
+        let ritual_escrow = cat_sim::stockpiles::station_input_id("offering-ritual");
+        let carry_id = "restart-offering-carry";
+        colony.jobs.push(JobRuntime {
+            id: carry_id.to_owned(),
+            kind: JobKind::CarryOffering,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Player,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            duration_ms: 300_000,
+            created_at: 10_000,
+            metadata: JobMetadata::OfferingCarry {
+                source_stockpile_id: source_id,
+                site: Some(TilePos { x: 9, y: 11 }),
+                accepted: false,
+                escrow_id: inbound_escrow,
+                delivered: 4.0,
+            },
+            ..JobRuntime::default()
+        });
+        colony.cats[0].carrying = Some(Carrying {
+            kind: CarryingKind::Materials,
+            amount: 6.0,
+            job_ended_at: 10_001,
+            source_gather_spot: Some(format!("offering-cargo:{carry_id}")),
+        });
+        colony.cats[0].destination = Some(Position {
+            map: cat_sim::entities::MapType::World,
+            x: f64::from(colony.anchor.x),
+            y: f64::from(colony.anchor.y),
+        });
+        colony.stockpiles.push(Stockpile {
+            id: ritual_escrow.clone(),
+            rect: cat_sim::stockpiles::shrine_rect(colony.anchor.x, colony.anchor.y),
+            accepts: [cat_sim::stockpiles::ResourceKind::Materials]
+                .into_iter()
+                .collect(),
+            contents: Resources {
+                materials: 10.0,
+                ..Resources::default()
+            },
+        });
+        colony.resources.materials += 10.0;
+        colony.jobs.push(JobRuntime {
+            id: "restart-offering-ritual".to_owned(),
+            kind: JobKind::PerformOffering,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Leader,
+            assigned_cat: Some(colony.cats[1].id.clone()),
+            duration_ms: 2_400_000,
+            created_at: 10_000,
+            started_at: Some(10_000),
+            ends_at: Some(2_410_000),
+            metadata: JobMetadata::OfferingRitual {
+                escrow_id: ritual_escrow,
+                amount: 10.0,
+            },
+            ..JobRuntime::default()
+        });
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save both offering stages");
+        let mut restarted = load_world(&conn)
+            .expect("load both offering stages")
+            .expect("persisted world");
+
+        assert_eq!(restarted.colonies[0], world.colonies[0]);
+
+        for now_ms in [11_000, 12_000, 13_000] {
+            assert_eq!(
+                world_tick(&mut restarted, now_ms),
+                world_tick(&mut world, now_ms),
+                "restarted physical offerings must make the same next-tick decisions"
+            );
+            assert_eq!(restarted, world);
+        }
     }
 
     #[test]

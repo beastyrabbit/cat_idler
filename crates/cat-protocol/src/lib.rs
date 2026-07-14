@@ -734,8 +734,11 @@ pub enum JobKind {
     TrainWarrior,
     ExpandVillage,
     /// P12.6: haul-then-ritual offering — surplus materials converted to blessings
-    /// at the shrine (complements, never duplicates, the leader's abstract `Tithe`).
+    /// at the shrine. This is only the physical stockpile-to-shrine delivery stage.
     CarryOffering,
+    /// P12.6: the shrine ritual that consumes physically delivered offering goods and
+    /// produces blessings. Never exists before its matching carry reaches the shrine.
+    PerformOffering,
     /// P16 gather spots: a mover walks to a gather spot, picks up its contents, and
     /// hauls them back to a village stockpile/shrine — see [`ClientAction::DesignateGatherSpot`].
     HaulGatherSpot,
