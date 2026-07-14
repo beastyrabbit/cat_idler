@@ -13129,15 +13129,22 @@ pub(crate) fn is_valid_fishing_shore(colony: &ColonyRuntime, site: TilePos) -> b
 /// share one finite population.
 #[must_use]
 pub(crate) fn fishing_habitat_tile(colony: &ColonyRuntime, site: TilePos) -> Option<TilePos> {
-    [(0, -1), (1, 0), (0, 1), (-1, 0)]
-        .into_iter()
-        .map(|(dx, dy)| TilePos {
-            x: site.x + dx,
-            y: site.y + dy,
-        })
-        .find(|water| {
-            colony.revealed_tiles.contains(water) && tile_has_water(colony.world_tiles.get(water))
-        })
+    let adjacent = [(0, -1), (1, 0), (0, 1), (-1, 0)].map(|(dx, dy)| TilePos {
+        x: site.x + dx,
+        y: site.y + dy,
+    });
+    let is_revealed_water = |water: &TilePos| {
+        colony.revealed_tiles.contains(water) && tile_has_water(colony.world_tiles.get(water))
+    };
+
+    // Preserve an established habitat before considering newly revealed neighbours. Without
+    // this first pass, learning about an earlier N/E/S/W water tile could change the canonical
+    // key and let removing/repainting the same shore manufacture a fresh population.
+    adjacent
+        .iter()
+        .copied()
+        .find(|water| is_revealed_water(water) && colony.fish_habitats.contains_key(water))
+        .or_else(|| adjacent.into_iter().find(is_revealed_water))
 }
 
 fn harvest_fish(colony: &mut ColonyRuntime, site: TilePos, requested: f64) -> f64 {
@@ -33303,6 +33310,46 @@ mod tests {
         assert!(removed.ok, "{removed:?}");
         designate_fixture_fishing_bank(&mut world, start + 2);
         assert_eq!(world.colonies[0].fish_habitats[&habitat].stock, 1.25);
+    }
+
+    #[test]
+    fn newly_revealed_adjacent_water_cannot_change_an_established_fish_habitat() {
+        let start = 10_000;
+        let mut world = new_world(42);
+        world.colonies.push(found_colony(42, "colony-1", start, 42));
+        let colony = &mut world.colonies[0];
+        let bank = colony.anchor;
+        let north = TilePos {
+            x: bank.x,
+            y: bank.y - 1,
+        };
+        let east = TilePos {
+            x: bank.x + 1,
+            y: bank.y,
+        };
+        colony.revealed_tiles.extend([north, east]);
+        let north_tile = colony.world_tiles.get_mut(&north).unwrap();
+        north_tile.tile_type = TileType::Meadow;
+        north_tile.resources.water = 0;
+        let east_tile = colony.world_tiles.get_mut(&east).unwrap();
+        east_tile.tile_type = TileType::River;
+        east_tile.resources.water = 100;
+        colony.fish_habitats.insert(
+            east,
+            stockpiles::FishPopulation {
+                stock: 1.25,
+                capacity: stockpiles::FISH_POPULATION_CAPACITY,
+                last_replenished_at_ms: start,
+            },
+        );
+        assert_eq!(fishing_habitat_tile(colony, bank), Some(east));
+
+        let north_tile = colony.world_tiles.get_mut(&north).unwrap();
+        north_tile.tile_type = TileType::River;
+        north_tile.resources.water = 100;
+        assert_eq!(fishing_habitat_tile(colony, bank), Some(east));
+        assert_eq!(colony.fish_habitats.len(), 1);
+        assert_eq!(colony.fish_habitats[&east].stock, 1.25);
     }
 
     #[test]
