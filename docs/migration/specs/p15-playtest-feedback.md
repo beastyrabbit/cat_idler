@@ -3,8 +3,8 @@
 > **Living feedback spec.** Movement smoothing, the booster, infinite-map streaming, and
 > shrine-return scouting, visible authored/traffic roads, exact footprints/depth, and secure
 > global/personal village foundations are verified. Coordinate placement, selectable/removable
-> designations, election controls, station-local inspectors/queues, physical shared-world depth,
-> and the scout-search mismatch remain open in
+> designations, election controls, and the first physical Sawmill inspector/queue are verified;
+> broader physical stations, shared-world depth, and the baseline Leader's browser/native visual close-out remain open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Captured from live `cargo dev` playtesting. Triaged; "already there" notes from a code survey.
@@ -52,25 +52,34 @@ Two-tier inspector, driven by the cursor:
   surfaces with distinct rendering and 175%/105% movement effects; forbidden terrain cannot form
   dirt paths.
 - **Workshops + production chains + routes — partial.** Mill/Sawmill, grain→flour→food,
-  logs→lumber, fibre/hide→cloth/leather, ore→metal, and useful tools are live. Workers still do not
-  walk to their assigned station, and station inputs/outputs/queues remain colony-global rather
-  than physical local haul routes.
+  logs→lumber, fibre/hide→cloth/leather, ore→metal, and useful tools are live. The Sawmill now
+  has a fully physical finite-store→station→store route, local ledgers, conserved cargo, and an
+  editable queue; extend that contract to the remaining stations.
 - **Fog of war + scout-driven discovery (detailed 2026-07-10).** The keystone exploration loop:
   - **World starts tiny** — only ~2 tiles outside the village are revealed at founding; everything
     beyond is fog.
   - **Deficit-driven scouting** — the leader notices a resource gap ("missing ~5 wood spots") and
     dispatches a **scout** to find it (extends the existing `scout` leader goal + explore job).
-  - **Random-walk search — open mismatch.** The desired scout wanders a deterministic direction
-    for a while, changes direction, repeats until it finds the resource (or gives up), then heads
-    back. The current runtime instead generates a bounded hidden area and selects the nearest useful
-    unrevealed target. Preserve this as an explicit design decision; shrine-return delivery being
-    correct does not make oracle target selection equivalent to searching.
+  - **Baseline Leader safety floor — close-out.** A true fresh one-second-cadence campaign exposed eight
+    unattended-collapse resets in 48 hours after strict officer gating removed primitive food work.
+    Before specialist offices exist, the founding Leader keeps deficit-scaled hunting, emergency
+    water, and this scouting loop, capped at six/two/one in flight at 15 cats and scaled
+    proportionally thereafter; it does not automate farms,
+    production, research, rituals, or defense.
+    The allocation/vacancy-cleanup fix passes three personal seeds and the 30-cat communal village
+    through exact 48-hour one-second campaigns with fog growth and no specialist leakage; complete
+    the native/browser founding confirmation.
+  - **Random-walk search — verified.** A scout follows deterministic knowledge-blind wander legs,
+    changes direction with bounded route retries, recognizes a resource only after physical
+    observation, and returns after success, survey/deadline exhaustion, or giving up. No hidden
+    target exists before a genuine hit.
   - **Provisional vs committed reveal** — while the scout is out, fog lifts only *partially/dimly*
     around it; the discovery is **fully committed to the map only when the scout returns to the
     shrine** (knowledge delivered on arrival). So the shrine is the map's "known world" ledger.
   - Reuses: `reveal_and_wear_walked_tiles`, explorer reveal radius, the leader director scout goal,
-    and the shrine-arrival pattern. Tiny initial reveal, deficit→scout trigger, and two-tier
-    provisional/committed knowledge are verified; random-walk scout behavior is not.
+    and the shrine-arrival pattern. Tiny initial reveal and two-tier provisional/committed knowledge
+    are verified. The founding Leader now keeps autonomous Scout labor while Loremaster is vacant,
+    without enabling research/ritual work; only the native/browser visual close-out remains.
 - **Cat booster.** Look at a cat → give it a boost that makes it more likely to be picked for
   jobs/roles. New per-cat "priority/boost" (sim) + inspector button (client). Pairs with the
   matchCatsToSlots fit scoring.
@@ -91,6 +100,6 @@ Two-tier inspector, driven by the cursor:
 ## Existing foundations (verify before extending)
 - Cat movement, chunked-infinite terrain, authoritative multi-colony state, and term elections
   exist in the sim. Shrine-return fog/scouting plus usable global/personal founding, ownership,
-  discovery, barter, and visible roads are verified. Election controls, exact designation tools,
-  and station-local inspection/queues remain product work; authoritative data structures alone are
-  not completion.
+  discovery, barter, visible roads, election controls, exact designation tools, and the physical
+  Sawmill queue/inspector are verified. Broader station-local physical routes and inspection remain
+  product work; authoritative data structures alone are not completion.

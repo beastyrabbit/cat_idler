@@ -2,9 +2,12 @@
 //!
 //! Run at the live server cadence:
 //! `SEED=20240712 HOURS=48 CADENCE_MS=1000 cargo run --release -p cat-sim --example playtest`.
-//! The default expectation set grows with the requested horizon. Override it with a
-//! comma-separated `EXPECT_FEATURES` list (or `none`), relax the idle-stall limit with
-//! `MAX_IDLE_STALL_HOURS`, or use `STRICT=0` to report failures without a non-zero exit.
+//! Set `COMMUNAL=1` to exercise the larger shared Grand Commons blueprint instead of an exact
+//! personal founding.
+//! The default expectations cover systems that do not require a player-established officer.
+//! Override them with a comma-separated `EXPECT_FEATURES` list (or `none`) when running an
+//! established fixture, relax the idle-stall limit with `MAX_IDLE_STALL_HOURS`, or use
+//! `STRICT=0` to report failures without a non-zero exit.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -12,7 +15,7 @@ use cat_sim::{
     actions::build_snapshot,
     entities::CarryingKind,
     types::BuildingType,
-    world_tick::{ColonyRuntime, found_colony, new_world, world_tick},
+    world_tick::{ColonyRuntime, found_colony, found_global_colony, new_world, world_tick},
 };
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -33,19 +36,15 @@ fn default_expected_features(hours: u64) -> HashSet<String> {
     let mut expected = HashSet::new();
     if hours >= 1 {
         expected.insert("election".to_owned());
+        expected.insert("fog".to_owned());
+        expected.insert("scout".to_owned());
     }
-    if hours >= 48 {
-        for feature in [
-            "field", "items", "offering", "raid", "research", "tithe", "tools",
-        ] {
-            expected.insert(feature.to_owned());
-        }
+    if hours >= 4 {
+        expected.insert("hunt".to_owned());
+        expected.insert("water".to_owned());
     }
     if hours >= 60 {
         expected.insert("trader".to_owned());
-    }
-    if hours >= 144 {
-        expected.insert("research_node".to_owned());
     }
     expected
 }
@@ -64,6 +63,7 @@ fn expected_features(hours: u64) -> HashSet<String> {
 #[derive(Debug, Clone, PartialEq)]
 struct PlaytestSummary {
     seed: u32,
+    communal: bool,
     hours: u64,
     cadence_ms: i64,
     births: u64,
@@ -82,10 +82,18 @@ struct PlaytestSummary {
     raids_resolved_without_player_defense: u64,
     active_raid_at_end: bool,
     event_counts: BTreeMap<String, u64>,
+    initial_revealed_tiles: usize,
+    final_revealed_tiles: usize,
     ritual_jobs_seen: u64,
     ritual_jobs_completed: u64,
     offering_jobs_seen: u64,
     offering_jobs_completed: u64,
+    hunt_jobs_seen: u64,
+    hunt_jobs_completed: u64,
+    water_jobs_seen: u64,
+    water_jobs_completed: u64,
+    leader_scout_jobs_seen: u64,
+    leader_scout_jobs_completed: u64,
     buildings_commissioned: BTreeMap<String, u64>,
     buildings_completed: BTreeMap<String, u64>,
     first_researcher_hour: Option<u64>,
@@ -133,9 +141,8 @@ impl PlaytestSummary {
                 self.hours_water_zero, self.hours
             ));
         }
-        if self.births == 0 && self.hours >= 24 {
-            flags.push("NO BIRTHS: the population never grew".to_owned());
-        }
+        // Foundings intentionally start at exact housing capacity. No birth without a
+        // player/Steward-built Den is the designed outcome, not a passive-run anomaly.
         if self.max_idle_stall_hours > idle_stall_limit {
             flags.push(format!(
                 "IDLE STALL: every living cat was idle for {} consecutive sampled hours (limit {idle_stall_limit})",
@@ -155,17 +162,28 @@ impl PlaytestSummary {
                     self.first_field_commissioned_hour.is_some()
                         && self.first_field_completed_hour.is_some()
                 }
+                "fog" => {
+                    self.final_revealed_tiles > self.initial_revealed_tiles
+                        && self.event_count("discovery") > 0
+                }
+                "hunt" => {
+                    self.hunt_jobs_seen > 0 && (self.hours < 24 || self.hunt_jobs_completed > 0)
+                }
                 "items" => self.peak_item_count > 0,
                 "offering" => {
                     self.event_count("offering") > 0 && self.event_count("blessing_delivered") > 0
                 }
                 "raid" => self.raids_spawned > 0 && self.raids_resolved > 0,
+                "scout" => self.leader_scout_jobs_seen > 0 && self.leader_scout_jobs_completed > 0,
                 "research" => {
                     self.first_researcher_hour.is_some() && self.first_research_point_hour.is_some()
                 }
                 "research_node" => self.first_research_node_hour.is_some(),
                 "tithe" => self.event_count("tithe") > 0,
                 "tools" => self.tools_produced >= 1.0,
+                "water" => {
+                    self.water_jobs_seen > 0 && (self.hours < 24 || self.water_jobs_completed > 0)
+                }
                 "trader" => self.trader_visits > 0 && self.trader_trading_windows > 0,
                 unknown => {
                     flags.push(format!("UNKNOWN EXPECTATION: {unknown}"));
@@ -201,16 +219,26 @@ fn game_hour(tick: i64, ticks_per_hour: i64) -> u64 {
     tick.div_euclid(ticks_per_hour) as u64
 }
 
-fn run_campaign(seed: u32, hours: u64, cadence_ms: i64, print_hourly: bool) -> PlaytestSummary {
+fn run_campaign(
+    seed: u32,
+    hours: u64,
+    cadence_ms: i64,
+    communal: bool,
+    print_hourly: bool,
+) -> PlaytestSummary {
     assert!(cadence_ms > 0, "CADENCE_MS must be positive");
     let mut world = new_world(seed);
-    world
-        .colonies
-        .push(found_colony(world.world_seed, "colony-1", 1_000, seed));
+    let colony = if communal {
+        found_global_colony(world.world_seed, "colony-1", 1_000, seed)
+    } else {
+        found_colony(world.world_seed, "colony-1", 1_000, seed)
+    };
+    world.colonies.push(colony);
 
     if print_hourly {
         println!(
-            "# passive campaign seed={seed} hours={hours} cadence_ms={cadence_ms} (1 tick = {:.3}s game-time)",
+            "# passive campaign village={} seed={seed} hours={hours} cadence_ms={cadence_ms} (1 tick = {:.3}s game-time)",
+            if communal { "communal" } else { "personal" },
             cadence_ms as f64 / 1000.0
         );
         println!(
@@ -240,6 +268,7 @@ fn run_campaign(seed: u32, hours: u64, cadence_ms: i64, print_hourly: bool) -> P
     let ticks_per_hour = (3_600_000 / cadence_ms).max(1);
     let total_ticks = ticks_per_hour.saturating_mul(hours as i64);
     let initial = &world.colonies[0];
+    let initial_revealed_tiles = initial.revealed_tiles.len();
     let mut known_ids: HashSet<String> = initial
         .cats
         .iter()
@@ -268,6 +297,12 @@ fn run_campaign(seed: u32, hours: u64, cadence_ms: i64, print_hourly: bool) -> P
     let mut completed_ritual_jobs = HashSet::new();
     let mut seen_offering_jobs = HashSet::new();
     let mut completed_offering_jobs = HashSet::new();
+    let mut seen_hunt_jobs = HashSet::new();
+    let mut completed_hunt_jobs = HashSet::new();
+    let mut seen_water_jobs = HashSet::new();
+    let mut completed_water_jobs = HashSet::new();
+    let mut seen_leader_scout_jobs = HashSet::new();
+    let mut completed_leader_scout_jobs = HashSet::new();
     let mut known_buildings: HashSet<String> = initial
         .buildings
         .iter()
@@ -333,6 +368,26 @@ fn run_campaign(seed: u32, hours: u64, cadence_ms: i64, print_hourly: bool) -> P
                     seen_offering_jobs.insert(job.id.clone());
                     if job.status == cat_sim::types::JobStatus::Completed {
                         completed_offering_jobs.insert(job.id.clone());
+                    }
+                }
+                cat_sim::types::JobKind::HuntExpedition => {
+                    seen_hunt_jobs.insert(job.id.clone());
+                    if job.status == cat_sim::types::JobStatus::Completed {
+                        completed_hunt_jobs.insert(job.id.clone());
+                    }
+                }
+                cat_sim::types::JobKind::FetchWater => {
+                    seen_water_jobs.insert(job.id.clone());
+                    if job.status == cat_sim::types::JobStatus::Completed {
+                        completed_water_jobs.insert(job.id.clone());
+                    }
+                }
+                cat_sim::types::JobKind::Explore
+                    if job.requested_by == cat_sim::world_tick::JobRequester::Leader =>
+                {
+                    seen_leader_scout_jobs.insert(job.id.clone());
+                    if job.status == cat_sim::types::JobStatus::Completed {
+                        completed_leader_scout_jobs.insert(job.id.clone());
                     }
                 }
                 _ => {}
@@ -498,6 +553,7 @@ fn run_campaign(seed: u32, hours: u64, cadence_ms: i64, print_hourly: bool) -> P
     let colony = &world.colonies[0];
     PlaytestSummary {
         seed,
+        communal,
         hours,
         cadence_ms,
         births,
@@ -524,10 +580,18 @@ fn run_campaign(seed: u32, hours: u64, cadence_ms: i64, print_hourly: bool) -> P
         raids_resolved_without_player_defense,
         active_raid_at_end: colony.active_raid.is_some(),
         event_counts,
+        initial_revealed_tiles,
+        final_revealed_tiles: colony.revealed_tiles.len(),
         ritual_jobs_seen: seen_ritual_jobs.len() as u64,
         ritual_jobs_completed: completed_ritual_jobs.len() as u64,
         offering_jobs_seen: seen_offering_jobs.len() as u64,
         offering_jobs_completed: completed_offering_jobs.len() as u64,
+        hunt_jobs_seen: seen_hunt_jobs.len() as u64,
+        hunt_jobs_completed: completed_hunt_jobs.len() as u64,
+        water_jobs_seen: seen_water_jobs.len() as u64,
+        water_jobs_completed: completed_water_jobs.len() as u64,
+        leader_scout_jobs_seen: seen_leader_scout_jobs.len() as u64,
+        leader_scout_jobs_completed: completed_leader_scout_jobs.len() as u64,
         buildings_commissioned,
         buildings_completed,
         first_researcher_hour,
@@ -552,7 +616,15 @@ fn run_campaign(seed: u32, hours: u64, cadence_ms: i64, print_hourly: bool) -> P
 }
 
 fn print_summary(summary: &PlaytestSummary, expected: &HashSet<String>, flags: &[String]) {
-    println!("\n# SUMMARY seed={}", summary.seed);
+    println!(
+        "\n# SUMMARY village={} seed={}",
+        if summary.communal {
+            "communal"
+        } else {
+            "personal"
+        },
+        summary.seed
+    );
     println!(
         "  population min={} max={} births={} deaths={} resets={}",
         summary.min_population,
@@ -605,7 +677,13 @@ fn print_summary(summary: &PlaytestSummary, expected: &HashSet<String>, flags: &
         summary.event_count("blessing_delivered")
     );
     println!(
-        "  shrine jobs ritual={}/{} completed offering={}/{} completed ritual_requests={}",
+        "  safety jobs hunt={}/{} completed water={}/{} completed leader_scout={}/{} completed; shrine ritual={}/{} completed offering={}/{} completed ritual_requests={}",
+        summary.hunt_jobs_seen,
+        summary.hunt_jobs_completed,
+        summary.water_jobs_seen,
+        summary.water_jobs_completed,
+        summary.leader_scout_jobs_seen,
+        summary.leader_scout_jobs_completed,
         summary.ritual_jobs_seen,
         summary.ritual_jobs_completed,
         summary.offering_jobs_seen,
@@ -619,6 +697,12 @@ fn print_summary(summary: &PlaytestSummary, expected: &HashSet<String>, flags: &
         summary.trader_visits,
         summary.trader_trading_windows,
         summary.max_idle_stall_hours
+    );
+    println!(
+        "  fog revealed={} -> {} tiles; shrine deliveries={}",
+        summary.initial_revealed_tiles,
+        summary.final_revealed_tiles,
+        summary.event_count("discovery")
     );
     println!("  event_counts={:?}", summary.event_counts);
     if !summary.reset_reasons.is_empty() {
@@ -641,13 +725,14 @@ fn main() {
     let seed = env_u64("SEED", 20_240_712) as u32;
     let hours = env_u64("HOURS", 48);
     let cadence_ms = env_u64("CADENCE_MS", 1_000) as i64;
+    let communal = env_bool("COMMUNAL", false);
     let expected = expected_features(hours);
     let idle_stall_limit = env_u64("MAX_IDLE_STALL_HOURS", 8);
     let strict = env_bool("STRICT", true);
 
-    let summary = run_campaign(seed, hours, cadence_ms, true);
+    let summary = run_campaign(seed, hours, cadence_ms, communal, true);
     if env_bool("VERIFY_DETERMINISM", true) {
-        let repeated = run_campaign(seed, hours, cadence_ms, false);
+        let repeated = run_campaign(seed, hours, cadence_ms, communal, false);
         assert_eq!(summary, repeated, "same seed and cadence diverged");
         println!("# determinism repeat: identical");
     }
@@ -655,5 +740,58 @@ fn main() {
     print_summary(&summary, &expected, &flags);
     if strict && !flags.is_empty() {
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cat_sim::world_tick::VillageScale;
+
+    #[test]
+    fn fresh_passive_expectations_do_not_require_vacant_officer_automation() {
+        let expected = default_expected_features(144);
+        assert!(expected.contains("election"));
+        assert!(expected.contains("fog"));
+        assert!(expected.contains("hunt"));
+        assert!(expected.contains("scout"));
+        assert!(expected.contains("water"));
+        assert!(expected.contains("trader"));
+        for officer_owned in [
+            "field",
+            "items",
+            "offering",
+            "raid",
+            "research",
+            "research_node",
+            "tithe",
+            "tools",
+        ] {
+            assert!(!expected.contains(officer_owned));
+        }
+    }
+
+    #[test]
+    fn scale_switch_selects_the_real_founding_blueprints() {
+        let personal = found_colony(7, "personal", 1_000, 7);
+        let communal = found_global_colony(7, "communal", 1_000, 7);
+        assert_eq!(personal.scale, VillageScale::Personal);
+        assert_eq!(communal.scale, VillageScale::Communal);
+        assert_eq!(
+            personal
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none())
+                .count(),
+            15
+        );
+        assert_eq!(
+            communal
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none())
+                .count(),
+            30
+        );
     }
 }

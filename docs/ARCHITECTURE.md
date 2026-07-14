@@ -118,8 +118,9 @@ the complete purchasable and persistent 500-study runtime/client ledger, and a r
 maintained product behavior rather than migration:
 
 - **Officer/manual split.** The seven maintained offices now own distinct automation categories;
-  vacant offices are manual-only, and appointment requires both the researched unlock and a
-  completed role station. Signed client paths cover basic farm/gather/road designation, staffing,
+  beyond the founding Leader's bounded hunt/water/scout safety floor, vacant offices are
+  manual-only. Appointment requires both the researched unlock and a completed role station.
+  Signed client paths cover basic farm/gather/road designation, staffing,
   military, ritual, shrine, and production orders. Exact coordinate building placement,
   selectable farm/gather variants, election/vote-kick controls, designation removal, durable
   per-cat typed labor preferences, and the physical Sawmill's editable ordered/repeatable/pausable
@@ -148,7 +149,13 @@ maintained product behavior rather than migration:
   Loremaster may complete at most one affordable full-catalog node per rolling real-life day.
   Typed modeled effects and future-content unlock registries persist. Resource/general scouts now
   preserve the shrine-return knowledge contract while following deterministic knowledge-blind
-  wander legs that only recognize targets after physical observation.
+  wander legs that only recognize targets after physical observation. Baseline deficit-driven
+  scouting belongs to the Leader before a Loremaster exists.
+- **Fresh idle safety floor.** The founding Leader retains only deficit-scaled hunt, emergency
+  water, and scouting jobs (ceilings six/two/one at 15 cats, scaled proportionally thereafter),
+  and vacancy cleanup preserves no more than those physical trips. Specialist production and
+  management stay manual while vacant. Three personal seeds pass exact 48-hour one-second
+  campaigns and byte-identical twins, and the 30-cat communal 48-hour campaign is green.
 - **Spatial, transport, and visual completeness.** Exact tree/rock occupancy, visible road
   surfaces, persisted exterior agricultural claims, and staged outer-wall construction with an
   atomic one-gate cutover are live. Real rail/ship/fishing routes and remaining integrated

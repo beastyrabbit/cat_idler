@@ -69,6 +69,12 @@ pub const HUNT_MAX_SLOTS_RATIO: f64 = 0.7;
 pub const WATER_MAX_SLOTS: u32 = 4;
 pub const QUARRY_MAX_SLOTS: u32 = 2;
 pub const SCOUT_MAX_SLOTS: u32 = 2;
+/// Before the matching specialist office exists, the founding Leader keeps only
+/// a small survival crew in the field so workshops and player-directed work retain
+/// real labor. Farmer/Loremaster automation restores the normal utility-AI caps.
+pub const BASELINE_HUNT_MAX_SLOTS: u32 = 6;
+pub const BASELINE_WATER_MAX_SLOTS: u32 = 2;
+pub const BASELINE_SCOUT_MAX_SLOTS: u32 = 1;
 pub const SCOUT_BASE_SCORE: f64 = 0.3;
 /// Fill ratio below which a wild-findable resource (materials/food) counts as
 /// "short" and starts pulling extra scouts out to discover new resource/hunt tiles.
@@ -596,16 +602,61 @@ fn allocate_labor(snapshot: &LeaderSnapshot, goals: &[LaborGoal]) -> Vec<OpenSlo
     slots
 }
 
+/// Primitive work the always-present founding Leader retains before specialist
+/// offices exist. This safety floor keeps a fresh idle village alive and lets its
+/// map begin growing without silently automating farms, workshops, research,
+/// rituals, expansion, or defense.
+const fn is_baseline_leader_goal(goal: LaborGoalKind) -> bool {
+    matches!(
+        goal,
+        LaborGoalKind::Hunt | LaborGoalKind::FetchWater | LaborGoalKind::Scout
+    )
+}
+
+fn baseline_leader_cap(goal: LaborGoalKind, population: u32) -> Option<u32> {
+    let proportional_cap =
+        |founding_cap: u32| founding_cap.saturating_mul(population.max(1)).div_ceil(15);
+    match goal {
+        LaborGoalKind::Hunt => Some(proportional_cap(BASELINE_HUNT_MAX_SLOTS)),
+        LaborGoalKind::FetchWater => Some(proportional_cap(BASELINE_WATER_MAX_SLOTS)),
+        LaborGoalKind::Scout => Some(proportional_cap(BASELINE_SCOUT_MAX_SLOTS)),
+        _ => None,
+    }
+}
+
 /// Filter the pure utility director into work that the colony may perform
-/// unattended. Each filled office enables exactly its own labor category; vacant
-/// offices never receive a survival/bootstrap exception.
+/// unattended. The founding Leader owns a narrow hunt/water/scout safety floor;
+/// every other category still requires its exact established office.
 #[must_use]
 pub fn automated_plan(snapshot: &LeaderSnapshot) -> DirectorPlan {
     let goals = labor_goals(snapshot)
         .into_iter()
-        .filter(|goal| snapshot.officers.contains_key(&officer_role_for(goal.kind)))
+        .filter_map(|mut goal| {
+            let role_is_filled = snapshot.officers.contains_key(&officer_role_for(goal.kind));
+            if !role_is_filled && !is_baseline_leader_goal(goal.kind) {
+                return None;
+            }
+            if !role_is_filled
+                && let Some(cap) = baseline_leader_cap(goal.kind, snapshot.population)
+            {
+                goal.max_slots = goal.max_slots.min(cap);
+                goal.hard_cap = goal.hard_cap.min(cap);
+            }
+            Some(goal)
+        })
         .collect::<Vec<_>>();
-    let slots = allocate_labor(snapshot, &goals);
+    let mut slots = allocate_labor(snapshot, &goals);
+    for slot in &mut slots {
+        if !snapshot.officers.contains_key(&officer_role_for(slot.goal))
+            && baseline_leader_cap(slot.goal, snapshot.population).is_some()
+        {
+            let available = goals
+                .iter()
+                .find(|goal| goal.kind == slot.goal)
+                .map_or(0, goal_open_slots);
+            slot.count = slot.count.min(available);
+        }
+    }
     let scored = direct_colony(snapshot);
     let decisions = scored
         .decisions
@@ -614,6 +665,10 @@ pub fn automated_plan(snapshot: &LeaderSnapshot) -> DirectorPlan {
             LeaderDecision::BuildStorage | LeaderDecision::BuildDen => {
                 snapshot.officers.contains_key(&OfficerRole::Steward)
             }
+            // The baseline Leader may start primitive hunts, but only an established
+            // Farmer is trusted to cancel them. Otherwise the full founding larder
+            // cancels the opening expedition one tick after dispatch, too late to
+            // restart and deliver its first physical food trip before collapse.
             LeaderDecision::CancelHunts => snapshot.officers.contains_key(&OfficerRole::Farmer),
             LeaderDecision::CancelTraining => snapshot.officers.contains_key(&OfficerRole::Captain),
             LeaderDecision::Tithe { .. } | LeaderDecision::Offering => {
@@ -1459,14 +1514,49 @@ mod tests {
     }
 
     #[test]
-    fn vacant_offices_emit_no_automated_labor_or_capital_recovery() {
+    fn vacant_offices_emit_only_the_baseline_leader_safety_floor() {
         let mut snapshot = healthy_snapshot(10, 0);
         snapshot.officers.clear();
         snapshot.housing.capacity = 1;
         snapshot.resources.food = snapshot.food_capacity;
         let plan = automated_plan(&snapshot);
-        assert!(plan.slots.is_empty());
+        assert!(
+            plan.slots
+                .iter()
+                .all(|slot| is_baseline_leader_goal(slot.goal))
+        );
+        assert!(plan.slots.iter().all(|slot| {
+            baseline_leader_cap(slot.goal, snapshot.population).is_some_and(|cap| slot.count <= cap)
+        }));
+        assert!(
+            total_slots(&plan)
+                <= BASELINE_HUNT_MAX_SLOTS + BASELINE_WATER_MAX_SLOTS + BASELINE_SCOUT_MAX_SLOTS
+        );
         assert!(plan.decisions.is_empty());
+    }
+
+    #[test]
+    fn baseline_safety_caps_scale_proportionally_without_a_sixteenth_cat_cliff() {
+        for (population, hunt, water, scout) in [
+            (1, 1, 1, 1),
+            (15, 6, 2, 1),
+            (16, 7, 3, 2),
+            (30, 12, 4, 2),
+            (31, 13, 5, 3),
+        ] {
+            assert_eq!(
+                baseline_leader_cap(LaborGoalKind::Hunt, population),
+                Some(hunt)
+            );
+            assert_eq!(
+                baseline_leader_cap(LaborGoalKind::FetchWater, population),
+                Some(water)
+            );
+            assert_eq!(
+                baseline_leader_cap(LaborGoalKind::Scout, population),
+                Some(scout)
+            );
+        }
     }
 
     #[test]
@@ -1476,12 +1566,9 @@ mod tests {
             let mut snapshot = base.clone();
             snapshot.officers.insert(*role, format!("{role:?}"));
             let automated = automated_plan(&snapshot);
-            assert!(
-                automated
-                    .slots
-                    .iter()
-                    .all(|slot| officer_role_for(slot.goal) == *role)
-            );
+            assert!(automated.slots.iter().all(|slot| {
+                is_baseline_leader_goal(slot.goal) || officer_role_for(slot.goal) == *role
+            }));
         }
 
         let mut all_filled = base.clone();

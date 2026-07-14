@@ -15,6 +15,12 @@
    - **Farmer** — fields, foraging, food.
    - **Captain** — warriors, defense, raids.
    - **Loremaster/Ritualist** — research + shrine/rituals.
+   The always-present founding Leader retains a narrow, deficit-scaled safety floor: at the
+   15-cat founding population, at most six primitive hunters, two emergency water fetchers, and
+   one scout; those ceilings scale proportionally as the population changes. Specialist
+   vacancies still make farming, production,
+   hauling policy, research, rituals, and defense manual; a fresh idle village must not repeatedly
+   reset merely because its first officer buildings do not exist yet.
    Each unlocked role hands its slice of decisions to the AI; unfilled roles stay manual.
 3. **A living, visible workplace (DF readability).**
    - **More workshops** placed around the forest; cats walk to them to work. Houses may
@@ -29,6 +35,9 @@
 5. **Knowledge must come home.** A founding village knows only its viable interior and a
    roughly two-tile halo. Resource-targeted and general scouts tentatively lift fog while
    away; discoveries become permanent only when the scout returns to and touches the shrine.
+   Baseline deficit-driven scout dispatch belongs to the founding Leader (especially the fast
+   first wood search) and is not gated behind the later Loremaster office; research and rituals
+   remain Loremaster-owned.
 
 ## What already exists in the sim (reuse, don't rebuild)
 - Utility-AI **leader director** (one overseer that automates) — the seed of the role system.

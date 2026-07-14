@@ -1,9 +1,10 @@
 # P12 — Idle Cat Forest sim expansion (cat-sim)
 
-> **Living target spec.** Exterior farms/logging and Mill/Sawmill production are verified, but
-> strict manual-to-officer ownership, all-labor skills, seeded spatial storehouses, physical
-> station inventories/routes, and broader recipes remain partial. Current evidence and exact
-> follow-ups live in [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+> **Living target spec.** Specialist manual-to-officer ownership (with a bounded founding Leader
+> hunt/water/scout safety floor), all-labor skills, seeded spatial storehouses, and one complete
+> physical Sawmill route are verified. Broader physical station/farm routes and recipes remain
+> partial. Current evidence and exact follow-ups live in
+> [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 The DF-texture depth from `docs/GAME_VISION.md`, decomposed into concrete, TDD-able Rust
 cards grounded in the *current* `cat-sim` code. Each card is pure sim logic (no I/O),
@@ -44,12 +45,14 @@ so experts emerge. Generalizes `role_xp` from 4 roles to all labors.
 **Goal:** the single leader director becomes assignable **officer roles**, each automating one
 labor category; unfilled roles stay manual (player-triggered).
 
-**Grounded design decision (2026-07-10):** to avoid destabilizing the self-sustaining survival
-loop, officers are an **additive layer**, not manual-by-default. The base Leader keeps automating
-the core loop exactly as today; assigning an officer to a role **offloads + boosts** that
-category (its specialist is matched first + a bounded per-category budget bonus). **Empty
-`officers` (the default) ⇒ byte-identical to pre-P12.2**, so no existing director/survival test
-regresses. The 8 `LaborGoalKind`s partition into 5 roles:
+**Superseded design note (2026-07-10, replaced 2026-07-14):** the initial additive-officer proposal
+kept every base-Leader category automated. Playtesting rejected that because it made vacancies
+meaningless; the later fully manual split then made a fresh founding repeatedly collapse. The
+maintained contract is specialist-manual with one bounded exception: the always-present founding
+Leader may keep at most six hunts, two emergency water trips, and one scout in flight per 15
+living cats. Farms,
+production, hauling policy, research, rituals, defense, and expansion remain manual while their
+offices are vacant. The 8 `LaborGoalKind`s otherwise partition into 5 roles:
 `Farmer{Hunt,FetchWater}`, `Forester{Quarry}`, `Captain{TrainWarrior,AssignSmithy}`,
 `Loremaster{AssignResearch,Scout}`, `Steward{AssignWorkshop}` (+stockpiles in P12.3). The deeper
 "unfilled ⇒ fully manual" comes once P12.3/P12.4 make manual control meaningful.
@@ -58,10 +61,12 @@ regresses. The 8 `LaborGoalKind`s partition into 5 roles:
   Captain(defense), Loremaster(research/ritual)}` (+ the existing Leader as role #0).
 - **Gate:** each role is unlocked by an upgrade-tree node + a built **role-building** (P12.4)
   with escalating cost. `leader_director` splits into per-role goal scorers reading the same
-  `LeaderSnapshot`; an unfilled role emits no auto-goals (its labors await manual actions).
+  `LeaderSnapshot`; an unfilled role emits no specialist auto-goals beyond the bounded founding
+  hunt/water/scout safety floor (its other labors await manual actions).
 - **Actions:** `assignOfficer{role, catId}` / `unassignOfficer{role}` (new ClientActions,
   add to cat-protocol + apply_action). Manual fallback = existing `requestJob`.
-- **Tests:** filled role auto-issues its category's goals; unfilled role doesn't; assigning a
+- **Tests:** filled role auto-issues its category's goals; unfilled roles emit only the bounded
+  Leader safety floor; assigning a
   dead/foreign cat rejected; determinism of multi-role budget split; a water crisis still pulls
   labor cross-role (extends the existing leaderDirector trade-off test).
 

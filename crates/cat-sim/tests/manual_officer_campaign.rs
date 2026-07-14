@@ -590,7 +590,7 @@ fn dead_or_missing_officers_receive_a_living_deterministic_successor() {
 }
 
 #[test]
-fn vacant_farmer_leaves_emergency_hunt_orders_to_the_player() {
+fn vacant_farmer_keeps_the_leader_safety_floor_but_leaves_advanced_work_manual() {
     let mut vacant = new_world(8080);
     vacant
         .colonies
@@ -599,32 +599,25 @@ fn vacant_farmer_leaves_emergency_hunt_orders_to_the_player() {
     vacant.colonies[0].resources.food = 10.0;
     vacant.colonies[0].resources.water = 100.0;
 
-    let mut filled = vacant.clone();
-    provision_role(&mut filled.colonies[0], proto::OfficerRole::Farmer);
-    let farmer = filled.colonies[0].cats[0].id.clone();
-    filled.colonies[0]
-        .officers
-        .insert(SimOfficerRole::Farmer, farmer);
-
     let _ = world_tick(&mut vacant, START + 60_000);
     assert!(
-        !job_in_flight(&vacant, JobKind::LeaderPlanHunt)
-            && !job_in_flight(&vacant, JobKind::HuntExpedition),
-        "a vacant Farmer office issued an unattended hunt",
+        job_in_flight(&vacant, JobKind::LeaderPlanHunt)
+            || job_in_flight(&vacant, JobKind::HuntExpedition),
+        "the founding Leader did not issue a survival hunt while the Farmer office was vacant",
+    );
+    assert!(
+        !job_in_flight(&vacant, JobKind::ForageFibre),
+        "a vacant Farmer office issued specialist fibre work",
     );
 
-    for minute in 1..=30i64 {
-        let _ = world_tick(&mut filled, START + minute * 60_000);
-        if job_in_flight(&filled, JobKind::LeaderPlanHunt)
-            || job_in_flight(&filled, JobKind::HuntExpedition)
-        {
-            break;
-        }
-    }
+    apply_ok(
+        &mut vacant,
+        signed_job(proto::JobKind::ForageFibre),
+        START + 60_001,
+    );
     assert!(
-        job_in_flight(&filled, JobKind::LeaderPlanHunt)
-            || job_in_flight(&filled, JobKind::HuntExpedition),
-        "a filled Farmer office never took over emergency hunting",
+        job_in_flight(&vacant, JobKind::ForageFibre),
+        "the player could not guide advanced Farmer work while the office was vacant",
     );
 }
 

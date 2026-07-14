@@ -36,10 +36,11 @@ Verified foundations include:
   Every study can be purchased with research points and persists; a Loremaster may complete at
   most one affordable full-catalog node per rolling real-life day. Typed modeled effects are live,
   while future recipe/resource/job IDs remain truthful registries until those systems exist;
-- strict manual-to-officer ownership across Steward, Accountant, Forester, Farmer, Captain,
-  Loremaster, and Cloth Leader: a vacant office leaves its category manual, appointment requires
-  the matching researched and completed role station, and signed client controls cover the
-  basic manual work paths. Manual raid clicks deal exactly one hit. Reachable tithes and carried
+- specialist manual-to-officer ownership across Steward, Accountant, Forester, Farmer, Captain,
+  Loremaster, and Cloth Leader: beyond the founding Leader's hunt/water/scout safety floor, a
+  vacant office leaves its category manual. Appointment requires the matching researched and
+  completed role station, and signed client controls cover the basic manual work paths. Manual
+  raid clicks deal exactly one hit. Reachable tithes and carried
   offerings produce blessings; tools improve construction, crafting, quarrying, and hauling;
   repeated buildings have escalating type-local costs, and the Accounting Tent is live in the
   snapshot and client;
@@ -60,6 +61,10 @@ gate. The exact evidence is recorded in `docs/IMPLEMENTATION_AUDIT.md`.
 Dev tooling (`be7cdee`) includes `CAT_BRP=1` for Bevy Remote Protocol inspection and a headless
 playtest harness:
 `SEED=... HOURS=48 CADENCE_MS=1000 cargo run --release -p cat-sim --example playtest`.
+Set `COMMUNAL=1` for the larger Grand Commons. Fresh passive defaults assert only
+officer-independent behavior; use `EXPECT_FEATURES=...` with the signed guided campaigns when
+testing a player-established economy. The harness reports fog growth/shrine deliveries separately
+so a correct scout route cannot conceal a missing founding dispatch.
 
 ## NEXT STEPS (maintained backlog, in rough priority order)
 
@@ -78,11 +83,19 @@ playtest harness:
    and atomic scalar barter into physical meeting, item trade, and routes. Deterministic
    knowledge-blind scout search is verified; preserve its physical-observation and shrine-return
    contracts as shared-world depth grows.
-3. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
+3. **Close the baseline founding Leader presentation.** A true fresh 48-hour live-cadence run exposed
+   eight repeated collapses because strict officer filtering and vacancy cleanup removed primitive
+   food/scout work. The Leader now retains deficit-scaled Hunt/FetchWater/Scout jobs capped at
+   six/two/one at the 15-cat founding population and scaled proportionally thereafter. Three
+   seeds now pass exact 48-hour one-second campaigns with byte-identical twins, no resets or
+   deaths, completed Leader work, permanent fog growth, and no specialist leakage; the 30-cat
+   communal campaign also passes. Complete only the native/browser founding visual flow. Keep farms,
+   workshops, research, rituals, defense, and expansion manual while their office is vacant.
+4. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
    outside-the-wall agricultural territory subset are live; finish their integrated framebuffer
    campaign, replace rail/shipping multipliers with built routes/vehicles, restore fishing, and
    complete the remaining WASM visual/interaction validation for the maintained Adventure skin.
-4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
+5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality
    workflow is committed; its first pushed run is still unverified. Transfer-weight optimization

@@ -32,11 +32,11 @@ use crate::{
     items::{self, Item},
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
-        CatBrief, CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions,
-        OFFERING_MATERIALS_AMOUNT, OFFERING_MATERIALS_RESERVE, RESEARCH_COMFORT_FLOOR,
-        RESEARCH_COMFORT_FOOD_PER_CAT, RESEARCH_COMFORT_WATER_PER_CAT, WATER_MAX_SLOTS,
-        automated_plan, is_research_comfortable, match_cats_to_slots_with_officers,
-        officer_role_for,
+        BASELINE_HUNT_MAX_SLOTS, BASELINE_SCOUT_MAX_SLOTS, BASELINE_WATER_MAX_SLOTS, CatBrief,
+        CatBriefStats, DirectorPlan, LaborGoalKind, MatchOptions, OFFERING_MATERIALS_AMOUNT,
+        OFFERING_MATERIALS_RESERVE, RESEARCH_COMFORT_FLOOR, RESEARCH_COMFORT_FOOD_PER_CAT,
+        RESEARCH_COMFORT_WATER_PER_CAT, WATER_MAX_SLOTS, automated_plan, is_research_comfortable,
+        match_cats_to_slots_with_officers, officer_role_for,
     },
     ledger::{StockLedger, refresh_ledger},
     life_sim::{
@@ -4559,7 +4559,7 @@ fn phase_17c_founding_wood_scout(colony: &mut ColonyRuntime, gate: TickGate) {
         colony,
         gate.processed_through,
         JobKind::Explore,
-        JobRequester::System,
+        JobRequester::Leader,
         Some(cat_id),
         JobMetadata::Scout {
             mission: ScoutMission::Resource(ScoutResource::Wood),
@@ -10586,6 +10586,32 @@ fn automated_job_role(colony: &ColonyRuntime, job: &JobRuntime) -> Option<Office
     }
 }
 
+/// Primitive jobs belong to the always-present founding Leader even though their
+/// richer category automation later belongs to Farmer/Loremaster. Role-vacancy
+/// cleanup must not cancel these every tick or a fresh village can never finish a
+/// physical hunt, water fetch, or scout return.
+fn is_baseline_leader_job(job: &JobRuntime) -> bool {
+    job.requested_by == JobRequester::Leader
+        && matches!(
+            job.kind,
+            JobKind::HuntExpedition | JobKind::FetchWater | JobKind::Explore
+        )
+}
+
+fn baseline_leader_job_cap(kind: JobKind, population: usize) -> Option<usize> {
+    let proportional_cap = |founding_cap: u32| {
+        (founding_cap as usize)
+            .saturating_mul(population.max(1))
+            .div_ceil(15)
+    };
+    match kind {
+        JobKind::HuntExpedition => Some(proportional_cap(BASELINE_HUNT_MAX_SLOTS)),
+        JobKind::FetchWater => Some(proportional_cap(BASELINE_WATER_MAX_SLOTS)),
+        JobKind::Explore => Some(proportional_cap(BASELINE_SCOUT_MAX_SLOTS)),
+        _ => None,
+    }
+}
+
 /// Stop only work that was explicitly created by officer automation for `role`.
 /// Player-assigned buildings/jobs carry no automation provenance and survive a vacancy.
 pub(crate) fn release_role_automation(colony: &mut ColonyRuntime, role: OfficerRole, now_ms: i64) {
@@ -10596,15 +10622,38 @@ pub(crate) fn release_role_automation(colony: &mut ColonyRuntime, role: OfficerR
         }
     }
 
+    let mut preserved_hunts = 0usize;
+    let mut preserved_water = 0usize;
+    let mut preserved_scouts = 0usize;
+    let living_population = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .count();
     let cancelled_indices = colony
         .jobs
         .iter()
         .enumerate()
         .filter_map(|(index, job)| {
-            (job.requested_by == JobRequester::Leader
-                && matches!(job.status, JobStatus::Active | JobStatus::Queued)
-                && automated_job_role(colony, job) == Some(role))
-            .then_some(index)
+            if job.requested_by != JobRequester::Leader
+                || !matches!(job.status, JobStatus::Active | JobStatus::Queued)
+                || automated_job_role(colony, job) != Some(role)
+            {
+                return None;
+            }
+            if is_baseline_leader_job(job) {
+                let preserved = match job.kind {
+                    JobKind::HuntExpedition => &mut preserved_hunts,
+                    JobKind::FetchWater => &mut preserved_water,
+                    JobKind::Explore => &mut preserved_scouts,
+                    _ => unreachable!("baseline helper accepted a non-baseline job"),
+                };
+                if *preserved < baseline_leader_job_cap(job.kind, living_population).unwrap_or(0) {
+                    *preserved += 1;
+                    return None;
+                }
+            }
+            Some(index)
         })
         .collect::<Vec<_>>();
     let mut released = Vec::new();
@@ -21109,6 +21158,81 @@ mod tests {
     }
 
     #[test]
+    fn vacancy_cleanup_preserves_only_baseline_leader_jobs() {
+        let mut colony = found_colony(76, "colony-1", 10_000, 76);
+        colony.jobs.clear();
+        let workers = colony
+            .cats
+            .iter()
+            .take(5)
+            .map(|cat| cat.id.clone())
+            .collect::<Vec<_>>();
+        for (kind, worker) in [
+            (JobKind::HuntExpedition, &workers[0]),
+            (JobKind::FetchWater, &workers[1]),
+            (JobKind::Explore, &workers[2]),
+            (JobKind::ForageFibre, &workers[3]),
+            (JobKind::Ritual, &workers[4]),
+        ] {
+            queue_job_requested_by(
+                &mut colony,
+                10_000,
+                kind,
+                JobRequester::Leader,
+                Some(worker.clone()),
+                JobMetadata::None,
+            );
+        }
+        for (kind, extra) in [
+            (JobKind::HuntExpedition, 7),
+            (JobKind::FetchWater, 2),
+            (JobKind::Explore, 2),
+        ] {
+            for _ in 0..extra {
+                queue_job_requested_by(
+                    &mut colony,
+                    10_000,
+                    kind,
+                    JobRequester::Leader,
+                    Some(workers[0].clone()),
+                    JobMetadata::None,
+                );
+            }
+        }
+
+        release_role_automation(&mut colony, OfficerRole::Farmer, 11_000);
+        release_role_automation(&mut colony, OfficerRole::Loremaster, 12_000);
+
+        let status = |kind| {
+            colony
+                .jobs
+                .iter()
+                .find(|job| job.kind == kind)
+                .expect("fixture job")
+                .status
+        };
+        for (kind, expected) in [
+            (JobKind::HuntExpedition, BASELINE_HUNT_MAX_SLOTS),
+            (JobKind::FetchWater, BASELINE_WATER_MAX_SLOTS),
+            (JobKind::Explore, BASELINE_SCOUT_MAX_SLOTS),
+        ] {
+            assert_eq!(
+                colony
+                    .jobs
+                    .iter()
+                    .filter(|job| {
+                        job.kind == kind
+                            && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                    })
+                    .count(),
+                expected as usize,
+            );
+        }
+        assert_eq!(status(JobKind::ForageFibre), JobStatus::Cancelled);
+        assert_eq!(status(JobKind::Ritual), JobStatus::Cancelled);
+    }
+
+    #[test]
     fn due_planner_reuses_its_worker_instead_of_creating_an_unstaffed_child() {
         for (planner, child) in [
             (JobKind::LeaderPlanHunt, JobKind::HuntExpedition),
@@ -22665,6 +22789,19 @@ mod tests {
                 .map(|cat| (&cat.id, cat.position, cat.destination, cat.activity))
                 .collect::<Vec<_>>()
         );
+        let first_scout = world.colonies[0]
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::Explore)
+            .expect("founding scout job");
+        assert_eq!(first_scout.requested_by, JobRequester::Leader);
+        assert!(matches!(
+            &first_scout.metadata,
+            JobMetadata::Scout {
+                mission: ScoutMission::Resource(ScoutResource::Wood),
+                ..
+            }
+        ));
         (
             world,
             delivered_at.expect("wood scout should touch shrine in bound"),
@@ -28137,6 +28274,87 @@ mod tests {
     }
 
     #[test]
+    fn fresh_leader_safety_floor_survives_and_maps_at_live_cadence() {
+        for seed in [7_u32, 42, 20_240_712] {
+            let mut world = new_world(seed);
+            world
+                .colonies
+                .push(found_colony(seed, "colony-1", 1_000, seed));
+            let founding_revealed = world.colonies[0].revealed_tiles.len();
+            let mut saw_hunt = false;
+            let mut saw_water = false;
+            let mut saw_scout = false;
+            let mut completed_scout = false;
+
+            // The failing player-observed baseline reset for the first time near
+            // game-hour three. Four true-live hours cover that boundary without
+            // hiding it behind a five-minute proxy tick.
+            for step in 1..=4 * 3_600_i64 {
+                let reports = world_tick(&mut world, 1_000 + step * 1_000);
+                assert_eq!(
+                    reports[0].reset_reason, None,
+                    "seed {seed}: fresh village reset at live second {step}"
+                );
+                for job in &world.colonies[0].jobs {
+                    if job.requested_by == JobRequester::Leader {
+                        saw_hunt |= job.kind == JobKind::HuntExpedition;
+                        saw_water |= job.kind == JobKind::FetchWater;
+                        if job.kind == JobKind::Explore {
+                            saw_scout = true;
+                            completed_scout |= job.status == JobStatus::Completed;
+                        }
+                    }
+                }
+                for (kind, cap) in [
+                    (JobKind::HuntExpedition, BASELINE_HUNT_MAX_SLOTS),
+                    (JobKind::FetchWater, BASELINE_WATER_MAX_SLOTS),
+                    (JobKind::Explore, BASELINE_SCOUT_MAX_SLOTS),
+                ] {
+                    let in_flight = world.colonies[0]
+                        .jobs
+                        .iter()
+                        .filter(|job| {
+                            job.kind == kind
+                                && job.requested_by == JobRequester::Leader
+                                && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                        })
+                        .count();
+                    assert!(
+                        in_flight <= cap as usize,
+                        "seed {seed}: {kind:?} exceeded baseline cap at live second {step}"
+                    );
+                }
+            }
+
+            let colony = &world.colonies[0];
+            assert!(saw_hunt, "seed {seed}: founding Leader never hunted");
+            assert!(
+                saw_water,
+                "seed {seed}: founding Leader never fetched water"
+            );
+            assert!(saw_scout, "seed {seed}: founding Leader never sent a scout");
+            assert!(
+                completed_scout,
+                "seed {seed}: founding Leader scout never completed its shrine return"
+            );
+            assert!(
+                colony.revealed_tiles.len() > founding_revealed,
+                "seed {seed}: a returned scout never expanded permanent fog"
+            );
+            assert!(colony.officers.is_empty());
+            assert_eq!(colony.upgrade_tree.research_points, 0.0);
+            assert!(
+                colony
+                    .jobs
+                    .iter()
+                    .all(|job| !matches!(job.kind, JobKind::Ritual | JobKind::CarryOffering)),
+                "seed {seed}: baseline safety floor leaked into Loremaster work"
+            );
+            assert_eq!(colony.run_number, 1);
+        }
+    }
+
+    #[test]
     fn founding_starts_with_fifteen_unique_adult_cats_and_three_five_bed_dens() {
         let colony = found_colony(4242, "colony-1", 1_000, 4242);
         assert_eq!(alive_cats(&colony.cats).count(), 15);
@@ -29517,15 +29735,13 @@ mod tests {
     }
 
     #[test]
-    fn fresh_vacant_founding_has_a_finite_runway_and_only_the_one_time_system_scout() {
+    fn fresh_vacant_founding_uses_only_the_baseline_leader_safety_floor() {
         let seed = 4242;
         let mut world = new_world(seed);
         world
             .colonies
             .push(found_colony(seed, "colony-1", 10_000, seed));
         let founding_reveal = world.colonies[0].revealed_tiles.clone();
-        let starting_food = world.colonies[0].resources.food;
-        let starting_water = world.colonies[0].resources.water;
         let starting_planks = world.colonies[0].resources.planks;
         let starting_blocks = world.colonies[0].resources.blocks;
 
@@ -29537,8 +29753,8 @@ mod tests {
         let colony = &world.colonies[0];
         assert!(colony.officers.is_empty());
         assert!(alive_cats(&colony.cats).count() > 0);
-        assert!(colony.resources.food < starting_food && colony.resources.food > 0.0);
-        assert!(colony.resources.water < starting_water && colony.resources.water > 0.0);
+        assert!(colony.resources.food > 0.0);
+        assert!(colony.resources.water > 0.0);
         assert_eq!(colony.resources.planks, starting_planks);
         assert_eq!(colony.resources.blocks, starting_blocks);
         assert!(
@@ -29548,18 +29764,42 @@ mod tests {
                 .filter(|building| RAW_MATERIAL_WORKSHOPS.contains(&building.building_type))
                 .all(|building| building.assigned_cat.is_none())
         );
-        let bootstrap_scouts = colony
+        let system_scouts = colony
             .jobs
             .iter()
             .filter(|job| job.kind == JobKind::Explore && job.requested_by == JobRequester::System)
             .count();
-        assert_eq!(bootstrap_scouts, 1, "bootstrap is exactly one system scout");
+        assert_eq!(
+            system_scouts, 0,
+            "founding exploration belongs to the Leader"
+        );
         assert!(colony.jobs.iter().all(|job| {
-            job.kind != JobKind::Explore || job.requested_by != JobRequester::Leader
+            job.requested_by != JobRequester::Leader
+                || matches!(
+                    job.kind,
+                    JobKind::LeaderPlanHunt
+                        | JobKind::HuntExpedition
+                        | JobKind::FetchWater
+                        | JobKind::Explore
+                )
         }));
+        for kind in [
+            JobKind::HuntExpedition,
+            JobKind::FetchWater,
+            JobKind::Explore,
+        ] {
+            assert!(
+                colony
+                    .jobs
+                    .iter()
+                    .any(|job| { job.kind == kind && job.requested_by == JobRequester::Leader }),
+                "founding Leader never dispatched {kind:?}"
+            );
+        }
+        assert_eq!(colony.upgrade_tree.research_points, 0.0);
         assert!(
-            colony.revealed_tiles.len() >= founding_reveal.len(),
-            "the one-time scout may add knowledge but cannot erase the founding reveal"
+            colony.revealed_tiles.len() > founding_reveal.len(),
+            "a returned baseline scout did not expand permanent knowledge"
         );
     }
 

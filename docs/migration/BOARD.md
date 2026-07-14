@@ -35,10 +35,10 @@ codex, plus a Claude review for high-value slices) signs off.
 | P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
 | P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh`; a same-origin combined server/WASM image, compression, health/readiness probes, exact Origin checks, and deployment instructions are verified. Native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Transfer-weight optimization remains optional. See `docs/migration/WASM.md` |
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
-| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven strict manual/officer domains, all 18 maintained skill gain/effect/UI paths, role-station/unlock gates, active shrine faucets, useful tools, escalating costs, Accounting Tent, finite spatial storage, and a complete physical logs→Sawmill→lumber route/inspector are verified; other physical workshop/farm chains and broader recipes remain |
+| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven specialist manual/officer domains, a narrow founding Leader Hunt/FetchWater/Scout safety floor, all 18 maintained skill gain/effect/UI paths, role gates, active shrine faucets, useful tools/costs, finite storage, and physical Sawmill are verified through exact 48-hour personal/communal campaigns; finish other physical chains/recipes |
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, signed manual orders, exact building/farm/gather/road/governance controls, durable per-cat typed labor preferences, the physical Sawmill's editable add/remove/reorder/repeat/pause queue, the purchasable 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; extend the generic queue UI as broader physical recipes land |
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code; integrated before/during/after wall framebuffers remain |
-| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact placement/governance controls, and deterministic knowledge-blind resource/general shrine-return scouting are verified, including restart-safe in-flight notebooks, 32-seed fast wood, and responsive controls; broader station-local inspector/queue paths remain partial |
+| P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns, with browser/native visual confirmation and broader physical stations remaining |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, and persisted outside-wall agricultural territory are verified; fishing and broader physical farm/production work remain |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fine-biome movement is unused, rail/shipping are global multipliers rather than built routes/vehicles, and fishing is absent |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone; all 25 current protocol variants have tested residential/open-station compositions, with the prior 24 plus Mill/Sawmill/crop stages framebuffer-verified; Accounting Tent is snapshot-reachable but still needs an integrated in-world capture. The Adventure skin is exact-size native-framebuffer verified, the release WASM bundle builds, and WASM visual interaction remains |
@@ -567,9 +567,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   research, and combat; protocol and the cat inspector expose the typed map while accepting
   legacy four-role snapshots.
 - **P12.2 officers** — Steward, Accountant, Forester, Farmer, Captain, Loremaster, and Cloth
-  Leader have strict automation ownership. Vacancies are manual-only; appointment requires the
-  matching researched unlock and completed role station; assignment, replacement, automation
-  provenance, and the rolling daily legacy-Loremaster timestamp persist.
+  Leader have strict specialist automation ownership. Beyond the founding Leader's bounded
+  hunt/water/scout safety floor, vacancies are manual-only. Appointment requires the matching
+  researched unlock and completed role station; assignment, replacement, automation provenance,
+  and the rolling daily legacy-Loremaster timestamp persist.
 - **P12.3 spatial stockpiles** — founding seeds a finite general storehouse; designated containers
   determine real capacity, legacy shrine stores migrate into them, and persisted transit ledgers
   reserve carried cargo without blocking the map. The complete Sawmill route now uses this model;
@@ -614,6 +615,14 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Scout targeting follows deterministic knowledge-blind wander legs with bounded alternate-heading
   retries. Targets remain absent until physically observed; missions change direction, give up, and
   return under survey/deadline/route exhaustion while preserving the shrine notebook contract.
+- **In close-out:** the founding Leader now retains deficit-scaled Hunt/FetchWater/Scout allocation
+  capped at six/two/one at 15 cats and scaled proportionally thereafter; vacancy cleanup preserves
+  no more than those physical trips. Three personal seeds and the 30-cat communal village pass
+  exact 48-hour one-second campaigns with fog growth and no research/ritual leakage. Native/browser
+  founding confirmation remains.
+- **Failing baseline preserved:** a fresh personal village suffered eight deterministic
+  unattended-collapse resets in 48 hours because the same strict filter removed primitive food
+  work. This remains the accepted before-fix comparison for the verified repair.
 - Cat booster: a per-cat priority flag that biases the leader's job/role matcher, plus an
   inspector toggle and on-map priority marker.
 - Control rebind + building inspector (real inbound-haul readout); smooth cat/raider movement
