@@ -3195,6 +3195,86 @@ fn scaffold_cost(colony: &ColonyRuntime, building_type: BuildingType) -> (f64, f
     )
 }
 
+/// Validate, pay for, and reserve an explicitly player-selected building footprint
+/// as one atomic mutation. The reservation is the incomplete scaffold itself, so a
+/// second action cannot race onto the same tiles while its builder is still queued.
+/// Automatic/legacy placement continues through phase 14 and does not use this path.
+pub(crate) fn commit_player_scaffold(
+    colony: &mut ColonyRuntime,
+    site: TilePos,
+    building_type: BuildingType,
+    world_seed: u32,
+    now_ms: i64,
+) -> Result<String, &'static str> {
+    let (width, height) = footprint_for(building_type);
+    let footprint = footprint_tiles(site, width, height);
+    if let Some(error) = placement_error_for_tiles(colony, &footprint, world_seed, true) {
+        return Err(error.message());
+    }
+    if reserved_construction_tiles(colony)
+        .iter()
+        .any(|tile| footprint.contains(tile))
+    {
+        return Err("The placement overlaps a reserved construction footprint.");
+    }
+    let claimed = colony.claimed_tiles.iter().copied().collect();
+    if !building_footprint_has_claim_margin(&footprint, &claimed) {
+        return Err("The building needs one claimed access tile around its footprint.");
+    }
+    if building_type == BuildingType::Field
+        && footprint.iter().any(|tile| {
+            inside_village_interior(colony, *tile)
+                || !tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
+        })
+    {
+        return Err("Fields require fertile claimed land outside the walled village.");
+    }
+    let Some(access_route) = candidate_building_road_route(colony, site, building_type, world_seed)
+    else {
+        return Err("The building would block shrine or gate access.");
+    };
+    if !has_officer(colony, OfficerRole::Steward) && !access_route.is_empty() {
+        return Err("Build a shrine-connected access road to that footprint first.");
+    }
+
+    let (timber_cost, block_cost) = scaffold_cost(colony, building_type);
+    let timber = allocate_construction_timber(
+        timber_cost,
+        colony.resources.lumber,
+        colony.resources.planks,
+    );
+    if !timber.covered || colony.resources.blocks < block_cost {
+        return Err("Not enough lumber/planks and dressed-stone blocks to reserve that scaffold.");
+    }
+
+    // Nothing below this point can fail. Keep payment, optional Steward paving,
+    // and the footprint reservation in one commit boundary.
+    colony.resources.lumber = (colony.resources.lumber - timber.lumber_used).max(0.0);
+    colony.resources.planks = (colony.resources.planks - timber.legacy_planks_used).max(0.0);
+    colony.resources.blocks = (colony.resources.blocks - block_cost).max(0.0);
+    let building_id = format!("building-{now_ms}-{}", colony.buildings.len() + 1);
+    colony.buildings.push(BuildingRuntime {
+        id: building_id.clone(),
+        building_type,
+        level: 1,
+        position: site,
+        is_complete: false,
+        construction_progress: 0,
+        production_progress: 0.0,
+        assigned_cat: None,
+        automated_by: None,
+    });
+    if has_officer(colony, OfficerRole::Steward) {
+        pave_access_route(colony, &access_route);
+    }
+    debug_assert!(building_is_road_connected_to_shrine(
+        colony,
+        colony.buildings.last().expect("scaffold was just reserved"),
+        world_seed,
+    ));
+    Ok(building_id)
+}
+
 /// Tools may consume only material above the most expensive pending scaffold (with
 /// the original four-unit safety floor). Repeated buildings therefore cannot be
 /// starved by the throughput upgrade meant to help construct them.
@@ -11868,6 +11948,39 @@ pub fn can_plan_building(
     building_type: BuildingType,
 ) -> bool {
     next_claimed_building_site(colony, 0.0, world_seed, building_type).is_some()
+}
+
+/// Mutation-free preflight for an explicit player-selected footprint anchor.
+/// Affordability is intentionally excluded because the action rechecks and pays
+/// atomically; this answers only whether the clicked spatial reservation is legal.
+#[must_use]
+pub fn can_plan_building_at(
+    colony: &ColonyRuntime,
+    site: TilePos,
+    world_seed: u32,
+    building_type: BuildingType,
+) -> bool {
+    let (width, height) = footprint_for(building_type);
+    let footprint = footprint_tiles(site, width, height);
+    if placement_error_for_tiles(colony, &footprint, world_seed, true).is_some()
+        || reserved_construction_tiles(colony)
+            .iter()
+            .any(|tile| footprint.contains(tile))
+    {
+        return false;
+    }
+    let claimed = colony.claimed_tiles.iter().copied().collect();
+    if !building_footprint_has_claim_margin(&footprint, &claimed)
+        || building_type == BuildingType::Field
+            && footprint.iter().any(|tile| {
+                inside_village_interior(colony, *tile)
+                    || !tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
+            })
+    {
+        return false;
+    }
+    candidate_building_road_route(colony, site, building_type, world_seed)
+        .is_some_and(|route| has_officer(colony, OfficerRole::Steward) || route.is_empty())
 }
 
 fn tile_has_water(tile: Option<&WorldTileRuntime>) -> bool {
@@ -24330,6 +24443,7 @@ mod tests {
             nickname: "Builder".to_owned(),
             sig: "pure-sim".to_owned(),
             building_type: proto::BuildingType::Workshop,
+            site: None,
         };
         let action_ctx = ActionCtx {
             session_id: "session".to_owned(),
@@ -24537,6 +24651,110 @@ mod tests {
                 .unwrap()
                 .is_complete
         );
+    }
+
+    #[test]
+    fn exact_player_scaffold_is_atomic_reserved_and_completes_at_clicked_anchor() {
+        let seed = 42;
+        let now = 50_000;
+        let mut colony = found_colony(seed, "exact-colony", 1_000, seed);
+        establish_core_offices(&mut colony);
+        colony.resources.lumber = 40.0;
+        colony.resources.planks = 40.0;
+        colony.resources.blocks = 40.0;
+        let site = next_claimed_building_site(&colony, 0.0, seed, BuildingType::Workshop)
+            .expect("mature fixture has an exact workshop anchor");
+        let resources_before = colony.resources.clone();
+        let buildings_before = colony.buildings.len();
+        let mut deterministic_twin = colony.clone();
+
+        let building_id =
+            commit_player_scaffold(&mut colony, site, BuildingType::Workshop, seed, now)
+                .expect("clicked site reserves atomically");
+        let twin_id = commit_player_scaffold(
+            &mut deterministic_twin,
+            site,
+            BuildingType::Workshop,
+            seed,
+            now,
+        )
+        .expect("identical clicked site reserves in deterministic twin");
+        assert_eq!(twin_id, building_id);
+        assert_eq!(deterministic_twin.resources, colony.resources);
+        assert_eq!(deterministic_twin.buildings, colony.buildings);
+        let scaffold = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .expect("reserved scaffold exists");
+        assert_eq!(scaffold.position, site);
+        assert!(!scaffold.is_complete);
+        assert_eq!(scaffold.construction_progress, 0);
+        assert!(colony.resources.blocks < resources_before.blocks);
+        assert!(
+            colony.resources.lumber < resources_before.lumber
+                || colony.resources.planks < resources_before.planks
+        );
+        assert!(building_is_road_connected_to_shrine(
+            &colony, scaffold, seed
+        ));
+
+        let after_success = colony.clone();
+        let overlap =
+            commit_player_scaffold(&mut colony, site, BuildingType::WaterBowl, seed, now + 1);
+        assert!(
+            overlap.is_err(),
+            "the scaffold itself reserves its footprint"
+        );
+        assert_eq!(colony.resources, after_success.resources);
+        assert_eq!(colony.buildings, after_success.buildings);
+
+        let outside = TilePos {
+            x: colony.anchor.x + 10_000,
+            y: colony.anchor.y + 10_000,
+        };
+        let outside_result =
+            commit_player_scaffold(&mut colony, outside, BuildingType::WaterBowl, seed, now + 2);
+        assert!(outside_result.is_err());
+        assert_eq!(colony.resources, after_success.resources);
+        assert_eq!(colony.buildings, after_success.buildings);
+
+        let builder = colony
+            .cats
+            .iter()
+            .find(|cat| cat.death_time.is_none())
+            .expect("living builder")
+            .id
+            .clone();
+        queue_job(
+            &mut colony,
+            now,
+            JobKind::BuildHouse,
+            Some(builder),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Workshop,
+                building_id: Some(building_id.clone()),
+                site: Some(site),
+            },
+        );
+        let job = colony.jobs.last_mut().expect("construction job");
+        job.status = JobStatus::Active;
+        job.started_at = Some(now);
+        job.ends_at = Some(now + 1);
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            &mut colony,
+            production_gate(1, now + 1),
+        );
+        let complete = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .expect("clicked scaffold remains");
+        assert_eq!(complete.position, site);
+        assert!(complete.is_complete);
+        assert_eq!(complete.construction_progress, 100);
+        assert_eq!(buildings_before + 1, colony.buildings.len());
     }
 
     #[test]

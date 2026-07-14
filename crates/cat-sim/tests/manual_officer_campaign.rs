@@ -417,6 +417,7 @@ fn fully_manual_multi_seed_guidance_survives_and_progresses_at_live_cadence() {
                 nickname: "Guide".to_owned(),
                 sig: "pure-sim".to_owned(),
                 building_type: proto::BuildingType::AccountingTent,
+                site: None,
             },
             now,
         );
@@ -824,6 +825,7 @@ fn staged_officer_handoff_reduces_manual_frequency_one_role_at_a_time() {
                 nickname: "Guide".to_owned(),
                 sig: "pure-sim".to_owned(),
                 building_type: proto_building,
+                site: None,
             },
             21_000 + index as i64,
         );

@@ -463,6 +463,7 @@ fn run_guided_campaign(seed: u32) -> WorldState {
             nickname,
             sig,
             building_type: proto::BuildingType::Den,
+            site: None,
         };
         let result = apply_action(&mut world, &action, &ctx(action_at));
         if result.ok {

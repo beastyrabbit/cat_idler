@@ -125,9 +125,14 @@ pub fn apply_action(
         proto::ClientAction::RemoveZone { zone_id, .. } => {
             with_colony(world, ctx, |colony| remove_zone(colony, zone_id, ctx))
         }
-        proto::ClientAction::PlanBuilding { building_type, .. } => {
+        proto::ClientAction::PlanBuilding {
+            building_type,
+            site,
+            ..
+        } => {
+            let world_seed = world.world_seed;
             with_colony(world, ctx, |colony| {
-                plan_building(colony, *building_type, ctx)
+                plan_building(colony, *building_type, *site, world_seed, ctx)
             })
         }
         proto::ClientAction::UnlockNode { node_id, .. } => {
@@ -594,10 +599,18 @@ fn cast_vote(
     if ctx.now_ms >= election.closes_at {
         return fail("Election is closed.");
     }
-    if !colony
+    let candidates = colony
         .cats
         .iter()
-        .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+        .filter(|cat| cat.death_time.is_none())
+        .map(|cat| crate::elections::ElectionCandidate {
+            id: cat.id.clone(),
+            leadership: cat.stats.leadership,
+        })
+        .collect::<Vec<_>>();
+    if !crate::elections::candidates_for_unbarred(&candidates)
+        .iter()
+        .any(|candidate| candidate == cat_id)
     {
         return fail("Candidate not found.");
     }
@@ -626,12 +639,36 @@ fn request_vote_kick(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::Acti
     if colony.leader_id.is_none() {
         return fail("No leader to remove.");
     }
-    if colony
+    let voter = voter_id(ctx);
+    if let Some((election_id, target_cat_id)) = colony
         .elections
         .iter()
-        .any(|election| election.kind == ElectionKind::VoteKick && election.resolved_at.is_none())
+        .find(|election| election.kind == ElectionKind::VoteKick && election.resolved_at.is_none())
+        .map(|election| {
+            (
+                election.id.clone(),
+                election.winner_cat_id.clone().unwrap_or_default(),
+            )
+        })
     {
-        return fail("Vote-kick already pending.");
+        if colony
+            .votes
+            .iter()
+            .any(|vote| vote.election_id == election_id && vote.voter_id == voter)
+        {
+            // Reconnects and double-clicks are idempotent: one stable player
+            // identity contributes at most one signature to this petition.
+            return ok();
+        }
+        colony.votes.push(VoteRuntime {
+            id: format!("vote-{}-{}", ctx.now_ms, colony.votes.len() + 1),
+            election_id,
+            voter_id: voter,
+            cat_id: target_cat_id,
+            weight: 1.0,
+        });
+        colony.last_player_activity_at = Some(ctx.now_ms);
+        return ok();
     }
 
     let election_id = format!("kick-{}-{}", ctx.now_ms, colony.elections.len() + 1);
@@ -646,7 +683,7 @@ fn request_vote_kick(colony: &mut ColonyRuntime, ctx: &ActionCtx) -> proto::Acti
     colony.votes.push(VoteRuntime {
         id: format!("vote-{}-{}", ctx.now_ms, colony.votes.len() + 1),
         election_id,
-        voter_id: voter_id(ctx),
+        voter_id: voter,
         cat_id: colony.leader_id.clone().unwrap_or_default(),
         weight: 1.0,
     });
@@ -706,6 +743,8 @@ fn remove_zone(colony: &mut ColonyRuntime, zone_id: &str, ctx: &ActionCtx) -> pr
 fn plan_building(
     colony: &mut ColonyRuntime,
     building_type: proto::BuildingType,
+    site: Option<proto::TilePoint>,
+    world_seed: u32,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
     let Some(building_type) = proto_to_sim_building_type(building_type) else {
@@ -805,6 +844,26 @@ fn plan_building(
     let Some(architect) = select_best_cat(colony, Some(CatSpecialization::Architect)) else {
         return fail("No available worker.");
     };
+    let (building_id, site) = if let Some(site) = site {
+        let site = TilePos {
+            x: site.x,
+            y: site.y,
+        };
+        match crate::world_tick::commit_player_scaffold(
+            colony,
+            site,
+            building_type,
+            world_seed,
+            ctx.now_ms,
+        ) {
+            Ok(building_id) => (Some(building_id), Some(site)),
+            Err(message) => return fail(message),
+        }
+    } else {
+        // Compatibility path for old saved/reconnecting clients: the runtime keeps
+        // choosing a deterministic site and pays at break-ground as before.
+        (None, None)
+    };
     queue_job(
         colony,
         ctx.now_ms,
@@ -814,8 +873,8 @@ fn plan_building(
         JobMetadata::Construction {
             phase: ConstructionPhase::ConstructHouse,
             building_type,
-            building_id: None,
-            site: None,
+            building_id,
+            site,
         },
     );
     colony.last_player_activity_at = Some(ctx.now_ms);
@@ -3416,6 +3475,96 @@ mod tests {
     }
 
     #[test]
+    fn vote_kick_petition_accepts_five_distinct_players_and_is_idempotent_per_player() {
+        let mut world = world_with_one_colony();
+        let original_leader = world.colonies[0].cats[0].id.clone();
+        world.colonies[0].leader_id = Some(original_leader.clone());
+        let opened_at = 1_010_000;
+        for player_index in 0..5 {
+            let action_ctx = ActionCtx {
+                session_id: format!("session-{player_index}"),
+                player_id: format!("player-{player_index}"),
+                colony_id: "c1".to_owned(),
+                now_ms: opened_at + i64::from(player_index),
+            };
+            let action = proto::ClientAction::RequestVoteKick {
+                session_id: action_ctx.session_id.clone(),
+                nickname: format!("Voter {player_index}"),
+                sig: "server-verified".to_owned(),
+            };
+            assert!(apply_action(&mut world, &action, &action_ctx).ok);
+            if player_index == 0 {
+                assert!(apply_action(&mut world, &action, &action_ctx).ok);
+                assert_eq!(
+                    world.colonies[0].votes.len(),
+                    1,
+                    "a reconnect/double-click cannot duplicate one signature"
+                );
+            }
+        }
+        let petition = world.colonies[0]
+            .elections
+            .iter()
+            .find(|election| election.kind == ElectionKind::VoteKick)
+            .expect("one petition");
+        assert_eq!(
+            petition.winner_cat_id.as_deref(),
+            Some(original_leader.as_str())
+        );
+        assert_eq!(world.colonies[0].votes.len(), 5);
+        let closes_at = petition.closes_at;
+
+        let _ = world_tick(&mut world, closes_at);
+        assert_ne!(
+            world.colonies[0].leader_id.as_deref(),
+            Some(original_leader.as_str()),
+            "five stable signed identities remove the petition target"
+        );
+        assert!(world.colonies[0].elections.iter().any(|election| {
+            election.kind == ElectionKind::VoteKick && election.resolved_at == Some(closes_at)
+        }));
+    }
+
+    #[test]
+    fn cast_vote_accepts_only_candidates_exposed_by_the_live_election_snapshot() {
+        let mut world = world_with_one_colony();
+        world.colonies[0].elections.push(ElectionRuntime {
+            id: "election-live".to_owned(),
+            opened_at: 999_000,
+            closes_at: 2_000_000,
+            resolved_at: None,
+            winner_cat_id: None,
+            kind: ElectionKind::Scheduled,
+        });
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let election = snapshot.colonies[0]
+            .election
+            .as_ref()
+            .expect("live election snapshot");
+        let candidate = election.candidates[0].id.clone();
+        let non_candidate = world.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| !election.candidates.iter().any(|listed| listed.id == cat.id))
+            .expect("founding roster exceeds candidate cap")
+            .id
+            .clone();
+        let vote = |cat_id| proto::ClientAction::CastVote {
+            session_id: "sess_1".to_owned(),
+            nickname: "Voter".to_owned(),
+            sig: "server-verified".to_owned(),
+            election_id: "election-live".to_owned(),
+            cat_id,
+        };
+        let rejected = apply_action(&mut world, &vote(non_candidate), &ctx());
+        assert!(!rejected.ok);
+        assert!(world.colonies[0].votes.is_empty());
+        let accepted = apply_action(&mut world, &vote(candidate.clone()), &ctx());
+        assert!(accepted.ok, "{accepted:?}");
+        assert_eq!(world.colonies[0].votes[0].cat_id, candidate);
+    }
+
+    #[test]
     fn typed_player_scout_action_dispatches_the_best_available_vision_cat() {
         let mut world = world_with_one_colony();
         let expected = world.colonies[0]
@@ -3549,6 +3698,12 @@ mod tests {
         );
         assert!(cleared.ok, "{cleared:?}");
         assert!(world.colonies[0].farms.is_empty());
+        let recreated = apply_action(&mut world, &designation, &ctx());
+        assert!(
+            recreated.ok,
+            "cleared farm tiles can be designated again: {recreated:?}"
+        );
+        assert_eq!(world.colonies[0].farms.len(), 1);
     }
 
     #[test]
@@ -4876,6 +5031,15 @@ mod tests {
         assert!(removed.ok, "{removed:?}");
         assert!(!world.colonies[0].stockpiles.iter().any(|p| p.id == pile_id));
         assert_stockpile_invariant(&world.colonies[0]);
+        let recreated = apply_action(
+            &mut world,
+            &designate_action(a, b, vec![proto::ResourceKind::Water]),
+            &ctx(),
+        );
+        assert!(
+            recreated.ok,
+            "removed stockpile tiles can be designated again: {recreated:?}"
+        );
 
         let noop = apply_action(
             &mut world,
@@ -5101,6 +5265,16 @@ mod tests {
             world.colonies[0].cats[0].activity,
             CatActivity::Idle,
             "cat freed since it was not yet carrying anything"
+        );
+
+        let recreated = apply_action(
+            &mut world,
+            &designate_gather_action(point, point, proto::ResourceKind::Food),
+            &ctx(),
+        );
+        assert!(
+            recreated.ok,
+            "removed gather-spot tiles can be designated again: {recreated:?}"
         );
 
         let unknown = apply_action(

@@ -1589,6 +1589,7 @@ mod tests {
                         nickname: "Builder Cat".to_owned(),
                         sig: sig.clone(),
                         building_type: cat_protocol::BuildingType::Den,
+                        site: None,
                     },
                 )
                 .await;
@@ -2535,6 +2536,388 @@ mod tests {
 
         drop(restarted);
         fs::remove_file(path).expect("remove village database");
+    }
+
+    #[tokio::test]
+    async fn signed_vote_kick_survives_restart_and_counts_each_reconnected_player_once() {
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-vote-kick-restart-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let secret = "vote-kick-restart-secret";
+        let mut world = starter_world(1_000_000);
+        let original_leader = world.colonies[0].cats[0].id.clone();
+        world.colonies[0].leader_id = Some(original_leader.clone());
+        let conn = Connection::open(&path).expect("open vote-kick database");
+        persistence::init_schema(&conn).expect("init vote-kick database");
+        let state = build_state_from_world(world, conn, secret.to_owned(), false, 1_000_000);
+
+        let mut issued_sessions = Vec::new();
+        for voter in 0..3 {
+            let mut connection = ConnectionContext::new(
+                format!("voter-{voter}-socket"),
+                STARTER_COLONY_ID.to_owned(),
+            );
+            let presence = send_action(
+                &state,
+                &mut connection,
+                &ClientAction::Presence {
+                    session_id: format!("voter-{voter}"),
+                    nickname: format!("Voter {voter}"),
+                    sig: None,
+                },
+            )
+            .await;
+            let session_id = presence.fields["sessionId"].clone();
+            let sig = presence.fields["sig"].clone();
+            let result = send_action(
+                &state,
+                &mut connection,
+                &ClientAction::RequestVoteKick {
+                    session_id: session_id.clone(),
+                    nickname: format!("Voter {voter}"),
+                    sig: sig.clone(),
+                },
+            )
+            .await;
+            assert!(result.result.ok, "signed petition failed: {result:?}");
+            issued_sessions.push((session_id, sig));
+        }
+        {
+            let world = state.world.lock().await;
+            assert_eq!(
+                build_snapshot(&world, now_ms(), 0).colonies[0]
+                    .vote_kick
+                    .as_ref()
+                    .expect("open petition")
+                    .signatures,
+                3
+            );
+        }
+        save_current_world(&state).await.expect("persist petition");
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen vote-kick database");
+        persistence::init_schema(&conn).expect("migrate vote-kick database");
+        let restarted = build_state_from_connection(2_000_000, conn, secret.to_owned())
+            .expect("restore petition");
+
+        // Reconnect the first bearer and repeat its action: the stable player id
+        // restores, but the petition still has exactly one signature from it.
+        let (session_id, sig) = issued_sessions[0].clone();
+        let mut reconnected = ConnectionContext::new(
+            "voter-0-reconnected".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        let presence = send_action(
+            &restarted,
+            &mut reconnected,
+            &ClientAction::Presence {
+                session_id: session_id.clone(),
+                nickname: "Voter 0".to_owned(),
+                sig: Some(sig.clone()),
+            },
+        )
+        .await;
+        assert!(presence.result.ok, "bearer reconnect failed: {presence:?}");
+        let duplicate = send_action(
+            &restarted,
+            &mut reconnected,
+            &ClientAction::RequestVoteKick {
+                session_id,
+                nickname: "Voter 0".to_owned(),
+                sig,
+            },
+        )
+        .await;
+        assert!(
+            duplicate.result.ok,
+            "idempotent repeat failed: {duplicate:?}"
+        );
+        assert_eq!(restarted.world.lock().await.colonies[0].votes.len(), 3);
+
+        for voter in 3..5 {
+            let mut connection = ConnectionContext::new(
+                format!("voter-{voter}-socket"),
+                STARTER_COLONY_ID.to_owned(),
+            );
+            let presence = send_action(
+                &restarted,
+                &mut connection,
+                &ClientAction::Presence {
+                    session_id: format!("voter-{voter}"),
+                    nickname: format!("Voter {voter}"),
+                    sig: None,
+                },
+            )
+            .await;
+            let result = send_action(
+                &restarted,
+                &mut connection,
+                &ClientAction::RequestVoteKick {
+                    session_id: presence.fields["sessionId"].clone(),
+                    nickname: format!("Voter {voter}"),
+                    sig: presence.fields["sig"].clone(),
+                },
+            )
+            .await;
+            assert!(result.result.ok, "signed petition failed: {result:?}");
+        }
+
+        let closes_at = {
+            let world = restarted.world.lock().await;
+            let colony = &world.colonies[0];
+            assert_eq!(colony.votes.len(), 5);
+            let petition = colony
+                .elections
+                .iter()
+                .find(|election| {
+                    election.kind == cat_sim::world_tick::ElectionKind::VoteKick
+                        && election.resolved_at.is_none()
+                })
+                .expect("restored open petition");
+            assert_eq!(
+                petition.winner_cat_id.as_deref(),
+                Some(original_leader.as_str())
+            );
+            petition.closes_at
+        };
+        {
+            let mut world = restarted.world.lock().await;
+            let _ = world_tick(&mut world, closes_at);
+            assert_ne!(
+                world.colonies[0].leader_id.as_deref(),
+                Some(original_leader.as_str())
+            );
+        }
+        save_current_world(&restarted)
+            .await
+            .expect("persist resolved petition");
+        drop(restarted);
+
+        let conn = Connection::open(&path).expect("reopen resolved database");
+        persistence::init_schema(&conn).expect("migrate resolved database");
+        let final_state = build_state_from_connection(3_000_000, conn, secret.to_owned())
+            .expect("restore resolved petition");
+        assert_ne!(
+            final_state.world.lock().await.colonies[0]
+                .leader_id
+                .as_deref(),
+            Some(original_leader.as_str())
+        );
+        drop(final_state);
+        fs::remove_file(path).expect("remove vote-kick database");
+    }
+
+    #[tokio::test]
+    async fn signed_exact_building_click_rejects_collisions_and_restores_completed_site() {
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-exact-build-restart-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let secret = "exact-build-restart-secret";
+        let started_at = now_ms();
+        let mut world = starter_world(started_at);
+        let colony = &mut world.colonies[0];
+        colony.resources.lumber = 40.0;
+        colony.resources.planks = 40.0;
+        colony.resources.blocks = 40.0;
+        colony.officers.insert(
+            cat_sim::officers::OfficerRole::Steward,
+            colony.cats[0].id.clone(),
+        );
+        let mut claimed = colony.claimed_tiles.clone();
+        claimed.sort_by_key(|tile| (tile.y, tile.x));
+        let site = claimed
+            .into_iter()
+            .find(|site| {
+                cat_sim::world_tick::can_plan_building_at(
+                    colony,
+                    *site,
+                    WORLD_SEED,
+                    cat_sim::types::BuildingType::WaterBowl,
+                )
+            })
+            .expect("founding claim has a clickable bowl site");
+        let conn = Connection::open(&path).expect("open exact-build database");
+        persistence::init_schema(&conn).expect("init exact-build database");
+        let state = build_state_from_world(world, conn, secret.to_owned(), true, started_at);
+
+        let mut socket =
+            ConnectionContext::new("builder-socket".to_owned(), STARTER_COLONY_ID.to_owned());
+        let presence = send_action(
+            &state,
+            &mut socket,
+            &ClientAction::Presence {
+                session_id: "exact-builder".to_owned(),
+                nickname: "Builder".to_owned(),
+                sig: None,
+            },
+        )
+        .await;
+        let session_id = presence.fields["sessionId"].clone();
+        let sig = presence.fields["sig"].clone();
+        let accelerated = send_action(
+            &state,
+            &mut socket,
+            &ClientAction::SetTestAcceleration {
+                preset: AccelerationPreset::Ludicrous,
+            },
+        )
+        .await;
+        assert!(accelerated.result.ok, "test acceleration: {accelerated:?}");
+        let signed_plan = |building_type, site| ClientAction::PlanBuilding {
+            session_id: session_id.clone(),
+            nickname: "Builder".to_owned(),
+            sig: sig.clone(),
+            building_type,
+            site: Some(site),
+        };
+
+        let before = state.world.lock().await.colonies[0].clone();
+        let outside = send_action(
+            &state,
+            &mut socket,
+            &signed_plan(
+                cat_protocol::BuildingType::WaterBowl,
+                TilePoint {
+                    x: site.x + 100_000,
+                    y: site.y + 100_000,
+                },
+            ),
+        )
+        .await;
+        assert!(!outside.result.ok);
+        {
+            let world = state.world.lock().await;
+            assert_eq!(world.colonies[0].resources, before.resources);
+            assert_eq!(world.colonies[0].buildings, before.buildings);
+        }
+
+        let accepted = send_action(
+            &state,
+            &mut socket,
+            &signed_plan(
+                cat_protocol::BuildingType::WaterBowl,
+                TilePoint {
+                    x: site.x,
+                    y: site.y,
+                },
+            ),
+        )
+        .await;
+        assert!(accepted.result.ok, "exact build failed: {accepted:?}");
+        let paid = state.world.lock().await.colonies[0].clone();
+        let scaffold = paid.buildings.last().expect("exact scaffold");
+        assert_eq!(scaffold.position, site);
+        assert!(!scaffold.is_complete);
+        assert!(paid.resources.blocks < before.resources.blocks);
+
+        let overlap = send_action(
+            &state,
+            &mut socket,
+            &signed_plan(
+                cat_protocol::BuildingType::Walls,
+                TilePoint {
+                    x: site.x,
+                    y: site.y,
+                },
+            ),
+        )
+        .await;
+        assert!(!overlap.result.ok);
+        {
+            let world = state.world.lock().await;
+            assert_eq!(world.colonies[0].resources, paid.resources);
+            assert_eq!(world.colonies[0].buildings, paid.buildings);
+        }
+
+        let completed_id = scaffold.id.clone();
+        {
+            let mut world = state.world.lock().await;
+            let _ = world_tick(&mut world, started_at + 1_000);
+            let ends_at = world.colonies[0]
+                .jobs
+                .iter()
+                .find(|job| {
+                    matches!(
+                        &job.metadata,
+                        cat_sim::world_tick::JobMetadata::Construction {
+                            building_id: Some(id),
+                            ..
+                        } if id == &completed_id
+                    )
+                })
+                .and_then(|job| job.ends_at)
+                .expect("exact construction promoted");
+            let _ = world_tick(&mut world, ends_at);
+            let building = world.colonies[0]
+                .buildings
+                .iter()
+                .find(|building| building.id == completed_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "exact building survives completion: run={} ids={:?} events={:?}",
+                        world.colonies[0].run_number,
+                        world.colonies[0]
+                            .buildings
+                            .iter()
+                            .map(|building| building.id.as_str())
+                            .collect::<Vec<_>>(),
+                        world.colonies[0]
+                            .events
+                            .iter()
+                            .rev()
+                            .take(4)
+                            .map(|event| event.message.as_str())
+                            .collect::<Vec<_>>()
+                    )
+                });
+            assert!(building.is_complete);
+            assert_eq!(building.position, site);
+        }
+        save_current_world(&state)
+            .await
+            .expect("persist exact building");
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen exact-build database");
+        persistence::init_schema(&conn).expect("migrate exact-build database");
+        let restarted = build_state_from_connection(started_at + 2_000, conn, secret.to_owned())
+            .expect("restore exact building");
+        let restored = restarted.world.lock().await.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == completed_id)
+            .cloned()
+            .expect("completed clicked building restored");
+        assert!(restored.is_complete);
+        assert_eq!(restored.position, site);
+
+        let mut reconnected = ConnectionContext::new(
+            "builder-reconnected".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        let presence = send_action(
+            &restarted,
+            &mut reconnected,
+            &ClientAction::Presence {
+                session_id,
+                nickname: "Builder".to_owned(),
+                sig: Some(sig),
+            },
+        )
+        .await;
+        assert!(
+            presence.result.ok,
+            "builder bearer reconnects: {presence:?}"
+        );
+        drop(restarted);
+        fs::remove_file(path).expect("remove exact-build database");
     }
 
     #[tokio::test]

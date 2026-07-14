@@ -1036,6 +1036,10 @@ pub enum ClientAction {
         sig: String,
         #[serde(rename = "type")]
         building_type: BuildingType,
+        /// North-west footprint anchor selected on the world map. Older clients did
+        /// not send this field; `None` retains deterministic automatic placement.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<TilePoint>,
     },
     UnlockNode {
         session_id: String,
@@ -2474,5 +2478,34 @@ mod tests {
             serde_json::to_value(BuildingType::AccountingTent).unwrap(),
             json!("accounting_tent")
         );
+    }
+
+    #[test]
+    fn plan_building_site_round_trips_and_old_payloads_default_to_automatic() {
+        let exact = ClientAction::PlanBuilding {
+            session_id: "s".to_owned(),
+            nickname: "Builder".to_owned(),
+            sig: "signed".to_owned(),
+            building_type: BuildingType::Sawmill,
+            site: Some(TilePoint { x: -17, y: 23 }),
+        };
+        let encoded = serde_json::to_value(&exact).expect("serialize exact placement");
+        assert_eq!(encoded["site"], json!({ "x": -17, "y": 23 }));
+        assert_eq!(
+            serde_json::from_value::<ClientAction>(encoded).expect("round trip"),
+            exact
+        );
+
+        let legacy = json!({
+            "action": "planBuilding",
+            "sessionId": "old",
+            "nickname": "Old client",
+            "sig": "signed",
+            "type": "den"
+        });
+        assert!(matches!(
+            serde_json::from_value::<ClientAction>(legacy).expect("legacy payload"),
+            ClientAction::PlanBuilding { site: None, .. }
+        ));
     }
 }

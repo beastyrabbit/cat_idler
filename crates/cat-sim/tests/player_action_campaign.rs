@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use cat_protocol as proto;
 use cat_sim::{
-    actions::{ActionCtx, apply_action},
+    actions::{ActionCtx, apply_action, build_snapshot},
     entities::{CatActivity, MapType, Position},
     items::{Item, ItemKind, Material},
     officers::OfficerRole,
@@ -498,7 +498,13 @@ fn run_action_campaign() -> WorldState {
         .expect("scheduled election opened")
         .id
         .clone();
-    let cat_id = world.colonies[0].cats[0].id.clone();
+    let cat_id = build_snapshot(&world, 4_200, 1).colonies[0]
+        .election
+        .as_ref()
+        .expect("scheduled election is exposed")
+        .candidates[0]
+        .id
+        .clone();
     let (session_id, nickname, sig) = signed_fields();
     apply_ok(
         &mut world,
@@ -619,6 +625,7 @@ fn run_action_campaign() -> WorldState {
                 nickname,
                 sig,
                 building_type,
+                site: None,
             },
             &ctx(6_000),
         );
@@ -1374,6 +1381,7 @@ fn migration_guidance_campaign() -> (WorldState, WorldState, Vec<String>, i64) {
             nickname: "Playtester".to_owned(),
             sig: "validated-at-server-boundary".to_owned(),
             building_type: proto::BuildingType::Den,
+            site: None,
         };
         let result = apply_action(
             &mut guided,

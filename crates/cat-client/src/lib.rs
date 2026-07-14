@@ -25,8 +25,8 @@ use bevy::ui::{InteractionDisabled, RelativeCursorPosition, VisualBox, widget::N
 use bevy::window::{CursorIcon, CustomCursor, CustomCursorImage, PrimaryWindow};
 use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
-    CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmStage,
-    FootprintSize, GateSide, ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus,
+    CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
+    FarmStage, FootprintSize, GateSide, ItemStackSnapshot, JobKind, OfficerRole, RaiderStatus,
     ResourceAmounts, ResourceCapacities, ResourceKind, RoleXp, ScoutMission, ScoutResource,
     Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
     TraderSellOffer, TraderVisitState, VillageKind, WorldSnapshot, ZoneKind,
@@ -531,6 +531,7 @@ struct Selection {
 #[derive(Resource, Default)]
 struct StockpileSelection {
     selected: Option<String>,
+    selected_farm: Option<String>,
 }
 
 /// The currently inspected building id (middle-click).
@@ -605,6 +606,11 @@ struct OfficersUi {
 struct OrdersUi {
     visible: bool,
     planned_building: usize,
+}
+
+#[derive(Resource, Default)]
+struct GovernanceUi {
+    candidate_index: usize,
 }
 
 /// Whether the announcements / event-log panel is open (toggled by `L`).
@@ -703,12 +709,26 @@ fn boost_button_label(boosted: bool) -> &'static str {
 
 /// Active map tool, any in-progress drag, and the accept-type the next stockpile
 /// will be designated with.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 struct Tools {
     mode: ToolMode,
     /// `(start_tile, current_tile)` while dragging a zone rectangle.
     drag: Option<((i32, i32), (i32, i32))>,
     accept: AcceptChoice,
+    crop: CropKind,
+    gather_kind: ResourceKind,
+}
+
+impl Default for Tools {
+    fn default() -> Self {
+        Self {
+            mode: ToolMode::Inspect,
+            drag: None,
+            accept: AcceptChoice::General,
+            crop: CropKind::Grain,
+            gather_kind: ResourceKind::Materials,
+        }
+    }
 }
 
 /// What a newly designated stockpile accepts: everything, or one resource.
@@ -760,6 +780,7 @@ enum ToolMode {
     Farm,
     GatherSpot,
     Road,
+    Building,
 }
 
 /// What a click-drag paints — a steering zone or a stockpile designation.
@@ -783,6 +804,7 @@ impl ToolMode {
             Self::Farm => "Farm",
             Self::GatherSpot => "Gather spot",
             Self::Road => "Road",
+            Self::Building => "Building",
         }
     }
 
@@ -796,6 +818,7 @@ impl ToolMode {
             Self::Farm => Some(PaintKind::Farm),
             Self::GatherSpot => Some(PaintKind::GatherSpot),
             Self::Road => Some(PaintKind::Road),
+            Self::Building => None,
         }
     }
 }
@@ -1886,6 +1909,14 @@ struct RemovePanelText;
 /// Marker for the "Remove stockpile" button.
 #[derive(Component)]
 struct RemoveStockpileButton;
+#[derive(Component)]
+struct CycleFarmCrop;
+#[derive(Component)]
+struct FarmCropText;
+#[derive(Component)]
+struct CycleGatherKind;
+#[derive(Component)]
+struct GatherKindText;
 /// Marker for the officers panel node (toggled with `O`).
 #[derive(Component)]
 struct OfficersPanel;
@@ -1901,6 +1932,16 @@ struct OrderButton(OrderAction);
 struct CycleOrderBuilding;
 #[derive(Component)]
 struct PlannedBuildingText;
+#[derive(Component)]
+struct CycleElectionCandidate;
+#[derive(Component)]
+struct ElectionCandidateText;
+#[derive(Component)]
+struct CastElectionVoteButton;
+#[derive(Component)]
+struct RequestVoteKickButton;
+#[derive(Component)]
+struct VoteKickButtonText;
 /// One officer role row in the officers panel (its text holder).
 #[derive(Component, Clone, Copy)]
 struct OfficerRow(OfficerRole);
@@ -2674,6 +2715,7 @@ pub fn run() {
         .insert_resource(BuildingSelection::default())
         .insert_resource(OfficersUi { visible: true })
         .insert_resource(OrdersUi::default())
+        .insert_resource(GovernanceUi::default())
         .insert_resource(AnnouncementsUi::default())
         .insert_resource(GoodsUi::default())
         .insert_resource(CensusUi::default())
@@ -2730,6 +2772,8 @@ pub fn run() {
                     (
                         handle_tool_buttons,
                         handle_accept_button,
+                        handle_farm_crop_button,
+                        handle_gather_kind_button,
                         sync_action_button_availability,
                         update_kit_buttons
                             .after(sync_action_button_availability)
@@ -2742,6 +2786,7 @@ pub fn run() {
                         update_adventure_cursor.after(update_kit_buttons),
                     ),
                     zone_paint,
+                    place_building,
                     render_zone_preview,
                     (
                         update_hud,
@@ -2760,6 +2805,8 @@ pub fn run() {
                         update_dispatches_panel,
                         handle_order_buttons,
                         handle_order_building_cycle,
+                        update_governance_controls,
+                        handle_governance_buttons,
                         handle_appoint_buttons,
                         handle_vacate_buttons,
                     ),
@@ -3710,7 +3757,7 @@ fn setup(
                 body.spawn((
                     ui_button(),
                     RemoveStockpileButton,
-                    children![ui_text("Remove stockpile", FS_BODY, UI_INK)],
+                    children![ui_text("Remove designation", FS_BODY, UI_INK)],
                 ));
             });
         });
@@ -3842,9 +3889,33 @@ fn spawn_orders_panel(commands: &mut Commands) {
                         children![ui_text("Plan selected type", FS_SMALL, UI_INK)],
                     ));
                     row.spawn(ui_text(
-                        "Select cat + building/pile on map for target orders",
+                        "Choose Building tool, then click its north-west map tile",
                         FS_SMALL,
                         UI_MUTED,
+                    ));
+                });
+                body.spawn(ui_text("Village election", FS_SMALL, UI_MUTED));
+                body.spawn(bottom_bar_row_node()).with_children(|row| {
+                    row.spawn((
+                        ui_button_small(),
+                        CycleElectionCandidate,
+                        children![(
+                            ui_text("No active election", FS_SMALL, UI_INK),
+                            ElectionCandidateText
+                        )],
+                    ));
+                    row.spawn((
+                        ui_button_small(),
+                        CastElectionVoteButton,
+                        children![ui_text("Cast vote", FS_SMALL, UI_INK)],
+                    ));
+                    row.spawn((
+                        ui_button_small(),
+                        RequestVoteKickButton,
+                        children![(
+                            ui_text("Request vote-kick", FS_SMALL, UI_INK),
+                            VoteKickButtonText
+                        )],
                     ));
                 });
             });
@@ -3904,6 +3975,7 @@ fn spawn_bottom_bar(commands: &mut Commands) {
                             ToolMode::Farm,
                             ToolMode::GatherSpot,
                             ToolMode::Road,
+                            ToolMode::Building,
                         ] {
                             row.spawn((
                                 ui_button(),
@@ -3918,6 +3990,19 @@ fn spawn_bottom_bar(commands: &mut Commands) {
                             children![(
                                 ui_text("Accepts: General", FS_BODY, UI_INK),
                                 AcceptButtonText,
+                            )],
+                        ));
+                        row.spawn((
+                            ui_button(),
+                            CycleFarmCrop,
+                            children![(ui_text("Crop: grain", FS_BODY, UI_INK), FarmCropText)],
+                        ));
+                        row.spawn((
+                            ui_button(),
+                            CycleGatherKind,
+                            children![(
+                                ui_text("Gather: materials", FS_BODY, UI_INK),
+                                GatherKindText
                             )],
                         ));
                     });
@@ -5256,24 +5341,38 @@ fn update_remove_panel(
     let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
         return;
     };
-    let pile = selection.selected.as_deref().and_then(|id| {
-        latest
-            .0
-            .as_ref()
-            .and_then(|w| w.colonies.first())
-            .and_then(|c| c.stockpiles.iter().find(|s| s.id == id))
-    });
-    match pile {
-        Some(pile) => {
+    let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
+    let pile = selection
+        .selected
+        .as_deref()
+        .and_then(|id| colony.and_then(|c| c.stockpiles.iter().find(|s| s.id == id)));
+    let farm = selection
+        .selected_farm
+        .as_deref()
+        .and_then(|id| colony.and_then(|c| c.farms.iter().find(|farm| farm.id == id)));
+    match (pile, farm) {
+        (Some(pile), _) => {
             node.display = Display::Flex;
             let total = resource_total(&pile.contents);
             let dominant = dominant_resource(&pile.contents).map_or("empty", resource_kind_name);
-            text.0 = format!("Stockpile\n{dominant} {}", total.round() as i64);
+            let title = if pile.gather_spot.is_some() {
+                "Gather spot"
+            } else {
+                "Stockpile"
+            };
+            text.0 = format!("{title}\n{dominant} {}", total.round() as i64);
         }
-        None => {
+        (_, Some(farm)) => {
+            node.display = Display::Flex;
+            text.0 = format!("{} farm\n{:?}", crop_label(farm.crop), farm.stage);
+        }
+        (None, None) => {
             node.display = Display::None;
             if selection.selected.is_some() {
                 selection.selected = None;
+            }
+            if selection.selected_farm.is_some() {
+                selection.selected_farm = None;
             }
         }
     }
@@ -5282,21 +5381,72 @@ fn update_remove_panel(
 /// Send RemoveStockpile when the remove button is clicked.
 fn handle_remove_button(
     session: Res<Session>,
+    latest: Res<LatestSnapshot>,
     mut selection: ResMut<StockpileSelection>,
     mut outgoing: ResMut<OutgoingActions>,
     button: Query<&Interaction, (Changed<Interaction>, With<RemoveStockpileButton>)>,
 ) {
     for interaction in &button {
-        if *interaction == Interaction::Pressed
-            && let (Some(id), true) = (selection.selected.clone(), session.ready)
-        {
-            outgoing.0.push(ClientAction::RemoveStockpile {
-                session_id: session.session_id.clone(),
-                nickname: "Desktop Cat".to_string(),
-                sig: session.sig.clone(),
-                stockpile_id: id,
-            });
-            selection.selected = None;
+        if *interaction != Interaction::Pressed || !session.ready {
+            continue;
+        }
+        if let Some(plot_id) = selection.selected_farm.take() {
+            outgoing
+                .0
+                .push(build_remove_action(&session, Some(plot_id), None, false));
+        } else if let Some(stockpile_id) = selection.selected.take() {
+            let is_gather = latest
+                .0
+                .as_ref()
+                .and_then(|world| world.colonies.first())
+                .and_then(|colony| {
+                    colony
+                        .stockpiles
+                        .iter()
+                        .find(|pile| pile.id == stockpile_id)
+                })
+                .is_some_and(|pile| pile.gather_spot.is_some());
+            // The selected snapshot is resolved in `update_remove_panel`; gather
+            // spots need their dedicated action so in-flight mover jobs are freed.
+            outgoing.0.push(build_remove_action(
+                &session,
+                None,
+                Some(stockpile_id),
+                is_gather,
+            ));
+        }
+    }
+}
+
+fn build_remove_action(
+    session: &Session,
+    farm_id: Option<String>,
+    stockpile_id: Option<String>,
+    is_gather: bool,
+) -> ClientAction {
+    let session_id = session.session_id.clone();
+    let nickname = "Desktop Cat".to_owned();
+    let sig = session.sig.clone();
+    if let Some(plot_id) = farm_id {
+        ClientAction::ClearFarm {
+            session_id,
+            nickname,
+            sig,
+            plot_id,
+        }
+    } else if is_gather {
+        ClientAction::RemoveGatherSpot {
+            session_id,
+            nickname,
+            sig,
+            stockpile_id: stockpile_id.expect("selected gather spot has an id"),
+        }
+    } else {
+        ClientAction::RemoveStockpile {
+            session_id,
+            nickname,
+            sig,
+            stockpile_id: stockpile_id.expect("selected stockpile has an id"),
         }
     }
 }
@@ -5404,6 +5554,90 @@ fn handle_order_building_cycle(
     }
 }
 
+fn update_governance_controls(
+    latest: Res<LatestSnapshot>,
+    mut governance: ResMut<GovernanceUi>,
+    mut candidate_text: Query<&mut Text, With<ElectionCandidateText>>,
+    mut kick_text: Query<&mut Text, (With<VoteKickButtonText>, Without<ElectionCandidateText>)>,
+) {
+    if !latest.is_changed() && !governance.is_changed() {
+        return;
+    }
+    let colony = latest.0.as_ref().and_then(|world| world.colonies.first());
+    if let Ok(mut text) = candidate_text.single_mut() {
+        text.0 = colony
+            .and_then(|colony| colony.election.as_ref())
+            .and_then(|election| {
+                if election.candidates.is_empty() {
+                    return None;
+                }
+                governance.candidate_index %= election.candidates.len();
+                let candidate = &election.candidates[governance.candidate_index];
+                let votes = election.tally.get(&candidate.id).copied().unwrap_or(0);
+                Some(format!("{}  ({votes} votes) [cycle]", candidate.name))
+            })
+            .unwrap_or_else(|| "No active election".to_owned());
+    }
+    if let Ok(mut text) = kick_text.single_mut() {
+        text.0 = colony
+            .and_then(|colony| colony.vote_kick.as_ref())
+            .map(|kick| format!("Sign vote-kick {}/{}", kick.signatures, kick.needed))
+            .unwrap_or_else(|| "Request vote-kick".to_owned());
+    }
+}
+
+fn handle_governance_buttons(
+    session: Res<Session>,
+    latest: Res<LatestSnapshot>,
+    mut governance: ResMut<GovernanceUi>,
+    mut outgoing: ResMut<OutgoingActions>,
+    cycle: Query<&Interaction, (Changed<Interaction>, With<CycleElectionCandidate>)>,
+    cast: Query<&Interaction, (Changed<Interaction>, With<CastElectionVoteButton>)>,
+    kick: Query<&Interaction, (Changed<Interaction>, With<RequestVoteKickButton>)>,
+) {
+    let Some(colony) = latest.0.as_ref().and_then(|world| world.colonies.first()) else {
+        return;
+    };
+    if cycle
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+        && let Some(election) = &colony.election
+        && !election.candidates.is_empty()
+    {
+        governance.candidate_index = (governance.candidate_index + 1) % election.candidates.len();
+    }
+    if !session.ready {
+        return;
+    }
+    if cast
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+        && let Some(election) = &colony.election
+        && let Some(candidate) = election
+            .candidates
+            .get(governance.candidate_index % election.candidates.len().max(1))
+    {
+        outgoing.0.push(ClientAction::CastVote {
+            session_id: session.session_id.clone(),
+            nickname: "Desktop Cat".to_owned(),
+            sig: session.sig.clone(),
+            election_id: election.id.clone(),
+            cat_id: candidate.id.clone(),
+        });
+    }
+    if kick
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+        && colony.leader.is_some()
+    {
+        outgoing.0.push(ClientAction::RequestVoteKick {
+            session_id: session.session_id.clone(),
+            nickname: "Desktop Cat".to_owned(),
+            sig: session.sig.clone(),
+        });
+    }
+}
+
 fn build_order_action(
     action: OrderAction,
     session: &Session,
@@ -5456,6 +5690,7 @@ fn build_order_action(
             nickname,
             sig,
             building_type: planned_building,
+            site: None,
         },
         OrderAction::StaffSelected => ClientAction::AssignWorker {
             session_id,
@@ -5498,6 +5733,7 @@ fn handle_order_buttons(
     pile: Res<StockpileSelection>,
     mut outgoing: ResMut<OutgoingActions>,
     mut feedback: ResMut<ClientFeedback>,
+    mut tools: ResMut<Tools>,
     buttons: Query<(&Interaction, &OrderButton), Changed<Interaction>>,
 ) {
     if !ui.visible {
@@ -5505,6 +5741,14 @@ fn handle_order_buttons(
     }
     for (interaction, button) in &buttons {
         if *interaction != Interaction::Pressed {
+            continue;
+        }
+        if button.0 == OrderAction::PlanBuilding {
+            tools.mode = ToolMode::Building;
+            tools.drag = None;
+            feedback.message = Some("Building tool active: click an exact map tile.".to_owned());
+            feedback.level = FeedbackLevel::Info;
+            feedback.remaining_secs = 8.0;
             continue;
         }
         let planned = PLANNABLE_BUILDINGS[ui.planned_building % PLANNABLE_BUILDINGS.len()];
@@ -5997,6 +6241,7 @@ fn select_cat(
     if picked.is_some() {
         // A cat wins the click; drop any stockpile selection.
         stockpile_selection.selected = None;
+        stockpile_selection.selected_farm = None;
         selection.selected = toggle_selection(selection.selected.as_deref(), picked);
         return;
     }
@@ -6007,10 +6252,20 @@ fn select_cat(
         .iter()
         .find(|s| s.id != SHRINE_STOCKPILE_ID && point_in_stockpile(tile, s));
     selection.selected = None;
-    stockpile_selection.selected = toggle_selection(
-        stockpile_selection.selected.as_deref(),
-        pile.map(|s| s.id.clone()),
-    );
+    if let Some(pile) = pile {
+        stockpile_selection.selected_farm = None;
+        stockpile_selection.selected = toggle_selection(
+            stockpile_selection.selected.as_deref(),
+            Some(pile.id.clone()),
+        );
+    } else {
+        let farm = colony.farms.iter().find(|farm| point_in_farm(tile, farm));
+        stockpile_selection.selected = None;
+        stockpile_selection.selected_farm = toggle_selection(
+            stockpile_selection.selected_farm.as_deref(),
+            farm.map(|farm| farm.id.clone()),
+        );
+    }
 }
 
 /// Right-click a building to inspect it; right-click empty ground or the same
@@ -6151,6 +6406,7 @@ fn cycle_stacked_selection(
     cat_sel.selected = None;
     building_sel.selected = None;
     pile_sel.selected = None;
+    pile_sel.selected_farm = None;
     match next.kind {
         PickKind::Cat => cat_sel.selected = Some(next.id),
         PickKind::Building => building_sel.selected = Some(next.id),
@@ -6258,6 +6514,7 @@ fn close_inspectors_on_esc(
         cat.selected = None;
         building.selected = None;
         stockpile.selected = None;
+        stockpile.selected_farm = None;
         announcements.visible = false;
         goods.visible = false;
         census.visible = false;
@@ -6509,6 +6766,73 @@ fn handle_accept_button(
     }
 }
 
+fn crop_label(crop: CropKind) -> &'static str {
+    match crop {
+        CropKind::Catnip => "catnip",
+        CropKind::Grain => "grain",
+        CropKind::Herb => "herbs",
+    }
+}
+
+fn next_crop(crop: CropKind) -> CropKind {
+    match crop {
+        CropKind::Catnip => CropKind::Grain,
+        CropKind::Grain => CropKind::Herb,
+        CropKind::Herb => CropKind::Catnip,
+    }
+}
+
+fn handle_farm_crop_button(
+    mut tools: ResMut<Tools>,
+    buttons: Query<&Interaction, (Changed<Interaction>, With<CycleFarmCrop>)>,
+    mut text: Query<&mut Text, With<FarmCropText>>,
+) {
+    if buttons
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        tools.crop = next_crop(tools.crop);
+    }
+    if tools.is_changed()
+        && let Ok(mut text) = text.single_mut()
+    {
+        text.0 = format!("Crop: {}", crop_label(tools.crop));
+    }
+}
+
+const GATHER_KINDS: [ResourceKind; 4] = [
+    ResourceKind::Food,
+    ResourceKind::Water,
+    ResourceKind::Materials,
+    ResourceKind::Logs,
+];
+
+fn next_gather_kind(kind: ResourceKind) -> ResourceKind {
+    let index = GATHER_KINDS
+        .iter()
+        .position(|candidate| *candidate == kind)
+        .unwrap_or(0);
+    GATHER_KINDS[(index + 1) % GATHER_KINDS.len()]
+}
+
+fn handle_gather_kind_button(
+    mut tools: ResMut<Tools>,
+    buttons: Query<&Interaction, (Changed<Interaction>, With<CycleGatherKind>)>,
+    mut text: Query<&mut Text, With<GatherKindText>>,
+) {
+    if buttons
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        tools.gather_kind = next_gather_kind(tools.gather_kind);
+    }
+    if tools.is_changed()
+        && let Ok(mut text) = text.single_mut()
+    {
+        text.0 = format!("Gather: {}", resource_kind_name(tools.gather_kind));
+    }
+}
+
 /// Click-drag a rectangle in a paint mode to designate an avoid/gather zone or a
 /// stockpile; release sends the matching action. Esc cancels an in-progress drag.
 #[allow(clippy::too_many_arguments)]
@@ -6528,6 +6852,8 @@ fn zone_paint(
         return;
     };
     let accept = tools.accept;
+    let crop = tools.crop;
+    let gather_kind = tools.gather_kind;
     if keys.just_pressed(KeyCode::Escape) {
         tools.drag = None;
         return;
@@ -6593,7 +6919,7 @@ fn zone_paint(
                 sig: session.sig.clone(),
                 a,
                 b,
-                crop: CropKind::Grain,
+                crop,
             },
             PaintKind::GatherSpot => ClientAction::DesignateGatherSpot {
                 session_id: session.session_id.clone(),
@@ -6601,7 +6927,7 @@ fn zone_paint(
                 sig: session.sig.clone(),
                 a,
                 b,
-                kind: ResourceKind::Materials,
+                kind: gather_kind,
             },
             PaintKind::Road => ClientAction::BuildRoad {
                 session_id: session.session_id.clone(),
@@ -6611,6 +6937,66 @@ fn zone_paint(
                 b,
             },
         });
+    }
+}
+
+/// Building tool: one left click selects the exact north-west footprint anchor.
+/// The authoritative sim repeats collision, access and affordability checks before
+/// atomically reserving the scaffold, so the preview need not predict server state.
+#[allow(clippy::too_many_arguments)]
+fn place_building(
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    camera: Query<(&Camera, &GlobalTransform), With<WorldCamera>>,
+    blockers: WorldInputBlockerQuery,
+    research: Res<UpgradeTreeUi>,
+    session: Res<Session>,
+    tools: Res<Tools>,
+    orders: Res<OrdersUi>,
+    mut outgoing: ResMut<OutgoingActions>,
+) {
+    if tools.mode != ToolMode::Building || !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let cursor = windows
+        .single()
+        .ok()
+        .and_then(|window| window.cursor_position());
+    let over_world_input_blocker = cursor_over_world_input_blocker(cursor, &blockers);
+    if !session.ready
+        || !world_pointer_input_allowed(
+            research.visible,
+            over_world_input_blocker,
+            cursor.is_some(),
+        )
+    {
+        return;
+    }
+    let Some(site) = cursor_world(&windows, &camera).map(world_to_tile) else {
+        return;
+    };
+    let building_type = PLANNABLE_BUILDINGS[orders.planned_building % PLANNABLE_BUILDINGS.len()];
+    outgoing.0.push(build_exact_building_action(
+        &session,
+        building_type,
+        TilePoint {
+            x: site.0,
+            y: site.1,
+        },
+    ));
+}
+
+fn build_exact_building_action(
+    session: &Session,
+    building_type: BuildingType,
+    site: TilePoint,
+) -> ClientAction {
+    ClientAction::PlanBuilding {
+        session_id: session.session_id.clone(),
+        nickname: "Desktop Cat".to_owned(),
+        sig: session.sig.clone(),
+        building_type,
+        site: Some(site),
     }
 }
 
@@ -8412,6 +8798,12 @@ fn point_in_stockpile(tile: (i32, i32), pile: &StockpileSnapshot) -> bool {
     (x0..=x1).contains(&tile.0) && (y0..=y1).contains(&tile.1)
 }
 
+fn point_in_farm(tile: (i32, i32), farm: &FarmSnapshot) -> bool {
+    let (x0, x1) = (farm.x1.min(farm.x2), farm.x1.max(farm.x2));
+    let (y0, y1) = (farm.y1.min(farm.y2), farm.y1.max(farm.y2));
+    (x0..=x1).contains(&tile.0) && (y0..=y1).contains(&tile.1)
+}
+
 /// Nearest id to `click` within `radius`, or `None` (used for cats + buildings).
 fn nearest_id(click: Vec2, items: &[(String, Vec2)], radius: f32) -> Option<String> {
     let r2 = radius * radius;
@@ -8810,6 +9202,7 @@ mod tests {
             .insert_resource(StockpileSelection::default())
             .insert_resource(OutgoingActions::default())
             .insert_resource(ClientFeedback::default())
+            .insert_resource(Tools::default())
             .add_systems(Update, handle_order_buttons);
         app.world_mut()
             .spawn((Interaction::Pressed, OrderButton(OrderAction::Quarry)));
@@ -8907,6 +9300,7 @@ mod tests {
                 nickname: "Desktop Cat".to_owned(),
                 sig: "signed".to_owned(),
                 building_type: BuildingType::Sawmill,
+                site: None,
             },
             ClientAction::AssignWorker {
                 session_id: "session-1".to_owned(),
@@ -9010,6 +9404,108 @@ mod tests {
             ),
             Err("Select a cat first.")
         );
+    }
+
+    #[test]
+    fn exact_tool_choices_cover_all_farms_and_supported_gather_resources() {
+        assert_eq!(next_crop(CropKind::Catnip), CropKind::Grain);
+        assert_eq!(next_crop(CropKind::Grain), CropKind::Herb);
+        assert_eq!(next_crop(CropKind::Herb), CropKind::Catnip);
+        let mut kind = GATHER_KINDS[0];
+        let mut seen = Vec::new();
+        for _ in 0..GATHER_KINDS.len() {
+            seen.push(kind);
+            kind = next_gather_kind(kind);
+        }
+        assert_eq!(seen, GATHER_KINDS);
+        assert_eq!(kind, GATHER_KINDS[0]);
+        assert_eq!(ToolMode::Building.paint_kind(), None);
+        assert_eq!(ToolMode::Building.label(), "Building");
+        assert_eq!(
+            build_exact_building_action(
+                &signed_session("builder-session"),
+                BuildingType::Mill,
+                TilePoint { x: -4, y: 9 },
+            ),
+            ClientAction::PlanBuilding {
+                session_id: "builder-session".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                building_type: BuildingType::Mill,
+                site: Some(TilePoint { x: -4, y: 9 }),
+            }
+        );
+    }
+
+    #[test]
+    fn designation_remove_builder_emits_each_signed_lifecycle_action() {
+        let session = signed_session("designation-session");
+        assert!(matches!(
+            build_remove_action(&session, Some("farm-1".to_owned()), None, false),
+            ClientAction::ClearFarm { session_id, sig, plot_id, .. }
+                if session_id == "designation-session" && sig == "signed" && plot_id == "farm-1"
+        ));
+        assert!(matches!(
+            build_remove_action(&session, None, Some("pile-1".to_owned()), false),
+            ClientAction::RemoveStockpile { stockpile_id, .. } if stockpile_id == "pile-1"
+        ));
+        assert!(matches!(
+            build_remove_action(&session, None, Some("gather-1".to_owned()), true),
+            ClientAction::RemoveGatherSpot { stockpile_id, .. } if stockpile_id == "gather-1"
+        ));
+    }
+
+    #[test]
+    fn live_election_controls_emit_candidate_vote_and_pending_petition_signature() {
+        let mut world = village_world(&["alpha"]);
+        let colony = &mut world.colonies[0];
+        colony.leader = Some(cat_protocol::LeaderSnapshot {
+            id: "leader-1".to_owned(),
+            name: "Oak".to_owned(),
+            leadership: 80.0,
+        });
+        colony.election = Some(cat_protocol::ElectionSnapshot {
+            id: "election-1".to_owned(),
+            ends_at: 99,
+            tally: Default::default(),
+            total_ballots: 0,
+            candidates: vec![cat_protocol::ElectionCandidate {
+                id: "candidate-1".to_owned(),
+                name: "Moss".to_owned(),
+                leadership: 72.0,
+                specialization: None,
+            }],
+        });
+        colony.vote_kick = Some(cat_protocol::VoteKickSnapshot {
+            id: "kick-1".to_owned(),
+            ends_at: 77,
+            target_cat_id: "leader-1".to_owned(),
+            target_name: "Oak".to_owned(),
+            signatures: 2,
+            needed: 5,
+        });
+        let mut app = App::new();
+        app.insert_resource(signed_session("governance-session"))
+            .insert_resource(LatestSnapshot(Some(world)))
+            .insert_resource(GovernanceUi::default())
+            .insert_resource(OutgoingActions::default())
+            .add_systems(Update, handle_governance_buttons);
+        app.world_mut()
+            .spawn((Interaction::Pressed, CastElectionVoteButton));
+        app.world_mut()
+            .spawn((Interaction::Pressed, RequestVoteKickButton));
+        app.update();
+        let actions = &app.world().resource::<OutgoingActions>().0;
+        assert!(matches!(
+            &actions[0],
+            ClientAction::CastVote { election_id, cat_id, .. }
+                if election_id == "election-1" && cat_id == "candidate-1"
+        ));
+        assert!(matches!(
+            &actions[1],
+            ClientAction::RequestVoteKick { session_id, sig, .. }
+                if session_id == "governance-session" && sig == "signed"
+        ));
     }
 
     #[test]
