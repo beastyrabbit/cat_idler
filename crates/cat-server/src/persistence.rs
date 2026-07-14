@@ -606,6 +606,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
             .get::<_, Option<i64>>("testCriticalMsOverride")?
             .unwrap_or(5 * 60 * 1000),
         test_rng_seed: row.get::<_, Option<u32>>("testRngSeed")?,
+        // Derived exclusively from `(world_seed, chunk)` and deliberately not
+        // serialized. Loading cold avoids stale terrain data while preserving exact
+        // gameplay state; movement warms the required chunks on demand.
+        decoration_cache: Default::default(),
     })
 }
 
@@ -2509,6 +2513,10 @@ mod tests {
         expected_after_reload.last_trader_departed_at = None;
 
         assert_eq!(loaded_colony, &expected_after_reload);
+        assert!(
+            loaded_colony.decoration_cache.is_empty(),
+            "runtime terrain caches must always reload cold"
+        );
 
         // Belt-and-suspenders explicit assertions on the fields this test exists to
         // guard (readable failure messages instead of one big struct diff).

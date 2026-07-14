@@ -7,7 +7,8 @@ use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
     entities::Resources,
     terrain_gen::{
-        DecorationRole, WORLD_TERRAIN_OPTIONS, generate_terrain_chunk, tile_climate_biome,
+        DecorationRole, WORLD_TERRAIN_OPTIONS, derive_biome_decoration, generate_terrain_chunk,
+        tile_climate_biome,
     },
     types::{BuildingType, TileType},
     world_gen::tile_to_chunk,
@@ -93,7 +94,15 @@ fn generated_sites(seed: u32) -> (TilePos, TilePos, TilePos) {
                     && tile.x.abs().max(tile.y.abs()) > 6
                     && tile.climate_biome.properties().fertility >= 1.0
                     && tile.river.is_none()
-                    && !matches!(tile.decoration, Some(DecorationRole::Tree { .. }))
+                    && !matches!(
+                        derive_biome_decoration(
+                            tile.x,
+                            tile.y,
+                            i64::from(seed),
+                            tile.climate_biome,
+                        ),
+                        Some(DecorationRole::Tree { .. })
+                    )
                 {
                     let site = TilePos {
                         x: tile.x,
@@ -108,7 +117,16 @@ fn generated_sites(seed: u32) -> (TilePos, TilePos, TilePos) {
                         farm = Some((left, site));
                     }
                 }
-                if forest.is_none() && matches!(tile.decoration, Some(DecorationRole::Tree { .. }))
+                if forest.is_none()
+                    && matches!(
+                        derive_biome_decoration(
+                            tile.x,
+                            tile.y,
+                            i64::from(seed),
+                            tile.climate_biome,
+                        ),
+                        Some(DecorationRole::Tree { .. })
+                    )
                 {
                     forest = Some(TilePos {
                         x: tile.x,
@@ -206,7 +224,12 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         .clone();
     farm_tile.pos = farm_a;
     farm_tile.tile_type = TileType::Field;
+    farm_tile.resources.food = 0;
+    farm_tile.resources.herbs = 0;
     farm_tile.resources.water = 0;
+    farm_tile.max_resources.food = 0;
+    farm_tile.max_resources.herbs = 0;
+    farm_tile.last_depleted = START_MS;
     farm_tile.overlay_feature = None;
     colony.world_tiles.insert(farm_a, farm_tile.clone());
     farm_tile.pos = farm_b;

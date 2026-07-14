@@ -1,8 +1,8 @@
 # P14 — Spatial placement, walls & road accessibility
 
 > **Living target spec.** The migration card shipped only part of this model. Atomic building
-> placement and reservations are verified; full tree/rock occupancy, staged wall replacement,
-> and the exact visible dirt/stone-road model remain open in
+> placement/reservations, rendered 2×3 tree and 1×1 rock occupancy, soft-obstacle routing, and
+> the exact visible dirt/stone-road model are verified. Staged wall replacement remains open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User direction (2026-07-10): the world must obey proper tile-based spatial rules. Today

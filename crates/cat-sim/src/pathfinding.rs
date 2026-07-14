@@ -123,6 +123,13 @@ pub trait TerrainWalkField {
     fn has_stair(&self, x: i32, y: i32) -> bool;
 }
 
+/// Lazily answers whether a generated multi-tile decoration covers a cell.
+/// Kept separate from the explicit obstacle set so callers can cache terrain
+/// chunks on demand instead of rebuilding the whole visible wilderness each tick.
+pub trait SoftObstacleField {
+    fn is_soft_obstacle(&self, x: i32, y: i32) -> bool;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FenceSide {
     N,
@@ -163,6 +170,9 @@ pub struct ColonyGridParams<'a> {
     /// building when reasonable but can still cross it, and can always reach a
     /// tile inside their own building's footprint (it was never blocked).
     pub soft_obstacles: Option<&'a HashSet<TilePos>>,
+    /// Generated decoration footprints (trees/rocks), queried lazily through a
+    /// shared per-pass cache. These use the same quarter-speed tier as buildings.
+    pub soft_obstacle_field: Option<&'a dyn SoftObstacleField>,
 }
 
 pub struct ColonyWalkGrid<'a> {
@@ -176,6 +186,7 @@ pub struct ColonyWalkGrid<'a> {
     mountains_unlocked: bool,
     shipping_unlocked: bool,
     soft_obstacles: Option<&'a HashSet<TilePos>>,
+    soft_obstacle_field: Option<&'a dyn SoftObstacleField>,
 }
 
 #[must_use]
@@ -207,6 +218,7 @@ pub fn build_colony_walk_grid(params: ColonyGridParams<'_>) -> ColonyWalkGrid<'_
         mountains_unlocked: params.mountains_unlocked,
         shipping_unlocked: params.shipping_unlocked,
         soft_obstacles: params.soft_obstacles,
+        soft_obstacle_field: params.soft_obstacle_field,
     }
 }
 
@@ -359,6 +371,9 @@ impl WalkGrid for ColonyWalkGrid<'_> {
         if self
             .soft_obstacles
             .is_some_and(|tiles| tiles.contains(&TilePos { x, y }))
+            || self
+                .soft_obstacle_field
+                .is_some_and(|field| field.is_soft_obstacle(x, y))
         {
             // A building never makes a tile *cheaper* than its terrain already
             // costs (e.g. dense woods under a footprint stays at least as dear) —
@@ -407,6 +422,16 @@ fn tile_cost(tile: Option<&WalkTile>) -> f64 {
     if tile.overlay_feature == Some(WalkOverlayFeature::RoadBuilt) {
         return ROAD_COST;
     }
+    // Only reached when the tile is actually walkable, i.e. after `is_blocked`
+    // has already let a water/mountain tile through (shipping/mountaineering
+    // owned respectively) — the cost tier below applies unconditionally, the
+    // same shape as the mountain check just after it.
+    if tile_is_water(tile) {
+        return WATER_COST;
+    }
+    if tile.tile_type == WalkTileType::Mountain {
+        return MOUNTAIN_COST;
+    }
     if tile.path_wear >= ROAD_WEAR_THRESHOLD
         || matches!(
             tile.overlay_feature,
@@ -418,16 +443,6 @@ fn tile_cost(tile: Option<&WalkTile>) -> f64 {
         )
     {
         return WORN_PATH_COST;
-    }
-    // Only reached when the tile is actually walkable, i.e. after `is_blocked`
-    // has already let a water/mountain tile through (shipping/mountaineering
-    // owned respectively) — the cost tier below applies unconditionally, the
-    // same shape as the mountain check just after it.
-    if tile_is_water(tile) {
-        return WATER_COST;
-    }
-    if tile.tile_type == WalkTileType::Mountain {
-        return MOUNTAIN_COST;
     }
     if tile.tile_type == WalkTileType::DenseWoods {
         return DENSE_WOODS_COST;
@@ -599,9 +614,9 @@ mod tests {
         BUILDING_FOOTPRINT_COST, ColonyGridParams, ColonyWalkGrid, DEFAULT_MARGIN,
         DEFAULT_MAX_EXPANSIONS, DENSE_WOODS_COST, FOREST_COST, FenceSide, FindPathOptions,
         GatePlacement, MIN_STEP_COST, MOUNTAIN_COST, OPEN_COST, ROAD_COST, ROAD_WEAR_THRESHOLD,
-        TilePos, VillageArea, WATER_COST, WORN_PATH_COST, WalkGrid, WalkOverlayFeature, WalkTile,
-        WalkTileResources, WalkTileType, WorldPos, build_colony_walk_grid, cliff_blocks_step,
-        find_path,
+        SoftObstacleField, TilePos, VillageArea, WATER_COST, WORN_PATH_COST, WalkGrid,
+        WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType, WorldPos,
+        build_colony_walk_grid, cliff_blocks_step, find_path,
     };
 
     #[derive(Debug, Deserialize)]
@@ -887,6 +902,7 @@ mod tests {
             mountains_unlocked,
             shipping_unlocked,
             soft_obstacles: None,
+            soft_obstacle_field: None,
         });
         check(&grid);
     }
@@ -980,6 +996,7 @@ mod tests {
             mountains_unlocked: false,
             shipping_unlocked: false,
             soft_obstacles: None,
+            soft_obstacle_field: None,
         });
         assert_eq!(
             find_path(start, goal, &without_shipping, options),
@@ -998,6 +1015,7 @@ mod tests {
             mountains_unlocked: false,
             shipping_unlocked: true,
             soft_obstacles: None,
+            soft_obstacle_field: None,
         });
         let path = find_path(start, goal, &with_shipping, options)
             .expect("a mover can path straight across the strait once shipping is unlocked");
@@ -1018,6 +1036,16 @@ mod tests {
     struct SoftObstacleGrid {
         footprint: HashSet<(i32, i32)>,
         walls: HashSet<(i32, i32)>,
+    }
+
+    struct GeneratedObstacleField {
+        footprint: HashSet<TilePos>,
+    }
+
+    impl SoftObstacleField for GeneratedObstacleField {
+        fn is_soft_obstacle(&self, x: i32, y: i32) -> bool {
+            self.footprint.contains(&TilePos { x, y })
+        }
     }
 
     impl WalkGrid for SoftObstacleGrid {
@@ -1163,6 +1191,7 @@ mod tests {
             mountains_unlocked: false,
             shipping_unlocked: false,
             soft_obstacles: Some(&soft_obstacles),
+            soft_obstacle_field: None,
         });
 
         assert_eq!(grid.cost(5, 5), BUILDING_FOOTPRINT_COST);
@@ -1175,6 +1204,31 @@ mod tests {
             OPEN_COST,
             "tiles outside any footprint stay at the plain terrain cost"
         );
+    }
+
+    #[test]
+    fn colony_walk_grid_costs_lazy_generated_footprints_at_the_same_soft_tier() {
+        let generated = GeneratedObstacleField {
+            footprint: [TilePos { x: 8, y: 9 }].into_iter().collect(),
+        };
+        let tiles = Vec::new();
+        let grid = build_colony_walk_grid(ColonyGridParams {
+            tiles: &tiles,
+            anchor: TilePos { x: 0, y: 0 },
+            ring_radius: 10_000,
+            gate: TilePos { x: 0, y: 1 },
+            area: None,
+            area_gate: None,
+            terrain: None,
+            mountains_unlocked: false,
+            shipping_unlocked: false,
+            soft_obstacles: None,
+            soft_obstacle_field: Some(&generated),
+        });
+
+        assert_eq!(grid.cost(8, 9), BUILDING_FOOTPRINT_COST);
+        assert!(!grid.is_blocked(8, 9));
+        assert_eq!(grid.cost(9, 9), OPEN_COST);
     }
 
     #[test]
@@ -1198,6 +1252,7 @@ mod tests {
             mountains_unlocked: false,
             shipping_unlocked: false,
             soft_obstacles: None,
+            soft_obstacle_field: None,
         });
 
         for (key, expected) in checks.blocked {
@@ -1241,6 +1296,7 @@ mod tests {
                 mountains_unlocked: false,
                 shipping_unlocked: false,
                 soft_obstacles: None,
+                soft_obstacle_field: None,
             });
 
             let path = find_path(

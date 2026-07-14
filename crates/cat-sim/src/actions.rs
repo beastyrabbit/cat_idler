@@ -1453,6 +1453,12 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .filter(|(_, tile)| tile.overlay_feature.as_deref() == Some("road_built"))
             .map(|(pos, _)| tile_point(pos))
             .collect(),
+        dirt_road_tiles: colony
+            .world_tiles
+            .iter()
+            .filter(|(_, tile)| crate::world_tick::tile_forms_dirt_road(tile))
+            .map(|(pos, _)| tile_point(pos))
+            .collect(),
         village_gate: village_gate_snapshot(colony),
         village_radius: village_ring_radius(colony.buildings.len() as i32) as u32,
         anchor: proto::TilePoint {
@@ -3571,15 +3577,17 @@ mod tests {
         );
         assert_eq!(world.colonies[0], before_overlap);
 
-        let water = world.colonies[0]
+        let (water_a, _) = open_stockpile_points(&world, 1, 1);
+        let water = TilePos {
+            x: water_a.x,
+            y: water_a.y,
+        };
+        let water_tile = world.colonies[0]
             .world_tiles
-            .values()
-            .find(|tile| {
-                world.colonies[0].claimed_tiles.contains(&tile.pos)
-                    && matches!(tile.tile_type, crate::types::TileType::River)
-            })
-            .expect("founding pond exists")
-            .pos;
+            .get_mut(&water)
+            .expect("open stockpile point is mapped");
+        water_tile.tile_type = crate::types::TileType::River;
+        water_tile.resources.water = 999;
         let before_water = world.colonies[0].clone();
         let on_water = apply_action(
             &mut world,
@@ -3947,6 +3955,62 @@ mod tests {
         let world = world_with_one_colony();
         let snap = build_snapshot(&world, 1_000_000, 1);
         assert!(snap.colonies[0].items.is_empty());
+    }
+
+    #[test]
+    fn build_snapshot_distinguishes_traffic_dirt_from_authored_stone_roads() {
+        let mut world = world_with_one_colony();
+        let dirt = world.colonies[0]
+            .world_tiles
+            .values()
+            .find(|tile| {
+                tile.overlay_feature.is_none()
+                    && !world.colonies[0].claimed_tiles.contains(&tile.pos)
+                    && !matches!(
+                        tile.tile_type,
+                        crate::types::TileType::Mountains | crate::types::TileType::CaveEntrance
+                    )
+            })
+            .expect("fixture has ordinary exterior ground")
+            .pos;
+        world.colonies[0]
+            .world_tiles
+            .get_mut(&dirt)
+            .expect("dirt tile")
+            .path_wear = crate::movement::WORN_ROAD_WEAR;
+
+        let stone_ground = world.colonies[0]
+            .world_tiles
+            .values()
+            .find(|tile| tile.pos != dirt && tile.overlay_feature.is_none())
+            .expect("fixture has a second exterior tile")
+            .pos;
+        let stone = world.colonies[0]
+            .world_tiles
+            .get_mut(&stone_ground)
+            .expect("stone ground tile");
+        stone.tile_type = crate::types::TileType::Mountains;
+        stone.path_wear = crate::movement::WORN_ROAD_WEAR;
+
+        let snap = build_snapshot(&world, 1_000_000, 1);
+        assert!(
+            snap.colonies[0]
+                .dirt_road_tiles
+                .contains(&tile_point(&dirt))
+        );
+        assert!(
+            !snap.colonies[0]
+                .dirt_road_tiles
+                .contains(&tile_point(&stone_ground)),
+            "stone ground must not surface as a dirt road"
+        );
+        assert!(
+            snap.colonies[0]
+                .road_tiles
+                .iter()
+                .all(|road| !snap.colonies[0].dirt_road_tiles.contains(road)),
+            "authored stone and traffic dirt surfaces are disjoint"
+        );
     }
 
     #[test]

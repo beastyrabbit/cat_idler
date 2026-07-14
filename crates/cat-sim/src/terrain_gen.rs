@@ -9,6 +9,10 @@ use crate::climate::{Biome, classify_climate_biome};
 pub const TERRAIN_CHUNK_SIZE: i32 = 12;
 pub const DEFAULT_MAX_HEIGHT: i32 = 3;
 pub const DIRECTIONS: [Direction; 4] = [Direction::N, Direction::E, Direction::S, Direction::W];
+/// A mature tree canopy occupies two by three fine-grid tiles, anchored at its
+/// north-west cell. Rocks and other small props remain one tile.
+pub const TREE_FOOTPRINT_WIDTH: i32 = 2;
+pub const TREE_FOOTPRINT_HEIGHT: i32 = 3;
 
 const LATTICE_DIVISOR: f64 = 4_294_967_296.0;
 const MOISTURE_SEED_MASK: i32 = 0x9e37_79b9_u32 as i32;
@@ -586,6 +590,17 @@ pub fn generate_terrain_chunk(
 /// this is how the sim "sees" them for placement/occupancy (buildings avoid trees).
 #[must_use]
 pub fn tile_has_tree(world_seed: u32, x: i32, y: i32) -> bool {
+    matches!(
+        rendered_decoration(world_seed, x, y),
+        Some(DecorationRole::Tree { .. })
+    )
+}
+
+/// Decoration the maintained client renders at an exact world tile. Unlike the
+/// legacy coarse `TerrainTile::decoration`, this uses the climate biome density
+/// table and is therefore the authoritative source for visual/physical props.
+#[must_use]
+pub fn rendered_decoration(world_seed: u32, x: i32, y: i32) -> Option<DecorationRole> {
     let chunk_x = floor_div(x, TERRAIN_CHUNK_SIZE);
     let chunk_y = floor_div(y, TERRAIN_CHUNK_SIZE);
     generate_terrain_chunk(
@@ -595,9 +610,27 @@ pub fn tile_has_tree(world_seed: u32, x: i32, y: i32) -> bool {
         WORLD_TERRAIN_OPTIONS,
     )
     .into_iter()
-    .any(|tile| {
-        tile.x == x && tile.y == y && matches!(tile.decoration, Some(DecorationRole::Tree { .. }))
+    .find(|tile| tile.x == x && tile.y == y)
+    .and_then(|tile| {
+        derive_biome_decoration(tile.x, tile.y, i64::from(world_seed), tile.climate_biome)
     })
+}
+
+/// Fine-grid cells occupied by one rendered decoration anchored at `(x, y)`.
+#[must_use]
+pub fn decoration_footprint(x: i32, y: i32, decoration: DecorationRole) -> Vec<Point> {
+    let (width, height) = match decoration {
+        DecorationRole::Tree { .. } => (TREE_FOOTPRINT_WIDTH, TREE_FOOTPRINT_HEIGHT),
+        DecorationRole::Rock { .. } => (1, 1),
+    };
+    (0..height)
+        .flat_map(|dy| {
+            (0..width).map(move |dx| Point {
+                x: x + dx,
+                y: y + dy,
+            })
+        })
+        .collect()
 }
 
 /// The deterministic [`BiomeRole`] the terrain generator assigns to world tile
@@ -2188,9 +2221,9 @@ mod tests {
     }
 
     #[test]
-    fn tile_has_tree_matches_the_generated_chunk_decoration() {
-        // `tile_has_tree` must agree, tile-for-tile, with what the terrain generator
-        // (and hence the client renderer) places, across chunk boundaries too.
+    fn tile_has_tree_matches_the_climate_driven_client_decoration() {
+        // `tile_has_tree` must agree, tile-for-tile, with the maintained client's
+        // climate-density decoration pass across chunk boundaries.
         let seed = 123u32;
         for chunk_x in -1..=1 {
             for chunk_y in -1..=1 {
@@ -2201,8 +2234,15 @@ mod tests {
                     WORLD_TERRAIN_OPTIONS,
                 );
                 for terrain_tile in chunk {
-                    let expected =
-                        matches!(terrain_tile.decoration, Some(DecorationRole::Tree { .. }));
+                    let expected = matches!(
+                        derive_biome_decoration(
+                            terrain_tile.x,
+                            terrain_tile.y,
+                            i64::from(seed),
+                            terrain_tile.climate_biome,
+                        ),
+                        Some(DecorationRole::Tree { .. })
+                    );
                     assert_eq!(
                         tile_has_tree(seed, terrain_tile.x, terrain_tile.y),
                         expected,

@@ -33,8 +33,9 @@ use cat_protocol::{
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
-    DecorationRole, RockSize, TERRAIN_CHUNK_SIZE, TerrainTile, WORLD_TERRAIN_OPTIONS,
-    derive_biome_decoration, generate_terrain_chunk, tile_climate_biome,
+    DecorationRole, RockSize, TERRAIN_CHUNK_SIZE, TREE_FOOTPRINT_HEIGHT, TREE_FOOTPRINT_WIDTH,
+    TerrainTile, WORLD_TERRAIN_OPTIONS, decoration_footprint, derive_biome_decoration,
+    generate_terrain_chunk, tile_climate_biome,
 };
 use cat_sim::village_layout::VILLAGE_ANCHOR;
 use cat_sim::world_gen::tile_to_chunk;
@@ -1695,6 +1696,7 @@ struct TerrainVisual(ChunkKey);
 struct TerrainDecoration {
     x: i32,
     y: i32,
+    role: DecorationRole,
 }
 /// A fog-of-war tile sprite, keyed by tile for incremental updates.
 #[derive(Component, Clone, Copy)]
@@ -3943,22 +3945,30 @@ fn spawn_terrain(
                 // trunk), sized a touch larger than the tile so the forest reads
                 // as overlapping canopies.
                 let (tree, scale) = art.tree(biome_tree(tile.climate_biome));
+                let width = TREE_FOOTPRINT_WIDTH as f32;
+                let height = TREE_FOOTPRINT_HEIGHT as f32;
+                let center = Vec2::new(
+                    p.x + TILE * (width - 1.0) * 0.5,
+                    p.y - TILE * (height - 1.0) * 0.5,
+                );
+                let role = decoration.expect("matched tree decoration");
                 commands.spawn((
                     Sprite {
                         image: tree,
-                        custom_size: Some(Vec2::splat(TILE * scale)),
+                        custom_size: Some(Vec2::new(TILE * width, TILE * height) * scale.min(1.0)),
                         ..default()
                     },
                     Anchor::CENTER,
-                    Transform::from_xyz(p.x, p.y, ysort_z(p.y)),
+                    Transform::from_xyz(center.x, center.y, ysort_z(center.y)),
                     TerrainVisual(chunk),
                     TerrainDecoration {
                         x: tile.x,
                         y: tile.y,
+                        role,
                     },
-                    if village_anchor
-                        .is_none_or(|anchor| procedural_decoration_visible(anchor, tile.x, tile.y))
-                    {
+                    if village_anchor.is_none_or(|anchor| {
+                        procedural_decoration_visible(anchor, tile.x, tile.y, role)
+                    }) {
                         Visibility::Inherited
                     } else {
                         Visibility::Hidden
@@ -3966,6 +3976,7 @@ fn spawn_terrain(
                 ));
             }
             Some(DecorationRole::Rock { size, .. }) => {
+                let role = decoration.expect("matched rock decoration");
                 let scale = rock_scale(size);
                 let base_y = p.y - TILE * 0.5;
                 commands.spawn((
@@ -3980,10 +3991,11 @@ fn spawn_terrain(
                     TerrainDecoration {
                         x: tile.x,
                         y: tile.y,
+                        role,
                     },
-                    if village_anchor
-                        .is_none_or(|anchor| procedural_decoration_visible(anchor, tile.x, tile.y))
-                    {
+                    if village_anchor.is_none_or(|anchor| {
+                        procedural_decoration_visible(anchor, tile.x, tile.y, role)
+                    }) {
                         Visibility::Inherited
                     } else {
                         Visibility::Hidden
@@ -4015,7 +4027,7 @@ fn sync_terrain_decoration_visibility(
         return;
     };
     for (tile, mut visibility) in &mut decorations {
-        *visibility = if procedural_decoration_visible(colony.anchor, tile.x, tile.y) {
+        *visibility = if procedural_decoration_visible(colony.anchor, tile.x, tile.y, tile.role) {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -4026,8 +4038,12 @@ fn sync_terrain_decoration_visibility(
 /// Ground remains visible everywhere. Procedural nature/resource props clear
 /// only inside the fixed founding wall core; expanded claimed farm/resource
 /// territory beyond that core deliberately retains its wilderness props.
-fn procedural_decoration_visible(anchor: TilePoint, x: i32, y: i32) -> bool {
-    x.abs_diff(anchor.x).max(y.abs_diff(anchor.y)) > VILLAGE_INTERIOR_RADIUS
+fn procedural_decoration_visible(anchor: TilePoint, x: i32, y: i32, role: DecorationRole) -> bool {
+    let center_x = anchor.x.saturating_add(1);
+    let center_y = anchor.y.saturating_add(1);
+    decoration_footprint(x, y, role).into_iter().all(|tile| {
+        tile.x.abs_diff(center_x).max(tile.y.abs_diff(center_y)) > VILLAGE_INTERIOR_RADIUS
+    })
 }
 
 fn chunk_for_tile(x: i32, y: i32) -> ChunkKey {
@@ -4273,9 +4289,9 @@ fn render_fog(
     }
 }
 
-/// Paved stone roads: an oriented road sprite at each `road_tiles` position (the
-/// blueprint lays a cross from the shrine to the four walls; roads.rs paves more
-/// as corridors wear). Re-read each snapshot; ground-level, below buildings/cats.
+/// Authored stone roads and traffic-formed dirt roads. Both use the connected
+/// road grammar, but receive deliberately cool-stone and warm-earth tints so
+/// their gameplay meaning stays legible even at the default camera zoom.
 fn render_roads(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
@@ -4292,7 +4308,9 @@ fn render_roads(
     else {
         return;
     };
-    let road_set: HashSet<(i32, i32)> = colony.road_tiles.iter().map(|t| (t.x, t.y)).collect();
+    let stone_set: HashSet<(i32, i32)> = colony.road_tiles.iter().map(|t| (t.x, t.y)).collect();
+    let dirt_set: HashSet<(i32, i32)> = colony.dirt_road_tiles.iter().map(|t| (t.x, t.y)).collect();
+    let road_set: HashSet<(i32, i32)> = stone_set.union(&dirt_set).copied().collect();
     for &(x, y) in &road_set {
         let sprite = road_sprite_kind(
             road_set.contains(&(x, y - 1)),
@@ -4305,6 +4323,11 @@ fn render_roads(
             Sprite {
                 image: art.road(sprite),
                 custom_size: Some(Vec2::splat(TILE)),
+                color: if dirt_set.contains(&(x, y)) {
+                    Color::srgb(0.72, 0.40, 0.16)
+                } else {
+                    Color::srgb(0.48, 0.58, 0.72)
+                },
                 ..default()
             },
             Transform::from_xyz(p.x, p.y, Z_ROAD),
@@ -7925,7 +7948,7 @@ mod tests {
         // The second tile is expanded claimed territory outside the permanent
         // wall core: a farm/work site there must keep its wilderness decor.
         snapshot.colonies[1].claimed_tiles =
-            vec![TilePoint { x: -14, y: -20 }, TilePoint { x: -13, y: -20 }];
+            vec![TilePoint { x: -14, y: -20 }, TilePoint { x: -12, y: -20 }];
         let mut selection = VillageSelection {
             selected_id: Some("beta".to_owned()),
             join_required: false,
@@ -7933,11 +7956,21 @@ mod tests {
 
         reconcile_village_selection(&mut snapshot, &mut selection);
         let anchor = snapshot.colonies[0].anchor;
+        let rock = DecorationRole::Rock {
+            size: RockSize::Small,
+            resource: false,
+        };
 
-        assert!(!procedural_decoration_visible(anchor, -20, -20));
-        assert!(!procedural_decoration_visible(anchor, -14, -20));
-        assert!(procedural_decoration_visible(anchor, -13, -20));
-        assert!(procedural_decoration_visible(anchor, 50, 50));
+        assert!(!procedural_decoration_visible(anchor, -20, -20, rock));
+        assert!(!procedural_decoration_visible(anchor, -14, -20, rock));
+        assert!(procedural_decoration_visible(anchor, -12, -20, rock));
+        assert!(procedural_decoration_visible(anchor, 50, 50, rock));
+
+        let tree = DecorationRole::Tree { species: 0 };
+        assert!(
+            !procedural_decoration_visible(anchor, -13, -20, tree),
+            "a 2x3 canopy that overhangs the wall is cleared as one object"
+        );
     }
 
     #[test]

@@ -63,11 +63,10 @@ playtest harness:
    leader choice for the 500-study catalog; complete global/personal village ownership,
    discovery, and direct trade. Preserve the now-verified founding, housing, migration, aging,
    reset, and physical emergency-water contracts while doing so.
-4. **Close world and presentation gaps.** Finish full tree/rock occupancy and staged wall growth,
-   clear actual interior deposits/resources, expose traffic dirt roads, replace rail/shipping
-   multipliers with built routes/vehicles, restore fishing, make Accounting Tent snapshot-
-   reachable, and complete the remaining WASM visual/interaction validation for the maintained
-   Adventure skin.
+4. **Close world and presentation gaps.** Finish staged closed-perimeter wall growth and an
+   explicit outside-the-wall agricultural territory model, replace rail/shipping multipliers
+   with built routes/vehicles, restore fishing, make Accounting Tent snapshot-reachable, and
+   complete the remaining WASM visual/interaction validation for the maintained Adventure skin.
 5. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

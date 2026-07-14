@@ -2,8 +2,9 @@
 
 > **Living target spec.** The original five-cat start was superseded by the 2026-07-13
 > playtest direction: every ordinary personal village starts with **15 adult cats in three
-> five-bed Dens**. The founding/housing integration is in progress; exact dirt/stone roads remain
-> open. See
+> five-bed Dens**. Founding/housing, authoritative interior clearing, exterior water, and the
+> exact dirt/stone road model are verified; gather logistics and agricultural-territory
+> semantics remain open. See
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Detailed founding/economy/spatial design from playtest. Numbers are the spec.

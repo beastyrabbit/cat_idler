@@ -250,6 +250,10 @@ pub struct ColonyRuntime {
     pub test_resilience_hours_override: Option<f64>,
     pub test_critical_ms_override: i64,
     pub test_rng_seed: Option<u32>,
+    /// Runtime-only deterministic terrain-decoration cache. It is excluded from
+    /// semantic equality and persistence; any loaded colony rebuilds identical
+    /// entries from `(world_seed, chunk)` on first use.
+    pub decoration_cache: DecorationCache,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -455,6 +459,7 @@ pub enum SpatialPlacementError {
     Farm,
     Water,
     Tree,
+    Rock,
     Mountain,
     PerimeterWall,
     Road,
@@ -473,6 +478,7 @@ impl SpatialPlacementError {
             Self::Farm => "The placement overlaps a designated farm.",
             Self::Water => "The placement overlaps water.",
             Self::Tree => "The placement overlaps a tree.",
+            Self::Rock => "The placement overlaps a rock.",
             Self::Mountain => "The placement overlaps impassable mountain terrain.",
             Self::PerimeterWall => "The placement overlaps the village perimeter wall.",
             Self::Road => "The placement overlaps a paved road.",
@@ -487,16 +493,111 @@ fn tile_has_paved_road(colony: &ColonyRuntime, tile: TilePos) -> bool {
         .is_some_and(|tile| tile.overlay_feature.as_deref() == Some("road_built"))
 }
 
+fn runtime_decoration_cleared(tile: &WorldTileRuntime) -> bool {
+    tile.overlay_feature.as_deref() == Some("stump")
+        || (tile.last_depleted > 0
+            && (tile.tile_type == TileType::Field
+                || (tile.tile_type == TileType::Meadow
+                    && tile.resources.food == 0
+                    && tile.resources.herbs == 0
+                    && tile.resources.water == 0
+                    && tile.max_resources.food == 0
+                    && tile.max_resources.herbs == 0)))
+}
+
 /// Deterministic tree decorations are physical blockers until a forest tile is
 /// explicitly cleared. Expansion records that clearing as `TileType::Field`;
 /// merely belonging to the founding claim does not erase a tree decoration.
+#[cfg(test)]
 fn tile_has_uncleared_tree(colony: &ColonyRuntime, tile: TilePos, world_seed: u32) -> bool {
     !tile_coordinates_supported(tile)
-        || (!colony
-            .world_tiles
-            .get(&tile)
-            .is_some_and(|runtime| runtime.tile_type == TileType::Field)
-            && crate::terrain_gen::tile_has_tree(world_seed, tile.x, tile.y))
+        || (!inside_village_interior(colony, tile)
+            && !colony
+                .world_tiles
+                .get(&tile)
+                .is_some_and(runtime_decoration_cleared)
+            && ((tile.y - (crate::terrain_gen::TREE_FOOTPRINT_HEIGHT - 1))..=tile.y).any(
+                |anchor_y| {
+                    ((tile.x - (crate::terrain_gen::TREE_FOOTPRINT_WIDTH - 1))..=tile.x).any(
+                        |anchor_x| {
+                            crate::terrain_gen::tile_has_tree(world_seed, anchor_x, anchor_y)
+                        },
+                    )
+                },
+            ))
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct DecorationAnchors {
+    trees: HashSet<TilePos>,
+    rocks: HashSet<TilePos>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DecorationCache {
+    chunks: BTreeMap<(u32, i32, i32), DecorationAnchors>,
+}
+
+// A cache never changes authoritative simulation meaning. Treating two cache
+// populations as equal keeps determinism/persistence assertions about gameplay
+// state independent from which read-only route happened to warm a chunk first.
+impl PartialEq for DecorationCache {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl DecorationCache {
+    /// Returns whether this derived cache has not generated any terrain chunks yet.
+    /// Persisted colonies always load in this state and lazily rebuild entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
+    fn ensure_chunks(&mut self, world_seed: u32, chunks: &BTreeSet<(i32, i32)>) {
+        for &(chunk_x, chunk_y) in chunks {
+            self.chunks
+                .entry((world_seed, chunk_x, chunk_y))
+                .or_insert_with(|| decoration_anchors_for_chunk(world_seed, chunk_x, chunk_y));
+        }
+    }
+
+    fn anchors(&self, world_seed: u32, chunk_x: i32, chunk_y: i32) -> Option<&DecorationAnchors> {
+        self.chunks.get(&(world_seed, chunk_x, chunk_y))
+    }
+}
+
+fn decoration_anchors_for_chunk(world_seed: u32, chunk_x: i32, chunk_y: i32) -> DecorationAnchors {
+    let mut out = DecorationAnchors::default();
+    for terrain in crate::terrain_gen::generate_terrain_chunk(
+        chunk_x,
+        chunk_y,
+        i64::from(world_seed),
+        crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+    ) {
+        match crate::terrain_gen::derive_biome_decoration(
+            terrain.x,
+            terrain.y,
+            i64::from(world_seed),
+            terrain.climate_biome,
+        ) {
+            Some(crate::terrain_gen::DecorationRole::Tree { .. }) => {
+                out.trees.insert(TilePos {
+                    x: terrain.x,
+                    y: terrain.y,
+                });
+            }
+            Some(crate::terrain_gen::DecorationRole::Rock { .. }) => {
+                out.rocks.insert(TilePos {
+                    x: terrain.x,
+                    y: terrain.y,
+                });
+            }
+            None => {}
+        }
+    }
+    out
 }
 
 /// Immutable spatial indexes shared by one placement/access-route search.
@@ -518,7 +619,7 @@ struct SpatialOccupancyContext {
     mapped_tiles: HashSet<TilePos>,
     shrine_tiles: HashSet<TilePos>,
     gate: Option<TilePos>,
-    tree_chunks: RefCell<BTreeMap<(i32, i32), HashSet<TilePos>>>,
+    decoration_chunks: RefCell<BTreeMap<(i32, i32), DecorationAnchors>>,
 }
 
 impl SpatialOccupancyContext {
@@ -540,7 +641,10 @@ impl SpatialOccupancyContext {
         let cleared_tree_tiles = colony
             .world_tiles
             .iter()
-            .filter_map(|(&pos, tile)| (tile.tile_type == TileType::Field).then_some(pos))
+            .filter_map(|(&pos, tile)| {
+                (runtime_decoration_cleared(tile) || inside_village_interior(colony, pos))
+                    .then_some(pos)
+            })
             .collect();
         let mountain_tiles = if is_owned(&colony.upgrade_tree, MOUNTAINEERING_NODE_ID) {
             HashSet::new()
@@ -578,7 +682,7 @@ impl SpatialOccupancyContext {
             mapped_tiles,
             shrine_tiles,
             gate,
-            tree_chunks: RefCell::new(BTreeMap::new()),
+            decoration_chunks: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -595,36 +699,36 @@ impl SpatialOccupancyContext {
     }
 
     fn has_uncleared_tree(&self, tile: TilePos) -> bool {
-        if self.cleared_tree_tiles.contains(&tile) {
+        if !self.mapped_tiles.contains(&tile) || self.cleared_tree_tiles.contains(&tile) {
             return false;
         }
+        ((tile.y - (crate::terrain_gen::TREE_FOOTPRINT_HEIGHT - 1))..=tile.y).any(|anchor_y| {
+            ((tile.x - (crate::terrain_gen::TREE_FOOTPRINT_WIDTH - 1))..=tile.x)
+                .any(|anchor_x| self.decoration_at(anchor_x, anchor_y, true))
+        })
+    }
 
+    fn has_uncleared_rock(&self, tile: TilePos) -> bool {
+        self.mapped_tiles.contains(&tile)
+            && !self.cleared_tree_tiles.contains(&tile)
+            && self.decoration_at(tile.x, tile.y, false)
+    }
+
+    fn decoration_at(&self, x: i32, y: i32, tree: bool) -> bool {
         let chunk = (
-            tile.x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
-            tile.y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+            x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+            y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
         );
-        let mut chunks = self.tree_chunks.borrow_mut();
-        let trees = chunks.entry(chunk).or_insert_with(|| {
-            crate::terrain_gen::generate_terrain_chunk(
-                chunk.0,
-                chunk.1,
-                i64::from(self.world_seed),
-                crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
-            )
-            .into_iter()
-            .filter_map(|terrain| {
-                matches!(
-                    terrain.decoration,
-                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
-                )
-                .then_some(TilePos {
-                    x: terrain.x,
-                    y: terrain.y,
-                })
-            })
-            .collect()
-        });
-        trees.contains(&tile)
+        let mut chunks = self.decoration_chunks.borrow_mut();
+        let anchors = chunks
+            .entry(chunk)
+            .or_insert_with(|| decoration_anchors_for_chunk(self.world_seed, chunk.0, chunk.1));
+        let pos = TilePos { x, y };
+        if tree {
+            anchors.trees.contains(&pos)
+        } else {
+            anchors.rocks.contains(&pos)
+        }
     }
 
     fn is_perimeter(&self, tile: TilePos) -> bool {
@@ -639,6 +743,7 @@ impl SpatialOccupancyContext {
             || self.has_farm(tile)
             || self.water_tiles.contains(&tile)
             || self.has_uncleared_tree(tile)
+            || self.has_uncleared_rock(tile)
             || self.mountain_tiles.contains(&tile)
             || self.is_perimeter(tile)
             || self.paved_road_tiles.contains(&tile)
@@ -672,6 +777,9 @@ impl SpatialOccupancyContext {
         }
         if tiles.iter().any(|&tile| self.has_uncleared_tree(tile)) {
             return Some(SpatialPlacementError::Tree);
+        }
+        if tiles.iter().any(|&tile| self.has_uncleared_rock(tile)) {
+            return Some(SpatialPlacementError::Rock);
         }
         if tiles.iter().any(|tile| self.mountain_tiles.contains(tile)) {
             return Some(SpatialPlacementError::Mountain);
@@ -710,6 +818,9 @@ impl SpatialOccupancyContext {
         if self.has_uncleared_tree(tile) {
             return Some(SpatialPlacementError::Tree);
         }
+        if self.has_uncleared_rock(tile) {
+            return Some(SpatialPlacementError::Rock);
+        }
         if self.mountain_tiles.contains(&tile) {
             return Some(SpatialPlacementError::Mountain);
         }
@@ -744,6 +855,80 @@ impl SpatialOccupancyContext {
             }
         }
         connected
+    }
+}
+
+impl pathfinding::SoftObstacleField for SpatialOccupancyContext {
+    fn is_soft_obstacle(&self, x: i32, y: i32) -> bool {
+        let tile = TilePos { x, y };
+        self.has_uncleared_tree(tile) || self.has_uncleared_rock(tile)
+    }
+}
+
+/// Cheap per-pass view of the persistent derived decoration cache. The expensive
+/// climate generation happens once per mapped chunk; A* then performs only set
+/// lookups while retaining the exact full rendered footprint.
+struct MovementDecorationObstacles {
+    mapped_tiles: HashSet<TilePos>,
+    cleared_tiles: HashSet<TilePos>,
+    trees: HashSet<TilePos>,
+    rocks: HashSet<TilePos>,
+}
+
+impl MovementDecorationObstacles {
+    fn new(colony: &ColonyRuntime, world_seed: u32) -> Self {
+        let mapped_tiles = colony.world_tiles.keys().copied().collect::<HashSet<_>>();
+        let chunks = mapped_tiles
+            .iter()
+            .map(|tile| {
+                (
+                    tile.x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                    tile.y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let mut trees = HashSet::new();
+        let mut rocks = HashSet::new();
+        for (chunk_x, chunk_y) in chunks {
+            if let Some(anchors) = colony
+                .decoration_cache
+                .anchors(world_seed, chunk_x, chunk_y)
+            {
+                trees.extend(anchors.trees.iter().copied());
+                rocks.extend(anchors.rocks.iter().copied());
+            }
+        }
+        Self {
+            mapped_tiles,
+            cleared_tiles: colony
+                .world_tiles
+                .iter()
+                .filter_map(|(&pos, tile)| {
+                    (runtime_decoration_cleared(tile) || inside_village_interior(colony, pos))
+                        .then_some(pos)
+                })
+                .collect(),
+            trees,
+            rocks,
+        }
+    }
+}
+
+impl pathfinding::SoftObstacleField for MovementDecorationObstacles {
+    fn is_soft_obstacle(&self, x: i32, y: i32) -> bool {
+        let tile = TilePos { x, y };
+        if !self.mapped_tiles.contains(&tile) || self.cleared_tiles.contains(&tile) {
+            return false;
+        }
+        let tree = ((y - (crate::terrain_gen::TREE_FOOTPRINT_HEIGHT - 1))..=y).any(|anchor_y| {
+            ((x - (crate::terrain_gen::TREE_FOOTPRINT_WIDTH - 1))..=x).any(|anchor_x| {
+                self.trees.contains(&TilePos {
+                    x: anchor_x,
+                    y: anchor_y,
+                })
+            })
+        });
+        tree || self.rocks.contains(&tile)
     }
 }
 
@@ -805,12 +990,10 @@ pub fn stockpile_placement_error(
     placement_error_for_tiles(colony, &tiles, world_seed, require_claimed)
 }
 
-/// Building-footprint tiles that act as P14.2 soft obstacles for pathfinding
-/// cost and movement speed: every building EXCEPT the shrine, which the spec
-/// calls out as "fully passable (the hub)" — it's the road/haul anchor every
-/// cat converges on, so it stays at open-ground cost/speed rather than the
-/// building-footprint tier.
-fn soft_obstacle_building_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
+/// Building tiles that act as P14.2 soft obstacles. The shrine remains fully
+/// passable. Natural decoration anchors are checked per moving cat below rather
+/// than regenerating every mapped terrain chunk on every tick.
+fn soft_obstacle_tiles(colony: &ColonyRuntime) -> HashSet<TilePos> {
     colony
         .buildings
         .iter()
@@ -1142,6 +1325,17 @@ pub struct WorldTileRuntime {
     pub overlay_feature: Option<String>,
 }
 
+/// Whether repeated foot traffic has formed a visible dirt road on this tile.
+/// Authored stone roads use their overlay; mountain/cave ground and water remain
+/// their original surface no matter how many cats cross them.
+#[must_use]
+pub fn tile_forms_dirt_road(tile: &WorldTileRuntime) -> bool {
+    tile.overlay_feature.as_deref() != Some("road_built")
+        && tile.path_wear >= crate::movement::WORN_ROAD_WEAR
+        && !matches!(tile.tile_type, TileType::Mountains | TileType::CaveEntrance)
+        && !tile_has_water(Some(tile))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZoneRuntime {
     pub rect: ZoneRect,
@@ -1279,7 +1473,8 @@ const VILLAGE_START_RADIUS: i32 = 6;
 /// among the shrine, dens, workshops, and streets.
 #[must_use]
 pub fn inside_village_interior(colony: &ColonyRuntime, tile: TilePos) -> bool {
-    cheb_from_anchor(colony.anchor, tile) <= VILLAGE_START_RADIUS
+    let center = shrine_center_tile(colony.anchor);
+    (tile.x - center.x).abs().max((tile.y - center.y).abs()) <= VILLAGE_START_RADIUS
 }
 /// Fog-of-war founding reveal: the whole claimed village starts revealed, plus a halo
 /// of this Chebyshev radius around the anchor (covers the adjacent water source).
@@ -1363,6 +1558,7 @@ impl Default for ColonyRuntime {
             test_resilience_hours_override: None,
             test_critical_ms_override: 5 * 60 * 1000,
             test_rng_seed: None,
+            decoration_cache: DecorationCache::default(),
         }
     }
 }
@@ -1482,8 +1678,10 @@ pub fn found_colony_at(
         test_rng_seed: Some(seed),
         ..ColonyRuntime::default()
     };
-    // Pave the shrine-to-wall stone road cross and clear/guarantee the village's water
-    // source so the fixed blueprint sits on solid, drinkable ground.
+    // The settlement is genuinely cleared in simulation state, not merely hidden
+    // by the renderer. Resources and water live beyond the wall.
+    clear_founding_interior(&mut colony);
+    // Pave the shrine-to-wall cross and guarantee a nearby exterior water source.
     stamp_founding_roads_and_water(&mut colony);
     connect_all_buildings_to_shrine(&mut colony, world_seed);
     debug_assert!(connect_current_gate_to_shrine(&mut colony, world_seed));
@@ -1927,15 +2125,38 @@ fn stamp_founding_roads_and_water(colony: &mut ColonyRuntime) {
         }
     }
 
-    // Ensure the village still has a water source it can reach; otherwise carve one on
-    // the nearest free in-band tile (deterministic — no RNG).
+    // Ensure the village still has a water source it can reach outside the wall;
+    // otherwise carve one in the already-revealed two-tile halo (deterministic).
     let has_reachable_water = colony.world_tiles.values().any(|tile| {
         tile_has_water(Some(tile))
-            && cheb_from_anchor(anchor, tile.pos) <= 6
+            && !colony.claimed_tiles.contains(&tile.pos)
+            && cheb_from_anchor(anchor, tile.pos) <= VILLAGE_START_RADIUS + 2
             && !blocked.contains(&tile.pos)
     });
     if !has_reachable_water && let Some(pos) = founding_pond_site(colony, &blocked) {
         set_water_tile(colony, pos);
+    }
+}
+
+/// Replace every tile inside the permanent founding wall with inert meadow. This
+/// removes water, forage, herbs, mountain/ore terrain, and resource overlays from
+/// the authoritative world; exterior farms and gather sites are unaffected.
+fn clear_founding_interior(colony: &mut ColonyRuntime) {
+    for pos in colony.claimed_tiles.clone() {
+        let tile = colony
+            .world_tiles
+            .entry(pos)
+            .or_insert_with(|| fresh_ground_tile(pos));
+        tile.tile_type = TileType::Meadow;
+        tile.resources.food = 0;
+        tile.resources.herbs = 0;
+        tile.resources.water = 0;
+        tile.max_resources.food = 0;
+        tile.max_resources.herbs = 0;
+        tile.danger_level = 0.0;
+        tile.path_wear = 0;
+        tile.last_depleted = colony.created_at;
+        tile.overlay_feature = None;
     }
 }
 
@@ -1960,16 +2181,22 @@ fn set_water_tile(colony: &mut ColonyRuntime, pos: TilePos) {
     }
 }
 
-/// Pick a deterministic free claimed tile (not a building/road, a few tiles out from the
-/// shrine) to carve the founding pond on, scanning in `(y, x)` order.
+/// Pick a deterministic free tile outside the south wall and inside the founding
+/// reveal halo. The tile immediately outside the gate stays clear for arrivals;
+/// the pond sits beside that approach rather than inside the village.
 fn founding_pond_site(colony: &ColonyRuntime, blocked: &HashSet<TilePos>) -> Option<TilePos> {
-    let mut candidates: Vec<TilePos> = colony
-        .claimed_tiles
-        .iter()
-        .copied()
+    let gate = gate_placement_default(&claimed_area(colony))?;
+    let outside_y = gate.y + 1;
+    let mut candidates: Vec<TilePos> = (-2_i32..=2)
+        .filter(|offset| *offset != 0)
+        .map(|offset| TilePos {
+            x: gate.x + offset,
+            y: outside_y,
+        })
         .filter(|pos| {
             !blocked.contains(pos)
-                && (2..=6).contains(&cheb_from_anchor(colony.anchor, *pos))
+                && !colony.claimed_tiles.contains(pos)
+                && cheb_from_anchor(colony.anchor, *pos) <= VILLAGE_START_RADIUS + 2
                 && colony
                     .world_tiles
                     .get(pos)
@@ -5755,12 +5982,25 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
     let elapsed_game_minutes = elapsed_migration_game_minutes(colony, gate);
     let resident_population = permanent_alive_population(colony);
     let probationary = probationary_ids(colony);
-    let housing_reservations = u32::try_from(
+    let pregnancy_reservations = u32::try_from(
         alive_cats(&colony.cats)
             .filter(|cat| !probationary.contains(cat.id.as_str()) && cat.is_pregnant)
             .count(),
     )
     .unwrap_or(u32::MAX);
+    let housing_capacity = colony_housing_capacity(colony).max(0.0).floor() as u32;
+    // Migration is the fast growth path, but it must not permanently consume every
+    // newly built bed before slow breeding gets a chance to use that system at all.
+    // Keep exactly one family bed open whenever there is real headroom and no living
+    // pregnancy already owns it. Probationers still arrive, work, consume, and may
+    // leave if the village never creates enough shelter for both growth sources.
+    let family_bed_reservation = u32::from(
+        pregnancy_reservations == 0
+            && housing_capacity > resident_population
+            && migration_game_minute_at(colony, gate.processed_through)
+                >= BREEDING_ESTABLISHMENT_GAME_HOURS * 60,
+    );
+    let housing_reservations = pregnancy_reservations.saturating_add(family_bed_reservation);
     let policy = MigrationPolicy::default();
     let input = MigrationInputs {
         world_seed,
@@ -5769,7 +6009,7 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
         elapsed_game_minutes,
         resident_population,
         housing_reservations,
-        housing_capacity: colony_housing_capacity(colony).max(0.0).floor() as u32,
+        housing_capacity,
         food: colony.resources.food,
         water: colony.resources.water,
         construction_wealth: migration_construction_wealth(
@@ -6303,34 +6543,53 @@ fn phase_32_movement_setup_and_village_expansion_queue(
     // search until that expansion completes or is cancelled.
     let blocked_construction_index = (!linked_expansion_in_flight)
         .then(|| {
-            colony.jobs.iter().position(|job| {
-                if job.kind != JobKind::BuildHouse
-                    || job.status != JobStatus::Queued
-                    || !allocate_construction_timber(
-                        SCAFFOLD_PLANK_COST,
-                        colony.resources.lumber,
-                        colony.resources.planks,
-                    )
-                    .covered
-                    || colony.resources.blocks < SCAFFOLD_BLOCK_COST
-                {
-                    return false;
-                }
-                let JobMetadata::Construction {
-                    phase: ConstructionPhase::ConstructHouse,
-                    building_type,
-                    building_id: None,
-                    site,
-                } = job.metadata
-                else {
-                    return false;
-                };
-                let building_type = scaffold_building_type(building_type);
-                site.map_or_else(
-                    || !can_plan_building(colony, world_seed, building_type),
-                    |site| !claimed_building_site_is_ready(colony, site, world_seed, building_type),
-                )
-            })
+            colony
+                .jobs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, job)| {
+                    if job.kind != JobKind::BuildHouse
+                        || job.status != JobStatus::Queued
+                        || !allocate_construction_timber(
+                            SCAFFOLD_PLANK_COST,
+                            colony.resources.lumber,
+                            colony.resources.planks,
+                        )
+                        .covered
+                        || colony.resources.blocks < SCAFFOLD_BLOCK_COST
+                    {
+                        return None;
+                    }
+                    let JobMetadata::Construction {
+                        phase: ConstructionPhase::ConstructHouse,
+                        building_type,
+                        building_id: None,
+                        site,
+                    } = job.metadata
+                    else {
+                        return None;
+                    };
+                    let building_type = scaffold_building_type(building_type);
+                    let needs_land = site.map_or_else(
+                        || !can_plan_building(colony, world_seed, building_type),
+                        |site| {
+                            !claimed_building_site_is_ready(colony, site, world_seed, building_type)
+                        },
+                    );
+                    needs_land.then_some((
+                        index,
+                        building_type == BuildingType::Field,
+                        site.is_none(),
+                        job.created_at,
+                    ))
+                })
+                // Agricultural expansion can require a long search outside the
+                // settlement. Never let that open-ended Field reservation monopolize
+                // the sole linked-expansion lane ahead of finite civic footprints.
+                .min_by_key(|(index, is_field, site_missing, created_at)| {
+                    (*is_field, *site_missing, *created_at, *index)
+                })
+                .map(|(index, _, _, _)| index)
         })
         .flatten();
     // Phase 14 runs before due expansions complete. When a linked expansion
@@ -6628,11 +6887,26 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
 ) {
     let area = pathfinding_area(&movement.claimed_area);
     let area_gate = movement.area_gate.map(pathfinding_gate);
-    // Computed once per tick and shared by every cat's A* search this phase (cheap:
-    // a HashSet built from the colony's building list, no terrain regeneration) —
-    // also reused below to apply the matching movement-speed soft-obstacle penalty.
-    let soft_obstacles = soft_obstacle_building_tiles(colony);
+    // Computed once per tick and shared by every cat's A* search this phase. Building
+    // footprints are a cheap eager set; generated tree/rock footprints use the same
+    // lazy per-chunk cache as placement so pathfinding pays only for chunks it visits.
+    // Both are reused below for the matching movement-speed penalty.
+    let soft_obstacles = soft_obstacle_tiles(colony);
     let path_soft_obstacles = pathfinding_tile_set(&soft_obstacles);
+    let decoration_chunks = colony
+        .world_tiles
+        .keys()
+        .map(|tile| {
+            (
+                tile.x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                tile.y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    colony
+        .decoration_cache
+        .ensure_chunks(movement.world_seed, &decoration_chunks);
+    let decoration_obstacles = MovementDecorationObstacles::new(colony, movement.world_seed);
     let walk_grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &movement.walk_tiles,
         anchor: PathTilePos {
@@ -6652,6 +6926,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         // identical for every colony without the node) until `shipping` is owned.
         shipping_unlocked: is_owned(&colony.upgrade_tree, SHIPPING_NODE_ID),
         soft_obstacles: Some(&path_soft_obstacles),
+        soft_obstacle_field: Some(&decoration_obstacles),
     });
     // P17 transport upgrade: `rail` speeds up long-distance hauls once owned —
     // checked per-cat below against the remaining route distance, inert (no
@@ -6697,18 +6972,16 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         let road_mult = standing_tile.map_or(1.0, |tile| {
             road_surface_multiplier(
                 tile.overlay_feature.as_deref() == Some("road_built"),
+                tile_forms_dirt_road(tile),
                 tile.path_wear,
             )
         });
-        // P14.2 soft obstacle (×0.25): a cat standing on a building footprint tile
-        // or a terrain-generated tree tile pads along at a quarter speed — real,
-        // not a biome approximation (a per-cat-per-tick check, the same cost order
-        // as the `tile_biome` lookup just above, unlike a per-A*-cell query would
-        // be), matching the same tier `BUILDING_FOOTPRINT_COST`/`FOREST_COST` cost
-        // A* already routes around.
+        // P14.2 soft obstacle (×0.25): a cat standing anywhere inside a building,
+        // full 2×3 tree canopy, or rock cell pads along at a quarter speed. This is
+        // the same cached physical footprint query A* uses, not a biome proxy.
         let on_soft_obstacle = soft_obstacles.contains(&standing_tile_pos)
-            || crate::terrain_gen::tile_has_tree(
-                movement.world_seed,
+            || pathfinding::SoftObstacleField::is_soft_obstacle(
+                &decoration_obstacles,
                 standing_tile_pos.x,
                 standing_tile_pos.y,
             );
@@ -8353,6 +8626,7 @@ fn commit_repair_claim(
     if region.iter().any(|tile| occupancy.has_farm(*tile))
         || footprint.iter().any(|tile| {
             occupancy.has_uncleared_tree(*tile)
+                || occupancy.has_uncleared_rock(*tile)
                 || occupancy.water_tiles.contains(tile)
                 || occupancy.mountain_tiles.contains(tile)
         })
@@ -8544,7 +8818,10 @@ fn emergency_repair_expansion_site_bounded(
                     usable = false;
                     break;
                 }
-                if occupancy.has_uncleared_tree(tile) || is_forest_type(runtime_tile.tile_type) {
+                if occupancy.has_uncleared_tree(tile)
+                    || occupancy.has_uncleared_rock(tile)
+                    || is_forest_type(runtime_tile.tile_type)
+                {
                     trees_to_clear.insert(tile);
                 }
                 materialized.insert(tile, runtime_tile);
@@ -9963,7 +10240,12 @@ fn generated_tree_targets(
             .into_iter()
             .filter(|tile| {
                 matches!(
-                    tile.decoration,
+                    crate::terrain_gen::derive_biome_decoration(
+                        tile.x,
+                        tile.y,
+                        i64::from(world_seed),
+                        tile.climate_biome,
+                    ),
                     Some(crate::terrain_gen::DecorationRole::Tree { .. })
                 )
             })
@@ -10101,7 +10383,7 @@ fn pathfinding_area(area: &crate::village_area::VillageArea) -> pathfinding::Vil
         .collect()
 }
 
-/// Converts a `world_tick::TilePos` set (e.g. [`soft_obstacle_building_tiles`])
+/// Converts a `world_tick::TilePos` set (e.g. [`soft_obstacle_tiles`])
 /// into the `pathfinding::TilePos` set `ColonyGridParams::soft_obstacles` expects.
 fn pathfinding_tile_set(tiles: &HashSet<TilePos>) -> HashSet<PathTilePos> {
     tiles
@@ -10591,7 +10873,8 @@ fn next_expansion_building_site(
                 || occupancy.water_tiles.contains(tile)
                 || occupancy.mountain_tiles.contains(tile)
                 || occupancy.paved_road_tiles.contains(tile)
-                || (occupancy.claimed.contains(tile) && occupancy.has_uncleared_tree(*tile))
+                || (occupancy.claimed.contains(tile)
+                    && (occupancy.has_uncleared_tree(*tile) || occupancy.has_uncleared_rock(*tile)))
         }) {
             continue;
         }
@@ -10601,7 +10884,9 @@ fn next_expansion_building_site(
                 .any(|tile| inside_village_interior(colony, *tile))
                 || tiles.iter().any(|tile| {
                     !(tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
-                        || missing.contains(tile) && occupancy.has_uncleared_tree(*tile))
+                        || missing.contains(tile)
+                            && (occupancy.has_uncleared_tree(*tile)
+                                || occupancy.has_uncleared_rock(*tile)))
                 }))
         {
             continue;
@@ -10623,7 +10908,7 @@ fn next_expansion_building_site(
         let mut projected = colony.clone();
         for tile in missing {
             projected.claimed_tiles.push(tile);
-            if occupancy.has_uncleared_tree(tile) {
+            if occupancy.has_uncleared_tree(tile) || occupancy.has_uncleared_rock(tile) {
                 let mut cleared = fresh_ground_tile(tile);
                 cleared.tile_type = TileType::Field;
                 projected.world_tiles.insert(tile, cleared);
@@ -10662,7 +10947,8 @@ fn next_claim_toward_building_site(
     frontier.sort_by_key(|tile| (tile.y, tile.x));
     frontier.into_iter().find(|target| {
         let mut projected = colony.clone();
-        if tile_has_uncleared_tree(&projected, *target, world_seed) {
+        let occupancy = SpatialOccupancyContext::new(&projected, world_seed);
+        if occupancy.has_uncleared_tree(*target) || occupancy.has_uncleared_rock(*target) {
             let mut cleared = fresh_ground_tile(*target);
             cleared.tile_type = TileType::Field;
             projected.world_tiles.insert(*target, cleared);
@@ -11210,17 +11496,23 @@ fn complete_village_expansion(
         return;
     }
     let previous_tile = colony.world_tiles.get(&target).cloned();
-    if tile_has_uncleared_tree(colony, target, world_seed) {
-        let tile = colony
-            .world_tiles
-            .entry(target)
-            .or_insert_with(|| fresh_ground_tile(target));
-        tile.tile_type = TileType::Field;
-        tile.resources.food = 0;
-        tile.resources.herbs = 0;
-        tile.max_resources.food = CHOPPED_FOREST_FOOD_CAP as u32;
-        tile.last_depleted = gate.processed_through;
-    }
+    // Settlement expansion clears the claimed cell itself, not only its rendered
+    // prop. No forage, herb, water, mountain/ore terrain, tree, or rock remains
+    // inside the new wall. Exterior farm/gather parcels use their own actions.
+    let tile = colony
+        .world_tiles
+        .entry(target)
+        .or_insert_with(|| fresh_ground_tile(target));
+    tile.tile_type = TileType::Meadow;
+    tile.resources.food = 0;
+    tile.resources.herbs = 0;
+    tile.resources.water = 0;
+    tile.max_resources.food = 0;
+    tile.max_resources.herbs = 0;
+    tile.danger_level = 0.0;
+    tile.path_wear = 0;
+    tile.last_depleted = gate.processed_through;
+    tile.overlay_feature = None;
     colony.claimed_tiles.push(target);
     if !connect_current_gate_to_shrine_avoiding(colony, world_seed, &reserved_footprint) {
         // The prospective perimeter would put its sole gate somewhere that
@@ -12716,9 +13008,15 @@ mod tests {
         reveal_and_wear_walked_tiles(&mut colony, &movement, &walked_again, "walker", None);
         let trafficked = &mut colony.world_tiles.get_mut(&pos(11, 6)).unwrap();
         assert_eq!(trafficked.path_wear, 72);
-        assert_eq!(road_surface_multiplier(false, trafficked.path_wear), 1.05);
+        assert_eq!(
+            road_surface_multiplier(false, true, trafficked.path_wear),
+            1.05
+        );
         trafficked.overlay_feature = Some("road_built".to_owned());
-        assert_eq!(road_surface_multiplier(true, trafficked.path_wear), 1.75);
+        assert_eq!(
+            road_surface_multiplier(true, true, trafficked.path_wear),
+            1.75
+        );
     }
 
     #[test]
@@ -15031,7 +15329,12 @@ mod tests {
                             .into_iter()
                             .filter(|tile| {
                                 matches!(
-                                    tile.decoration,
+                                    crate::terrain_gen::derive_biome_decoration(
+                                        tile.x,
+                                        tile.y,
+                                        i64::from(seed),
+                                        tile.climate_biome,
+                                    ),
                                     Some(crate::terrain_gen::DecorationRole::Tree { .. })
                                 )
                             })
@@ -16973,9 +17276,30 @@ mod tests {
 
             let origin = scout_search_origin(&colony);
             let wood_targets = scout_wood_targets(&colony, seed);
+            let provisional = colony
+                .provisional_tiles
+                .values()
+                .flat_map(|tiles| tiles.iter().copied())
+                .collect::<HashSet<_>>();
+            let reserved = active_or_queued_jobs(&colony)
+                .into_iter()
+                .filter_map(|job| match job.metadata {
+                    JobMetadata::Scout {
+                        target: Some(target),
+                        ..
+                    } => Some(target),
+                    _ => None,
+                })
+                .collect::<HashSet<_>>();
+            let radius = scout_search_radius(&colony);
             assert!(colony.world_tiles.values().all(|candidate| {
                 colony.revealed_tiles.contains(&candidate.pos)
+                    || colony.claimed_tiles.contains(&candidate.pos)
+                    || provisional.contains(&candidate.pos)
+                    || reserved.contains(&candidate.pos)
+                    || cheb_from_anchor(origin, candidate.pos) > radius
                     || !wood_targets.contains(&candidate.pos)
+                    || scout_destination_for_target(&colony, candidate.pos).is_none()
                     || scout_target_order(origin, candidate.pos)
                         >= scout_target_order(origin, route.target)
             }));
@@ -17695,7 +18019,7 @@ mod tests {
             built_and_staffed,
             "seed {seed}: the colony never autonomously built and staffed a research hut; \
                  points={}, resources={:?}, claimed={}, mapped={}, next_future={:?}, huts={:?}, \
-                 builds={:?}, expansions={:?}",
+                 builds={:?}, builders={:?}, expansions={:?}",
             colony.upgrade_tree.research_points,
             colony.resources,
             colony.claimed_tiles.len(),
@@ -17720,6 +18044,25 @@ mod tests {
                     &job.metadata,
                     job.assigned_cat.as_deref()
                 ))
+                .collect::<Vec<_>>(),
+            colony
+                .cats
+                .iter()
+                .filter(|cat| {
+                    colony
+                        .jobs
+                        .iter()
+                        .any(|job| job.assigned_cat.as_ref() == Some(&cat.id))
+                })
+                .map(|cat| {
+                    (
+                        &cat.id,
+                        cat.activity,
+                        cat.position,
+                        cat.destination,
+                        cat.current_task,
+                    )
+                })
                 .collect::<Vec<_>>(),
             active_or_queued_jobs(colony)
                 .into_iter()
@@ -20130,11 +20473,12 @@ mod tests {
             .world_tiles
             .insert(wild_tree, fresh_ground_tile(wild_tree));
         assert!(tile_has_uncleared_tree(&colony, wild_tree, seed));
-        colony
+        let cleared = colony
             .world_tiles
             .get_mut(&wild_tree)
-            .expect("the materialized wild tile exists")
-            .tile_type = TileType::Field;
+            .expect("the materialized wild tile exists");
+        cleared.tile_type = TileType::Field;
+        cleared.last_depleted = 1;
         assert!(
             !tile_has_uncleared_tree(&colony, wild_tree, seed),
             "an explicitly cleared forest tile no longer blocks placement"
@@ -20145,7 +20489,7 @@ mod tests {
             .world_tiles
             .get_mut(&wild_tree)
             .expect("the materialized wild tile exists")
-            .tile_type = TileType::Meadow;
+            .last_depleted = 0;
         assert!(tile_is_occupied(&colony, wild_tree, seed));
 
         // Open claimed ground (no building, tree, water, or perimeter) is free.
@@ -20170,7 +20514,7 @@ mod tests {
     // --- P14.2: soft-obstacle pathfinding (buildings as slow-passable) --------
 
     #[test]
-    fn soft_obstacle_building_tiles_excludes_the_shrine_but_includes_other_buildings() {
+    fn soft_obstacle_index_excludes_the_shrine_but_includes_other_buildings() {
         // The shrine stays "fully passable (the hub)" per the P14.2 spec — every
         // haul converges on it, so it must not get the building-footprint cost/
         // speed tier. Every other founding building (dens/workshops) does.
@@ -20186,7 +20530,7 @@ mod tests {
             .find(|building| building.building_type != BuildingType::Shrine)
             .expect("founding blueprint has non-shrine buildings");
 
-        let soft_obstacles = soft_obstacle_building_tiles(&colony);
+        let soft_obstacles = soft_obstacle_tiles(&colony);
         for tile in building_footprint_tiles(shrine) {
             assert!(
                 !soft_obstacles.contains(&tile),
@@ -20198,6 +20542,82 @@ mod tests {
             other_tiles.iter().all(|tile| soft_obstacles.contains(tile)),
             "every non-shrine building tile must be a soft obstacle: {other_tiles:?}"
         );
+    }
+
+    #[test]
+    fn rendered_tree_canopy_occupies_two_by_three_tiles_and_rocks_one() {
+        let seed = 42;
+        let mut colony = found_colony(seed, "colony-1", 1_000, seed);
+        let occupancy = SpatialOccupancyContext::new(&colony, seed);
+        let anchor = colony
+            .world_tiles
+            .keys()
+            .copied()
+            .find(|tile| {
+                let Some(decoration @ crate::terrain_gen::DecorationRole::Tree { .. }) =
+                    crate::terrain_gen::rendered_decoration(seed, tile.x, tile.y)
+                else {
+                    return false;
+                };
+                crate::terrain_gen::decoration_footprint(tile.x, tile.y, decoration)
+                    .into_iter()
+                    .all(|point| {
+                        !inside_village_interior(
+                            &colony,
+                            TilePos {
+                                x: point.x,
+                                y: point.y,
+                            },
+                        )
+                    })
+            })
+            .expect("mapped exterior has a rendered tree");
+        let footprint = crate::terrain_gen::decoration_footprint(
+            anchor.x,
+            anchor.y,
+            crate::terrain_gen::rendered_decoration(seed, anchor.x, anchor.y).unwrap(),
+        );
+        assert_eq!(footprint.len(), 6);
+        assert!(footprint.iter().all(|tile| {
+            occupancy.has_uncleared_tree(TilePos {
+                x: tile.x,
+                y: tile.y,
+            })
+        }));
+
+        let rock = colony
+            .world_tiles
+            .keys()
+            .copied()
+            .find_map(|tile| {
+                let decoration = crate::terrain_gen::rendered_decoration(seed, tile.x, tile.y)?;
+                matches!(decoration, crate::terrain_gen::DecorationRole::Rock { .. })
+                    .then_some((tile, decoration))
+            })
+            .expect("mapped world has a rendered rock");
+        assert_eq!(
+            crate::terrain_gen::decoration_footprint(rock.0.x, rock.0.y, rock.1).len(),
+            1
+        );
+
+        let chunks = colony
+            .world_tiles
+            .keys()
+            .map(|tile| {
+                (
+                    tile.x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                    tile.y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        colony.decoration_cache.ensure_chunks(seed, &chunks);
+        let movement = MovementDecorationObstacles::new(&colony, seed);
+        assert!(footprint.iter().all(|tile| {
+            pathfinding::SoftObstacleField::is_soft_obstacle(&movement, tile.x, tile.y)
+        }));
+        assert!(pathfinding::SoftObstacleField::is_soft_obstacle(
+            &movement, rock.0.x, rock.0.y
+        ));
     }
 
     #[test]
@@ -20460,6 +20880,128 @@ mod tests {
 
         // The fresh-timer/exact-charge behavior after all required frontier work is
         // covered end-to-end by `player_plan_expands_until_a_connected_scaffold_then_charges_and_times_once`.
+    }
+
+    #[test]
+    fn civic_construction_gets_linked_expansion_before_open_ended_field_search() {
+        let seed = 42;
+        let mut colony = found_colony(seed, "colony-1", 1_000, seed);
+        let min_x = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.x)
+            .min()
+            .unwrap();
+        let max_x = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.x)
+            .max()
+            .unwrap();
+        let min_y = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.y)
+            .min()
+            .unwrap();
+        let max_y = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| tile.y)
+            .max()
+            .unwrap();
+        colony.stockpiles.push(Stockpile {
+            id: "civic-priority-fixture".to_owned(),
+            rect: ZoneRect {
+                x1: min_x,
+                y1: min_y,
+                x2: max_x,
+                y2: max_y,
+            },
+            accepts: [ResourceKind::Food].into_iter().collect(),
+            contents: Resources::default(),
+        });
+        assert!(!can_plan_building(&colony, seed, BuildingType::Field));
+        assert!(!can_plan_building(&colony, seed, BuildingType::ResearchHut));
+        colony.resources.planks = SCAFFOLD_PLANK_COST;
+        colony.resources.blocks = SCAFFOLD_BLOCK_COST;
+
+        let field_builder = colony.cats[0].id.clone();
+        queue_job(
+            &mut colony,
+            2_000,
+            JobKind::BuildHouse,
+            Some(field_builder.clone()),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Field,
+                building_id: None,
+                site: None,
+            },
+        );
+        let research_builder = colony.cats[1].id.clone();
+        queue_job(
+            &mut colony,
+            2_001,
+            JobKind::BuildHouse,
+            Some(research_builder.clone()),
+            JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::ResearchHut,
+                building_id: None,
+                site: None,
+            },
+        );
+        let research_job_id = colony
+            .jobs
+            .iter()
+            .find(|job| job.assigned_cat.as_deref() == Some(research_builder.as_str()))
+            .expect("research construction exists")
+            .id
+            .clone();
+
+        let _ = phase_32_movement_setup_and_village_expansion_queue(
+            &mut colony,
+            production_gate(60, 3_000),
+            reliable_policy(),
+            seed,
+        );
+
+        let expansion = active_or_queued_jobs(&colony)
+            .into_iter()
+            .find(|job| job.kind == JobKind::ExpandVillage)
+            .expect("one linked expansion is queued");
+        assert_eq!(
+            expansion.assigned_cat.as_deref(),
+            Some(research_builder.as_str()),
+            "the finite civic footprint receives the sole expansion worker"
+        );
+        assert!(matches!(
+            &expansion.metadata,
+            JobMetadata::Expansion {
+                source_build_job_id: Some(source),
+                ..
+            } if source == &research_job_id
+        ));
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .find(|job| {
+                    matches!(
+                        job.metadata,
+                        JobMetadata::Construction {
+                            building_type: BuildingType::Field,
+                            ..
+                        }
+                    )
+                })
+                .expect("field construction remains queued")
+                .assigned_cat
+                .as_deref(),
+            Some(field_builder.as_str()),
+            "the agricultural reservation waits without losing its builder"
+        );
     }
 
     #[test]
@@ -20823,6 +21365,13 @@ mod tests {
             "the tree is cleared rather than causing an endless expansion rollback"
         );
         assert!(!tile_has_uncleared_tree(&colony, target, seed));
+        let cleared = &colony.world_tiles[&target];
+        assert_eq!(cleared.tile_type, TileType::Meadow);
+        assert_eq!(cleared.resources.food, 0);
+        assert_eq!(cleared.resources.herbs, 0);
+        assert_eq!(cleared.resources.water, 0);
+        assert_eq!(cleared.max_resources.food, 0);
+        assert_eq!(cleared.max_resources.herbs, 0);
         assert!(
             colony.revealed_tiles.contains(&target),
             "newly claimed settlement ground must be immediately playable/visible"
@@ -20993,6 +21542,9 @@ mod tests {
             ..ColonyRuntime::default()
         };
         typed_block(&mut grass, pos(40, 40), 6, 7, TileType::Meadow);
+        for tile in grass.world_tiles.values_mut() {
+            tile.overlay_feature = Some("stump".to_owned());
+        }
         let field = next_claimed_building_site(&grass, 0.0, seed, BuildingType::Field)
             .expect("a field fits on the grass claim");
         for tile in footprint_tiles(field, 2, 3) {
@@ -21016,6 +21568,9 @@ mod tests {
         // footprint after mountaineering, while remaining inside the same barren
         // climate region.
         typed_block(&mut rock, rock_origin, 12, 12, TileType::Mountains);
+        for tile in rock.world_tiles.values_mut() {
+            tile.overlay_feature = Some("stump".to_owned());
+        }
         for tile in footprint_tiles(rock_origin, 12, 12) {
             assert!(
                 !crate::terrain_gen::tile_climate_biome(seed, tile.x, tile.y)
@@ -21049,6 +21604,9 @@ mod tests {
         let mut colony = ColonyRuntime::default();
         typed_block(&mut colony, pos(1, 1), 11, 11, TileType::Field);
         typed_block(&mut colony, pos(30, 30), 7, 8, TileType::Field);
+        for tile in colony.world_tiles.values_mut() {
+            tile.last_depleted = 1;
+        }
         let interior = pos(3, 3);
         let exterior = pos(31, 31);
 
@@ -21687,6 +22245,44 @@ mod tests {
     }
 
     #[test]
+    fn migration_leaves_the_last_real_vacancy_for_slow_breeding() {
+        let seed = 42;
+        let mut colony = found_colony(seed, "colony-1", 0, seed);
+        let mut fourth_den = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == BuildingType::Den)
+            .cloned()
+            .expect("founding den");
+        fourth_den.id = "fourth-den".to_owned();
+        fourth_den.position = pos(100, 100);
+        colony.buildings.push(fourth_den);
+        for index in 0..4 {
+            let mut resident = colony.cats[index].clone();
+            resident.id = format!("extra-resident-{index}");
+            resident.name = format!("Extra Resident {index}");
+            colony.cats.push(resident);
+        }
+        colony.resources.food = 1_000_000.0;
+        colony.resources.water = 1_000_000.0;
+        colony.resources.materials = 1_000_000.0;
+        colony.run_started_at = -36 * 60 * 60_000;
+
+        phase_25c_prosperity_migration(&mut colony, production_gate(60, 60_000), seed);
+
+        assert_eq!(colony_housing_capacity(&colony), 20.0);
+        assert_eq!(permanent_alive_population(&colony), 19);
+        assert_eq!(colony.migration_state.probationary_migrants.len(), 1);
+        assert!(
+            !colony
+                .events
+                .iter()
+                .any(|event| event.kind == EventKind::MigrationRetained),
+            "the twentieth bed remains available for the intentionally slower breeding path"
+        );
+    }
+
+    #[test]
     fn slow_breeding_at_live_one_second_cadence_fills_only_real_bed_headroom() {
         for seed in [7, 42, 99, 1_234, 555] {
             let mut colony = found_colony(seed, "colony-1", 0, seed);
@@ -22222,6 +22818,57 @@ mod tests {
     }
 
     #[test]
+    fn founding_interior_contains_no_natural_resources_or_water() {
+        for seed in [1, 7, 99, 555, 4_242] {
+            let colony = found_colony(seed, "colony-1", 1_000, seed);
+            for pos in &colony.claimed_tiles {
+                let tile = colony.world_tiles.get(pos).expect("claimed tile is mapped");
+                assert_eq!(tile.tile_type, TileType::Meadow, "seed {seed} at {pos:?}");
+                assert_eq!(tile.resources.food, 0, "seed {seed} at {pos:?}");
+                assert_eq!(tile.resources.herbs, 0, "seed {seed} at {pos:?}");
+                assert_eq!(tile.resources.water, 0, "seed {seed} at {pos:?}");
+                assert_eq!(tile.max_resources.food, 0, "seed {seed} at {pos:?}");
+                assert_eq!(tile.max_resources.herbs, 0, "seed {seed} at {pos:?}");
+                assert!(!tile_has_uncleared_tree(&colony, *pos, seed));
+            }
+            let pond = colony
+                .world_tiles
+                .values()
+                .find(|tile| tile.resources.water > 0 && colony.revealed_tiles.contains(&tile.pos))
+                .expect("nearby revealed exterior water exists");
+            assert!(!colony.claimed_tiles.contains(&pond.pos));
+            assert!(colony.revealed_tiles.contains(&pond.pos));
+        }
+    }
+
+    #[test]
+    fn worn_stone_ground_never_becomes_a_dirt_road() {
+        let ordinary = WorldTileRuntime {
+            pos: TilePos { x: 0, y: 0 },
+            tile_type: TileType::Meadow,
+            resources: TileResources {
+                food: 0,
+                herbs: 0,
+                water: 0,
+            },
+            max_resources: MaxResources { food: 0, herbs: 0 },
+            danger_level: 0.0,
+            path_wear: crate::movement::WORN_ROAD_WEAR,
+            last_depleted: 0,
+            overlay_feature: None,
+        };
+        assert!(tile_forms_dirt_road(&ordinary));
+        assert!(!tile_forms_dirt_road(&WorldTileRuntime {
+            tile_type: TileType::Mountains,
+            ..ordinary.clone()
+        }));
+        assert!(!tile_forms_dirt_road(&WorldTileRuntime {
+            overlay_feature: Some("road_built".to_owned()),
+            ..ordinary
+        }));
+    }
+
+    #[test]
     fn founding_paves_stone_roads_from_the_shrine_to_all_four_walls() {
         let colony = found_colony(4242, "colony-1", 1_000, 4242);
         let center = shrine_center_tile(VILLAGE_ANCHOR_TILE);
@@ -22308,7 +22955,8 @@ mod tests {
 
             assert!(
                 colony.world_tiles.values().any(|t| tile_has_water(Some(t))
-                    && cheb_from_anchor(VILLAGE_ANCHOR_TILE, t.pos) <= 6),
+                    && !colony.claimed_tiles.contains(&t.pos)
+                    && cheb_from_anchor(VILLAGE_ANCHOR_TILE, t.pos) <= VILLAGE_START_RADIUS + 2),
                 "seed {seed}: the village has no reachable water source"
             );
         }

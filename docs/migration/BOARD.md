@@ -37,9 +37,9 @@ codex, plus a Claude review for high-value slices) signs off.
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
 | P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — farming/logging/Mill/Sawmill and spatial container actions are verified; skills cover only four legacy labors, officers remain additive, the shrine is still the all-resource fallback, and physical local workshop logistics/broader recipes/escalating costs remain |
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, the full-page 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; complete manual work controls and live generated-study purchases remain |
-| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, linked expansion, and scaffold recovery are verified; trees occupy only their anchor, rocks are not occupants, and wall expansion is not staged outer-before-inner |
+| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, linked expansion, scaffold recovery, rendered 2×3 tree/1×1 rock occupancy, and exact dirt/stone road surfaces are verified; wall expansion is not staged outer-before-inner |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster and resource/general shrine-return scouting are verified, including restart-safe in-flight notebooks and responsive controls; the richer manual inspector/control surface remains partial |
-| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, reserved-bed pregnancy, prosperity migration/36-hour probation, aging, deterministic reset, physical emergency water, and lifecycle gates are verified; exact authored/traffic roads, interior clearing, and gather spots remain |
+| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, reserved-bed pregnancy, migration that leaves the last real family vacancy, prosperity migration/36-hour probation, aging, deterministic reset, physical emergency water, authoritative interior clearing, exterior water, and exact authored/traffic roads are verified; gather spots and the outside-wall agricultural territory model remain |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fine-biome movement is unused, rail/shipping are global multipliers rather than built routes/vehicles, and fishing is absent |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone and all 24 current protocol variants have framebuffer-verified residential/open-station compositions, including Mill/Sawmill and crop stages; the Adventure sliced-panel/button/progress/cursor skin is exact-size native-framebuffer verified and the release WASM bundle builds; Accounting Tent is not snapshot-reachable and WASM visual interaction remains |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — base item/trade slices shipped; recipe/resource breadth and guided reachability remain |
@@ -590,10 +590,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 ### P14 — Spatial placement (spec: `docs/migration/specs/p14-spatial-placement.md`)
 - **Verified slice:** atomic player/leader validation and commit, exclusive future footprints,
   collision-free building/stockpile/gather/road reservations, exact shrine/gate/exterior
-  connectivity, linked expansion persistence, and paid-scaffold recovery.
-- **Still partial:** a generated tree occupies only its anchor rather than its rendered 2×3
-  footprint, rocks are not occupants, and perimeter expansion replaces the derived wall
-  immediately instead of building the outer wall before removing the inner wall.
+  connectivity, linked expansion persistence, paid-scaffold recovery, rendered 2×3 tree and
+  1×1 rock occupancy, soft-obstacle path costs, and disjoint authored-stone/traffic-dirt roads.
+- **Still partial:** perimeter expansion replaces the derived wall immediately instead of
+  building the outer wall before removing the inner wall.
 
 ### P15 — Playtest-feedback backlog (spec: `docs/migration/specs/p15-playtest-feedback.md`)
 - Fog of war is verified: the exact 13×13 founding claim plus two-tile halo starts visible;
@@ -621,6 +621,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   markers rendered on the map.
 - Farms and legacy fields stay beyond the permanent settlement core; logging ignores hidden
   interior trees, and linked field claims retain one-tile expansion without starving founders.
+- Founding and ordinary expansion clear claimed natural deposits in authoritative state; the
+  guaranteed water source sits outside the south wall. An explicit distinction between expanded
+  walled settlement and claimed agricultural territory is still required.
 - Tile recalibration (smaller render tile, footprint sizes tuned: house 2×3, workshop 3×3,
   shrine 3×3 with a road ring, tree 2×3).
 

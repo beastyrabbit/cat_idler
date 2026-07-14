@@ -98,10 +98,14 @@ pub const WORN_ROAD_WEAR: u32 = 70;
 /// heavily worn dirt path is a touch faster than open ground; everything else is
 /// neutral (`1.0`). Deterministic — a pure function of the tile's road state.
 #[must_use]
-pub fn road_surface_multiplier(is_road_built: bool, path_wear: u32) -> f64 {
+pub fn road_surface_multiplier(
+    is_road_built: bool,
+    dirt_road_eligible: bool,
+    path_wear: u32,
+) -> f64 {
     if is_road_built {
         ROAD_BUILT_SPEED_MULT
-    } else if path_wear >= WORN_ROAD_WEAR {
+    } else if dirt_road_eligible && path_wear >= WORN_ROAD_WEAR {
         DIRT_ROAD_SPEED_MULT
     } else {
         1.0
@@ -1015,9 +1019,9 @@ mod tests {
 
     #[test]
     fn road_surface_multiplier_orders_stone_road_over_dirt_over_grass() {
-        let stone = road_surface_multiplier(true, 0);
-        let dirt = road_surface_multiplier(false, WORN_ROAD_WEAR);
-        let grass = road_surface_multiplier(false, 0);
+        let stone = road_surface_multiplier(true, true, 0);
+        let dirt = road_surface_multiplier(false, true, WORN_ROAD_WEAR);
+        let grass = road_surface_multiplier(false, true, 0);
         assert_eq!(ROAD_BUILT_SPEED_MULT, 1.75);
         assert_eq!(DIRT_ROAD_SPEED_MULT, 1.05);
         assert_eq!(stone, ROAD_BUILT_SPEED_MULT);
@@ -1025,11 +1029,19 @@ mod tests {
         assert_eq!(grass, 1.0);
         assert!(stone > dirt && dirt > grass);
         // Just-below-threshold wear is still plain ground.
-        assert_eq!(road_surface_multiplier(false, WORN_ROAD_WEAR - 1), 1.0);
         assert_eq!(
-            road_surface_multiplier(true, WORN_ROAD_WEAR),
+            road_surface_multiplier(false, true, WORN_ROAD_WEAR - 1),
+            1.0
+        );
+        assert_eq!(
+            road_surface_multiplier(true, false, WORN_ROAD_WEAR),
             ROAD_BUILT_SPEED_MULT,
             "traffic wear cannot downgrade a built stone road into a dirt road"
+        );
+        assert_eq!(
+            road_surface_multiplier(false, false, WORN_ROAD_WEAR),
+            1.0,
+            "stone ground cannot become a dirt road"
         );
     }
 
@@ -1042,8 +1054,8 @@ mod tests {
         let dest = WorldPos { x: 40.0, y: 0.0 };
         let base = effective_move_speed(BiomeRole::Grassland, "cat-7", LifeStage::Adult);
 
-        let road_speed = base * road_surface_multiplier(true, 100);
-        let grass_speed = base * road_surface_multiplier(false, 0);
+        let road_speed = base * road_surface_multiplier(true, true, 100);
+        let grass_speed = base * road_surface_multiplier(false, true, 0);
 
         let on_road = walk_path(start, dest, elapsed * road_speed, &[]);
         let on_grass = walk_path(start, dest, elapsed * grass_speed, &[]);

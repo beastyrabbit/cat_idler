@@ -55,6 +55,10 @@ pub struct ColonySnapshot {
     /// over these. Additive; empty/absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_tiles: Vec<TilePoint>,
+    /// Traffic-formed dirt roads (`path_wear >= 70`) which have not been paved.
+    /// They are distinct from authored stone roads and never form on stone ground.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirt_road_tiles: Vec<TilePoint>,
     pub village_gate: Option<GatePlacement>,
     pub village_radius: u32,
     pub anchor: TilePoint,
@@ -1666,6 +1670,7 @@ mod tests {
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 provisional_tiles: vec![],
                 road_tiles: vec![],
+                dirt_road_tiles: vec![],
                 village_gate: Some(GatePlacement {
                     x: 5,
                     y: 7,
