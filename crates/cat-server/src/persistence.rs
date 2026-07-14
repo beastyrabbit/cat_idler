@@ -2557,6 +2557,7 @@ mod tests {
                 stockpile_id: farm_gather_id.clone(),
                 kind: cat_sim::stockpiles::ResourceKind::Grain,
                 expires_at_ms: i64::MAX,
+                purpose: cat_sim::stockpiles::GatherSpotPurpose::General,
             });
         world.colonies[0].farms.push(FarmPlot {
             id: "farm-hauling".to_owned(),
@@ -2764,6 +2765,7 @@ mod tests {
             stockpile_id: gather_id.clone(),
             kind: cat_sim::stockpiles::ResourceKind::Grain,
             expires_at_ms: i64::MAX,
+            purpose: cat_sim::stockpiles::GatherSpotPurpose::General,
         });
         colony.farms.push(FarmPlot {
             id: "farm-restart".to_owned(),
