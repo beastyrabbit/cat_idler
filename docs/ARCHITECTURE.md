@@ -123,12 +123,12 @@ maintained product behavior rather than migration:
   military, ritual, shrine, and production orders. Exact coordinate building placement,
   selectable farm/gather variants, election/vote-kick controls, and designation removal are live;
   exact per-cat labor and editable station production queues remain open.
-- **Physical work and production breadth.** Workshop staffing is an id assignment rather than
-  station travel; inputs/outputs still draw on colony-global resources, the shrine remains the
-  fallback reservoir instead of the specified general storehouse, skills lack complete
-  mill/farm/research gain-and-effect paths, and many recipes/material variants are absent. Tools
-  now improve construction, crafting, quarrying, and hauling, and repeated building costs escalate
-  per type, but neither closes the local-logistics gap.
+- **Physical work and production breadth.** Founding now seeds a finite spatial storehouse and the
+  logs→Sawmill→lumber chain physically routes a staffed cat, reserved cargo, station-local input
+  and output, and final stockpile delivery before aggregate credit. The inspector exposes that
+  real queue and travel state. All 18 maintained labor skills now have truthful gain sources,
+  bounded effects, persistence, and inspector visibility. Other workshops still draw aggregate
+  inputs/outputs, and many recipes/material variants are absent.
 - **Multi-village product model.** One canonical communal village and one personal village per
   stable signed identity are live. Ownership and selection persist; foreign private state stays
   server-filtered; explicit returned-scout delivery (never generic reveal state) creates mutual
@@ -146,9 +146,10 @@ maintained product behavior rather than migration:
   Typed modeled effects and future-content unlock registries persist. Resource scouts preserve the
   shrine-return knowledge contract but currently select the nearest useful hidden terrain target
   rather than performing the deterministic random-walk search described by the P15 feedback spec.
-- **Spatial, transport, and visual completeness.** Exact tree/rock occupancy and visible road
-  surfaces are verified. Staged wall growth, a separate claimed agricultural-territory model,
-  real rail/ship/fishing routes, and remaining menu/WASM skin states remain incomplete. Accounting
+- **Spatial, transport, and visual completeness.** Exact tree/rock occupancy, visible road
+  surfaces, persisted exterior agricultural claims, and staged outer-wall construction with an
+  atomic one-gate cutover are live. Real rail/ship/fishing routes and remaining integrated
+  wall/menu/WASM skin captures remain incomplete. Accounting
   Tent is snapshot-reachable and has an explicit open-station client composition; the maintained
   Adventure panel, button, progress, minimap, and cursor foundation is native-framebuffer verified.
 

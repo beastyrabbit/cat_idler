@@ -35,11 +35,11 @@ codex, plus a Claude review for high-value slices) signs off.
 | P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
 | P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh`; a same-origin combined server/WASM image, compression, health/readiness probes, exact Origin checks, and deployment instructions are verified. Native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Transfer-weight optimization remains optional. See `docs/migration/WASM.md` |
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
-| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven strict manual/officer domains, role-station/unlock gates, active shrine faucets, useful tools, escalating costs, Accounting Tent, farming/logging/processing chains, and spatial container actions are verified; the shrine is still the all-resource fallback, and physical local workshop logistics, all-labor skills, and broader recipes remain |
+| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven strict manual/officer domains, all 18 maintained skill gain/effect/UI paths, role-station/unlock gates, active shrine faucets, useful tools, escalating costs, Accounting Tent, finite spatial storage, and a complete physical logs→Sawmill→lumber route/inspector are verified; other physical workshop/farm chains and broader recipes remain |
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, signed manual orders, exact coordinate building placement, selectable farm/gather variants, clear/remove and election/vote-kick controls, the full-page purchasable 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; exact per-cat labor and editable production-queue tools remain |
-| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, linked expansion, scaffold recovery, rendered 2×3 tree/1×1 rock occupancy, and exact dirt/stone road surfaces are verified; wall expansion is not staged outer-before-inner |
+| P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code; integrated before/during/after wall framebuffers remain |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact placement/governance controls, and resource/general shrine-return scouting are verified, including restart-safe in-flight notebooks and responsive controls; scout routing still uses nearest-hidden-target oracle selection instead of the specified random walk, and station-local inspector/queue paths remain partial |
-| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, reserved-bed pregnancy, migration that leaves the last real family vacancy, prosperity migration/36-hour probation, aging, deterministic reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, and manual/Steward gather-spot movement are verified; selectable gather variants/removal and the outside-wall agricultural territory model remain |
+| P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, and persisted outside-wall agricultural territory are verified; fishing and broader physical farm/production work remain |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, and exterior plots are live; fine-biome movement is unused, rail/shipping are global multipliers rather than built routes/vehicles, and fishing is absent |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone; all 25 current protocol variants have tested residential/open-station compositions, with the prior 24 plus Mill/Sawmill/crop stages framebuffer-verified; Accounting Tent is snapshot-reachable but still needs an integrated in-world capture. The Adventure skin is exact-size native-framebuffer verified, the release WASM bundle builds, and WASM visual interaction remains |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — planks/blocks/tools, grain/flour/food, logs/lumber, fibre/cloth, hide/leather, ore/metal, protected useful tools, material trade goods, visiting traders, and coin are live; recipe/material breadth, physical local inventories, fishing, and complete controls remain |
@@ -562,26 +562,30 @@ without reading ~150 commits. It intentionally does not restate every commit —
 for exact commit hashes/messages, and the corresponding spec doc for the original design.
 
 ### P12 — Sim expansion (spec: `docs/migration/specs/p12-idle-cat-forest.md`)
-- **P12.1 skills** — proficiency/XP persists and is exposed for the four legacy labors
-  (Hunter, Architect, Ritualist, Warrior). Mill, Farm, Research, and other maintained labors do
-  not yet have complete gain/effect/UI paths.
+- **P12.1 skills** — proficiency/XP persists for all 18 maintained labors. Only truthful work
+  accrues continuous or completed-cycle XP; bounded effects apply to production, movement,
+  research, and combat; protocol and the cat inspector expose the typed map while accepting
+  legacy four-role snapshots.
 - **P12.2 officers** — Steward, Accountant, Forester, Farmer, Captain, Loremaster, and Cloth
   Leader have strict automation ownership. Vacancies are manual-only; appointment requires the
   matching researched unlock and completed role station; assignment, replacement, automation
   provenance, and the rolling daily legacy-Loremaster timestamp persist.
-- **P12.3 spatial stockpiles** — designated containers are places in the world, but the shrine
-  remains the all-resource fallback reservoir; the specified seeded general storehouse/local
-  capacity model and physical hauling contract are not complete.
+- **P12.3 spatial stockpiles** — founding seeds a finite general storehouse; designated containers
+  determine real capacity, legacy shrine stores migrate into them, and persisted transit ledgers
+  reserve carried cargo without blocking the map. The complete Sawmill route now uses this model;
+  remaining workshop and farm chains still need conversion.
 - **P12.4a/b workshop chains + Accountant direction** — workshop crafting covers
   planks/blocks/tools, exterior catnip/grain/herb plots, logging, Mill grain→flour→food, Sawmill
   logs→lumber, fibre/hide→cloth/leather, and ore→metal. A staffed Accounting Tent keeps the
   aggregate ledger exact; tools give a bounded construction/crafting/quarrying/hauling bonus and
-  repeated building costs escalate per type. Workers still do not path to their station and
-  inputs/outputs use colony-global resources; station-local ledgers/queues remain absent.
+  repeated building costs escalate per type. Sawmill workers now path
+  stockpile→station→stockpile with persisted local input/output, a real queue, and no aggregate
+  lumber credit before delivery. Other workshops still use colony-global resources.
 - **P12.6 logistics** — general/limited stockpile designation, signed manual shrine orders, and
   Steward gather-spot automation landed. Population-relative tithe and carried-offering gates are
-  reachable across five unattended seeds without consuming protected reserves. The seeded general
-  storehouse and local physical logistics promised by the spec remain open.
+  reachable across five unattended seeds without consuming protected reserves. The seeded finite
+  general storehouse and complete physical Sawmill route are verified; other production chains
+  still need the same local hauling contract.
 
 ### P13 — Client UI for P12
 - Spatial stockpile designation + render (`b3d28fb`).
@@ -597,8 +601,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   collision-free building/stockpile/gather/road reservations, exact shrine/gate/exterior
   connectivity, linked expansion persistence, paid-scaffold recovery, rendered 2×3 tree and
   1×1 rock occupancy, soft-obstacle path costs, and disjoint authored-stone/traffic-dirt roads.
-- **Still partial:** perimeter expansion replaces the derived wall immediately instead of
-  building the outer wall before removing the inner wall.
+- **Staged expansion:** persisted exterior agricultural claims are excluded from wall derivation;
+  a replacement perimeter is built segment by segment while the old closed enclosure remains
+  authoritative, then all edges and the one south gate cut over atomically. Integrated
+  before/during/after framebuffers remain the final visual gate.
 
 ### P15 — Playtest-feedback backlog (spec: `docs/migration/specs/p15-playtest-feedback.md`)
 - Fog of war is verified: the exact 13×13 founding claim plus two-tile halo starts visible;
@@ -629,9 +635,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   markers rendered on the map.
 - Farms and legacy fields stay beyond the permanent settlement core; logging ignores hidden
   interior trees, and linked field claims retain one-tile expansion without starving founders.
-- Founding and ordinary expansion clear claimed natural deposits in authoritative state; the
-  guaranteed water source sits outside the south wall. An explicit distinction between expanded
-  walled settlement and claimed agricultural territory is still required.
+- Founding and ordinary expansion clear settlement deposits in authoritative state; the
+  guaranteed water source sits outside the south wall. Expanded settlement and claimed
+  agricultural territory are distinct persisted classes, and agricultural parcels stay exterior
+  to both active and prospective walls.
 - Tile recalibration (smaller render tile, footprint sizes tuned: house 2×3, workshop 3×3,
   shrine 3×3 with a road ring, tree 2×3).
 
