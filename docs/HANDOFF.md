@@ -122,8 +122,10 @@ so a correct scout route cannot conceal a missing founding dispatch.
    unattended twins. Preserve those contracts while replacing rail/shipping multipliers with
    built routes/vehicles, making fine biomes own their promised physical resource ecology, and
    extending physical logistics to the remaining workshops. Item durability now has a real
-   wear/break/repair consumer; turn the remaining registry-only research payloads
-   (recipes/resources/jobs and worker slots) into observable behavior.
+   wear/break/repair consumer. Correct the audited building-capacity inconsistency (target bonuses
+   currently leak globally while snapshot/trade paths omit them), then turn the remaining
+   registry-only research payloads (100 recipes, 64 resources, ten jobs, and 25 worker-slot
+   modifiers) into observable behavior without advertising IDs that have no runtime object.
 4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

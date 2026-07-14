@@ -1,8 +1,26 @@
 # Idle Cat Forest fix log
 
 This is the maintained, evidence-backed log for fixes found during design review and player-guided
-or unattended playtesting. Add an entry only after the behavior, persistence boundary, relevant
-Rust quality gates, and any changed Bevy visuals have been verified.
+or unattended playtesting. The queue records reproduced problems before work begins. Move an item
+to the verified log only after its behavior, persistence boundary, relevant Rust quality gates,
+and any changed Bevy visuals have been verified.
+
+## Open fix queue
+
+| Finding | Required correction | State |
+| --- | --- | --- |
+| Remaining scalar processors bypass physical inventory | Workshop Materials→Refined and Smelter Ore→Metal must use finite source piles, durable station input/output/transit, on-site work, and delivery-before-credit. Removing a station, losing a carrier, filling a destination, or restarting must not teleport, create, or lose cargo. | in progress |
+| Production stations pull every input from general storage | Steward-managed limited piles must appear beside every physical processor and be filled by real source→destination balancing trips. Vacancy, removal, full storage, death, cancellation, and restart must preserve exact physical provenance and transit. | in progress |
+| Building capacity research is internally inconsistent | A capacity study for one building currently leaks to unrelated storage, while snapshots and village-trade checks omit the same modifier. One target-correct capacity calculation must drive simulation, projection, and actions without cross-building leakage. | in progress |
+| Research advertises recipes and resources that do not exist | All 100 generated recipe IDs and 64 generated resource IDs currently enter registries with no consumer, and none names a maintained queue recipe or `ResourceKind`. First bind research to real physical recipes, then add only physically sourced resource/recipe breadth. | queued |
+| Research job unlocks do not gate jobs truthfully | All ten `UnlockJob` payloads are unread. Fetch Water and Explore work before their claimed unlocks, while six advertised IDs are not runtime job kinds. Align catalog wording/IDs and authoritative action gates. | queued |
+| Some building unlock studies lie or duplicate another gate | Research Hut is intentionally available for bootstrap despite an unlock payload; `mill_foundations` cannot independently unlock the Mill because `milling` remains mandatory. Make the catalog and placement rules agree while preserving a playable bootstrap. | queued |
+| Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
+| Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
+| Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
+| Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains; rail and shipping have modifiers but no tracks, trains, vessels, or routes. | queued |
+
+## Verified fixes
 
 ## 2026-07-14 — Finite item wear, breakage, and material-backed repair
 
