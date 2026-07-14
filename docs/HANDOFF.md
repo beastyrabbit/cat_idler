@@ -60,6 +60,11 @@ Verified foundations include:
   storage before aggregate credit. Farmer automation and signed manual assignment share this
   route; vacancy, blocked storage, death, restart, skill gain, and moved-gate reachability are
   covered without free crop mutation.
+- physical accounting rounds: a tent worker visits reachable stockpiles in deterministic order,
+  counts each pile for five game-seconds, and returns to the tent. Per-pile and aggregate reports
+  remain stale until that contact, blocked piles stay stale for a later round, and in-progress
+  routes survive SQLite restart. The HUD, stockpile inspector, and Accounting Tent inspector expose
+  stale estimates and current round progress without leaking authoritative inventory totals.
 
 The founding/housing integration replaced the archived five-cat loop and passed its full
 simulation, protocol, server, client, persistence, guided-action, determinism, and framebuffer
@@ -80,10 +85,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    delivery-before-credit, death conservation, restart persistence, and the live inspector.
    Exterior farming now follows the same physical truth through plot work, bounded baskets, local
    handoff, and storage delivery. Apply that contract to every remaining workshop, make the
-   Accountant physically visit and count individual piles, and complete recipes/materials. All 19
-   maintained labor skills now have truthful gain sources, bounded effects, persistence, and
-   inspector visibility. Signed per-cat preferences and the Sawmill's real editable queue are live;
-   extend the generic queue control as physical recipes land. Preserve the verified tool
+   remaining production chains carry and deliver their inputs and outputs, and complete
+   recipes/materials. Physical Accountant rounds now keep reports truthful one visited pile at a
+   time. All 19 maintained labor skills have truthful gain sources, bounded effects, persistence,
+   and inspector visibility. Signed per-cat preferences and the Sawmill's real editable queue are
+   live; extend the generic queue control as physical recipes land. Preserve the verified tool
    productivity, type-local escalating costs, shrine faucets, and research pacing in balance
    campaigns.
 2. **Deepen the shared world.** The durable 30-cat/six-Den/19×19 communal hub is mechanically

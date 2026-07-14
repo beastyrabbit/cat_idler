@@ -272,8 +272,43 @@ pub struct StockLedgerSnapshot {
     pub reported: ResourceAmounts,
     /// Game-tick timestamp (ms) of the last recount.
     pub last_counted: i64,
-    /// Whether the reported totals currently match the true resources exactly (a staffed
-    /// Accounting Tent keeps this `true` every tick).
+    /// Whether every reported total currently happens to match the authoritative economy.
+    pub accurate: bool,
+    /// Physical work currently being performed by the Accounting Tent. Additive for older
+    /// clients/snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_round: Option<AccountingRoundSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountingPhase {
+    TravelingToTent,
+    TravelingToPile,
+    Counting,
+    ReturningToTent,
+    WaitingAtTent,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountingRoundSnapshot {
+    pub worker_id: String,
+    pub tent_id: String,
+    pub phase: AccountingPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_stockpile_id: Option<String>,
+    pub remaining_piles: usize,
+    pub unreachable_piles: usize,
+    pub dwell_elapsed_ms: i64,
+    pub dwell_required_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockpileReportSnapshot {
+    pub reported: ResourceAmounts,
+    pub last_counted: i64,
     pub accurate: bool,
 }
 
@@ -287,6 +322,11 @@ pub struct StockpileSnapshot {
     pub y2: i32,
     pub accepts: Vec<ResourceKind>,
     pub contents: ResourceAmounts,
+    /// Player-facing counted values. `contents` remains available for physical pile sprite
+    /// size/shape; numeric UI must use this report so exact simulation state cannot bypass the
+    /// Accountant. Absent only on legacy snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<StockpileReportSnapshot>,
     /// Present when this pile is a P16 gather spot: a temporary, single-resource drop
     /// point placeable outside the claimed village. Absent for the shrine reservoir and
     /// every general player stockpile, and for pre-P16 snapshots.
@@ -2609,6 +2649,7 @@ mod tests {
             y2: 6,
             accepts: vec![ResourceKind::Food],
             contents,
+            report: None,
             gather_spot: None,
         });
         let encoded = serde_json::to_value(&snap).expect("serialize");
@@ -2635,6 +2676,7 @@ mod tests {
             reported,
             last_counted: 1_700_000_030_000,
             accurate: true,
+            active_round: None,
         });
         let encoded = serde_json::to_value(&snap).expect("serialize");
         assert_eq!(

@@ -2832,7 +2832,37 @@ fn stock_ledger_snapshot(colony: &ColonyRuntime) -> proto::StockLedgerSnapshot {
     proto::StockLedgerSnapshot {
         reported: resources_snapshot(&colony.stock_ledger.reported),
         last_counted: colony.stock_ledger.last_counted,
-        accurate: colony.stock_ledger.is_accurate(&colony.resources),
+        accurate: colony.stock_ledger.is_accurate(&colony.resources)
+            && colony
+                .stock_ledger
+                .visible_piles_are_accurate(&colony.stockpiles),
+        active_round: colony.stock_ledger.active_round.as_ref().map(|round| {
+            proto::AccountingRoundSnapshot {
+                worker_id: round.worker_id.clone(),
+                tent_id: round.tent_id.clone(),
+                phase: match round.phase {
+                    crate::ledger::AccountingPhase::TravelingToTent => {
+                        proto::AccountingPhase::TravelingToTent
+                    }
+                    crate::ledger::AccountingPhase::TravelingToPile => {
+                        proto::AccountingPhase::TravelingToPile
+                    }
+                    crate::ledger::AccountingPhase::Counting => proto::AccountingPhase::Counting,
+                    crate::ledger::AccountingPhase::ReturningToTent => {
+                        proto::AccountingPhase::ReturningToTent
+                    }
+                    crate::ledger::AccountingPhase::WaitingAtTent => {
+                        proto::AccountingPhase::WaitingAtTent
+                    }
+                },
+                target_stockpile_id: round.target_stockpile_id.clone(),
+                remaining_piles: round.pending_stockpile_ids.len()
+                    + usize::from(round.target_stockpile_id.is_some()),
+                unreachable_piles: round.unreachable_stockpile_ids.len(),
+                dwell_elapsed_ms: round.dwell_elapsed_ms,
+                dwell_required_ms: crate::ledger::PILE_COUNT_DWELL_MS,
+            }
+        }),
     }
 }
 
@@ -2852,6 +2882,15 @@ fn stockpile_snapshot(
             .map(|kind| sim_to_proto_resource_kind(*kind))
             .collect(),
         contents: resources_snapshot(&pile.contents),
+        report: colony
+            .stock_ledger
+            .pile_reports
+            .get(&pile.id)
+            .map(|report| proto::StockpileReportSnapshot {
+                reported: resources_snapshot(&report.reported),
+                last_counted: report.last_counted,
+                accurate: report.reported == pile.contents,
+            }),
         gather_spot: colony
             .gather_spots
             .iter()

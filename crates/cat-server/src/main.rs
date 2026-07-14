@@ -2204,6 +2204,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authenticated_manual_accountant_resumes_the_same_physical_round_after_restart() {
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-accountant-restart-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let secret = "accountant-restart-secret";
+        let mut world = starter_world(1_000_000);
+        let tent_id = "signed-accounting-tent".to_owned();
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        let anchor = world.colonies[0].anchor;
+        world.colonies[0]
+            .buildings
+            .push(cat_sim::world_tick::BuildingRuntime {
+                id: tent_id.clone(),
+                building_type: cat_sim::types::BuildingType::AccountingTent,
+                position: anchor,
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: cat_sim::world_tick::default_production_queue(
+                    cat_sim::types::BuildingType::AccountingTent,
+                ),
+                ..cat_sim::world_tick::BuildingRuntime::default()
+            });
+        let conn = Connection::open(&path).expect("open accountant database");
+        persistence::init_schema(&conn).expect("init accountant database");
+        let state = build_state_from_world(world, conn, secret.to_owned(), false, 1_000_000);
+        let signed = signed_session("accountant-session".to_owned(), secret);
+        let mut connection =
+            ConnectionContext::new("accountant-socket".to_owned(), STARTER_COLONY_ID.to_owned());
+        connection.identity = Some(signed.clone());
+        let (truth_before, piles_before) = {
+            let live = state.world.lock().await;
+            (
+                live.colonies[0].resources.clone(),
+                live.colonies[0].stockpiles.clone(),
+            )
+        };
+
+        let assigned = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::AssignWorker {
+                session_id: signed.session_id.clone(),
+                nickname: "Bookkeeper".to_owned(),
+                sig: signed.sig.clone(),
+                cat_id: cat_id.clone(),
+                building_id: Some(tent_id.clone()),
+            },
+        )
+        .await;
+        assert!(assigned.result.ok, "signed assignment failed: {assigned:?}");
+        {
+            let live = state.world.lock().await;
+            assert_eq!(live.colonies[0].resources, truth_before);
+            assert_eq!(live.colonies[0].stockpiles, piles_before);
+        }
+        {
+            let mut live = state.world.lock().await;
+            let _ = cat_sim::world_tick::world_tick(&mut live, 1_001_000);
+            assert!(live.colonies[0].stock_ledger.active_round.is_some());
+        }
+        save_current_world(&state)
+            .await
+            .expect("persist physical accountant");
+        let before = state.world.lock().await.colonies[0].stock_ledger.clone();
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen accountant database");
+        persistence::init_schema(&conn).expect("migrate accountant database");
+        let restarted = build_state_from_connection(1_002_000, conn, secret.to_owned())
+            .expect("restore physical accountant");
+        {
+            let restored = restarted.world.lock().await;
+            assert_eq!(restored.colonies[0].stock_ledger, before);
+            assert_eq!(
+                restored.colonies[0]
+                    .buildings
+                    .iter()
+                    .find(|building| building.id == tent_id)
+                    .and_then(|building| building.assigned_cat.as_deref()),
+                Some(cat_id.as_str())
+            );
+        }
+
+        // The same authenticated session can reconnect and explicitly release the worker;
+        // this also proves the persisted assignment is not officer-owned ghost automation.
+        let mut reconnected = ConnectionContext::new(
+            "accountant-reconnected".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        reconnected.identity = Some(signed.clone());
+        let released = send_action(
+            &restarted,
+            &mut reconnected,
+            &ClientAction::AssignWorker {
+                session_id: signed.session_id,
+                nickname: "Bookkeeper".to_owned(),
+                sig: signed.sig,
+                cat_id,
+                building_id: None,
+            },
+        )
+        .await;
+        assert!(released.result.ok, "signed release failed: {released:?}");
+        drop(restarted);
+        fs::remove_file(path).expect("remove accountant database");
+    }
+
+    #[tokio::test]
     async fn authenticated_manual_officer_campaign_mutates_only_the_selected_colony() {
         use cat_sim::{
             entities::Resources,

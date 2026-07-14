@@ -5747,12 +5747,26 @@ fn render_stockpiles(
         ));
 
         let mut label = accepts_label(&pile.accepts);
-        if let Some(dominant) = dominant {
+        let reported = pile.report.as_ref();
+        if let Some(report_dominant) =
+            reported.and_then(|report| dominant_resource(&report.reported))
+        {
+            let reported_total = resource_total(&reported.expect("checked report").reported);
+            let approximation = if reported.is_some_and(|report| report.accurate) {
+                ""
+            } else {
+                "~"
+            };
             label.push_str(&format!(
-                "  {} {}",
-                resource_kind_name(dominant),
-                total.round() as i64
+                "  {} {}{}",
+                resource_kind_name(report_dominant),
+                approximation,
+                reported_total.round() as i64
             ));
+        } else if reported.is_none() {
+            label.push_str("  uncounted");
+        }
+        if let Some(dominant) = dominant {
             commands.spawn((
                 Sprite {
                     image: art.pile(pile_prop(dominant)),
@@ -5865,11 +5879,11 @@ fn update_remove_panel(
                 .as_ref()
                 .and_then(|spot| spot.fish_population)
                 .map_or_else(
-                    || format!("{title}\n{}", resource_contents_summary(&pile.contents)),
+                    || format!("{title}\n{}", reported_pile_contents(pile)),
                     |population| {
                         format!(
                             "{title}\n{}\nhabitat {:.1} / {:.0}",
-                            resource_contents_summary(&pile.contents),
+                            reported_pile_contents(pile),
                             population.stock,
                             population.capacity
                         )
@@ -7589,7 +7603,7 @@ fn stockpile_tooltip(pile: &StockpileSnapshot) -> String {
     let mut tooltip = format!(
         "{title}\naccepts {accepts}\ncontents: {contents}",
         accepts = accepts_label(&pile.accepts),
-        contents = resource_contents_summary(&pile.contents),
+        contents = reported_pile_contents(pile),
     );
     if let Some(population) = pile
         .gather_spot
@@ -7602,6 +7616,16 @@ fn stockpile_tooltip(pile: &StockpileSnapshot) -> String {
         ));
     }
     tooltip
+}
+
+fn reported_pile_contents(pile: &StockpileSnapshot) -> String {
+    pile.report.as_ref().map_or_else(
+        || "uncounted".to_owned(),
+        |report| {
+            let prefix = if report.accurate { "" } else { "~" };
+            format!("{prefix}{}", resource_contents_summary(&report.reported))
+        },
+    )
 }
 
 /// Toolbar tool-mode toggles: set the active mode, tint buttons by state, and
@@ -8098,10 +8122,26 @@ fn update_hud(
     };
     header.0 = dashboard_header_text(colony, world.online_count);
     footer.0 = dashboard_footer_text(colony);
-    let r = &colony.resources;
+    let mut reported = colony
+        .stock_ledger
+        .as_ref()
+        .map_or(colony.resources, |ledger| ledger.reported);
+    // Blessings are a non-physical divine currency, not stockpile goods.
+    reported.blessings = colony.resources.blessings;
+    let r = &reported;
     let cap = &colony.storage.capacities;
+    let approximate = colony
+        .stock_ledger
+        .as_ref()
+        .is_some_and(|ledger| !ledger.accurate);
     for (mut text, res) in &mut values {
         text.0 = hud_resource_text(res.0, Some((r, cap)));
+        if approximate
+            && res.0 != HudRes::Blessings
+            && let Some(space) = text.0.find(' ')
+        {
+            text.0.insert(space + 1, '~');
+        }
     }
 }
 
@@ -8651,17 +8691,50 @@ fn hud_treasury_line(items: &[ItemStackSnapshot]) -> String {
 /// reality and are marked stale (with a `~` prefix + a hint to build the tent).
 fn ledger_hud_text(ledger: &StockLedgerSnapshot) -> String {
     let r = &ledger.reported;
-    if ledger.accurate {
+    let totals = if ledger.accurate {
         format!(
             "Ledger (exact): F{:.0} W{:.0} M{:.0} R{:.0}",
             r.food, r.water, r.materials, r.refined
         )
     } else {
         format!(
-            "Ledger (stale - build Accounting Tent)\n\
+            "Ledger (stale)\n\
              known ~F{:.0} ~W{:.0} ~M{:.0} ~R{:.0}",
             r.food, r.water, r.materials, r.refined
         )
+    };
+    ledger
+        .active_round
+        .as_ref()
+        .map_or(totals.clone(), |round| {
+            format!("{totals}\n{}", accounting_round_text(round))
+        })
+}
+
+fn accounting_round_text(round: &cat_protocol::AccountingRoundSnapshot) -> String {
+    let target = round.target_stockpile_id.as_deref().unwrap_or("tent");
+    match round.phase {
+        cat_protocol::AccountingPhase::TravelingToTent => {
+            format!("Accountant returning to tent ({})", round.worker_id)
+        }
+        cat_protocol::AccountingPhase::TravelingToPile => format!(
+            "Accountant walking to {target} · {} left · {} unreachable",
+            round.remaining_piles, round.unreachable_piles
+        ),
+        cat_protocol::AccountingPhase::Counting => format!(
+            "Accountant counting {target} · {:.0}/{:.0}s · {} left",
+            round.dwell_elapsed_ms as f64 / 1_000.0,
+            round.dwell_required_ms as f64 / 1_000.0,
+            round.remaining_piles
+        ),
+        cat_protocol::AccountingPhase::ReturningToTent => format!(
+            "Accountant returning with books · {} unreachable",
+            round.unreachable_piles
+        ),
+        cat_protocol::AccountingPhase::WaitingAtTent => format!(
+            "Accountant at tent · {} unreachable",
+            round.unreachable_piles
+        ),
     }
 }
 
@@ -8836,10 +8909,20 @@ fn update_goods(
         text.0 = colony.map_or_else(
             || format!("Treasury: {}g", treasury_total(&items)),
             |colony| {
+                let stale = colony
+                    .stock_ledger
+                    .as_ref()
+                    .filter(|ledger| !ledger.accurate)
+                    .map_or("", |_| " (stale, ~)");
+                let reported = colony
+                    .stock_ledger
+                    .as_ref()
+                    .map_or(colony.resources, |ledger| ledger.reported);
                 format!(
-                    "Treasury: {}g\n{}",
+                    "Treasury: {}g\nReported stock{}:\n{}",
                     treasury_total(&items),
-                    production_stores_text(&colony.resources)
+                    stale,
+                    production_stores_text(&reported)
                 )
             },
         );
@@ -9549,6 +9632,32 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
     }
     if building.production_paused {
         out.push_str("\nproduction paused");
+    }
+    if building.building_type == BuildingType::AccountingTent {
+        out.push_str("\nledger work: ");
+        out.push_str(
+            colony
+                .stock_ledger
+                .as_ref()
+                .and_then(|ledger| ledger.active_round.as_ref())
+                .map_or("no active count", |round| {
+                    // The footer and inspector deliberately share the same truthful state.
+                    // Allocate only for the active case, then append below.
+                    if round.tent_id == building.id {
+                        "active physical round"
+                    } else {
+                        "another tent is active"
+                    }
+                }),
+        );
+        if let Some(round) = colony
+            .stock_ledger
+            .as_ref()
+            .and_then(|ledger| ledger.active_round.as_ref())
+            .filter(|round| round.tent_id == building.id)
+        {
+            out.push_str(&format!("\n{}", accounting_round_text(round)));
+        }
     }
     if let Some(reason) = &building.production_block_reason {
         out.push_str(&format!("\nblocked: {}", reason.replace('_', " ")));
@@ -12142,6 +12251,7 @@ mod tests {
             y2: 3, // deliberately unordered
             accepts: vec![],
             contents: amounts(0.0, 0.0, 0.0),
+            report: None,
             gather_spot: None,
         };
         assert!(point_in_stockpile((3, 4), &pile));
@@ -12848,6 +12958,11 @@ mod tests {
                 metal: 0.0,
                 blessings: 0.0,
             },
+            report: Some(cat_protocol::StockpileReportSnapshot {
+                reported: amounts(12.0, 0.0, 0.0),
+                last_counted: 0,
+                accurate: true,
+            }),
             gather_spot: None,
         };
         let tip = stockpile_tooltip(&pile);
@@ -12866,6 +12981,7 @@ mod tests {
         mature.contents.leather = 7.0;
         mature.contents.ore = 8.0;
         mature.contents.metal = 9.0;
+        mature.report.as_mut().expect("report").reported = mature.contents;
         let mature_tip = stockpile_tooltip(&mature);
         for named in [
             "planks 1.0",
@@ -13072,6 +13188,7 @@ mod tests {
             reported,
             last_counted: 0,
             accurate: true,
+            active_round: None,
         });
         assert!(exact.contains("exact"));
         assert!(exact.contains("F148"));
@@ -13096,9 +13213,9 @@ mod tests {
             reported,
             last_counted: 0,
             accurate: false,
+            active_round: None,
         });
         assert!(stale.contains("stale"));
-        assert!(stale.contains("Accounting Tent"));
         assert!(stale.contains("~F148"));
     }
 

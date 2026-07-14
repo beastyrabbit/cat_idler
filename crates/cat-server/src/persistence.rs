@@ -3115,6 +3115,25 @@ mod tests {
             ..JobRuntime::default()
         });
 
+        // Physical Accountant JSON is durable inside the existing stockLedger column: a
+        // restart during the pile dwell must not silently return the cat to its desk or make
+        // every pile fresh.
+        world.colonies[0].stock_ledger = StockLedger::counted_with_piles(
+            &world.colonies[0].resources,
+            &world.colonies[0].stockpiles,
+            1_000_000,
+        );
+        world.colonies[0].stock_ledger.active_round = Some(cat_sim::ledger::AccountingRound {
+            worker_id: world.colonies[0].cats[0].id.clone(),
+            tent_id: "accounting-restart".to_owned(),
+            phase: cat_sim::ledger::AccountingPhase::Counting,
+            target_stockpile_id: Some("stockpile-a".to_owned()),
+            pending_stockpile_ids: vec![cat_sim::stockpiles::GENERAL_STOREHOUSE_ID.to_owned()],
+            unreachable_stockpile_ids: vec!["blocked-pile".to_owned()],
+            dwell_elapsed_ms: 2_000,
+            topology_signature: 77,
+        });
+
         save_world(&conn, &world).expect("save world");
         let mut loaded = load_world(&conn)
             .expect("load world")
@@ -3366,6 +3385,25 @@ mod tests {
             loaded.colonies[0].stock_ledger,
             cat_sim::ledger::StockLedger::default()
         );
+    }
+
+    #[test]
+    fn aggregate_only_stock_ledger_json_migrates_without_fabricating_a_round() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(42);
+        world
+            .colonies
+            .push(found_colony(42, "colony-1", 1_000_000, 7));
+        let legacy = StockLedger::counted(&world.colonies[0].resources, 999_000);
+        world.colonies[0].stock_ledger = legacy.clone();
+        save_world(&conn, &world).expect("save aggregate-only ledger");
+
+        let loaded = load_world(&conn).expect("load").expect("world");
+        assert_eq!(loaded.colonies[0].stock_ledger.reported, legacy.reported);
+        assert_eq!(loaded.colonies[0].stock_ledger.last_counted, 999_000);
+        assert!(loaded.colonies[0].stock_ledger.pile_reports.is_empty());
+        assert!(loaded.colonies[0].stock_ledger.active_round.is_none());
     }
 
     #[test]

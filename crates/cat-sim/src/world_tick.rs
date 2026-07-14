@@ -38,7 +38,10 @@ use crate::{
         RESEARCH_COMFORT_WATER_PER_CAT, WATER_MAX_SLOTS, automated_plan, is_research_comfortable,
         match_cats_to_slots_with_officers, officer_role_for,
     },
-    ledger::{StockLedger, refresh_ledger},
+    ledger::{
+        AccountingPhase, AccountingRound, PILE_COUNT_DWELL_MS, StockLedger,
+        UNSTAFFED_RECOUNT_INTERVAL_MS, refresh_ledger,
+    },
     life_sim::{
         BREEDING_ESTABLISHMENT_GAME_HOURS, ColonyBreedingState, GESTATION_GAME_HOURS, can_work,
         colony_can_breed, conception_probability, get_life_stage, inherit_stats,
@@ -676,6 +679,9 @@ pub struct DecorationCache {
     /// changes deterministically re-arm it. A loaded game may retry once after restart.
     farm_designation_failures: BTreeMap<String, u64>,
     farm_route_component: RefCell<Option<(u64, HashSet<PathTilePos>)>>,
+    /// Shared physical-accounting connectivity, keyed by authoritative topology. A round
+    /// asks for this once and then persists its deterministic target queue.
+    accounting_route_component: RefCell<Option<(u64, HashSet<PathTilePos>)>>,
     #[cfg(test)]
     farm_route_debug: FarmRouteDebug,
     #[cfg(test)]
@@ -684,6 +690,10 @@ pub struct DecorationCache {
     farm_route_component_cache_hits: std::cell::Cell<u64>,
     #[cfg(test)]
     farm_route_queries: std::cell::Cell<u64>,
+    #[cfg(test)]
+    accounting_route_component_traversals: std::cell::Cell<u64>,
+    #[cfg(test)]
+    accounting_route_component_cache_hits: std::cell::Cell<u64>,
 }
 
 #[cfg(test)]
@@ -2151,7 +2161,8 @@ fn found_colony_with_kind(
     // Seed the finite general storehouse so the stockpile invariant holds before the first tick.
     reconcile_colony_stockpiles(&mut colony);
     // The books are counted at founding, so the reported ledger starts exact.
-    colony.stock_ledger = StockLedger::counted(&colony.resources, now_ms);
+    colony.stock_ledger =
+        StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, now_ms);
     colony
 }
 
@@ -2835,6 +2846,11 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_25c_prosperity_migration(colony, gate, world_seed);
         if let Some(reset_reason) = phase_26_empty_colony_reset(colony, gate) {
             reconcile_colony_stockpiles(colony);
+            colony.stock_ledger = StockLedger::counted_with_piles(
+                &colony.resources,
+                &colony.stockpiles,
+                gate.processed_through,
+            );
             reports.push(TickReport {
                 colony_id: colony.id.clone(),
                 skipped: false,
@@ -2858,6 +2874,11 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_35b_road_accessibility(colony, gate, world_seed);
         if let Some(reset_reason) = phase_36_threat_and_raid_director(colony, gate) {
             reconcile_colony_stockpiles(colony);
+            colony.stock_ledger = StockLedger::counted_with_piles(
+                &colony.resources,
+                &colony.stockpiles,
+                gate.processed_through,
+            );
             reports.push(TickReport {
                 colony_id: colony.id.clone(),
                 skipped: false,
@@ -2868,6 +2889,13 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_36b_trader_lifecycle(colony, gate);
         let reset_reason = phase_37_final_clamp_critical_collapse_status_persist(colony, gate);
         reconcile_colony_stockpiles(colony);
+        if reset_reason.is_some() {
+            colony.stock_ledger = StockLedger::counted_with_piles(
+                &colony.resources,
+                &colony.stockpiles,
+                gate.processed_through,
+            );
+        }
 
         reports.push(TickReport {
             colony_id: colony.id.clone(),
@@ -7691,16 +7719,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         }
     }
 
-    // Refresh the reported stock ledger (P12.4a). A staffed Accounting Tent recounts it to the
-    // exact current stock every tick; otherwise it lags and recounts on an interval. This only
-    // touches `stock_ledger`, never the true `resources`.
-    let staffed = has_staffed_accounting_tent(colony);
-    refresh_ledger(
-        &mut colony.stock_ledger,
-        &colony.resources,
-        staffed,
-        gate.processed_through,
-    );
+    // P12.4a physical accounting. A manual or officer-staffed tent sends its worker on a
+    // durable tent → pile(s) → tent round. Without one, retain the deliberately slow
+    // background recount. Neither path mutates authoritative resources or pile contents.
+    advance_accounting_round(colony, gate, world_seed);
 }
 
 fn spendable_production_materials(colony: &ColonyRuntime) -> (f64, f64) {
@@ -7849,14 +7871,429 @@ fn route_output_to_nearest_pile(
     }
 }
 
-/// Whether a completed Accounting Tent is staffed by a living cat (its bookkeeper keeps the
-/// stock ledger exact each tick).
-fn has_staffed_accounting_tent(colony: &ColonyRuntime) -> bool {
-    colony.buildings.iter().any(|building| {
-        building.building_type == BuildingType::AccountingTent
-            && building.construction_progress >= 100
-            && assigned_worker(colony, &building.id).is_some()
-    })
+fn advance_accounting_round(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
+    colony.stock_ledger.migrate_pile_reports(&colony.stockpiles);
+    let Some((tent, worker_id)) = staffed_accounting_tent(colony) else {
+        cancel_invalid_accounting_round(colony);
+        refresh_ledger(
+            &mut colony.stock_ledger,
+            &colony.resources,
+            &colony.stockpiles,
+            false,
+            gate.processed_through,
+        );
+        return;
+    };
+
+    // A staffed tent never receives the background whole-colony shortcut.
+    refresh_ledger(
+        &mut colony.stock_ledger,
+        &colony.resources,
+        &colony.stockpiles,
+        true,
+        gate.processed_through,
+    );
+
+    let tent_point = station_work_point(&tent);
+    let previous_round = colony.stock_ledger.active_round.take();
+    if let Some(previous) = previous_round
+        .as_ref()
+        .filter(|round| round.worker_id != worker_id || round.tent_id != tent.id)
+    {
+        clear_accountant_motion(colony, &previous.worker_id);
+    }
+    let mut round = previous_round
+        .filter(|round| round.worker_id == worker_id && round.tent_id == tent.id)
+        .unwrap_or_else(|| AccountingRound {
+            worker_id: worker_id.clone(),
+            tent_id: tent.id.clone(),
+            phase: AccountingPhase::TravelingToTent,
+            ..AccountingRound::default()
+        });
+
+    let Some(worker_index) = colony
+        .cats
+        .iter()
+        .position(|cat| cat.id == worker_id && cat.death_time.is_none())
+    else {
+        return;
+    };
+
+    let current_signature = accounting_topology_signature(colony, world_seed);
+    if round.topology_signature != 0
+        && round.topology_signature != current_signature
+        && !matches!(
+            round.phase,
+            AccountingPhase::TravelingToTent | AccountingPhase::ReturningToTent
+        )
+    {
+        round.phase = AccountingPhase::ReturningToTent;
+        round.target_stockpile_id = None;
+        round.pending_stockpile_ids.clear();
+        round.dwell_elapsed_ms = 0;
+    }
+
+    match round.phase {
+        AccountingPhase::TravelingToTent | AccountingPhase::ReturningToTent => {
+            if at_world_point(colony, worker_index, tent_point) {
+                plan_accounting_round(colony, &mut round, tent_point, world_seed);
+                point_accountant_at_current_target(colony, worker_index, &mut round, tent_point);
+            } else {
+                send_accountant_to(colony, worker_index, tent_point, true);
+            }
+        }
+        AccountingPhase::TravelingToPile => {
+            let target = round
+                .target_stockpile_id
+                .as_deref()
+                .and_then(|id| visible_stockpile(colony, id))
+                .map(stockpile_work_point);
+            if let Some(target) = target {
+                if at_world_point(colony, worker_index, target) {
+                    round.phase = AccountingPhase::Counting;
+                    round.dwell_elapsed_ms = 0;
+                    colony.cats[worker_index].destination = None;
+                    colony.cats[worker_index].activity = CatActivity::Working;
+                } else {
+                    send_accountant_to(colony, worker_index, target, false);
+                }
+            } else {
+                advance_accounting_target(colony, worker_index, &mut round, tent_point);
+            }
+        }
+        AccountingPhase::Counting => {
+            let target = round
+                .target_stockpile_id
+                .as_deref()
+                .and_then(|id| visible_stockpile(colony, id))
+                .cloned();
+            if let Some(target) = target {
+                let target_point = stockpile_work_point(&target);
+                if !at_world_point(colony, worker_index, target_point) {
+                    round.phase = AccountingPhase::TravelingToPile;
+                    round.dwell_elapsed_ms = 0;
+                    send_accountant_to(colony, worker_index, target_point, false);
+                } else {
+                    round.dwell_elapsed_ms = round.dwell_elapsed_ms.saturating_add(
+                        (gate.elapsed_sec.saturating_mul(1_000) as f64
+                            * normalize_time_scale(colony)) as i64,
+                    );
+                    if round.dwell_elapsed_ms >= PILE_COUNT_DWELL_MS {
+                        colony
+                            .stock_ledger
+                            .count_pile(&target, gate.processed_through);
+                        advance_accounting_target(colony, worker_index, &mut round, tent_point);
+                    }
+                }
+            } else {
+                advance_accounting_target(colony, worker_index, &mut round, tent_point);
+            }
+        }
+        AccountingPhase::WaitingAtTent => {
+            if !at_world_point(colony, worker_index, tent_point) {
+                round.phase = AccountingPhase::TravelingToTent;
+                send_accountant_to(colony, worker_index, tent_point, true);
+            } else {
+                round.dwell_elapsed_ms = round
+                    .dwell_elapsed_ms
+                    .saturating_add(gate.elapsed_sec.saturating_mul(1_000));
+                if round.topology_signature != current_signature
+                    || round.dwell_elapsed_ms >= UNSTAFFED_RECOUNT_INTERVAL_MS
+                {
+                    plan_accounting_round(colony, &mut round, tent_point, world_seed);
+                    point_accountant_at_current_target(
+                        colony,
+                        worker_index,
+                        &mut round,
+                        tent_point,
+                    );
+                }
+            }
+        }
+    }
+    colony.stock_ledger.active_round = Some(round);
+}
+
+fn cancel_invalid_accounting_round(colony: &mut ColonyRuntime) {
+    let Some(round) = colony.stock_ledger.active_round.take() else {
+        return;
+    };
+    clear_accountant_motion(colony, &round.worker_id);
+}
+
+fn clear_accountant_motion(colony: &mut ColonyRuntime, worker_id: &str) {
+    if let Some(cat) = colony.cats.iter_mut().find(|cat| {
+        cat.id == worker_id
+            && cat.death_time.is_none()
+            && cat.current_task.is_none()
+            && cat.carrying.is_none()
+    }) {
+        cat.destination = None;
+        cat.activity = CatActivity::Idle;
+    }
+}
+
+fn visible_stockpile<'a>(colony: &'a ColonyRuntime, id: &str) -> Option<&'a Stockpile> {
+    colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == id && !pile.is_station_local())
+}
+
+fn stockpile_work_point(pile: &Stockpile) -> WorldPos {
+    let (x, y) = pile.center();
+    WorldPos { x, y }
+}
+
+fn send_accountant_to(
+    colony: &mut ColonyRuntime,
+    worker_index: usize,
+    target: WorldPos,
+    returning: bool,
+) {
+    colony.cats[worker_index].destination = Some(position_from_world(target));
+    colony.cats[worker_index].activity = if returning {
+        CatActivity::Returning
+    } else {
+        CatActivity::Traveling
+    };
+}
+
+fn advance_accounting_target(
+    colony: &mut ColonyRuntime,
+    worker_index: usize,
+    round: &mut AccountingRound,
+    tent_point: WorldPos,
+) {
+    round.target_stockpile_id = round
+        .pending_stockpile_ids
+        .iter()
+        .position(|id| visible_stockpile(colony, id).is_some())
+        .map(|index| round.pending_stockpile_ids.remove(index));
+    round.dwell_elapsed_ms = 0;
+    point_accountant_at_current_target(colony, worker_index, round, tent_point);
+}
+
+fn point_accountant_at_current_target(
+    colony: &mut ColonyRuntime,
+    worker_index: usize,
+    round: &mut AccountingRound,
+    tent_point: WorldPos,
+) {
+    if let Some(target) = round
+        .target_stockpile_id
+        .as_deref()
+        .and_then(|id| visible_stockpile(colony, id))
+        .map(stockpile_work_point)
+    {
+        round.phase = AccountingPhase::TravelingToPile;
+        send_accountant_to(colony, worker_index, target, false);
+    } else if at_world_point(colony, worker_index, tent_point) {
+        round.phase = AccountingPhase::WaitingAtTent;
+        round.dwell_elapsed_ms = 0;
+        colony.cats[worker_index].destination = None;
+        colony.cats[worker_index].activity = CatActivity::Working;
+    } else {
+        round.phase = AccountingPhase::ReturningToTent;
+        send_accountant_to(colony, worker_index, tent_point, true);
+    }
+}
+
+fn plan_accounting_round(
+    colony: &ColonyRuntime,
+    round: &mut AccountingRound,
+    tent_point: WorldPos,
+    world_seed: u32,
+) {
+    let signature = accounting_topology_signature(colony, world_seed);
+    let piles = colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+        .collect::<Vec<_>>();
+    let component = accounting_reachable_component(colony, signature, tent_point, &piles);
+    let mut reachable = Vec::new();
+    let mut unreachable = Vec::new();
+    for pile in piles {
+        let point = stockpile_work_point(pile);
+        let tile = path_tile_for_world(point);
+        if component.contains(&tile) {
+            let dx = point.x - tent_point.x;
+            let dy = point.y - tent_point.y;
+            reachable.push((dx * dx + dy * dy, pile.id.clone()));
+        } else {
+            unreachable.push(pile.id.clone());
+        }
+    }
+    reachable.sort_by(|(left_distance, left_id), (right_distance, right_id)| {
+        left_distance
+            .total_cmp(right_distance)
+            .then_with(|| left_id.cmp(right_id))
+    });
+    unreachable.sort();
+    let mut ordered = reachable.into_iter().map(|(_, id)| id).collect::<Vec<_>>();
+    round.target_stockpile_id = (!ordered.is_empty()).then(|| ordered.remove(0));
+    round.pending_stockpile_ids = ordered;
+    round.unreachable_stockpile_ids = unreachable;
+    round.topology_signature = signature;
+    round.dwell_elapsed_ms = 0;
+}
+
+fn accounting_topology_signature(colony: &ColonyRuntime, world_seed: u32) -> u64 {
+    let mut hash = farm_designation_geometry_signature(colony, world_seed);
+    let mut mix = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    for pile in colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+    {
+        mix(pile.id.as_bytes());
+        mix(&pile.rect.x1.to_le_bytes());
+        mix(&pile.rect.y1.to_le_bytes());
+        mix(&pile.rect.x2.to_le_bytes());
+        mix(&pile.rect.y2.to_le_bytes());
+    }
+    let mut edges = staged_wall_fence_edges(colony)
+        .into_iter()
+        .collect::<Vec<_>>();
+    edges.sort_by_key(|edge| (edge.ax, edge.ay, edge.bx, edge.by));
+    for edge in edges {
+        mix(&edge.ax.to_le_bytes());
+        mix(&edge.ay.to_le_bytes());
+        mix(&edge.bx.to_le_bytes());
+        mix(&edge.by.to_le_bytes());
+    }
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    mix(&[
+        u8::from(effects.unlocked_capabilities.contains("mountain_travel")),
+        u8::from(effects.unlocked_capabilities.contains("water_travel")),
+    ]);
+    for (tile, runtime) in &colony.world_tiles {
+        if tile_has_water(Some(runtime)) || runtime.tile_type == TileType::Mountains {
+            mix(&tile.x.to_le_bytes());
+            mix(&tile.y.to_le_bytes());
+            mix(&[
+                u8::from(tile_has_water(Some(runtime))),
+                u8::from(runtime.tile_type == TileType::Mountains),
+            ]);
+        }
+    }
+    hash
+}
+
+fn accounting_reachable_component(
+    colony: &ColonyRuntime,
+    signature: u64,
+    start: WorldPos,
+    piles: &[&Stockpile],
+) -> HashSet<PathTilePos> {
+    if let Some((_, component)) = colony
+        .decoration_cache
+        .accounting_route_component
+        .borrow()
+        .as_ref()
+        .filter(|(key, _)| *key == signature)
+    {
+        #[cfg(test)]
+        colony
+            .decoration_cache
+            .accounting_route_component_cache_hits
+            .set(
+                colony
+                    .decoration_cache
+                    .accounting_route_component_cache_hits
+                    .get()
+                    + 1,
+            );
+        return component.clone();
+    }
+
+    let area = claimed_area(colony);
+    let path_area = pathfinding_area(&area);
+    let retained_gate = retained_area_gate(colony);
+    let area_gate = retained_gate.map(pathfinding_gate);
+    let ring_radius = village_ring_radius(colony.buildings.len() as i32);
+    let gate = movement_gate(colony.anchor, retained_gate, ring_radius);
+    let staged_edges = staged_wall_fence_edges(colony);
+    let walk_tiles = colony
+        .world_tiles
+        .values()
+        .map(walk_tile_from_runtime)
+        .collect::<Vec<_>>();
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let grid = build_colony_walk_grid(ColonyGridParams {
+        tiles: &walk_tiles,
+        anchor: PathTilePos {
+            x: colony.anchor.x,
+            y: colony.anchor.y,
+        },
+        ring_radius,
+        gate: PathTilePos {
+            x: gate.x,
+            y: gate.y,
+        },
+        area: (!path_area.is_empty()).then_some(&path_area),
+        area_gate,
+        extra_fence_edges: (!staged_edges.is_empty()).then_some(&staged_edges),
+        terrain: None,
+        mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
+        shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
+        soft_obstacles: None,
+        soft_obstacle_field: None,
+        surface_factors: None,
+    });
+    let goals = piles
+        .iter()
+        .map(|pile| pathfinding_pos(stockpile_work_point(pile)))
+        .collect::<Vec<_>>();
+    let component = reachable_component(
+        pathfinding_pos(start),
+        &goals,
+        &grid,
+        FindPathOptions {
+            max_expansions: pathfinding::DEFAULT_MAX_EXPANSIONS,
+            margin: 4,
+        },
+    );
+    #[cfg(test)]
+    colony
+        .decoration_cache
+        .accounting_route_component_traversals
+        .set(
+            colony
+                .decoration_cache
+                .accounting_route_component_traversals
+                .get()
+                + 1,
+        );
+    colony
+        .decoration_cache
+        .accounting_route_component
+        .replace(Some((signature, component.clone())));
+    component
+}
+
+/// Deterministically select the staffed Accounting Tent that owns physical rounds. Manual
+/// staffing works with the office vacant; officer automation merely fills the same field.
+fn staffed_accounting_tent(colony: &ColonyRuntime) -> Option<(BuildingRuntime, String)> {
+    colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.building_type == BuildingType::AccountingTent
+                && building.construction_progress >= 100
+        })
+        .filter_map(|building| {
+            assigned_worker(colony, &building.id).map(|cat| (building.clone(), cat.id.clone()))
+        })
+        .min_by(|(left, _), (right, _)| left.id.cmp(&right.id))
 }
 
 /// Rolling real-time interval between successful Loremaster unlocks.
@@ -11604,6 +12041,7 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     colony.resources = starting_resources_with_blessings(colony.scale, blessings);
     // Drop player piles; the end-of-tick reconcile reseeds the shrine reservoir.
     colony.stockpiles.clear();
+    colony.stock_ledger = StockLedger::default();
     // P16: every gather spot's underlying pile just got dropped above, so drop their
     // bookkeeping records too (no stale entries pointing at piles that no longer exist).
     colony.gather_spots.clear();
@@ -27627,32 +28065,193 @@ mod tests {
                     ..Resources::default()
                 },
                 last_counted,
+                ..StockLedger::default()
             },
+            anchor: TilePos { x: 6, y: 6 },
             last_tick: 0,
             test_rng_seed: Some(1),
             ..ColonyRuntime::default()
         };
+        colony.claimed_tiles = (-2..=13)
+            .flat_map(|x| (-2..=13).map(move |y| TilePos { x, y }))
+            .collect();
         reconcile_colony_stockpiles(&mut colony);
         colony
     }
 
     #[test]
-    fn staffed_accounting_tent_recounts_the_ledger_to_exact_stock_each_tick() {
+    fn staffed_accounting_tent_counts_only_after_physical_travel_and_dwell() {
         let mut colony = accounting_colony(5.0, true, 1_000);
         let truth = colony.resources.clone();
 
         phase_23_production(&mut colony, production_gate(1, 5_000), 123);
+        assert_eq!(colony.stock_ledger.reported.food, 5.0, "no desk teleport");
+        assert!(colony.stock_ledger.active_round.is_some());
+
+        // Test only the state machine here: movement owns the actual interpolation and is
+        // covered independently. Arrive at each destination, then persist five one-second
+        // counting ticks before the report changes.
+        for now in (6_000..=13_000).step_by(1_000) {
+            if let Some(destination) = colony.cats[0].destination.take() {
+                colony.cats[0].position = destination;
+            }
+            phase_23_production(&mut colony, production_gate(1, now), 123);
+            if now < 12_000 {
+                assert_eq!(
+                    colony.stock_ledger.reported.food, 5.0,
+                    "no count before physical dwell completes at {now}"
+                );
+            }
+        }
 
         assert_eq!(
             colony.stock_ledger.reported, truth,
-            "staffed tent recounts to exact stock"
+            "round: {:?}, cat: {:?}",
+            colony.stock_ledger.active_round, colony.cats[0]
         );
-        assert_eq!(colony.stock_ledger.last_counted, 5_000);
         assert!(colony.stock_ledger.is_accurate(&colony.resources));
         assert_eq!(
             colony.resources, truth,
-            "ledger refresh never mutates resources"
+            "physical counting never mutates resources"
         );
+    }
+
+    #[test]
+    fn manual_accountant_with_vacant_office_plans_nearest_then_id_once_per_topology() {
+        let mut colony = accounting_colony(5.0, true, 1_000);
+        assert!(!colony.officers.contains_key(&OfficerRole::Accountant));
+        colony.stockpiles.push(designated_pile(
+            "pile-b",
+            tile_rect(8, 5),
+            &[ResourceKind::Food],
+        ));
+        colony.stockpiles.push(designated_pile(
+            "pile-a",
+            tile_rect(4, 5),
+            &[ResourceKind::Food],
+        ));
+        colony.stock_ledger =
+            StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, 1_000);
+        let tent = colony.buildings[0].clone();
+        let tent_point = station_work_point(&tent);
+        colony.cats[0].position = position_from_world(tent_point);
+        let mut twin = colony.clone();
+
+        phase_23_production(&mut colony, production_gate(1, 2_000), 123);
+        phase_23_production(&mut twin, production_gate(1, 2_000), 123);
+        assert_eq!(colony.stock_ledger, twin.stock_ledger);
+        assert_eq!(colony.cats[0].destination, twin.cats[0].destination);
+        let round = colony.stock_ledger.active_round.as_ref().expect("round");
+        assert_eq!(round.target_stockpile_id.as_deref(), Some("pile-a"));
+        assert_eq!(round.pending_stockpile_ids[0], "pile-b");
+        assert_eq!(
+            colony
+                .decoration_cache
+                .accounting_route_component_traversals
+                .get(),
+            1
+        );
+
+        let mut replanned = AccountingRound::default();
+        plan_accounting_round(&colony, &mut replanned, tent_point, 123);
+        assert_eq!(
+            colony
+                .decoration_cache
+                .accounting_route_component_traversals
+                .get(),
+            1,
+            "the second plan reuses the shared topology component"
+        );
+        assert_eq!(
+            colony
+                .decoration_cache
+                .accounting_route_component_cache_hits
+                .get(),
+            1
+        );
+    }
+
+    #[test]
+    fn blocked_and_removed_accounting_targets_stay_stale_and_do_not_stall_round() {
+        let mut colony = accounting_colony(5.0, true, 1_000);
+        colony.stockpiles.push(designated_pile(
+            "blocked",
+            tile_rect(100, 100),
+            &[ResourceKind::Food],
+        ));
+        colony.stock_ledger =
+            StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, 1_000);
+        let tent_point = station_work_point(&colony.buildings[0]);
+        colony.cats[0].position = position_from_world(tent_point);
+        phase_23_production(&mut colony, production_gate(1, 2_000), 123);
+        assert!(
+            colony
+                .stock_ledger
+                .active_round
+                .as_ref()
+                .is_some_and(|round| round
+                    .unreachable_stockpile_ids
+                    .contains(&"blocked".to_owned()))
+        );
+        assert_eq!(
+            colony.stock_ledger.pile_reports["blocked"].last_counted,
+            1_000
+        );
+
+        colony.stock_ledger.active_round = Some(AccountingRound {
+            worker_id: "book".to_owned(),
+            tent_id: "tent-1".to_owned(),
+            phase: AccountingPhase::TravelingToPile,
+            target_stockpile_id: Some("removed".to_owned()),
+            pending_stockpile_ids: vec![stockpiles::GENERAL_STOREHOUSE_ID.to_owned()],
+            topology_signature: accounting_topology_signature(&colony, 123),
+            ..AccountingRound::default()
+        });
+        phase_23_production(&mut colony, production_gate(1, 3_000), 123);
+        assert_eq!(
+            colony
+                .stock_ledger
+                .active_round
+                .as_ref()
+                .and_then(|round| round.target_stockpile_id.as_deref()),
+            Some(stockpiles::GENERAL_STOREHOUSE_ID)
+        );
+    }
+
+    #[test]
+    fn reassignment_cancels_old_physical_round_without_touching_reports() {
+        let mut colony = accounting_colony(5.0, true, 1_000);
+        phase_23_production(&mut colony, production_gate(1, 2_000), 123);
+        let before = colony.stock_ledger.reported.clone();
+        assert!(colony.cats[0].destination.is_some());
+
+        colony.buildings[0].assigned_cat = None;
+        phase_23_production(&mut colony, production_gate(1, 3_000), 123);
+        assert!(colony.stock_ledger.active_round.is_none());
+        assert!(colony.cats[0].destination.is_none());
+        assert_eq!(colony.stock_ledger.reported, before);
+    }
+
+    #[test]
+    fn extinction_clears_round_and_reseeds_an_exact_founding_report() {
+        let mut world = new_world(42);
+        let mut colony = found_colony(42, "colony-1", 1_000, 9);
+        colony.stock_ledger.active_round = Some(AccountingRound {
+            worker_id: colony.cats[0].id.clone(),
+            tent_id: "old-tent".to_owned(),
+            ..AccountingRound::default()
+        });
+        for cat in &mut colony.cats {
+            cat.death_time = Some(1_500);
+        }
+        world.colonies.push(colony);
+
+        let report = world_tick(&mut world, 2_000);
+        assert_eq!(report[0].reset_reason, Some(RunResetReason::AllCatsDead));
+        let colony = &world.colonies[0];
+        assert!(colony.stock_ledger.active_round.is_none());
+        assert!(colony.stock_ledger.is_accurate(&colony.resources));
+        assert_eq!(colony.stock_ledger.pile_reports.len(), 1);
     }
 
     #[test]

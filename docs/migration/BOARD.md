@@ -35,7 +35,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P9 | Client render + UI (top-down world, HUD, action buttons) | done — P9.1–P9.4 shipped and framebuffer-verified; P9.5 (`bevy_brp_extras` MCP screenshot tooling)/P9.gate were superseded rather than formally closed (manual framebuffer capture per `docs/HANDOFF.md` is the verification method actually used; P13/P18/P19 added far more client UI on top) |
 | P10 | WASM/web + native packaging | done — release bundle builds via `scripts/build-web.sh`; a same-origin combined server/WASM image, compression, health/readiness probes, exact Origin checks, and deployment instructions are verified. Native ships as `cargo build --release -p cat-desktop` + `BEVY_ASSET_ROOT`/`CAT_SERVER_URL`. Transfer-weight optimization remains optional. See `docs/migration/WASM.md` |
 | P11 | Cutover (retire the TS reference tree, big-bang) | done — 2026-07-11: fast-forwarded `main` → the Rust workspace and removed the TypeScript tree (`app/ components/ db/ hooks/ lib/ server/ tests/ types/ worker/` + JS build configs). Preserved on `archive/web-game` (tag `web-final`, `8d3bc5a`). `main` is now the Rust/Bevy game. |
-| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven specialist manual/officer domains, a narrow founding Leader Hunt/FetchWater/Scout safety floor, all 19 maintained skill gain/effect/UI paths, role gates, active shrine faucets, useful tools/costs, finite storage, and complete physical logging/fishing routes are verified through exact 48-hour personal/communal campaigns; other physical chains/recipes remain in progress |
+| P12 | Sim expansion: skills, officers, spatial stockpiles, workshop chains | in progress — seven specialist manual/officer domains, a narrow founding Leader Hunt/FetchWater/Scout safety floor, all 19 maintained skill gain/effect/UI paths, role gates, active shrine faucets, useful tools/costs, finite storage, physical Accountant rounds, and complete physical logging/fishing routes are verified; other physical chains/recipes remain in progress |
 | P13 | Client UI for P12: stockpile designation, officer assignment | in progress — designation/assignment, signed manual orders, exact building/farm/gather/road/governance controls, durable per-cat typed labor preferences, the physical Sawmill's editable add/remove/reorder/repeat/pause queue, the purchasable 500-study ledger, crop/timber HUD state, visible farm stages, and distinct Mill/Sawmill stations shipped; extend the generic queue UI as broader physical recipes land |
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code and accepted before/during/after native framebuffers |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns with optimized-browser and signed-native shrine-return confirmation; broader physical stations remain |
@@ -708,10 +708,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   tool/weapon/armor chains, broader physical local inventories, and reachable exact client
   controls for every chain.
 - Physical-economy follow-ups remain explicit: all non-Sawmill stations need the station-local
-  carry/work/delivery contract; the Accountant must visit and refresh individual
-  piles; climate resource hints must become real fine-biome sources; and registry-only research
-  payloads need runtime consumers. P16's older founding-stockpile numbers also need one canonical
-  decision and exact aggregate/physical-pile tests.
+  carry/work/delivery contract; climate resource hints must become real fine-biome sources; and
+  registry-only research payloads need runtime consumers. The Accountant now physically visits
+  reachable piles and refreshes only the report it actually counted.
 
 ### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)
 - **Multi-village founding and contact**: one larger durable communal global village (30 adults,
