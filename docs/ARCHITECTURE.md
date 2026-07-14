@@ -114,7 +114,7 @@ that's the fastest way to find the ported behavior's original spec and tests.
 
 The core migration is complete, including ore/metal extraction and staffed Research Hut and
 School buildings. Verified post-cutover slices include atomic placement/reservations, exterior
-farm/logging production with Mill/Sawmill, label-free open stations, selected-village routing,
+farm/logging production with physical processors, label-free open stations, selected-village routing,
 the complete purchasable and persistent 500-study runtime/client ledger, and a responsive blocking-pool server tick. The remaining work is
 maintained product behavior rather than migration:
 
@@ -124,11 +124,12 @@ maintained product behavior rather than migration:
   Signed client paths cover basic farm/gather/road designation, staffing,
   military, ritual, shrine, and production orders. Exact coordinate building placement,
   selectable farm/gather variants, election/vote-kick controls, designation removal, durable
-  per-cat typed labor preferences, and the physical Mill/Sawmill editable
+  per-cat typed labor preferences, and the physical Mill/Sawmill/Workshop/Smelter editable
   ordered/repeatable/pausable queues are live. The generic queue model is ready for other recipes
   as their physical chains land. Automatic election timing is visible between election windows.
 - **Physical work and production breadth.** Founding now seeds a finite spatial storehouse and the
-  logs→Sawmill→lumber and grain→Mill→flour+food chains physically route staffed cats, reserved
+  logs→Sawmill→lumber, grain→Mill→flour+food, Materials→Workshop→Refined, and
+  Ore→Smelter→Metal chains physically route staffed cats, reserved
   cargo, station-local input and output, and final stockpile delivery before aggregate credit.
   Their inspectors expose real queues and travel state. A staffed Accountant physically visits
   reachable piles, dwells to count them, and updates only those reports; blocked piles remain

@@ -5,7 +5,7 @@
 > five-bed Dens**. Founding/housing, authoritative interior clearing, exterior water, and the
 > exact dirt/stone road model are verified. Selectable/removable gather controls, finite shoreline
 > fishing, persisted exterior agricultural territory, physical farm labor, and physical
-> Mill/Sawmill routes are live; the remaining workshop routes remain open. See
+> Mill/Sawmill/Workshop/Smelter routes are live; the remaining workshop routes remain open. See
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Detailed founding/economy/spatial design from playtest. Numbers are the spec.

@@ -9,7 +9,6 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Remaining scalar processors bypass physical inventory | Workshop Materials→Refined and Smelter Ore→Metal must use finite source piles, durable station input/output/transit, on-site work, and delivery-before-credit. Removing a station, losing a carrier, filling a destination, or restarting must not teleport, create, or lose cargo. | in progress |
 | Production stations pull every input from general storage | Steward-managed limited piles must appear beside every physical processor and be filled by real source→destination balancing trips. Vacancy, removal, full storage, death, cancellation, and restart must preserve exact physical provenance and transit. | in progress |
 | Building capacity research is internally inconsistent | A capacity study for one building currently leaks to unrelated storage, while snapshots and village-trade checks omit the same modifier. One target-correct capacity calculation must drive simulation, projection, and actions without cross-building leakage. | in progress |
 | Research advertises recipes and resources that do not exist | All 100 generated recipe IDs and 64 generated resource IDs currently enter registries with no consumer, and none names a maintained queue recipe or `ResourceKind`. First bind research to real physical recipes, then add only physically sourced resource/recipe breadth. | queued |
@@ -21,6 +20,25 @@ and any changed Bevy visuals have been verified.
 | Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains; rail and shipping have modifiers but no tracks, trains, vessels, or routes. | queued |
 
 ## Verified fixes
+
+## 2026-07-15 — Physical Workshop and Smelter refining
+
+**Problem:** Workshop Materials→Refined and Smelter Ore→Metal conversion mutated aggregate
+resources without requiring the assigned cat to fetch inputs, work at the open station, or carry
+finished output to finite storage.
+
+**Fix:** Both refiners now use editable repeating queues, durable station-local input/output and
+transit ledgers, physical source and destination routes, delivery-before-credit, per-completed-cycle
+skill and tool wear, and deterministic partial-load handling. Removing a station leaves its local
+goods at the former footprint for a living salvage trip; full storage, a filled destination while
+en route, carrier death, and restart never teleport, create, or lose cargo.
+
+**Player visibility and evidence:** The inspector exposes local and in-flight Materials/Refined and
+Ore/Metal, queue state, progress, blocked reason, and worker travel. Signed player guidance,
+cadence partitioning, legacy queue migration, SQLite restart, removal/death/full-storage recovery,
+protocol/client coverage, 1,286 four-crate tests, strict Clippy, and formatting pass. Accepted
+1920×1080 own-framebuffers show the selected roofless Workshop and Smelter with their real local
+ledgers, outbound cargo, repeating recipes, and workers in transit.
 
 ## 2026-07-14 — Finite item wear, breakage, and material-backed repair
 

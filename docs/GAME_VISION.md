@@ -138,8 +138,9 @@ that every product promise inside them is finished. Remaining product gaps are t
      category of automation, each tied to a role-building + upgrade-tree unlock + escalating cost.
   3. **Spatial stockpiles**: designatable stockpile zones that physically hold items; hauling
      routes goods workshop↔stockpile↔workshop. Accountant rounds refresh only visited reports.
-  4. **More workshops + production chains**: physical Mill/Sawmill are complete; extend their
-     local carry/work/delivery contract to cloth, metal, and the remaining craft graph.
+  4. **More workshops + production chains**: physical Mill, Sawmill, Workshop, and Smelter are
+     complete; extend their local carry/work/delivery contract to cloth and the remaining craft
+     graph.
   5. **Visible farm plots** in the overworld.
 - **Player paths:** designation tools (place stockpiles/farms/workshops), role assignment UI,
   manual-workshop controls, then automation as roles unlock.

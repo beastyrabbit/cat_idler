@@ -4,8 +4,8 @@
 > shrine-return scouting, visible authored/traffic roads, exact footprints/depth, and secure
 > global/personal village foundations are verified. Coordinate placement, selectable/removable
 > designations, election controls plus authoritative between-term timing, and physical
-> Mill/Sawmill inspectors/queues are verified; the baseline Leader's browser and native
-> shrine-return campaigns are both verified. Broader physical
+> Mill/Sawmill/Workshop/Smelter inspectors and queues are verified; the baseline Leader's browser
+> and native shrine-return campaigns are both verified. Broader physical
 > stations and shared-world depth remain open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
@@ -53,11 +53,11 @@ Two-tier inspector, driven by the cursor:
 - **Roads visible — resolved.** Authored stone and traffic-formed dirt are disjoint snapshot
   surfaces with distinct rendering and 175%/105% movement effects; forbidden terrain cannot form
   dirt paths.
-- **Workshops + production chains + routes — partial.** Mill/Sawmill, grain→flour→food,
-  logs→lumber, fibre/hide→cloth/leather, ore→metal, and useful tools are live. Mill and Sawmill
-  have fully physical finite-store→station→store routes, local ledgers, conserved cargo, and
-  editable queues for Grain/Flour/Food and Logs/Lumber respectively; extend that contract to
-  stations other than these two.
+- **Workshops + production chains + routes — partial.** Grain→flour→food, logs→lumber,
+  Materials→Refined, ore→metal, fibre/hide→cloth/leather, and useful tools are live. Mill, Sawmill,
+  Workshop, and Smelter have fully physical finite-store→station→store routes, local ledgers,
+  conserved cargo, and editable queues for their maintained recipes; extend that contract to the
+  remaining stations.
 - **Fog of war + scout-driven discovery (detailed 2026-07-10).** The keystone exploration loop:
   - **World starts tiny** — only ~2 tiles outside the village are revealed at founding; everything
     beyond is fog.
@@ -106,6 +106,6 @@ Two-tier inspector, driven by the cursor:
 ## Existing foundations (verify before extending)
 - Cat movement, chunked-infinite terrain, authoritative multi-colony state, and term elections
   exist in the sim. Shrine-return fog/scouting plus usable global/personal founding, ownership,
-  discovery, barter, visible roads, election controls, exact designation tools, and the physical
-  Mill/Sawmill queues and inspectors are verified. Broader station-local physical routes remain
+  discovery, barter, visible roads, election controls, exact designation tools, and all four
+  physical processors' queues and inspectors are verified. Broader station-local routes remain
   product work; authoritative data structures alone are not completion.

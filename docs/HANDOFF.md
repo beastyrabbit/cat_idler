@@ -28,10 +28,10 @@ Verified foundations include:
 - atomic placement/reservations/scaffold recovery; label-free roofed homes and explicit open
   compositions for all 25 current protocol building variants, including an integrated legal
   Accounting Tent that retains all three founding Dens; exterior crop/logging production with
-  distinct roofless Mill and Sawmill stations, persisted outside-wall agriculture, and an accepted
-  before/during/after staged-wall cutover. Both processing stations now have complete physical
-  finite-store→station-local input→on-site work→station-local output→finite-store routes, durable
-  editable queues, conserved transit, and truthful inspectors. The selected Mill's accepted
+  distinct roofless processing stations, persisted outside-wall agriculture, and an accepted
+  before/during/after staged-wall cutover. Mill, Sawmill, Workshop, and Smelter now have complete
+  physical finite-store→station-local input→on-site work→station-local output→finite-store routes,
+  durable editable queues, conserved transit, and truthful inspectors. The selected Mill's accepted
   1920×1080 client framebuffer shows Grain 4.0 locally, Flour 2.0 locally, Flour 1.5 outbound,
   the repeating recipe, half progress, and its worker hauling output;
 - exact founding fog plus signed resource/general scouting whose provisional knowledge commits
@@ -95,7 +95,8 @@ so a correct scout route cannot conceal a missing founding dispatch.
 ## NEXT STEPS (maintained backlog, in rough priority order)
 
 1. **Finish the physical economy.** The finite founding storehouse and complete physical
-   logs→Sawmill→lumber and grain→Mill→flour+food routes are verified, including station-local
+   logs→Sawmill→lumber, grain→Mill→flour+food, Materials→Workshop→Refined, and
+   Ore→Smelter→Metal routes are verified, including station-local
    ledgers, transit reservation, delivery-before-credit, death conservation, restart persistence,
    real editable queues, and live inspectors.
    Exterior farming now follows the same physical truth through plot work, bounded baskets, local
@@ -103,8 +104,8 @@ so a correct scout route cannot conceal a missing founding dispatch.
    remaining production chains carry and deliver their inputs and outputs, and complete
    recipes/materials. Physical Accountant rounds now keep reports truthful one visited pile at a
    time. All 19 maintained labor skills have truthful gain sources, bounded effects, persistence,
-   and inspector visibility. Signed per-cat preferences and both physical stations' real editable
-   queues are live; extend the generic queue control as additional physical recipes land.
+   and inspector visibility. Signed per-cat preferences and all four physical processors' real
+   editable queues are live; extend the generic queue control as additional physical recipes land.
    Preserve the verified tool productivity, type-local escalating costs, shrine faucets, and
    research pacing in balance campaigns.
 2. **Deepen the shared world.** The durable 30-cat/six-Den/19×19 communal hub is mechanically
