@@ -28,8 +28,12 @@ Verified foundations include:
 - atomic placement/reservations/scaffold recovery; label-free roofed homes and explicit open
   compositions for all 25 current protocol building variants, including an integrated legal
   Accounting Tent that retains all three founding Dens; exterior crop/logging production with
-  distinct Mill and Sawmill stations, persisted outside-wall agriculture, and an accepted
-  before/during/after staged-wall cutover;
+  distinct roofless Mill and Sawmill stations, persisted outside-wall agriculture, and an accepted
+  before/during/after staged-wall cutover. Both processing stations now have complete physical
+  finite-store→station-local input→on-site work→station-local output→finite-store routes, durable
+  editable queues, conserved transit, and truthful inspectors. The selected Mill's accepted
+  1920×1080 client framebuffer shows Grain 4.0 locally, Flour 2.0 locally, Flour 1.5 outbound,
+  the repeating recipe, half progress, and its worker hauling output;
 - exact founding fog plus signed resource/general scouting whose provisional knowledge commits
   only on physical shrine return, including restart-safe in-flight notebooks and responsive
   controls at 1024×768 through 1920×1080. Optimized browser and signed fresh-native campaigns both
@@ -42,10 +46,20 @@ Verified foundations include:
   Loremaster, and Cloth Leader: beyond the founding Leader's hunt/water/scout safety floor, a
   vacant office leaves its category manual. Appointment requires the matching researched and
   completed role station, and signed client controls cover the basic manual work paths. Manual
-  raid clicks deal exactly one hit. Reachable tithes and carried
-  offerings produce blessings; tools improve construction, crafting, quarrying, and hauling;
+  raid clicks deal exactly one hit. Reachable tithes and physical two-stage material offerings
+  (stockpile pickup and shrine delivery, then ritual) produce blessings without early credit;
+  tools improve construction, crafting, quarrying, and hauling;
   repeated buildings have escalating type-local costs, and the Accounting Tent is live in the
   snapshot and client;
+- automatic elections expose an authoritative between-term schedule in snapshots and the
+  governance panel: term start, next election boundary, term length, and a server-derived
+  countdown remain visible even while no election is open;
+- finite item units have stable identities, physical weight, durability, work-driven wear, and
+  persistent broken state. A player can repair a damaged unit at its appropriate completed,
+  staffed workshop by spending one visible matching material; the live durability research
+  multiplier affects the repair result. Traders respect a 20 kg item-load limit, and the Goods
+  panel exposes weight, condition, damaged/broken counts, and repair controls. This closes the
+  condition loop, not the still-open material and recipe breadth;
 - one canonical communal village plus one owner-only personal village per stable signed identity,
   with deterministic distant viable sites, secure selected-village routing, restart-safe
   ownership and selection, explicit returned-scout discovery, summary-only foreign contact,
@@ -81,17 +95,18 @@ so a correct scout route cannot conceal a missing founding dispatch.
 ## NEXT STEPS (maintained backlog, in rough priority order)
 
 1. **Finish the physical economy.** The finite founding storehouse and complete physical
-   logs→Sawmill→lumber route are verified, including station-local ledgers, transit reservation,
-   delivery-before-credit, death conservation, restart persistence, and the live inspector.
+   logs→Sawmill→lumber and grain→Mill→flour+food routes are verified, including station-local
+   ledgers, transit reservation, delivery-before-credit, death conservation, restart persistence,
+   real editable queues, and live inspectors.
    Exterior farming now follows the same physical truth through plot work, bounded baskets, local
    handoff, and storage delivery. Apply that contract to every remaining workshop, make the
    remaining production chains carry and deliver their inputs and outputs, and complete
    recipes/materials. Physical Accountant rounds now keep reports truthful one visited pile at a
    time. All 19 maintained labor skills have truthful gain sources, bounded effects, persistence,
-   and inspector visibility. Signed per-cat preferences and the Sawmill's real editable queue are
-   live; extend the generic queue control as physical recipes land. Preserve the verified tool
-   productivity, type-local escalating costs, shrine faucets, and research pacing in balance
-   campaigns.
+   and inspector visibility. Signed per-cat preferences and both physical stations' real editable
+   queues are live; extend the generic queue control as additional physical recipes land.
+   Preserve the verified tool productivity, type-local escalating costs, shrine faucets, and
+   research pacing in balance campaigns.
 2. **Deepen the shared world.** The durable 30-cat/six-Den/19×19 communal hub is mechanically
    larger than exact 15-cat/three-Den personal villages. Replace per-colony duplicated mutable
    terrain with an authoritative shared spatial model where appropriate, then turn summary contact
@@ -106,8 +121,9 @@ so a correct scout route cannot conceal a missing founding dispatch.
    replenish at 0.5 fish per game-hour up to 24, survive repaint/restart, and pass guided plus
    unattended twins. Preserve those contracts while replacing rail/shipping multipliers with
    built routes/vehicles, making fine biomes own their promised physical resource ecology, and
-   extending physical logistics to the remaining workshops. Turn every currently registry-only
-   research payload (recipes/resources/jobs, worker slots, and durability) into observable behavior.
+   extending physical logistics to the remaining workshops. Item durability now has a real
+   wear/break/repair consumer; turn the remaining registry-only research payloads
+   (recipes/resources/jobs and worker slots) into observable behavior.
 4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

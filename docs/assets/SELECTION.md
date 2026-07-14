@@ -74,7 +74,7 @@ Trees are 2 tiles tall, bottom-anchored on their lower tile.
 **Buildings and stations — `public/images/game/{buildings,interior,props,farm}/`:** residential
 rooms use the Tiny Town `den.png` roof silhouette. Non-residential buildings are composed at
 runtime as exposed wood, stone, or soil floors with typed top-down props; persistent map-name
-plaques are not part of the art direction. The 24 current protocol building variants have an
+plaques are not part of the art direction. All 25 current protocol building variants have an
 explicit treatment, including distinct open Mill and Sawmill layouts. The facade PNGs remain
 review/fallback choices in `docs/sprite-review.html` rather than the workshop renderer.
 
@@ -91,8 +91,8 @@ for fox/badger/bear/rival-beast; rival-cat raiders keep the wired `raider-sheet.
 **Icons / UI — `public/images/game/icons/`:** per `items_ui.md`. The resource icons are
 tracked PNGs used by the Bevy HUD. Semantic Adventure panel, button, progress, minimap, and
 32px cursor PNGs are tracked under `public/images/game/ui/` and integrated through Bevy sliced
-images and custom cursors. Native and optimized-WASM framebuffers are verified; the remaining
-integrated native building/wall campaign is tracked in `docs/IMPLEMENTATION_AUDIT.md`.
+images and custom cursors. Native and optimized-WASM framebuffers are verified, including the
+staged wall/agricultural campaign, the integrated Accounting Tent, and the physical Mill.
 
 ## Source mapping
 

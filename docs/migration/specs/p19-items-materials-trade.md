@@ -1,8 +1,10 @@
 # P19 — DF-scale item economy (cat-themed): materials, material-variant crafting, traders
 
 > **Living target spec.** The item/material model, a small recipe subset, visiting traders, and
-> basic buy/sell actions exist. Full source/crafting breadth, local physical inventories,
-> quality/UI coverage, and built transport remain open. Finite fresh-Fish habitats and the
+> basic buy/sell actions exist. Stable item-unit identity, weight, finite durability, work wear,
+> material-backed repair, a 20 kg trader load limit, persistence, and Goods-panel condition
+> controls are verified. Full source/crafting breadth, local physical inventories, and built
+> transport remain open. Finite fresh-Fish habitats and the
 > physical shore→store route are verified. Configurable, consensual inter-village
 > resource barter is verified with a 32-open-offer cap and atomic inventory/storage rechecks;
 > deeper item-stack/route/relationship trade remains open in
@@ -11,6 +13,20 @@
 User (2026-07-10): give the game a DF-like breadth of resources/items, but **cat-themed**
 ("humanoid cats", "warrior cats") — similar amount. Like DF, **craft an item from multiple
 materials** (a wooden mug OR a stone mug). And add **traders that come by and let you trade**.
+
+## Implemented finite-item condition contract
+
+Each unit has a stable ID, material, kind, quality, value, physical weight, and current/maximum
+durability. Relevant work wears finite units; reaching zero leaves a broken unit rather than
+deleting it. A signed player repair targets that stable ID and succeeds only at the appropriate
+completed, staffed workshop with a living worker and one visible unit of matching material. The
+durability research effect scales restored condition. These values and actions survive SQLite
+restart, and the Goods panel makes condition and repair visible.
+
+One signed caravan sale may transfer at most 20,000 grams of items. That bounded-load seam and the
+finite-item loop are implemented foundations; they do not make the catalog complete. Bone, gem,
+clay, broader metal variants, finished functional equipment chains, and physical station-local
+logistics for the remaining workshops are still product work.
 
 ## Resource / item taxonomy (DF breadth, cat-flavoured)
 Three tiers (extends P16's logs/planks/stone/blocks and P12.4b chains):
@@ -25,7 +41,8 @@ Three tiers (extends P16's logs/planks/stone/blocks and P12.4b chains):
 ## Material-variant crafting (the "wooden mug OR stone mug")
 A recipe is **item-type × material** → a variant: `mug` craftable from wood / stone / metal / bone,
 each variant differing in **value, quality, weight, durability** (metal weapon > wood; stone mug >
-wood mug in value, etc.). Model: `Item { kind: ItemKind, material: Material, quality }`; a workshop
+wood mug in value, etc.). The live model adds a stable unit ID and current/maximum durability to
+the kind/material/quality identity; a workshop
 recipe = (ItemKind, allowed materials) consuming N of that material. This keeps the item list
 compact (kinds × materials) while giving DF-like variety. Value = f(kind, material, quality).
 

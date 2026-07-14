@@ -4,17 +4,17 @@
 > playtest direction: every ordinary personal village starts with **15 adult cats in three
 > five-bed Dens**. Founding/housing, authoritative interior clearing, exterior water, and the
 > exact dirt/stone road model are verified. Selectable/removable gather controls, finite shoreline
-> fishing, and persisted exterior agricultural territory are live; physical farm labor and the
-> remaining workshop routes remain open. See
+> fishing, persisted exterior agricultural territory, physical farm labor, and physical
+> Mill/Sawmill routes are live; the remaining workshop routes remain open. See
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 Detailed founding/economy/spatial design from playtest. Numbers are the spec.
 
 ## Tile recalibration (foundation — everything sizes off this)
-- The current 1×1 tile renders **too big** → make the render tile ~**1/3** its current size
-  (TILE px ≈ 28 → ~9–10). Interpretation: this is a **render-scale + footprint recalibration on
-  the existing integer grid**, NOT a grid subdivision — cats already pathfind per-tile; the world
-  just has more, smaller tiles (fine, terrain is infinite). Confirm if that's wrong.
+- **Implemented authority:** one integer simulation/pathfinding cell corresponds to one 16×16
+  source-art tile. The Bevy client scales that cell to `TILE = 10` world units and camera zoom
+  determines screen size; there is no 3× logical-grid subdivision. This is the settled
+  render-scale + footprint recalibration, not an open interpretation.
 - **Footprints** (in the new small tile units): early **house 2×3**; **workshop 3×3**; **shrine
   3×3** but reserves a **5×5** (a 1-tile road ring around it); **road tile 1×1**; **tree 2×3**;
   small props **1×1**. (Recalibrates P14.1: house 2×2→2×3, workshop 2×3→3×3, add tree 2×3.)
@@ -108,6 +108,7 @@ New resource types + chains:
    (stone 100% / grass 75%); render dark-grey stone vs worn dirt. (Extends roads.rs + pathfinding
    cost model + snapshot road tiles + client render.)
 
-## Open decision
-- **Tile granularity**: render-shrink + footprint recalibration on the existing grid (assumed), vs
-  a real 3× grid subdivision (bigger). Assuming the former unless told otherwise.
+## Implemented decision
+- **Tile granularity is closed:** retain the existing one-cell logical grid, use one 16×16
+  source-art tile per cell, and achieve the smaller on-screen scale through the client's 10-unit
+  world spacing and camera. Footprints and pathfinding use the same integer cells.

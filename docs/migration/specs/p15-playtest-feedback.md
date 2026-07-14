@@ -3,8 +3,9 @@
 > **Living feedback spec.** Movement smoothing, the booster, infinite-map streaming, and
 > shrine-return scouting, visible authored/traffic roads, exact footprints/depth, and secure
 > global/personal village foundations are verified. Coordinate placement, selectable/removable
-> designations, election controls, and the first physical Sawmill inspector/queue are verified;
-> the baseline Leader's browser/native shrine-return close-out is also verified. Broader physical
+> designations, election controls plus authoritative between-term timing, and physical
+> Mill/Sawmill inspectors/queues are verified; the baseline Leader's browser and native
+> shrine-return campaigns are both verified. Broader physical
 > stations and shared-world depth remain open in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
@@ -53,9 +54,10 @@ Two-tier inspector, driven by the cursor:
   surfaces with distinct rendering and 175%/105% movement effects; forbidden terrain cannot form
   dirt paths.
 - **Workshops + production chains + routes — partial.** Mill/Sawmill, grain→flour→food,
-  logs→lumber, fibre/hide→cloth/leather, ore→metal, and useful tools are live. The Sawmill now
-  has a fully physical finite-store→station→store route, local ledgers, conserved cargo, and an
-  editable queue; extend that contract to the remaining stations.
+  logs→lumber, fibre/hide→cloth/leather, ore→metal, and useful tools are live. Mill and Sawmill
+  have fully physical finite-store→station→store routes, local ledgers, conserved cargo, and
+  editable queues for Grain/Flour/Food and Logs/Lumber respectively; extend that contract to
+  stations other than these two.
 - **Fog of war + scout-driven discovery (detailed 2026-07-10).** The keystone exploration loop:
   - **World starts tiny** — only ~2 tiles outside the village are revealed at founding; everything
     beyond is fog.
@@ -68,8 +70,9 @@ Two-tier inspector, driven by the cursor:
     proportionally thereafter; it does not automate farms,
     production, research, rituals, or defense.
     The allocation/vacancy-cleanup fix passes three personal seeds and the 30-cat communal village
-    through exact 48-hour one-second campaigns with fog growth and no specialist leakage; complete
-    the fresh native founding confirmation; the optimized browser path is verified.
+    through exact 48-hour one-second campaigns with fog growth and no specialist leakage.
+    Optimized browser and signed fresh-native campaigns both verify physical shrine return and
+    permanent fog growth.
   - **Random-walk search — verified.** A scout follows deterministic knowledge-blind wander legs,
     changes direction with bounded route retries, recognizes a resource only after physical
     observation, and returns after success, survey/deadline exhaustion, or giving up. No hidden
@@ -80,12 +83,14 @@ Two-tier inspector, driven by the cursor:
   - Reuses: `reveal_and_wear_walked_tiles`, explorer reveal radius, the leader director scout goal,
     and the shrine-arrival pattern. Tiny initial reveal and two-tier provisional/committed knowledge
     are verified. The founding Leader now keeps autonomous Scout labor while Loremaster is vacant,
-    without enabling research/ritual work; only the native/browser visual close-out remains.
+    without enabling research/ritual work; the matching native and browser visual gates are closed.
 - **Cat booster.** Look at a cat → give it a boost that makes it more likely to be picked for
   jobs/roles. New per-cat "priority/boost" (sim) + inspector button (client). Pairs with the
   matchCatsToSlots fit scoring.
-- **Elections auto-run.** Term elections exist (`elections.rs`); verify `runElectionLifecycle`
-  fires each tick and resolves terms without player action; surface the schedule in the HUD.
+- **Elections auto-run — verified.** The lifecycle runs inside the authoritative tick and resolves
+  terms without player action. Between elections the snapshot carries the resolved term start,
+  next boundary, scaled term length, and server-derived remaining time; the governance panel shows
+  the countdown while open-election controls retain precedence.
 - **Unlimited map / multiple settlements.** Terrain is infinite and authoritative multi-colony
   play is live. Each stable signed identity can found one deterministic distant personal village,
   retain ownership and selection across restart, discover another village only through explicit
@@ -102,5 +107,5 @@ Two-tier inspector, driven by the cursor:
 - Cat movement, chunked-infinite terrain, authoritative multi-colony state, and term elections
   exist in the sim. Shrine-return fog/scouting plus usable global/personal founding, ownership,
   discovery, barter, visible roads, election controls, exact designation tools, and the physical
-  Sawmill queue/inspector are verified. Broader station-local physical routes and inspection remain
+  Mill/Sawmill queues and inspectors are verified. Broader station-local physical routes remain
   product work; authoritative data structures alone are not completion.

@@ -9,13 +9,12 @@ side-view platformer, and smooth-vector families were excluded up front.
 
 ---
 
-## TL;DR recommendation
+## Maintained runtime selection
 
-**Primary terrain family → `RTS Medieval (Pixel)`.** It is the one pack that satisfies the selection rule
-("one cohesive family covering grass / forest / water / dirt / stone at a consistent tile size") — 207
-individual 16×16 PNGs with grass, sand, dirt, stone, two water types, dirt-path autotiles, grass-bordered
-ponds, plus trees, rocks, bushes, stumps, and mushrooms. Clean chunky pixel style, subtle outlines,
-Stardew/DF-Steam-adjacent. Ships pre-sliced (no spritesheet slicing needed).
+**Current terrain family → `Roguelike Base Pack`.** The tracked runtime slices under
+`public/images/game/terrain/` and `public/images/game/nature/` come from its 16px sheet. This is
+the family-level decision recorded in `SELECTION.md`; the RTS Medieval and Tiny-family sections
+below are retained research notes, not alternative runtime claims.
 
 **Strong stylistic alternative → `Tiny Town` + `Tiny Battle`** (same "Tiny" family, both 16×16 individual
 PNGs). Boldest, cutest, highest-contrast chunky look. Caveat: **Tiny Town alone has no water and no stone
@@ -23,17 +22,18 @@ ground** (grass + dirt only), so it is *not* a complete single-family primary �
 Battle for water/roads, and even then the family lacks a stone-ground tile and sand. Pick this pair only if
 the cute chunky look outweighs terrain completeness.
 
-**Runner-up (single-sheet) → `Roguelike Base Pack`** — comparably complete, but it's one spritesheet that
-must be sliced, and its water reads teal. Kept below as a fallback.
+The Farm Expansion contributes tracked soil and crop stages. Infrastructure uses tracked
+Roguelike Base road, wall, gate, and bridge slices; authored stone roads and traffic-formed dirt
+paths are both live.
 
 ### Families evaluated
 
 | Family | Tile | Format | Grass | Forest/trees | Water | Dirt/path | Stone | Verdict |
 |---|---|---|---|---|---|---|---|---|
-| **RTS Medieval (Pixel)** | 16×16 | 207 individual PNGs | yes | yes (pine+round, clusters) | yes shallow + pond | yes 2 path autotiles | yes ground + cobble | **PRIMARY — most complete single family** |
+| **RTS Medieval (Pixel)** | 16×16 | 207 individual PNGs | yes | yes (pine+round, clusters) | yes shallow + pond | yes 2 path autotiles | yes ground + cobble | Historical candidate; not the runtime family |
 | Tiny Town | 16×16 | 132 individual PNGs | yes | yes (great trees/bushes/mushrooms) | no | dirt clearing only | no (walls only) | Cutest, but terrain-incomplete alone |
 | Tiny Battle | 16×16 | 198 individual PNGs | yes | few | yes lakes + waterfall | roads | no | Completes Tiny Town's water/roads |
-| Roguelike Base Pack | 16×16 | 1 spritesheet | yes | yes | yes (teal) | yes | yes | Complete but needs slicing |
+| Roguelike Base Pack | 16×16 | 1 spritesheet | yes | yes | yes (teal) | yes | yes | **CURRENT RUNTIME FAMILY** |
 | RTS Medieval (vector) | vector | PNG/SVG | yes | yes | yes | yes | yes | Smooth vector — wrong pixel aesthetic |
 | Map Pack | 64×64 | vector PNGs | yes | ~ | yes | ~ | yes | Smooth blobby vector, too large/different |
 | Pixel Platformer Farm Exp. | **18×18** | 112 PNGs | — | — | — | tilled | — | Side-view, size mismatch — crops only (see below) |
@@ -45,12 +45,12 @@ must be sliced, and its water reads teal. Kept below as a fallback.
 
 ---
 
-## PRIMARY — RTS Medieval (Pixel)
+## Historical candidate — RTS Medieval (Pixel)
 
 - **Tile size:** 16 × 16 px, 1 px margin. **Grid 23 cols × 9 rows** → `index = row*23 + col`.
 - **Individual tiles:** `public/Kenney Game Assets All-in-1 3.5.0/2D assets/RTS Medieval (Pixel)/Tiles/tile_NNNN.png`
 - **Combined sheet (fallback):** `.../RTS Medieval (Pixel)/Tilemap/tilemap.png` (390×152, spaced) or `tilemap_packed.png` (368×144).
-- **Verdict:** the most game-ready single family in the library for a forest village. Muted teal-green grass,
+- **Historical verdict:** a strong single-family candidate, but not the selected runtime family. Muted teal-green grass,
   proper clustered forest tiles, boulders, grass-bordered ponds, and two dirt-path autotile sets (one paved
   on grass, one on bare ground) — everything the terrain + hauling-path layers need, in one palette.
 
@@ -128,9 +128,9 @@ Use **Tiny Town** for grass/dirt/trees/props/buildings and **Tiny Battle** for w
 
 ---
 
-## RUNNER-UP — Roguelike Base Pack (single spritesheet)
+## Current runtime family — Roguelike Base Pack (single spritesheet)
 
-Complete top-down terrain but ships as one sheet that must be sliced; water reads teal.
+Complete top-down terrain shipped as one sheet and copied into semantic tracked slices.
 - **Tile size:** 16 × 16, 1 px spacing. **57 cols × 31 rows**, pitch 17. `crop 16×16 at x=col*17, y=row*17`.
 - **Sheet:** `public/Kenney Game Assets All-in-1 3.5.0/2D assets/Roguelike Base Pack/Spritesheet/roguelikeSheet_transparent.png`
 
@@ -147,7 +147,7 @@ Trees (2-tile-tall, crop 16×32) at `cols 13–18, rows 9–10`; round bushes/ca
 - **Farmland / crops** — `Pixel Platformer Farm Expansion` has tilled-soil tiles and growing crops
   (carrots, corn, tomatoes, pumpkins, sprouts). **But it is 18×18 and side-view**, so it does not tile
   with any 16×16 primary. Use it only as a source of individual **crop icons** (rescaled), not terrain.
-  Prefer the primary's own farmland: RTS Medieval Pixel dirt ground `tile_0023`, or Roguelike Base `(10,13)`.
+  The runtime uses the tracked Farm Expansion soil/crop slices alongside Roguelike Base terrain.
   Path: `.../Pixel Platformer Farm Expansion/Tiles/`.
 - **Foliage Pack / Foliage Sprites** — side-view / white-silhouette vector foliage; not top-down colored
   tiles. Skip for terrain; only useful if you need decorative overlays and will recolor them.
@@ -161,13 +161,13 @@ props) rather than depend on the ignored source tree.
 ```bash
 BASE="public/Kenney Game Assets All-in-1 3.5.0/2D assets"
 
-# PRIMARY (individual PNGs — just copy, no slicing):
+# Historical RTS candidate (individual PNGs; not the current runtime source):
 cp "$BASE/RTS Medieval (Pixel)/Tiles/tile_0000.png" public/images/game/terrain/grass.png
 cp "$BASE/RTS Medieval (Pixel)/Tiles/tile_0046.png" public/images/game/terrain/water-shallow.png
 cp "$BASE/RTS Medieval (Pixel)/Tiles/tile_0073.png" public/images/game/nature/tree-leafy.png
 # index -> filename: printf 'tile_%04d.png' $((row*23 + col))
 
-# RUNNER-UP (Roguelike Base Pack is a sheet — slice by col,row):
+# Current runtime family (Roguelike Base Pack is a sheet — slice by col,row):
 SHEET="$BASE/Roguelike Base Pack/Spritesheet/roguelikeSheet_transparent.png"
 magick "$SHEET" -crop 16x16+$((5*17))+$((0*17)) +repage public/images/game/terrain/grass.png
 ```

@@ -10,17 +10,18 @@ Chosen files get **copied** into tracked folders:
 - UI     → `public/images/game/ui/`
 - Cursors → `public/images/game/ui/cursor/`
 
-Current placeholders in `public/images/resources/` are flat colored squares with a letter
-(`food.png` = pink "F", `water.png` = blue "W", etc.) — these should be replaced.
+The Bevy client uses the tracked semantic sprites under these directories; the old lettered
+resource images are not the maintained HUD source. The exact resource-to-image mapping lives in
+`resource_icon_path` in `crates/cat-client/src/lib.rs`.
 
 ---
 
-## TL;DR recommendation
+## Maintained runtime selection
 
 - **ONE icon set:** **Board Game Icons** (`Icons/Board Game Icons`). Clean monochrome-white
   glyphs, 64px + 128px, and it literally ships named `resource_*` and `structure_*` glyphs.
-  Recolor per-resource via the bundled vector SVGs, or tint the white PNGs with a CSS
-  `mask`/`filter`. This is the cohesive DF-Steam-readable core.
+  The selected glyphs were copied into semantic tracked PNGs and are tinted by Bevy where needed.
+  This is the cohesive DF-Steam-readable core.
 - **ONE colored accent set:** **Fish Pack** (`2D assets/Fish Pack`) for the cat-food fish and
   seaweed = catnip/herbs — flat vector, same visual language, and adorable for a cat game.
 - **ONE UI kit:** **UI Pack - Adventure** (`UI assets/UI Pack - Adventure`). Warm wood-frame +
@@ -37,7 +38,12 @@ no semantic names, so mapping is manual.
 
 ---
 
-## Resource / goods icons — Board Game Icons
+## Resource / goods icons — live semantic copies
+
+The tracked icon set currently contains `armor`, `blessings`, `blocks`, `food`, `goods`, `herbs`,
+`materials`, `planks`, `refined`, `tools`, `water`, and `weapons`. The Goods panel also exposes
+each finite item's physical weight, condition range, damaged/broken counts, and a repair action
+when a valid staffed workshop and matching visible material are available.
 
 Source dir: `public/Kenney Game Assets All-in-1 3.5.0/Icons/Board Game Icons/PNG/`
 Two sizes: `Default (64px)/` and `Double (128px)/`. Ship **128px** (crisp, downscales clean).
@@ -96,8 +102,8 @@ for the newspaper or a famine event.
 ## UI kit — UI Pack - Adventure
 
 Source dir: `public/Kenney Game Assets All-in-1 3.5.0/UI assets/UI Pack - Adventure/PNG/Double/`
-Wood-frame + cream-parchment aesthetic. All 9-patch panels are corner-safe for CSS
-`border-image`. Ship the `Double` set.
+Wood-frame + cream-parchment aesthetic. The selected panels are integrated through Bevy sliced
+images. Semantic tracked copies, not the ignored source pack, are the runtime assets.
 
 | UI need | Source file | Verdict |
 |---|---|---|
@@ -108,7 +114,7 @@ Wood-frame + cream-parchment aesthetic. All 9-patch panels are corner-safe for C
 | **Button (default)** | `button_brown.png` | Wood button, idle state. |
 | **Button (primary/CTA)** | `button_red.png` | Red for confirm/boost/attack actions. |
 | **Button (secondary)** | `button_grey.png` | Neutral/disabled-ish. |
-| **Button hover** | reuse `button_grey`↔`button_brown` swap, or CSS brightness | Pack has no explicit hover frame; do a tint/brightness shift on hover. |
+| **Button hover** | reuse `button_grey`↔`button_brown` swap, or Bevy tint | Pack has no explicit hover frame; use the tracked interactive-state sprites/tints. |
 | **Close button** | `button_brown_close.png` / `button_red_close.png` | Pre-baked ✕ button for modals. |
 | **Progress / resource bar** | `progress_green_border.png`, `progress_red_border.png`, `progress_blue_border.png`, `progress_white_border.png` | Colored pill bars — green=food/health, blue=water, red=threat, white=neutral. `_small` variants for compact rows. Bordered versions read best. |
 | **Progress track (empty)** | `progress_transparent.png` | Empty groove behind a fill. |
@@ -160,14 +166,6 @@ The Bevy client uses `panel.png`, `panel-dark.png`, and `panel-ornate.png` as sl
 bars; plus `banner.png`, `icon-frame.png`, and `minimap-ring.png`. The cursor directory tracks
 `pointer.png`, `interact.png`, `pressed.png`, `target.png`, and `disabled.png`.
 
-Suggested destination renames (semantic, drop Kenney prefixes):
-`resource_apple.png → food.png`, `resource_wheat.png → grain.png`,
-`resource_wood.png → wood.png`, `resource_iron.png → stone.png`,
-`resource_planks.png → refined.png`, `book_open.png → research.png`,
-`sword.png → weapon.png`, `shield.png → armor.png`, `flask_full.png → water.png`,
-`fire.png → blessing.png`, `pouch.png → sack.png`, `fish_blue.png → fish.png`.
-
-Recoloring: the Board Game Icons are pure white — either (a) recolor the SVGs in
-`Icons/Board Game Icons/Vector/Icons/` and re-export per resource, or (b) keep white PNGs and
-apply a per-resource CSS `filter`/`mask` tint at render time (less disk, one source of truth).
-Option (b) is recommended.
+Implemented semantic copies are listed above and committed under `public/images/game/icons/`.
+The source-name table remains useful provenance for future additions, but new runtime mappings
+must be added explicitly to the Bevy asset table and verified in the client's own framebuffer.

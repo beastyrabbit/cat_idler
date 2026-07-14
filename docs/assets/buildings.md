@@ -43,7 +43,7 @@ individual top-down props sit on it with their own y-sorted depth. This keeps ca
 working, makes Field a real crop plot, and leaves the Shrine open on every side for scout returns.
 Only Den, Beds, Nursery, and Elder Corner retain the roofed `den.png` silhouette.
 
-The runtime compositions are exhaustive for the 24 current protocol variants in
+The runtime compositions are exhaustive for all 25 current protocol variants in
 `crates/cat-client/src/station_layout.rs`. In addition
 to the existing `interior/`, `props/`, and `farm/` sprites, the review bench promoted these
 individual pieces into `public/images/game/interior/`: colored beds, bookcase, brazier,
@@ -51,8 +51,9 @@ candelabra, display table, forge fire, map table, metal basin, gold reliquary, s
 stove, sword block, and weapon stand. They remain separate images; no station is flattened into a
 new building texture. Mill and Sawmill are live, distinct open layouts: grain/flour containers on
 a stone milling floor versus a saw bed, raw logs, and finished-goods crate on a wood floor.
-Accounting Tent is represented only on the review bench until it becomes snapshot-reachable, so
-it is not evidence that every maintained building is playable.
+The Accounting Tent is also snapshot-reachable and renders as an open desk-and-ledger station.
+Its assigned Accountant physically walks deterministic rounds to reachable stockpiles, and the
+integrated station and active route have been accepted in the client's own framebuffer.
 
 ### Retained workshop facades — review/fallback alternatives
 
@@ -142,8 +143,7 @@ forest animals — these are the closest cohesive fantasy-creature stand-ins, no
 
 - `public/images/game/terrain/`, `nature/` — ground + trees, owned by the ground/terrain agent.
 - `public/images/game/infra/` (10 files) — soil/palisade/gate/bridge/road sprites from the Base
-  sheet. The client currently renders authored/paved road tiles; traffic-formed dirt-path
-  exposure remains tracked in `docs/IMPLEMENTATION_AUDIT.md`.
+  sheet. The client renders both authored stone roads and live traffic-formed dirt paths.
 
 ## Files written / current in each dir
 

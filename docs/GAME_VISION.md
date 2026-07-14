@@ -11,10 +11,12 @@
    work* — turning the game idle. The current single **Leader** (the utility-AI director)
    is role #1; the evolution is **more specialized roles**:
    - **Steward** — hauling + stockpile management (what goes where).
+   - **Accountant** — physical stockpile rounds and reported inventory freshness.
    - **Forester** — wood: felling, replanting, lumber.
    - **Farmer** — fields, foraging, food.
    - **Captain** — warriors, defense, raids.
    - **Loremaster/Ritualist** — research + shrine/rituals.
+   - **Cloth Leader** — fibre, hide, cloth, leather, and clothing stations.
    The always-present founding Leader retains a narrow, deficit-scaled safety floor: at the
    15-cat founding population, at most six primitive hunters, two emergency water fetchers, and
    one scout; those ceilings scale proportionally as the population changes. Specialist
@@ -73,7 +75,7 @@ Each production/management category starts **manual** (a god/player triggers it)
 unlock a **role-officer** that automates it. Roles live in **role-buildings**, which are
 **unlocked by the upgrade tree** and cost **escalating resources** to build:
 - **Accountant** (build an *Accounting Tent*) — a cat walks the **stockpiles "counting stuff"**;
-  gives you **more accurate stock values and a faster update rate** (à la DF bookkeeper).
+  only physically visited piles receive a fresh exact report (à la DF bookkeeper).
 - **Cloth Leader** (build a *Clothier's Workshop*) — cats can first be told **manually** to
   produce **cloth / armour / clothing**; once the Cloth Leader is unlocked, it runs automatically.
 - **Steward** (hauling + stockpiles), **Forester** (wood), **Farmer** (fields/foraging),
@@ -92,8 +94,8 @@ specialized per role); unfilled roles stay manual.
 
 ### Visible stockpiles
 Stockpiles are **real places in the world** — piles of wood/food/stone/cloth that grow and
-shrink and that the player designates. The **Accountant** improves how accurately + how often
-their contents are reported.
+shrink and that the player designates. The **Accountant** physically visits and counts them;
+unvisited or unreachable piles remain visibly stale.
 
 ### Buildings & upgrade tree
 - **Role-buildings** and **workshops** are gated behind the **upgrade tree** and cost
@@ -126,17 +128,18 @@ their contents are reported.
   deliberate current-design replacement for the archived web prototype's 48/57.6-hour values.
 
 ## Post-cutover completion order
-The Rust/Bevy cutover and the original P9–P19 migration phases are complete. Remaining
-product gaps are tracked in `docs/IMPLEMENTATION_AUDIT.md`; the intended dependency order is:
+The Rust/Bevy cutover is complete. P9–P19 are historical delivery groupings, not blanket claims
+that every product promise inside them is finished. Remaining product gaps are tracked in
+`docs/IMPLEMENTATION_AUDIT.md`; the intended dependency order is:
 
-- **Simulation foundations:**
+- **Verified foundations and continuing depth:**
   1. **Skills**: general per-labor skill/xp curve; skill affects speed/yield.
   2. **Role/officer system**: split the leader director into assignable roles, each gating a
      category of automation, each tied to a role-building + upgrade-tree unlock + escalating cost.
   3. **Spatial stockpiles**: designatable stockpile zones that physically hold items; hauling
-     routes goods workshop↔stockpile↔workshop. Accountant improves accuracy/update-rate.
-  4. **More workshops + production chains**: mill, clothier, sawmill, accounting tent, catnip/
-     grain farms; the craft/haul graph between them.
+     routes goods workshop↔stockpile↔workshop. Accountant rounds refresh only visited reports.
+  4. **More workshops + production chains**: physical Mill/Sawmill are complete; extend their
+     local carry/work/delivery contract to cloth, metal, and the remaining craft graph.
   5. **Visible farm plots** in the overworld.
 - **Player paths:** designation tools (place stockpiles/farms/workshops), role assignment UI,
   manual-workshop controls, then automation as roles unlock.

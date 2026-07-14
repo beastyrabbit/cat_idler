@@ -44,8 +44,8 @@ effect. There is no client-side prediction.
 `crates/cat-sim` is a `#![forbid(unsafe_code)]`, dependency-light crate (only `cat-protocol`,
 `serde`, `serde_json`, and `ryu-js` for archived-behavior float formatting) with **no I/O**: no
 filesystem, no networking, no clock, no threads, no `rand`. Every module is unit-tested in
-place; `cargo test -p cat-sim` runs ~650 tests in well under 20 seconds because none of it
-touches the outside world.
+place; use `cargo nextest list -p cat-sim` for the current inventory rather than copying a test
+total into documentation.
 
 ### Determinism
 
@@ -84,12 +84,13 @@ store.
 ### The tick
 
 `world_tick(&mut WorldState, now_ms) -> Vec<TickReport>` is the single entry point, called once
-per colony per second by `cat-server`. It runs roughly **40 ordered phases** (`fn phase_*` in
-`crates/cat-sim/src/world_tick.rs`) — life sim → consumption/spoilage → elections/zones → path
+per colony per second by `cat-server`. It runs many explicitly ordered phase functions
+(`fn phase_*` in `crates/cat-sim/src/world_tick.rs`) — life sim → consumption/spoilage → elections/zones → path
 decay/regrowth → job promotion → leader plan/direct/assign → production/research → survival →
 due-job completion → hauling → movement → roads → raids → status/persist-prep — mirroring the
-original `server/game.ts:workerTick`'s phase ordering exactly (per `AGENTS.md` rule #1:
-"parity, not reinvention"). **Do not add a second tick path** — every simulated effect goes
+ported `server/game.ts:workerTick` ordering where behavior came from it, with post-cutover phases
+inserted explicitly for new systems such as habitats, migration, staged walls, stations, and
+traders. **Do not add a second tick path** — every simulated effect goes
 through this one function, same discipline the TS game enforced for `workerTick`.
 
 ### Module map (by concern)
@@ -123,14 +124,23 @@ maintained product behavior rather than migration:
   Signed client paths cover basic farm/gather/road designation, staffing,
   military, ritual, shrine, and production orders. Exact coordinate building placement,
   selectable farm/gather variants, election/vote-kick controls, designation removal, durable
-  per-cat typed labor preferences, and the physical Sawmill's editable ordered/repeatable/pausable
-  queue are live. The generic queue model is ready for other recipes as their physical chains land.
+  per-cat typed labor preferences, and the physical Mill/Sawmill editable
+  ordered/repeatable/pausable queues are live. The generic queue model is ready for other recipes
+  as their physical chains land. Automatic election timing is visible between election windows.
 - **Physical work and production breadth.** Founding now seeds a finite spatial storehouse and the
-  logs→Sawmill→lumber chain physically routes a staffed cat, reserved cargo, station-local input
-  and output, and final stockpile delivery before aggregate credit. The inspector exposes that
-  real queue and travel state. All 19 maintained labor skills now have truthful gain sources,
+  logs→Sawmill→lumber and grain→Mill→flour+food chains physically route staffed cats, reserved
+  cargo, station-local input and output, and final stockpile delivery before aggregate credit.
+  Their inspectors expose real queues and travel state. A staffed Accountant physically visits
+  reachable piles, dwells to count them, and updates only those reports; blocked piles remain
+  stale. All 19 maintained labor skills now have truthful gain sources,
   bounded effects, persistence, and inspector visibility. Other workshops still draw aggregate
   inputs/outputs, and many recipes/material variants are absent.
+- **Finite item condition.** Finished units carry stable IDs, material/quality-based weight and
+  durability, wear through truthful functional use, remain present when broken, and can be repaired
+  only at their appropriate completed, staffed workshop using one matching visible material.
+  Durability research changes finite-unit maxima, the signed trader sale path caps each load at
+  20kg, and the Goods UI exposes weight, condition, broken units, and exact repair actions. This is
+  a verified seam, not a claim that the planned material/recipe catalog is complete.
 - **Multi-village product model.** One canonical communal village and one personal village per
   stable signed identity are live. Ownership and selection persist; foreign private state stays
   server-filtered; explicit returned-scout delivery (never generic reveal state) creates mutual
@@ -147,7 +157,8 @@ maintained product behavior rather than migration:
   uses the corresponding local-storage record.
 - **Research and scouting depth.** Players can spend research points on all 500 studies, and a
   Loremaster may complete at most one affordable full-catalog node per rolling real-life day.
-  Typed modeled effects and future-content unlock registries persist. Resource/general scouts now
+  Typed modeled effects (including the durability consumer) and future-content unlock registries
+  persist. Resource/general scouts now
   preserve the shrine-return knowledge contract while following deterministic knowledge-blind
   wander legs that only recognize targets after physical observation. Baseline deficit-driven
   scouting belongs to the Leader before a Loremaster exists.
@@ -159,7 +170,7 @@ maintained product behavior rather than migration:
 - **Spatial, transport, and visual completeness.** Exact tree/rock occupancy, visible road
   surfaces, persisted exterior agricultural claims, staged outer-wall construction with an
   atomic one-gate cutover, and persisted finite-water-habitat fishing routes are live. Real
-  rail/ship routes remain incomplete. The integrated staged-wall, Accounting Tent, native UI,
+  rail/ship routes remain incomplete. The integrated staged-wall, physical Accounting Tent, native UI,
   and optimized-WASM skin captures are verified. Accounting Tent is snapshot-reachable and has
   an explicit open-station client composition; the maintained Adventure panel, button, progress,
   minimap, and cursor foundation is native- and browser-framebuffer verified.
@@ -188,17 +199,16 @@ over the WebSocket:
 
 - **`WorldSnapshot`** — top-level, holds a `Vec<ColonySnapshot>` plus world-level fields.
 - **`ColonySnapshot`** — one colony's full renderable state: resources + storage caps, cats,
-  jobs, buildings, upgrade-tree progress, research, election/vote-kick state, zones, threat +
+  jobs, buildings, upgrade-tree progress, research, open-election/vote-kick state plus the
+  authoritative between-term election schedule, zones, threat +
   raiders, claimed tiles/fence/gate, village radius/anchor, officers, stockpiles, gather spots,
   item store, road tiles, online count.
-- **`ClientAction`** — a typed server contract: `Presence` (handshake),
-  `RequestJob`, `Boost`, `PurchaseUpgrade`, `CastVote`,
-  `RequestVoteKick`, `CreateZone`/`RemoveZone`, `PlanBuilding`, `UnlockNode`, `AssignWorker`,
-  `TrainWarrior`, `DefendRaid`, `BuildRoad`, `FoundVillage`/`JoinVillage`,
-  `AssignOfficer`/`UnassignOfficer`, `DesignateFarm`/`ClearFarm`,
-  `DesignateStockpile`/`RemoveStockpile`,
-  `DesignateGatherSpot`/`RemoveGatherSpot`, `SellGoods`, `BuyResource`, `BoostCat`, plus test
-  controls (`SetTestAcceleration`, `AdvanceTime`, `SetTestRngSeed`).
+- **`ClientAction`** — an exhaustive typed contract. It covers handshake,
+  signed jobs/scouts/shrine work, upgrades/research, elections, zones, exact construction and
+  roads, staffing/officers/labor preferences, farm/stockpile/gather/fishing designations, village
+  founding/selection/barter, trader buy/sell, exact finite-item repair, station queue editing,
+  raids, and the three release-disabled test controls. The exhaustive enum in
+  `crates/cat-protocol/src/lib.rs` is authoritative when this inventory changes.
 
 Field names are `camelCase` on the wire (matching the old TS API shape where it still matters)
 via `#[serde(rename_all = "camelCase")]`-style annotations; most actions carry `session_id` /
@@ -257,7 +267,8 @@ terrain generated client-side from the shared `world_seed` (via `cat_sim::genera
 roads, cats (colored by specialization, carrying marker, walk animation that interpolates toward
 the latest snapshot tile rather than teleporting), label-free roofed homes and typed open
 stations, stockpiles/gather spots, raiders, crop stages, and zone overlays. The HUD shows
-resources with caps, colony census, event log, trade, officers, village selection, and
+resources with caps, colony census, event log, trade, officers, village selection, authoritative
+election countdown/open-election controls, and
 cat/building inspectors. Its full-page research screen renders and purchases the complete
 500-study catalog with filter/search/pan/zoom.
 The maintained P18 Adventure 9-patch/button/progress/minimap/cursor foundation is implemented and
@@ -292,11 +303,14 @@ attaching a fresh client to a stale, pre-rebuild server.
 
 ## Testing strategy
 
-- **`cat-sim`**: 835+ pure unit/integration tests plus golden-master fixtures under
+- **`cat-sim`**: pure unit/integration tests plus golden-master fixtures under
   `docs/migration/fixtures/` for modules ported from TS, generated by a one-off `npx tsx`
   script run against the *frozen, never-edited* TS source (`AGENTS.md` rule #5 — the sole
   permitted JS use in this codebase). Any new simulation constant needs a boundary test in the
   owning module, same discipline the old TS project enforced.
+- **Test totals:** use `cargo nextest list --workspace`; dated feature sections in the audit retain
+  the exact gate that supported that evidence, but this architecture document does not freeze a
+  workspace count that becomes false on the next integrated slice.
 - **`cat-protocol`**: serde round-trip tests (serialize → deserialize → equal).
 - **`cat-server`**: integration tests spin up the axum app in-process (no real socket needed)
   and drive it through `ClientAction` JSON, e.g. founding a village and asserting the shared

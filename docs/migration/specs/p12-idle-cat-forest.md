@@ -1,9 +1,9 @@
 # P12 — Idle Cat Forest sim expansion (cat-sim)
 
 > **Living target spec.** Specialist manual-to-officer ownership (with a bounded founding Leader
-> hunt/water/scout safety floor), all-labor skills, seeded spatial storehouses, and one complete
-> physical Sawmill route are verified. Broader physical station/farm routes and recipes remain
-> partial. Current evidence and exact follow-ups live in
+> hunt/water/scout safety floor), 19-labor skills, seeded spatial storehouses, physical Accountant
+> rounds, physical farm labor, and complete physical Mill and Sawmill routes are verified. Broader
+> physical station routes and recipes remain partial. Current evidence and exact follow-ups live in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 The DF-texture depth from `docs/GAME_VISION.md`, decomposed into concrete, TDD-able Rust
@@ -28,8 +28,9 @@ an existing one. Cards are ordered by dependency; P12.1 unblocks the rest.
 ## P12.1 — Skills (general per-labor proficiency) — FOUNDATION, do first
 **Goal:** every labor a cat performs accrues a per-labor skill that scales its speed & yield,
 so experts emerge. Generalizes `role_xp` from 4 roles to all labors.
-- **Data:** add `Cat.skills: BTreeMap<Labor, f64>` (xp per labor), where
-  `Labor = {Hunt, Build, Ritual, Fight, Quarry, FetchWater, Mill, Craft, Farm, Haul, Research}`.
+- **Data (maintained contract):** `Cat.skills: BTreeMap<Labor, f64>` stores XP for all 19
+  typed labors: `Hunt, Fishing, Build, Ritual, Fight, Train, Quarry, Woodcut, Forage,
+  FetchWater, Mill, Process, Craft, Textile, Metalwork, Farm, Haul, Research, Scout`.
   Keep `role_xp` for the 4 specialization roles + back-compat serde (`#[serde(default)]`, skip
   if empty). A skill `Labor` maps to the job `kind` that produced it.
 - **Gain:** on job completion, `+SKILL_GAIN_PER_JOB` (start 1.0, same as role_xp) to that labor;
@@ -45,20 +46,22 @@ so experts emerge. Generalizes `role_xp` from 4 roles to all labors.
 **Goal:** the single leader director becomes assignable **officer roles**, each automating one
 labor category; unfilled roles stay manual (player-triggered).
 
-**Superseded design note (2026-07-10, replaced 2026-07-14):** the initial additive-officer proposal
-kept every base-Leader category automated. Playtesting rejected that because it made vacancies
-meaningless; the later fully manual split then made a fresh founding repeatedly collapse. The
-maintained contract is specialist-manual with one bounded exception: the always-present founding
-Leader may keep at most six hunts, two emergency water trips, and one scout in flight per 15
-living cats. Farms,
-production, hauling policy, research, rituals, defense, and expansion remain manual while their
-offices are vacant. The 8 `LaborGoalKind`s otherwise partition into 5 roles:
-`Farmer{Hunt,FetchWater}`, `Forester{Quarry}`, `Captain{TrainWarrior,AssignSmithy}`,
-`Loremaster{AssignResearch,Scout}`, `Steward{AssignWorkshop}` (+stockpiles in P12.3). The deeper
-"unfilled ⇒ fully manual" comes once P12.3/P12.4 make manual control meaningful.
-- **Data:** `Colony.officers: BTreeMap<OfficerRole, Option<CatId>>` where
-  `OfficerRole = {Steward(haul/stockpiles), Forester(wood), Farmer(fields/forage),
-  Captain(defense), Loremaster(research/ritual)}` (+ the existing Leader as role #0).
+**Superseded design provenance (2026-07-10):** the first sketch had eight goal kinds split among
+five roles and kept the base Leader broadly automated. That five-role example is retained only to
+explain the evolution; it is not the maintained enum or ownership contract. Playtesting rejected
+additive officers because vacancies were meaningless, then found that a completely manual fresh
+founding collapsed before its officer buildings existed.
+
+**Maintained contract (2026-07-14):** seven specialist offices are authoritative:
+`Steward` (hauling, stockpiles, general workshops and roads), `Accountant` (physical stock counts),
+`Forester` (quarrying, logging, wood processing), `Farmer` (fields, forage, fishing and Mill),
+`Captain` (training, defense and metal stations), `Loremaster` (research, post-founding scouts and
+rituals), and `ClothLeader` (cloth/leather stations). The always-present founding Leader is the
+only vacancy exception and may keep at most six hunts, two emergency water trips, and one scout
+in flight per 15 living cats, scaled proportionally. Other specialist work remains manual while
+its owning office is vacant.
+- **Data:** `Colony.officers: BTreeMap<OfficerRole, CatId>` with the seven roles above. The
+  founding Leader remains separate from this map.
 - **Gate:** each role is unlocked by an upgrade-tree node + a built **role-building** (P12.4)
   with escalating cost. `leader_director` splits into per-role goal scorers reading the same
   `LeaderSnapshot`; an unfilled role emits no specialist auto-goals beyond the bounded founding
@@ -78,10 +81,11 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
 - **Logic:** haul targets the nearest accepting stockpile (not only the shrine); a stockpile's
   contents count toward colony storage (respect `storage.rs` caps). Workshops pull inputs from /
   push outputs to the nearest stockpile.
-- **Accountant (P12.4 building):** without it, stockpile totals in the snapshot are stale
-  (updated slowly / fuzzed); a staffed Accounting Tent walks the piles and makes totals exact +
-  fast-refresh (à la DF bookkeeper). Model as a per-stockpile `last_counted` freshness the
-  snapshot reports.
+- **Accountant (P12.4 building):** stockpile reports remain stale until an assigned cat physically
+  returns to the Accounting Tent, visits each reachable pile in deterministic order, counts it
+  for five game-seconds, and returns. Each visited pile refreshes independently; blocked piles
+  remain stale. Persisted per-pile freshness lets the client show `~120 food`, `uncounted`, and
+  current route/count progress without exposing authoritative totals.
 - **Actions:** `designateStockpile{rect, accepts}` / `removeStockpile`. **Renders** as visible
   piles (props already sliced: barrel/crate/sack/log_pile/stone_pile/ore_pile/gold_pile).
 - **Tests:** haul chooses nearest accepting pile; caps enforced; contents survive tick;
@@ -98,6 +102,13 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
   resource costs (build → unlock role → automate → free paws → build next).
 - **Tests:** each chain converts inputs→outputs at the right rate only when staffed + inputs
   present; escalating cost math; unlock gating; determinism.
+
+**Verified physical subset:** Mill and Sawmill no longer convert aggregate colony counters in
+place. Each reserves visible finite stock, carries input to a station-local store, works there
+under its durable ordered/repeatable/pausable queue, places output in a station-local store, and
+carries it to compatible finite storage before aggregate credit. Their snapshot/inspector state
+includes the worker, progress, queue, local inventory, transit cargo, and block reason. Apply this
+contract to the remaining production stations rather than reopening either completed route.
 
 ## P12.5 — Visible farm plots
 **Goal:** designate farm plots; cats plant/tend/harvest; crops grow through visible stages.
@@ -138,6 +149,11 @@ Today (P12.3) the **shrine is the default balancing reservoir**. Change it:
 - Sequencing note: (c) touches the same shrine/deposit/hauling code as **haul-fill**, so do it
   **after** haul-fill lands (not in parallel). Keep the reservoir invariant; regression-guard so an
   un-modified colony (no offerings queued) is byte-identical.
+
+**Implemented material-offering contract:** the current action reserves visible surplus Materials
+from a real stockpile, a living cat carries them to shrine escrow, and only then may the separate
+ritual consume them and credit the canonical blessing balance. Cancellation, death, and restart
+preserve the physical goods without early or double credit.
 
 ## Cross-cutting
 - **Protocol:** every new action + snapshot field goes in `cat-protocol` (camelCase) and
