@@ -589,8 +589,13 @@ fn cycle_stacked_pick<'a>(
     stack.get(idx)
 }
 
-/// The shrine reservoir's stockpile id — always present, de-emphasized in render.
+/// Legacy shrine store id plus the current finite seeded village storehouse id.
 const SHRINE_STOCKPILE_ID: &str = "stockpile-shrine";
+const GENERAL_STOREHOUSE_ID: &str = "stockpile-storehouse";
+
+fn is_seeded_store(pile_id: &str) -> bool {
+    matches!(pile_id, SHRINE_STOCKPILE_ID | GENERAL_STOREHOUSE_ID)
+}
 
 /// Whether the officers panel is shown (toggled by `O`). Hidden by default
 /// (`visible` = false) so it can't pile up on the HUD + event-log in the left
@@ -2992,6 +2997,9 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
         ResourceKind::Armor => HudRes::Armor,
         ResourceKind::Logs => HudRes::Logs,
         ResourceKind::Lumber => HudRes::Lumber,
+        ResourceKind::Planks => HudRes::Lumber,
+        ResourceKind::Blocks => HudRes::Materials,
+        ResourceKind::Tools => HudRes::Refined,
         ResourceKind::Fibre | ResourceKind::Cloth => HudRes::Herbs,
         ResourceKind::Hide | ResourceKind::Leather => HudRes::Materials,
         ResourceKind::Ore => HudRes::Materials,
@@ -5221,7 +5229,7 @@ fn render_stockpiles(
         return;
     };
     for pile in &colony.stockpiles {
-        let is_shrine = pile.id == SHRINE_STOCKPILE_ID;
+        let is_shrine = is_seeded_store(&pile.id);
         let (x0, x1) = (pile.x1.min(pile.x2), pile.x1.max(pile.x2));
         let (y0, y1) = (pile.y1.min(pile.y2), pile.y1.max(pile.y2));
         let w = (x1 - x0 + 1) as f32 * TILE;
@@ -6250,7 +6258,7 @@ fn select_cat(
     let pile = colony
         .stockpiles
         .iter()
-        .find(|s| s.id != SHRINE_STOCKPILE_ID && point_in_stockpile(tile, s));
+        .find(|s| !is_seeded_store(&s.id) && point_in_stockpile(tile, s));
     selection.selected = None;
     if let Some(pile) = pile {
         stockpile_selection.selected_farm = None;
@@ -6384,7 +6392,7 @@ fn cycle_stacked_selection(
     for pile in colony
         .stockpiles
         .iter()
-        .filter(|s| s.id != SHRINE_STOCKPILE_ID && point_in_stockpile(tile, s))
+        .filter(|s| !is_seeded_store(&s.id) && point_in_stockpile(tile, s))
     {
         stack.push(PickCandidate {
             id: pile.id.clone(),
@@ -6719,8 +6727,10 @@ fn building_tooltip(building: &BuildingSnapshot) -> String {
 
 /// Compact hover text for a stockpile: what it accepts + rough contents.
 fn stockpile_tooltip(pile: &StockpileSnapshot) -> String {
-    let title = if pile.id == SHRINE_STOCKPILE_ID {
-        "Shrine reservoir"
+    let title = if pile.id == GENERAL_STOREHOUSE_ID {
+        "Village storehouse"
+    } else if pile.id == SHRINE_STOCKPILE_ID {
+        "Legacy shrine store"
     } else {
         "Stockpile"
     };
@@ -7281,6 +7291,9 @@ fn trade_resource_short_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Armor => "armor",
         ResourceKind::Logs => "logs",
         ResourceKind::Lumber => "lumber",
+        ResourceKind::Planks => "planks",
+        ResourceKind::Blocks => "blocks",
+        ResourceKind::Tools => "tools",
         ResourceKind::Fibre => "fibre",
         ResourceKind::Hide => "hide",
         ResourceKind::Cloth => "cloth",
@@ -8594,6 +8607,48 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
     } else {
         out.push_str("\ninbound: none");
     }
+    if !building.input_inventory.is_empty() {
+        out.push_str(&format!(
+            "\nlocal input: {}",
+            building
+                .input_inventory
+                .iter()
+                .map(|stack| format!("{} {:.1}", resource_kind_name(stack.kind), stack.amount))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !building.output_inventory.is_empty() {
+        out.push_str(&format!(
+            "\nlocal output: {}",
+            building
+                .output_inventory
+                .iter()
+                .map(|stack| format!("{} {:.1}", resource_kind_name(stack.kind), stack.amount))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !building.production_queue.is_empty() {
+        out.push_str(&format!(
+            "\nqueue: {}",
+            building.production_queue.join(" -> ")
+        ));
+    }
+    if let Some(reason) = &building.production_block_reason {
+        out.push_str(&format!("\nblocked: {}", reason.replace('_', " ")));
+    }
+    if let Some(travel) = &building.worker_travel {
+        out.push_str(&format!("\nworker: {travel}"));
+    }
+    if building.outbound_haul > 0.0 {
+        out.push_str(&format!(
+            "\noutbound: {:.1} units en route",
+            building.outbound_haul
+        ));
+    } else {
+        out.push_str("\noutbound: none");
+    }
     out
 }
 
@@ -8667,7 +8722,9 @@ fn pile_prop(kind: ResourceKind) -> PropTexture {
         ResourceKind::Catnip | ResourceKind::Grain | ResourceKind::Flour => PropTexture::Sack,
         ResourceKind::Materials => PropTexture::StonePile,
         ResourceKind::Refined => PropTexture::GoldPile,
-        ResourceKind::Logs | ResourceKind::Lumber => PropTexture::Crate,
+        ResourceKind::Logs | ResourceKind::Lumber | ResourceKind::Planks => PropTexture::Crate,
+        ResourceKind::Blocks => PropTexture::StonePile,
+        ResourceKind::Tools => PropTexture::GoldPile,
         ResourceKind::Fibre | ResourceKind::Cloth => PropTexture::Haystack,
         ResourceKind::Hide | ResourceKind::Leather => PropTexture::Sack,
         ResourceKind::Ore => PropTexture::StonePile,
@@ -8697,6 +8754,9 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::Armor => "armor",
         ResourceKind::Logs => "logs",
         ResourceKind::Lumber => "lumber",
+        ResourceKind::Planks => "planks",
+        ResourceKind::Blocks => "blocks",
+        ResourceKind::Tools => "tools",
         ResourceKind::Fibre => "fibre",
         ResourceKind::Hide => "hide",
         ResourceKind::Cloth => "cloth",
@@ -9157,6 +9217,9 @@ fn carrying_color(kind: CarryingKind) -> Color {
         CarryingKind::Materials => Color::srgb(0.70, 0.55, 0.35),
         CarryingKind::Blessings => Color::srgb(0.95, 0.85, 0.40),
         CarryingKind::Logs => Color::srgb(0.45, 0.29, 0.17),
+        CarryingKind::Lumber | CarryingKind::Planks => Color::srgb(0.70, 0.47, 0.25),
+        CarryingKind::Blocks => Color::srgb(0.58, 0.60, 0.64),
+        CarryingKind::Tools => Color::srgb(0.76, 0.78, 0.84),
     }
 }
 
@@ -11469,7 +11532,7 @@ mod tests {
     }
 
     #[test]
-    fn stockpile_tooltip_names_shrine_and_reports_contents() {
+    fn stockpile_tooltip_names_general_and_legacy_stores_and_reports_contents() {
         let pile = StockpileSnapshot {
             id: "stockpile-1".to_string(),
             x1: 0,
@@ -11508,11 +11571,16 @@ mod tests {
         assert!(tip.contains("food only"));
         assert!(tip.contains("~12"));
 
-        let shrine = StockpileSnapshot {
-            id: SHRINE_STOCKPILE_ID.to_string(),
+        let storehouse = StockpileSnapshot {
+            id: GENERAL_STOREHOUSE_ID.to_string(),
             ..pile
         };
-        assert!(stockpile_tooltip(&shrine).contains("Shrine reservoir"));
+        assert!(stockpile_tooltip(&storehouse).contains("Village storehouse"));
+        let legacy = StockpileSnapshot {
+            id: SHRINE_STOCKPILE_ID.to_string(),
+            ..storehouse
+        };
+        assert!(stockpile_tooltip(&legacy).contains("Legacy shrine store"));
     }
 
     #[test]
@@ -11746,7 +11814,7 @@ mod tests {
                 "threat":{"pressure":0,"band":"calm","raidActive":false,"warriors":0,"weapons":0,"armor":0},
                 "raiders":[],
                 "buildings":[
-                    {"id":"b1","type":"workshop","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0},"footprint":{"width":3,"height":2},"staffCount":1,"staffCap":1,"productionProgress":0.4,"productionOutput":"refined","inboundHaul":7.5},
+                    {"id":"b1","type":"sawmill","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0},"footprint":{"width":3,"height":2},"staffCount":1,"staffCap":1,"productionProgress":0.4,"productionOutput":"lumber","inboundHaul":5.0,"outboundHaul":2.0,"inputInventory":[{"kind":"logs","amount":5.0}],"outputInventory":[{"kind":"lumber","amount":2.0}],"productionQueue":["logs_to_lumber"],"productionBlockReason":"output_in_transit","workerTravel":"hauling output to storage","inboundCargo":[{"kind":"logs","amount":5.0}],"outboundCargo":[{"kind":"lumber","amount":2.0}]},
                     {"id":"b2","type":"den","level":1,"constructionProgress":40.0,"worldPosition":{"x":5,"y":6},"position":{"x":-1,"y":0},"footprint":{"width":2,"height":2}}
                 ],
                 "claimedTiles":[],"villageGate":null,"villageRadius":4,"anchor":{"x":6,"y":6}
@@ -11757,16 +11825,22 @@ mod tests {
         let workshop = &colony.buildings[0];
         let den = &colony.buildings[1];
         let ws = building_inspector_text(workshop, colony);
-        assert!(ws.contains("workshop"));
+        assert!(ws.contains("sawmill"));
         assert!(ws.contains("Lv 2"));
         assert!(ws.contains("operational"));
         assert!(ws.contains("Moss")); // assigned worker name
         assert!(ws.contains("staffed: 1/1")); // live staff count / cap
-        assert!(ws.contains("making refined")); // live production output
+        assert!(ws.contains("making lumber")); // live production output
         assert!(ws.contains("[####------]")); // progress bar at 0.4
         assert!(ws.contains("40%"));
         assert!(ws.contains("footprint: 3x2 tiles"));
-        assert!(ws.contains("inbound: 7.5"));
+        assert!(ws.contains("inbound: 5.0"));
+        assert!(ws.contains("local input: logs 5.0"));
+        assert!(ws.contains("local output: lumber 2.0"));
+        assert!(ws.contains("queue: logs_to_lumber"));
+        assert!(ws.contains("blocked: output in transit"));
+        assert!(ws.contains("worker: hauling output to storage"));
+        assert!(ws.contains("outbound: 2.0"));
         // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);
         assert!(den_text.contains("under construction 40%"));

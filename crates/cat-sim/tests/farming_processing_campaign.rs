@@ -312,6 +312,25 @@ fn run_guided_campaign(seed: u32) -> WorldState {
         "the empty mill store drives crop choice"
     );
 
+    // This synthetic campaign intentionally starts with a large survival runway.
+    // Provision it through the same public stockpile action a player uses: the 4x4
+    // warehouse yard contributes 640 units per accepted resource, which combines
+    // with the 360-unit founding store without relying on the removed unbounded
+    // shrine reservoir.
+    let (session_id, nickname, sig) = signed();
+    apply_ok(
+        &mut world,
+        proto::ClientAction::DesignateStockpile {
+            session_id,
+            nickname,
+            sig,
+            a: proto::TilePoint { x: 9, y: 9 },
+            b: proto::TilePoint { x: 12, y: 12 },
+            accepts: vec![proto::ResourceKind::Food, proto::ResourceKind::Water],
+        },
+        START_MS,
+    );
+
     let (session_id, nickname, sig) = signed();
     apply_ok(
         &mut world,

@@ -219,8 +219,8 @@ pub struct ColonyRuntime {
     pub pending_scout_delivery_tiles: BTreeSet<TilePos>,
     /// Appointed officers (role → cat id). Vacant roles remain manual-only.
     pub officers: BTreeMap<OfficerRole, String>,
-    /// On-map stockpiles (P12.3). Always includes the shrine reservoir after a tick;
-    /// their contents sum to `resources` per the balancing-reservoir invariant.
+    /// On-map physical stores. Always includes the finite seeded general storehouse after
+    /// a tick; ordinary piles plus station input/transit sum to `resources`.
     pub stockpiles: Vec<Stockpile>,
     /// Player-designated visible crop plots (P12.5). Empty for legacy colonies.
     pub farms: Vec<FarmPlot>,
@@ -685,7 +685,11 @@ impl SpatialOccupancyContext {
         let stockpile_rects = colony
             .stockpiles
             .iter()
-            .filter(|pile| !pile.is_shrine())
+            // Station-local stores are inventories attached to an existing building or
+            // in-flight route, not independently placeable map footprints. Treating the
+            // transit ledger as a second pile at the general store could sever the only
+            // gate-to-shrine road during expansion.
+            .filter(|pile| !pile.is_shrine() && !pile.is_station_local())
             .map(|pile| pile.rect)
             .collect();
         let farm_rects = colony.farms.iter().map(|farm| farm.rect).collect();
@@ -1756,7 +1760,7 @@ pub fn found_colony_at(
     // The world starts tiny: fog covers everything except the founding village reveal.
     // Cats uncover the rest as they walk.
     reveal_founding_area(&mut colony);
-    // Seed the shrine reservoir so the stockpile invariant holds before the first tick.
+    // Seed the finite general storehouse so the stockpile invariant holds before the first tick.
     reconcile_colony_stockpiles(&mut colony);
     // The books are counted at founding, so the reported ledger starts exact.
     colony.stock_ledger = StockLedger::counted(&colony.resources, now_ms);
@@ -2085,7 +2089,7 @@ const fn shrine_center_tile(anchor: TilePos) -> TilePos {
 }
 
 /// The fixed founding blueprint (P16): the shrine dead-centre, three den houses and
-/// the three raw-material workshops arranged in the four quadrants around it, leaving
+/// the three raw-material workshops arranged around it, leaving
 /// the shrine's centre row/column clear for the road cross. Anchors are absolute NW
 /// corners; every footprint stays inside `founding_claimed_tiles` and none overlap.
 ///
@@ -2636,7 +2640,9 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     for death in old_age_deaths {
         if let Some(carrying) = death.carrying {
             let deposit_at = position_to_world(colony.anchor, death.position);
-            credit_carrying(colony, &carrying, deposit_at);
+            if !salvage_station_cargo(colony, &carrying, deposit_at) {
+                credit_carrying(colony, &carrying, deposit_at);
+            }
         }
         cancel_cat_jobs(colony, &death.id, gate.processed_through);
         append_event(
@@ -5740,41 +5746,9 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 }
             }
             BuildingType::Sawmill => {
-                let worker = assigned_worker(colony, &building_id);
-                let caps = storage_caps(colony);
-                let step = advance_sawmill(
-                    colony.buildings[building_index].production_progress,
-                    building_elapsed,
-                    SawmillOptions {
-                        has_worker: worker.is_some(),
-                        worker_is_architect: worker.is_some_and(|cat| {
-                            cat.specialization == Some(CatSpecialization::Architect)
-                        }),
-                        logs_available: colony.resources.logs,
-                        lumber_headroom: (caps.lumber - colony.resources.lumber).max(0.0),
-                    },
-                );
-                colony.buildings[building_index].production_progress = step.next_progress;
-                if step.lumber_produced > 0.0 {
-                    colony.resources.logs = (colony.resources.logs - step.logs_used).max(0.0);
-                    colony.resources.lumber += step.lumber_produced;
-                    let site = colony.buildings[building_index].position;
-                    route_output_to_nearest_pile(
-                        colony,
-                        ResourceKind::Lumber,
-                        step.lumber_produced,
-                        site,
-                    );
-                    append_event(
-                        colony,
-                        gate.processed_through,
-                        EventKind::Production,
-                        format!(
-                            "The sawmill cut {} logs into {} lumber.",
-                            step.logs_used, step.lumber_produced,
-                        ),
-                    );
-                }
+                // Keep the research catalog's output/cycle modifiers while routing the
+                // actual inputs and outputs through the physical station inventories.
+                advance_physical_sawmill(colony, building_index, gate, building_elapsed);
             }
             BuildingType::Workshop => {
                 let worker = assigned_worker(colony, &building_id);
@@ -6517,7 +6491,9 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
         // cleanup below clears `carrying`.
         if let Some(carrying) = colony.cats[index].carrying.clone() {
             let deposit_at = position_to_world(colony.anchor, colony.cats[index].position);
-            credit_carrying(colony, &carrying, deposit_at);
+            if !salvage_station_cargo(colony, &carrying, deposit_at) {
+                credit_carrying(colony, &carrying, deposit_at);
+            }
         }
 
         // Cancel the dying cat's own active/queued jobs (mirrors `retireCat`)
@@ -7871,6 +7847,9 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         | ResourceKind::Weapons
         | ResourceKind::Armor
         | ResourceKind::Lumber
+        | ResourceKind::Planks
+        | ResourceKind::Blocks
+        | ResourceKind::Tools
         | ResourceKind::Fibre
         | ResourceKind::Hide
         | ResourceKind::Cloth
@@ -13167,18 +13146,334 @@ fn chop_nearest_explored_forest(colony: &mut ColonyRuntime, now_ms: i64) {
     }
 }
 
-/// The shrine reservoir's footprint at a colony's village anchor.
-fn shrine_stockpile_rect(anchor: TilePos) -> ZoneRect {
-    stockpiles::shrine_rect(anchor.x, anchor.y)
+fn general_storehouse_rect(colony: &ColonyRuntime) -> ZoneRect {
+    // A compact 2x2 pile west of the east gate road, clear of every founding building
+    // and the shrine cross. It is a physical stockpile (not a storage-capacity building),
+    // so it preserves the exact three-house/three-workshop founding economy.
+    ZoneRect {
+        x1: colony.anchor.x + 5,
+        y1: colony.anchor.y - 1,
+        x2: colony.anchor.x + 6,
+        y2: colony.anchor.y,
+    }
 }
 
-/// Restore the stockpile balancing-reservoir invariant for a colony (seeds the shrine
-/// reservoir if absent). Runs at the end of every tick and after stockpile actions.
+const STATION_IN_CARGO_PREFIX: &str = "station-in|";
+const STATION_OUT_CARGO_PREFIX: &str = "station-out|";
+
+fn station_cargo_marker(prefix: &str, building_id: &str, pile_id: &str) -> String {
+    format!("{prefix}{building_id}|{pile_id}")
+}
+
+fn parse_station_cargo(marker: Option<&str>) -> Option<(&str, &str, &str)> {
+    let marker = marker?;
+    let (direction, rest) = if let Some(rest) = marker.strip_prefix(STATION_IN_CARGO_PREFIX) {
+        ("in", rest)
+    } else if let Some(rest) = marker.strip_prefix(STATION_OUT_CARGO_PREFIX) {
+        ("out", rest)
+    } else {
+        return None;
+    };
+    let (building_id, pile_id) = rest.split_once('|')?;
+    Some((direction, building_id, pile_id))
+}
+
+fn station_store_rect(building: &BuildingRuntime) -> ZoneRect {
+    let (width, height) = footprint_for(building.building_type);
+    ZoneRect {
+        x1: building.position.x,
+        y1: building.position.y,
+        x2: building.position.x + width - 1,
+        y2: building.position.y + height - 1,
+    }
+}
+
+fn ensure_sawmill_station_stores(colony: &mut ColonyRuntime, building_index: usize) {
+    let building = colony.buildings[building_index].clone();
+    let rect = station_store_rect(&building);
+    let input_id = stockpiles::station_input_id(&building.id);
+    if !colony.stockpiles.iter().any(|pile| pile.id == input_id) {
+        colony.stockpiles.push(stockpiles::make_station_store(
+            input_id,
+            rect,
+            [ResourceKind::Logs],
+        ));
+    }
+    let output_id = stockpiles::station_output_id(&building.id);
+    if !colony.stockpiles.iter().any(|pile| pile.id == output_id) {
+        colony.stockpiles.push(stockpiles::make_station_store(
+            output_id,
+            rect,
+            [ResourceKind::Lumber],
+        ));
+    }
+}
+
+fn station_work_point(building: &BuildingRuntime) -> WorldPos {
+    building_entrance_candidates(building)
+        .first()
+        .copied()
+        .map_or_else(|| tile_pos_to_world(building.position), tile_pos_to_world)
+}
+
+fn at_world_point(colony: &ColonyRuntime, cat_index: usize, target: WorldPos) -> bool {
+    let current = position_to_world(colony.anchor, colony.cats[cat_index].position);
+    (current.x - target.x).abs() <= 0.1 && (current.y - target.y).abs() <= 0.1
+}
+
+fn send_cat_to(colony: &mut ColonyRuntime, cat_index: usize, target: WorldPos) {
+    colony.cats[cat_index].destination = Some(position_from_world(target));
+    colony.cats[cat_index].activity = CatActivity::Traveling;
+}
+
+fn nearest_source_pile(
+    colony: &ColonyRuntime,
+    kind: ResourceKind,
+    amount: f64,
+    from: WorldPos,
+) -> Option<usize> {
+    colony
+        .stockpiles
+        .iter()
+        .enumerate()
+        .filter(|(_, pile)| {
+            !pile.is_station_local()
+                && stockpiles::resource_amount(&pile.contents, kind) + f64::EPSILON >= amount
+        })
+        .map(|(index, pile)| {
+            let (x, y) = pile.center();
+            let distance = (x - from.x).powi(2) + (y - from.y).powi(2);
+            (index, distance, pile.id.as_str())
+        })
+        .min_by(|left, right| left.1.total_cmp(&right.1).then_with(|| left.2.cmp(right.2)))
+        .map(|(index, _, _)| index)
+}
+
+fn nearest_output_pile(
+    colony: &ColonyRuntime,
+    kind: ResourceKind,
+    from: WorldPos,
+) -> Option<usize> {
+    colony
+        .stockpiles
+        .iter()
+        .enumerate()
+        .filter(|(_, pile)| !pile.is_station_local() && pile.has_headroom(kind))
+        .map(|(index, pile)| {
+            let (x, y) = pile.center();
+            let distance = (x - from.x).powi(2) + (y - from.y).powi(2);
+            (index, distance, pile.id.as_str())
+        })
+        .min_by(|left, right| left.1.total_cmp(&right.1).then_with(|| left.2.cmp(right.2)))
+        .map(|(index, _, _)| index)
+}
+
+fn advance_physical_sawmill(
+    colony: &mut ColonyRuntime,
+    building_index: usize,
+    gate: TickGate,
+    production_elapsed: f64,
+) {
+    ensure_sawmill_station_stores(colony, building_index);
+    let building = colony.buildings[building_index].clone();
+    let input_id = stockpiles::station_input_id(&building.id);
+    let output_id = stockpiles::station_output_id(&building.id);
+    let Some(cat_id) = building.assigned_cat.as_deref() else {
+        return;
+    };
+    let Some(cat_index) = colony
+        .cats
+        .iter()
+        .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+    else {
+        return;
+    };
+    if colony.cats[cat_index].carrying.is_some() {
+        return;
+    }
+
+    let work_point = station_work_point(&building);
+    let output_amount = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == output_id)
+        .map_or(0.0, |pile| {
+            stockpiles::resource_amount(&pile.contents, ResourceKind::Lumber)
+        });
+    if output_amount > 0.0 {
+        if !at_world_point(colony, cat_index, work_point) {
+            send_cat_to(colony, cat_index, work_point);
+            return;
+        }
+        let Some(destination_index) = nearest_output_pile(
+            colony,
+            ResourceKind::Lumber,
+            tile_pos_to_world(building.position),
+        ) else {
+            return;
+        };
+        let destination_id = colony.stockpiles[destination_index].id.clone();
+        let destination_center = colony.stockpiles[destination_index].center();
+        let haul_amount =
+            output_amount.min(colony.stockpiles[destination_index].headroom(ResourceKind::Lumber));
+        if haul_amount <= 0.0 {
+            return;
+        }
+        if let Some(output) = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == output_id)
+        {
+            stockpiles::add_resource(&mut output.contents, ResourceKind::Lumber, -haul_amount);
+        }
+        colony.cats[cat_index].carrying = Some(Carrying {
+            kind: CarryingKind::Lumber,
+            amount: haul_amount,
+            job_ended_at: gate.processed_through,
+            source_gather_spot: Some(station_cargo_marker(
+                STATION_OUT_CARGO_PREFIX,
+                &building.id,
+                &destination_id,
+            )),
+        });
+        send_cat_to(
+            colony,
+            cat_index,
+            WorldPos {
+                x: destination_center.0,
+                y: destination_center.1,
+            },
+        );
+        return;
+    }
+
+    let input_amount = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == input_id)
+        .map_or(0.0, |pile| {
+            stockpiles::resource_amount(&pile.contents, ResourceKind::Logs)
+        });
+    if input_amount + f64::EPSILON < crate::processing::SAWMILL_LOGS_PER_CYCLE {
+        let Some(source_index) = nearest_source_pile(
+            colony,
+            ResourceKind::Logs,
+            crate::processing::SAWMILL_LOGS_PER_CYCLE,
+            tile_pos_to_world(building.position),
+        ) else {
+            return;
+        };
+        let source_center = colony.stockpiles[source_index].center();
+        let source_point = WorldPos {
+            x: source_center.0,
+            y: source_center.1,
+        };
+        if !at_world_point(colony, cat_index, source_point) {
+            send_cat_to(colony, cat_index, source_point);
+            return;
+        }
+        let transit_id = stockpiles::station_transit_id(&building.id);
+        if !colony.stockpiles.iter().any(|pile| pile.id == transit_id) {
+            colony.stockpiles.push(stockpiles::make_station_store(
+                transit_id.clone(),
+                colony.stockpiles[source_index].rect,
+                [ResourceKind::Logs],
+            ));
+        }
+        stockpiles::add_resource(
+            &mut colony.stockpiles[source_index].contents,
+            ResourceKind::Logs,
+            -crate::processing::SAWMILL_LOGS_PER_CYCLE,
+        );
+        if let Some(transit) = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == transit_id)
+        {
+            stockpiles::add_resource(
+                &mut transit.contents,
+                ResourceKind::Logs,
+                crate::processing::SAWMILL_LOGS_PER_CYCLE,
+            );
+        }
+        colony.cats[cat_index].carrying = Some(Carrying {
+            kind: CarryingKind::Logs,
+            amount: crate::processing::SAWMILL_LOGS_PER_CYCLE,
+            job_ended_at: gate.processed_through,
+            source_gather_spot: Some(station_cargo_marker(
+                STATION_IN_CARGO_PREFIX,
+                &building.id,
+                &transit_id,
+            )),
+        });
+        send_cat_to(colony, cat_index, work_point);
+        return;
+    }
+
+    if !at_world_point(colony, cat_index, work_point) {
+        send_cat_to(colony, cat_index, work_point);
+        return;
+    }
+    colony.cats[cat_index].activity = CatActivity::Working;
+    let output_headroom = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == output_id)
+        .and_then(Stockpile::capacity)
+        .map_or(0.0, |capacity| (capacity - output_amount).max(0.0));
+    let step = advance_sawmill(
+        building.production_progress,
+        production_elapsed,
+        SawmillOptions {
+            has_worker: true,
+            worker_is_architect: colony.cats[cat_index].specialization
+                == Some(CatSpecialization::Architect),
+            logs_available: input_amount,
+            lumber_headroom: output_headroom,
+        },
+    );
+    colony.buildings[building_index].production_progress = step.next_progress;
+    if step.lumber_produced <= 0.0 {
+        return;
+    }
+    if let Some(input) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == input_id)
+    {
+        stockpiles::add_resource(&mut input.contents, ResourceKind::Logs, -step.logs_used);
+    }
+    colony.resources.logs = (colony.resources.logs - step.logs_used).max(0.0);
+    if let Some(output) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == output_id)
+    {
+        stockpiles::add_resource(
+            &mut output.contents,
+            ResourceKind::Lumber,
+            step.lumber_produced,
+        );
+    }
+    append_event(
+        colony,
+        gate.processed_through,
+        EventKind::Production,
+        format!(
+            "The sawmill cut {} delivered logs into {} lumber awaiting haulage.",
+            step.logs_used, step.lumber_produced,
+        ),
+    );
+}
+
+/// Restore the physical-store invariant for a colony (seeds/migrates the finite general
+/// storehouse). Runs at the end of every tick and after stockpile actions.
 pub fn reconcile_colony_stockpiles(colony: &mut ColonyRuntime) {
+    let storehouse_rect = general_storehouse_rect(colony);
     stockpiles::reconcile(
         &mut colony.stockpiles,
-        &colony.resources,
-        shrine_stockpile_rect(colony.anchor),
+        &mut colony.resources,
+        storehouse_rect,
     );
 }
 
@@ -13190,6 +13485,10 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
         CarryingKind::Food => Some(ResourceKind::Food),
         CarryingKind::Materials => Some(ResourceKind::Materials),
         CarryingKind::Logs => Some(ResourceKind::Logs),
+        CarryingKind::Lumber => Some(ResourceKind::Lumber),
+        CarryingKind::Planks => Some(ResourceKind::Planks),
+        CarryingKind::Blocks => Some(ResourceKind::Blocks),
+        CarryingKind::Tools => Some(ResourceKind::Tools),
         CarryingKind::Water => Some(ResourceKind::Water),
         CarryingKind::Blessings => None,
     }
@@ -13250,6 +13549,28 @@ fn haul_deposit_target(
     carrying: &Carrying,
     from_pos: WorldPos,
 ) -> WorldPos {
+    if let Some((direction, building_id, pile_id)) =
+        parse_station_cargo(carrying.source_gather_spot.as_deref())
+    {
+        if direction == "in" {
+            return colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .map_or_else(|| village_anchor_world(colony.anchor), station_work_point);
+        }
+        return colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id)
+            .map_or_else(
+                || village_anchor_world(colony.anchor),
+                |pile| {
+                    let (x, y) = pile.center();
+                    WorldPos { x, y }
+                },
+            );
+    }
     if carrying.source_gather_spot.is_some() {
         let gather_spot_ids: Vec<String> = colony
             .gather_spots
@@ -13302,14 +13623,199 @@ pub fn building_inbound_haul(colony: &ColonyRuntime, building: &BuildingRuntime)
                 .map(|carrying| (cat.position, carrying))
         })
         .filter(|(position, carrying)| {
-            haul_deposit_target(
-                colony,
-                carrying,
-                position_to_world(colony.anchor, *position),
-            ) == building_pos
+            parse_station_cargo(carrying.source_gather_spot.as_deref())
+                .is_some_and(|(direction, id, _)| direction == "in" && id == building.id)
+                || haul_deposit_target(
+                    colony,
+                    carrying,
+                    position_to_world(colony.anchor, *position),
+                ) == building_pos
         })
         .map(|(_, carrying)| carrying.amount)
         .sum()
+}
+
+#[must_use]
+pub fn building_outbound_haul(colony: &ColonyRuntime, building: &BuildingRuntime) -> f64 {
+    colony
+        .cats
+        .iter()
+        .filter_map(|cat| cat.carrying.as_ref())
+        .filter(|carrying| {
+            parse_station_cargo(carrying.source_gather_spot.as_deref())
+                .is_some_and(|(direction, id, _)| direction == "out" && id == building.id)
+        })
+        .map(|carrying| carrying.amount)
+        .sum()
+}
+
+#[must_use]
+pub fn building_station_inventory(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+    output: bool,
+) -> Vec<(ResourceKind, f64)> {
+    let id = if output {
+        stockpiles::station_output_id(&building.id)
+    } else {
+        stockpiles::station_input_id(&building.id)
+    };
+    colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == id)
+        .map(|pile| {
+            ResourceKind::ALL
+                .iter()
+                .copied()
+                .filter_map(|kind| {
+                    let amount = stockpiles::resource_amount(&pile.contents, kind);
+                    (amount > 0.0).then_some((kind, amount))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[must_use]
+pub fn building_station_cargo(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+    direction: &str,
+) -> Vec<(ResourceKind, f64)> {
+    colony
+        .cats
+        .iter()
+        .filter_map(|cat| cat.carrying.as_ref())
+        .filter_map(|carrying| {
+            let (cargo_direction, building_id, _) =
+                parse_station_cargo(carrying.source_gather_spot.as_deref())?;
+            (cargo_direction == direction && building_id == building.id)
+                .then_some((carrying_resource_kind(carrying.kind)?, carrying.amount))
+        })
+        .fold(
+            BTreeMap::<ResourceKind, f64>::new(),
+            |mut totals, (kind, amount)| {
+                *totals.entry(kind).or_default() += amount;
+                totals
+            },
+        )
+        .into_iter()
+        .collect()
+}
+
+#[must_use]
+pub fn building_production_queue(building: &BuildingRuntime) -> Vec<String> {
+    match building.building_type {
+        BuildingType::Sawmill => vec!["logs_to_lumber".to_owned()],
+        _ => Vec::new(),
+    }
+}
+
+#[must_use]
+pub fn building_worker_travel(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+) -> Option<String> {
+    let cat_id = building.assigned_cat.as_deref()?;
+    let cat = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id && cat.death_time.is_none())?;
+    if let Some(carrying) = &cat.carrying
+        && let Some((direction, id, _)) =
+            parse_station_cargo(carrying.source_gather_spot.as_deref())
+        && id == building.id
+    {
+        return Some(
+            if direction == "in" {
+                "hauling input to station"
+            } else {
+                "hauling output to storage"
+            }
+            .to_owned(),
+        );
+    }
+    cat.destination.map(|destination| {
+        format!(
+            "traveling to {},{}",
+            destination.x.round() as i32,
+            destination.y.round() as i32
+        )
+    })
+}
+
+#[must_use]
+pub fn building_production_block_reason(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+) -> Option<String> {
+    if building.building_type != BuildingType::Sawmill {
+        return None;
+    }
+    let Some(cat_id) = building.assigned_cat.as_deref() else {
+        return Some("no_worker".to_owned());
+    };
+    let Some(cat_index) = colony
+        .cats
+        .iter()
+        .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+    else {
+        return Some("no_worker".to_owned());
+    };
+    if let Some(carrying) = &colony.cats[cat_index].carrying
+        && let Some((direction, id, _)) =
+            parse_station_cargo(carrying.source_gather_spot.as_deref())
+        && id == building.id
+    {
+        return Some(
+            if direction == "in" {
+                "input_in_transit"
+            } else {
+                "output_in_transit"
+            }
+            .to_owned(),
+        );
+    }
+    let output = building_station_inventory(colony, building, true)
+        .into_iter()
+        .find_map(|(kind, amount)| (kind == ResourceKind::Lumber).then_some(amount))
+        .unwrap_or(0.0);
+    if output > 0.0 {
+        return Some(
+            if nearest_output_pile(colony, ResourceKind::Lumber, station_work_point(building))
+                .is_some()
+            {
+                "output_awaiting_haul"
+            } else {
+                "output_storage_full"
+            }
+            .to_owned(),
+        );
+    }
+    let input = building_station_inventory(colony, building, false)
+        .into_iter()
+        .find_map(|(kind, amount)| (kind == ResourceKind::Logs).then_some(amount))
+        .unwrap_or(0.0);
+    if input + f64::EPSILON < crate::processing::SAWMILL_LOGS_PER_CYCLE {
+        return Some(
+            if nearest_source_pile(
+                colony,
+                ResourceKind::Logs,
+                crate::processing::SAWMILL_LOGS_PER_CYCLE,
+                station_work_point(building),
+            )
+            .is_some()
+            {
+                "fetching_logs"
+            } else {
+                "missing_logs"
+            }
+            .to_owned(),
+        );
+    }
+    (!at_world_point(colony, cat_index, station_work_point(building)))
+        .then(|| "worker_travel".to_owned())
 }
 
 /// Cancel a dead cat's active/queued jobs so none are left stuck waiting on an
@@ -13358,12 +13864,69 @@ fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
 }
 
 fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: WorldPos) {
+    if let Some((direction, building_id, pile_id)) =
+        parse_station_cargo(carrying.source_gather_spot.as_deref())
+    {
+        let Some(kind) = carrying_resource_kind(carrying.kind) else {
+            return;
+        };
+        if direction == "in" {
+            let input_id = stockpiles::station_input_id(building_id);
+            let available = colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == pile_id)
+                .map_or(0.0, |pile| {
+                    stockpiles::resource_amount(&pile.contents, kind)
+                });
+            let transferred = carrying.amount.min(available);
+            if transferred <= 0.0 {
+                return;
+            }
+            if let Some(source) = colony.stockpiles.iter_mut().find(|pile| pile.id == pile_id) {
+                stockpiles::add_resource(&mut source.contents, kind, -transferred);
+            }
+            if let Some(input) = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == input_id)
+            {
+                stockpiles::add_resource(&mut input.contents, kind, transferred);
+            }
+            return;
+        }
+        let delivered = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id)
+            .map_or(0.0, |pile| pile.headroom(kind).min(carrying.amount));
+        stockpiles::add_resource(&mut colony.resources, kind, delivered);
+        if let Some(destination) = colony.stockpiles.iter_mut().find(|pile| pile.id == pile_id) {
+            stockpiles::add_resource(&mut destination.contents, kind, delivered);
+        }
+        let remainder = carrying.amount - delivered;
+        if remainder > 0.0 {
+            let output_id = stockpiles::station_output_id(building_id);
+            if let Some(output) = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == output_id)
+            {
+                stockpiles::add_resource(&mut output.contents, kind, remainder);
+            }
+        }
+        return;
+    }
     // Blessings never enter `resources` (they fund the global upgrade pool), so they are
     // not placed in a pile — keeping `sum(piles) == resources` intact.
     let kind = match carrying.kind {
         CarryingKind::Food => ResourceKind::Food,
         CarryingKind::Materials => ResourceKind::Materials,
         CarryingKind::Logs => ResourceKind::Logs,
+        CarryingKind::Lumber => ResourceKind::Lumber,
+        CarryingKind::Planks => ResourceKind::Planks,
+        CarryingKind::Blocks => ResourceKind::Blocks,
+        CarryingKind::Tools => ResourceKind::Tools,
         CarryingKind::Water => ResourceKind::Water,
         CarryingKind::Blessings => {
             colony.global_upgrade_points += carrying.amount;
@@ -13402,6 +13965,59 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
     }
 }
 
+/// Put station cargo back into physical storage when its carrier dies. Input cargo was
+/// already removed from its source into a persisted transit store; output cargo was
+/// removed from the station's uncredited output store. Returning either one avoids the
+/// generic salvage path crediting it a second time or teleporting it to its destination.
+fn salvage_station_cargo(colony: &mut ColonyRuntime, carrying: &Carrying, at: WorldPos) -> bool {
+    let Some((direction, building_id, pile_id)) =
+        parse_station_cargo(carrying.source_gather_spot.as_deref())
+    else {
+        return false;
+    };
+    let Some(kind) = carrying_resource_kind(carrying.kind) else {
+        return true;
+    };
+    if direction == "out" {
+        let output_id = stockpiles::station_output_id(building_id);
+        if let Some(output) = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == output_id)
+        {
+            stockpiles::add_resource(&mut output.contents, kind, carrying.amount);
+        }
+        return true;
+    }
+    let available = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == pile_id)
+        .map_or(0.0, |pile| {
+            stockpiles::resource_amount(&pile.contents, kind)
+        });
+    let amount = carrying.amount.min(available);
+    if amount <= 0.0 {
+        return true;
+    }
+    let destination = nearest_output_pile(colony, kind, at);
+    if let Some(transit) = colony.stockpiles.iter_mut().find(|pile| pile.id == pile_id) {
+        stockpiles::add_resource(&mut transit.contents, kind, -amount);
+    }
+    if let Some(index) = destination {
+        stockpiles::add_resource(&mut colony.stockpiles[index].contents, kind, amount);
+    } else if let Some(input) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == stockpiles::station_input_id(building_id))
+    {
+        // Every accepting store is full: keep the already-owned goods safely at the
+        // station instead of deleting or duplicating them.
+        stockpiles::add_resource(&mut input.contents, kind, amount);
+    }
+    true
+}
+
 fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
     match carrying.kind {
         CarryingKind::Food => format!("{cat_id} delivered {} food to the shrine.", carrying.amount),
@@ -13414,6 +14030,12 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
         CarryingKind::Logs => {
             format!("{cat_id} hauled {} logs to storage.", carrying.amount)
         }
+        CarryingKind::Lumber => {
+            format!("{cat_id} hauled {} lumber to storage.", carrying.amount)
+        }
+        CarryingKind::Planks => format!("{cat_id} hauled {} planks.", carrying.amount),
+        CarryingKind::Blocks => format!("{cat_id} hauled {} blocks.", carrying.amount),
+        CarryingKind::Tools => format!("{cat_id} hauled {} tools.", carrying.amount),
         CarryingKind::Water => {
             format!("{cat_id} carried {} water to the shrine.", carrying.amount)
         }
@@ -17586,6 +18208,16 @@ mod tests {
         colony
     }
 
+    fn place_chain_worker_at_seeded_store(colony: &mut ColonyRuntime) {
+        let (x, y) = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("seeded storehouse")
+            .center();
+        colony.cats[0].position = position_from_world(WorldPos { x, y });
+    }
+
     #[test]
     fn two_raw_benches_share_one_five_material_cycle_in_stable_scarcity_order() {
         let run = |order: [BuildingType; 2]| {
@@ -17716,7 +18348,7 @@ mod tests {
     }
 
     #[test]
-    fn sawmill_consumes_only_logs_and_produces_lumber() {
+    fn sawmill_hauls_logs_through_local_inventory_and_credits_lumber_only_on_delivery() {
         let mut colony = chain_colony(
             BuildingType::Sawmill,
             Resources {
@@ -17727,11 +18359,246 @@ mod tests {
             },
             true,
         );
+        place_chain_worker_at_seeded_store(&mut colony);
+        let station = colony.buildings[0].clone();
+        let source_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("seeded storehouse")
+            .id
+            .clone();
+
+        // The worker begins at the storehouse. This call reserves five real logs in a
+        // persisted transit store and starts physical travel; nothing is consumed or
+        // produced merely because the station has a worker.
         phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+        assert_eq!(colony.resources.logs, 5.0);
+        assert_eq!(colony.resources.lumber, 0.0);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == source_id)
+                .unwrap()
+                .contents
+                .logs,
+            0.0
+        );
+        let inbound = colony.cats[0].carrying.clone().expect("logs in flight");
+        assert_eq!(inbound.kind, CarryingKind::Logs);
+        assert_eq!(building_inbound_haul(&colony, &station), 5.0);
+
+        // Simulate arrival at the actual station entrance and run the same deposit path
+        // movement uses. The next production pass may now consume local input.
+        let work_point = station_work_point(&station);
+        colony.cats[0].position = position_from_world(work_point);
+        credit_carrying(&mut colony, &inbound, work_point);
+        colony.cats[0].carrying = None;
+        colony.buildings[0].production_progress = 590.0;
+        phase_23_production(&mut colony, production_gate(30, 60_000), 123);
         assert_eq!(colony.resources.logs, 0.0);
+        assert_eq!(colony.resources.lumber, 0.0, "output is still local");
+        assert_eq!(
+            building_station_inventory(&colony, &station, true),
+            vec![(ResourceKind::Lumber, 2.0)]
+        );
+
+        // A later pass picks that output up. Aggregate lumber remains zero until the
+        // carrier physically deposits at its chosen accepting destination.
+        phase_23_production(&mut colony, production_gate(1, 61_000), 123);
+        let outbound = colony.cats[0].carrying.clone().expect("lumber in flight");
+        assert_eq!(outbound.kind, CarryingKind::Lumber);
+        assert_eq!(colony.resources.lumber, 0.0);
+        let target = haul_deposit_target(
+            &colony,
+            &outbound,
+            position_to_world(colony.anchor, colony.cats[0].position),
+        );
+        credit_carrying(&mut colony, &outbound, target);
+        colony.cats[0].carrying = None;
         assert_eq!(colony.resources.lumber, 2.0);
         assert_eq!(colony.resources.materials, 11.0);
         assert_eq!(colony.resources.planks, 7.0);
+    }
+
+    #[test]
+    fn dying_sawmill_input_carrier_returns_reserved_logs_without_loss_or_duplication() {
+        let mut colony = chain_colony(
+            BuildingType::Sawmill,
+            Resources {
+                logs: 5.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        place_chain_worker_at_seeded_store(&mut colony);
+        phase_23_production(&mut colony, production_gate(1, 1_000), 123);
+        let carrying = colony.cats[0]
+            .carrying
+            .clone()
+            .expect("reserved input haul");
+        let at = position_to_world(colony.anchor, colony.cats[0].position);
+
+        assert!(salvage_station_cargo(&mut colony, &carrying, at));
+        colony.cats[0].carrying = None;
+        reconcile_colony_stockpiles(&mut colony);
+
+        let physical_logs: f64 = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| !pile.is_station_output())
+            .map(|pile| pile.contents.logs)
+            .sum();
+        assert_eq!(physical_logs, 5.0);
+        assert_eq!(colony.resources.logs, 5.0);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.is_station_transit())
+                .unwrap()
+                .contents
+                .logs,
+            0.0
+        );
+    }
+
+    #[test]
+    fn vacant_forester_manual_worker_and_appointed_forester_start_the_same_physical_chain() {
+        let resources = Resources {
+            logs: 5.0,
+            ..Resources::default()
+        };
+        let mut manual = chain_colony(BuildingType::Sawmill, resources.clone(), true);
+        let mut automated = chain_colony(BuildingType::Sawmill, resources, false);
+        place_chain_worker_at_seeded_store(&mut manual);
+        place_chain_worker_at_seeded_store(&mut automated);
+        automated
+            .officers
+            .insert(OfficerRole::Forester, "crafter".to_owned());
+
+        phase_23_production(&mut manual, production_gate(1, 1_000), 123);
+        phase_23_production(&mut automated, production_gate(1, 1_000), 123);
+
+        assert!(!manual.officers.contains_key(&OfficerRole::Forester));
+        assert_eq!(manual.buildings[0].automated_by, None);
+        assert_eq!(
+            automated.buildings[0].automated_by,
+            Some(OfficerRole::Forester)
+        );
+        for colony in [&manual, &automated] {
+            let cargo = colony.cats[0]
+                .carrying
+                .as_ref()
+                .expect("input physically reserved");
+            assert_eq!(cargo.kind, CarryingKind::Logs);
+            assert_eq!(cargo.amount, 5.0);
+            assert_eq!(colony.resources.logs, 5.0);
+            assert_eq!(colony.resources.lumber, 0.0);
+            assert_eq!(
+                building_production_block_reason(colony, &colony.buildings[0]).as_deref(),
+                Some("input_in_transit")
+            );
+        }
+    }
+
+    #[test]
+    fn physical_sawmill_dispatch_is_deterministic_for_identical_worlds() {
+        let mut left = chain_colony(
+            BuildingType::Sawmill,
+            Resources {
+                logs: 10.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        let mut right = left.clone();
+        place_chain_worker_at_seeded_store(&mut left);
+        place_chain_worker_at_seeded_store(&mut right);
+        phase_23_production(&mut left, production_gate(1, 1_000), 123);
+        phase_23_production(&mut right, production_gate(1, 1_000), 123);
+        assert_eq!(left.resources, right.resources);
+        assert_eq!(left.stockpiles, right.stockpiles);
+        assert_eq!(left.cats, right.cats);
+        assert_eq!(left.buildings, right.buildings);
+    }
+
+    #[test]
+    fn physical_sawmill_chooses_nearest_source_and_destination_and_reports_full_storage() {
+        let mut colony = chain_colony(
+            BuildingType::Sawmill,
+            Resources {
+                logs: 10.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        let near_rect = tile_rect(11, 12);
+        let mut near = designated_pile("near-logs", near_rect, &[ResourceKind::Logs]);
+        near.contents.logs = 5.0;
+        colony.stockpiles.push(near);
+        reconcile_colony_stockpiles(&mut colony);
+
+        phase_23_production(&mut colony, production_gate(1, 1_000), 123);
+        assert_eq!(
+            colony.cats[0].destination,
+            Some(position_from_world(WorldPos { x: 11.0, y: 12.0 })),
+            "the closest stocked source wins"
+        );
+
+        // Isolate a completed local output and fill every general destination.
+        colony.cats[0].carrying = None;
+        colony.cats[0].destination = None;
+        colony.stockpiles.retain(|pile| pile.id != "near-logs");
+        let building = colony.buildings[0].clone();
+        let output_id = stockpiles::station_output_id(&building.id);
+        colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == output_id)
+            .unwrap()
+            .contents
+            .lumber = 2.0;
+        for pile in &mut colony.stockpiles {
+            if !pile.is_station_local() {
+                pile.accepts.insert(ResourceKind::Lumber);
+                let capacity = pile
+                    .capacity()
+                    .unwrap_or(stockpiles::GENERAL_STOREHOUSE_CAPACITY);
+                pile.contents.lumber = capacity;
+            }
+        }
+        assert_eq!(
+            building_production_block_reason(&colony, &building).as_deref(),
+            Some("output_storage_full")
+        );
+
+        // Free a nearby destination. The station worker picks it deterministically and
+        // the snapshot state becomes an outbound physical haul.
+        let mut destination =
+            designated_pile("near-lumber", tile_rect(13, 12), &[ResourceKind::Lumber]);
+        destination.contents.lumber = stockpiles::STOCKPILE_TILE_CAPACITY - 0.1;
+        colony.stockpiles.push(destination);
+        colony.cats[0].position = position_from_world(station_work_point(&building));
+        phase_23_production(&mut colony, production_gate(1, 2_000), 123);
+        let outbound = colony.cats[0].carrying.as_ref().expect("outbound cargo");
+        assert_eq!(outbound.kind, CarryingKind::Lumber);
+        assert!((outbound.amount - 0.1).abs() <= 1e-9);
+        let remainder = building_station_inventory(&colony, &building, true);
+        assert_eq!(remainder[0].0, ResourceKind::Lumber);
+        assert!(
+            (remainder[0].1 - 1.9).abs() <= 1e-9,
+            "the uncarried remainder stays physically at the station"
+        );
+        assert_eq!(
+            haul_deposit_target(
+                &colony,
+                outbound,
+                position_to_world(colony.anchor, colony.cats[0].position)
+            ),
+            WorldPos { x: 13.0, y: 12.0 }
+        );
     }
 
     #[test]
@@ -26296,7 +27163,8 @@ mod tests {
             }
         );
 
-        // Exactly three dens and the three raw-material workshops.
+        // Exactly three dens and the three raw-material workshops. The finite seeded
+        // storehouse is a stockpile, not a fourth capacity building.
         let count = |bt: BuildingType| {
             colony
                 .buildings

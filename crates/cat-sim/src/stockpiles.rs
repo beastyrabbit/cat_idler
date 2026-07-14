@@ -1,18 +1,19 @@
 //! Spatial stockpiles (P12.3) — goods physically live in on-map containers.
 //!
-//! **Balancing-reservoir model.** The economy of record stays `ColonyRuntime.resources`;
-//! stockpiles are a *view* that must always sum back to it:
+//! **Physical-store model.** `ColonyRuntime.resources` is a compatibility aggregate;
+//! stockpiles plus station input/transit stores are the physical source of truth and sum
+//! back to it (finished station output is excluded until delivered):
 //!
 //! > INVARIANT: `sum(stockpile.contents) == colony.resources` for every resource, every tick.
 //!
-//! Exactly one stockpile — the **shrine reservoir** ([`SHRINE_STOCKPILE_ID`], accepts every
-//! resource, centered on the village anchor) — absorbs the balance. Deposits (hauling
+//! Exactly one finite seeded **general storehouse** ([`GENERAL_STOREHOUSE_ID`], accepts every
+//! resource, located at the founding FoodStorage) absorbs the ordinary balance. Deposits
 //! arrivals) route their carried goods to the nearest accepting player pile with headroom
-//! (falling back to the reservoir) while still crediting `colony.resources` exactly as
+//! (falling back to the storehouse) while still crediting `colony.resources` exactly as
 //! before. Every *other* resource change (consumption, spoilage, production, caps, tithe,
 //! upgrades) keeps mutating `colony.resources` untouched; [`reconcile`] then folds the whole
-//! net change into the reservoir at end of tick. With no player piles, deposits and the
-//! reservoir both land at the shrine, so the economy is byte-identical to pre-P12.3.
+//! net change into the storehouse at end of tick. Legacy shrine reservoirs migrate
+//! deterministically to this finite store on load/reconcile.
 
 use std::collections::BTreeSet;
 
@@ -20,11 +21,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::{entities::Resources, zones::ZoneRect};
 
-/// Reserved id of the shrine reservoir stockpile (the always-present balancing pile).
+/// Legacy id migrated to [`GENERAL_STOREHOUSE_ID`] at reconciliation.
 pub const SHRINE_STOCKPILE_ID: &str = "stockpile-shrine";
+pub const GENERAL_STOREHOUSE_ID: &str = "stockpile-storehouse";
+pub const GENERAL_STOREHOUSE_CAPACITY: f64 = 360.0;
 
-/// Per-tile capacity of a *designated* (player) stockpile, per resource. The shrine
-/// reservoir is unbounded. Only gates deposit routing among piles — never the economy.
+/// Reserved, persisted station-local stores. They use the existing stockpile JSON so
+/// saves can resume mid-production without a parallel persistence format, but they are
+/// never player deposit targets. Input stores are part of the aggregate resource ledger;
+/// output stores are work-in-progress and are credited only after an outbound physical
+/// haul reaches a general pile.
+pub const STATION_INPUT_PREFIX: &str = "station-input:";
+pub const STATION_OUTPUT_PREFIX: &str = "station-output:";
+pub const STATION_TRANSIT_PREFIX: &str = "station-transit:";
+pub const STATION_LOCAL_CAPACITY: f64 = 10.0;
+
+/// Per-tile capacity of a *designated* (player) stockpile, per resource.
 pub const STOCKPILE_TILE_CAPACITY: f64 = 40.0;
 
 /// Largest square edge (in tiles) a designated stockpile may span — reuses the zone cap.
@@ -93,6 +105,9 @@ pub enum ResourceKind {
     Armor,
     Logs,
     Lumber,
+    Planks,
+    Blocks,
+    Tools,
     Fibre,
     Hide,
     Cloth,
@@ -117,6 +132,9 @@ impl ResourceKind {
         Self::Armor,
         Self::Logs,
         Self::Lumber,
+        Self::Planks,
+        Self::Blocks,
+        Self::Tools,
         Self::Fibre,
         Self::Hide,
         Self::Cloth,
@@ -143,6 +161,9 @@ pub fn resource_amount(resources: &Resources, kind: ResourceKind) -> f64 {
         ResourceKind::Armor => resources.armor,
         ResourceKind::Logs => resources.logs,
         ResourceKind::Lumber => resources.lumber,
+        ResourceKind::Planks => resources.planks,
+        ResourceKind::Blocks => resources.blocks,
+        ResourceKind::Tools => resources.tools,
         ResourceKind::Fibre => resources.fibre,
         ResourceKind::Hide => resources.hide,
         ResourceKind::Cloth => resources.cloth,
@@ -168,6 +189,9 @@ pub fn set_resource(resources: &mut Resources, kind: ResourceKind, value: f64) {
         ResourceKind::Armor => resources.armor = value,
         ResourceKind::Logs => resources.logs = value,
         ResourceKind::Lumber => resources.lumber = value,
+        ResourceKind::Planks => resources.planks = value,
+        ResourceKind::Blocks => resources.blocks = value,
+        ResourceKind::Tools => resources.tools = value,
         ResourceKind::Fibre => resources.fibre = value,
         ResourceKind::Hide => resources.hide = value,
         ResourceKind::Cloth => resources.cloth = value,
@@ -196,7 +220,32 @@ pub struct Stockpile {
 impl Stockpile {
     #[must_use]
     pub fn is_shrine(&self) -> bool {
-        self.id == SHRINE_STOCKPILE_ID
+        self.id == SHRINE_STOCKPILE_ID || self.id == GENERAL_STOREHOUSE_ID
+    }
+
+    #[must_use]
+    pub fn is_general_storehouse(&self) -> bool {
+        self.id == GENERAL_STOREHOUSE_ID
+    }
+
+    #[must_use]
+    pub fn is_station_input(&self) -> bool {
+        self.id.starts_with(STATION_INPUT_PREFIX)
+    }
+
+    #[must_use]
+    pub fn is_station_output(&self) -> bool {
+        self.id.starts_with(STATION_OUTPUT_PREFIX)
+    }
+
+    #[must_use]
+    pub fn is_station_transit(&self) -> bool {
+        self.id.starts_with(STATION_TRANSIT_PREFIX)
+    }
+
+    #[must_use]
+    pub fn is_station_local(&self) -> bool {
+        self.is_station_input() || self.is_station_output() || self.is_station_transit()
     }
 
     /// Tile count of the (inclusive-edge) footprint.
@@ -207,11 +256,16 @@ impl Stockpile {
         f64::from(w) * f64::from(h)
     }
 
-    /// Per-resource capacity: unbounded for the shrine reservoir, else area-scaled.
+    /// Per-resource capacity: finite for every current pile; only a not-yet-migrated
+    /// legacy shrine row temporarily reports unbounded capacity.
     #[must_use]
     pub fn capacity(&self) -> Option<f64> {
-        if self.is_shrine() {
+        if self.id == SHRINE_STOCKPILE_ID {
             None
+        } else if self.is_general_storehouse() {
+            Some(GENERAL_STOREHOUSE_CAPACITY)
+        } else if self.is_station_local() {
+            Some(STATION_LOCAL_CAPACITY)
         } else {
             Some(self.tiles() * STOCKPILE_TILE_CAPACITY)
         }
@@ -232,6 +286,45 @@ impl Stockpile {
         }
         self.capacity()
             .is_none_or(|cap| resource_amount(&self.contents, kind) < cap)
+    }
+
+    #[must_use]
+    pub fn headroom(&self, kind: ResourceKind) -> f64 {
+        if !self.accepts.contains(&kind) {
+            return 0.0;
+        }
+        self.capacity().map_or(f64::INFINITY, |capacity| {
+            (capacity - resource_amount(&self.contents, kind)).max(0.0)
+        })
+    }
+}
+
+#[must_use]
+pub fn station_input_id(building_id: &str) -> String {
+    format!("{STATION_INPUT_PREFIX}{building_id}")
+}
+
+#[must_use]
+pub fn station_output_id(building_id: &str) -> String {
+    format!("{STATION_OUTPUT_PREFIX}{building_id}")
+}
+
+#[must_use]
+pub fn station_transit_id(building_id: &str) -> String {
+    format!("{STATION_TRANSIT_PREFIX}{building_id}")
+}
+
+#[must_use]
+pub fn make_station_store(
+    id: String,
+    rect: ZoneRect,
+    accepts: impl IntoIterator<Item = ResourceKind>,
+) -> Stockpile {
+    Stockpile {
+        id,
+        rect,
+        accepts: accepts.into_iter().collect(),
+        contents: Resources::default(),
     }
 }
 
@@ -270,11 +363,11 @@ pub fn shrine_rect(anchor_x: i32, anchor_y: i32) -> ZoneRect {
     }
 }
 
-/// A fresh shrine reservoir (accepts every resource, empty contents).
+/// A fresh finite seeded storehouse (legacy function name retained for call-site stability).
 #[must_use]
 pub fn make_shrine(rect: ZoneRect) -> Stockpile {
     Stockpile {
-        id: SHRINE_STOCKPILE_ID.to_owned(),
+        id: GENERAL_STOREHOUSE_ID.to_owned(),
         rect,
         accepts: ResourceKind::ALL.iter().copied().collect(),
         contents: Resources::default(),
@@ -282,7 +375,25 @@ pub fn make_shrine(rect: ZoneRect) -> Stockpile {
 }
 
 fn shrine_index(stockpiles: &mut Vec<Stockpile>, shrine_rect: ZoneRect) -> usize {
-    if let Some(idx) = stockpiles.iter().position(Stockpile::is_shrine) {
+    if stockpiles
+        .iter()
+        .any(|pile| pile.id == GENERAL_STOREHOUSE_ID)
+    {
+        stockpiles.retain(|pile| pile.id != SHRINE_STOCKPILE_ID);
+        let idx = stockpiles
+            .iter()
+            .position(|pile| pile.id == GENERAL_STOREHOUSE_ID)
+            .expect("storehouse retained");
+        stockpiles[idx].rect = shrine_rect;
+        return idx;
+    }
+    if let Some(idx) = stockpiles
+        .iter()
+        .position(|pile| pile.id == SHRINE_STOCKPILE_ID)
+    {
+        stockpiles[idx].id = GENERAL_STOREHOUSE_ID.to_owned();
+        stockpiles[idx].rect = shrine_rect;
+        stockpiles[idx].accepts = ResourceKind::ALL.iter().copied().collect();
         return idx;
     }
     stockpiles.push(make_shrine(shrine_rect));
@@ -297,8 +408,8 @@ fn rect_center(rect: ZoneRect) -> (f64, f64) {
 }
 
 /// Choose the stockpile a deposit of `kind` arriving at `(from_x, from_y)` should land in:
-/// the nearest accepting pile with headroom, tie-broken by id; the shrine reservoir is the
-/// guaranteed fallback. Returns `None` only if no pile can hold it (no shrine present).
+/// the nearest accepting pile with headroom, tie-broken by id; the seeded storehouse is the
+/// normal fallback. Returns `None` only if no pile can hold it.
 #[must_use]
 pub fn deposit_index(
     stockpiles: &[Stockpile],
@@ -308,7 +419,7 @@ pub fn deposit_index(
 ) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (idx, pile) in stockpiles.iter().enumerate() {
-        if !pile.has_headroom(kind) {
+        if pile.is_station_local() || !pile.has_headroom(kind) {
             continue;
         }
         let (cx, cy) = rect_center(pile.rect);
@@ -341,7 +452,8 @@ pub fn village_deposit_index(
 ) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (idx, pile) in stockpiles.iter().enumerate() {
-        if gather_spot_ids.contains(&pile.id) || !pile.has_headroom(kind) {
+        if pile.is_station_local() || gather_spot_ids.contains(&pile.id) || !pile.has_headroom(kind)
+        {
             continue;
         }
         let (cx, cy) = rect_center(pile.rect);
@@ -360,15 +472,19 @@ pub fn village_deposit_index(
         .or_else(|| stockpiles.iter().position(Stockpile::is_shrine))
 }
 
-/// Restore the invariant: set the shrine reservoir to `resources − sum(player piles)` per
+/// Restore the invariant: set the finite storehouse to `resources − sum(other physical piles)` per
 /// resource, draining player piles (deterministically, by id) when they hold more than the
 /// current total. Never mutates `resources`, so the economy stays byte-identical. Creates
-/// the shrine reservoir if absent (legacy rows / freshly reset runs).
-pub fn reconcile(stockpiles: &mut Vec<Stockpile>, resources: &Resources, shrine_rect: ZoneRect) {
+/// the storehouse if absent and migrates any legacy shrine row.
+pub fn reconcile(
+    stockpiles: &mut Vec<Stockpile>,
+    resources: &mut Resources,
+    shrine_rect: ZoneRect,
+) {
     let shrine_idx = shrine_index(stockpiles, shrine_rect);
 
     let mut player: Vec<usize> = (0..stockpiles.len())
-        .filter(|&idx| idx != shrine_idx)
+        .filter(|&idx| idx != shrine_idx && !stockpiles[idx].is_station_output())
         .collect();
     player.sort_by(|&a, &b| stockpiles[a].id.cmp(&stockpiles[b].id));
 
@@ -394,11 +510,15 @@ pub fn reconcile(stockpiles: &mut Vec<Stockpile>, resources: &Resources, shrine_
             }
             set_resource(&mut stockpiles[shrine_idx].contents, kind, 0.0);
         } else {
-            set_resource(
-                &mut stockpiles[shrine_idx].contents,
-                kind,
-                total - player_sum,
-            );
+            let residual = total - player_sum;
+            let stored = stockpiles[shrine_idx]
+                .capacity()
+                .map_or(residual, |capacity| residual.min(capacity));
+            set_resource(&mut stockpiles[shrine_idx].contents, kind, stored);
+            // Physical capacity is authoritative. Any aggregate amount that cannot fit
+            // in the finite storehouse or a designated pile is deterministic overflow,
+            // not an invisible unbounded shrine balance.
+            set_resource(resources, kind, player_sum + stored);
         }
     }
 }
@@ -444,8 +564,8 @@ mod tests {
     #[test]
     fn reconcile_seeds_shrine_and_holds_the_whole_total() {
         let mut piles = Vec::new();
-        let resources = res(150.0, 100.0, 24.0);
-        reconcile(&mut piles, &resources, small_rect(6, 6));
+        let mut resources = res(150.0, 100.0, 24.0);
+        reconcile(&mut piles, &mut resources, small_rect(6, 6));
 
         assert_eq!(piles.len(), 1);
         assert!(piles[0].is_shrine());
@@ -458,6 +578,42 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_migrates_legacy_unbounded_shrine_to_finite_storehouse() {
+        let rect = small_rect(2, 2);
+        let mut legacy = make_shrine(rect);
+        legacy.id = SHRINE_STOCKPILE_ID.to_owned();
+        legacy.contents.food = 25.0;
+        let mut piles = vec![legacy];
+        let mut resources = res(25.0, 10.0, 5.0);
+        let store_rect = ZoneRect {
+            x1: 8,
+            y1: 8,
+            x2: 10,
+            y2: 10,
+        };
+
+        reconcile(&mut piles, &mut resources, store_rect);
+
+        assert_eq!(piles.len(), 1);
+        assert_eq!(piles[0].id, GENERAL_STOREHOUSE_ID);
+        assert_eq!(piles[0].rect, store_rect);
+        assert_eq!(piles[0].capacity(), Some(GENERAL_STOREHOUSE_CAPACITY));
+        assert_eq!(piles[0].contents.food, 25.0);
+    }
+
+    #[test]
+    fn finite_storehouse_clamps_invisible_overflow_instead_of_hiding_it() {
+        let mut piles = Vec::new();
+        let mut resources = res(GENERAL_STOREHOUSE_CAPACITY + 40.0, 0.0, 0.0);
+
+        reconcile(&mut piles, &mut resources, small_rect(6, 6));
+
+        assert_eq!(resources.food, GENERAL_STOREHOUSE_CAPACITY);
+        assert_eq!(piles[0].contents.food, GENERAL_STOREHOUSE_CAPACITY);
+        assert_eq!(pile_sum(&piles, ResourceKind::Food), resources.food);
+    }
+
+    #[test]
     fn reconcile_with_a_player_pile_keeps_the_invariant_exactly() {
         let mut piles = vec![
             make_shrine(small_rect(6, 6)),
@@ -466,7 +622,8 @@ mod tests {
         // A deposit already filled the player pile with 30 food.
         piles[1].contents.food = 30.0;
         let resources = res(150.0, 100.0, 24.0);
-        reconcile(&mut piles, &resources, small_rect(6, 6));
+        let mut resources = resources;
+        reconcile(&mut piles, &mut resources, small_rect(6, 6));
 
         assert_eq!(pile_sum(&piles, ResourceKind::Food), 150.0);
         assert_eq!(piles[1].contents.food, 30.0, "player pile retained");
@@ -486,7 +643,8 @@ mod tests {
         piles[2].contents.food = 40.0;
         // Consumption dropped the world total below the 80 held in piles.
         let resources = res(50.0, 0.0, 0.0);
-        reconcile(&mut piles, &resources, small_rect(6, 6));
+        let mut resources = resources;
+        reconcile(&mut piles, &mut resources, small_rect(6, 6));
 
         assert_eq!(pile_sum(&piles, ResourceKind::Food), 50.0);
         // Drained in id order: "stockpile-a" first (loses 30 → 10), "stockpile-b" untouched.

@@ -1345,8 +1345,11 @@ fn remove_stockpile(
     stockpile_id: &str,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
-    if stockpile_id == stockpiles::SHRINE_STOCKPILE_ID {
-        return fail("The shrine reservoir cannot be removed.");
+    if matches!(
+        stockpile_id,
+        stockpiles::SHRINE_STOCKPILE_ID | stockpiles::GENERAL_STOREHOUSE_ID
+    ) {
+        return fail("The seeded village storehouse cannot be removed.");
     }
     colony
         .stockpiles
@@ -1982,6 +1985,9 @@ fn trade_would_overflow(
         stockpiles::ResourceKind::Armor => Some(capacities.armor),
         stockpiles::ResourceKind::Logs => Some(capacities.logs),
         stockpiles::ResourceKind::Lumber => Some(capacities.lumber),
+        stockpiles::ResourceKind::Planks => Some(capacities.planks),
+        stockpiles::ResourceKind::Blocks => Some(capacities.blocks),
+        stockpiles::ResourceKind::Tools => Some(capacities.tools),
         stockpiles::ResourceKind::Fibre => Some(capacities.fibre),
         stockpiles::ResourceKind::Hide => Some(capacities.hide),
         stockpiles::ResourceKind::Cloth => Some(capacities.cloth),
@@ -2218,6 +2224,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         stockpiles: colony
             .stockpiles
             .iter()
+            .filter(|pile| !pile.is_station_local())
             .map(|pile| stockpile_snapshot(pile, &colony.gather_spots))
             .collect(),
         farms: colony
@@ -2638,7 +2645,44 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 // shrine today: every other building type draws its inputs straight from
                 // `colony.resources`, never from physically delivered cargo.
                 inbound_haul: crate::world_tick::building_inbound_haul(colony, building),
-                outbound_haul: 0.0,
+                outbound_haul: crate::world_tick::building_outbound_haul(colony, building),
+                input_inventory: crate::world_tick::building_station_inventory(
+                    colony, building, false,
+                )
+                .into_iter()
+                .map(|(kind, amount)| proto::ResourceStackSnapshot {
+                    kind: sim_to_proto_resource_kind(kind),
+                    amount,
+                })
+                .collect(),
+                output_inventory: crate::world_tick::building_station_inventory(
+                    colony, building, true,
+                )
+                .into_iter()
+                .map(|(kind, amount)| proto::ResourceStackSnapshot {
+                    kind: sim_to_proto_resource_kind(kind),
+                    amount,
+                })
+                .collect(),
+                production_queue: crate::world_tick::building_production_queue(building),
+                production_block_reason: crate::world_tick::building_production_block_reason(
+                    colony, building,
+                ),
+                worker_travel: crate::world_tick::building_worker_travel(colony, building),
+                inbound_cargo: crate::world_tick::building_station_cargo(colony, building, "in")
+                    .into_iter()
+                    .map(|(kind, amount)| proto::ResourceStackSnapshot {
+                        kind: sim_to_proto_resource_kind(kind),
+                        amount,
+                    })
+                    .collect(),
+                outbound_cargo: crate::world_tick::building_station_cargo(colony, building, "out")
+                    .into_iter()
+                    .map(|(kind, amount)| proto::ResourceStackSnapshot {
+                        kind: sim_to_proto_resource_kind(kind),
+                        amount,
+                    })
+                    .collect(),
             })
         })
         .collect()
@@ -3208,6 +3252,9 @@ fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::Resource
         proto::ResourceKind::Armor => ResourceKind::Armor,
         proto::ResourceKind::Logs => ResourceKind::Logs,
         proto::ResourceKind::Lumber => ResourceKind::Lumber,
+        proto::ResourceKind::Planks => ResourceKind::Planks,
+        proto::ResourceKind::Blocks => ResourceKind::Blocks,
+        proto::ResourceKind::Tools => ResourceKind::Tools,
         proto::ResourceKind::Fibre => ResourceKind::Fibre,
         proto::ResourceKind::Hide => ResourceKind::Hide,
         proto::ResourceKind::Cloth => ResourceKind::Cloth,
@@ -3233,6 +3280,9 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
         ResourceKind::Armor => proto::ResourceKind::Armor,
         ResourceKind::Logs => proto::ResourceKind::Logs,
         ResourceKind::Lumber => proto::ResourceKind::Lumber,
+        ResourceKind::Planks => proto::ResourceKind::Planks,
+        ResourceKind::Blocks => proto::ResourceKind::Blocks,
+        ResourceKind::Tools => proto::ResourceKind::Tools,
         ResourceKind::Fibre => proto::ResourceKind::Fibre,
         ResourceKind::Hide => proto::ResourceKind::Hide,
         ResourceKind::Cloth => proto::ResourceKind::Cloth,
@@ -3440,6 +3490,10 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Blessings => proto::CarryingKind::Blessings,
         entities::CarryingKind::Materials => proto::CarryingKind::Materials,
         entities::CarryingKind::Logs => proto::CarryingKind::Logs,
+        entities::CarryingKind::Lumber => proto::CarryingKind::Lumber,
+        entities::CarryingKind::Planks => proto::CarryingKind::Planks,
+        entities::CarryingKind::Blocks => proto::CarryingKind::Blocks,
+        entities::CarryingKind::Tools => proto::CarryingKind::Tools,
         entities::CarryingKind::Water => proto::CarryingKind::Water,
     }
 }
@@ -4231,7 +4285,13 @@ mod tests {
         let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
         personal.kind = VillageKind::Personal;
         personal.owner_player_id = Some("owner".to_owned());
-        personal.resources.food = storage::BASE_CAPACITY.food - 1.0;
+        let effects = upgrade_tree::resolve_effects(personal.upgrade_tree.owned_node_ids.iter());
+        let capacity = storage::storage_capacities(
+            &storage_buildings(&personal),
+            effects.storage_per_level_mult,
+        )
+        .food;
+        personal.resources.food = capacity - 1.0;
         personal.known_village_ids.insert("c1".to_owned());
         world.colonies[0]
             .known_village_ids
@@ -4380,6 +4440,45 @@ mod tests {
         assert!((0.0..=1.0).contains(&building.production_progress));
         assert_eq!(building.production_progress, 0.5);
         assert_eq!(building.production_output.as_deref(), Some("refined"));
+    }
+
+    #[test]
+    fn signed_manual_assignment_can_run_a_sawmill_while_forester_office_is_vacant() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        assert!(!colony.officers.contains_key(&OfficerRole::Forester));
+        let cat_id = colony.cats[0].id.clone();
+        let building_id = "manual-sawmill".to_owned();
+        colony.buildings.push(crate::world_tick::BuildingRuntime {
+            id: building_id.clone(),
+            building_type: BuildingType::Sawmill,
+            level: 1,
+            position: TilePos { x: 18, y: 18 },
+            is_complete: true,
+            construction_progress: 100,
+            ..crate::world_tick::BuildingRuntime::default()
+        });
+
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::AssignWorker {
+                session_id: "sess_1".to_owned(),
+                nickname: "Guest".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: cat_id.clone(),
+                building_id: Some(building_id.clone()),
+            },
+            &ctx(),
+        );
+
+        assert!(result.ok, "manual staffing must not require a Forester");
+        let building = world.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .unwrap();
+        assert_eq!(building.assigned_cat.as_deref(), Some(cat_id.as_str()));
+        assert_eq!(building.automated_by, None);
     }
 
     #[test]
@@ -5304,8 +5403,8 @@ mod tests {
             snap.colonies[0]
                 .stockpiles
                 .iter()
-                .any(|pile| pile.id == stockpiles::SHRINE_STOCKPILE_ID),
-            "shrine reservoir exposed"
+                .any(|pile| pile.id == stockpiles::GENERAL_STOREHOUSE_ID),
+            "finite seeded storehouse exposed"
         );
         assert!(
             snap.colonies[0].stockpiles.len() >= 2,
@@ -5332,12 +5431,12 @@ mod tests {
         let gather_spot = pile.gather_spot.expect("flagged as a gather spot");
         assert_eq!(gather_spot.kind, proto::ResourceKind::Water);
 
-        // The shrine and a general stockpile are never flagged as gather spots.
+        // The seeded storehouse and a general stockpile are never flagged as gather spots.
         let shrine = snap.colonies[0]
             .stockpiles
             .iter()
-            .find(|pile| pile.id == stockpiles::SHRINE_STOCKPILE_ID)
-            .expect("shrine exposed");
+            .find(|pile| pile.id == stockpiles::GENERAL_STOREHOUSE_ID)
+            .expect("storehouse exposed");
         assert!(shrine.gather_spot.is_none());
     }
 

@@ -140,7 +140,7 @@ pub struct ColonySnapshot {
     /// Appointed officers (role → cat id). P12.2; empty/absent when none appointed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub officers: BTreeMap<OfficerRole, String>,
-    /// On-map stockpiles (P12.3), including the shrine reservoir. Rendered as visible
+    /// On-map stockpiles, including the finite seeded village storehouse. Rendered as visible
     /// piles sized to contents. Empty/absent for pre-P12.3 snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stockpiles: Vec<StockpileSnapshot>,
@@ -287,6 +287,9 @@ pub enum ResourceKind {
     Armor,
     Logs,
     Lumber,
+    Planks,
+    Blocks,
+    Tools,
     Fibre,
     Hide,
     Cloth,
@@ -521,6 +524,10 @@ pub enum CarryingKind {
     Blessings,
     Materials,
     Logs,
+    Lumber,
+    Planks,
+    Blocks,
+    Tools,
     Water,
 }
 
@@ -831,6 +838,34 @@ pub struct BuildingSnapshot {
     /// so a physical workshop-haul implementation can expose it without a wire break.
     #[serde(default)]
     pub outbound_haul: f64,
+    /// True station-local inputs already delivered to this building. These are not a
+    /// projection of colony totals.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_inventory: Vec<ResourceStackSnapshot>,
+    /// Finished goods still at the station awaiting a physical outbound haul. They are
+    /// deliberately absent from colony aggregate resources until deposited.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_inventory: Vec<ResourceStackSnapshot>,
+    /// Stable recipe ids in deterministic execution order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub production_queue: Vec<String>,
+    /// Stable machine-readable reason that the queue cannot currently advance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub production_block_reason: Option<String>,
+    /// Human-readable physical worker/cargo travel state for the inspector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_travel: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inbound_cargo: Vec<ResourceStackSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outbound_cargo: Vec<ResourceStackSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceStackSnapshot {
+    pub kind: ResourceKind,
+    pub amount: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1923,6 +1958,7 @@ mod tests {
                     production_output: None,
                     inbound_haul: 0.0,
                     outbound_haul: 0.0,
+                    ..BuildingSnapshot::default()
                 }],
                 claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
@@ -2287,6 +2323,7 @@ mod tests {
             production_output: Some("refined".to_string()),
             inbound_haul: 0.0,
             outbound_haul: 0.0,
+            ..BuildingSnapshot::default()
         };
 
         let encoded = serde_json::to_value(&building).expect("serialize building");

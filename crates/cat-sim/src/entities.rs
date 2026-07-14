@@ -54,6 +54,14 @@ pub enum CarryingKind {
     Materials,
     #[serde(rename = "logs")]
     Logs,
+    #[serde(rename = "lumber")]
+    Lumber,
+    #[serde(rename = "planks")]
+    Planks,
+    #[serde(rename = "blocks")]
+    Blocks,
+    #[serde(rename = "tools")]
+    Tools,
     #[serde(rename = "water")]
     Water,
 }

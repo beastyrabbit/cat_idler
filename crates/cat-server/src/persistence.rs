@@ -1828,6 +1828,78 @@ mod tests {
     }
 
     #[test]
+    fn station_input_transit_and_carrier_resume_exactly_after_restart() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(8_181);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 8_181);
+        let building_id = "restart-sawmill";
+        colony.buildings.push(BuildingRuntime {
+            id: building_id.to_owned(),
+            building_type: BuildingType::Sawmill,
+            position: TilePos { x: 18, y: 18 },
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 317.5,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            ..BuildingRuntime::default()
+        });
+        let transit_id = cat_sim::stockpiles::station_transit_id(building_id);
+        colony.stockpiles.push(Stockpile {
+            id: transit_id.clone(),
+            rect: ZoneRect {
+                x1: 11,
+                y1: 2,
+                x2: 13,
+                y2: 4,
+            },
+            accepts: [cat_sim::stockpiles::ResourceKind::Logs]
+                .into_iter()
+                .collect(),
+            contents: Resources {
+                logs: 5.0,
+                ..Resources::default()
+            },
+        });
+        colony.cats[0].carrying = Some(Carrying {
+            kind: cat_sim::entities::CarryingKind::Logs,
+            amount: 5.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(format!("station-in|{building_id}|{transit_id}")),
+        });
+        colony.cats[0].destination = Some(Position {
+            map: cat_sim::entities::MapType::World,
+            x: 17.0,
+            y: 18.0,
+        });
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save mid-haul");
+        let restarted = load_world(&conn).expect("load").expect("persisted world");
+        let colony = &restarted.colonies[0];
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == transit_id)
+                .expect("transit store persisted")
+                .contents
+                .logs,
+            5.0
+        );
+        assert_eq!(colony.cats[0].carrying.as_ref().unwrap().amount, 5.0);
+        assert_eq!(
+            colony.cats[0]
+                .carrying
+                .as_ref()
+                .unwrap()
+                .source_gather_spot
+                .as_deref(),
+            Some(format!("station-in|{building_id}|{transit_id}").as_str())
+        );
+        assert_eq!(colony.buildings.last().unwrap().production_progress, 317.5);
+    }
+
+    #[test]
     fn restart_at_organic_arrival_preserves_the_exact_deadline_outcome() {
         const STARTED_AT: i64 = 10_000;
         const STEP_MS: i64 = 15 * 60_000;
