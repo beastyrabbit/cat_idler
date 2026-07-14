@@ -53,7 +53,6 @@ enum PurchaseState {
     ResearchReady,
     ResearchUnaffordable,
     LegacyReady,
-    IntegrationPending,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -215,11 +214,9 @@ impl ResearchUiModel {
             return PurchaseState::Locked;
         };
         let node = &research_catalog().nodes()[index];
+        let has_legacy_blessing_purchase = UPGRADE_NODES.iter().any(|legacy| legacy.id == node.id);
         if snapshot.owned_node_ids.iter().any(|owned| owned == id) {
             return PurchaseState::Owned;
-        }
-        if !UPGRADE_NODES.iter().any(|legacy| legacy.id == node.id) {
-            return PurchaseState::IntegrationPending;
         }
         match self.state_of(id, snapshot) {
             CatalogNodeState::Owned => PurchaseState::Owned,
@@ -227,7 +224,8 @@ impl ResearchUiModel {
             CatalogNodeState::Available => {
                 if can_afford(snapshot.research_points, node.cost) {
                     PurchaseState::ResearchReady
-                } else if can_afford(snapshot.blessings, node.cost) {
+                } else if has_legacy_blessing_purchase && can_afford(snapshot.blessings, node.cost)
+                {
                     PurchaseState::LegacyReady
                 } else {
                     PurchaseState::ResearchUnaffordable
@@ -713,7 +711,7 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                             button.spawn((ui_text("", FS_SMALL, UI_INK), PurchaseButtonText));
                         });
                     inspector.spawn(ui_text(
-                        "The original 24 studies can be completed with research points or commissioned with blessings. Expanded catalog studies remain visible for planning while their runtime effects are integrated.",
+                        "All studies can be completed with research points. The original studies may also be commissioned separately with shrine blessings.",
                         FS_SMALL,
                         LEDGER_MUTED,
                     ));
@@ -1152,8 +1150,7 @@ fn payload_line(payload: &ResearchPayload) -> String {
     }
 }
 
-/// Repaint only the one-node inspector. Generated catalog nodes are explicitly
-/// non-actionable until the sim consumes their payloads.
+/// Repaint only the one-node inspector.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn update_research_inspector(
     latest: Res<LatestSnapshot>,
@@ -1222,7 +1219,6 @@ pub(super) fn update_research_inspector(
                 format!("Need {:.0} research points", node.cost)
             }
             PurchaseState::LegacyReady => format!("Commission for {:.0} blessings", node.cost),
-            PurchaseState::IntegrationPending => "Runtime integration pending".to_owned(),
         },
     );
     if let Ok(mut disabled) = purchase_button.single_mut() {
@@ -1408,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_nodes_prefer_research_then_blessings_and_generated_stay_disabled() {
+    fn every_catalog_node_uses_research_while_legacy_nodes_retain_blessing_fallback() {
         let model = ResearchUiModel::from_catalog();
         let mut research = snapshot(&["research_hut"], 99.0);
         assert_eq!(
@@ -1423,22 +1419,26 @@ mod tests {
             model.purchase_state("basic_tools", &research),
             PurchaseState::LegacyReady
         );
+        research.research_points = 99.0;
         let generated = research_catalog()
             .nodes()
             .iter()
-            .find(|node| node.id == "den_foundations")
+            .find(|node| node.id == "research_hut_foundations")
             .unwrap();
         assert_eq!(
             model.purchase_state(&generated.id, &research),
-            PurchaseState::IntegrationPending
+            PurchaseState::ResearchReady
         );
-        assert!(model.dispatchable_legacy_node("basic_tools", &research));
-        assert!(!model.dispatchable_research_node(&generated.id, &research));
+        assert!(!model.dispatchable_legacy_node("basic_tools", &research));
+        assert!(model.dispatchable_research_node(&generated.id, &research));
         assert!(!model.dispatchable_legacy_node(&generated.id, &research));
 
         let generated_action =
             research_purchase_action(&model, &research, &generated.id, &session());
-        assert!(generated_action.is_none());
+        assert!(matches!(
+            generated_action,
+            Some(ClientAction::ResearchNode { node_id, .. }) if node_id == generated.id
+        ));
 
         research.research_points = 12.0;
         assert!(matches!(
@@ -1468,7 +1468,7 @@ mod tests {
         ));
         assert!(research_purchase_disabled(
             true,
-            Some(PurchaseState::IntegrationPending)
+            Some(PurchaseState::Locked)
         ));
         assert!(research_purchase_disabled(true, None));
     }

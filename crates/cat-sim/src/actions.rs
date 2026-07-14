@@ -748,6 +748,13 @@ fn plan_building(
             _ => "Building is locked.",
         });
     }
+    let research_effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    if building_type != BuildingType::ResearchHut
+        && upgrade_tree::building_has_research_gate(building_type.as_str())
+        && !research_effects.unlocks_building(building_type.as_str())
+    {
+        return fail("That building must be researched before construction.");
+    }
     if matches!(
         building_type,
         BuildingType::Smithy | BuildingType::Barracks | BuildingType::School
@@ -1424,7 +1431,8 @@ fn sell_goods(
         return fail("Not enough goods.");
     }
 
-    let payout = trader::trader_buy_price(item, count);
+    let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let payout = trader::trader_buy_price(item, count) * effects.trade_value_mult;
     let removed = colony.remove_item(item, count);
     debug_assert!(removed, "checked availability above");
     colony.coin += payout;
@@ -1900,7 +1908,8 @@ fn trade_would_overflow(
 ) -> bool {
     let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let capacities =
-        storage::storage_capacities(&storage_buildings(colony), effects.storage_per_level_mult);
+        storage::storage_capacities(&storage_buildings(colony), effects.storage_per_level_mult)
+            .scaled(effects.storage_capacity_mult);
     let capacity = match kind {
         stockpiles::ResourceKind::Food => Some(capacities.food),
         stockpiles::ResourceKind::Water => Some(capacities.water),
@@ -1983,9 +1992,11 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
     let alive_cats = alive_cats_sorted(colony);
     let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let storage_buildings = storage_buildings(colony);
-    let caps = storage::storage_capacities(&storage_buildings, effects.storage_per_level_mult);
+    let caps = storage::storage_capacities(&storage_buildings, effects.storage_per_level_mult)
+        .scaled(effects.storage_capacity_mult);
     let housing_buildings = housing_buildings(colony);
-    let housing_capacity = housing::housing_capacity(&housing_buildings, effects.housing_per_den);
+    let housing_capacity = housing::housing_capacity(&housing_buildings, effects.housing_per_den)
+        * effects.housing_capacity_mult;
     let population = alive_cats.len() as u32;
     let current_migration_minute = migration_game_minute_at(colony, now_ms);
     let probation_deadlines = colony

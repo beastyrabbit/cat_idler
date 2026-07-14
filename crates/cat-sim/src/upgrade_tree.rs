@@ -3,7 +3,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::{BuildingType, JobKind};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::{
+    research_catalog::{
+        BuildingAttribute, EffectOperation, ResearchNode as CatalogNode, ResearchPayload,
+        research_catalog,
+    },
+    types::{BuildingType, JobKind},
+};
 
 /// Every modifier a node can grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -588,7 +596,7 @@ pub fn deserialize_upgrade_tree_state(raw: impl DeserializeUpgradeTreeInput) -> 
             let Some(id) = id.as_str() else {
                 continue;
             };
-            if get_node(id).is_some() && !owned_node_ids.iter().any(|owned| owned == id) {
+            if research_catalog().contains(id) && !owned_node_ids.iter().any(|owned| owned == id) {
                 owned_node_ids.push(id.to_owned());
             }
         }
@@ -612,8 +620,17 @@ pub fn is_owned(state: &UpgradeTreeState, id: &str) -> bool {
 }
 
 #[must_use]
+pub fn building_has_research_gate(building_id: &str) -> bool {
+    research_catalog().nodes().iter().any(|node| {
+        node.payloads.iter().any(|payload| {
+            matches!(payload, ResearchPayload::UnlockBuilding { building_id: id } if id == building_id)
+        })
+    })
+}
+
+#[must_use]
 pub fn prerequisites_met(state: &UpgradeTreeState, id: &str) -> bool {
-    let Some(node) = get_node(id) else {
+    let Some(node) = research_catalog().get(id) else {
         return false;
     };
 
@@ -624,7 +641,17 @@ pub fn prerequisites_met(state: &UpgradeTreeState, id: &str) -> bool {
 
 #[must_use]
 pub fn can_unlock(state: &UpgradeTreeState, id: &str) -> bool {
-    get_node(id).is_some() && !is_owned(state, id) && prerequisites_met(state, id)
+    research_catalog().contains(id) && !is_owned(state, id) && prerequisites_met(state, id)
+}
+
+/// Every currently available study in stable catalog order.
+#[must_use]
+pub fn unlockable_catalog_nodes(state: &UpgradeTreeState) -> Vec<&'static CatalogNode> {
+    research_catalog()
+        .nodes()
+        .iter()
+        .filter(|node| can_unlock(state, &node.id))
+        .collect()
 }
 
 #[must_use]
@@ -731,11 +758,14 @@ pub fn accrue_research(state: &UpgradeTreeState, points: f64) -> UpgradeTreeStat
 }
 
 #[must_use]
-pub fn next_research_target(state: &UpgradeTreeState) -> Option<&'static UpgradeNode> {
+pub fn next_research_target(state: &UpgradeTreeState) -> Option<&'static CatalogNode> {
     let mut best = None;
-    for node in unlockable_nodes(state) {
-        if best.is_none_or(|current: &UpgradeNode| {
-            node.cost < current.cost || (node.cost == current.cost && node.id < current.id)
+    for node in unlockable_catalog_nodes(state) {
+        if best.is_none_or(|current: &CatalogNode| {
+            node.leader_priority < current.leader_priority
+                || (node.leader_priority == current.leader_priority
+                    && (node.cost < current.cost
+                        || (node.cost == current.cost && node.id < current.id)))
         }) {
             best = Some(node);
         }
@@ -756,7 +786,7 @@ pub struct AutoUnlockResult {
 /// never shrine blessings, and never silently picks a different node.
 #[must_use]
 pub fn cat_purchase(state: &UpgradeTreeState, id: &str) -> AutoUnlockResult {
-    let Some(node) = get_node(id) else {
+    let Some(node) = research_catalog().get(id) else {
         return AutoUnlockResult {
             ok: false,
             state: state.clone(),
@@ -784,12 +814,15 @@ pub fn cat_purchase(state: &UpgradeTreeState, id: &str) -> AutoUnlockResult {
 #[must_use]
 pub fn cat_auto_unlock(state: &UpgradeTreeState) -> AutoUnlockResult {
     let mut best = None;
-    for node in unlockable_nodes(state) {
+    for node in unlockable_catalog_nodes(state) {
         if node.cost > state.research_points {
             continue;
         }
-        if best.is_none_or(|current: &UpgradeNode| {
-            node.cost < current.cost || (node.cost == current.cost && node.id < current.id)
+        if best.is_none_or(|current: &CatalogNode| {
+            node.leader_priority < current.leader_priority
+                || (node.leader_priority == current.leader_priority
+                    && (node.cost < current.cost
+                        || (node.cost == current.cost && node.id < current.id)))
         }) {
             best = Some(node);
         }
@@ -806,14 +839,14 @@ pub fn cat_auto_unlock(state: &UpgradeTreeState) -> AutoUnlockResult {
     AutoUnlockResult {
         ok: true,
         state: UpgradeTreeState {
-            owned_node_ids: with_owned(state, node.id),
+            owned_node_ids: with_owned(state, &node.id),
             research_points: state.research_points - node.cost,
         },
-        node_id: Some(node.id.to_owned()),
+        node_id: Some(node.id.clone()),
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedEffects {
     pub hunt_yield_mult: f64,
@@ -826,45 +859,156 @@ pub struct ResolvedEffects {
     pub research_rate_mult: f64,
     pub storage_per_level_mult: f64,
     pub housing_per_den: f64,
+    pub housing_capacity_mult: f64,
     pub water_carry_capacity: f64,
+    pub production_rate_mult: f64,
+    pub storage_capacity_mult: f64,
+    pub construction_speed_mult: f64,
+    pub haul_capacity_mult: f64,
+    pub trade_value_mult: f64,
+    pub health_recovery_mult: f64,
+    pub spoilage_resistance: f64,
+    pub water_efficiency_mult: f64,
+    /// String-keyed ownership makes planned content truthful without pretending a
+    /// corresponding enum-backed building, recipe, resource, or job exists yet.
+    pub unlocked_buildings: BTreeSet<String>,
+    pub unlocked_recipes: BTreeSet<String>,
+    pub unlocked_resources: BTreeSet<String>,
+    pub unlocked_jobs: BTreeSet<String>,
+    pub unlocked_capabilities: BTreeSet<String>,
+    pub building_modifiers: BTreeMap<String, BuildingModifiers>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildingModifiers {
+    pub capacity_mult: f64,
+    pub output_mult: f64,
+    pub cycle_time_mult: f64,
+    pub worker_slots: u32,
+    pub durability_mult: f64,
+}
+
+impl Default for BuildingModifiers {
+    fn default() -> Self {
+        Self {
+            capacity_mult: 1.0,
+            output_mult: 1.0,
+            cycle_time_mult: 1.0,
+            worker_slots: 0,
+            durability_mult: 1.0,
+        }
+    }
 }
 
 impl ResolvedEffects {
-    fn add(&mut self, key: EffectKey, value: f64) {
-        match key {
-            EffectKey::HuntYieldMult => self.hunt_yield_mult += value,
-            EffectKey::GatherYieldMult => self.gather_yield_mult += value,
-            EffectKey::MaterialYieldMult => self.material_yield_mult += value,
-            EffectKey::FarmYieldMult => self.farm_yield_mult += value,
-            EffectKey::MoveSpeedMult => self.move_speed_mult += value,
-            EffectKey::CombatPowerMult => self.combat_power_mult += value,
-            EffectKey::DefenseMult => self.defense_mult += value,
-            EffectKey::ResearchRateMult => self.research_rate_mult += value,
-            EffectKey::StoragePerLevelMult => self.storage_per_level_mult += value,
-            EffectKey::HousingPerDen => self.housing_per_den += value,
-            EffectKey::WaterCarryCapacity => self.water_carry_capacity += value,
+    fn apply_value(target: &mut f64, operation: EffectOperation, value: f64) {
+        match operation {
+            EffectOperation::Add => *target += value,
+            EffectOperation::Multiply => *target *= value,
         }
     }
 
-    fn resolve_mults(self) -> Self {
-        Self {
-            hunt_yield_mult: 1.0 + self.hunt_yield_mult,
-            gather_yield_mult: 1.0 + self.gather_yield_mult,
-            material_yield_mult: 1.0 + self.material_yield_mult,
-            farm_yield_mult: 1.0 + self.farm_yield_mult,
-            move_speed_mult: 1.0 + self.move_speed_mult,
-            combat_power_mult: 1.0 + self.combat_power_mult,
-            defense_mult: 1.0 + self.defense_mult,
-            research_rate_mult: 1.0 + self.research_rate_mult,
-            storage_per_level_mult: 1.0 + self.storage_per_level_mult,
-            housing_per_den: self.housing_per_den,
-            water_carry_capacity: self.water_carry_capacity,
+    fn apply_named_effect(&mut self, id: &str, operation: EffectOperation, value: f64) {
+        let target = match id {
+            "huntYieldMult" => &mut self.hunt_yield_mult,
+            "gatherYieldMult" => &mut self.gather_yield_mult,
+            "materialYieldMult" => &mut self.material_yield_mult,
+            "farmYieldMult" | "farmYield" => &mut self.farm_yield_mult,
+            "moveSpeedMult" | "movementSpeed" => &mut self.move_speed_mult,
+            "combatPowerMult" | "combatPower" => &mut self.combat_power_mult,
+            "defenseMult" | "defensePower" => &mut self.defense_mult,
+            "researchRateMult" | "researchRate" => &mut self.research_rate_mult,
+            "storagePerLevelMult" => &mut self.storage_per_level_mult,
+            "housingPerDen" => &mut self.housing_per_den,
+            "housingCapacity" => &mut self.housing_capacity_mult,
+            "waterCarryCapacity" => &mut self.water_carry_capacity,
+            "productionRate" => &mut self.production_rate_mult,
+            "storageCapacity" => &mut self.storage_capacity_mult,
+            "constructionSpeed" => &mut self.construction_speed_mult,
+            "haulCapacity" => &mut self.haul_capacity_mult,
+            "tradeValue" => &mut self.trade_value_mult,
+            "healthRecovery" => &mut self.health_recovery_mult,
+            "spoilageResistance" => &mut self.spoilage_resistance,
+            "waterEfficiency" => &mut self.water_efficiency_mult,
+            _ => return,
+        };
+        Self::apply_value(target, operation, value);
+    }
+
+    fn apply_payload(&mut self, payload: &ResearchPayload) {
+        match payload {
+            ResearchPayload::UnlockBuilding { building_id } => {
+                self.unlocked_buildings.insert(building_id.clone());
+            }
+            ResearchPayload::UnlockRecipe { recipe_id } => {
+                self.unlocked_recipes.insert(recipe_id.clone());
+            }
+            ResearchPayload::UnlockResource { resource_id } => {
+                self.unlocked_resources.insert(resource_id.clone());
+            }
+            ResearchPayload::UnlockJob { job_id } => {
+                self.unlocked_jobs.insert(job_id.clone());
+            }
+            ResearchPayload::UnlockCapability { capability_id } => {
+                self.unlocked_capabilities.insert(capability_id.clone());
+            }
+            ResearchPayload::Modify {
+                effect_id,
+                operation,
+                value,
+            } => self.apply_named_effect(effect_id, *operation, *value),
+            ResearchPayload::ModifyBuilding {
+                building_id,
+                attribute,
+                operation,
+                value,
+            } => {
+                let modifiers = self
+                    .building_modifiers
+                    .entry(building_id.clone())
+                    .or_default();
+                match attribute {
+                    BuildingAttribute::Capacity => {
+                        Self::apply_value(&mut modifiers.capacity_mult, *operation, *value)
+                    }
+                    BuildingAttribute::Output => {
+                        Self::apply_value(&mut modifiers.output_mult, *operation, *value)
+                    }
+                    BuildingAttribute::CycleTime => {
+                        Self::apply_value(&mut modifiers.cycle_time_mult, *operation, *value)
+                    }
+                    BuildingAttribute::WorkerSlots => {
+                        if *operation == EffectOperation::Add {
+                            modifiers.worker_slots = modifiers
+                                .worker_slots
+                                .saturating_add(value.max(0.0).floor() as u32);
+                        }
+                    }
+                    BuildingAttribute::Durability => {
+                        Self::apply_value(&mut modifiers.durability_mult, *operation, *value)
+                    }
+                }
+            }
         }
+    }
+
+    #[must_use]
+    pub fn building(&self, building_id: &str) -> BuildingModifiers {
+        self.building_modifiers
+            .get(building_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn unlocks_building(&self, building_id: &str) -> bool {
+        self.unlocked_buildings.contains(building_id)
     }
 }
 
 #[must_use]
-pub const fn neutral_effects() -> ResolvedEffects {
+pub fn neutral_effects() -> ResolvedEffects {
     ResolvedEffects {
         hunt_yield_mult: 1.0,
         gather_yield_mult: 1.0,
@@ -876,23 +1020,22 @@ pub const fn neutral_effects() -> ResolvedEffects {
         research_rate_mult: 1.0,
         storage_per_level_mult: 1.0,
         housing_per_den: 0.0,
+        housing_capacity_mult: 1.0,
         water_carry_capacity: 0.0,
-    }
-}
-
-fn zero_effect_sums() -> ResolvedEffects {
-    ResolvedEffects {
-        hunt_yield_mult: 0.0,
-        gather_yield_mult: 0.0,
-        material_yield_mult: 0.0,
-        farm_yield_mult: 0.0,
-        move_speed_mult: 0.0,
-        combat_power_mult: 0.0,
-        defense_mult: 0.0,
-        research_rate_mult: 0.0,
-        storage_per_level_mult: 0.0,
-        housing_per_den: 0.0,
-        water_carry_capacity: 0.0,
+        production_rate_mult: 1.0,
+        storage_capacity_mult: 1.0,
+        construction_speed_mult: 1.0,
+        haul_capacity_mult: 1.0,
+        trade_value_mult: 1.0,
+        health_recovery_mult: 1.0,
+        spoilage_resistance: 0.0,
+        water_efficiency_mult: 1.0,
+        unlocked_buildings: BTreeSet::new(),
+        unlocked_recipes: BTreeSet::new(),
+        unlocked_resources: BTreeSet::new(),
+        unlocked_jobs: BTreeSet::new(),
+        unlocked_capabilities: BTreeSet::new(),
+        building_modifiers: BTreeMap::new(),
     }
 }
 
@@ -902,20 +1045,17 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let mut sums = zero_effect_sums();
+    let mut resolved = neutral_effects();
     for id in owned_node_ids {
-        let Some(node) = get_node(id.as_ref()) else {
+        let Some(node) = research_catalog().get(id.as_ref()) else {
             continue;
         };
-        let Some(effects) = node.unlocks.effects else {
-            continue;
-        };
-        for effect in effects {
-            sums.add(effect.key, effect.value);
+        for payload in &node.payloads {
+            resolved.apply_payload(payload);
         }
     }
-
-    sums.resolve_mults()
+    resolved.spoilage_resistance = resolved.spoilage_resistance.clamp(0.0, 0.95);
+    resolved
 }
 
 fn js_max(left: f64, right: f64) -> f64 {
@@ -1173,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn cat_auto_unlock_and_next_target_are_cheapest_then_id_deterministic() {
+    fn cat_auto_unlock_and_next_target_follow_leader_priority_then_cost_and_id() {
         let result = cat_auto_unlock(&state_with(&[], 6.0));
         assert!(result.ok);
         assert_eq!(result.node_id.as_deref(), Some("research_hut"));
@@ -1197,10 +1337,14 @@ mod tests {
 
         let broke = state_with(&["research_hut"], 0.0);
         assert_eq!(
-            next_research_target(&broke).map(|node| node.id),
+            next_research_target(&broke).map(|node| node.id.as_str()),
             Some("basic_tools")
         );
-        let all_owned = UPGRADE_NODES.iter().map(|node| node.id).collect::<Vec<_>>();
+        let all_owned = crate::research_catalog::research_catalog()
+            .nodes()
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
         assert!(next_research_target(&state_with(&all_owned, 0.0)).is_none());
     }
 
@@ -1239,7 +1383,10 @@ mod tests {
         assert_eq!(resolved.research_rate_mult, 2.25);
 
         let resolved = resolve_effects(["ghost", "research_hut", "smithy"]);
-        assert_eq!(resolved, neutral_effects());
+        assert_eq!(resolved.hunt_yield_mult, 1.0);
+        assert!(resolved.unlocked_buildings.contains("research_hut"));
+        assert!(resolved.unlocked_buildings.contains("smithy"));
+        assert!(resolved.unlocked_jobs.contains("research"));
     }
 
     #[test]
@@ -1283,5 +1430,90 @@ mod tests {
             "researchPoints": "lots"
         }));
         assert_eq!(restored.research_points, 0.0);
+    }
+
+    #[test]
+    fn all_five_hundred_catalog_studies_are_buyable_in_dependency_order() {
+        let mut state = state_with(&[], 1_000_000.0);
+        while state.owned_node_ids.len() < crate::research_catalog::RESEARCH_NODE_COUNT {
+            let next = crate::research_catalog::research_catalog()
+                .nodes()
+                .iter()
+                .find(|node| can_unlock(&state, &node.id))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "catalog stalled after {} owned studies",
+                        state.owned_node_ids.len()
+                    )
+                });
+            let result = cat_purchase(&state, &next.id);
+            assert!(result.ok, "{} must be purchasable", next.id);
+            state = result.state;
+        }
+        assert_eq!(
+            state.owned_node_ids.len(),
+            crate::research_catalog::RESEARCH_NODE_COUNT
+        );
+    }
+
+    #[test]
+    fn every_catalog_payload_resolves_into_a_truthful_effect_or_unlock_registry() {
+        use crate::research_catalog::{ResearchPayload, research_catalog};
+
+        for node in research_catalog().nodes() {
+            let resolved = resolve_effects([node.id.as_str()]);
+            for payload in &node.payloads {
+                match payload {
+                    ResearchPayload::UnlockBuilding { building_id } => {
+                        assert!(resolved.unlocked_buildings.contains(building_id));
+                    }
+                    ResearchPayload::UnlockRecipe { recipe_id } => {
+                        assert!(resolved.unlocked_recipes.contains(recipe_id));
+                    }
+                    ResearchPayload::UnlockResource { resource_id } => {
+                        assert!(resolved.unlocked_resources.contains(resource_id));
+                    }
+                    ResearchPayload::UnlockJob { job_id } => {
+                        assert!(resolved.unlocked_jobs.contains(job_id));
+                    }
+                    ResearchPayload::UnlockCapability { capability_id } => {
+                        assert!(resolved.unlocked_capabilities.contains(capability_id));
+                    }
+                    ResearchPayload::ModifyBuilding { building_id, .. } => {
+                        assert!(resolved.building_modifiers.contains_key(building_id));
+                        assert_ne!(
+                            resolved.building(building_id),
+                            super::BuildingModifiers::default()
+                        );
+                    }
+                    ResearchPayload::Modify { effect_id, .. } => {
+                        let encoded = serde_json::to_value(&resolved).unwrap();
+                        assert_ne!(
+                            encoded,
+                            serde_json::to_value(neutral_effects()).unwrap(),
+                            "{effect_id} from {} must alter the resolved model",
+                            node.id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generated_ownership_survives_legacy_save_shape() {
+        let restored = deserialize_upgrade_tree_state(json!({
+            "ownedNodeIds": ["research_hut", "research_hut_foundations", "logistics_basics"],
+            "researchPoints": 12.5
+        }));
+        assert_eq!(
+            restored.owned_node_ids,
+            [
+                "research_hut",
+                "research_hut_foundations",
+                "logistics_basics"
+            ]
+        );
+        assert_eq!(restored.research_points, 12.5);
     }
 }

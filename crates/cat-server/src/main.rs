@@ -2021,6 +2021,12 @@ mod tests {
                 session_id: signed.session_id.clone(),
                 nickname: "Tester".to_owned(),
                 sig: signed.sig.clone(),
+                node_id: "research_hut_foundations".to_owned(),
+            },
+            ClientAction::ResearchNode {
+                session_id: signed.session_id.clone(),
+                nickname: "Tester".to_owned(),
+                sig: signed.sig.clone(),
                 node_id: "foraging_lore".to_owned(),
             },
             ClientAction::AssignOfficer {
@@ -2065,6 +2071,13 @@ mod tests {
                 .owned_node_ids
                 .iter()
                 .any(|node| node == "research_hut")
+        );
+        assert!(
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .iter()
+                .any(|node| node == "research_hut_foundations")
         );
         assert!(
             colony

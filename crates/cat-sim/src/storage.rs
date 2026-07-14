@@ -44,6 +44,36 @@ pub struct StorageCapacities {
     pub metal: f64,
 }
 
+impl StorageCapacities {
+    #[must_use]
+    pub fn scaled(self, multiplier: f64) -> Self {
+        let multiplier = multiplier.max(0.0);
+        Self {
+            food: self.food * multiplier,
+            water: self.water * multiplier,
+            herbs: self.herbs * multiplier,
+            catnip: self.catnip * multiplier,
+            grain: self.grain * multiplier,
+            flour: self.flour * multiplier,
+            materials: self.materials * multiplier,
+            refined: self.refined * multiplier,
+            weapons: self.weapons * multiplier,
+            armor: self.armor * multiplier,
+            planks: self.planks * multiplier,
+            logs: self.logs * multiplier,
+            lumber: self.lumber * multiplier,
+            blocks: self.blocks * multiplier,
+            tools: self.tools * multiplier,
+            fibre: self.fibre * multiplier,
+            hide: self.hide * multiplier,
+            cloth: self.cloth * multiplier,
+            leather: self.leather * multiplier,
+            ore: self.ore * multiplier,
+            metal: self.metal * multiplier,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GranaryBonus {
     pub food: f64,

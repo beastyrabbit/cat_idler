@@ -385,6 +385,30 @@ fn fully_manual_multi_seed_guidance_survives_and_progresses_at_live_cadence() {
         );
         reset_work(&mut world);
 
+        // Guide the colony through the real prerequisites for its first accounting
+        // tent, including the generated 500-study catalog node that owns the building.
+        world.colonies[0].upgrade_tree.research_points = 1_000.0;
+        for node_id in [
+            "den_insulation",
+            "school",
+            "foraging_lore",
+            "sawmill",
+            "masonry",
+            "advanced_storage",
+            "accounting_tent_foundations",
+        ] {
+            now += 1;
+            apply_ok(
+                &mut world,
+                proto::ClientAction::ResearchNode {
+                    session_id: "guided-session".to_owned(),
+                    nickname: "Guide".to_owned(),
+                    sig: "pure-sim".to_owned(),
+                    node_id: node_id.to_owned(),
+                },
+                now,
+            );
+        }
         now += 1;
         apply_ok(
             &mut world,
@@ -764,6 +788,10 @@ fn staged_officer_handoff_reduces_manual_frequency_one_role_at_a_time() {
         .iter()
         .map(|node| node.id.to_owned())
         .collect();
+    world.colonies[0]
+        .upgrade_tree
+        .owned_node_ids
+        .push("accounting_tent_foundations".to_owned());
     // Planning a Field is gated by the real village-level progression in addition to
     // its research node. Build a legal level-four civic fixture (20 completed,
     // non-shrine buildings) so every signed PlanBuilding action below crosses the same

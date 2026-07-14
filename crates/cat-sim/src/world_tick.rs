@@ -97,9 +97,8 @@ use crate::{
         UpgradeKey,
     },
     upgrade_tree::{
-        MOUNTAINEERING_NODE_ID, RAIL_NODE_ID, SHIPPING_NODE_ID, UpgradeTreeState, accrue_research,
-        cat_auto_unlock, create_upgrade_tree_state, get_node, is_owned, points_per_tick_for,
-        resolve_effects,
+        UpgradeTreeState, accrue_research, cat_auto_unlock, create_upgrade_tree_state, is_owned,
+        points_per_tick_for, resolve_effects,
     },
     village_area::{
         ExpandOptions, GatePlacement as AreaGatePlacement, Side, expand_village, from_tiles,
@@ -703,7 +702,10 @@ impl SpatialOccupancyContext {
                     .then_some(pos)
             })
             .collect();
-        let mountain_tiles = if is_owned(&colony.upgrade_tree, MOUNTAINEERING_NODE_ID) {
+        let mountain_tiles = if resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+            .unlocked_capabilities
+            .contains("mountain_travel")
+        {
             HashSet::new()
         } else {
             colony
@@ -1213,7 +1215,7 @@ pub enum EventKind {
     /// An interim leader was appointed because the seat was empty (no election).
     LeaderChange,
     VillageFounded,
-    /// A staffed research hut/school auto-unlocked the cheapest affordable
+    /// A staffed research hut/school auto-unlocked the leader's highest-priority affordable
     /// upgrade-tree node from accrued research points.
     ResearchUnlocked,
     /// A player spent blessings to directly purchase an upgrade-tree node.
@@ -2944,18 +2946,21 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
 ) {
     let cat_count = alive_cats(&colony.cats).count() as f64;
     let elapsed_for_decay = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
-    let consumption = consumption_for_tick(
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let spoilage_elapsed = elapsed_for_decay * (1.0 - effects.spoilage_resistance);
+    let mut consumption = consumption_for_tick(
         cat_count,
         elapsed_for_decay,
         idle_engine_upgrade_levels(&colony.upgrade_levels),
     );
+    consumption.water_use /= effects.water_efficiency_mult.max(f64::EPSILON);
     let caps = storage_caps(colony);
 
     colony.resources.food = apply_food_spoilage_after_consumption(
         colony.resources.food,
         consumption.food_use,
         caps.food,
-        elapsed_for_decay,
+        spoilage_elapsed,
     );
     colony.resources.water =
         clamp_resource(colony.resources.water - consumption.water_use, caps.water);
@@ -3287,7 +3292,12 @@ fn phase_14_promote_queued_jobs_and_break_ground(
             let Some(cat_id) = replacement else {
                 continue;
             };
-            let full_duration_ms = colony.jobs[job_index].duration_ms.max(1_000);
+            let construction_speed = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+                .construction_speed_mult
+                .max(f64::EPSILON);
+            let full_duration_ms =
+                ((colony.jobs[job_index].duration_ms as f64 / construction_speed).round() as i64)
+                    .max(1_000);
             let remaining_percent = i64::from(100_u8.saturating_sub(scaffold_progress.min(99)));
             let remaining_duration_ms = full_duration_ms
                 .saturating_mul(remaining_percent)
@@ -3481,19 +3491,24 @@ fn phase_14_promote_queued_jobs_and_break_ground(
         }
 
         let assigned_cat = colony.jobs[job_index].assigned_cat.clone();
+        let effective_duration_ms = if colony.jobs[job_index].kind == JobKind::BuildHouse {
+            let speed = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+                .construction_speed_mult
+                .max(f64::EPSILON);
+            ((colony.jobs[job_index].duration_ms as f64 / speed).round() as i64).max(1_000)
+        } else {
+            colony.jobs[job_index].duration_ms.max(1_000)
+        };
         {
             let job = &mut colony.jobs[job_index];
             job.status = JobStatus::Active;
             if broke_ground {
                 job.started_at = Some(gate.processed_through);
-                job.ends_at = Some(gate.processed_through + job.duration_ms.max(1_000));
+                job.ends_at = Some(gate.processed_through + effective_duration_ms);
                 job.completed_at = None;
             } else if job.started_at.is_none() {
                 job.started_at = Some(gate.processed_through);
-                job.ends_at = Some(
-                    gate.processed_through
-                        .saturating_add(job.duration_ms.max(1_000)),
-                );
+                job.ends_at = Some(gate.processed_through.saturating_add(effective_duration_ms));
                 job.completed_at = None;
             }
             job.metadata = next_metadata;
@@ -4273,7 +4288,9 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         .count() as u32;
 
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
-    let committed_capacity = committed_den_capacity(colony, effects.housing_per_den);
+    let committed_capacity = (f64::from(committed_den_capacity(colony, effects.housing_per_den))
+        * effects.housing_capacity_mult)
+        .floor() as u32;
     let housing_buildings = colony
         .buildings
         .iter()
@@ -4320,8 +4337,10 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         water_capacity: caps.water,
         water_drain_per_tick: Some(food_drain.water_use),
         housing: LeaderHousing {
-            capacity: crate::housing::housing_capacity(&housing_buildings, effects.housing_per_den)
-                as u32,
+            capacity: (crate::housing::housing_capacity(
+                &housing_buildings,
+                effects.housing_per_den,
+            ) * effects.housing_capacity_mult) as u32,
             committed: committed_capacity,
         },
         active_hunts,
@@ -4863,7 +4882,7 @@ fn has_research_hut_or_build_in_flight(colony: &ColonyRuntime) -> bool {
 /// to build the hut that earns it. We break the cycle by making the research hut buildable
 /// at founding, **ungated by the tree** (it is the entry to research, not a reward of it):
 /// once a comfy colony stands one up and staffs it, [`phase_24_research`] accrues points and
-/// auto-unlocks the cheapest affordable node — starting with `research_hut` itself — and the
+/// auto-unlocks the highest-priority affordable node — starting with `research_hut` itself — and the
 /// tree climbs on its own.
 ///
 /// Everything here is gated on the colony being *comfortable* (food and water both holding
@@ -5287,6 +5306,9 @@ fn advance_designated_farms(
             && assigned_worker(colony, &building.id).is_some()
     });
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let field_modifiers = effects.building(BuildingType::Field.as_str());
+    let production_elapsed = production_elapsed * field_modifiers.output_mult
+        / field_modifiers.cycle_time_mult.max(f64::EPSILON);
     let caps = storage_caps(colony);
 
     for index in 0..colony.farms.len() {
@@ -5542,7 +5564,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         auto_staff_idle_buildings(colony, BuildingType::Tannery, gate.processed_through, true);
     }
 
-    let production_elapsed = gate.elapsed_sec as f64 * normalize_time_scale(colony);
+    let research_effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let production_elapsed = gate.elapsed_sec as f64
+        * normalize_time_scale(colony)
+        * research_effects.production_rate_mult;
     advance_designated_farms(colony, gate, world_seed, production_elapsed);
     let crafting_elapsed = productive_elapsed(production_elapsed, colony.resources.tools);
     // Production follows the physical worker, regardless of who assigned it. A
@@ -5559,7 +5584,13 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         .collect::<Vec<_>>();
 
     for (building_index, building_id) in building_ids {
-        match colony.buildings[building_index].building_type {
+        let building_type = colony.buildings[building_index].building_type;
+        let modifiers = research_effects.building(building_type.as_str());
+        let building_elapsed = production_elapsed * modifiers.output_mult
+            / modifiers.cycle_time_mult.max(f64::EPSILON);
+        let building_crafting_elapsed =
+            productive_elapsed(building_elapsed, colony.resources.tools);
+        match building_type {
             BuildingType::Field => {
                 if assigned_worker(colony, &building_id).is_none() {
                     continue;
@@ -5576,14 +5607,14 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 )
                 .properties()
                 .fertility;
-                colony.resources.food += field_yield(production_elapsed) * fertility;
+                colony.resources.food += field_yield(building_elapsed) * fertility;
             }
             BuildingType::Mill => {
                 let worker = assigned_worker(colony, &building_id);
                 let caps = storage_caps(colony);
                 let step = advance_mill(
                     colony.buildings[building_index].production_progress,
-                    production_elapsed,
+                    building_elapsed,
                     MillOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -5633,7 +5664,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let caps = storage_caps(colony);
                 let step = advance_sawmill(
                     colony.buildings[building_index].production_progress,
-                    production_elapsed,
+                    building_elapsed,
                     SawmillOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -5670,7 +5701,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let (spendable_materials, _) = spendable_production_materials(colony);
                 let step = advance_workshop(
                     colony.buildings[building_index].production_progress,
-                    crafting_elapsed,
+                    building_crafting_elapsed,
                     WorkshopOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -5716,7 +5747,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let (spendable_materials, _) = spendable_production_materials(colony);
                 let step = advance_smithy(
                     colony.buildings[building_index].production_progress,
-                    crafting_elapsed,
+                    building_crafting_elapsed,
                     SmithyOptions {
                         has_worker: worker.is_some(),
                         worker_is_fast: worker.is_some_and(|cat| {
@@ -5777,7 +5808,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let forge_worker = assigned_worker(colony, &building_id);
                 let forge_step = advance_metal_forge(
                     colony.metal_forge_progress,
-                    crafting_elapsed,
+                    building_crafting_elapsed,
                     MetalForgeOptions {
                         has_worker: forge_worker.is_some(),
                         worker_is_fast: forge_worker.is_some_and(|cat| {
@@ -5835,7 +5866,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
                 let craft_step = advance_craft(
                     colony.stone_craft_progress,
-                    crafting_elapsed,
+                    building_crafting_elapsed,
                     CraftOptions {
                         has_worker: craft_has_worker,
                         worker_is_architect: craft_is_architect,
@@ -5863,7 +5894,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let worker = assigned_worker(colony, &building_id);
                 let step = advance_woodworking(
                     colony.buildings[building_index].production_progress,
-                    crafting_elapsed,
+                    building_crafting_elapsed,
                     WoodworkingOptions {
                         has_worker: worker.is_some(),
                         worker_is_architect: worker.is_some_and(|cat| {
@@ -5905,7 +5936,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
                 let craft_step = advance_craft(
                     colony.wood_craft_progress,
-                    crafting_elapsed,
+                    building_crafting_elapsed,
                     CraftOptions {
                         has_worker: craft_has_worker,
                         worker_is_architect: craft_is_architect,
@@ -6300,10 +6331,10 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
         let node_name = result
             .node_id
             .as_deref()
-            .and_then(get_node)
+            .and_then(|id| crate::research_catalog::research_catalog().get(id))
             .map_or_else(
                 || result.node_id.as_deref().unwrap_or("something"),
-                |node| node.name,
+                |node| node.name.as_str(),
             )
             .to_owned();
         colony.upgrade_tree = result.state;
@@ -6345,6 +6376,7 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
     policy: TickPolicy,
 ) {
     let elapsed_sec = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let resources = SurvivalResources {
         food: colony.resources.food,
         water: colony.resources.water,
@@ -6368,6 +6400,15 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
             policy.config,
         );
         colony.cats[index].needs = result.next_needs.clone();
+        if resources.food > 0.0
+            && resources.water > 0.0
+            && effects.health_recovery_mult > 1.0
+            && colony.cats[index].needs.health > 0.0
+        {
+            let bonus_recovery = (effects.health_recovery_mult - 1.0) * elapsed_sec / 3_600.0;
+            colony.cats[index].needs.health =
+                (colony.cats[index].needs.health + bonus_recovery).min(100.0);
+        }
         let cat_name = colony.cats[index].name.clone();
 
         if result.dehydrating_started {
@@ -7440,6 +7481,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         .decoration_cache
         .ensure_chunks(movement.world_seed, &decoration_chunks);
     let decoration_obstacles = MovementDecorationObstacles::new(colony, movement.world_seed);
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let walk_grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &movement.walk_tiles,
         anchor: PathTilePos {
@@ -7454,18 +7496,17 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         area: (!area.is_empty()).then_some(&area),
         area_gate,
         terrain: None,
-        mountains_unlocked: is_owned(&colony.upgrade_tree, MOUNTAINEERING_NODE_ID),
+        mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
         // P17 transport upgrade: water stays blocked (pre-P17 behaviour, byte-
         // identical for every colony without the node) until `shipping` is owned.
-        shipping_unlocked: is_owned(&colony.upgrade_tree, SHIPPING_NODE_ID),
+        shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
         soft_obstacles: Some(&path_soft_obstacles),
         soft_obstacle_field: Some(&decoration_obstacles),
     });
     // P17 transport upgrade: `rail` speeds up long-distance hauls once owned —
     // checked per-cat below against the remaining route distance, inert (no
     // owned-node lookup cost beyond this single flag) for every colony without it.
-    let rail_unlocked = is_owned(&colony.upgrade_tree, RAIL_NODE_ID);
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let rail_unlocked = effects.unlocked_capabilities.contains("rail_logistics");
     let cat_ids = colony
         .cats
         .iter()
@@ -9910,6 +9951,7 @@ fn colony_housing_capacity(colony: &ColonyRuntime) -> f64 {
         .collect();
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     crate::housing::housing_capacity(&housing_buildings, effects.housing_per_den)
+        * effects.housing_capacity_mult
 }
 
 fn alive_cats(cats: &[Cat]) -> impl Iterator<Item = &Cat> {
@@ -10131,7 +10173,18 @@ fn storage_caps(colony: &ColonyRuntime) -> StorageCapacities {
         .collect();
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
 
+    let building_capacity_mult = colony
+        .buildings
+        .iter()
+        .filter(|building| building.construction_progress >= 100)
+        .map(|building| {
+            effects
+                .building(building.building_type.as_str())
+                .capacity_mult
+        })
+        .fold(1.0, f64::max);
     storage_capacities(&buildings, effects.storage_per_level_mult)
+        .scaled(effects.storage_capacity_mult * building_capacity_mult)
 }
 
 fn clamp_resources_to_caps(resources: &mut Resources, caps: StorageCapacities) {
@@ -11194,7 +11247,9 @@ fn scout_tile_is_passable(colony: &ColonyRuntime, pos: TilePos) -> bool {
     colony.world_tiles.get(&pos).is_some_and(|tile| {
         !tile_has_water(Some(tile))
             && (tile.tile_type != TileType::Mountains
-                || is_owned(&colony.upgrade_tree, MOUNTAINEERING_NODE_ID))
+                || resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+                    .unlocked_capabilities
+                    .contains("mountain_travel"))
     })
 }
 
@@ -12848,7 +12903,12 @@ fn hunt_yield_for(cat: &Cat, colony: &ColonyRuntime) -> f64 {
     // the specialist bonus inside `get_hunt_reward`; both increment +1 per hunt so this
     // is identical to the pre-P12.1 `trade_yield_multiplier(role_xp.hunter)` at parity.
     let yield_mult = crate::life_sim::trade_yield_multiplier(cat.skill(Labor::Hunt));
-    (base * stage_mult * yield_mult * effects.hunt_yield_mult.max(0.0))
+    (base
+        * stage_mult
+        * yield_mult
+        * effects.hunt_yield_mult.max(0.0)
+        * effects.production_rate_mult
+        * effects.haul_capacity_mult)
         .floor()
         .max(1.0)
 }
@@ -12871,17 +12931,25 @@ fn total_yield_for_job(
     world_seed: u32,
 ) -> f64 {
     let cat = &colony.cats[cat_index];
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let haul_mult = effects.haul_capacity_mult.max(0.0);
     match job.kind {
-        JobKind::FetchWater => skill_scaled_yield(cat, job.kind, WATER_TOTAL_YIELD),
+        JobKind::FetchWater => {
+            skill_scaled_yield(
+                cat,
+                job.kind,
+                WATER_TOTAL_YIELD + effects.water_carry_capacity,
+            ) * haul_mult
+        }
         // P17 mining rules: `QUARRY_TOTAL_YIELD` is the "full mountain" base yield,
         // scaled by the site's mining rule (`quarry_yield_multiplier`).
         JobKind::Quarry => {
             let mult = hauling_metadata(job).0.map_or(1.0, |site| {
                 quarry_yield_multiplier(colony, world_seed, site)
             });
-            (skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD) * mult).floor()
+            (skill_scaled_yield(cat, job.kind, QUARRY_TOTAL_YIELD) * mult * haul_mult).floor()
         }
-        JobKind::GatherLogs => skill_scaled_yield(cat, job.kind, LOGGING_TOTAL_YIELD),
+        JobKind::GatherLogs => skill_scaled_yield(cat, job.kind, LOGGING_TOTAL_YIELD) * haul_mult,
         JobKind::HuntExpedition => hunt_yield_for(cat, colony),
         _ => 0.0,
     }
@@ -13387,7 +13455,8 @@ mod tests {
         if is_owned(state, node_id) {
             return;
         }
-        let node = get_node(node_id).expect("officer fixture references a canonical upgrade node");
+        let node = crate::upgrade_tree::get_node(node_id)
+            .expect("officer fixture references a canonical upgrade node");
         for prerequisite in node.prerequisites {
             grant_fixture_node_chain(state, prerequisite);
         }
@@ -20656,7 +20725,7 @@ mod tests {
         colony
             .upgrade_tree
             .owned_node_ids
-            .push(MOUNTAINEERING_NODE_ID.to_owned());
+            .push(crate::upgrade_tree::MOUNTAINEERING_NODE_ID.to_owned());
         colony
             .upgrade_tree
             .owned_node_ids
@@ -20827,7 +20896,7 @@ mod tests {
     /// research points, and auto-unlocks a further node on its own.
     ///
     /// The end-to-end pieces are covered thus: the build/staff/accrue wiring runs live here
-    /// from a founded colony; [`staffed_research_hut_accrues_points_and_auto_unlocks_the_cheapest_nodes`]
+    /// from a founded colony; [`staffed_research_hut_accrues_points_and_auto_unlocks_by_leader_priority`]
     /// proves a full week of accrual crosses several node thresholds; and
     /// [`research_staffing_and_commission_respect_the_comfort_gate`] proves the survival gate.
     /// A node costs ~42 game-hours of a single scholar (20 pts/researcher/week) — more than a cat
@@ -21545,11 +21614,11 @@ mod tests {
     /// this fix `research_workforce` was hard-coded `0.0`, so a staffed hut banked nothing
     /// and the whole tech tree sat dormant in unattended play. A completed hut staffed by a
     /// living cat must now count as one researcher, and a game-week of accrual (20
-    /// pts/researcher/week) must auto-unlock the cheapest-first nodes — proving the tree can
+    /// pts/researcher/week) must auto-unlock leader-priority nodes — proving the tree can
     /// advance on the cat path alone. Deterministic: a flat function of elapsed game-seconds,
     /// no RNG.
     #[test]
-    fn staffed_research_hut_accrues_points_and_auto_unlocks_the_cheapest_nodes() {
+    fn staffed_research_hut_accrues_points_and_auto_unlocks_by_leader_priority() {
         let mut colony = found_colony(7, "colony-1", 10_000, 7);
         colony.upgrade_tree = crate::upgrade_tree::create_upgrade_tree_state();
         let scholar = colony.cats[0].id.clone();
@@ -21829,7 +21898,7 @@ mod tests {
     /// node): a completed, staffed school must count toward [`research_workforce`] exactly
     /// like a research hut, and the two stack — a colony with one of each fields two
     /// researchers. Mirrors
-    /// [`staffed_research_hut_accrues_points_and_auto_unlocks_the_cheapest_nodes`], swapping
+    /// [`staffed_research_hut_accrues_points_and_auto_unlocks_by_leader_priority`], swapping
     /// the hut for a school (and covering the stacked case the hut-only test doesn't).
     #[test]
     fn staffed_school_contributes_research_workforce_and_accrues_points() {
@@ -24819,7 +24888,7 @@ mod tests {
         );
         rock.upgrade_tree
             .owned_node_ids
-            .push(MOUNTAINEERING_NODE_ID.to_owned());
+            .push(crate::upgrade_tree::MOUNTAINEERING_NODE_ID.to_owned());
         assert!(
             next_claimed_building_site(&rock, 0.0, seed, BuildingType::Den).is_some(),
             "a den fits on decoration-free claimed rock after mountaineering makes it passable"

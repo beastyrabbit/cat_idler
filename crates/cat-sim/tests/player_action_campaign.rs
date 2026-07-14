@@ -579,6 +579,10 @@ fn run_action_campaign() -> WorldState {
         .iter()
         .map(|node| node.id.to_owned())
         .collect();
+    world.colonies[0]
+        .upgrade_tree
+        .owned_node_ids
+        .push("accounting_tent_foundations".to_owned());
     for building_type in [
         proto::BuildingType::Den,
         proto::BuildingType::FoodStorage,
