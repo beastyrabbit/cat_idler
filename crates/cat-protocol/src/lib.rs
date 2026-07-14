@@ -1009,9 +1009,10 @@ pub enum ScoutResource {
     Stone,
 }
 
-/// The purpose of a scout excursion. General exploration advances the nearest
-/// reachable fog frontier; a resource mission picks the nearest useful,
-/// unrevealed terrain target with deterministic tie-breaking.
+/// The purpose of a scout excursion. Both mission shapes follow deterministic,
+/// knowledge-blind wander legs. General exploration returns after surveying enough
+/// new ground; a resource mission returns when it physically observes the requested
+/// terrain resource or exhausts its bounded search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "resource", rename_all = "camelCase")]
 pub enum ScoutMission {

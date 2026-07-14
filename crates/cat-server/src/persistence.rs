@@ -2073,7 +2073,7 @@ mod tests {
     }
 
     #[test]
-    fn permanent_fog_scout_mission_and_provisional_notes_survive_restart() {
+    fn knowledge_blind_mid_search_destination_and_provisional_notes_survive_restart() {
         let conn = open_database(":memory:").expect("database");
         let mut world = new_world(4_242);
         let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 4_242);
@@ -2100,7 +2100,9 @@ mod tests {
             completed_at: None,
             metadata: JobMetadata::Scout {
                 mission: ScoutMission::Resource(ScoutResource::Wood),
-                target: Some(TilePos { x: 22, y: 19 }),
+                // No resource has been physically observed yet. A restart must
+                // preserve this distinction instead of resolving a hidden target.
+                target: None,
                 destination: Some(TilePos { x: 21, y: 19 }),
                 accepted: true,
                 found: false,
@@ -2118,7 +2120,7 @@ mod tests {
             loaded.jobs.last().map(|job| &job.metadata),
             Some(JobMetadata::Scout {
                 mission: ScoutMission::Resource(ScoutResource::Wood),
-                target: Some(TilePos { x: 22, y: 19 }),
+                target: None,
                 destination: Some(TilePos { x: 21, y: 19 }),
                 accepted: true,
                 found: false,
