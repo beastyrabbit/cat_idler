@@ -1930,7 +1930,7 @@ fn to_sql_io(err: std::io::Error) -> rusqlite::Error {
 mod tests {
     use cat_protocol::{ClientAction, JobKind as ProtoJobKind};
     use cat_sim::{
-        actions::apply_action,
+        actions::{apply_action, build_snapshot},
         entities::CarryingKind,
         migration::ProbationaryMigrant,
         world_tick::{
@@ -1977,6 +1977,43 @@ mod tests {
             });
             colony.officers.insert(role, colony.cats[index].id.clone());
         }
+    }
+
+    #[test]
+    fn election_schedule_survives_restart_from_persisted_term_history() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(20_260_714);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000_000, 42));
+        let winner_id = world.colonies[0].cats[0].id.clone();
+        world.colonies[0].test_time_scale = 20.0;
+        world.colonies[0].elections.push(ElectionRuntime {
+            id: "term-before-restart".to_owned(),
+            opened_at: 900_000,
+            closes_at: 950_000,
+            resolved_at: Some(951_000),
+            winner_cat_id: Some(winner_id),
+            kind: ElectionKind::Scheduled,
+        });
+        let before = build_snapshot(&world, 1_000_000, 0).colonies[0]
+            .election_schedule
+            .clone()
+            .expect("schedule before restart");
+
+        save_world(&conn, &world).expect("save world");
+        let loaded = load_world(&conn)
+            .expect("load world")
+            .expect("persisted world");
+        let after = build_snapshot(&loaded, 1_000_000, 0).colonies[0]
+            .election_schedule
+            .clone()
+            .expect("schedule after restart");
+
+        assert_eq!(after, before);
+        assert_eq!(after.term_length_ms, 4_320_000);
+        assert_eq!(after.next_election_at, 5_270_000);
     }
 
     #[test]

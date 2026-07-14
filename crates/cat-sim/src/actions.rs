@@ -35,13 +35,14 @@ use crate::{
         ColonyRuntime, ConstructionPhase, ElectionKind, ElectionRuntime, EventKind, EventLog,
         JobMetadata, JobRequester, JobRuntime, RaiderRuntime, ScoutMission, ScoutResource, TilePos,
         TradeDirection, VillageKind, VillageScale, VillageTradeOffer, VoteRuntime, WorldState,
-        ZoneRuntime, ensure_farm_gather_spot_at, farm_designation_route_is_reachable,
-        farm_gather_spot_id, farm_rect_touches_claim_boundary, farm_route_is_reachable,
-        found_colony_at, found_global_colony, has_frontier, has_logging_site, has_quarry_site,
-        has_water_site, inside_village_interior, is_farm_gather_spot_id, legal_farm_gather_spots,
-        material_offering_metadata, migration_game_minute_at, occupied_farm_tiles,
-        reconcile_colony_stockpiles, release_farm_worker, release_role_automation,
-        village_exterior_is_road_connected, visible_offering_materials, world_tick,
+        ZoneRuntime, election_schedule_timing, ensure_farm_gather_spot_at,
+        farm_designation_route_is_reachable, farm_gather_spot_id, farm_rect_touches_claim_boundary,
+        farm_route_is_reachable, found_colony_at, found_global_colony, has_frontier,
+        has_logging_site, has_quarry_site, has_water_site, inside_village_interior,
+        is_farm_gather_spot_id, legal_farm_gather_spots, material_offering_metadata,
+        migration_game_minute_at, occupied_farm_tiles, reconcile_colony_stockpiles,
+        release_farm_worker, release_role_automation, village_exterior_is_road_connected,
+        visible_offering_materials, world_tick,
     },
     zones,
 };
@@ -2563,6 +2564,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         .take(housing_capacity_u32 as usize)
         .collect::<BTreeSet<_>>();
     let election_payload = election_snapshot(colony, &alive_cats);
+    let election_schedule_payload = election_schedule_snapshot(colony, now_ms);
     let vote_kick_payload = vote_kick_snapshot(colony, &alive_cats);
     let warrior_count = alive_cats
         .iter()
@@ -2649,6 +2651,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         },
         research: research_snapshot(colony),
         election: election_payload,
+        election_schedule: election_schedule_payload,
         vote_kick: vote_kick_payload,
         zones: zones_snapshot(colony, now_ms),
         threat: proto::ThreatSnapshot {
@@ -3113,6 +3116,18 @@ fn election_snapshot(
                     .cloned()
             })
             .collect(),
+    })
+}
+
+fn election_schedule_snapshot(
+    colony: &ColonyRuntime,
+    now_ms: i64,
+) -> Option<proto::ElectionScheduleSnapshot> {
+    election_schedule_timing(colony, now_ms).map(|schedule| proto::ElectionScheduleSnapshot {
+        term_started_at: schedule.term_started_at,
+        next_election_at: schedule.next_election_at,
+        term_length_ms: schedule.term_length_ms,
+        remaining_ms: schedule.next_election_at.saturating_sub(now_ms).max(0),
     })
 }
 
@@ -5244,6 +5259,33 @@ mod tests {
         let colony = &snap.colonies[0];
         assert_eq!(colony.cats.len(), world.colonies[0].cats.len());
         assert_eq!(colony.resources.food, world.colonies[0].resources.food);
+    }
+
+    #[test]
+    fn build_snapshot_exposes_authoritative_between_term_countdown() {
+        let mut world = world_with_one_colony();
+        let winner_id = world.colonies[0].cats[0].id.clone();
+        world.colonies[0].elections.push(ElectionRuntime {
+            id: "resolved-election".to_owned(),
+            opened_at: 900_000,
+            closes_at: 950_000,
+            resolved_at: Some(951_000),
+            winner_cat_id: Some(winner_id),
+            kind: ElectionKind::Scheduled,
+        });
+
+        let snapshot = build_snapshot(&world, 1_000_000, 0);
+        let schedule = snapshot.colonies[0]
+            .election_schedule
+            .as_ref()
+            .expect("resolved term exposes its next boundary");
+        assert_eq!(schedule.term_started_at, Some(950_000));
+        assert_eq!(schedule.next_election_at, 87_350_000);
+        assert_eq!(schedule.term_length_ms, 86_400_000);
+        assert_eq!(schedule.remaining_ms, 86_350_000);
+
+        let twin = build_snapshot(&world, 1_000_000, 0);
+        assert_eq!(snapshot, twin, "schedule projection must be deterministic");
     }
 
     #[test]

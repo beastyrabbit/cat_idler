@@ -13540,6 +13540,36 @@ fn last_resolved_leadership_election_at(colony: &ColonyRuntime) -> Option<i64> {
         .max()
 }
 
+/// Authoritative projection of the automatic term-election boundary. The projection
+/// deliberately uses the same resolved-election anchor and scaled term as phase 9, so
+/// clients never have to reproduce lifecycle timing. While an election is open its
+/// richer live payload owns the governance UI instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ElectionScheduleTiming {
+    pub term_started_at: Option<i64>,
+    pub next_election_at: i64,
+    pub term_length_ms: i64,
+}
+
+pub(crate) fn election_schedule_timing(
+    colony: &ColonyRuntime,
+    now_ms: i64,
+) -> Option<ElectionScheduleTiming> {
+    if colony.elections.iter().any(is_open_leadership_election) {
+        return None;
+    }
+
+    let term_length_ms = scaled_term_ms(colony).ceil() as i64;
+    let term_started_at = last_resolved_leadership_election_at(colony);
+    Some(ElectionScheduleTiming {
+        term_started_at,
+        next_election_at: term_started_at.map_or(now_ms, |started_at| {
+            started_at.saturating_add(term_length_ms)
+        }),
+        term_length_ms,
+    })
+}
+
 fn scaled_term_ms(colony: &ColonyRuntime) -> f64 {
     (TERM_MS / normalize_time_scale(colony)).max(10_000.0)
 }
@@ -30840,6 +30870,81 @@ mod tests {
                 >= 2,
             "expected both an election-opened and an election-resolved event"
         );
+    }
+
+    #[test]
+    fn election_schedule_uses_the_lifecycle_boundary_and_acceleration_scale() {
+        let mut colony = found_colony(1234, "colony-1", 10_000, 1234);
+        colony.elections.push(ElectionRuntime {
+            id: "resolved-election".to_owned(),
+            opened_at: 20_000,
+            closes_at: 30_000,
+            resolved_at: Some(31_000),
+            winner_cat_id: Some(colony.cats[0].id.clone()),
+            kind: ElectionKind::Scheduled,
+        });
+
+        let normal = election_schedule_timing(&colony, 40_000).expect("term is scheduled");
+        assert_eq!(normal.term_started_at, Some(30_000));
+        assert_eq!(normal.term_length_ms, 86_400_000);
+        assert_eq!(normal.next_election_at, 86_430_000);
+
+        colony.test_time_scale = 20.0;
+        let accelerated = election_schedule_timing(&colony, 40_000).expect("term is scheduled");
+        assert_eq!(accelerated.term_length_ms, 4_320_000);
+        assert_eq!(accelerated.next_election_at, 4_350_000);
+
+        let mut twin = colony.clone();
+        assert_eq!(
+            election_schedule_timing(&colony, 40_000),
+            election_schedule_timing(&twin, 40_000),
+            "identical election history must project an identical schedule"
+        );
+        let previous_water = twin.resources.water.to_bits();
+
+        phase_9_elections_lifecycle(
+            &mut twin,
+            TickGate {
+                elapsed_sec: 1,
+                processed_through: accelerated.next_election_at - 1,
+                minute_rolled: false,
+                previous_water,
+            },
+        );
+        assert_eq!(twin.elections.len(), 1, "the term is not due one ms early");
+        phase_9_elections_lifecycle(
+            &mut twin,
+            TickGate {
+                elapsed_sec: 1,
+                processed_through: accelerated.next_election_at,
+                minute_rolled: false,
+                previous_water,
+            },
+        );
+        assert_eq!(
+            twin.elections.len(),
+            2,
+            "the exact boundary opens an election"
+        );
+        assert!(
+            election_schedule_timing(&twin, accelerated.next_election_at).is_none(),
+            "the live election payload replaces the between-term schedule"
+        );
+    }
+
+    #[test]
+    fn fresh_and_reset_election_schedules_follow_the_same_due_now_rule() {
+        let now = 500_000;
+        let mut fresh = found_colony(1234, "colony-1", now, 1234);
+        let schedule = election_schedule_timing(&fresh, now).expect("fresh schedule");
+        assert_eq!(schedule.term_started_at, None);
+        assert_eq!(schedule.next_election_at, now);
+
+        fresh.elections.clear();
+        reset_run(&mut fresh, now, RunResetReason::AllCatsDead);
+        let reset = election_schedule_timing(&fresh, now).expect("reset schedule");
+        assert_eq!(reset.term_started_at, None);
+        assert_eq!(reset.next_election_at, now);
     }
 
     /// Governance reachability guardrail: a leader death must not leave the seat

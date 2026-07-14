@@ -126,6 +126,11 @@ pub struct ColonySnapshot {
     pub housing: HousingSnapshot,
     pub research: ResearchSnapshot,
     pub election: Option<ElectionSnapshot>,
+    /// The authoritative timing of the next automatic leadership election. This is
+    /// present between elections so clients can explain the current term instead of
+    /// inferring a deadline from their own clock. Absent on legacy snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub election_schedule: Option<ElectionScheduleSnapshot>,
     pub vote_kick: Option<VoteKickSnapshot>,
     pub zones: Vec<ZoneSnapshot>,
     pub threat: ThreatSnapshot,
@@ -836,6 +841,20 @@ pub struct ElectionSnapshot {
     pub tally: BTreeMap<String, u32>,
     pub total_ballots: u32,
     pub candidates: Vec<ElectionCandidate>,
+}
+
+/// Server-derived term timing for the automatic leadership-election lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ElectionScheduleSnapshot {
+    /// Close time of the election which began the current term, when one exists.
+    pub term_started_at: Option<i64>,
+    /// Exact simulation boundary at which the next scheduled election becomes due.
+    pub next_election_at: i64,
+    /// Effective term length after applying the authoritative time scale.
+    pub term_length_ms: i64,
+    /// Remaining time calculated at the enclosing [`WorldSnapshot::now`].
+    pub remaining_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1889,6 +1908,32 @@ mod tests {
             serde_json::from_value(legacy_json).expect("deserialize legacy colony snapshot");
         assert_eq!(colony.coin, 0.0);
         assert!(colony.trader.is_none());
+        assert!(colony.election_schedule.is_none());
+    }
+
+    #[test]
+    fn election_schedule_is_additive_and_round_trips_camel_case() {
+        let schedule = ElectionScheduleSnapshot {
+            term_started_at: Some(1_000),
+            next_election_at: 87_400_000,
+            term_length_ms: 86_400_000,
+            remaining_ms: 43_200_000,
+        };
+        let encoded = serde_json::to_value(&schedule).expect("serialize election schedule");
+        assert_eq!(
+            encoded,
+            json!({
+                "termStartedAt": 1_000,
+                "nextElectionAt": 87_400_000,
+                "termLengthMs": 86_400_000,
+                "remainingMs": 43_200_000
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ElectionScheduleSnapshot>(encoded)
+                .expect("deserialize election schedule"),
+            schedule
+        );
     }
 
     #[test]
@@ -2272,6 +2317,12 @@ mod tests {
                         leadership: 9.0,
                         specialization: Some(Specialization::Hunter),
                     }],
+                }),
+                election_schedule: Some(ElectionScheduleSnapshot {
+                    term_started_at: Some(1_699_913_600_000),
+                    next_election_at: 1_700_000_000_000,
+                    term_length_ms: 86_400_000,
+                    remaining_ms: 0,
                 }),
                 vote_kick: Some(VoteKickSnapshot {
                     id: "kick_1".to_string(),

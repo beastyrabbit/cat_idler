@@ -4183,7 +4183,7 @@ fn spawn_orders_panel(commands: &mut Commands) {
                         ui_button_small(),
                         CycleElectionCandidate,
                         children![(
-                            ui_text("No active election", FS_SMALL, UI_INK),
+                            ui_text("Election schedule loading…", FS_SMALL, UI_INK),
                             ElectionCandidateText
                         )],
                     ));
@@ -6145,13 +6145,42 @@ fn update_governance_controls(
                 let votes = election.tally.get(&candidate.id).copied().unwrap_or(0);
                 Some(format!("{}  ({votes} votes) [cycle]", candidate.name))
             })
-            .unwrap_or_else(|| "No active election".to_owned());
+            .unwrap_or_else(|| inactive_election_text(colony));
     }
     if let Ok(mut text) = kick_text.single_mut() {
         text.0 = colony
             .and_then(|colony| colony.vote_kick.as_ref())
             .map(|kick| format!("Sign vote-kick {}/{}", kick.signatures, kick.needed))
             .unwrap_or_else(|| "Request vote-kick".to_owned());
+    }
+}
+
+fn inactive_election_text(colony: Option<&cat_protocol::ColonySnapshot>) -> String {
+    let Some(schedule) = colony.and_then(|colony| colony.election_schedule.as_ref()) else {
+        return "Election schedule unavailable".to_owned();
+    };
+    let remaining = compact_election_duration(schedule.remaining_ms);
+    let term = compact_election_duration(schedule.term_length_ms);
+    if schedule.term_started_at.is_some() {
+        format!("Election: {remaining} · term: {term}")
+    } else {
+        format!("Election due {remaining} · term: {term}")
+    }
+}
+
+fn compact_election_duration(duration_ms: i64) -> String {
+    if duration_ms <= 0 {
+        return "now".to_owned();
+    }
+    let total_minutes = duration_ms.saturating_add(59_999) / 60_000;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if hours > 0 && minutes > 0 {
+        format!("{hours}h {minutes}m")
+    } else if hours > 0 {
+        format!("{hours}h")
+    } else {
+        format!("{minutes}m")
     }
 }
 
@@ -10591,6 +10620,58 @@ mod tests {
             ClientAction::RequestVoteKick { session_id, sig, .. }
                 if session_id == "governance-session" && sig == "signed"
         ));
+    }
+
+    #[test]
+    fn inactive_election_hud_reports_the_authoritative_term_countdown() {
+        let schedule = cat_protocol::ElectionScheduleSnapshot {
+            term_started_at: Some(1_000),
+            next_election_at: 86_401_000,
+            term_length_ms: 86_400_000,
+            remaining_ms: 82_740_000,
+        };
+        let mut colony = village_colony("alpha", "Moss Hollow", 5, "thriving");
+        colony.election_schedule = Some(schedule);
+        assert_eq!(
+            inactive_election_text(Some(&colony)),
+            "Election: 22h 59m · term: 24h"
+        );
+        assert_eq!(compact_election_duration(1), "1m");
+        assert_eq!(compact_election_duration(0), "now");
+        assert_eq!(
+            inactive_election_text(None),
+            "Election schedule unavailable"
+        );
+    }
+
+    #[test]
+    fn governance_update_replaces_the_bare_inactive_label_with_term_info() {
+        let mut world = village_world(&["alpha"]);
+        world.colonies[0].election_schedule = Some(cat_protocol::ElectionScheduleSnapshot {
+            term_started_at: Some(1_000),
+            next_election_at: 86_401_000,
+            term_length_ms: 86_400_000,
+            remaining_ms: 3_600_000,
+        });
+        let mut app = App::new();
+        app.insert_resource(LatestSnapshot(Some(world)))
+            .insert_resource(GovernanceUi::default())
+            .add_systems(Update, update_governance_controls);
+        let candidate = app
+            .world_mut()
+            .spawn((Text::new(""), ElectionCandidateText))
+            .id();
+        app.world_mut().spawn((Text::new(""), VoteKickButtonText));
+
+        app.update();
+
+        assert_eq!(
+            app.world()
+                .get::<Text>(candidate)
+                .expect("candidate text")
+                .0,
+            "Election: 1h · term: 24h"
+        );
     }
 
     #[test]
