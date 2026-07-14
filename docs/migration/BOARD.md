@@ -579,7 +579,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   personal villages start with 50 Food, 100 Water, 16 Herbs, 60 Materials, 10 Planks, and 10
   Blocks; communal villages receive exactly twice that mix; all other maintained scalar resources
   start at zero. Mill, Sawmill, Workshop, Smelter, and exterior-farm routes use this model;
-  remaining workshop chains still need conversion.
+  remaining workshop chains still need conversion. Food Storage, Water Bowl, and Smithy research
+  now expands only its owned physical domains through one clamp/routing/snapshot/trade authority.
+  The other 22 generated capacity studies and 10-unit station-local stores remain explicitly open.
 - **P12.4a/b workshop chains + Accountant direction** — workshop crafting covers
   planks/blocks/tools, exterior catnip/grain/herb plots, logging, Mill grain→flour→food, Sawmill
   logs→lumber, fibre/hide→cloth/leather, and ore→metal. A staffed Accounting Tent keeps the

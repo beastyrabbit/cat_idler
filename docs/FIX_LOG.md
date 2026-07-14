@@ -10,7 +10,7 @@ and any changed Bevy visuals have been verified.
 | Finding | Required correction | State |
 | --- | --- | --- |
 | Production stations pull every input from general storage | Steward-managed limited piles must appear beside every physical processor and be filled by real source→destination balancing trips. Vacancy, removal, full storage, death, cancellation, and restart must preserve exact physical provenance and transit. | in progress |
-| Building capacity research is internally inconsistent | A capacity study for one building currently leaks to unrelated storage, while snapshots and village-trade checks omit the same modifier. One target-correct capacity calculation must drive simulation, projection, and actions without cross-building leakage. | in progress |
+| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research advertises recipes and resources that do not exist | All 100 generated recipe IDs and 64 generated resource IDs currently enter registries with no consumer, and none names a maintained queue recipe or `ResourceKind`. First bind research to real physical recipes, then add only physically sourced resource/recipe breadth. | queued |
 | Research job unlocks do not gate jobs truthfully | All ten `UnlockJob` payloads are unread. Fetch Water and Explore work before their claimed unlocks, while six advertised IDs are not runtime job kinds. Align catalog wording/IDs and authoritative action gates. | queued |
 | Some building unlock studies lie or duplicate another gate | Research Hut is intentionally available for bootstrap despite an unlock payload; `mill_foundations` cannot independently unlock the Mill because `milling` remains mandatory. Make the catalog and placement rules agree while preserving a playable bootstrap. | queued |
@@ -20,6 +20,31 @@ and any changed Bevy visuals have been verified.
 | Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains; rail and shipping have modifiers but no tracks, trains, vessels, or routes. | queued |
 
 ## Verified fixes
+
+## 2026-07-15 — Target-correct storage-capacity research
+
+**Problem:** A capacity study on any completed building leaked its largest multiplier into every
+resource. Simulation clamps, snapshots, physical pile routing, and village-trade checks also used
+different capacity calculations, so the UI could advertise space that delivery could not use.
+
+**Fix:** One authoritative calculation now drives the aggregate clamp, general-storehouse
+headroom, snapshots, signed trade validation/deposit, and persistence. `food_storage_stores`
+changes only Food/Fish/Herbs/Materials/Refined capacity, `water_bowl_stores` only Water, and
+`smithy_stores` only Weapons/Armor. Unsupported building targets cannot leak globally. Trade
+acceptance builds an exact physical deposit plan before mutation and therefore cannot lose goods
+behind a debug-only assertion. Consumption refreshes the pile ledger before returning carriers;
+source-less fresh expedition excess that genuinely cannot fit is explicitly abandoned and the
+living worker released, while farm/gather/station cargo and death spills remain conserved.
+
+**Evidence:** The capacity-only runtime resolver is bit-identical to full effect resolution across
+all 500 catalog prefixes. Target-isolation, legacy shrine/designated migration, exact physical
+headroom, signed purchase/trade, adversarial no-route trade, persistence, fresh-overflow
+termination, physical-cargo conservation, deterministic twins, and the untouched no-cheat guided
+farm→Mill campaign pass. Remaining scope is the 22 unsupported `*_stores` targets and the fixed
+10-unit station-local stores listed in the open queue. The accepted 3826×2105 own-framebuffer
+shows researched Food/Fish capacity at 680 (baseline 600 plus the targeted 80) while Water remains
+independently 200. The final sim/server gate passes 1,130 tests with one explicit skip, plus strict
+Clippy, formatting, and diff checks.
 
 ## 2026-07-15 — Physical Workshop and Smelter refining
 

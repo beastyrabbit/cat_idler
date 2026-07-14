@@ -19,11 +19,14 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{entities::Resources, zones::ZoneRect};
+use crate::{entities::Resources, storage::StorageCapacities, zones::ZoneRect};
 
 /// Legacy id migrated to [`GENERAL_STOREHOUSE_ID`] at reconciliation.
 pub const SHRINE_STOCKPILE_ID: &str = "stockpile-shrine";
 pub const GENERAL_STOREHOUSE_ID: &str = "stockpile-storehouse";
+/// Legacy structural fallback for callers without colony research context.
+/// Live simulation routing uses [`capacity_for`] so the founding storehouse has
+/// the target-correct per-resource capacity owned by its completed storage buildings.
 pub const GENERAL_STOREHOUSE_CAPACITY: f64 = 360.0;
 
 /// Reserved, persisted station-local stores. They use the existing stockpile JSON so
@@ -287,8 +290,10 @@ impl Stockpile {
         f64::from(w) * f64::from(h)
     }
 
-    /// Per-resource capacity: finite for every current pile; only a not-yet-migrated
-    /// legacy shrine row temporarily reports unbounded capacity.
+    /// Structural per-resource capacity when no colony research context is available.
+    /// Live general-store routing must use [`capacity_for`]; designated and station-local
+    /// piles use this value directly. A not-yet-migrated legacy shrine is temporarily
+    /// unbounded so reconciliation can preserve it.
     #[must_use]
     pub fn capacity(&self) -> Option<f64> {
         if self.id == SHRINE_STOCKPILE_ID {
@@ -327,6 +332,77 @@ impl Stockpile {
         self.capacity().map_or(f64::INFINITY, |capacity| {
             (capacity - resource_amount(&self.contents, kind)).max(0.0)
         })
+    }
+}
+
+/// Effective capacity of one pile for one resource. The seeded general storehouse
+/// is the physical face of the legacy per-resource storage model: Food Storage,
+/// Water Bowl, and Smithy buildings therefore give it different headroom by
+/// resource. Designated and station-local piles retain their spatial capacities.
+#[must_use]
+pub fn capacity_for(
+    pile: &Stockpile,
+    kind: ResourceKind,
+    storehouse_caps: &StorageCapacities,
+) -> Option<f64> {
+    if pile.is_general_storehouse() {
+        Some(storage_capacity_for(*storehouse_caps, kind))
+    } else {
+        pile.capacity()
+    }
+}
+
+#[must_use]
+pub fn has_headroom_for(
+    pile: &Stockpile,
+    kind: ResourceKind,
+    storehouse_caps: &StorageCapacities,
+) -> bool {
+    pile.accepts.contains(&kind)
+        && capacity_for(pile, kind, storehouse_caps)
+            .is_none_or(|cap| resource_amount(&pile.contents, kind) < cap)
+}
+
+#[must_use]
+pub fn headroom_for(
+    pile: &Stockpile,
+    kind: ResourceKind,
+    storehouse_caps: &StorageCapacities,
+) -> f64 {
+    if !pile.accepts.contains(&kind) {
+        return 0.0;
+    }
+    capacity_for(pile, kind, storehouse_caps).map_or(f64::INFINITY, |capacity| {
+        (capacity - resource_amount(&pile.contents, kind)).max(0.0)
+    })
+}
+
+#[must_use]
+pub const fn storage_capacity_for(caps: StorageCapacities, kind: ResourceKind) -> f64 {
+    match kind {
+        ResourceKind::Food => caps.food,
+        ResourceKind::Fish => caps.fish,
+        ResourceKind::Water => caps.water,
+        ResourceKind::Herbs => caps.herbs,
+        ResourceKind::Catnip => caps.catnip,
+        ResourceKind::Grain => caps.grain,
+        ResourceKind::Flour => caps.flour,
+        ResourceKind::Materials => caps.materials,
+        ResourceKind::Refined => caps.refined,
+        ResourceKind::Weapons => caps.weapons,
+        ResourceKind::Armor => caps.armor,
+        ResourceKind::Logs => caps.logs,
+        ResourceKind::Lumber => caps.lumber,
+        ResourceKind::Planks => caps.planks,
+        ResourceKind::Blocks => caps.blocks,
+        ResourceKind::Tools => caps.tools,
+        ResourceKind::Fibre => caps.fibre,
+        ResourceKind::Hide => caps.hide,
+        ResourceKind::Cloth => caps.cloth,
+        ResourceKind::Leather => caps.leather,
+        ResourceKind::Ore => caps.ore,
+        ResourceKind::Metal => caps.metal,
+        ResourceKind::Blessings => f64::INFINITY,
     }
 }
 
@@ -448,9 +524,24 @@ pub fn deposit_index(
     from_x: f64,
     from_y: f64,
 ) -> Option<usize> {
+    deposit_index_with_caps(stockpiles, kind, from_x, from_y, None)
+}
+
+#[must_use]
+pub fn deposit_index_with_caps(
+    stockpiles: &[Stockpile],
+    kind: ResourceKind,
+    from_x: f64,
+    from_y: f64,
+    storehouse_caps: Option<&StorageCapacities>,
+) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (idx, pile) in stockpiles.iter().enumerate() {
-        if pile.is_station_local() || !pile.has_headroom(kind) {
+        let has_headroom = storehouse_caps.map_or_else(
+            || pile.has_headroom(kind),
+            |caps| has_headroom_for(pile, kind, caps),
+        );
+        if pile.is_station_local() || !has_headroom {
             continue;
         }
         let (cx, cy) = rect_center(pile.rect);
@@ -466,9 +557,13 @@ pub fn deposit_index(
         }
     }
     best.map(|(idx, _)| idx).or_else(|| {
-        stockpiles
-            .iter()
-            .position(|pile| pile.is_shrine() && pile.has_headroom(kind))
+        stockpiles.iter().position(|pile| {
+            pile.is_shrine()
+                && storehouse_caps.map_or_else(
+                    || pile.has_headroom(kind),
+                    |caps| has_headroom_for(pile, kind, caps),
+                )
+        })
     })
 }
 
@@ -484,10 +579,25 @@ pub fn village_deposit_index(
     from_x: f64,
     from_y: f64,
 ) -> Option<usize> {
+    village_deposit_index_with_caps(stockpiles, gather_spot_ids, kind, from_x, from_y, None)
+}
+
+#[must_use]
+pub fn village_deposit_index_with_caps(
+    stockpiles: &[Stockpile],
+    gather_spot_ids: &[String],
+    kind: ResourceKind,
+    from_x: f64,
+    from_y: f64,
+    storehouse_caps: Option<&StorageCapacities>,
+) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (idx, pile) in stockpiles.iter().enumerate() {
-        if pile.is_station_local() || gather_spot_ids.contains(&pile.id) || !pile.has_headroom(kind)
-        {
+        let has_headroom = storehouse_caps.map_or_else(
+            || pile.has_headroom(kind),
+            |caps| has_headroom_for(pile, kind, caps),
+        );
+        if pile.is_station_local() || gather_spot_ids.contains(&pile.id) || !has_headroom {
             continue;
         }
         let (cx, cy) = rect_center(pile.rect);
@@ -503,9 +613,13 @@ pub fn village_deposit_index(
         }
     }
     best.map(|(idx, _)| idx).or_else(|| {
-        stockpiles
-            .iter()
-            .position(|pile| pile.is_shrine() && pile.has_headroom(kind))
+        stockpiles.iter().position(|pile| {
+            pile.is_shrine()
+                && storehouse_caps.map_or_else(
+                    || pile.has_headroom(kind),
+                    |caps| has_headroom_for(pile, kind, caps),
+                )
+        })
     })
 }
 
@@ -517,6 +631,7 @@ pub fn reconcile(
     stockpiles: &mut Vec<Stockpile>,
     resources: &mut Resources,
     shrine_rect: ZoneRect,
+    storehouse_caps: StorageCapacities,
 ) {
     let shrine_idx = shrine_index(stockpiles, shrine_rect);
 
@@ -548,8 +663,7 @@ pub fn reconcile(
             set_resource(&mut stockpiles[shrine_idx].contents, kind, 0.0);
         } else {
             let residual = total - player_sum;
-            let stored = stockpiles[shrine_idx]
-                .capacity()
+            let stored = capacity_for(&stockpiles[shrine_idx], kind, &storehouse_caps)
                 .map_or(residual, |capacity| residual.min(capacity));
             set_resource(&mut stockpiles[shrine_idx].contents, kind, stored);
             // Physical capacity is authoritative. Any aggregate amount that cannot fit
@@ -602,7 +716,12 @@ mod tests {
     fn reconcile_seeds_shrine_and_holds_the_whole_total() {
         let mut piles = Vec::new();
         let mut resources = res(150.0, 100.0, 24.0);
-        reconcile(&mut piles, &mut resources, small_rect(6, 6));
+        reconcile(
+            &mut piles,
+            &mut resources,
+            small_rect(6, 6),
+            crate::storage::BASE_CAPACITY,
+        );
 
         assert_eq!(piles.len(), 1);
         assert!(piles[0].is_shrine());
@@ -629,7 +748,12 @@ mod tests {
             y2: 10,
         };
 
-        reconcile(&mut piles, &mut resources, store_rect);
+        reconcile(
+            &mut piles,
+            &mut resources,
+            store_rect,
+            crate::storage::BASE_CAPACITY,
+        );
 
         assert_eq!(piles.len(), 1);
         assert_eq!(piles[0].id, GENERAL_STOREHOUSE_ID);
@@ -639,14 +763,69 @@ mod tests {
     }
 
     #[test]
+    fn legacy_shrine_migration_uses_researched_per_resource_headroom_without_wiping_goods() {
+        let mut legacy = make_shrine(small_rect(2, 2));
+        legacy.id = SHRINE_STOCKPILE_ID.to_owned();
+        legacy.contents.food = 700.0;
+        let mut piles = vec![legacy];
+        let mut resources = res(700.0, 10.0, 5.0);
+        let caps = StorageCapacities {
+            food: 800.0,
+            ..crate::storage::BASE_CAPACITY
+        };
+
+        reconcile(&mut piles, &mut resources, small_rect(6, 6), caps);
+
+        assert_eq!(piles.len(), 1);
+        assert!(piles[0].is_general_storehouse());
+        assert_eq!(piles[0].contents.food, 700.0);
+        assert_eq!(resources.food, 700.0);
+        assert_eq!(
+            capacity_for(&piles[0], ResourceKind::Food, &caps),
+            Some(800.0)
+        );
+    }
+
+    #[test]
+    fn designated_only_legacy_state_seeds_general_store_before_clamping_unaccepted_resources() {
+        let mut designated = player_pile(
+            "stockpile-food-only",
+            small_rect(8, 8),
+            &[ResourceKind::Food],
+        );
+        designated.contents.food = 20.0;
+        let mut piles = vec![designated];
+        let mut resources = res(20.0, 300.0, 5.0);
+        let caps = StorageCapacities {
+            water: 400.0,
+            ..crate::storage::BASE_CAPACITY
+        };
+
+        reconcile(&mut piles, &mut resources, small_rect(6, 6), caps);
+
+        let general = piles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("reconciliation seeds the missing general storehouse");
+        assert_eq!(general.contents.water, 300.0);
+        assert_eq!(resources.water, 300.0);
+        assert_eq!(pile_sum(&piles, ResourceKind::Water), 300.0);
+    }
+
+    #[test]
     fn finite_storehouse_clamps_invisible_overflow_instead_of_hiding_it() {
         let mut piles = Vec::new();
-        let mut resources = res(GENERAL_STOREHOUSE_CAPACITY + 40.0, 0.0, 0.0);
+        let mut resources = res(crate::storage::BASE_CAPACITY.food + 40.0, 0.0, 0.0);
 
-        reconcile(&mut piles, &mut resources, small_rect(6, 6));
+        reconcile(
+            &mut piles,
+            &mut resources,
+            small_rect(6, 6),
+            crate::storage::BASE_CAPACITY,
+        );
 
-        assert_eq!(resources.food, GENERAL_STOREHOUSE_CAPACITY);
-        assert_eq!(piles[0].contents.food, GENERAL_STOREHOUSE_CAPACITY);
+        assert_eq!(resources.food, crate::storage::BASE_CAPACITY.food);
+        assert_eq!(piles[0].contents.food, crate::storage::BASE_CAPACITY.food);
         assert_eq!(pile_sum(&piles, ResourceKind::Food), resources.food);
     }
 
@@ -660,7 +839,12 @@ mod tests {
         piles[1].contents.food = 30.0;
         let resources = res(150.0, 100.0, 24.0);
         let mut resources = resources;
-        reconcile(&mut piles, &mut resources, small_rect(6, 6));
+        reconcile(
+            &mut piles,
+            &mut resources,
+            small_rect(6, 6),
+            crate::storage::BASE_CAPACITY,
+        );
 
         assert_eq!(pile_sum(&piles, ResourceKind::Food), 150.0);
         assert_eq!(piles[1].contents.food, 30.0, "player pile retained");
@@ -681,7 +865,12 @@ mod tests {
         // Consumption dropped the world total below the 80 held in piles.
         let resources = res(50.0, 0.0, 0.0);
         let mut resources = resources;
-        reconcile(&mut piles, &mut resources, small_rect(6, 6));
+        reconcile(
+            &mut piles,
+            &mut resources,
+            small_rect(6, 6),
+            crate::storage::BASE_CAPACITY,
+        );
 
         assert_eq!(pile_sum(&piles, ResourceKind::Food), 50.0);
         // Drained in id order: "stockpile-a" first (loses 30 → 10), "stockpile-b" untouched.

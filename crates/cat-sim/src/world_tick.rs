@@ -86,9 +86,7 @@ use crate::{
     smithy::{MetalForgeOptions, SmithyOptions, advance_metal_forge, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
     stockpiles::{self, GatherSpot, GatherSpotPurpose, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
-    storage::{
-        StorageBuilding, StorageCapacities, count_storehouses, storage_capacities, storehouse_cap,
-    },
+    storage::{StorageBuilding, StorageCapacities, count_storehouses, storehouse_cap},
     survival::{SurvivalResources, apply_survival_tick},
     terrain_gen::tile_climate_biome,
     threat::{
@@ -6516,7 +6514,7 @@ fn advance_designated_farms(
             let amount = plot
                 .pending_output
                 .min(farming::FARM_BASKET_CAPACITY)
-                .min(colony.stockpiles[destination_index].headroom(crop_kind));
+                .min(stockpile_headroom(colony, destination_index, crop_kind));
             if amount <= 0.0 {
                 colony.farms[index].work_phase = FarmWorkPhase::OutputBlocked;
                 continue;
@@ -7937,9 +7935,7 @@ fn route_output_to_nearest_pile(
     if amount <= 0.0 {
         return;
     }
-    if let Some(idx) =
-        stockpiles::deposit_index(&colony.stockpiles, kind, f64::from(at.x), f64::from(at.y))
-    {
+    if let Some(idx) = deposit_stockpile_index(colony, kind, f64::from(at.x), f64::from(at.y)) {
         stockpiles::add_resource(&mut colony.stockpiles[idx].contents, kind, amount);
     }
 }
@@ -9621,6 +9617,10 @@ fn phase_33_movement_deposits_and_no_destination_wander(
     gate: TickGate,
     movement: &mut MovementPassContext,
 ) {
+    // Consumption changed the aggregate in phase 7. Refresh the physical ledger at the
+    // delivery boundary so headroom includes what the colony ate this tick without
+    // changing the earlier job-promotion and mid-job routing phases.
+    reconcile_colony_stockpiles(colony);
     advance_material_offering_logistics(colony, gate.processed_through);
 
     let cat_ids = colony
@@ -9654,7 +9654,15 @@ fn phase_33_movement_deposits_and_no_destination_wander(
                 continue;
             }
 
-            let remaining = credit_carrying(colony, &carrying, world_pos);
+            let mut remaining = credit_carrying(colony, &carrying, world_pos);
+            // A hunt, quarry, forage, or water-fetch yield does not exist in a source
+            // inventory before this delivery. Preserve the established overflow rule:
+            // the unstorable portion is abandoned at the storehouse and the worker is
+            // released. Persisted farm/gather/station cargo has a physical source marker
+            // and must instead remain in transit until a real destination has room.
+            if carrying.source_gather_spot.is_none() && carrying.kind != CarryingKind::Blessings {
+                remaining = 0.0;
+            }
             #[cfg(test)]
             if remaining <= f64::EPSILON
                 && parse_farm_cargo(carrying.source_gather_spot.as_deref()).is_some()
@@ -9826,8 +9834,11 @@ fn recover_orphaned_offering_escrows(colony: &mut ColonyRuntime) {
             else {
                 break;
             };
-            let moved =
-                amount.min(colony.stockpiles[destination].headroom(ResourceKind::Materials));
+            let moved = amount.min(stockpile_headroom(
+                colony,
+                destination,
+                ResourceKind::Materials,
+            ));
             if moved <= f64::EPSILON {
                 break;
             }
@@ -10769,17 +10780,13 @@ fn complete_arrived_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) 
             continue;
         };
         let cat_pos = position_to_world(colony.anchor, colony.cats[cat_index].position);
-        let Some(dest_index) = stockpiles::village_deposit_index(
-            &colony.stockpiles,
-            &gather_spot_ids,
-            kind,
-            cat_pos.x,
-            cat_pos.y,
-        ) else {
+        let Some(dest_index) =
+            village_deposit_stockpile_index(colony, &gather_spot_ids, kind, cat_pos.x, cat_pos.y)
+        else {
             colony.cats[cat_index].activity = CatActivity::Working;
             continue;
         };
-        let mut amount = available.min(colony.stockpiles[dest_index].headroom(kind));
+        let mut amount = available.min(stockpile_headroom(colony, dest_index, kind));
         // A maintained farm handoff can accumulate several harvests while its mover is
         // away. Crop logistics still use physical baskets on the long leg: leave any
         // excess at the handoff for a later trip instead of giving one cat an unlimited
@@ -13401,20 +13408,44 @@ fn storage_caps(colony: &ColonyRuntime) -> StorageCapacities {
             )
         })
         .collect();
-    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    crate::storage::authoritative_storage_capacities_for_owned(
+        &buildings,
+        &colony.stockpiles,
+        colony.upgrade_tree.owned_node_ids.iter(),
+    )
+}
 
-    let building_capacity_mult = colony
-        .buildings
-        .iter()
-        .filter(|building| building.construction_progress >= 100)
-        .map(|building| {
-            effects
-                .building(building.building_type.as_str())
-                .capacity_mult
-        })
-        .fold(1.0, f64::max);
-    storage_capacities(&buildings, effects.storage_per_level_mult)
-        .scaled(effects.storage_capacity_mult * building_capacity_mult)
+fn stockpile_headroom(colony: &ColonyRuntime, index: usize, kind: ResourceKind) -> f64 {
+    let caps = storage_caps(colony);
+    stockpiles::headroom_for(&colony.stockpiles[index], kind, &caps)
+}
+
+fn deposit_stockpile_index(
+    colony: &ColonyRuntime,
+    kind: ResourceKind,
+    from_x: f64,
+    from_y: f64,
+) -> Option<usize> {
+    let caps = storage_caps(colony);
+    stockpiles::deposit_index_with_caps(&colony.stockpiles, kind, from_x, from_y, Some(&caps))
+}
+
+fn village_deposit_stockpile_index(
+    colony: &ColonyRuntime,
+    gather_spot_ids: &[String],
+    kind: ResourceKind,
+    from_x: f64,
+    from_y: f64,
+) -> Option<usize> {
+    let caps = storage_caps(colony);
+    stockpiles::village_deposit_index_with_caps(
+        &colony.stockpiles,
+        gather_spot_ids,
+        kind,
+        from_x,
+        from_y,
+        Some(&caps),
+    )
 }
 
 fn clamp_resources_to_caps(resources: &mut Resources, caps: StorageCapacities) {
@@ -17809,11 +17840,14 @@ fn nearest_output_pile(
     kind: ResourceKind,
     from: WorldPos,
 ) -> Option<usize> {
+    let caps = storage_caps(colony);
     colony
         .stockpiles
         .iter()
         .enumerate()
-        .filter(|(_, pile)| !pile.is_station_local() && pile.has_headroom(kind))
+        .filter(|(_, pile)| {
+            !pile.is_station_local() && stockpiles::has_headroom_for(pile, kind, &caps)
+        })
         .map(|(index, pile)| {
             let (x, y) = pile.center();
             let distance = (x - from.x).powi(2) + (y - from.y).powi(2);
@@ -17870,7 +17904,7 @@ fn begin_station_output_haul(
     };
     let destination_id = colony.stockpiles[destination_index].id.clone();
     let destination_center = colony.stockpiles[destination_index].center();
-    let haul_amount = output_amount.min(colony.stockpiles[destination_index].headroom(kind));
+    let haul_amount = output_amount.min(stockpile_headroom(colony, destination_index, kind));
     if haul_amount <= f64::EPSILON {
         return true;
     }
@@ -18680,7 +18714,7 @@ fn recover_orphaned_station_stores(colony: &mut ColonyRuntime, gate: TickGate) {
         return;
     }
 
-    let haul_amount = amount.min(colony.stockpiles[destination_index].headroom(kind));
+    let haul_amount = amount.min(stockpile_headroom(colony, destination_index, kind));
     let Some(carrying_kind) = carrying_kind_for_resource(kind) else {
         return;
     };
@@ -18720,10 +18754,12 @@ fn recover_orphaned_station_stores(colony: &mut ColonyRuntime, gate: TickGate) {
 /// storehouse). Runs at the end of every tick and after stockpile actions.
 pub fn reconcile_colony_stockpiles(colony: &mut ColonyRuntime) {
     let storehouse_rect = general_storehouse_rect(colony);
+    let storehouse_caps = storage_caps(colony);
     stockpiles::reconcile(
         &mut colony.stockpiles,
         &mut colony.resources,
         storehouse_rect,
+        storehouse_caps,
     );
 }
 
@@ -18773,11 +18809,12 @@ fn haul_destination_excluding(
     let Some(kind) = carrying_resource_kind(carrying_kind) else {
         return village_anchor_world(colony.anchor);
     };
+    let caps = storage_caps(colony);
     let mut best: Option<(&Stockpile, f64)> = None;
     for pile in &colony.stockpiles {
         if pile.is_station_local()
             || excluded_pile_id.is_some_and(|excluded| pile.id == excluded)
-            || !pile.has_headroom(kind)
+            || !stockpiles::has_headroom_for(pile, kind, &caps)
         {
             continue;
         }
@@ -18854,10 +18891,14 @@ fn haul_deposit_target(
                 );
         }
         let kind = carrying_resource_kind(carrying.kind);
+        let caps = storage_caps(colony);
         return colony
             .stockpiles
             .iter()
-            .find(|pile| pile.id == pile_id && kind.is_some_and(|kind| pile.has_headroom(kind)))
+            .find(|pile| {
+                pile.id == pile_id
+                    && kind.is_some_and(|kind| stockpiles::has_headroom_for(pile, kind, &caps))
+            })
             .map_or_else(
                 || {
                     kind.and_then(|kind| nearest_output_pile(colony, kind, from_pos))
@@ -18879,20 +18920,14 @@ fn haul_deposit_target(
             .map(|spot| spot.stockpile_id.clone())
             .collect();
         let kind = carrying_resource_kind(carrying.kind).unwrap_or(ResourceKind::Food);
-        stockpiles::village_deposit_index(
-            &colony.stockpiles,
-            &gather_spot_ids,
-            kind,
-            from_pos.x,
-            from_pos.y,
-        )
-        .map_or_else(
-            || from_pos,
-            |idx| {
-                let (cx, cy) = colony.stockpiles[idx].center();
-                WorldPos { x: cx, y: cy }
-            },
-        )
+        village_deposit_stockpile_index(colony, &gather_spot_ids, kind, from_pos.x, from_pos.y)
+            .map_or_else(
+                || from_pos,
+                |idx| {
+                    let (cx, cy) = colony.stockpiles[idx].center();
+                    WorldPos { x: cx, y: cy }
+                },
+            )
     } else {
         haul_destination(colony, carrying.kind, from_pos)
     }
@@ -19242,11 +19277,10 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         let Some(kind) = carrying_resource_kind(carrying.kind) else {
             return carrying.amount;
         };
-        let delivered = colony
-            .stockpiles
-            .iter()
-            .find(|pile| pile.id == pile_id)
-            .map_or(0.0, |pile| pile.headroom(kind).min(carrying.amount));
+        let destination_index = colony.stockpiles.iter().position(|pile| pile.id == pile_id);
+        let delivered = destination_index.map_or(0.0, |index| {
+            stockpile_headroom(colony, index, kind).min(carrying.amount)
+        });
         stockpiles::add_resource(&mut colony.resources, kind, delivered);
         if let Some(destination) = colony.stockpiles.iter_mut().find(|pile| pile.id == pile_id) {
             stockpiles::add_resource(&mut destination.contents, kind, delivered);
@@ -19292,7 +19326,7 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
             } else {
                 let destination = nearest_output_pile(colony, kind, deposit_at);
                 let headroom =
-                    destination.map_or(0.0, |index| colony.stockpiles[index].headroom(kind));
+                    destination.map_or(0.0, |index| stockpile_headroom(colony, index, kind));
                 (destination, headroom)
             };
             let transferred = carrying.amount.min(available).min(headroom);
@@ -19317,11 +19351,14 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
             }
             return (carrying.amount - transferred).max(0.0);
         }
+        let caps = storage_caps(colony);
         let destination = colony
             .stockpiles
             .iter()
             .enumerate()
-            .filter(|(_, pile)| !pile.is_station_local() && pile.has_headroom(kind))
+            .filter(|(_, pile)| {
+                !pile.is_station_local() && stockpiles::has_headroom_for(pile, kind, &caps)
+            })
             .filter(|(_, pile)| {
                 let (x, y) = pile.center();
                 is_at_shrine(deposit_at, WorldPos { x, y })
@@ -19329,7 +19366,7 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
             .min_by(|(_, left), (_, right)| left.id.cmp(&right.id))
             .map(|(index, _)| index);
         let delivered = destination.map_or(0.0, |index| {
-            colony.stockpiles[index].headroom(kind).min(carrying.amount)
+            stockpile_headroom(colony, index, kind).min(carrying.amount)
         });
         stockpiles::add_resource(&mut colony.resources, kind, delivered);
         if let Some(destination) = destination {
@@ -19378,14 +19415,14 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
             .iter()
             .map(|spot| spot.stockpile_id.clone())
             .collect();
-        if let Some(idx) = stockpiles::village_deposit_index(
-            &colony.stockpiles,
+        if let Some(idx) = village_deposit_stockpile_index(
+            colony,
             &gather_spot_ids,
             kind,
             deposit_at.x,
             deposit_at.y,
         ) {
-            let delivered = carrying.amount.min(colony.stockpiles[idx].headroom(kind));
+            let delivered = carrying.amount.min(stockpile_headroom(colony, idx, kind));
             stockpiles::add_resource(&mut colony.stockpiles[idx].contents, kind, delivered);
             stockpiles::add_resource(&mut colony.resources, kind, delivered);
             return (carrying.amount - delivered).max(0.0);
@@ -19393,10 +19430,8 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         return carrying.amount;
     }
 
-    if let Some(idx) =
-        stockpiles::deposit_index(&colony.stockpiles, kind, deposit_at.x, deposit_at.y)
-    {
-        let delivered = carrying.amount.min(colony.stockpiles[idx].headroom(kind));
+    if let Some(idx) = deposit_stockpile_index(colony, kind, deposit_at.x, deposit_at.y) {
+        let delivered = carrying.amount.min(stockpile_headroom(colony, idx, kind));
         stockpiles::add_resource(&mut colony.stockpiles[idx].contents, kind, delivered);
         stockpiles::add_resource(&mut colony.resources, kind, delivered);
         return (carrying.amount - delivered).max(0.0);
@@ -21093,7 +21128,6 @@ mod tests {
                 ..ColonyRuntime::default()
             }],
         };
-
         let _ = world_tick(&mut world, 1_000);
 
         let colony = &world.colonies[0];
@@ -23191,12 +23225,13 @@ mod tests {
             ..ColonyRuntime::default()
         };
         reconcile_colony_stockpiles(&mut colony);
+        let food_capacity = storage_caps(&colony).food;
         let store = colony
             .stockpiles
             .iter_mut()
             .find(|pile| pile.is_general_storehouse())
             .unwrap();
-        store.contents.food = store.capacity().unwrap();
+        store.contents.food = food_capacity;
         let from = WorldPos { x: 18.0, y: 22.0 };
         assert_eq!(haul_destination(&colony, CarryingKind::Food, from), from);
     }
@@ -23783,12 +23818,13 @@ mod tests {
             ..ColonyRuntime::default()
         };
         reconcile_colony_stockpiles(&mut colony);
+        let food_capacity = storage_caps(&colony).food;
         let store = colony
             .stockpiles
             .iter_mut()
             .find(|pile| pile.is_shrine())
             .unwrap();
-        store.contents.food = store.capacity().unwrap() - 3.0;
+        store.contents.food = food_capacity - 3.0;
         let mut source = designated_pile("gather-1", tile_rect(30, 30), &[ResourceKind::Food]);
         source.contents.food = 10.0;
         colony.stockpiles.push(source);
@@ -24344,13 +24380,15 @@ mod tests {
     #[test]
     fn mid_job_haul_routes_the_carrier_toward_a_designated_food_pile() {
         // Same setup as `mid_job_hunt_haul_splits_total_and_sets_carrying`, but a designated
-        // food pile exists: the carrier now heads for the pile (14,6) instead of the anchor.
+        // food pile exists: the carrier now heads for the pile (22,6) instead of the general
+        // storehouse. Keep this synthetic hunt away from the real storehouse footprint so the
+        // designated pile is genuinely the nearest valid destination.
         let mut cat = adult_idle_cat("hunter", "colony-1");
         cat.activity = CatActivity::Working;
         cat.current_task = Some(TaskType::Hunt);
         cat.position = Position {
             map: MapType::World,
-            x: 12.0,
+            x: 20.0,
             y: 6.0,
         };
 
@@ -24363,7 +24401,7 @@ mod tests {
                 cats: vec![cat],
                 stockpiles: vec![designated_pile(
                     "stockpile-food",
-                    tile_rect(14, 6),
+                    tile_rect(22, 6),
                     &[ResourceKind::Food],
                 )],
                 jobs: vec![JobRuntime {
@@ -24376,7 +24414,7 @@ mod tests {
                     started_at: Some(0),
                     ends_at: Some(9_000),
                     metadata: JobMetadata::Hauling {
-                        site: Some(pos(12, 6)),
+                        site: Some(pos(20, 6)),
                         total_yield: Some(10.0),
                         trips_done: 0,
                         next_trip_at: Some(3_000),
@@ -24385,7 +24423,7 @@ mod tests {
                     ..JobRuntime::default()
                 }],
                 world_tiles: BTreeMap::from([(
-                    pos(12, 6),
+                    pos(20, 6),
                     WorldTileRuntime {
                         resources: TileResources {
                             food: 30,
@@ -24393,7 +24431,7 @@ mod tests {
                             water: 0,
                         },
                         path_wear: 63,
-                        ..tile(12, 6, 63, None)
+                        ..tile(20, 6, 63, None)
                     },
                 )]),
                 last_tick: 2_000,
@@ -24401,7 +24439,6 @@ mod tests {
                 ..ColonyRuntime::default()
             }],
         };
-
         let _ = world_tick(&mut world, 3_000);
 
         let cat = &world.colonies[0].cats[0];
@@ -24410,7 +24447,7 @@ mod tests {
             cat.destination,
             Some(Position {
                 map: MapType::World,
-                x: 14.0,
+                x: 22.0,
                 y: 6.0,
             }),
             "carrier routed to the food pile, not the anchor"
@@ -25946,7 +25983,7 @@ mod tests {
         let mut colony = chain_colony(
             BuildingType::Mill,
             Resources {
-                flour: stockpiles::GENERAL_STOREHOUSE_CAPACITY - 1.0,
+                flour: BASE_CAPACITY.flour - 1.0,
                 ..Resources::default()
             },
             true,
@@ -25973,10 +26010,7 @@ mod tests {
         let target = haul_deposit_target(&colony, &outbound, station_work_point(&building));
         credit_carrying(&mut colony, &outbound, target);
         colony.cats[0].carrying = None;
-        assert_eq!(
-            colony.resources.flour,
-            stockpiles::GENERAL_STOREHOUSE_CAPACITY
-        );
+        assert_eq!(colony.resources.flour, BASE_CAPACITY.flour);
         assert_eq!(
             building_production_block_reason(&colony, &building).as_deref(),
             Some("output_storage_full")
@@ -26411,11 +26445,11 @@ mod tests {
             .unwrap()
             .contents
             .lumber = 2.0;
+        let caps = storage_caps(&colony);
         for pile in &mut colony.stockpiles {
             if !pile.is_station_local() {
                 pile.accepts.insert(ResourceKind::Lumber);
-                let capacity = pile
-                    .capacity()
+                let capacity = stockpiles::capacity_for(pile, ResourceKind::Lumber, &caps)
                     .unwrap_or(stockpiles::GENERAL_STOREHOUSE_CAPACITY);
                 pile.contents.lumber = capacity;
             }
@@ -26917,7 +26951,7 @@ mod tests {
         let mut colony = chain_colony(
             BuildingType::Workshop,
             Resources {
-                refined: stockpiles::GENERAL_STOREHOUSE_CAPACITY,
+                refined: BASE_CAPACITY.refined,
                 ..Resources::default()
             },
             true,
@@ -26946,10 +26980,7 @@ mod tests {
 
         recover_orphaned_station_stores(&mut colony, production_gate(1, 1_000));
         assert!(colony.cats[0].carrying.is_none());
-        assert_eq!(
-            colony.resources.refined,
-            stockpiles::GENERAL_STOREHOUSE_CAPACITY
-        );
+        assert_eq!(colony.resources.refined, BASE_CAPACITY.refined);
         assert_eq!(
             colony
                 .stockpiles
@@ -26995,8 +27026,8 @@ mod tests {
             .find(|pile| pile.is_general_storehouse())
             .unwrap()
             .contents
-            .refined = stockpiles::GENERAL_STOREHOUSE_CAPACITY;
-        colony.resources.refined = stockpiles::GENERAL_STOREHOUSE_CAPACITY;
+            .refined = BASE_CAPACITY.refined;
+        colony.resources.refined = BASE_CAPACITY.refined;
         assert_eq!(credit_carrying(&mut colony, &cargo, target), 1.0);
         assert_eq!(
             colony
@@ -27384,7 +27415,7 @@ mod tests {
             BuildingType::Workshop,
             Resources {
                 materials: 35.0,
-                refined: stockpiles::GENERAL_STOREHOUSE_CAPACITY,
+                refined: BASE_CAPACITY.refined,
                 ..Resources::default()
             },
             true,
@@ -27422,10 +27453,7 @@ mod tests {
         colony.cats[0].position = position_from_world(station_work_point(&colony.buildings[0]));
         advance_physical_refiner(&mut colony, 0, production_gate(30, 61_000), 30.0, false);
         assert_eq!(colony.resources.materials, 30.0);
-        assert_eq!(
-            colony.resources.refined,
-            stockpiles::GENERAL_STOREHOUSE_CAPACITY
-        );
+        assert_eq!(colony.resources.refined, BASE_CAPACITY.refined);
         assert_eq!(
             building_station_inventory(&colony, &colony.buildings[0], true),
             vec![(ResourceKind::Refined, 1.0)],
@@ -42133,7 +42161,7 @@ mod tests {
     }
 
     #[test]
-    fn finite_pile_deposit_returns_unstored_cargo_instead_of_overfilling() {
+    fn living_fresh_expedition_abandons_only_unstorable_excess_and_releases_worker() {
         let mut world = new_world(42);
         world
             .colonies
@@ -42180,8 +42208,17 @@ mod tests {
             .find(|pile| pile.id == pile_id)
             .unwrap();
         assert_eq!(pile.contents.fish, pile.capacity().unwrap());
-        assert_eq!(colony.cats[0].carrying.as_ref().unwrap().amount, 3.0);
+        assert!(
+            colony.cats[0].carrying.is_none(),
+            "source-less expedition overflow is abandoned so the worker terminates its haul"
+        );
+        assert_ne!(colony.cats[0].activity, CatActivity::Returning);
         assert_eq!(colony.resources.fish, before + 2.0);
+
+        // This compatibility rule is deliberately narrower than the conservation rules
+        // for physical cargo. Farm baskets return overflow to `pending_output`, gather
+        // and station transfers retain it in transit, and death salvage persists it on
+        // the corpse; their focused tests exercise those three paths independently.
     }
 
     #[test]
@@ -42674,24 +42711,14 @@ mod tests {
 
     fn set_store_food_headroom(colony: &mut ColonyRuntime, headroom: f64) {
         reconcile_colony_stockpiles(colony);
-        let capacity = colony
-            .stockpiles
-            .iter()
-            .find(|pile| pile.is_shrine())
-            .and_then(Stockpile::capacity)
-            .unwrap();
+        let capacity = storage_caps(colony).food;
         colony.resources.food = capacity - headroom;
         reconcile_colony_stockpiles(colony);
     }
 
     fn set_store_fish_headroom(colony: &mut ColonyRuntime, headroom: f64) {
         reconcile_colony_stockpiles(colony);
-        let capacity = colony
-            .stockpiles
-            .iter()
-            .find(|pile| pile.is_shrine())
-            .and_then(Stockpile::capacity)
-            .unwrap();
+        let capacity = storage_caps(colony).fish;
         colony.resources.fish = capacity - headroom;
         reconcile_colony_stockpiles(colony);
     }

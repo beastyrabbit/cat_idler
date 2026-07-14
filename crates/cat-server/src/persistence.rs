@@ -4221,6 +4221,7 @@ mod tests {
             "era2-workshop".to_owned(),
             "research_hut_foundations".to_owned(),
             "logistics_basics".to_owned(),
+            "food_storage_stores".to_owned(),
         ];
         colony.upgrade_tree.research_points = 17.5;
 

@@ -2547,18 +2547,57 @@ fn accept_village_trade(
     );
     stockpiles::add_resource(
         &mut target.resources,
-        offer.offered_kind,
-        offer.offered_amount,
-    );
-    stockpiles::add_resource(
-        &mut target.resources,
         offer.requested_kind,
         -offer.requested_amount,
     );
-    stockpiles::add_resource(
-        &mut source.resources,
+    // Reconcile the outgoing halves first so their vacated physical slots are
+    // available to receive the other village's goods.
+    reconcile_colony_stockpiles(source);
+    reconcile_colony_stockpiles(target);
+    let Some(source_plan) =
+        trade_deposit_plan(source, offer.requested_kind, offer.requested_amount)
+    else {
+        stockpiles::add_resource(
+            &mut source.resources,
+            offer.offered_kind,
+            offer.offered_amount,
+        );
+        stockpiles::add_resource(
+            &mut target.resources,
+            offer.requested_kind,
+            offer.requested_amount,
+        );
+        reconcile_colony_stockpiles(source);
+        reconcile_colony_stockpiles(target);
+        return fail("A receiving village lacks storage for this trade.");
+    };
+    let Some(target_plan) = trade_deposit_plan(target, offer.offered_kind, offer.offered_amount)
+    else {
+        stockpiles::add_resource(
+            &mut source.resources,
+            offer.offered_kind,
+            offer.offered_amount,
+        );
+        stockpiles::add_resource(
+            &mut target.resources,
+            offer.requested_kind,
+            offer.requested_amount,
+        );
+        reconcile_colony_stockpiles(source);
+        reconcile_colony_stockpiles(target);
+        return fail("A receiving village lacks storage for this trade.");
+    };
+    store_trade_incoming(
+        source,
         offer.requested_kind,
         offer.requested_amount,
+        &source_plan,
+    );
+    store_trade_incoming(
+        target,
+        offer.offered_kind,
+        offer.offered_amount,
+        &target_plan,
     );
     source.village_trade_offers.remove(offer_id);
     source.last_player_activity_at = Some(ctx.now_ms);
@@ -2568,15 +2607,65 @@ fn accept_village_trade(
     ok()
 }
 
+fn store_trade_incoming(
+    colony: &mut ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    amount: f64,
+    plan: &[(usize, f64)],
+) {
+    stockpiles::add_resource(&mut colony.resources, kind, amount);
+    for &(index, stored) in plan {
+        stockpiles::add_resource(&mut colony.stockpiles[index].contents, kind, stored);
+    }
+}
+
+fn trade_deposit_plan(
+    colony: &ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    amount: f64,
+) -> Option<Vec<(usize, f64)>> {
+    let capacities = storage::authoritative_storage_capacities_for_owned(
+        &storage_buildings(colony),
+        &colony.stockpiles,
+        colony.upgrade_tree.owned_node_ids.iter(),
+    );
+    let mut indices = colony
+        .stockpiles
+        .iter()
+        .enumerate()
+        .filter(|(_, pile)| !pile.is_station_local() && pile.accepts.contains(&kind))
+        .map(|(index, pile)| (pile.id.clone(), index))
+        .collect::<Vec<_>>();
+    indices.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut plan = Vec::new();
+    let mut remaining = amount;
+    for (_, index) in indices {
+        let stored = remaining.min(stockpiles::headroom_for(
+            &colony.stockpiles[index],
+            kind,
+            &capacities,
+        ));
+        if stored > 0.0 {
+            plan.push((index, stored));
+        }
+        remaining -= stored;
+        if remaining <= f64::EPSILON {
+            break;
+        }
+    }
+    (remaining <= f64::EPSILON).then_some(plan)
+}
+
 fn trade_would_overflow(
     colony: &ColonyRuntime,
     kind: stockpiles::ResourceKind,
     incoming: f64,
 ) -> bool {
-    let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
-    let capacities =
-        storage::storage_capacities(&storage_buildings(colony), effects.storage_per_level_mult)
-            .scaled(effects.storage_capacity_mult);
+    let capacities = storage::authoritative_storage_capacities_for_owned(
+        &storage_buildings(colony),
+        &colony.stockpiles,
+        colony.upgrade_tree.owned_node_ids.iter(),
+    );
     let capacity = match kind {
         stockpiles::ResourceKind::Food => Some(capacities.food),
         stockpiles::ResourceKind::Fish => Some(capacities.fish),
@@ -2604,7 +2693,7 @@ fn trade_would_overflow(
     };
     capacity.is_some_and(|capacity| {
         stockpiles::resource_amount(&colony.resources, kind) + incoming > capacity + f64::EPSILON
-    })
+    }) || trade_deposit_plan(colony, kind, incoming).is_none()
 }
 
 fn cancel_village_trade(
@@ -2663,8 +2752,8 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
     let alive_cats = alive_cats_sorted(colony);
     let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let storage_buildings = storage_buildings(colony);
-    let caps = storage::storage_capacities(&storage_buildings, effects.storage_per_level_mult)
-        .scaled(effects.storage_capacity_mult);
+    let caps =
+        storage::authoritative_storage_capacities(&storage_buildings, &colony.stockpiles, &effects);
     let housing_buildings = housing_buildings(colony);
     let housing_capacity = housing::housing_capacity(&housing_buildings, effects.housing_per_den)
         * effects.housing_capacity_mult;
@@ -4420,6 +4509,7 @@ fn sim_to_proto_threat_band(band: threat::ThreatBand) -> proto::ThreatBand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::GRANARY_BONUS;
     use crate::village_layout::VILLAGE_ANCHOR;
     use crate::world_tick::{
         BuildingRuntime, TraderRuntime, found_colony, new_world, stockpile_placement_error,
@@ -4438,6 +4528,25 @@ mod tests {
         WorldState {
             world_seed: 20_240_703,
             colonies: vec![found_colony(20_240_703, "c1", 1_000_000, 1234)],
+        }
+    }
+
+    fn completed_building(id: &str, building_type: BuildingType) -> BuildingRuntime {
+        BuildingRuntime {
+            id: id.to_owned(),
+            building_type,
+            level: 1,
+            position: TilePos {
+                x: VILLAGE_ANCHOR.x,
+                y: VILLAGE_ANCHOR.y,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 0.0,
+            assigned_cat: None,
+            automated_by: None,
+            production_queue: crate::world_tick::default_production_queue(building_type),
+            production_paused: false,
         }
     }
 
@@ -5422,6 +5531,165 @@ mod tests {
 
         assert!(!result.ok);
         assert_eq!(world, before);
+    }
+
+    #[test]
+    fn trade_rejects_exact_physical_routing_gap_even_below_aggregate_capacity() {
+        let mut colony = found_colony(42, "physical-gap", 1_000_000, 55);
+        for pile in &mut colony.stockpiles {
+            pile.accepts.remove(&stockpiles::ResourceKind::Food);
+        }
+        colony.resources.food = 0.0;
+
+        assert!(
+            trade_deposit_plan(&colony, stockpiles::ResourceKind::Food, 1.0).is_none(),
+            "no accepting pile means there is no exact deposit plan"
+        );
+        assert!(
+            trade_would_overflow(&colony, stockpiles::ResourceKind::Food, 1.0),
+            "aggregate capacity alone must never authorize a release-build loss"
+        );
+    }
+
+    #[test]
+    fn signed_capacity_research_updates_snapshot_and_trade_from_one_authority() {
+        let mut world = world_with_one_colony();
+        let mut personal = found_colony(world.world_seed, "personal", 1_000_000, 55);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some("owner".to_owned());
+        personal
+            .buildings
+            .retain(|building| building.building_type != BuildingType::FoodStorage);
+        personal
+            .buildings
+            .push(completed_building("granary", BuildingType::FoodStorage));
+        personal
+            .upgrade_tree
+            .owned_node_ids
+            .extend(["masonry".to_owned(), "food_storage_foundations".to_owned()]);
+        personal.upgrade_tree.research_points = 100.0;
+        personal.known_village_ids.insert("c1".to_owned());
+        world.colonies[0]
+            .known_village_ids
+            .insert("personal".to_owned());
+        world.colonies.push(personal);
+
+        let before = build_snapshot(&world, 1_000_000, 1).colonies[1]
+            .storage
+            .capacities;
+        let mut owner = ctx();
+        owner.player_id = "owner".to_owned();
+        owner.colony_id = "personal".to_owned();
+        let purchase = proto::ClientAction::ResearchNode {
+            session_id: owner.session_id.clone(),
+            nickname: "Owner".to_owned(),
+            sig: "server-verified".to_owned(),
+            node_id: "food_storage_stores".to_owned(),
+        };
+        let mut twin = world.clone();
+        assert!(apply_action(&mut world, &purchase, &owner).ok);
+        assert!(apply_action(&mut twin, &purchase, &owner).ok);
+        assert_eq!(
+            world, twin,
+            "signed capacity purchase must be deterministic"
+        );
+
+        let after = build_snapshot(&world, 1_000_000, 1).colonies[1]
+            .storage
+            .capacities;
+        let masonry_mult = 1.25;
+        assert_eq!(before.food, 700.0);
+        assert_eq!(
+            after.food,
+            before.food + GRANARY_BONUS.food * masonry_mult * 0.2
+        );
+        assert_eq!(
+            after.fish,
+            before.fish + GRANARY_BONUS.food * masonry_mult * 0.2
+        );
+        assert_eq!(
+            after.herbs,
+            before.herbs + GRANARY_BONUS.herbs * masonry_mult * 0.2
+        );
+        assert_eq!(
+            after.materials,
+            before.materials + GRANARY_BONUS.materials * masonry_mult * 0.2
+        );
+        assert_eq!(
+            after.refined,
+            before.refined + GRANARY_BONUS.refined * masonry_mult * 0.2
+        );
+        assert_eq!(after.water, before.water);
+        assert_eq!(after.weapons, before.weapons);
+        assert_eq!(after.armor, before.armor);
+
+        world.colonies[1].resources.food = before.food - 1.0;
+        world.colonies[1].resources.materials = 5.0;
+        let storehouse = world.colonies[1]
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("founding storehouse");
+        storehouse.contents.food = before.food - 1.0;
+        let offer = proto::ClientAction::OfferVillageTrade {
+            session_id: "sess_1".to_owned(),
+            nickname: "Global Cat".to_owned(),
+            sig: "server-verified".to_owned(),
+            target_colony_id: "personal".to_owned(),
+            offered_kind: proto::ResourceKind::Food,
+            offered_amount: 20.0,
+            requested_kind: proto::ResourceKind::Materials,
+            requested_amount: 1.0,
+        };
+        assert!(apply_action(&mut world, &offer, &ctx()).ok);
+        let offer_id = world.colonies[0]
+            .village_trade_offers
+            .keys()
+            .next()
+            .expect("offer persisted")
+            .clone();
+
+        let mut legacy_capacity = world.clone();
+        legacy_capacity.colonies[1]
+            .upgrade_tree
+            .owned_node_ids
+            .retain(|id| id != "food_storage_stores");
+        let rejected = apply_action(
+            &mut legacy_capacity,
+            &proto::ClientAction::AcceptVillageTrade {
+                session_id: owner.session_id.clone(),
+                nickname: "Owner".to_owned(),
+                sig: "server-verified".to_owned(),
+                offer_id: offer_id.clone(),
+            },
+            &owner,
+        );
+        assert!(!rejected.ok, "the control capacity cannot receive 20 food");
+
+        let accepted = apply_action(
+            &mut world,
+            &proto::ClientAction::AcceptVillageTrade {
+                session_id: owner.session_id.clone(),
+                nickname: "Owner".to_owned(),
+                sig: "server-verified".to_owned(),
+                offer_id,
+            },
+            &owner,
+        );
+        assert!(
+            accepted.ok,
+            "researched local granary capacity must be honored"
+        );
+        assert_eq!(world.colonies[1].resources.food, before.food + 19.0);
+        assert_eq!(
+            world.colonies[1]
+                .stockpiles
+                .iter()
+                .map(|pile| pile.contents.food)
+                .sum::<f64>(),
+            before.food + 19.0,
+            "accepted goods must occupy real pile headroom"
+        );
     }
 
     #[test]

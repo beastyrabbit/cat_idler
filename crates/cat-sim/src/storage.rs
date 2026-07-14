@@ -2,7 +2,101 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::BuildingType;
+use crate::{
+    research_catalog::{BuildingAttribute, EffectOperation, ResearchPayload, research_catalog},
+    stockpiles::{ResourceKind, Stockpile},
+    types::BuildingType,
+    upgrade_tree::ResolvedEffects,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StorageResearchEffects {
+    pub storage_per_level_mult: f64,
+    pub storage_capacity_mult: f64,
+    pub food_storage_capacity_mult: f64,
+    pub water_bowl_capacity_mult: f64,
+    pub smithy_capacity_mult: f64,
+}
+
+impl Default for StorageResearchEffects {
+    fn default() -> Self {
+        Self {
+            storage_per_level_mult: 1.0,
+            storage_capacity_mult: 1.0,
+            food_storage_capacity_mult: 1.0,
+            water_bowl_capacity_mult: 1.0,
+            smithy_capacity_mult: 1.0,
+        }
+    }
+}
+
+impl StorageResearchEffects {
+    fn apply(target: &mut f64, operation: EffectOperation, value: f64) {
+        match operation {
+            EffectOperation::Add => *target += value,
+            EffectOperation::Multiply => *target *= value,
+        }
+    }
+
+    fn building_capacity_mut(&mut self, building_id: &str) -> Option<&mut f64> {
+        match building_id {
+            "food_storage" => Some(&mut self.food_storage_capacity_mult),
+            "water_bowl" => Some(&mut self.water_bowl_capacity_mult),
+            "smithy" => Some(&mut self.smithy_capacity_mult),
+            _ => None,
+        }
+    }
+}
+
+/// Resolve only the five scalar values consumed by storage capacity. Routing asks for
+/// these values frequently; constructing every unrelated unlock set and building
+/// modifier map would make physical hauling cost grow with the 500-node catalog.
+#[must_use]
+pub fn resolve_storage_research_effects<I, S>(owned_node_ids: I) -> StorageResearchEffects
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut effects = StorageResearchEffects::default();
+    for id in owned_node_ids {
+        let Some(node) = research_catalog().get(id.as_ref()) else {
+            continue;
+        };
+        for payload in &node.payloads {
+            match payload {
+                ResearchPayload::Modify {
+                    effect_id,
+                    operation,
+                    value,
+                } => match effect_id.as_str() {
+                    "storagePerLevelMult" => StorageResearchEffects::apply(
+                        &mut effects.storage_per_level_mult,
+                        *operation,
+                        *value,
+                    ),
+                    "storageCapacity" => StorageResearchEffects::apply(
+                        &mut effects.storage_capacity_mult,
+                        *operation,
+                        *value,
+                    ),
+                    _ => {}
+                },
+                ResearchPayload::ModifyBuilding {
+                    building_id,
+                    attribute: BuildingAttribute::Capacity,
+                    operation,
+                    value,
+                } => {
+                    if let Some(target) = effects.building_capacity_mut(building_id) {
+                        StorageResearchEffects::apply(target, *operation, *value);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    effects
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct StorageCapacities {
@@ -156,6 +250,157 @@ pub fn storage_capacities_default(buildings: &[StorageBuilding]) -> StorageCapac
 
 #[must_use]
 pub fn storage_capacities(buildings: &[StorageBuilding], storage_mult: f64) -> StorageCapacities {
+    storage_capacities_with_building_mult(buildings, storage_mult, |_| 1.0)
+}
+
+/// The one authoritative research-aware capacity calculation.
+///
+/// A building-target capacity payload may only scale storage that the existing
+/// storage model physically assigns to that building type. Food stores own the
+/// dry-goods domains, water bowls own water, and smithies own armory space. The
+/// other catalog building families do not silently become global warehouses.
+#[must_use]
+pub fn authoritative_storage_capacities(
+    buildings: &[StorageBuilding],
+    stockpiles: &[Stockpile],
+    effects: &ResolvedEffects,
+) -> StorageCapacities {
+    let researched = research_aware_storage_capacities(buildings, effects);
+    // Legacy rows may have only the old unbounded shrine id, while narrow
+    // fixtures can omit the seeded storehouse altogether. Reconciliation turns
+    // either state into the general storehouse backed by `researched`; do not
+    // erase resources before that migration gets a chance to run.
+    if !stockpiles.iter().any(|pile| pile.is_general_storehouse()) {
+        return researched;
+    }
+    researched.min(physical_storage_capacities(stockpiles, researched))
+}
+
+/// Authoritative capacity from owned node ids without resolving unrelated research
+/// payloads. This is equivalent to [`authoritative_storage_capacities`] for every
+/// capacity consumer and is the runtime hauling path.
+#[must_use]
+pub fn authoritative_storage_capacities_for_owned<I, S>(
+    buildings: &[StorageBuilding],
+    stockpiles: &[Stockpile],
+    owned_node_ids: I,
+) -> StorageCapacities
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let effects = resolve_storage_research_effects(owned_node_ids);
+    let researched = research_aware_storage_capacities_compact(buildings, effects);
+    if !stockpiles.iter().any(|pile| pile.is_general_storehouse()) {
+        return researched;
+    }
+    researched.min(physical_storage_capacities(stockpiles, researched))
+}
+
+/// Research-aware capacity owned by completed storage buildings, before spatial
+/// placement is considered. The general storehouse uses these per-resource values
+/// as its real headroom, so a targeted study expands the matching physical store.
+#[must_use]
+pub fn research_aware_storage_capacities(
+    buildings: &[StorageBuilding],
+    effects: &ResolvedEffects,
+) -> StorageCapacities {
+    storage_capacities_with_building_mult(
+        buildings,
+        effects.storage_per_level_mult,
+        |building_type| effects.building(building_type.as_str()).capacity_mult,
+    )
+    .scaled(effects.storage_capacity_mult)
+}
+
+fn research_aware_storage_capacities_compact(
+    buildings: &[StorageBuilding],
+    effects: StorageResearchEffects,
+) -> StorageCapacities {
+    storage_capacities_with_building_mult(
+        buildings,
+        effects.storage_per_level_mult,
+        |building_type| match building_type {
+            BuildingType::FoodStorage => effects.food_storage_capacity_mult,
+            BuildingType::WaterBowl => effects.water_bowl_capacity_mult,
+            BuildingType::Smithy => effects.smithy_capacity_mult,
+            _ => 1.0,
+        },
+    )
+    .scaled(effects.storage_capacity_mult)
+}
+
+impl StorageCapacities {
+    fn min(self, other: Self) -> Self {
+        Self {
+            food: self.food.min(other.food),
+            fish: self.fish.min(other.fish),
+            water: self.water.min(other.water),
+            herbs: self.herbs.min(other.herbs),
+            catnip: self.catnip.min(other.catnip),
+            grain: self.grain.min(other.grain),
+            flour: self.flour.min(other.flour),
+            materials: self.materials.min(other.materials),
+            refined: self.refined.min(other.refined),
+            weapons: self.weapons.min(other.weapons),
+            armor: self.armor.min(other.armor),
+            planks: self.planks.min(other.planks),
+            logs: self.logs.min(other.logs),
+            lumber: self.lumber.min(other.lumber),
+            blocks: self.blocks.min(other.blocks),
+            tools: self.tools.min(other.tools),
+            fibre: self.fibre.min(other.fibre),
+            hide: self.hide.min(other.hide),
+            cloth: self.cloth.min(other.cloth),
+            leather: self.leather.min(other.leather),
+            ore: self.ore.min(other.ore),
+            metal: self.metal.min(other.metal),
+        }
+    }
+}
+
+fn physical_storage_capacities(
+    stockpiles: &[Stockpile],
+    storehouse_caps: StorageCapacities,
+) -> StorageCapacities {
+    let capacity = |kind| {
+        stockpiles
+            .iter()
+            .filter(|pile| !pile.is_station_local() && pile.accepts.contains(&kind))
+            .filter_map(|pile| crate::stockpiles::capacity_for(pile, kind, &storehouse_caps))
+            .sum()
+    };
+    StorageCapacities {
+        food: capacity(ResourceKind::Food),
+        fish: capacity(ResourceKind::Fish),
+        water: capacity(ResourceKind::Water),
+        herbs: capacity(ResourceKind::Herbs),
+        catnip: capacity(ResourceKind::Catnip),
+        grain: capacity(ResourceKind::Grain),
+        flour: capacity(ResourceKind::Flour),
+        materials: capacity(ResourceKind::Materials),
+        refined: capacity(ResourceKind::Refined),
+        weapons: capacity(ResourceKind::Weapons),
+        armor: capacity(ResourceKind::Armor),
+        planks: capacity(ResourceKind::Planks),
+        logs: capacity(ResourceKind::Logs),
+        lumber: capacity(ResourceKind::Lumber),
+        blocks: capacity(ResourceKind::Blocks),
+        tools: capacity(ResourceKind::Tools),
+        fibre: capacity(ResourceKind::Fibre),
+        hide: capacity(ResourceKind::Hide),
+        cloth: capacity(ResourceKind::Cloth),
+        leather: capacity(ResourceKind::Leather),
+        ore: capacity(ResourceKind::Ore),
+        metal: capacity(ResourceKind::Metal),
+    }
+}
+
+fn storage_capacities_with_building_mult(
+    buildings: &[StorageBuilding],
+    storage_mult: f64,
+    building_capacity_mult: impl Fn(BuildingType) -> f64,
+) -> StorageCapacities {
     let mut caps = BASE_CAPACITY;
     let mult = js_max(0.0, storage_mult);
 
@@ -165,20 +410,21 @@ pub fn storage_capacities(buildings: &[StorageBuilding], storage_mult: f64) -> S
         }
 
         let level = level_of(*building);
+        let local_mult = js_max(0.0, building_capacity_mult(building.building_type));
         match building.building_type {
             BuildingType::FoodStorage => {
-                caps.food += GRANARY_BONUS.food * level * mult;
-                caps.fish += GRANARY_BONUS.food * level * mult;
-                caps.herbs += GRANARY_BONUS.herbs * level * mult;
-                caps.materials += GRANARY_BONUS.materials * level * mult;
-                caps.refined += GRANARY_BONUS.refined * level * mult;
+                caps.food += GRANARY_BONUS.food * level * mult * local_mult;
+                caps.fish += GRANARY_BONUS.food * level * mult * local_mult;
+                caps.herbs += GRANARY_BONUS.herbs * level * mult * local_mult;
+                caps.materials += GRANARY_BONUS.materials * level * mult * local_mult;
+                caps.refined += GRANARY_BONUS.refined * level * mult * local_mult;
             }
             BuildingType::WaterBowl => {
-                caps.water += WATER_BOWL_BONUS * level * mult;
+                caps.water += WATER_BOWL_BONUS * level * mult * local_mult;
             }
             BuildingType::Smithy => {
-                caps.weapons += SMITHY_ARMORY_BONUS * level * mult;
-                caps.armor += SMITHY_ARMORY_BONUS * level * mult;
+                caps.weapons += SMITHY_ARMORY_BONUS * level * mult * local_mult;
+                caps.armor += SMITHY_ARMORY_BONUS * level * mult * local_mult;
             }
             _ => {}
         }
@@ -234,10 +480,19 @@ fn js_max(left: f64, right: f64) -> f64 {
 mod tests {
     use super::{
         BASE_CAPACITY, GRANARY_BONUS, SMITHY_ARMORY_BONUS, StorageBuilding, StorageCapacities,
-        WATER_BOWL_BONUS, count_storehouses, storage_capacities, storage_capacities_default,
+        WATER_BOWL_BONUS, authoritative_storage_capacities,
+        authoritative_storage_capacities_for_owned, count_storehouses, storage_capacities,
+        storage_capacities_default, storage_capacities_with_building_mult,
         storage_capacities_with_mult, storehouse_cap,
     };
+    use crate::research_catalog::research_catalog;
     use crate::types::BuildingType;
+    use crate::upgrade_tree::resolve_effects;
+    use crate::{
+        entities::Resources,
+        stockpiles::{ResourceKind, SHRINE_STOCKPILE_ID, Stockpile, make_shrine},
+        zones::ZoneRect,
+    };
 
     fn building(
         building_type: BuildingType,
@@ -248,6 +503,20 @@ mod tests {
             building_type,
             construction_progress,
             level,
+        }
+    }
+
+    fn roomy_physical_store() -> Stockpile {
+        Stockpile {
+            id: "roomy-store".to_owned(),
+            rect: ZoneRect {
+                x1: 0,
+                y1: 0,
+                x2: 99,
+                y2: 99,
+            },
+            accepts: ResourceKind::ALL.iter().copied().collect(),
+            contents: Resources::default(),
         }
     }
 
@@ -294,6 +563,160 @@ mod tests {
         );
         assert_f64_bits(actual.ore, expected.ore, &format!("{label} ore"));
         assert_f64_bits(actual.metal, expected.metal, &format!("{label} metal"));
+    }
+
+    #[test]
+    fn capacity_only_resolver_matches_full_effect_resolution_across_the_catalog() {
+        let buildings = [
+            building(BuildingType::FoodStorage, 100.0, Some(2.0)),
+            building(BuildingType::WaterBowl, 100.0, Some(2.0)),
+            building(BuildingType::Smithy, 100.0, Some(2.0)),
+        ];
+        let physical = [roomy_physical_store()];
+        let mut owned = Vec::new();
+        for node in research_catalog().nodes() {
+            owned.push(node.id.as_str());
+            let expected = authoritative_storage_capacities(
+                &buildings,
+                &physical,
+                &resolve_effects(owned.iter().copied()),
+            );
+            let actual = authoritative_storage_capacities_for_owned(
+                &buildings,
+                &physical,
+                owned.iter().copied(),
+            );
+            assert_caps_bits(actual, expected, &node.id);
+        }
+    }
+
+    #[test]
+    fn building_capacity_research_scales_only_the_buildings_existing_storage_domains() {
+        let buildings = [
+            building(BuildingType::FoodStorage, 100.0, Some(1.0)),
+            building(BuildingType::WaterBowl, 100.0, Some(1.0)),
+            building(BuildingType::Smithy, 100.0, Some(1.0)),
+            building(BuildingType::Den, 100.0, Some(1.0)),
+        ];
+        let physical = [roomy_physical_store()];
+        let baseline = authoritative_storage_capacities(
+            &buildings,
+            &physical,
+            &resolve_effects([] as [&str; 0]),
+        );
+
+        let food = authoritative_storage_capacities(
+            &buildings,
+            &physical,
+            &resolve_effects(["food_storage_stores"]),
+        );
+        assert_eq!(food.food, baseline.food + GRANARY_BONUS.food * 0.2);
+        assert_eq!(food.fish, baseline.fish + GRANARY_BONUS.food * 0.2);
+        assert_eq!(food.herbs, baseline.herbs + GRANARY_BONUS.herbs * 0.2);
+        assert_eq!(
+            food.materials,
+            baseline.materials + GRANARY_BONUS.materials * 0.2
+        );
+        assert_eq!(food.refined, baseline.refined + GRANARY_BONUS.refined * 0.2);
+        assert_eq!(food.water, baseline.water);
+        assert_eq!(food.weapons, baseline.weapons);
+        assert_eq!(food.armor, baseline.armor);
+
+        let water = authoritative_storage_capacities(
+            &buildings,
+            &physical,
+            &resolve_effects(["water_bowl_stores"]),
+        );
+        assert_eq!(water.water, baseline.water + WATER_BOWL_BONUS * 0.2);
+        assert_eq!(water.food, baseline.food);
+        assert_eq!(water.weapons, baseline.weapons);
+
+        let smithy = authoritative_storage_capacities(
+            &buildings,
+            &physical,
+            &resolve_effects(["smithy_stores"]),
+        );
+        assert_eq!(smithy.weapons, baseline.weapons + SMITHY_ARMORY_BONUS * 0.2);
+        assert_eq!(smithy.armor, baseline.armor + SMITHY_ARMORY_BONUS * 0.2);
+        assert_eq!(smithy.food, baseline.food);
+        assert_eq!(smithy.water, baseline.water);
+
+        let general = make_shrine(ZoneRect {
+            x1: 1,
+            y1: 1,
+            x2: 1,
+            y2: 1,
+        });
+        let physical_food = authoritative_storage_capacities(
+            &buildings,
+            std::slice::from_ref(&general),
+            &resolve_effects(["food_storage_stores"]),
+        );
+        assert_eq!(
+            crate::stockpiles::capacity_for(&general, ResourceKind::Food, &physical_food),
+            Some(physical_food.food),
+            "the targeted study expands real founding-store headroom"
+        );
+    }
+
+    #[test]
+    fn unsupported_building_capacity_research_is_isolated_and_deterministic() {
+        let buildings = [
+            building(BuildingType::FoodStorage, 100.0, Some(2.0)),
+            building(BuildingType::WaterBowl, 100.0, Some(1.0)),
+            building(BuildingType::Smithy, 100.0, Some(1.0)),
+            building(BuildingType::Den, 100.0, Some(1.0)),
+            building(BuildingType::Workshop, 100.0, Some(1.0)),
+        ];
+        let physical = [roomy_physical_store()];
+        let baseline = authoritative_storage_capacities(
+            &buildings,
+            &physical,
+            &resolve_effects([] as [&str; 0]),
+        );
+        let unsupported = resolve_effects(["den_stores", "workshop_stores"]);
+        let left = authoritative_storage_capacities(&buildings, &physical, &unsupported);
+        let right = authoritative_storage_capacities(&buildings, &physical, &unsupported);
+
+        assert_caps_bits(left, baseline, "unsupported target isolation");
+        assert_caps_bits(right, left, "deterministic twin");
+    }
+
+    #[test]
+    fn legacy_shrine_and_missing_storehouse_preserve_capacity_until_reconciliation() {
+        let buildings = [building(BuildingType::FoodStorage, 100.0, Some(1.0))];
+        let effects = resolve_effects(["food_storage_stores"]);
+        let expected = storage_capacities_with_building_mult(
+            &buildings,
+            effects.storage_per_level_mult,
+            |building_type| effects.building(building_type.as_str()).capacity_mult,
+        )
+        .scaled(effects.storage_capacity_mult);
+
+        assert_caps_bits(
+            authoritative_storage_capacities(&buildings, &[], &effects),
+            expected,
+            "missing storehouse default",
+        );
+
+        let mut legacy_shrine = make_shrine(ZoneRect {
+            x1: 2,
+            y1: 2,
+            x2: 2,
+            y2: 2,
+        });
+        legacy_shrine.id = SHRINE_STOCKPILE_ID.to_owned();
+        assert_caps_bits(
+            authoritative_storage_capacities(&buildings, &[legacy_shrine], &effects),
+            expected,
+            "legacy shrine migration default",
+        );
+
+        assert_caps_bits(
+            authoritative_storage_capacities(&buildings, &[roomy_physical_store()], &effects),
+            expected,
+            "designated-only migration default",
+        );
     }
 
     #[test]
