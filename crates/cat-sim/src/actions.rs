@@ -1269,14 +1269,16 @@ fn edit_production_queue(
     let Some(building) = colony.buildings.iter_mut().find(|building| {
         building.id == building_id
             && building.construction_progress >= 100
-            && building.building_type == BuildingType::Sawmill
+            && !crate::world_tick::available_production_recipes(building.building_type).is_empty()
     }) else {
         return fail("That building has no editable production queue.");
     };
 
     match edit {
         proto::ProductionQueueEdit::Add { recipe_id, repeat } => {
-            if recipe_id != crate::world_tick::SAWMILL_RECIPE_ID {
+            if !crate::world_tick::available_production_recipes(building.building_type)
+                .contains(&recipe_id.as_str())
+            {
                 return fail("That recipe is not available at this station.");
             }
             if building.production_queue.len() >= 32 {
@@ -3203,9 +3205,8 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 production_output: production::building_output_label(building.building_type)
                     .map(str::to_owned),
                 // Live sum of carried cargo whose haul target resolves to this building's
-                // tile (see `world_tick::building_inbound_haul`). Only ever nonzero for the
-                // shrine today: every other building type draws its inputs straight from
-                // `colony.resources`, never from physically delivered cargo.
+                // tile (see `world_tick::building_inbound_haul`). Physical Mill/Sawmill
+                // inputs target their station; ordinary cargo targets stockpiles.
                 inbound_haul: crate::world_tick::building_inbound_haul(colony, building),
                 outbound_haul: crate::world_tick::building_outbound_haul(colony, building),
                 input_inventory: crate::world_tick::building_station_inventory(
@@ -3233,6 +3234,12 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                         repeat: entry.repeat,
                     })
                     .collect(),
+                available_recipes: crate::world_tick::available_production_recipes(
+                    building.building_type,
+                )
+                .iter()
+                .map(|recipe| (*recipe).to_owned())
+                .collect(),
                 production_paused: building.production_paused,
                 production_block_reason: crate::world_tick::building_production_block_reason(
                     colony, building,
@@ -4163,6 +4170,7 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Water => proto::CarryingKind::Water,
         entities::CarryingKind::Catnip => proto::CarryingKind::Catnip,
         entities::CarryingKind::Grain => proto::CarryingKind::Grain,
+        entities::CarryingKind::Flour => proto::CarryingKind::Flour,
         entities::CarryingKind::Herbs => proto::CarryingKind::Herbs,
     }
 }
@@ -6994,7 +7002,7 @@ mod tests {
     }
 
     #[test]
-    fn guided_sawmill_queue_edits_are_ordered_repeatable_and_exact() {
+    fn guided_station_queue_edits_are_ordered_recipe_scoped_and_exact() {
         let mut world = world_with_one_colony();
         let colony = &mut world.colonies[0];
         colony.buildings.push(BuildingRuntime {
@@ -7067,6 +7075,70 @@ mod tests {
                 &ctx(),
             )
             .ok
+        );
+
+        world.colonies[0].buildings.push(BuildingRuntime {
+            id: "mill-player".to_owned(),
+            building_type: BuildingType::Mill,
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: Vec::new(),
+            ..BuildingRuntime::default()
+        });
+        let queue_add =
+            |building_id: &str, recipe_id: &str| proto::ClientAction::EditProductionQueue {
+                session_id: "sess_1".to_owned(),
+                nickname: "Player".to_owned(),
+                sig: "signed".to_owned(),
+                building_id: building_id.to_owned(),
+                edit: proto::ProductionQueueEdit::Add {
+                    recipe_id: recipe_id.to_owned(),
+                    repeat: true,
+                },
+            };
+        assert!(
+            apply_action(
+                &mut world,
+                &queue_add("mill-player", crate::world_tick::MILL_RECIPE_ID),
+                &ctx(),
+            )
+            .ok
+        );
+        assert!(
+            !apply_action(
+                &mut world,
+                &queue_add("mill-player", crate::world_tick::SAWMILL_RECIPE_ID),
+                &ctx(),
+            )
+            .ok,
+            "Sawmill recipe cannot cross into a Mill"
+        );
+        assert!(
+            !apply_action(
+                &mut world,
+                &queue_add("sawmill-player", crate::world_tick::MILL_RECIPE_ID),
+                &ctx(),
+            )
+            .ok,
+            "Mill recipe cannot cross into a Sawmill"
+        );
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let buildings = &snapshot.colonies[0].buildings;
+        assert_eq!(
+            buildings
+                .iter()
+                .find(|building| building.id == "mill-player")
+                .unwrap()
+                .available_recipes,
+            vec![crate::world_tick::MILL_RECIPE_ID.to_owned()]
+        );
+        assert_eq!(
+            buildings
+                .iter()
+                .find(|building| building.id == "sawmill-player")
+                .unwrap()
+                .available_recipes,
+            vec![crate::world_tick::SAWMILL_RECIPE_ID.to_owned()]
         );
     }
 

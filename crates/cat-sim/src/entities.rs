@@ -72,6 +72,9 @@ pub enum CarryingKind {
     Catnip,
     #[serde(rename = "grain")]
     Grain,
+    /// Milled grain moving between a Mill and a physical stockpile.
+    #[serde(rename = "flour")]
+    Flour,
     #[serde(rename = "herbs")]
     Herbs,
 }

@@ -4032,7 +4032,7 @@ fn setup(
                     controls.spawn((ui_text("", FS_SMALL, UI_MUTED), StationQueueText));
                     controls.spawn(bottom_bar_row_node()).with_children(|row| {
                         for (kind, label) in [
-                            (StationQueueButton::Add, "+ cut logs"),
+                            (StationQueueButton::Add, "+ recipe"),
                             (StationQueueButton::SelectNext, "next"),
                             (StationQueueButton::MoveUp, "up"),
                             (StationQueueButton::MoveDown, "down"),
@@ -6500,9 +6500,7 @@ fn update_station_queue_controls(
             .and_then(|world| world.colonies.first())
             .and_then(|colony| colony.buildings.iter().find(|building| building.id == id))
     });
-    let Some(building) =
-        building.filter(|building| building.building_type == BuildingType::Sawmill)
-    else {
+    let Some(building) = building.filter(|building| !building.available_recipes.is_empty()) else {
         panel.display = Display::None;
         ui.selected = 0;
         return;
@@ -6511,7 +6509,12 @@ fn update_station_queue_controls(
     if building.production_queue.is_empty() {
         ui.selected = 0;
         text.0 = format!(
-            "queue empty — add cut logs | {}",
+            "queue empty — add {} | {}",
+            building
+                .available_recipes
+                .first()
+                .map_or("recipe", |recipe| recipe.as_str())
+                .replace('_', " "),
             if building.production_paused {
                 "paused"
             } else {
@@ -6579,12 +6582,12 @@ fn station_queue_action(
     selected: usize,
     button: StationQueueButton,
 ) -> Option<ClientAction> {
-    if !session.ready || building.building_type != BuildingType::Sawmill {
+    if !session.ready || building.available_recipes.is_empty() {
         return None;
     }
     let edit = match button {
         StationQueueButton::Add => ProductionQueueEdit::Add {
-            recipe_id: "logs_to_lumber".to_owned(),
+            recipe_id: building.available_recipes.first()?.clone(),
             repeat: true,
         },
         StationQueueButton::MoveUp => ProductionQueueEdit::Move {
@@ -10181,6 +10184,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
         CarryingKind::Tools => Color::srgb(0.76, 0.78, 0.84),
         CarryingKind::Catnip => Color::srgb(0.78, 0.60, 0.92),
         CarryingKind::Grain => Color::srgb(0.96, 0.78, 0.34),
+        CarryingKind::Flour => Color::srgb(0.94, 0.91, 0.77),
         CarryingKind::Herbs => Color::srgb(0.55, 0.88, 0.48),
     }
 }
@@ -13024,7 +13028,7 @@ mod tests {
                 "threat":{"pressure":0,"band":"calm","raidActive":false,"warriors":0,"weapons":0,"armor":0},
                 "raiders":[],
                 "buildings":[
-                    {"id":"b1","type":"sawmill","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0},"footprint":{"width":3,"height":2},"staffCount":1,"staffCap":1,"productionProgress":0.4,"productionOutput":"lumber","inboundHaul":5.0,"outboundHaul":2.0,"inputInventory":[{"kind":"logs","amount":5.0}],"outputInventory":[{"kind":"lumber","amount":2.0}],"productionQueue":["logs_to_lumber"],"productionBlockReason":"output_in_transit","workerTravel":"hauling output to storage","inboundCargo":[{"kind":"logs","amount":5.0}],"outboundCargo":[{"kind":"lumber","amount":2.0}]},
+                    {"id":"b1","type":"sawmill","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0},"footprint":{"width":3,"height":2},"staffCount":1,"staffCap":1,"productionProgress":0.4,"productionOutput":"lumber","inboundHaul":5.0,"outboundHaul":2.0,"inputInventory":[{"kind":"logs","amount":5.0}],"outputInventory":[{"kind":"lumber","amount":2.0}],"productionQueue":["logs_to_lumber"],"availableRecipes":["logs_to_lumber"],"productionBlockReason":"output_in_transit","workerTravel":"hauling output to storage","inboundCargo":[{"kind":"logs","amount":5.0}],"outboundCargo":[{"kind":"lumber","amount":2.0}]},
                     {"id":"b2","type":"den","level":1,"constructionProgress":40.0,"worldPosition":{"x":5,"y":6},"position":{"x":-1,"y":0},"footprint":{"width":2,"height":2}}
                 ],
                 "claimedTiles":[],"villageGate":null,"villageRadius":4,"anchor":{"x":6,"y":6}
@@ -13108,6 +13112,32 @@ mod tests {
                 ..
             })
         ));
+        let mut mill = workshop.clone();
+        mill.id = "mill-1".to_owned();
+        mill.building_type = BuildingType::Mill;
+        mill.production_queue.clear();
+        mill.available_recipes = vec!["grain_to_flour_and_food".to_owned()];
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("mill-queue-session"),
+                &mill,
+                0,
+                StationQueueButton::Add,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                session_id,
+                building_id,
+                edit: ProductionQueueEdit::Add { recipe_id, repeat: true },
+                ..
+            }) if session_id == "mill-queue-session"
+                && building_id == "mill-1"
+                && recipe_id == "grain_to_flour_and_food"
+        ));
+        assert_ne!(
+            carrying_color(CarryingKind::Flour),
+            carrying_color(CarryingKind::Grain),
+            "flour and grain cargo must remain visually distinct"
+        );
         // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);
         assert!(den_text.contains("under construction 40%"));

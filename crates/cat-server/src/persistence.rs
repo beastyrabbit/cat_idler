@@ -176,6 +176,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             automatedOfficerRole TEXT,
             productionQueue TEXT,
             productionPaused INTEGER NOT NULL DEFAULT 0,
+            productionQueueInitialized INTEGER NOT NULL DEFAULT 0,
             -- Buildings are colony-scoped: type-derived ids (e.g. "shrine") are
             -- only unique within a colony, so the key is (colonyId, id).
             PRIMARY KEY (colonyId, id)
@@ -316,6 +317,11 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
             "productionPaused",
             "INTEGER NOT NULL DEFAULT 0",
         ),
+        (
+            "buildings",
+            "productionQueueInitialized",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
     ];
     for (table, column, decl) in ADDITIONS {
         if !column_exists(conn, table, column)? {
@@ -334,6 +340,30 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
             }
         }
     }
+    // Mill queues did not exist before the physical-chain slice. Seed every
+    // uninitialized legacy Mill exactly once, then mark existing rows initialized.
+    // Running this on every startup also repairs a process interrupted between the
+    // column ALTER and data UPDATE. Future saves write 1, so a player-cleared [] queue
+    // stays empty through every later restart.
+    if column_exists(conn, "buildings", "type")? {
+        conn.execute(
+            "UPDATE buildings
+             SET productionQueue = ?1
+             WHERE type = 'mill'
+               AND productionQueueInitialized = 0
+               AND (productionQueue IS NULL OR productionQueue = '[]')",
+            [
+                serde_json::to_string(&default_production_queue(BuildingType::Mill))
+                    .map_err(to_sql_json)?,
+            ],
+        )?;
+    }
+    conn.execute(
+        "UPDATE buildings
+         SET productionQueueInitialized = 1
+         WHERE productionQueueInitialized = 0",
+        [],
+    )?;
     Ok(())
 }
 
@@ -992,8 +1022,8 @@ fn save_building(
         "INSERT INTO buildings (
             id, colonyId, type, level, position, constructionProgress,
             productionProgress, isComplete, assignedCatId, automatedOfficerRole,
-            productionQueue, productionPaused
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            productionQueue, productionPaused, productionQueueInitialized
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -2031,6 +2061,208 @@ mod tests {
     }
 
     #[test]
+    fn legacy_mill_queue_is_initialized_once_and_player_cleared_empty_stays_empty() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        init_schema(&conn).expect("schema");
+        conn.execute(
+            "INSERT INTO buildings (
+                id, colonyId, type, level, position, constructionProgress,
+                productionProgress, isComplete, productionQueue, productionPaused,
+                productionQueueInitialized
+             ) VALUES ('legacy-mill', 'colony-1', 'mill', 1, '{}', 100, 0, 1, '[]', 0, 0)",
+            [],
+        )
+        .expect("legacy mill row");
+        conn.execute(
+            "INSERT INTO buildings (
+                id, colonyId, type, level, position, constructionProgress,
+                productionProgress, isComplete, productionQueue, productionPaused,
+                productionQueueInitialized
+             ) VALUES ('legacy-saw', 'colony-1', 'sawmill', 1, '{}', 100, 0, 1, '[]', 0, 0)",
+            [],
+        )
+        .expect("legacy saw row");
+        conn.execute_batch("ALTER TABLE buildings DROP COLUMN productionQueueInitialized;")
+            .expect("simulate pre-Mill-queue schema");
+
+        migrate_add_missing_columns(&conn).expect("one-time queue migration");
+        let (mill_queue, initialized): (String, i64) = conn
+            .query_row(
+                "SELECT productionQueue, productionQueueInitialized
+                 FROM buildings WHERE id = 'legacy-mill'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("migrated mill");
+        assert_eq!(
+            serde_json::from_str::<Vec<ProductionQueueEntry>>(&mill_queue).unwrap(),
+            default_production_queue(BuildingType::Mill)
+        );
+        assert_eq!(initialized, 1);
+        let saw_queue: String = conn
+            .query_row(
+                "SELECT productionQueue FROM buildings WHERE id = 'legacy-saw'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saw_queue, "[]", "unrelated station queues are untouched");
+
+        conn.execute(
+            "UPDATE buildings SET productionQueue = '[]' WHERE id = 'legacy-mill'",
+            [],
+        )
+        .expect("player clears queue");
+        migrate_add_missing_columns(&conn).expect("idempotent restart");
+        let cleared: String = conn
+            .query_row(
+                "SELECT productionQueue FROM buildings WHERE id = 'legacy-mill'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            cleared, "[]",
+            "initialized empty queue remains player-owned"
+        );
+    }
+
+    #[test]
+    fn mill_local_inventories_and_both_haul_directions_resume_exactly_after_restart() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(6_414);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 6_414);
+        let building_id = "restart-mill";
+        colony.buildings.push(BuildingRuntime {
+            id: building_id.to_owned(),
+            building_type: BuildingType::Mill,
+            position: TilePos { x: 18, y: 18 },
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 317.5,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            production_queue: vec![ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::MILL_RECIPE_ID.to_owned(),
+                repeat: false,
+            }],
+            ..BuildingRuntime::default()
+        });
+        let rect = ZoneRect {
+            x1: 18,
+            y1: 18,
+            x2: 20,
+            y2: 20,
+        };
+        let input_id = cat_sim::stockpiles::station_input_id(building_id);
+        let output_id = cat_sim::stockpiles::station_output_id(building_id);
+        let transit_id = cat_sim::stockpiles::station_transit_id(building_id);
+        for (id, accepts, contents) in [
+            (
+                input_id.clone(),
+                [cat_sim::stockpiles::ResourceKind::Grain]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    grain: 4.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                output_id.clone(),
+                [cat_sim::stockpiles::ResourceKind::Flour]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    flour: 1.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                transit_id.clone(),
+                [cat_sim::stockpiles::ResourceKind::Flour]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    flour: 2.0,
+                    ..Resources::default()
+                },
+            ),
+        ] {
+            colony.stockpiles.push(Stockpile {
+                id,
+                rect,
+                accepts,
+                contents,
+            });
+        }
+        colony.resources.grain += 4.0;
+        colony.resources.flour += 2.0;
+        colony.cats[0].carrying = Some(Carrying {
+            kind: cat_sim::entities::CarryingKind::Flour,
+            amount: 2.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(format!("station-in|{building_id}|{transit_id}")),
+        });
+        let general_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap()
+            .id
+            .clone();
+        colony.cats[1].carrying = Some(Carrying {
+            kind: cat_sim::entities::CarryingKind::Food,
+            amount: 4.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(format!("station-out|{building_id}|{general_id}")),
+        });
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save Mill mid-haul");
+        let restarted = load_world(&conn).expect("load").expect("world");
+        let colony = &restarted.colonies[0];
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == building_id)
+                .unwrap()
+                .production_progress,
+            317.5
+        );
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == input_id)
+                .unwrap()
+                .contents
+                .grain,
+            4.0
+        );
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == output_id)
+                .unwrap()
+                .contents
+                .flour,
+            1.0
+        );
+        assert_eq!(colony.cats[0].carrying.as_ref().unwrap().amount, 2.0);
+        assert_eq!(
+            colony.cats[1]
+                .carrying
+                .as_ref()
+                .unwrap()
+                .source_gather_spot
+                .as_deref(),
+            Some(format!("station-out|{building_id}|{general_id}").as_str())
+        );
+    }
+
+    #[test]
     fn restart_at_organic_arrival_preserves_the_exact_deadline_outcome() {
         const STARTED_AT: i64 = 10_000;
         const STEP_MS: i64 = 15 * 60_000;
@@ -2333,6 +2565,7 @@ mod tests {
             ("cats", "skills"),
             ("cats", "boosted"),
             ("buildings", "automatedOfficerRole"),
+            ("buildings", "productionQueueInitialized"),
         ] {
             assert!(!column_exists(&conn, table, column).unwrap());
         }
@@ -2360,6 +2593,7 @@ mod tests {
             ("cats", "skills"),
             ("cats", "boosted"),
             ("buildings", "automatedOfficerRole"),
+            ("buildings", "productionQueueInitialized"),
         ] {
             assert!(
                 column_exists(&conn, table, column).unwrap(),

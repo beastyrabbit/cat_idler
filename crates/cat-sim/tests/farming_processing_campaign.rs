@@ -745,9 +745,9 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     );
     assert!(
         colony.events.iter().any(|event| {
-            event.message.contains("The mill used") && event.message.contains("producing")
+            event.message.contains("The mill used") && event.message.contains("awaiting haulage")
         }),
-        "the mill ground grain and baked flour into food"
+        "the mill consumed delivered grain and left physical output for haulage"
     );
     assert!(
         colony.resources.lumber >= 2.0,
@@ -851,14 +851,42 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
     let founding_reveal = world.colonies[0].revealed_tiles.len();
     let mut now_ms = START_MS;
     let mut manual_access_road_built = false;
+    let mut saw_delivered_flour = false;
+    let mut saw_delivered_mill_food = false;
     let mut last_farm_click_geometry = None;
 
     for step in 0..MAX_STEPS {
         let colony = &world.colonies[0];
+        let mill_produced_flour = colony.events.iter().any(|event| {
+            event.message.contains("The mill used") && event.message.contains("leaving 2 flour")
+        });
+        let mill_produced_food = colony.events.iter().any(|event| {
+            event.message.contains("The mill used") && event.message.contains("and 4 food")
+        });
+        saw_delivered_flour |= mill_produced_flour && colony.resources.flour >= 2.0;
+        saw_delivered_mill_food |= mill_produced_food
+            && colony
+                .buildings
+                .iter()
+                .filter(|building| {
+                    building.building_type == BuildingType::Mill && building.is_complete
+                })
+                .all(|building| {
+                    cat_sim::world_tick::building_station_inventory(colony, building, true)
+                        .into_iter()
+                        .all(|(kind, amount)| {
+                            kind != cat_sim::stockpiles::ResourceKind::Food
+                                || amount <= f64::EPSILON
+                        })
+                        && cat_sim::world_tick::building_outbound_haul(colony, building)
+                            <= f64::EPSILON
+                });
         if colony
             .events
             .iter()
             .any(|event| event.message.contains("farmer harvested"))
+            && saw_delivered_flour
+            && saw_delivered_mill_food
         {
             assert!(colony.revealed_tiles.len() > founding_reveal);
             assert!(
@@ -954,7 +982,7 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
             }
         }
 
-        for node_id in ["basic_tools", "water_carriers", "irrigation"] {
+        for node_id in ["basic_tools", "water_carriers", "irrigation", "milling"] {
             let (session_id, nickname, sig) = signed();
             let _ = try_action(
                 &mut world,
@@ -1038,6 +1066,18 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
                 try_pave_reserved_build_access(&mut world, BuildingType::Field, now_ms);
         }
 
+        if upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, "milling")
+            && !world.colonies[0].buildings.iter().any(|building| {
+                building.building_type == BuildingType::Mill && building.is_complete
+            })
+        {
+            if !has_pending_building(&world.colonies[0], BuildingType::Mill) {
+                let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::Mill, now_ms);
+            }
+            manual_access_road_built |=
+                try_pave_reserved_build_access(&mut world, BuildingType::Mill, now_ms);
+        }
+
         let completed_fields = world.colonies[0]
             .buildings
             .iter()
@@ -1074,6 +1114,46 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
                     ) {
                         break;
                     }
+                }
+            }
+        }
+
+        for building_id in world.colonies[0]
+            .buildings
+            .iter()
+            .filter(|building| {
+                building.building_type == BuildingType::Mill
+                    && building.is_complete
+                    && building.assigned_cat.is_none()
+            })
+            .map(|building| building.id.clone())
+            .collect::<Vec<_>>()
+        {
+            let assigned = world.colonies[0]
+                .buildings
+                .iter()
+                .filter_map(|building| building.assigned_cat.clone())
+                .collect::<BTreeSet<_>>();
+            for cat_id in world.colonies[0]
+                .cats
+                .iter()
+                .filter(|cat| cat.death_time.is_none() && !assigned.contains(&cat.id))
+                .map(|cat| cat.id.clone())
+                .collect::<Vec<_>>()
+            {
+                let (session_id, nickname, sig) = signed();
+                if try_action(
+                    &mut world,
+                    proto::ClientAction::AssignWorker {
+                        session_id,
+                        nickname,
+                        sig,
+                        cat_id,
+                        building_id: Some(building_id.clone()),
+                    },
+                    now_ms,
+                ) {
+                    break;
                 }
             }
         }
@@ -1255,16 +1335,19 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
         })
         .collect::<Vec<_>>();
     panic!(
-        "no-cheat farm smoke timed out: alive={} food={} water={} blessings={} research={} owned={:?} buildings={:?} farms={:?} agricultural_routes={agricultural_route_diagnostics:?} visible_routes={visible_route_diagnostics:?}",
+        "no-cheat farm→Mill smoke timed out: alive={} food={} flour={} water={} blessings={} research={} delivered_flour={} delivered_food={} owned={:?} buildings={:?} farms={:?} agricultural_routes={agricultural_route_diagnostics:?} visible_routes={visible_route_diagnostics:?}",
         colony
             .cats
             .iter()
             .filter(|cat| cat.death_time.is_none())
             .count(),
         colony.resources.food,
+        colony.resources.flour,
         colony.resources.water,
         colony.global_upgrade_points,
         colony.upgrade_tree.research_points,
+        saw_delivered_flour,
+        saw_delivered_mill_food,
         colony.upgrade_tree.owned_node_ids,
         colony
             .buildings
@@ -1276,7 +1359,7 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
 }
 
 #[test]
-fn no_cheat_player_guidance_reaches_a_physical_farm_harvest_deterministically() {
+fn no_cheat_player_guidance_reaches_physical_farm_to_mill_delivery_deterministically() {
     let first = run_no_cheat_player_farm_smoke(42);
     let second = run_no_cheat_player_farm_smoke(42);
     assert_eq!(first, second);

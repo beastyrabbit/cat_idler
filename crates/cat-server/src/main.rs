@@ -2056,7 +2056,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn signed_labor_and_sawmill_guidance_survives_database_restart() {
+    async fn signed_labor_and_station_guidance_survives_database_restart() {
         let path = std::env::temp_dir().join(format!(
             "cat-server-guidance-restart-{}-{}.db",
             std::process::id(),
@@ -2078,6 +2078,19 @@ mod tests {
                 ),
                 ..cat_sim::world_tick::BuildingRuntime::default()
             });
+        world.colonies[0]
+            .buildings
+            .push(cat_sim::world_tick::BuildingRuntime {
+                id: "guidance-mill".to_owned(),
+                building_type: cat_sim::types::BuildingType::Mill,
+                position: cat_sim::world_tick::TilePos { x: 44, y: 40 },
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: cat_sim::world_tick::default_production_queue(
+                    cat_sim::types::BuildingType::Mill,
+                ),
+                ..cat_sim::world_tick::BuildingRuntime::default()
+            });
         let cat_id = world.colonies[0].cats[0].id.clone();
         let sawmill_id = world.colonies[0]
             .buildings
@@ -2089,6 +2102,7 @@ mod tests {
             .expect("starter village has its complete Sawmill")
             .id
             .clone();
+        let mill_id = "guidance-mill".to_owned();
         let conn = Connection::open(&path).expect("open guidance database");
         persistence::init_schema(&conn).expect("init guidance database");
         let state = build_state_from_world(world, conn, secret.to_owned(), false, 1_000_000);
@@ -2123,6 +2137,23 @@ mod tests {
                 building_id: sawmill_id.clone(),
                 edit: cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
             },
+            ClientAction::EditProductionQueue {
+                session_id: signed.session_id.clone(),
+                nickname: "Guide".to_owned(),
+                sig: signed.sig.clone(),
+                building_id: mill_id.clone(),
+                edit: cat_protocol::ProductionQueueEdit::SetRepeat {
+                    index: 0,
+                    repeat: false,
+                },
+            },
+            ClientAction::EditProductionQueue {
+                session_id: signed.session_id.clone(),
+                nickname: "Guide".to_owned(),
+                sig: signed.sig.clone(),
+                building_id: mill_id.clone(),
+                edit: cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
+            },
         ] {
             let result = send_action(&state, &mut connection, &action).await;
             assert!(result.result.ok, "signed guidance failed: {result:?}");
@@ -2155,6 +2186,18 @@ mod tests {
         assert!(sawmill.production_paused);
         assert_eq!(sawmill.production_queue.len(), 1);
         assert!(!sawmill.production_queue[0].repeat);
+        let mill = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == mill_id)
+            .expect("guided Mill restored");
+        assert!(mill.production_paused);
+        assert_eq!(mill.production_queue.len(), 1);
+        assert_eq!(
+            mill.production_queue[0].recipe_id,
+            cat_sim::world_tick::MILL_RECIPE_ID
+        );
+        assert!(!mill.production_queue[0].repeat);
         drop(restored);
         drop(restarted);
         fs::remove_file(path).expect("remove guidance database");

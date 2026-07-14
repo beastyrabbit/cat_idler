@@ -657,6 +657,7 @@ pub enum CarryingKind {
     Water,
     Catnip,
     Grain,
+    Flour,
     Herbs,
 }
 
@@ -956,17 +957,13 @@ pub struct BuildingSnapshot {
     pub production_output: Option<String>,
     /// Resource units physically in flight toward this building right now — the live sum
     /// of carried cargo whose haul destination resolves to this building's tile (see
-    /// `cat_sim::world_tick::building_inbound_haul`). In practice only ever nonzero for
-    /// the shrine: the sim's hauling model routes every haul to either a stockpile
-    /// (player-designated pile or gather spot — plain rects, not buildings) or the shrine
-    /// anchor fallback; no other building type is ever a haul target, since production
-    /// buildings draw inputs straight from the colony's resource pool rather than from
-    /// physically delivered cargo. Additive; defaults to 0.0 for older snapshots.
+    /// `cat_sim::world_tick::building_inbound_haul`). Physical Mill/Sawmill input
+    /// carriers target their station work point; ordinary cargo targets a stockpile.
+    /// Additive; defaults to 0.0 for older snapshots.
     #[serde(default)]
     pub inbound_haul: f64,
-    /// Resource units physically departing this building in carried cargo. The
-    /// current balancing-stockpile model normally reports zero; the field is present
-    /// so a physical workshop-haul implementation can expose it without a wire break.
+    /// Resource units physically departing this building in carried cargo. Physical
+    /// Mill/Sawmill outputs remain uncredited until this cargo reaches storage.
     #[serde(default)]
     pub outbound_haul: f64,
     /// True station-local inputs already delivered to this building. These are not a
@@ -980,6 +977,10 @@ pub struct BuildingSnapshot {
     /// Durable recipes in deterministic execution order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub production_queue: Vec<ProductionQueueEntrySnapshot>,
+    /// Recipes the authoritative simulation accepts for this station. Queue controls
+    /// must use this list rather than duplicating station knowledge in the client.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_recipes: Vec<String>,
     /// Pausing prevents a new recipe cycle while still allowing already-finished
     /// output to be physically hauled away.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -2742,6 +2743,7 @@ mod tests {
         assert_eq!(decoded.production_progress, 0.0);
         assert_eq!(decoded.production_output, None);
         assert_eq!(decoded.inbound_haul, 0.0);
+        assert!(decoded.available_recipes.is_empty());
         // The pre-existing footprint back-compat default is untouched by this change.
         assert_eq!(
             decoded.footprint,
@@ -2749,6 +2751,27 @@ mod tests {
                 width: 1,
                 height: 1
             }
+        );
+    }
+
+    #[test]
+    fn station_available_recipes_use_authoritative_camel_case_wire_field() {
+        let building = BuildingSnapshot {
+            id: "mill-1".to_owned(),
+            building_type: BuildingType::Mill,
+            available_recipes: vec!["grain_to_flour_and_food".to_owned()],
+            ..BuildingSnapshot::default()
+        };
+        let encoded = serde_json::to_value(&building).expect("serialize Mill");
+        assert_eq!(
+            encoded["availableRecipes"],
+            json!(["grain_to_flour_and_food"])
+        );
+        let decoded: BuildingSnapshot = serde_json::from_value(encoded).expect("round trip");
+        assert_eq!(decoded.available_recipes, building.available_recipes);
+        assert_eq!(
+            serde_json::to_value(CarryingKind::Flour).unwrap(),
+            json!("flour")
         );
     }
 
