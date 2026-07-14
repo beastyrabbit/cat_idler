@@ -32,9 +32,9 @@ use cat_protocol::{
     CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
     FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemStackSnapshot, JobKind, Labor,
     OfficerRole, ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts,
-    ResourceCapacities, ResourceKind, RoleXp, ScoutMission, ScoutResource, Specialization,
-    StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer,
-    TraderVisitState, VillageKind, VillageScale, WorldSnapshot, ZoneKind,
+    ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource,
+    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
+    TraderSellOffer, TraderVisitState, VillageKind, VillageScale, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -1226,9 +1226,24 @@ const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = 3.0 * UI_BTN_H + 4.0 * UI_GAP + 2.0 * UI_
 const NARROW_BOTTOM_BAR_FOOTPRINT: f32 = 4.0 * UI_BTN_H + 5.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
 const NARROW_LAYOUT_MAX_WIDTH: f32 = 1100.0;
 const BOTTOM_OVERLAY_CLEARANCE: f32 = WIDE_BOTTOM_BAR_FOOTPRINT + UI_GAP;
-/// Eight two-column resource rows remain readable at this compact height and
+/// Twelve two-column resource rows remain readable at this compact height and
 /// leave room for Dispatches above the narrow wrapped toolbar.
-const HUD_RESOURCE_PILL_HEIGHT: f32 = 20.0;
+const HUD_RESOURCE_PILL_HEIGHT: f32 = 19.0;
+#[cfg(test)]
+const HUD_RESOURCE_COLUMNS: usize = 2;
+const HUD_RESOURCE_CELL_WIDTH: f32 = 190.0;
+const HUD_PANEL_WIDTH: f32 = 430.0;
+
+#[cfg(test)]
+fn hud_resource_grid_rows() -> usize {
+    HUD_RESOURCES.len().div_ceil(HUD_RESOURCE_COLUMNS)
+}
+
+#[cfg(test)]
+fn hud_resource_grid_height() -> f32 {
+    let rows = hud_resource_grid_rows();
+    rows as f32 * HUD_RESOURCE_PILL_HEIGHT + rows.saturating_sub(1) as f32 * UI_GAP_TIGHT
+}
 
 /// Tracked Adventure-pack textures. Runtime never reaches into the ignored
 /// source bundle; these semantic copies are the stable client asset contract.
@@ -3000,9 +3015,10 @@ fn primary_window_for_platform(is_web: bool) -> Window {
     }
 }
 
-/// The resources shown in the HUD readout. Its own enum (not `proto::ResourceKind`,
-/// which lacks the refinement tier) so it can carry planks/blocks/tools too.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// The resources shown in the HUD readout. This deliberately remains a
+/// one-to-one client enum: adding an alias here would make two maintained stores
+/// visually indistinguishable in the dashboard and gather flags.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum HudRes {
     Food,
     Fish,
@@ -3018,13 +3034,19 @@ enum HudRes {
     Logs,
     Lumber,
     Herbs,
+    Fibre,
+    Hide,
+    Cloth,
+    Leather,
+    Ore,
+    Metal,
     Weapons,
     Armor,
     Blessings,
 }
 
 /// The HUD resources, in display order (refinement tier grouped after refined).
-const HUD_RESOURCES: [HudRes; 17] = [
+const HUD_RESOURCES: [HudRes; 23] = [
     HudRes::Food,
     HudRes::Fish,
     HudRes::Water,
@@ -3039,6 +3061,12 @@ const HUD_RESOURCES: [HudRes; 17] = [
     HudRes::Logs,
     HudRes::Lumber,
     HudRes::Herbs,
+    HudRes::Fibre,
+    HudRes::Hide,
+    HudRes::Cloth,
+    HudRes::Leather,
+    HudRes::Ore,
+    HudRes::Metal,
     HudRes::Weapons,
     HudRes::Armor,
     HudRes::Blessings,
@@ -3047,66 +3075,69 @@ const HUD_RESOURCES: [HudRes; 17] = [
 /// Board-game glyph icons (white, recolorable) for the HUD resource readout.
 #[derive(Resource, Clone)]
 struct IconArt {
-    food: Handle<Image>,
-    water: Handle<Image>,
-    materials: Handle<Image>,
-    refined: Handle<Image>,
-    planks: Handle<Image>,
-    blocks: Handle<Image>,
-    tools: Handle<Image>,
-    herbs: Handle<Image>,
-    weapons: Handle<Image>,
-    armor: Handle<Image>,
-    blessings: Handle<Image>,
+    resources: BTreeMap<HudRes, Handle<Image>>,
     goods: Handle<Image>,
 }
 
 impl IconArt {
     fn load(assets: &AssetServer) -> Self {
         Self {
-            food: assets.load("public/images/game/icons/food.png"),
-            water: assets.load("public/images/game/icons/water.png"),
-            materials: assets.load("public/images/game/icons/materials.png"),
-            refined: assets.load("public/images/game/icons/refined.png"),
-            planks: assets.load("public/images/game/icons/planks.png"),
-            blocks: assets.load("public/images/game/icons/blocks.png"),
-            tools: assets.load("public/images/game/icons/tools.png"),
-            herbs: assets.load("public/images/game/icons/herbs.png"),
-            weapons: assets.load("public/images/game/icons/weapons.png"),
-            armor: assets.load("public/images/game/icons/armor.png"),
-            blessings: assets.load("public/images/game/icons/blessings.png"),
+            resources: HUD_RESOURCES
+                .into_iter()
+                .map(|kind| (kind, assets.load(resource_icon_path(kind))))
+                .collect(),
             goods: assets.load("public/images/game/icons/goods.png"),
         }
     }
 
     fn get(&self, kind: HudRes) -> Handle<Image> {
-        match kind {
-            HudRes::Food | HudRes::Fish => self.food.clone(),
-            HudRes::Water => self.water.clone(),
-            HudRes::Catnip => self.herbs.clone(),
-            HudRes::Grain | HudRes::Flour => self.food.clone(),
-            HudRes::Materials => self.materials.clone(),
-            HudRes::Refined => self.refined.clone(),
-            HudRes::Planks => self.planks.clone(),
-            HudRes::Blocks => self.blocks.clone(),
-            HudRes::Tools => self.tools.clone(),
-            HudRes::Logs | HudRes::Lumber => self.planks.clone(),
-            HudRes::Herbs => self.herbs.clone(),
-            HudRes::Weapons => self.weapons.clone(),
-            HudRes::Armor => self.armor.clone(),
-            HudRes::Blessings => self.blessings.clone(),
-        }
+        self.resources
+            .get(&kind)
+            .expect("every HUD resource has an icon")
+            .clone()
     }
 
     /// The glyph for a crafted-item kind: sword/shield/wrench for weapon/armor/
     /// tool, else the generic goods pouch (tinted by material at the call site).
     fn item_glyph(&self, kind: &str) -> Handle<Image> {
         match kind {
-            "weapon" => self.weapons.clone(),
-            "armor" => self.armor.clone(),
-            "tool" => self.tools.clone(),
+            "weapon" => self.get(HudRes::Weapons),
+            "armor" => self.get(HudRes::Armor),
+            "tool" => self.get(HudRes::Tools),
             _ => self.goods.clone(),
         }
+    }
+}
+
+/// A distinct tracked sprite for every maintained resource. Several are tiny
+/// world props rather than abstract glyphs on purpose: ore looks like an ore
+/// pile, fibre like a haystack, and metal like the smithy's basin even before a
+/// player reads the adjacent label.
+fn resource_icon_path(kind: HudRes) -> &'static str {
+    match kind {
+        HudRes::Food => "public/images/game/icons/food.png",
+        HudRes::Fish => "public/images/game/terrain/water_edge.png",
+        HudRes::Water => "public/images/game/icons/water.png",
+        HudRes::Catnip => "public/images/resources/herbs.png",
+        HudRes::Grain => "public/images/game/farm/crop_mature.png",
+        HudRes::Flour => "public/images/game/props/sack.png",
+        HudRes::Materials => "public/images/game/icons/materials.png",
+        HudRes::Refined => "public/images/game/icons/refined.png",
+        HudRes::Planks => "public/images/game/interior/floor_wood.png",
+        HudRes::Blocks => "public/images/game/icons/blocks.png",
+        HudRes::Tools => "public/images/game/icons/tools.png",
+        HudRes::Logs => "public/images/game/props/log_pile.png",
+        HudRes::Lumber => "public/images/game/icons/planks.png",
+        HudRes::Herbs => "public/images/game/icons/herbs.png",
+        HudRes::Fibre => "public/images/game/props/haystack.png",
+        HudRes::Hide => "public/images/game/interior/bed-orange.png",
+        HudRes::Cloth => "public/images/game/interior/scroll.png",
+        HudRes::Leather => "public/images/game/interior/stool-square.png",
+        HudRes::Ore => "public/images/game/props/ore_pile.png",
+        HudRes::Metal => "public/images/game/interior/metal-basin.png",
+        HudRes::Weapons => "public/images/game/icons/weapons.png",
+        HudRes::Armor => "public/images/game/icons/armor.png",
+        HudRes::Blessings => "public/images/game/icons/blessings.png",
     }
 }
 
@@ -3148,14 +3179,44 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
         ResourceKind::Armor => HudRes::Armor,
         ResourceKind::Logs => HudRes::Logs,
         ResourceKind::Lumber => HudRes::Lumber,
-        ResourceKind::Planks => HudRes::Lumber,
-        ResourceKind::Blocks => HudRes::Materials,
-        ResourceKind::Tools => HudRes::Refined,
-        ResourceKind::Fibre | ResourceKind::Cloth => HudRes::Herbs,
-        ResourceKind::Hide | ResourceKind::Leather => HudRes::Materials,
-        ResourceKind::Ore => HudRes::Materials,
-        ResourceKind::Metal => HudRes::Refined,
+        ResourceKind::Planks => HudRes::Planks,
+        ResourceKind::Blocks => HudRes::Blocks,
+        ResourceKind::Tools => HudRes::Tools,
+        ResourceKind::Fibre => HudRes::Fibre,
+        ResourceKind::Hide => HudRes::Hide,
+        ResourceKind::Cloth => HudRes::Cloth,
+        ResourceKind::Leather => HudRes::Leather,
+        ResourceKind::Ore => HudRes::Ore,
+        ResourceKind::Metal => HudRes::Metal,
         ResourceKind::Blessings => HudRes::Blessings,
+    }
+}
+
+fn hud_resource_label(kind: HudRes) -> &'static str {
+    match kind {
+        HudRes::Food => "Food",
+        HudRes::Fish => "Fish",
+        HudRes::Water => "Water",
+        HudRes::Catnip => "Catnip",
+        HudRes::Grain => "Grain",
+        HudRes::Flour => "Flour",
+        HudRes::Materials => "Materials",
+        HudRes::Refined => "Refined",
+        HudRes::Planks => "Planks",
+        HudRes::Blocks => "Blocks",
+        HudRes::Tools => "Tools",
+        HudRes::Logs => "Logs",
+        HudRes::Lumber => "Lumber",
+        HudRes::Herbs => "Herbs",
+        HudRes::Fibre => "Fibre",
+        HudRes::Hide => "Hide",
+        HudRes::Cloth => "Cloth",
+        HudRes::Leather => "Leather",
+        HudRes::Ore => "Ore",
+        HudRes::Metal => "Metal",
+        HudRes::Weapons => "Weapons",
+        HudRes::Armor => "Armor",
+        HudRes::Blessings => "Blessings",
     }
 }
 
@@ -3176,6 +3237,12 @@ fn resource_icon_tint(kind: HudRes) -> Color {
         HudRes::Logs => Color::srgb(0.45, 0.29, 0.17),
         HudRes::Lumber => Color::srgb(0.76, 0.55, 0.30),
         HudRes::Herbs => Color::srgb(0.51, 0.79, 0.42),
+        HudRes::Fibre => Color::srgb(0.72, 0.78, 0.52),
+        HudRes::Hide => Color::srgb(0.72, 0.50, 0.34),
+        HudRes::Cloth => Color::srgb(0.74, 0.48, 0.69),
+        HudRes::Leather => Color::srgb(0.55, 0.34, 0.22),
+        HudRes::Ore => Color::srgb(0.48, 0.57, 0.66),
+        HudRes::Metal => Color::srgb(0.73, 0.80, 0.86),
         HudRes::Weapons => Color::srgb(0.74, 0.76, 0.82),
         HudRes::Armor => Color::srgb(0.56, 0.64, 0.76),
         HudRes::Blessings => Color::srgb(0.96, 0.80, 0.32),
@@ -3200,10 +3267,24 @@ fn hud_resource_value(kind: HudRes, r: &ResourceAmounts, cap: &ResourceCapacitie
         HudRes::Logs => format!("{:.0} / {:.0}", r.logs, cap.logs),
         HudRes::Lumber => format!("{:.0} / {:.0}", r.lumber, cap.lumber),
         HudRes::Herbs => format!("{:.0} / {:.0}", r.herbs, cap.herbs),
+        HudRes::Fibre => format!("{:.0} / {:.0}", r.fibre, cap.fibre),
+        HudRes::Hide => format!("{:.0} / {:.0}", r.hide, cap.hide),
+        HudRes::Cloth => format!("{:.0} / {:.0}", r.cloth, cap.cloth),
+        HudRes::Leather => format!("{:.0} / {:.0}", r.leather, cap.leather),
+        HudRes::Ore => format!("{:.0} / {:.0}", r.ore, cap.ore),
+        HudRes::Metal => format!("{:.0} / {:.0}", r.metal, cap.metal),
         HudRes::Weapons => format!("{:.0}", r.weapons),
         HudRes::Armor => format!("{:.0}", r.armor),
         HudRes::Blessings => format!("{:.1}", r.blessings),
     }
+}
+
+fn hud_resource_text(kind: HudRes, r: Option<(&ResourceAmounts, &ResourceCapacities)>) -> String {
+    let value = r.map_or_else(
+        || "-".to_owned(),
+        |(r, cap)| hud_resource_value(kind, r, cap),
+    );
+    format!("{} {value}", hud_resource_label(kind))
 }
 
 fn setup(
@@ -3319,7 +3400,7 @@ fn setup(
             Node {
                 left: Val::Px(10.0),
                 top: Val::Px(52.0),
-                ..ui_panel_node(Val::Px(322.0))
+                ..ui_panel_node(Val::Px(HUD_PANEL_WIDTH))
             },
             ui_panel_frame(),
             WorldInputBlocker,
@@ -3330,8 +3411,8 @@ fn setup(
                 // Status header (name / leader / pop / threat).
                 body.spawn((ui_text("connecting…", FS_SECTION, UI_INK), HudHeaderText));
                 // Resource readout: a tinted glyph + value per resource in
-                // TWO columns (a wrapping row of fixed-width cells) so the 11
-                // resources fit ~6 rows and the panel stays compact.
+                // TWO columns (a wrapping row of fixed-width cells) so every
+                // maintained resource remains named without widening the panel.
                 body.spawn(Node {
                     width: Val::Percent(100.0),
                     flex_direction: FlexDirection::Row,
@@ -3345,7 +3426,7 @@ fn setup(
                     for kind in HUD_RESOURCES {
                         grid.spawn((
                             Node {
-                                width: Val::Px(138.0),
+                                width: Val::Px(HUD_RESOURCE_CELL_WIDTH),
                                 height: Val::Px(HUD_RESOURCE_PILL_HEIGHT),
                                 padding: UiRect::horizontal(Val::Px(4.0)),
                                 align_items: AlignItems::Center,
@@ -3378,7 +3459,10 @@ fn setup(
                                         },
                                     )],
                                 ),
-                                (ui_text("-", FS_BODY, UI_TITLE_INK), HudResource(kind)),
+                                (
+                                    ui_text(hud_resource_text(kind, None), FS_SMALL, UI_TITLE_INK,),
+                                    HudResource(kind),
+                                ),
                             ],
                         ));
                     }
@@ -5626,6 +5710,19 @@ fn render_stockpiles(
                     Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 2.0),
                     StockpileVis,
                 ));
+                if let Some(icons) = icons.as_ref() {
+                    let hud = hud_res_of(dominant);
+                    commands.spawn((
+                        Sprite {
+                            image: icons.get(hud),
+                            color: resource_icon_tint(hud),
+                            custom_size: Some(Vec2::splat(TILE * 0.34)),
+                            ..default()
+                        },
+                        Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 2.1),
+                        StockpileVis,
+                    ));
+                }
             }
             continue;
         }
@@ -5665,6 +5762,19 @@ fn render_stockpiles(
                 Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin)),
                 StockpileVis,
             ));
+            if let Some(icons) = icons.as_ref() {
+                let hud = hud_res_of(dominant);
+                commands.spawn((
+                    Sprite {
+                        image: icons.get(hud),
+                        color: resource_icon_tint(hud),
+                        custom_size: Some(Vec2::splat(TILE * 0.34)),
+                        ..default()
+                    },
+                    Transform::from_xyz(cx, cy, ysort_z(cy, depth_origin) + 0.1),
+                    StockpileVis,
+                ));
+            }
         }
         commands.spawn((
             Text2d::new(label),
@@ -5704,9 +5814,11 @@ fn render_stockpiles(
                 Transform::from_xyz(cx, flag_y + TILE * 0.45, ysort_z(cy, depth_origin) + 3.1),
                 StockpileVis,
             ));
+            let hud = hud_res_of(gs.kind);
             commands.spawn((
                 Sprite {
-                    image: icons.get(hud_res_of(gs.kind)),
+                    image: icons.get(hud),
+                    color: resource_icon_tint(hud),
                     custom_size: Some(Vec2::splat(TILE * 0.46)),
                     ..default()
                 },
@@ -5743,8 +5855,6 @@ fn update_remove_panel(
     match (pile, farm) {
         (Some(pile), _) => {
             node.display = Display::Flex;
-            let total = resource_total(&pile.contents);
-            let dominant = dominant_resource(&pile.contents).map_or("empty", resource_kind_name);
             let title = match pile.gather_spot.as_ref().map(|spot| spot.purpose) {
                 Some(GatherSpotPurpose::Fishing) => "Fishing shore",
                 Some(GatherSpotPurpose::General) => "Gather spot",
@@ -5755,11 +5865,11 @@ fn update_remove_panel(
                 .as_ref()
                 .and_then(|spot| spot.fish_population)
                 .map_or_else(
-                    || format!("{title}\n{dominant} {}", total.round() as i64),
+                    || format!("{title}\n{}", resource_contents_summary(&pile.contents)),
                     |population| {
                         format!(
-                            "{title}\nfresh fish {}\nhabitat {:.1} / {:.0}",
-                            total.round() as i64,
+                            "{title}\n{}\nhabitat {:.1} / {:.0}",
+                            resource_contents_summary(&pile.contents),
                             population.stock,
                             population.capacity
                         )
@@ -7408,9 +7518,9 @@ fn stockpile_tooltip(pile: &StockpileSnapshot) -> String {
         "Stockpile"
     };
     let mut tooltip = format!(
-        "{title}\naccepts {accepts}\ncontents ~{total:.0}",
+        "{title}\naccepts {accepts}\ncontents: {contents}",
         accepts = accepts_label(&pile.accepts),
-        total = resource_total(&pile.contents),
+        contents = resource_contents_summary(&pile.contents),
     );
     if let Some(population) = pile
         .gather_spot
@@ -7901,8 +8011,8 @@ fn update_hud(
     let Some(world) = latest.0.as_ref() else {
         header.0 = "connecting…".to_string();
         footer.0 = String::new();
-        for (mut text, _) in &mut values {
-            text.0 = "-".to_string();
+        for (mut text, res) in &mut values {
+            text.0 = hud_resource_text(res.0, None);
         }
         return;
     };
@@ -7912,8 +8022,8 @@ fn update_hud(
             world.online_count
         );
         footer.0 = String::new();
-        for (mut text, _) in &mut values {
-            text.0 = "-".to_string();
+        for (mut text, res) in &mut values {
+            text.0 = hud_resource_text(res.0, None);
         }
         return;
     };
@@ -7922,7 +8032,7 @@ fn update_hud(
     let r = &colony.resources;
     let cap = &colony.storage.capacities;
     for (mut text, res) in &mut values {
-        text.0 = hud_resource_value(res.0, r, cap);
+        text.0 = hud_resource_text(res.0, Some((r, cap)));
     }
 }
 
@@ -8486,20 +8596,40 @@ fn ledger_hud_text(ledger: &StockLedgerSnapshot) -> String {
     }
 }
 
-/// Reachable Goods-panel summary for the production resources that do not fit
-/// in the compact always-on survival HUD.
+/// Reachable Goods-panel summary, grouped by production chain. The same names
+/// used by the HUD and inspectors make every maintained store identifiable.
 fn production_stores_text(resources: &ResourceAmounts) -> String {
     format!(
-        "Fresh fish {:.0}\n\
-         Production stores: fibre {:.0} · hide {:.0} · cloth {:.0} · leather {:.0}\n\
-         Ore & metal: ore {:.0} · metal {:.0}",
+        "Provisions: food {:.0} · fish {:.0} · water {:.0}\n\
+         Crops: herbs {:.0} · catnip {:.0} · grain {:.0} · flour {:.0}\n\
+         Timber: logs {:.0} · lumber {:.0} · planks {:.0}\n\
+         Stonework: materials {:.0} · blocks {:.0} · refined {:.0}\n\
+         Textiles: fibre {:.0} · hide {:.0} · cloth {:.0} · leather {:.0}\n\
+         Smithing: ore {:.0} · metal {:.0} · tools {:.0}\n\
+         Arms: weapons {:.0} · armor {:.0} · blessings {:.1}",
+        resources.food,
         resources.fish,
+        resources.water,
+        resources.herbs,
+        resources.catnip,
+        resources.grain,
+        resources.flour,
+        resources.logs,
+        resources.lumber,
+        resources.planks,
+        resources.materials,
+        resources.blocks,
+        resources.refined,
         resources.fibre,
         resources.hide,
         resources.cloth,
         resources.leather,
         resources.ore,
         resources.metal,
+        resources.tools,
+        resources.weapons,
+        resources.armor,
+        resources.blessings,
     )
 }
 
@@ -9309,6 +9439,12 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
     } else {
         out.push_str("\ninbound: none");
     }
+    if !building.inbound_cargo.is_empty() {
+        out.push_str(&format!(
+            "\ninbound cargo: {}",
+            resource_stacks_text(&building.inbound_cargo)
+        ));
+    }
     if !building.input_inventory.is_empty() {
         out.push_str(&format!(
             "\nlocal input: {}",
@@ -9359,7 +9495,21 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
     } else {
         out.push_str("\noutbound: none");
     }
+    if !building.outbound_cargo.is_empty() {
+        out.push_str(&format!(
+            "\noutbound cargo: {}",
+            resource_stacks_text(&building.outbound_cargo)
+        ));
+    }
     out
+}
+
+fn resource_stacks_text(stacks: &[ResourceStackSnapshot]) -> String {
+    stacks
+        .iter()
+        .map(|stack| format!("{} {:.1}", resource_kind_name(stack.kind), stack.amount))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The name of the cat holding an officer role, or `None` when vacant / the
@@ -9373,56 +9523,93 @@ fn officer_holder_name(colony: &ColonySnapshot, role: OfficerRole) -> Option<&st
         .map(|c| c.name.as_str())
 }
 
+const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 23] = [
+    ResourceKind::Food,
+    ResourceKind::Fish,
+    ResourceKind::Water,
+    ResourceKind::Herbs,
+    ResourceKind::Catnip,
+    ResourceKind::Grain,
+    ResourceKind::Flour,
+    ResourceKind::Materials,
+    ResourceKind::Refined,
+    ResourceKind::Planks,
+    ResourceKind::Blocks,
+    ResourceKind::Tools,
+    ResourceKind::Logs,
+    ResourceKind::Lumber,
+    ResourceKind::Fibre,
+    ResourceKind::Hide,
+    ResourceKind::Cloth,
+    ResourceKind::Leather,
+    ResourceKind::Ore,
+    ResourceKind::Metal,
+    ResourceKind::Weapons,
+    ResourceKind::Armor,
+    ResourceKind::Blessings,
+];
+
+fn resource_amount(kind: ResourceKind, resources: &ResourceAmounts) -> f64 {
+    match kind {
+        ResourceKind::Food => resources.food,
+        ResourceKind::Fish => resources.fish,
+        ResourceKind::Water => resources.water,
+        ResourceKind::Herbs => resources.herbs,
+        ResourceKind::Catnip => resources.catnip,
+        ResourceKind::Grain => resources.grain,
+        ResourceKind::Flour => resources.flour,
+        ResourceKind::Materials => resources.materials,
+        ResourceKind::Refined => resources.refined,
+        ResourceKind::Weapons => resources.weapons,
+        ResourceKind::Armor => resources.armor,
+        ResourceKind::Logs => resources.logs,
+        ResourceKind::Lumber => resources.lumber,
+        ResourceKind::Planks => resources.planks,
+        ResourceKind::Blocks => resources.blocks,
+        ResourceKind::Tools => resources.tools,
+        ResourceKind::Fibre => resources.fibre,
+        ResourceKind::Hide => resources.hide,
+        ResourceKind::Cloth => resources.cloth,
+        ResourceKind::Leather => resources.leather,
+        ResourceKind::Ore => resources.ore,
+        ResourceKind::Metal => resources.metal,
+        ResourceKind::Blessings => resources.blessings,
+    }
+}
+
+fn resource_contents_summary(resources: &ResourceAmounts) -> String {
+    let entries = MAINTAINED_RESOURCE_KINDS
+        .into_iter()
+        .filter_map(|kind| {
+            let amount = resource_amount(kind, resources);
+            (amount > 0.0).then(|| format!("{} {:.1}", resource_kind_name(kind), amount))
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        "empty".to_owned()
+    } else {
+        entries.join(", ")
+    }
+}
+
 /// Sum of the storable goods held in a stockpile (blessings excluded).
 fn resource_total(c: &ResourceAmounts) -> f64 {
-    c.food
-        + c.fish
-        + c.water
-        + c.herbs
-        + c.catnip
-        + c.grain
-        + c.flour
-        + c.materials
-        + c.refined
-        + c.weapons
-        + c.armor
-        + c.logs
-        + c.lumber
-        + c.fibre
-        + c.hide
-        + c.cloth
-        + c.leather
-        + c.ore
-        + c.metal
+    MAINTAINED_RESOURCE_KINDS
+        .into_iter()
+        .filter(|kind| *kind != ResourceKind::Blessings)
+        .map(|kind| resource_amount(kind, c))
+        .sum()
 }
 
 /// The single largest storable resource in a pile, or `None` when it's empty.
 fn dominant_resource(c: &ResourceAmounts) -> Option<ResourceKind> {
-    [
-        (ResourceKind::Food, c.food),
-        (ResourceKind::Fish, c.fish),
-        (ResourceKind::Water, c.water),
-        (ResourceKind::Herbs, c.herbs),
-        (ResourceKind::Catnip, c.catnip),
-        (ResourceKind::Grain, c.grain),
-        (ResourceKind::Flour, c.flour),
-        (ResourceKind::Materials, c.materials),
-        (ResourceKind::Refined, c.refined),
-        (ResourceKind::Weapons, c.weapons),
-        (ResourceKind::Armor, c.armor),
-        (ResourceKind::Logs, c.logs),
-        (ResourceKind::Lumber, c.lumber),
-        (ResourceKind::Fibre, c.fibre),
-        (ResourceKind::Hide, c.hide),
-        (ResourceKind::Cloth, c.cloth),
-        (ResourceKind::Leather, c.leather),
-        (ResourceKind::Ore, c.ore),
-        (ResourceKind::Metal, c.metal),
-    ]
-    .into_iter()
-    .filter(|(_, v)| *v > 0.0)
-    .max_by(|a, b| a.1.total_cmp(&b.1))
-    .map(|(kind, _)| kind)
+    MAINTAINED_RESOURCE_KINDS
+        .into_iter()
+        .filter(|kind| *kind != ResourceKind::Blessings)
+        .map(|kind| (kind, resource_amount(kind, c)))
+        .filter(|(_, amount)| *amount > 0.0)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(kind, _)| kind)
 }
 
 /// The pile prop sprite for a dominant resource.
@@ -10568,6 +10755,14 @@ mod tests {
         assert_eq!(dispatches_display(1024.0, false), Display::None);
         assert_eq!(dispatches_display(1280.0, false), Display::Flex);
         assert_eq!(dispatches_display(1280.0, true), Display::None);
+        assert_eq!(hud_resource_grid_rows(), 12);
+        assert_eq!(hud_resource_grid_height(), 261.0);
+        let grid_width = HUD_RESOURCE_COLUMNS as f32 * HUD_RESOURCE_CELL_WIDTH
+            + (HUD_RESOURCE_COLUMNS - 1) as f32 * UI_GAP
+            + 2.0 * UI_PAD
+            + 2.0 * UI_BORDER_W;
+        assert!(grid_width <= HUD_PANEL_WIDTH);
+        const { assert!(HUD_PANEL_WIDTH < 1024.0 && HUD_PANEL_WIDTH < 1280.0) };
         const { assert!(NARROW_BOTTOM_BAR_FOOTPRINT > WIDE_BOTTOM_BAR_FOOTPRINT) };
         const { assert!(HUD_RESOURCE_PILL_HEIGHT <= 20.0) };
     }
@@ -11143,8 +11338,10 @@ mod tests {
 
     #[test]
     fn hud_res_maps_every_resource_kind_to_its_glyph() {
-        // Every wire ResourceKind a gather spot can carry maps to a HUD glyph.
+        // Every wire ResourceKind maps one-to-one to a HUD identity. These are
+        // the aliases that previously made late-game stores unreadable.
         assert_eq!(hud_res_of(ResourceKind::Food), HudRes::Food);
+        assert_eq!(hud_res_of(ResourceKind::Fish), HudRes::Fish);
         assert_eq!(hud_res_of(ResourceKind::Water), HudRes::Water);
         assert_eq!(hud_res_of(ResourceKind::Herbs), HudRes::Herbs);
         assert_eq!(hud_res_of(ResourceKind::Catnip), HudRes::Catnip);
@@ -11156,12 +11353,15 @@ mod tests {
         assert_eq!(hud_res_of(ResourceKind::Armor), HudRes::Armor);
         assert_eq!(hud_res_of(ResourceKind::Logs), HudRes::Logs);
         assert_eq!(hud_res_of(ResourceKind::Lumber), HudRes::Lumber);
-        assert_eq!(hud_res_of(ResourceKind::Fibre), HudRes::Herbs);
-        assert_eq!(hud_res_of(ResourceKind::Hide), HudRes::Materials);
-        assert_eq!(hud_res_of(ResourceKind::Cloth), HudRes::Herbs);
-        assert_eq!(hud_res_of(ResourceKind::Leather), HudRes::Materials);
-        assert_eq!(hud_res_of(ResourceKind::Ore), HudRes::Materials);
-        assert_eq!(hud_res_of(ResourceKind::Metal), HudRes::Refined);
+        assert_eq!(hud_res_of(ResourceKind::Planks), HudRes::Planks);
+        assert_eq!(hud_res_of(ResourceKind::Blocks), HudRes::Blocks);
+        assert_eq!(hud_res_of(ResourceKind::Tools), HudRes::Tools);
+        assert_eq!(hud_res_of(ResourceKind::Fibre), HudRes::Fibre);
+        assert_eq!(hud_res_of(ResourceKind::Hide), HudRes::Hide);
+        assert_eq!(hud_res_of(ResourceKind::Cloth), HudRes::Cloth);
+        assert_eq!(hud_res_of(ResourceKind::Leather), HudRes::Leather);
+        assert_eq!(hud_res_of(ResourceKind::Ore), HudRes::Ore);
+        assert_eq!(hud_res_of(ResourceKind::Metal), HudRes::Metal);
         assert_eq!(hud_res_of(ResourceKind::Blessings), HudRes::Blessings);
     }
 
@@ -12354,31 +12554,24 @@ mod tests {
     }
 
     #[test]
-    fn resource_icons_map_all_kinds_to_distinct_tints() {
-        // Every HUD resource has a tint, and neighbouring resources differ so the
-        // readout reads at a glance.
-        let tints: Vec<Color> = HUD_RESOURCES
+    fn resource_icons_and_labels_are_one_to_one_for_all_maintained_stores() {
+        let paths = HUD_RESOURCES
             .iter()
-            .map(|k| resource_icon_tint(*k))
-            .collect();
-        assert_eq!(tints.len(), 17);
-        assert_ne!(
-            resource_icon_tint(HudRes::Food),
-            resource_icon_tint(HudRes::Water)
-        );
-        assert_ne!(
-            resource_icon_tint(HudRes::Materials),
-            resource_icon_tint(HudRes::Refined)
-        );
-        // The refinement tier is distinct from each other and from refined.
-        assert_ne!(
-            resource_icon_tint(HudRes::Planks),
-            resource_icon_tint(HudRes::Blocks)
-        );
-        assert_ne!(
-            resource_icon_tint(HudRes::Blocks),
-            resource_icon_tint(HudRes::Tools)
-        );
+            .map(|kind| resource_icon_path(*kind))
+            .collect::<HashSet<_>>();
+        let labels = HUD_RESOURCES
+            .iter()
+            .map(|kind| hud_resource_label(*kind))
+            .collect::<HashSet<_>>();
+        assert_eq!(HUD_RESOURCES.len(), MAINTAINED_RESOURCE_KINDS.len());
+        assert_eq!(paths.len(), HUD_RESOURCES.len(), "no icon-path aliases");
+        assert_eq!(labels.len(), HUD_RESOURCES.len(), "no label aliases");
+        assert_eq!(hud_resource_label(HudRes::Fibre), "Fibre");
+        assert_eq!(hud_resource_label(HudRes::Cloth), "Cloth");
+        assert_eq!(hud_resource_label(HudRes::Hide), "Hide");
+        assert_eq!(hud_resource_label(HudRes::Leather), "Leather");
+        assert_eq!(hud_resource_label(HudRes::Ore), "Ore");
+        assert_eq!(hud_resource_label(HudRes::Metal), "Metal");
     }
 
     #[test]
@@ -12442,8 +12635,18 @@ mod tests {
         assert_eq!(hud_resource_value(HudRes::Planks, &r, &cap), "12 / 100");
         assert_eq!(hud_resource_value(HudRes::Blocks, &r, &cap), "7 / 100");
         assert_eq!(hud_resource_value(HudRes::Tools, &r, &cap), "1 / 100");
+        assert_eq!(hud_resource_value(HudRes::Fibre, &r, &cap), "11 / 100");
+        assert_eq!(hud_resource_value(HudRes::Hide, &r, &cap), "12 / 100");
+        assert_eq!(hud_resource_value(HudRes::Cloth, &r, &cap), "5 / 100");
+        assert_eq!(hud_resource_value(HudRes::Leather, &r, &cap), "6 / 100");
+        assert_eq!(hud_resource_value(HudRes::Ore, &r, &cap), "7 / 100");
+        assert_eq!(hud_resource_value(HudRes::Metal, &r, &cap), "8 / 100");
         assert_eq!(hud_resource_value(HudRes::Weapons, &r, &cap), "3");
         assert_eq!(hud_resource_value(HudRes::Blessings, &r, &cap), "4.5");
+        assert_eq!(
+            hud_resource_text(HudRes::Ore, Some((&r, &cap))),
+            "Ore 7 / 100"
+        );
     }
 
     #[test]
@@ -12485,7 +12688,38 @@ mod tests {
         let tip = stockpile_tooltip(&pile);
         assert!(tip.contains("Stockpile"));
         assert!(tip.contains("food only"));
-        assert!(tip.contains("~12"));
+        assert!(tip.contains("contents: food 12.0"));
+
+        let mut mature = pile.clone();
+        mature.contents.food = 0.0;
+        mature.contents.planks = 1.0;
+        mature.contents.blocks = 2.0;
+        mature.contents.tools = 3.0;
+        mature.contents.fibre = 4.0;
+        mature.contents.hide = 5.0;
+        mature.contents.cloth = 6.0;
+        mature.contents.leather = 7.0;
+        mature.contents.ore = 8.0;
+        mature.contents.metal = 9.0;
+        let mature_tip = stockpile_tooltip(&mature);
+        for named in [
+            "planks 1.0",
+            "blocks 2.0",
+            "tools 3.0",
+            "fibre 4.0",
+            "hide 5.0",
+            "cloth 6.0",
+            "leather 7.0",
+            "ore 8.0",
+            "metal 9.0",
+        ] {
+            assert!(mature_tip.contains(named), "missing {named}: {mature_tip}");
+        }
+        assert_eq!(resource_total(&mature.contents), 45.0);
+        assert_eq!(
+            dominant_resource(&mature.contents),
+            Some(ResourceKind::Metal)
+        );
 
         let mut fishing_contents = pile.contents;
         fishing_contents.food = 0.0;
@@ -12776,12 +13010,40 @@ mod tests {
         assert!(ws.contains("40%"));
         assert!(ws.contains("footprint: 3x2 tiles"));
         assert!(ws.contains("inbound: 5.0"));
+        assert!(ws.contains("inbound cargo: logs 5.0"));
         assert!(ws.contains("local input: logs 5.0"));
         assert!(ws.contains("local output: lumber 2.0"));
         assert!(ws.contains("queue: logs_to_lumber"));
         assert!(ws.contains("blocked: output in transit"));
         assert!(ws.contains("worker: hauling output to storage"));
         assert!(ws.contains("outbound: 2.0"));
+        assert!(ws.contains("outbound cargo: lumber 2.0"));
+
+        let mature_stacks = [
+            ResourceKind::Fibre,
+            ResourceKind::Hide,
+            ResourceKind::Cloth,
+            ResourceKind::Leather,
+            ResourceKind::Ore,
+            ResourceKind::Metal,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| ResourceStackSnapshot {
+            kind,
+            amount: index as f64 + 1.0,
+        })
+        .collect::<Vec<_>>();
+        let mut mature = workshop.clone();
+        mature.input_inventory = mature_stacks.clone();
+        mature.inbound_cargo = mature_stacks;
+        let mature_text = building_inspector_text(&mature, colony);
+        for named in ["fibre", "hide", "cloth", "leather", "ore", "metal"] {
+            assert!(
+                mature_text.contains(named),
+                "missing {named}: {mature_text}"
+            );
+        }
         assert!(matches!(
             station_queue_action(
                 &signed_session("queue-session"),
