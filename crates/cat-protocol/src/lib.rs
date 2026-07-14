@@ -22,8 +22,8 @@ pub struct WorldSnapshot {
     /// snapshots, whose selected village remains the first colony.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_colony_id: Option<String>,
-    /// Public summaries learned through inter-village contact. The secure
-    /// village-foundation slice keeps this empty until discovery is implemented.
+    /// Public summaries learned only after a scout physically observes another shrine
+    /// and returns that contact knowledge to its own shrine.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub known_villages: Vec<VillageSummary>,
     /// Open atomic barter proposals visible to this socket. The server projects
