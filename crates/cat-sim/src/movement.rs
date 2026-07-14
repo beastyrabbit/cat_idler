@@ -187,8 +187,20 @@ pub fn life_stage_gait(stage: LifeStage) -> f64 {
 /// modifiers: base × terrain surface × per-cat gait × life-stage gait.
 #[must_use]
 pub fn effective_move_speed(biome: BiomeRole, cat_id: &str, stage: LifeStage) -> f64 {
+    effective_move_speed_for_surface(terrain_surface_factor(biome), cat_id, stage)
+}
+
+/// Effective per-cat rate for one already-resolved fine-biome surface factor.
+/// This is the P17 entry point used by the world tick; the coarse-biome wrapper
+/// above remains for historical fixtures and callers.
+#[must_use]
+pub fn effective_move_speed_for_surface(
+    surface_factor: f64,
+    cat_id: &str,
+    stage: LifeStage,
+) -> f64 {
     BASE_MOVE_SPEED_TILES_PER_SEC
-        * terrain_surface_factor(biome)
+        * surface_factor.max(0.0)
         * cat_gait(cat_id)
         * life_stage_gait(stage)
 }
@@ -358,6 +370,152 @@ pub fn walk_path(
     }
 }
 
+/// Walk an orthogonal route using the actual speed of each crossed tile.
+///
+/// `speed_at_tile` is queried only when the route enters a new half-open tile
+/// cell. Splitting one elapsed interval into smaller calls therefore produces
+/// the same position: biome, road, and obstacle boundaries consume time at the
+/// same spatial boundary rather than applying the starting tile's speed to the
+/// whole tick.
+#[must_use]
+pub fn walk_path_timed<F>(
+    from: WorldPos,
+    destination: WorldPos,
+    elapsed_sec: f64,
+    waypoints: &[WorldPos],
+    mut speed_at_tile: F,
+) -> PathWalk
+where
+    F: FnMut(i32, i32) -> f64,
+{
+    let mut remaining_sec = elapsed_sec.max(0.0);
+    let mut x = from.x;
+    let mut y = from.y;
+    let mut tiles = Vec::new();
+    let mut seen = HashSet::new();
+
+    record_tiles(&mut tiles, &mut seen, WorldPos { x, y }, WorldPos { x, y });
+
+    let mut arrived = false;
+    for (index, stop) in waypoints
+        .iter()
+        .chain(std::iter::once(&destination))
+        .enumerate()
+    {
+        advance_axis_timed(
+            &mut x,
+            y,
+            stop.x,
+            &mut remaining_sec,
+            &mut tiles,
+            &mut seen,
+            true,
+            &mut speed_at_tile,
+        );
+        advance_axis_timed(
+            &mut y,
+            x,
+            stop.y,
+            &mut remaining_sec,
+            &mut tiles,
+            &mut seen,
+            false,
+            &mut speed_at_tile,
+        );
+
+        if x != stop.x || y != stop.y {
+            break;
+        }
+        if index == waypoints.len() {
+            arrived = true;
+        }
+    }
+
+    PathWalk {
+        position: WorldPos { x, y },
+        arrived,
+        tiles,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_axis_timed<F>(
+    moving: &mut f64,
+    fixed: f64,
+    target: f64,
+    remaining_sec: &mut f64,
+    tiles: &mut Vec<WorldPos>,
+    seen: &mut HashSet<(i32, i32)>,
+    moving_x: bool,
+    speed_at_tile: &mut F,
+) where
+    F: FnMut(i32, i32) -> f64,
+{
+    let direction = (target - *moving).signum();
+    while direction != 0.0 && *moving != target && *remaining_sec > 0.0 {
+        // At an exact half-tile boundary, assign the cell in the direction of
+        // travel. This avoids a zero-length retry and makes reverse travel use
+        // the same spatial partition as forward travel.
+        let moving_tile = if direction > 0.0 {
+            (*moving + 0.5).floor() as i32
+        } else {
+            (*moving - 0.5).ceil() as i32
+        };
+        let fixed_tile = (fixed + 0.5).floor() as i32;
+        let boundary = f64::from(moving_tile) + direction * 0.5;
+        let segment_end = if direction > 0.0 {
+            target.min(boundary)
+        } else {
+            target.max(boundary)
+        };
+        let distance = (segment_end - *moving).abs();
+        if distance <= f64::EPSILON {
+            // Floating-point noise at a boundary: nudge by one ulp-equivalent
+            // fraction, then let the ordinary segment accounting continue.
+            *moving += direction * 1e-12;
+            continue;
+        }
+
+        let (tile_x, tile_y) = if moving_x {
+            (moving_tile, fixed_tile)
+        } else {
+            (fixed_tile, moving_tile)
+        };
+        let speed = speed_at_tile(tile_x, tile_y).max(f64::EPSILON);
+        let needed_sec = distance / speed;
+        let previous = if moving_x {
+            WorldPos {
+                x: *moving,
+                y: fixed,
+            }
+        } else {
+            WorldPos {
+                x: fixed,
+                y: *moving,
+            }
+        };
+        if needed_sec <= *remaining_sec {
+            *moving = segment_end;
+            *remaining_sec -= needed_sec;
+        } else {
+            *moving += direction * speed * *remaining_sec;
+            *remaining_sec = 0.0;
+        }
+        let next = if moving_x {
+            WorldPos {
+                x: *moving,
+                y: fixed,
+            }
+        } else {
+            WorldPos {
+                x: fixed,
+                y: *moving,
+            }
+        };
+        record_tiles(tiles, seen, previous, next);
+    }
+}
+
 /// Minimum / maximum length (in tiles) of a single scout wander leg. Each leg is a
 /// short stretch in one randomly-chosen heading; stringing legs together makes a
 /// scout meander outward across the fog instead of beelining a fixed frontier tile.
@@ -483,7 +641,7 @@ mod tests {
         destination_for_job, effective_move_speed, life_stage_gait, path_tiles, pick_wander_target,
         rail_speed_multiplier, road_surface_multiplier, scout_wander_target,
         soft_obstacle_speed_multiplier, straight_line_distance_tiles, terrain_surface_factor,
-        walk_path,
+        walk_path, walk_path_timed,
     };
 
     fn dist(a: WorldPos, b: WorldPos) -> f64 {
@@ -1015,6 +1173,53 @@ mod tests {
         let first = effective_move_speed(BiomeRole::Forest, "cat-42", LifeStage::Young);
         let second = effective_move_speed(BiomeRole::Forest, "cat-42", LifeStage::Young);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn timed_walk_is_invariant_to_tick_partition_across_surface_boundaries() {
+        let start = WorldPos { x: 0.0, y: 0.0 };
+        let destination = WorldPos { x: 4.0, y: 0.0 };
+        let speed = |x: i32, _y: i32| match x {
+            ..=0 => 0.5,
+            1 => 0.25,
+            2 => 1.0,
+            _ => 0.75,
+        };
+
+        let whole = walk_path_timed(start, destination, 4.75, &[], speed);
+        let mut split_position = start;
+        let mut split_arrived = false;
+        for _ in 0..19 {
+            let step = walk_path_timed(split_position, destination, 0.25, &[], speed);
+            split_position = step.position;
+            split_arrived = step.arrived;
+        }
+
+        assert_eq!(whole.position, split_position);
+        assert_eq!(whole.arrived, split_arrived);
+    }
+
+    #[test]
+    fn timed_walk_uses_the_tile_being_crossed_in_both_directions() {
+        let speed = |x: i32, _y: i32| if x == 1 { 0.25 } else { 1.0 };
+        let east = walk_path_timed(
+            WorldPos { x: 0.0, y: 0.0 },
+            WorldPos { x: 2.0, y: 0.0 },
+            2.0,
+            &[],
+            speed,
+        );
+        let west = walk_path_timed(
+            WorldPos { x: 2.0, y: 0.0 },
+            WorldPos { x: 0.0, y: 0.0 },
+            2.0,
+            &[],
+            speed,
+        );
+
+        assert_eq!(east.position.x, 0.875);
+        assert_eq!(west.position.x, 1.125);
+        assert_eq!(east.position.y, west.position.y);
     }
 
     #[test]

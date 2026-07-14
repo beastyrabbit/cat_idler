@@ -40,7 +40,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | in progress — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code; integrated before/during/after wall framebuffers remain |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns, with browser/native visual confirmation and broader physical stations remaining |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, and physical shoreline fishing are verified; broader physical farm/production work remains in progress |
-| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, exterior plots, and finite persisted fish habitats are live; fine-biome movement is unused, and rail/shipping are global multipliers rather than built routes/vehicles |
+| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, exterior plots, finite persisted fish habitats, and cached fine-biome path/movement costs are live; rail/shipping are global multipliers rather than built routes/vehicles |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques are gone; all 25 current protocol variants have tested residential/open-station compositions, with the prior 24 plus Mill/Sawmill/crop stages framebuffer-verified; Accounting Tent is snapshot-reachable but still needs an integrated in-world capture. The Adventure skin and research ledger are exact-size native- and optimized-WASM-framebuffer verified; staged wall/agricultural native captures also remain |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — planks/blocks/tools, grain/flour/food, logs/lumber, fibre/cloth, hide/leather, ore/metal, finite fresh Fish, protected useful tools, material trade goods, visiting traders, and coin are live; recipe/material breadth, broader physical local inventories, and complete controls remain |
 
@@ -664,8 +664,13 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   (not a world-generation acceptance test). Each canonical water habitat starts with at most 24
   fish and replenishes deterministically by 0.5 per game-hour; only a successful on-site catch
   depletes it, and removing/repainting its designation cannot refill it.
-  Transport upgrade flags still need real routes and vehicles:
-  fine-biome movement factors are unused, rail has no tracks/trains, and shipping has no vessels.
+  Fine-biome movement factors now drive both inverse-cost A* and physical elapsed-time travel,
+  composed with dirt/stone roads and soft obstacles through a shared per-tick chunk cache.
+  Focused generated-map/cadence tests, all 11 signed guided/manual campaign cases, and four
+  live-cadence passive game-hours for seeds 7/42/20240712 as byte-identical twins verify the
+  integration; fog grew 289→459/414/474 with no death or reset.
+  Transport upgrade flags still need real routes and vehicles: rail has no tracks/trains, and
+  shipping has no vessels.
 
 ### P18 — Visual polish (spec: `docs/migration/specs/p18-visual-polish.md`)
 - The maintained Adventure art is live through Bevy sliced images: parchment, dark, and ornate

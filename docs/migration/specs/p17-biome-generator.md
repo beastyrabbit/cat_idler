@@ -1,8 +1,9 @@
 # P17 — 2D biome generator (Minecraft-style, ~25 biomes)
 
 > **Living target spec.** The deterministic 26-biome climate generator and rendering exist.
-> Fine-biome movement factors, complete biome-specific resource logistics, fishing, and physical
-> rail/ship transport remain open in [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
+> Fine-biome movement and finite physical fishing are verified. Complete biome-specific resource
+> logistics and physical rail/ship transport remain open in
+> [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 User (2026-07-10): trees should be sparse on grass biomes and dense in forest biomes, etc. —
 we need a proper **biome generator, like Minecraft but 2D**, targeting **~25 biomes**.
@@ -50,6 +51,10 @@ mushroom/odd. (≈25; trim/merge as needed.)
 ## Ripple effects (why this is foundational)
 - **Tree density per biome** → fixes the uniform-tree look directly.
 - **Per-biome movement speed** → feeds the movement-stagger + P14.2 cost model.
+  This is now live: A* pays inverse fine-biome speed and physical movement consumes elapsed time
+  at each crossed biome/road/obstacle boundary. One prewarmed derived chunk cache serves every
+  mover and A* candidate in the tick; claimed non-agricultural settlement ground remains cleared
+  meadow, while exterior agricultural claims retain their generated biome.
 - **Per-biome resources** → the scout-driven fog loop ("find 5 wood spots") + gather spots need
   to know which biomes have wood/stone/fish/farmland.
 - **Render + assets**: ~25 biomes need distinct ground tiles/tints. Curate from the Roguelike
@@ -65,3 +70,12 @@ table, keep it deterministic + per-chunk + infinite; golden-test a few chunks), 
 biome→tile/tint render + tree-density render. Coordinates with movement-speed (per-biome factor)
 and P14.2 (cost). Big but self-contained; slot after the current feel/movement cards land so the
 terrain subsystem isn't being edited by two agents at once.
+
+## Fine-movement verification (2026-07-14)
+
+- Generated-biome cache, inverse A* cost, actual route choice, road and soft-obstacle composition,
+  claimed-meadow authority, and tick-partition-independent boundary crossing have focused tests.
+- All 11 signed guided/manual campaign cases pass after the integration.
+- Passive seeds 7, 42, and 20240712 each pass four game-hours at the live 1-second cadence as
+  byte-identical twins, with no death/reset and fog growth from 289 to 459, 414, and 474 tiles.
+- The complete `cat-sim` gate passes 981/981 tests (one separately skipped).

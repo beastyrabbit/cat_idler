@@ -5,7 +5,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
 };
 
 use serde::{Deserialize, Serialize};
@@ -50,9 +50,9 @@ use crate::{
     },
     movement::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
-        effective_move_speed, pick_wander_target, rail_speed_multiplier, road_surface_multiplier,
-        scout_wander_target, soft_obstacle_speed_multiplier, straight_line_distance_tiles,
-        walk_path,
+        effective_move_speed_for_surface, pick_wander_target, rail_speed_multiplier,
+        road_surface_multiplier, scout_wander_target, soft_obstacle_speed_multiplier,
+        straight_line_distance_tiles, walk_path, walk_path_timed,
     },
     officers::{OfficerRole, prerequisite_for},
     pathfinding::{
@@ -323,9 +323,10 @@ pub struct ColonyRuntime {
     pub test_resilience_hours_override: Option<f64>,
     pub test_critical_ms_override: i64,
     pub test_rng_seed: Option<u32>,
-    /// Runtime-only deterministic terrain-decoration cache. It is excluded from
-    /// semantic equality and persistence; any loaded colony rebuilds identical
-    /// entries from `(world_seed, chunk)` on first use.
+    /// Runtime-only deterministic terrain cache (fine biomes plus decoration
+    /// anchors). It is excluded from semantic equality and persistence; any
+    /// loaded colony rebuilds identical entries from `(world_seed, chunk)` on
+    /// first use.
     pub decoration_cache: DecorationCache,
 }
 
@@ -632,6 +633,7 @@ fn tile_has_uncleared_tree(colony: &ColonyRuntime, tile: TilePos, world_seed: u3
 struct DecorationAnchors {
     trees: HashSet<TilePos>,
     rocks: HashSet<TilePos>,
+    climate_biomes: BTreeMap<TilePos, crate::climate::Biome>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -667,6 +669,13 @@ impl DecorationCache {
     fn anchors(&self, world_seed: u32, chunk_x: i32, chunk_y: i32) -> Option<&DecorationAnchors> {
         self.chunks.get(&(world_seed, chunk_x, chunk_y))
     }
+
+    fn climate_biome(&self, world_seed: u32, pos: TilePos) -> Option<crate::climate::Biome> {
+        let chunk_x = pos.x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE);
+        let chunk_y = pos.y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE);
+        self.anchors(world_seed, chunk_x, chunk_y)
+            .and_then(|chunk| chunk.climate_biomes.get(&pos).copied())
+    }
 }
 
 fn decoration_anchors_for_chunk(world_seed: u32, chunk_x: i32, chunk_y: i32) -> DecorationAnchors {
@@ -677,6 +686,11 @@ fn decoration_anchors_for_chunk(world_seed: u32, chunk_x: i32, chunk_y: i32) -> 
         i64::from(world_seed),
         crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
     ) {
+        let pos = TilePos {
+            x: terrain.x,
+            y: terrain.y,
+        };
+        out.climate_biomes.insert(pos, terrain.climate_biome);
         match crate::terrain_gen::derive_biome_decoration(
             terrain.x,
             terrain.y,
@@ -684,16 +698,10 @@ fn decoration_anchors_for_chunk(world_seed: u32, chunk_x: i32, chunk_y: i32) -> 
             terrain.climate_biome,
         ) {
             Some(crate::terrain_gen::DecorationRole::Tree { .. }) => {
-                out.trees.insert(TilePos {
-                    x: terrain.x,
-                    y: terrain.y,
-                });
+                out.trees.insert(pos);
             }
             Some(crate::terrain_gen::DecorationRole::Rock { .. }) => {
-                out.rocks.insert(TilePos {
-                    x: terrain.x,
-                    y: terrain.y,
-                });
+                out.rocks.insert(pos);
             }
             None => {}
         }
@@ -1045,6 +1053,52 @@ impl pathfinding::SoftObstacleField for MovementDecorationObstacles {
         });
         tree || self.rocks.contains(&tile)
     }
+}
+
+/// Build the one per-tick fine-biome surface table shared by A* and physical
+/// movement. Terrain chunks are already warm in [`DecorationCache`], so this is
+/// one hash lookup per mapped tile rather than one full chunk regeneration per
+/// A* candidate or moving cat.
+fn movement_surface_factors(colony: &ColonyRuntime, world_seed: u32) -> HashMap<PathTilePos, f64> {
+    movement_surface_factors_from_cache(colony, world_seed, &colony.decoration_cache)
+}
+
+fn movement_surface_factors_from_cache(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+    cache: &DecorationCache,
+) -> HashMap<PathTilePos, f64> {
+    let claimed = colony.claimed_tiles.iter().copied().collect::<HashSet<_>>();
+    colony
+        .world_tiles
+        .iter()
+        .map(|(&pos, tile)| {
+            let generated = cache
+                .climate_biome(world_seed, pos)
+                .unwrap_or(crate::climate::Biome::Plains);
+            // Settlement clearing is authoritative simulation state: the
+            // walled, non-agricultural claim has meadow footing even when the
+            // procedural climate underneath was sand, swamp, or mountain.
+            let biome = if claimed.contains(&pos)
+                && !colony.agricultural_tiles.contains(&pos)
+                && !tile_has_water(Some(tile))
+            {
+                crate::climate::Biome::Meadow
+            } else {
+                generated
+            };
+            let factor = if tile_has_water(Some(tile)) {
+                // Only used after the shipping capability makes water
+                // traversable; it matches pathfinding's explicit WATER_COST.
+                1.0 / pathfinding::WATER_COST
+            } else if biome.properties().move_factor > 0.0 {
+                biome.properties().move_factor
+            } else {
+                crate::movement::terrain_surface_factor(biome.surface_role())
+            };
+            (PathTilePos { x: pos.x, y: pos.y }, factor)
+        })
+        .collect()
 }
 
 /// Hard safety envelope for player-authored/world-routed coordinates. The live map is
@@ -8174,6 +8228,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         .decoration_cache
         .ensure_chunks(movement.world_seed, &decoration_chunks);
     let decoration_obstacles = MovementDecorationObstacles::new(colony, movement.world_seed);
+    let surface_factors = movement_surface_factors(colony, movement.world_seed);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let walk_grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &movement.walk_tiles,
@@ -8197,6 +8252,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
         soft_obstacles: Some(&path_soft_obstacles),
         soft_obstacle_field: Some(&decoration_obstacles),
+        surface_factors: Some(&surface_factors),
     });
     // P17 transport upgrade: `rail` speeds up long-distance hauls once owned —
     // checked per-cat below against the remaining route distance, inert (no
@@ -8224,8 +8280,6 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         let destination = position_to_world(colony.anchor, destination);
         let activity = colony.cats[cat_index].activity;
         let current_task = colony.cats[cat_index].current_task;
-        let standing_tile_pos = world_pos_to_tile(world_pos);
-        let standing_tile = colony.world_tiles.get(&standing_tile_pos);
         let scout_speed_factor = scout_travel_speed_factor(colony, &cat_id, current_task, activity);
         let labor_speed_factor = if colony.cats[cat_index].carrying.is_some()
             || current_task == Some(TaskType::Build)
@@ -8246,47 +8300,12 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         } else {
             1.0
         };
-        // Per-cat effective rate: base × terrain surface (the tile the cat is on)
-        // × per-cat gait × life-stage gait. This desyncs the herd — cats on slow
-        // ground or with a slow gait fall behind instead of stepping in unison.
-        let standing_biome = crate::terrain_gen::tile_biome(
-            movement.world_seed,
-            standing_tile_pos.x,
-            standing_tile_pos.y,
-        );
         let stage = get_life_stage(colony.cats[cat_index].age_hours);
-        // Paved stone roads (×1.75) and worn dirt roads (×1.05) carry cats faster
-        // than open ground; the road network is the fast lane for the haul loop.
-        let road_mult = standing_tile.map_or(1.0, |tile| {
-            road_surface_multiplier(
-                tile.overlay_feature.as_deref() == Some("road_built"),
-                tile_forms_dirt_road(tile),
-                tile.path_wear,
-            )
-        });
-        // P14.2 soft obstacle (×0.25): a cat standing anywhere inside a building,
-        // full 2×3 tree canopy, or rock cell pads along at a quarter speed. This is
-        // the same cached physical footprint query A* uses, not a biome proxy.
-        let on_soft_obstacle = soft_obstacles.contains(&standing_tile_pos)
-            || pathfinding::SoftObstacleField::is_soft_obstacle(
-                &decoration_obstacles,
-                standing_tile_pos.x,
-                standing_tile_pos.y,
-            );
-        let soft_obstacle_mult = soft_obstacle_speed_multiplier(on_soft_obstacle);
-        // P17 `rail`: a long-distance haul (remaining route beyond
-        // RAIL_LONG_HAUL_DISTANCE_TILES) moves much faster once the colony owns the
-        // upgrade; village-scale routes (hunts, quarrying, shrine hauls) never
-        // clear the threshold, so this is inert without it and inert for ordinary
-        // routes even with it owned.
-        let rail_mult = rail_speed_multiplier(
-            rail_unlocked,
-            straight_line_distance_tiles(world_pos, destination),
-        );
-        let speed = effective_move_speed(standing_biome, &cat_id, stage)
-            * road_mult
-            * soft_obstacle_mult
-            * rail_mult
+        // Everything independent of the crossed tile is resolved once. Fine
+        // biome, road, soft-obstacle, and rail factors are sampled spatially by
+        // `walk_path_timed`, so crossing a boundary consumes the same amount of
+        // time whether this interval arrives as one large tick or many small ones.
+        let unit_surface_speed = effective_move_speed_for_surface(1.0, &cat_id, stage)
             * scout_speed_factor
             * labor_speed_factor
             * effects.move_speed_mult;
@@ -8312,11 +8331,46 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         } else {
             Vec::new()
         };
-        let walk = walk_path(
+        let walk = walk_path_timed(
             world_pos,
             destination,
-            movement.movement_elapsed * speed,
+            movement.movement_elapsed,
             &waypoints,
+            |x, y| {
+                let path_pos = PathTilePos { x, y };
+                let tile_pos = TilePos { x, y };
+                let surface = surface_factors.get(&path_pos).copied().unwrap_or_else(|| {
+                    crate::movement::terrain_surface_factor(
+                        crate::terrain_gen::BiomeRole::Grassland,
+                    )
+                });
+                let road = colony.world_tiles.get(&tile_pos).map_or(1.0, |tile| {
+                    road_surface_multiplier(
+                        tile.overlay_feature.as_deref() == Some("road_built"),
+                        tile_forms_dirt_road(tile),
+                        tile.path_wear,
+                    )
+                });
+                let soft = soft_obstacle_speed_multiplier(
+                    soft_obstacles.contains(&tile_pos)
+                        || pathfinding::SoftObstacleField::is_soft_obstacle(
+                            &decoration_obstacles,
+                            x,
+                            y,
+                        ),
+                );
+                let rail = rail_speed_multiplier(
+                    rail_unlocked,
+                    straight_line_distance_tiles(
+                        WorldPos {
+                            x: f64::from(x),
+                            y: f64::from(y),
+                        },
+                        destination,
+                    ),
+                );
+                unit_surface_speed * surface * road * soft * rail
+            },
         );
         let arrived = walk.arrived;
 
@@ -13164,7 +13218,7 @@ fn harvest_fish(colony: &mut ColonyRuntime, site: TilePos, requested: f64) -> f6
 /// it off from the shrine; workers must be able to reach the tile under the same
 /// hard traversal rules used by phase 34.
 #[must_use]
-pub fn is_reachable_fishing_shore(colony: &ColonyRuntime, site: TilePos, _world_seed: u32) -> bool {
+pub fn is_reachable_fishing_shore(colony: &ColonyRuntime, site: TilePos, world_seed: u32) -> bool {
     if !is_valid_fishing_shore(colony, site) {
         return false;
     }
@@ -13182,6 +13236,19 @@ pub fn is_reachable_fishing_shore(colony: &ColonyRuntime, site: TilePos, _world_
         .map(walk_tile_from_runtime)
         .collect::<Vec<_>>();
     let staged_edges = staged_wall_fence_edges(colony);
+    let chunks = colony
+        .world_tiles
+        .keys()
+        .map(|tile| {
+            (
+                tile.x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+                tile.y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let mut terrain_cache = colony.decoration_cache.clone();
+    terrain_cache.ensure_chunks(world_seed, &chunks);
+    let surface_factors = movement_surface_factors_from_cache(colony, world_seed, &terrain_cache);
     let grid = build_colony_walk_grid(ColonyGridParams {
         tiles: &walk_tiles,
         anchor: PathTilePos {
@@ -13201,6 +13268,7 @@ pub fn is_reachable_fishing_shore(colony: &ColonyRuntime, site: TilePos, _world_
         shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
         soft_obstacles: None,
         soft_obstacle_field: None,
+        surface_factors: Some(&surface_factors),
     });
     find_path(
         pathfinding_pos(village_anchor_world(colony.anchor)),
@@ -17592,6 +17660,369 @@ mod tests {
             road_surface_multiplier(true, true, trafficked.path_wear),
             1.75
         );
+    }
+
+    fn first_generated_land_biome_site(
+        seed: u32,
+        predicate: impl Fn(crate::climate::Biome) -> bool,
+    ) -> (TilePos, crate::climate::Biome) {
+        for chunk_y in -6..=6 {
+            for chunk_x in -6..=6 {
+                for terrain in crate::terrain_gen::generate_terrain_chunk(
+                    chunk_x,
+                    chunk_y,
+                    i64::from(seed),
+                    crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                ) {
+                    let biome = terrain.climate_biome;
+                    if biome.properties().move_factor > 0.0 && predicate(biome) {
+                        return (
+                            TilePos {
+                                x: terrain.x,
+                                y: terrain.y,
+                            },
+                            biome,
+                        );
+                    }
+                }
+            }
+        }
+        panic!("bounded generated terrain contains the requested land biome")
+    }
+
+    #[test]
+    fn movement_surface_cache_uses_generated_biomes_and_authoritative_cleared_meadow() {
+        let seed = 42;
+        let (wild, biome) =
+            first_generated_land_biome_site(seed, |biome| biome != crate::climate::Biome::Meadow);
+        let mut colony = ColonyRuntime {
+            world_tiles: BTreeMap::from([(wild, tile(wild.x, wild.y, 0, None))]),
+            ..ColonyRuntime::default()
+        };
+        let chunks = BTreeSet::from([(
+            wild.x.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+            wild.y.div_euclid(crate::terrain_gen::TERRAIN_CHUNK_SIZE),
+        )]);
+        colony.decoration_cache.ensure_chunks(seed, &chunks);
+        let warmed_chunks = colony.decoration_cache.chunks.len();
+
+        let wild_factors = movement_surface_factors(&colony, seed);
+        assert_eq!(
+            wild_factors[&PathTilePos {
+                x: wild.x,
+                y: wild.y
+            }],
+            biome.properties().move_factor,
+            "the cached runtime factor must come from the generated fine biome"
+        );
+
+        colony.claimed_tiles.push(wild);
+        let cleared = movement_surface_factors(&colony, seed);
+        assert_eq!(
+            cleared[&PathTilePos {
+                x: wild.x,
+                y: wild.y
+            }],
+            crate::climate::Biome::Meadow.properties().move_factor,
+            "walled settlement clearing must replace procedural footing"
+        );
+
+        colony.agricultural_tiles.insert(wild);
+        let agricultural = movement_surface_factors(&colony, seed);
+        assert_eq!(
+            agricultural[&PathTilePos {
+                x: wild.x,
+                y: wild.y
+            }],
+            biome.properties().move_factor,
+            "exterior agricultural claims retain their generated biome"
+        );
+        assert_eq!(
+            colony.decoration_cache.chunks.len(),
+            warmed_chunks,
+            "repeated factor reads must not regenerate or multiply chunk entries"
+        );
+    }
+
+    #[test]
+    fn generated_biome_and_road_factors_compose_in_physical_cat_travel() {
+        let seed = 42;
+        let (start, biome) =
+            first_generated_land_biome_site(seed, |biome| biome.properties().move_factor <= 0.6);
+
+        fn travel_delta(seed: u32, start: TilePos, paved: bool) -> f64 {
+            let mut cat = adult_idle_cat("biome-walker", "colony-1");
+            cat.position = position_from_world(tile_pos_to_world(start));
+            cat.destination = Some(position_from_world(WorldPos {
+                x: f64::from(start.x + 1),
+                y: f64::from(start.y),
+            }));
+            cat.activity = CatActivity::Traveling;
+            let mut world_tiles = BTreeMap::new();
+            for y in (start.y - 1)..=(start.y + 1) {
+                for x in (start.x - 1)..=(start.x + 2) {
+                    world_tiles.insert(
+                        pos(x, y),
+                        tile(
+                            x,
+                            y,
+                            0,
+                            (paved && x == start.x && y == start.y).then_some("road_built"),
+                        ),
+                    );
+                }
+            }
+            let mut colony = ColonyRuntime {
+                id: "colony-1".to_owned(),
+                cats: vec![cat],
+                world_tiles,
+                ..ColonyRuntime::default()
+            };
+            let movement = MovementPassContext {
+                movement_seed: movement_seed(seed),
+                movement_elapsed: 0.2,
+                wander_chance: 0.0,
+                ring_radius: 10_000,
+                anchor: VILLAGE_ANCHOR_TILE,
+                claimed_area: Default::default(),
+                area_gate: None,
+                staged_wall_edges: HashSet::new(),
+                gate: pos(6, 10),
+                walk_tiles: colony
+                    .world_tiles
+                    .values()
+                    .map(walk_tile_from_runtime)
+                    .collect(),
+                zones: Vec::new(),
+                world_seed: seed,
+            };
+            phase_34_movement_travel_job_acceptance_reveal_path_wear(
+                &mut colony,
+                TickGate {
+                    elapsed_sec: 1,
+                    processed_through: 1_000,
+                    minute_rolled: false,
+                    previous_water: 0,
+                },
+                &movement,
+            );
+            colony.cats[0].position.x - f64::from(start.x)
+        }
+
+        let open = travel_delta(seed, start, false);
+        let paved = travel_delta(seed, start, true);
+        assert!(open > 0.0, "{biome:?} should be physically traversable");
+        assert!(
+            (paved / open - 1.75).abs() < 1e-10,
+            "open={open} paved={paved}"
+        );
+    }
+
+    #[test]
+    fn generated_fine_biomes_can_change_the_selected_path() {
+        let seed = 42;
+        let mut found_detour = None;
+        'chunks: for chunk_y in -6..=6 {
+            for chunk_x in -6..=6 {
+                let terrain = crate::terrain_gen::generate_terrain_chunk(
+                    chunk_x,
+                    chunk_y,
+                    i64::from(seed),
+                    crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                );
+                let min_x = chunk_x * crate::terrain_gen::TERRAIN_CHUNK_SIZE;
+                let min_y = chunk_y * crate::terrain_gen::TERRAIN_CHUNK_SIZE;
+                for row in 2..=(crate::terrain_gen::TERRAIN_CHUNK_SIZE - 3) {
+                    let start = PathTilePos {
+                        x: min_x + 2,
+                        y: min_y + row,
+                    };
+                    let goal = PathTilePos {
+                        x: min_x + crate::terrain_gen::TERRAIN_CHUNK_SIZE - 3,
+                        y: min_y + row,
+                    };
+                    let tiles = terrain
+                        .iter()
+                        .map(|tile| WalkTile {
+                            x: tile.x,
+                            y: tile.y,
+                            tile_type: WalkTileType::Other,
+                            overlay_feature: None,
+                            resources: None,
+                            path_wear: 0,
+                        })
+                        .collect::<Vec<_>>();
+                    let factors = terrain
+                        .iter()
+                        .map(|tile| {
+                            let properties = tile.climate_biome.properties();
+                            let factor = if properties.move_factor > 0.0 {
+                                properties.move_factor
+                            } else {
+                                crate::movement::terrain_surface_factor(
+                                    tile.climate_biome.surface_role(),
+                                )
+                            };
+                            (
+                                PathTilePos {
+                                    x: tile.x,
+                                    y: tile.y,
+                                },
+                                factor,
+                            )
+                        })
+                        .collect::<HashMap<_, _>>();
+                    let grid = build_colony_walk_grid(ColonyGridParams {
+                        tiles: &tiles,
+                        anchor: PathTilePos { x: 0, y: 0 },
+                        ring_radius: 10_000,
+                        gate: PathTilePos { x: 0, y: 1 },
+                        area: None,
+                        area_gate: None,
+                        extra_fence_edges: None,
+                        terrain: None,
+                        mountains_unlocked: true,
+                        shipping_unlocked: false,
+                        soft_obstacles: None,
+                        soft_obstacle_field: None,
+                        surface_factors: Some(&factors),
+                    });
+                    if let Some(path) = find_path(
+                        pathfinding::WorldPos {
+                            x: f64::from(start.x),
+                            y: f64::from(start.y),
+                        },
+                        pathfinding::WorldPos {
+                            x: f64::from(goal.x),
+                            y: f64::from(goal.y),
+                        },
+                        &grid,
+                        FindPathOptions {
+                            margin: 2,
+                            ..FindPathOptions::default()
+                        },
+                    ) && path.iter().any(|step| step.y != f64::from(start.y))
+                    {
+                        found_detour = Some((start, goal, path));
+                        break 'chunks;
+                    }
+                }
+            }
+        }
+
+        let (start, goal, path) = found_detour.expect(
+            "the checked generated climate matrix should contain a cheaper cross-biome detour",
+        );
+        assert!(path.len() > usize::try_from(goal.x - start.x + 1).unwrap());
+    }
+
+    #[test]
+    fn physical_generated_biome_travel_is_tick_partition_deterministic() {
+        let seed = 42;
+        let mut boundary = None;
+        'search: for chunk_y in -6..=6 {
+            for chunk_x in -6..=6 {
+                let terrain = crate::terrain_gen::generate_terrain_chunk(
+                    chunk_x,
+                    chunk_y,
+                    i64::from(seed),
+                    crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                );
+                let by_pos = terrain
+                    .iter()
+                    .map(|tile| ((tile.x, tile.y), tile))
+                    .collect::<HashMap<_, _>>();
+                for tile in &terrain {
+                    let Some(east) = by_pos.get(&(tile.x + 1, tile.y)) else {
+                        continue;
+                    };
+                    let a = tile.climate_biome.properties().move_factor;
+                    let b = east.climate_biome.properties().move_factor;
+                    if a > 0.0 && b > 0.0 && a != b {
+                        boundary = Some(TilePos {
+                            x: tile.x,
+                            y: tile.y,
+                        });
+                        break 'search;
+                    }
+                }
+            }
+        }
+        let start = boundary.expect("bounded generated terrain has a land-biome boundary");
+
+        fn colony_at_boundary(seed: u32, start: TilePos) -> (ColonyRuntime, MovementPassContext) {
+            let mut cat = adult_idle_cat("partition-walker", "colony-1");
+            cat.position = position_from_world(tile_pos_to_world(start));
+            cat.destination = Some(position_from_world(WorldPos {
+                x: f64::from(start.x + 2),
+                y: f64::from(start.y),
+            }));
+            cat.activity = CatActivity::Traveling;
+            let mut world_tiles = BTreeMap::new();
+            for y in (start.y - 2)..=(start.y + 2) {
+                for x in (start.x - 2)..=(start.x + 4) {
+                    let mut ground = tile(x, y, 0, None);
+                    ground.last_depleted = 1;
+                    world_tiles.insert(pos(x, y), ground);
+                }
+            }
+            let colony = ColonyRuntime {
+                id: "colony-1".to_owned(),
+                cats: vec![cat],
+                world_tiles,
+                ..ColonyRuntime::default()
+            };
+            let movement = MovementPassContext {
+                movement_seed: movement_seed(seed),
+                movement_elapsed: 3.0,
+                wander_chance: 0.0,
+                ring_radius: 10_000,
+                anchor: VILLAGE_ANCHOR_TILE,
+                claimed_area: Default::default(),
+                area_gate: None,
+                staged_wall_edges: HashSet::new(),
+                gate: pos(6, 10),
+                walk_tiles: colony
+                    .world_tiles
+                    .values()
+                    .map(walk_tile_from_runtime)
+                    .collect(),
+                zones: Vec::new(),
+                world_seed: seed,
+            };
+            (colony, movement)
+        }
+
+        let (mut whole, whole_movement) = colony_at_boundary(seed, start);
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(
+            &mut whole,
+            TickGate {
+                elapsed_sec: 3,
+                processed_through: 3_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+            &whole_movement,
+        );
+
+        let (mut split, mut split_movement) = colony_at_boundary(seed, start);
+        split_movement.movement_elapsed = 0.5;
+        for step in 1..=6 {
+            phase_34_movement_travel_job_acceptance_reveal_path_wear(
+                &mut split,
+                TickGate {
+                    elapsed_sec: 1,
+                    processed_through: step * 500,
+                    minute_rolled: false,
+                    previous_water: 0,
+                },
+                &split_movement,
+            );
+        }
+
+        assert_eq!(whole.cats[0].position, split.cats[0].position);
+        assert_eq!(whole.cats[0].destination, split.cats[0].destination);
+        assert_eq!(whole.cats[0].activity, split.cats[0].activity);
     }
 
     #[test]
@@ -28134,6 +28565,7 @@ mod tests {
             shipping_unlocked: false,
             soft_obstacles: None,
             soft_obstacle_field: None,
+            surface_factors: None,
         });
         assert!(pathfinding::WalkGrid::fence_blocks_step(
             &grid,

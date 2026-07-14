@@ -2,6 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::movement::{
+    DIRT_ROAD_SPEED_MULT, ROAD_BUILT_SPEED_MULT, SOFT_OBSTACLE_SPEED_MULT, SURFACE_FACTOR_GRASSLAND,
+};
+
 pub const ROAD_COST: f64 = 0.4;
 pub const WORN_PATH_COST: f64 = 0.6;
 pub const OPEN_COST: f64 = 1.0;
@@ -202,6 +206,11 @@ pub struct ColonyGridParams<'a> {
     /// Generated decoration footprints (trees/rocks), queried lazily through a
     /// shared per-pass cache. These use the same quarter-speed tier as buildings.
     pub soft_obstacle_field: Option<&'a dyn SoftObstacleField>,
+    /// Fine P17 biome movement factors for mapped tiles. When absent, retain
+    /// the historical coarse P3 cost table exactly (fixture compatibility).
+    /// Runtime movement supplies a precomputed map shared by every A* search in
+    /// the tick, so candidate expansion never regenerates terrain chunks.
+    pub surface_factors: Option<&'a HashMap<TilePos, f64>>,
 }
 
 pub struct ColonyWalkGrid<'a> {
@@ -217,6 +226,7 @@ pub struct ColonyWalkGrid<'a> {
     shipping_unlocked: bool,
     soft_obstacles: Option<&'a HashSet<TilePos>>,
     soft_obstacle_field: Option<&'a dyn SoftObstacleField>,
+    surface_factors: Option<&'a HashMap<TilePos, f64>>,
 }
 
 #[must_use]
@@ -250,6 +260,7 @@ pub fn build_colony_walk_grid(params: ColonyGridParams<'_>) -> ColonyWalkGrid<'_
         shipping_unlocked: params.shipping_unlocked,
         soft_obstacles: params.soft_obstacles,
         soft_obstacle_field: params.soft_obstacle_field,
+        surface_factors: params.surface_factors,
     }
 }
 
@@ -398,7 +409,17 @@ impl WalkGrid for ColonyWalkGrid<'_> {
     }
 
     fn cost(&self, x: i32, y: i32) -> f64 {
-        let base = tile_cost(self.by_key.get(&pack_tile_key(x, y)));
+        let tile = self.by_key.get(&pack_tile_key(x, y));
+        let base = self.surface_factors.map_or_else(
+            || tile_cost(tile),
+            |factors| {
+                let factor = factors
+                    .get(&TilePos { x, y })
+                    .copied()
+                    .unwrap_or(SURFACE_FACTOR_GRASSLAND);
+                fine_tile_cost(tile, factor)
+            },
+        );
         if self
             .soft_obstacles
             .is_some_and(|tiles| tiles.contains(&TilePos { x, y }))
@@ -406,10 +427,14 @@ impl WalkGrid for ColonyWalkGrid<'_> {
                 .soft_obstacle_field
                 .is_some_and(|field| field.is_soft_obstacle(x, y))
         {
-            // A building never makes a tile *cheaper* than its terrain already
-            // costs (e.g. dense woods under a footprint stays at least as dear) —
-            // take the max, don't override.
-            base.max(BUILDING_FOOTPRINT_COST)
+            // Fine runtime costs compose the same ×0.25 speed penalty used by
+            // physical movement. Historical callers without fine factors retain
+            // the old max-at-4.0 compatibility tier.
+            if self.surface_factors.is_some() {
+                base / SOFT_OBSTACLE_SPEED_MULT
+            } else {
+                base.max(BUILDING_FOOTPRINT_COST)
+            }
         } else {
             base
         }
@@ -488,6 +513,38 @@ fn tile_cost(tile: Option<&WalkTile>) -> f64 {
         return FOREST_COST;
     }
     OPEN_COST
+}
+
+/// Cost matching the live movement equation: inverse biome speed, with road
+/// multipliers composed on top of that surface. Water retains its explicit
+/// shipping tier because climate water rows are intentionally `0.0`/blocked.
+fn fine_tile_cost(tile: Option<&WalkTile>, surface_factor: f64) -> f64 {
+    if !surface_factor.is_finite() || surface_factor <= 0.0 {
+        return tile_cost(tile);
+    }
+    if tile.is_some_and(tile_is_water) {
+        return WATER_COST;
+    }
+
+    let road_multiplier =
+        if tile.is_some_and(|tile| tile.overlay_feature == Some(WalkOverlayFeature::RoadBuilt)) {
+            ROAD_BUILT_SPEED_MULT
+        } else if tile.is_some_and(|tile| {
+            tile.path_wear >= ROAD_WEAR_THRESHOLD
+                || matches!(
+                    tile.overlay_feature,
+                    Some(
+                        WalkOverlayFeature::GameTrail
+                            | WalkOverlayFeature::AncientRoad
+                            | WalkOverlayFeature::TradeRoute
+                    )
+                )
+        }) {
+            DIRT_ROAD_SPEED_MULT
+        } else {
+            1.0
+        };
+    1.0 / (surface_factor * road_multiplier)
 }
 
 fn fence_blocks_move(
@@ -651,9 +708,9 @@ mod tests {
         BUILDING_FOOTPRINT_COST, ColonyGridParams, ColonyWalkGrid, DEFAULT_MARGIN,
         DEFAULT_MAX_EXPANSIONS, DENSE_WOODS_COST, FOREST_COST, FenceSide, FindPathOptions,
         GatePlacement, MIN_STEP_COST, MOUNTAIN_COST, OPEN_COST, ROAD_COST, ROAD_WEAR_THRESHOLD,
-        SoftObstacleField, TilePos, VillageArea, WATER_COST, WORN_PATH_COST, WalkGrid,
-        WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType, WorldPos,
-        build_colony_walk_grid, cliff_blocks_step, find_path,
+        SURFACE_FACTOR_GRASSLAND, SoftObstacleField, TilePos, VillageArea, WATER_COST,
+        WORN_PATH_COST, WalkGrid, WalkOverlayFeature, WalkTile, WalkTileResources, WalkTileType,
+        WorldPos, build_colony_walk_grid, cliff_blocks_step, find_path, tile_cost,
     };
 
     #[derive(Debug, Deserialize)]
@@ -941,6 +998,7 @@ mod tests {
             shipping_unlocked,
             soft_obstacles: None,
             soft_obstacle_field: None,
+            surface_factors: None,
         });
         check(&grid);
     }
@@ -1036,6 +1094,7 @@ mod tests {
             shipping_unlocked: false,
             soft_obstacles: None,
             soft_obstacle_field: None,
+            surface_factors: None,
         });
         assert_eq!(
             find_path(start, goal, &without_shipping, options),
@@ -1056,6 +1115,7 @@ mod tests {
             shipping_unlocked: true,
             soft_obstacles: None,
             soft_obstacle_field: None,
+            surface_factors: None,
         });
         let path = find_path(start, goal, &with_shipping, options)
             .expect("a mover can path straight across the strait once shipping is unlocked");
@@ -1233,6 +1293,7 @@ mod tests {
             shipping_unlocked: false,
             soft_obstacles: Some(&soft_obstacles),
             soft_obstacle_field: None,
+            surface_factors: None,
         });
 
         assert_eq!(grid.cost(5, 5), BUILDING_FOOTPRINT_COST);
@@ -1266,11 +1327,126 @@ mod tests {
             shipping_unlocked: false,
             soft_obstacles: None,
             soft_obstacle_field: Some(&generated),
+            surface_factors: None,
         });
 
         assert_eq!(grid.cost(8, 9), BUILDING_FOOTPRINT_COST);
         assert!(!grid.is_blocked(8, 9));
         assert_eq!(grid.cost(9, 9), OPEN_COST);
+    }
+
+    #[test]
+    fn fine_biome_costs_compose_with_roads_and_soft_obstacles() {
+        let tiles = vec![
+            WalkTile {
+                x: 1,
+                y: 0,
+                tile_type: WalkTileType::Other,
+                overlay_feature: None,
+                resources: None,
+                path_wear: 0,
+            },
+            WalkTile {
+                x: 2,
+                y: 0,
+                tile_type: WalkTileType::Other,
+                overlay_feature: Some(WalkOverlayFeature::RoadBuilt),
+                resources: None,
+                path_wear: 0,
+            },
+            WalkTile {
+                x: 3,
+                y: 0,
+                tile_type: WalkTileType::Other,
+                overlay_feature: None,
+                resources: None,
+                path_wear: ROAD_WEAR_THRESHOLD,
+            },
+        ];
+        let surface_factors = HashMap::from([
+            (TilePos { x: 1, y: 0 }, 0.5),
+            (TilePos { x: 2, y: 0 }, 0.5),
+            (TilePos { x: 3, y: 0 }, 0.5),
+        ]);
+        let soft_obstacles = HashSet::from([TilePos { x: 2, y: 0 }]);
+        let grid = build_colony_walk_grid(ColonyGridParams {
+            tiles: &tiles,
+            anchor: TilePos { x: 0, y: 0 },
+            ring_radius: 10_000,
+            gate: TilePos { x: 0, y: 1 },
+            area: None,
+            area_gate: None,
+            extra_fence_edges: None,
+            terrain: None,
+            mountains_unlocked: false,
+            shipping_unlocked: false,
+            soft_obstacles: Some(&soft_obstacles),
+            soft_obstacle_field: None,
+            surface_factors: Some(&surface_factors),
+        });
+
+        assert!((grid.cost(1, 0) - 2.0).abs() < 1e-12);
+        assert!((grid.cost(2, 0) - 1.0 / (0.5 * 1.75 * 0.25)).abs() < 1e-12);
+        assert!((grid.cost(3, 0) - 1.0 / (0.5 * 1.05)).abs() < 1e-12);
+        assert!((grid.cost(4, 0) - 1.0 / SURFACE_FACTOR_GRASSLAND).abs() < 1e-12);
+        assert_eq!(tile_cost(None), OPEN_COST);
+    }
+
+    #[test]
+    fn a_star_chooses_a_longer_fast_biome_over_a_slow_direct_crossing() {
+        let mut tiles = Vec::new();
+        let mut surface_factors = HashMap::new();
+        for y in -3..=3 {
+            for x in -3..=9 {
+                tiles.push(WalkTile {
+                    x,
+                    y,
+                    tile_type: WalkTileType::Other,
+                    overlay_feature: None,
+                    resources: None,
+                    path_wear: 0,
+                });
+                let factor = if y == 1 {
+                    0.8
+                } else if y == 0 && (1..=5).contains(&x) {
+                    0.45
+                } else {
+                    0.75
+                };
+                surface_factors.insert(TilePos { x, y }, factor);
+            }
+        }
+        let grid = build_colony_walk_grid(ColonyGridParams {
+            tiles: &tiles,
+            anchor: TilePos { x: 0, y: 0 },
+            ring_radius: 10_000,
+            gate: TilePos { x: 0, y: 1 },
+            area: None,
+            area_gate: None,
+            extra_fence_edges: None,
+            terrain: None,
+            mountains_unlocked: false,
+            shipping_unlocked: false,
+            soft_obstacles: None,
+            soft_obstacle_field: None,
+            surface_factors: Some(&surface_factors),
+        });
+
+        let path = find_path(
+            WorldPos { x: 0.0, y: 0.0 },
+            WorldPos { x: 6.0, y: 0.0 },
+            &grid,
+            FindPathOptions {
+                margin: 3,
+                ..FindPathOptions::default()
+            },
+        )
+        .expect("fast-biome detour is reachable");
+        assert!(path.iter().any(|step| step.y == 1.0), "route={path:?}");
+        assert!(
+            path.len() > 7,
+            "the selected fast route should be longer in tiles: {path:?}"
+        );
     }
 
     #[test]
@@ -1296,6 +1472,7 @@ mod tests {
             shipping_unlocked: false,
             soft_obstacles: None,
             soft_obstacle_field: None,
+            surface_factors: None,
         });
 
         for (key, expected) in checks.blocked {
@@ -1341,6 +1518,7 @@ mod tests {
                 shipping_unlocked: false,
                 soft_obstacles: None,
                 soft_obstacle_field: None,
+                surface_factors: None,
             });
 
             let path = find_path(

@@ -94,8 +94,12 @@ so a correct scout route cannot conceal a missing founding dispatch.
    workshops, research, rituals, defense, and expansion manual while their office is vacant.
 4. **Close world and presentation gaps.** Staged closed-perimeter wall growth and a persisted
    outside-the-wall agricultural territory subset are live; finish their integrated framebuffer
-   campaign and replace rail/shipping multipliers with built routes/vehicles. The first physical
-   fishing route now catches a distinct fresh-Fish material from persisted, finite water habitats:
+   campaign and replace rail/shipping multipliers with built routes/vehicles. Fine-biome factors
+   now drive both A* route choice and physical per-tile travel through a shared derived chunk
+   cache, with exact road/soft-obstacle composition and tick-partition determinism. Seeds 7, 42,
+   and 20240712 pass four live-cadence passive game-hours as byte-identical twins (fog 289→459,
+   414, and 474; no deaths/resets), and all 11 signed guided/manual campaign cases pass. The first
+   physical fishing route now catches a distinct fresh-Fish material from persisted, finite water habitats:
    catch succeeds only while working on the designated reachable bank, depletes the shared habitat,
    and replenishes deterministically at 0.5 fish per game-hour up to 24. Removing and repainting the
    shore cannot reset it. Manual and Farmer routing, storage headroom, cancellation/death salvage,

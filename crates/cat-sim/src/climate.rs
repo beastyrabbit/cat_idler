@@ -4,9 +4,9 @@
 //! [`BiomeRole`](crate::terrain_gen::BiomeRole) the terrain generator already
 //! emits. It is deliberately **additive and non-breaking**:
 //!
-//! - Movement ([`crate::movement`]) and placement / P14.1
-//!   ([`crate::terrain_gen::tile_biome`], [`crate::terrain_gen::tile_has_tree`])
-//!   keep reading the unchanged `BiomeRole`, so their fixtures stay green.
+//! - Movement ([`crate::movement`]) consumes each fine biome's `move_factor`
+//!   through a per-tick, per-chunk derived cache. Placement / P14.1 keeps the
+//!   unchanged coarse [`BiomeRole`] compatibility surface.
 //! - This module adds a ~26-entry [`Biome`] palette + property table (tree
 //!   density, ground tint, movement factor, resource + mining rule, crop
 //!   fertility, passability) and a *base* classifier over
@@ -14,9 +14,9 @@
 //!   low-frequency climate-noise fields and stamps [`Biome`] on every tile.
 //!
 //! Every [`Biome`] maps back to a **surface** [`BiomeRole`]
-//! ([`BiomeClimate::surface_role`]) so a future movement/placement rewire can
-//! adopt the palette without changing the existing role semantics — the founding
-//! plateau always resolves to a grass biome ([`Biome::Plains`] → grassland).
+//! ([`BiomeClimate::surface_role`]) for legacy placement and fallback behavior;
+//! the founding plateau always resolves to a grass biome
+//! ([`Biome::Plains`] → grassland).
 
 use std::{fmt, str::FromStr};
 
