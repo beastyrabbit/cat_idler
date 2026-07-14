@@ -464,17 +464,18 @@ fn request_job(
     let metadata = if kind == JobKind::ExpandVillage {
         let area = claimed_area(colony);
         let is_water = |position: GridPos| {
-            colony
-                .world_tiles
-                .get(&TilePos {
-                    x: position.x,
-                    y: position.y,
-                })
-                .is_some_and(|tile| {
-                    tile.tile_type == TileType::River
-                        || tile.overlay_feature.as_deref() == Some("river")
-                        || tile.resources.water > 0
-                })
+            let pos = TilePos {
+                x: position.x,
+                y: position.y,
+            };
+            if colony.claimed_tiles.contains(&pos) {
+                return true;
+            }
+            colony.world_tiles.get(&pos).is_some_and(|tile| {
+                tile.tile_type == TileType::River
+                    || tile.overlay_feature.as_deref() == Some("river")
+                    || tile.resources.water > 0
+            })
         };
         let Some(target) = village_area::expand_village(
             &area,
@@ -492,6 +493,7 @@ fn request_job(
             },
             accepted: false,
             source_build_job_id: None,
+            wall_work_ms: 0,
         }
     } else {
         JobMetadata::None
@@ -1261,6 +1263,11 @@ fn designate_farm(
         stage: FarmStage::Soil,
         growth_hours: 0.0,
     });
+    for y in rect.y1..=rect.y2 {
+        for x in rect.x1..=rect.x2 {
+            colony.agricultural_tiles.insert(TilePos { x, y });
+        }
+    }
     colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
@@ -2185,6 +2192,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         raiders: raiders_snapshot(colony),
         buildings: buildings_snapshot(colony),
         claimed_tiles: colony.claimed_tiles.iter().map(tile_point).collect(),
+        agricultural_tiles: colony.agricultural_tiles.iter().map(tile_point).collect(),
         revealed_tiles: colony.revealed_tiles.iter().map(tile_point).collect(),
         // Merge every out scout's tentative tiles into one deterministic, deduped,
         // sorted set (matching `revealed_tiles`'s `BTreeSet` ordering) rather than
@@ -2211,6 +2219,20 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .map(|(pos, _)| tile_point(pos))
             .collect(),
         village_gate: village_gate_snapshot(colony),
+        wall_segments: crate::world_tick::effective_wall_segments(colony)
+            .into_iter()
+            .map(|entry| proto::WallSegment {
+                x: entry.segment.x,
+                y: entry.segment.y,
+                side: match entry.segment.side {
+                    village_area::Side::N => proto::GateSide::N,
+                    village_area::Side::E => proto::GateSide::E,
+                    village_area::Side::S => proto::GateSide::S,
+                    village_area::Side::W => proto::GateSide::W,
+                },
+                under_construction: entry.newly_built,
+            })
+            .collect(),
         village_radius: village_ring_radius(colony.buildings.len() as i32) as u32,
         anchor: proto::TilePoint {
             x: colony.anchor.x,
@@ -2998,6 +3020,7 @@ fn claimed_area(colony: &ColonyRuntime) -> village_area::VillageArea {
     let tiles = colony
         .claimed_tiles
         .iter()
+        .filter(|tile| !colony.agricultural_tiles.contains(tile))
         .map(|tile| GridPos {
             x: tile.x,
             y: tile.y,

@@ -114,6 +114,10 @@ pub struct ColonySnapshot {
     pub raiders: Vec<RaiderSnapshot>,
     pub buildings: Vec<BuildingSnapshot>,
     pub claimed_tiles: Vec<TilePoint>,
+    /// Exterior territory owned for agriculture but intentionally excluded from the
+    /// palisaded settlement. Always a subset of `claimed_tiles`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agricultural_tiles: Vec<TilePoint>,
     /// Permanent fog-of-war knowledge: the founding village area plus discoveries that
     /// scouts have delivered at the shrine. The client fogs every tile outside this set.
     /// Additive since P15; empty/absent for pre-fog snapshots.
@@ -135,6 +139,10 @@ pub struct ColonySnapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dirt_road_tiles: Vec<TilePoint>,
     pub village_gate: Option<GatePlacement>,
+    /// Authoritative wall edges. During expansion this contains the complete old
+    /// enclosure plus only those new outer segments whose work has finished.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wall_segments: Vec<WallSegment>,
     pub village_radius: u32,
     pub anchor: TilePoint,
     /// Appointed officers (role → cat id). P12.2; empty/absent when none appointed.
@@ -990,6 +998,18 @@ pub struct GatePlacement {
     pub x: i32,
     pub y: i32,
     pub side: GateSide,
+}
+
+/// One physically present palisade edge. `under_construction` distinguishes the
+/// newly completed outer ring from the retained old enclosure while expansion is live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WallSegment {
+    pub x: i32,
+    pub y: i32,
+    pub side: GateSide,
+    #[serde(default)]
+    pub under_construction: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1961,6 +1981,7 @@ mod tests {
                     ..BuildingSnapshot::default()
                 }],
                 claimed_tiles: vec![TilePoint { x: 6, y: 6 }],
+                agricultural_tiles: vec![],
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 provisional_tiles: vec![],
                 road_tiles: vec![],
@@ -1970,6 +1991,7 @@ mod tests {
                     y: 7,
                     side: GateSide::S,
                 }),
+                wall_segments: vec![],
                 village_radius: 4,
                 anchor: TilePoint { x: 6, y: 6 },
                 officers: BTreeMap::new(),

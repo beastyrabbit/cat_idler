@@ -81,6 +81,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             ritualRequestedAt INTEGER,
             criticalSince INTEGER,
             claimedTiles TEXT,
+            agriculturalTiles TEXT,
             revealedTiles TEXT,
             provisionalTiles TEXT,
             threatPressure REAL,
@@ -278,6 +279,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "gatherSpots", "TEXT"),
         ("colonies", "stockLedger", "TEXT"),
         ("colonies", "revealedTiles", "TEXT"),
+        ("colonies", "agriculturalTiles", "TEXT"),
         ("colonies", "provisionalTiles", "TEXT"),
         ("colonies", "coin", "REAL"),
         ("colonies", "items", "TEXT"),
@@ -409,7 +411,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 worldSeed, isGlobal, ownerPlayerId, runNumber, runStartedAt, lastPlayerActivityAt,
                 lastLoremasterUnlockAt, lastTitheAt, lastOfferingAt,
                 automationTier, globalUpgradePoints, upgradeTree, upgradeLevels,
-                ritualRequestedAt, criticalSince, claimedTiles, revealedTiles, provisionalTiles,
+                ritualRequestedAt, criticalSince, claimedTiles, agriculturalTiles, revealedTiles, provisionalTiles,
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, farms, gatherSpots,
@@ -452,7 +454,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             runNumber, runStartedAt, lastPlayerActivityAt, lastLoremasterUnlockAt, lastTitheAt,
             lastOfferingAt, automationTier,
             globalUpgradePoints, upgradeTree, upgradeLevels, ritualRequestedAt,
-            criticalSince, claimedTiles, revealedTiles, provisionalTiles, threatPressure, lastRaidAt,
+            criticalSince, claimedTiles, agriculturalTiles, revealedTiles, provisionalTiles, threatPressure, lastRaidAt,
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
             stockpiles, farms, gatherSpots, stockLedger, coin, items, woodCraftProgress,
@@ -463,7 +465,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
             ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
-            ?48, ?49, ?50, ?51, ?52
+            ?48, ?49, ?50, ?51, ?52, ?53
         )",
         params![
             colony.id,
@@ -487,6 +489,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.ritual_requested_at,
             colony.critical_since,
             tile_list_json(&colony.claimed_tiles),
+            tile_list_json(&colony.agricultural_tiles.iter().copied().collect::<Vec<_>>()),
             tile_list_json(&colony.revealed_tiles.iter().copied().collect::<Vec<_>>()),
             provisional_tiles_json(&colony.provisional_tiles),
             colony.threat_pressure,
@@ -558,6 +561,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let upgrade_tree_json: Option<String> = row.get("upgradeTree")?;
     let upgrade_levels_json: Option<String> = row.get("upgradeLevels")?;
     let claimed_tiles_json: Option<String> = row.get("claimedTiles")?;
+    let agricultural_tiles_json: Option<String> = row.get("agriculturalTiles")?;
     let revealed_tiles_json: Option<String> = row.get("revealedTiles")?;
     let provisional_tiles_json: Option<String> = row.get("provisionalTiles")?;
     let officers_json: Option<String> = row.get("officers")?;
@@ -628,6 +632,9 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         // there and keeps the single-colony game byte-identical.
         anchor,
         claimed_tiles,
+        agricultural_tiles: parse_tile_list(agricultural_tiles_json.as_deref())?
+            .into_iter()
+            .collect(),
         revealed_tiles,
         provisional_tiles: parse_provisional_tiles(provisional_tiles_json.as_deref())?,
         officers: officers_json
@@ -1449,11 +1456,13 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
             target,
             accepted,
             source_build_job_id,
+            wall_work_ms,
         } => json!({
             "kind": "expansion",
             "target": tile_pos_json(target),
             "accepted": accepted,
             "sourceBuildJobId": source_build_job_id,
+            "wallWorkMs": wall_work_ms,
         }),
         JobMetadata::Hauling {
             site,
@@ -1540,6 +1549,11 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
                 .get("sourceBuildJobId")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            wall_work_ms: value
+                .get("wallWorkMs")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                .max(0),
         }),
         Some("hauling") => Ok(JobMetadata::Hauling {
             site: value
@@ -2443,6 +2457,9 @@ mod tests {
             .colonies
             .push(found_colony(world.world_seed, "colony-1", 1_000, 42));
         let builder = world.colonies[0].cats[0].id.clone();
+        world.colonies[0]
+            .agricultural_tiles
+            .insert(TilePos { x: 30, y: 31 });
         world.colonies[0].jobs = vec![
             JobRuntime {
                 id: "job-build-blocked".to_owned(),
@@ -2466,6 +2483,7 @@ mod tests {
                     target: TilePos { x: 13, y: 7 },
                     accepted: true,
                     source_build_job_id: Some("job-build-blocked".to_owned()),
+                    wall_work_ms: 321_000,
                 },
                 ..JobRuntime::default()
             },
@@ -2476,6 +2494,10 @@ mod tests {
             .expect("load linked jobs")
             .expect("world exists");
         assert_eq!(loaded.colonies[0].jobs, world.colonies[0].jobs);
+        assert_eq!(
+            loaded.colonies[0].agricultural_tiles,
+            world.colonies[0].agricultural_tiles
+        );
         assert!(matches!(
             &loaded.colonies[0].jobs[1].metadata,
             JobMetadata::Expansion {
@@ -2497,6 +2519,7 @@ mod tests {
                 target: TilePos { x: 13, y: 7 },
                 accepted: false,
                 source_build_job_id: None,
+                wall_work_ms: 0,
             }
         );
     }

@@ -5137,16 +5137,50 @@ fn render_walls(
     else {
         return;
     };
-    let claimed: HashSet<(i32, i32)> = colony.claimed_tiles.iter().map(|t| (t.x, t.y)).collect();
     let gate_edge = colony
         .village_gate
         .map(|g| ((g.x, g.y), gate_side_to_wall(g.side)));
+    let wall_segments = if colony.wall_segments.is_empty() {
+        // Legacy snapshots predate authoritative staged-wall edges.
+        let agricultural = colony
+            .agricultural_tiles
+            .iter()
+            .map(|tile| (tile.x, tile.y))
+            .collect::<HashSet<_>>();
+        let claimed = colony
+            .claimed_tiles
+            .iter()
+            .map(|tile| (tile.x, tile.y))
+            .filter(|tile| !agricultural.contains(tile))
+            .collect::<HashSet<_>>();
+        wall_edges(&claimed, gate_edge)
+            .into_iter()
+            .map(|(tile, side)| (tile, side, false))
+            .collect::<Vec<_>>()
+    } else {
+        colony
+            .wall_segments
+            .iter()
+            .map(|segment| {
+                (
+                    (segment.x, segment.y),
+                    gate_side_to_wall(segment.side),
+                    segment.under_construction,
+                )
+            })
+            .collect()
+    };
 
-    for (tile, side) in wall_edges(&claimed, gate_edge) {
+    for (tile, side, newly_built) in wall_segments {
         let (pos, rot) = wall_edge_transform(tile, side);
         commands.spawn((
             Sprite {
                 image: art.palisade.clone(),
+                color: if newly_built {
+                    Color::srgb(1.0, 0.82, 0.48)
+                } else {
+                    Color::WHITE
+                },
                 custom_size: Some(Vec2::splat(TILE)),
                 ..default()
             },

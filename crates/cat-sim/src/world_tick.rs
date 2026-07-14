@@ -101,8 +101,9 @@ use crate::{
         points_per_tick_for, resolve_effects,
     },
     village_area::{
-        ExpandOptions, GatePlacement as AreaGatePlacement, Side, expand_village, from_tiles,
-        gate_placement_default, is_inside_village, should_expand, side_delta,
+        ExpandOptions, FenceSegment, GatePlacement as AreaGatePlacement, Side, expand_village,
+        fence_perimeter, from_tiles, gate_placement_default, is_inside_village, should_expand,
+        side_delta,
     },
     village_layout::{DEFAULT_MAX_RING, GridPos, VILLAGE_ANCHOR, ring_cells, village_ring_radius},
     warriors::{
@@ -190,6 +191,10 @@ pub struct ColonyRuntime {
     pub ritual_requested_at: Option<i64>,
     pub critical_since: Option<i64>,
     pub claimed_tiles: Vec<TilePos>,
+    /// Claimed exterior land reserved for farming rather than incorporated into the
+    /// palisaded settlement. This is a subset of `claimed_tiles`: agricultural parcels
+    /// remain owned, revealed, and workable, but never move the settlement wall or gate.
+    pub agricultural_tiles: BTreeSet<TilePos>,
     /// World-tile coordinate of this colony's village anchor (the shrine footprint's NW
     /// corner). Colony 0 (the single founding colony) is always [`VILLAGE_ANCHOR`], so its
     /// every anchor-relative computation is byte-identical to the pre-multi-village code.
@@ -348,6 +353,10 @@ pub enum JobMetadata {
         /// Exact site-less construction whose builder was temporarily borrowed for
         /// this prerequisite expansion. `None` for ordinary crowding expansions.
         source_build_job_id: Option<JobId>,
+        /// Durable hands-on wall work already completed. The prospective outer
+        /// perimeter is deterministic from `(claimed area, target)`; persisting the
+        /// elapsed work keeps partial segments stable across worker death and restart.
+        wall_work_ms: i64,
     },
     Hauling {
         site: Option<TilePos>,
@@ -665,6 +674,7 @@ fn decoration_anchors_for_chunk(world_seed: u32, chunk_x: i32, chunk_y: i32) -> 
 struct SpatialOccupancyContext {
     world_seed: u32,
     claimed: HashSet<TilePos>,
+    walled_claimed: HashSet<TilePos>,
     building_tiles: HashSet<TilePos>,
     stockpile_rects: Vec<ZoneRect>,
     farm_rects: Vec<ZoneRect>,
@@ -681,6 +691,11 @@ struct SpatialOccupancyContext {
 impl SpatialOccupancyContext {
     fn new(colony: &ColonyRuntime, world_seed: u32) -> Self {
         let claimed: HashSet<TilePos> = colony.claimed_tiles.iter().copied().collect();
+        let walled_claimed = claimed
+            .iter()
+            .copied()
+            .filter(|tile| !colony.agricultural_tiles.contains(tile))
+            .collect();
         let building_tiles = occupied_building_tiles(colony);
         let stockpile_rects = colony
             .stockpiles
@@ -735,6 +750,7 @@ impl SpatialOccupancyContext {
         Self {
             world_seed,
             claimed,
+            walled_claimed,
             building_tiles,
             stockpile_rects,
             farm_rects,
@@ -795,7 +811,7 @@ impl SpatialOccupancyContext {
     }
 
     fn is_perimeter(&self, tile: TilePos) -> bool {
-        tile_is_on_fence_perimeter(&self.claimed, tile)
+        tile_is_on_fence_perimeter(&self.walled_claimed, tile)
     }
 
     fn tile_is_occupied(&self, tile: TilePos) -> bool {
@@ -1557,6 +1573,10 @@ struct MovementPassContext {
     anchor: TilePos,
     claimed_area: crate::village_area::VillageArea,
     area_gate: Option<AreaGatePlacement>,
+    /// Completed pieces of a prospective outer wall. The retained settlement
+    /// remains the authoritative enclosure and gate until atomic cutover, while
+    /// these physical edges already block crossing in either direction.
+    staged_wall_edges: HashSet<pathfinding::FenceEdge>,
     gate: TilePos,
     walk_tiles: Vec<WalkTile>,
     zones: Vec<Zone>,
@@ -1592,6 +1612,7 @@ impl Default for ColonyRuntime {
             ritual_requested_at: None,
             critical_since: None,
             claimed_tiles: Vec::new(),
+            agricultural_tiles: BTreeSet::new(),
             anchor: VILLAGE_ANCHOR_TILE,
             revealed_tiles: BTreeSet::new(),
             provisional_tiles: BTreeMap::new(),
@@ -2407,6 +2428,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         }
         phase_27_due_job_prelude(colony, gate);
         phase_28_due_completion_supplies_and_planner_jobs(colony, gate);
+        phase_28b_advance_staged_wall_work(colony, gate);
         phase_29_due_completion_gathering_explore_expansion(colony, gate, world_seed);
         phase_30_due_completion_build_ritual_training_return_mark_done(colony, gate);
         phase_31_mid_job_hauling(colony, gate, world_seed);
@@ -3325,6 +3347,64 @@ fn phase_14_promote_queued_jobs_and_break_ground(
     let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
 
     for job_index in queued_indices {
+        if colony.jobs[job_index].kind == JobKind::ExpandVillage {
+            let assigned_is_alive =
+                colony.jobs[job_index]
+                    .assigned_cat
+                    .as_deref()
+                    .is_some_and(|cat_id| {
+                        colony
+                            .cats
+                            .iter()
+                            .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+                    });
+            if !assigned_is_alive {
+                if colony.jobs[job_index].requested_by == JobRequester::Leader
+                    && automated_job_role(colony, &colony.jobs[job_index])
+                        .is_some_and(|role| !has_officer(colony, role))
+                {
+                    continue;
+                }
+                let Some(replacement) = select_best_cat(colony, Some(CatSpecialization::Architect))
+                else {
+                    continue;
+                };
+                let target = match colony.jobs[job_index].metadata {
+                    JobMetadata::Expansion { target, .. } => target,
+                    _ => continue,
+                };
+                colony.jobs[job_index].assigned_cat = Some(replacement.clone());
+                if let JobMetadata::Expansion { accepted, .. } =
+                    &mut colony.jobs[job_index].metadata
+                {
+                    *accepted = false;
+                }
+                if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == replacement) {
+                    cat.current_task = task_for_job(JobKind::ExpandVillage);
+                    cat.activity = CatActivity::Traveling;
+                    cat.destination = Some(position_from_world(tile_pos_to_world(target)));
+                }
+            }
+            if let JobMetadata::Expansion {
+                target,
+                accepted: false,
+                ..
+            } = colony.jobs[job_index].metadata
+                && let Some(cat_id) = colony.jobs[job_index].assigned_cat.clone()
+                && let Some(cat) = colony
+                    .cats
+                    .iter_mut()
+                    .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+            {
+                // Expansion metadata already owns an exact target, so phase 15's
+                // generic destination resolver intentionally skips it. Send both the
+                // original and any replacement builder there explicitly instead of
+                // letting the shared Explore task fall into scout wandering.
+                cat.current_task = task_for_job(JobKind::ExpandVillage);
+                cat.activity = CatActivity::Traveling;
+                cat.destination = Some(position_from_world(tile_pos_to_world(target)));
+            }
+        }
         if colony.jobs[job_index].kind == JobKind::FetchWater
             && colony.jobs[job_index]
                 .assigned_cat
@@ -3597,6 +3677,12 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 job.ends_at = Some(gate.processed_through.saturating_add(effective_duration_ms));
                 job.completed_at = None;
             }
+            if job.kind == JobKind::ExpandVillage {
+                // Staged wall work owns completion; the ordinary wall-clock due timer
+                // must never mature while a builder is still traveling or interrupted.
+                job.ends_at = None;
+                job.completed_at = None;
+            }
             job.metadata = next_metadata;
         }
         if broke_ground
@@ -3823,16 +3909,19 @@ fn phase_15_assign_promoted_job_destinations(
             JobKind::ExpandVillage => match colony.jobs[job_index].metadata.clone() {
                 JobMetadata::Expansion {
                     source_build_job_id,
+                    wall_work_ms,
                     ..
                 } => JobMetadata::Expansion {
                     target: site,
                     accepted: false,
                     source_build_job_id,
+                    wall_work_ms,
                 },
                 _ => JobMetadata::Expansion {
                     target: site,
                     accepted: false,
                     source_build_job_id: None,
+                    wall_work_ms: 0,
                 },
             },
             JobKind::HaulGatherSpot => match colony.jobs[job_index].metadata.clone() {
@@ -6965,6 +7054,40 @@ fn phase_29_due_completion_gathering_explore_expansion(
     }
 }
 
+/// Advance only wall work performed by a living builder who has physically reached
+/// the frontier. Expansion timers are deliberately suspended until this durable work
+/// reaches the job duration, so travel, death, vacancy, and restart cannot complete or
+/// teleport a perimeter.
+fn phase_28b_advance_staged_wall_work(colony: &mut ColonyRuntime, gate: TickGate) {
+    let elapsed_ms = gate.elapsed_sec.saturating_mul(1_000);
+    for job in &mut colony.jobs {
+        if job.kind != JobKind::ExpandVillage || job.status != JobStatus::Active {
+            continue;
+        }
+        let worker_alive = job.assigned_cat.as_deref().is_some_and(|cat_id| {
+            colony
+                .cats
+                .iter()
+                .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+        });
+        let JobMetadata::Expansion {
+            accepted,
+            wall_work_ms,
+            ..
+        } = &mut job.metadata
+        else {
+            continue;
+        };
+        if *accepted && worker_alive {
+            *wall_work_ms = wall_work_ms
+                .saturating_add(elapsed_ms)
+                .min(job.duration_ms.max(1));
+        }
+        job.ends_at = (*accepted && worker_alive && *wall_work_ms >= job.duration_ms.max(1))
+            .then_some(gate.processed_through);
+    }
+}
+
 /// Phase 30: complete build/ritual/training jobs, return workers, and mark jobs
 /// completed.
 fn phase_30_due_completion_build_ritual_training_return_mark_done(
@@ -7265,7 +7388,10 @@ fn phase_32_movement_setup_and_village_expansion_queue(
         movement_seed = roll.next_seed;
         let mut next_roll = Some(roll.value);
         let mut rng = || next_roll.take().unwrap_or(0.0);
-        let is_water = |pos: GridPos| water_tiles.contains(&TilePos { x: pos.x, y: pos.y });
+        let is_water = |pos: GridPos| {
+            let tile = TilePos { x: pos.x, y: pos.y };
+            water_tiles.contains(&tile) || colony.claimed_tiles.contains(&tile)
+        };
         let forced_target = blocked_construction_index.and_then(|index| {
             let JobMetadata::Construction {
                 building_type,
@@ -7356,6 +7482,7 @@ fn phase_32_movement_setup_and_village_expansion_queue(
                     },
                     accepted: false,
                     source_build_job_id,
+                    wall_work_ms: 0,
                 },
             );
             if linked_field_expansion {
@@ -7371,6 +7498,7 @@ fn phase_32_movement_setup_and_village_expansion_queue(
         .then(|| gate_placement_default(&claimed_area))
         .flatten();
     let gate_pos = movement_gate(colony.anchor, area_gate, ring_radius);
+    let staged_wall_edges = staged_wall_fence_edges(colony);
 
     MovementPassContext {
         movement_seed,
@@ -7380,6 +7508,7 @@ fn phase_32_movement_setup_and_village_expansion_queue(
         anchor: colony.anchor,
         claimed_area,
         area_gate,
+        staged_wall_edges,
         gate: gate_pos,
         walk_tiles: colony
             .world_tiles
@@ -7551,6 +7680,8 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         },
         area: (!area.is_empty()).then_some(&area),
         area_gate,
+        extra_fence_edges: (!movement.staged_wall_edges.is_empty())
+            .then_some(&movement.staged_wall_edges),
         terrain: None,
         mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
         // P17 transport upgrade: water stays blocked (pre-P17 behaviour, byte-
@@ -10073,10 +10204,31 @@ pub(crate) fn release_role_automation(colony: &mut ColonyRuntime, role: OfficerR
     let mut released = Vec::new();
     for index in cancelled_indices {
         let job = &mut colony.jobs[index];
-        job.status = JobStatus::Cancelled;
-        job.completed_at = Some(now_ms);
         if let Some(cat_id) = &job.assigned_cat {
             released.push(cat_id.clone());
+        }
+        let partial_wall = matches!(
+            job.metadata,
+            JobMetadata::Expansion {
+                wall_work_ms: 1..,
+                ..
+            }
+        );
+        if partial_wall {
+            // A vacancy may interrupt leadership, but it cannot unbuild physical
+            // wall pieces. Park the exact durable job until the responsible role
+            // is filled again; phase 14 deterministically assigns a new worker.
+            job.status = JobStatus::Queued;
+            job.assigned_cat = None;
+            job.started_at = None;
+            job.ends_at = None;
+            job.completed_at = None;
+            if let JobMetadata::Expansion { accepted, .. } = &mut job.metadata {
+                *accepted = false;
+            }
+        } else {
+            job.status = JobStatus::Cancelled;
+            job.completed_at = Some(now_ms);
         }
     }
     for cat_id in released {
@@ -11316,12 +11468,122 @@ fn claimed_area(colony: &ColonyRuntime) -> crate::village_area::VillageArea {
     let tiles = colony
         .claimed_tiles
         .iter()
+        .filter(|tile| !colony.agricultural_tiles.contains(tile))
         .map(|tile| GridPos {
             x: tile.x,
             y: tile.y,
         })
         .collect::<Vec<_>>();
     from_tiles(&tiles)
+}
+
+/// One authoritative wall edge exposed to snapshots. The retained enclosure is
+/// complete while an expansion is underway; `newly_built` marks only the finished
+/// segments of the prospective outer ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveWallSegment {
+    pub segment: FenceSegment,
+    pub newly_built: bool,
+}
+
+fn segment_key(segment: FenceSegment) -> (i32, i32, u8) {
+    let side = match segment.side {
+        Side::N => 0,
+        Side::E => 1,
+        Side::S => 2,
+        Side::W => 3,
+    };
+    (segment.y, segment.x, side)
+}
+
+fn prospective_outer_wall_segments(colony: &ColonyRuntime, target: TilePos) -> Vec<FenceSegment> {
+    let old_area = claimed_area(colony);
+    let old_geometry = fence_perimeter(&old_area, None)
+        .into_iter()
+        .map(segment_key)
+        .collect::<HashSet<_>>();
+    let mut projected = old_area;
+    projected.insert(crate::village_area::key(target.x, target.y));
+    let gate = gate_placement_default(&projected);
+    let mut segments = fence_perimeter(&projected, gate)
+        .into_iter()
+        .filter(|segment| !segment.gate && !old_geometry.contains(&segment_key(*segment)))
+        .collect::<Vec<_>>();
+    segments.sort_by_key(|segment| segment_key(*segment));
+    segments
+}
+
+fn completed_outer_wall_segment_count(job: &JobRuntime, total: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let JobMetadata::Expansion { wall_work_ms, .. } = job.metadata else {
+        return 0;
+    };
+    let duration = job.duration_ms.max(1);
+    let completed = wall_work_ms.clamp(0, duration) as i128 * total as i128 / duration as i128;
+    usize::try_from(completed).unwrap_or(total).min(total)
+}
+
+/// Physical wall state, including durable partial outer-ring construction.
+#[must_use]
+pub fn effective_wall_segments(colony: &ColonyRuntime) -> Vec<EffectiveWallSegment> {
+    let area = claimed_area(colony);
+    let gate = gate_placement_default(&area);
+    let mut result = fence_perimeter(&area, gate)
+        .into_iter()
+        .filter(|segment| !segment.gate)
+        .map(|segment| EffectiveWallSegment {
+            segment,
+            newly_built: false,
+        })
+        .collect::<Vec<_>>();
+    let mut seen = result
+        .iter()
+        .map(|entry| segment_key(entry.segment))
+        .collect::<HashSet<_>>();
+
+    for job in colony.jobs.iter().filter(|job| {
+        job.kind == JobKind::ExpandVillage
+            && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+    }) {
+        if expansion_is_for_field(colony, job) {
+            // Exterior farm claims are land-preparation work, not settlement-wall
+            // growth. They remain outside the unchanged complete enclosure.
+            continue;
+        }
+        let JobMetadata::Expansion { target, .. } = job.metadata else {
+            continue;
+        };
+        let outer = prospective_outer_wall_segments(colony, target);
+        let completed = completed_outer_wall_segment_count(job, outer.len());
+        for segment in outer.into_iter().take(completed) {
+            if seen.insert(segment_key(segment)) {
+                result.push(EffectiveWallSegment {
+                    segment,
+                    newly_built: true,
+                });
+            }
+        }
+    }
+    result.sort_by_key(|entry| segment_key(entry.segment));
+    result
+}
+
+fn staged_wall_fence_edges(colony: &ColonyRuntime) -> HashSet<pathfinding::FenceEdge> {
+    effective_wall_segments(colony)
+        .into_iter()
+        .filter(|entry| entry.newly_built)
+        .map(|entry| {
+            let delta = side_delta(entry.segment.side);
+            pathfinding::FenceEdge::new(
+                entry.segment.x,
+                entry.segment.y,
+                entry.segment.x + delta.x,
+                entry.segment.y + delta.y,
+            )
+        })
+        .collect()
 }
 
 fn movement_gate(
@@ -11491,11 +11753,13 @@ fn accept_job(colony: &mut ColonyRuntime, job_index: usize) {
         JobMetadata::Expansion {
             target,
             source_build_job_id,
+            wall_work_ms,
             ..
         } => JobMetadata::Expansion {
             target,
             accepted: true,
             source_build_job_id,
+            wall_work_ms,
         },
         JobMetadata::GatherHaul {
             stockpile_id, site, ..
@@ -11686,6 +11950,10 @@ fn next_claimed_building_site(
             let tiles = footprint_tiles(*anchor, w, h);
             occupancy.placement_error_for_tiles(&tiles, true).is_none()
                 && tiles.iter().all(|tile| !reserved_tiles.contains(tile))
+                && (building_type == BuildingType::Field
+                    || tiles
+                        .iter()
+                        .all(|tile| !colony.agricultural_tiles.contains(tile)))
                 && building_footprint_has_claim_margin(&tiles, &occupancy.claimed)
                 && (!require_farmable
                     || tiles.iter().all(|tile| {
@@ -11775,6 +12043,10 @@ fn claimed_building_site_is_ready(
     let tiles = footprint_tiles(site, width, height);
     let claimed = colony.claimed_tiles.iter().copied().collect();
     placement_error_for_tiles(colony, &tiles, world_seed, true).is_none()
+        && (building_type == BuildingType::Field
+            || tiles
+                .iter()
+                .all(|tile| !colony.agricultural_tiles.contains(tile)))
         && building_footprint_has_claim_margin(&tiles, &claimed)
         && (building_type != BuildingType::Field
             || tiles.iter().all(|tile| {
@@ -12663,6 +12935,17 @@ fn complete_village_expansion(
     gate: TickGate,
     world_seed: u32,
 ) {
+    let JobMetadata::Expansion {
+        accepted: true,
+        wall_work_ms,
+        ..
+    } = job.metadata
+    else {
+        return;
+    };
+    if wall_work_ms < job.duration_ms.max(1) {
+        return;
+    }
     let reserved_footprint = match &job.metadata {
         JobMetadata::Expansion {
             source_build_job_id: Some(source_build_job_id),
@@ -12697,6 +12980,7 @@ fn complete_village_expansion(
             return;
         }
     };
+    let agricultural = expansion_is_for_field(colony, job);
     if !tile_coordinates_supported(target)
         || colony.claimed_tiles.contains(&target)
         || !is_adjacent_to_claimed(colony, target)
@@ -12724,12 +13008,16 @@ fn complete_village_expansion(
     tile.last_depleted = gate.processed_through;
     tile.overlay_feature = None;
     colony.claimed_tiles.push(target);
+    if agricultural {
+        colony.agricultural_tiles.insert(target);
+    }
     if !connect_current_gate_to_shrine_avoiding(colony, world_seed, &reserved_footprint) {
         // The prospective perimeter would put its sole gate somewhere that
         // cannot reach the shrine without crossing a hard occupant. Roll the
         // claim back completely; a later expansion plan can choose another
         // frontier tile. Existing persisted shapes remain untouched.
         colony.claimed_tiles.pop();
+        colony.agricultural_tiles.remove(&target);
         if let Some(previous_tile) = previous_tile {
             colony.world_tiles.insert(target, previous_tile);
         } else {
@@ -12752,6 +13040,20 @@ fn complete_village_expansion(
         ),
     );
     restore_expansion_worker_to_construction(colony, job);
+}
+
+fn expansion_is_for_field(colony: &ColonyRuntime, expansion: &JobRuntime) -> bool {
+    let JobMetadata::Expansion {
+        source_build_job_id: Some(source_id),
+        ..
+    } = &expansion.metadata
+    else {
+        return false;
+    };
+    colony
+        .jobs
+        .iter()
+        .any(|job| job.id == *source_id && job_building_type(job) == Some(BuildingType::Field))
 }
 
 /// Return a cat temporarily transferred from a site-less construction to the expansion
@@ -13846,8 +14148,9 @@ fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
         } else {
             false
         };
+        let staged_expansion_survives = colony.jobs[index].kind == JobKind::ExpandVillage;
         let job = &mut colony.jobs[index];
-        if paid_scaffold_survives {
+        if paid_scaffold_survives || staged_expansion_survives {
             // The refined materials and completed work belong to the scaffold,
             // not its builder. Release the dead cat and let phase 14 recruit a
             // replacement for only the unfinished portion.
@@ -13856,6 +14159,9 @@ fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
             job.started_at = None;
             job.ends_at = None;
             job.completed_at = None;
+            if let JobMetadata::Expansion { accepted, .. } = &mut job.metadata {
+                *accepted = false;
+            }
         } else {
             job.status = JobStatus::Cancelled;
             job.completed_at = Some(now_ms);
@@ -15983,6 +16289,7 @@ mod tests {
             anchor: VILLAGE_ANCHOR_TILE,
             claimed_area: Default::default(),
             area_gate: None,
+            staged_wall_edges: HashSet::new(),
             gate: pos(6, 10),
             walk_tiles: colony
                 .world_tiles
@@ -17036,6 +17343,7 @@ mod tests {
             anchor: VILLAGE_ANCHOR_TILE,
             claimed_area: Default::default(),
             area_gate: None,
+            staged_wall_edges: HashSet::new(),
             gate: pos(6, 10),
             walk_tiles: Vec::new(),
             zones: Vec::new(),
@@ -19980,6 +20288,7 @@ mod tests {
                 target: TilePos { x: 0, y: 0 },
                 accepted: false,
                 source_build_job_id: Some(source),
+                wall_work_ms: 0,
             },
         );
         colony
@@ -21365,6 +21674,7 @@ mod tests {
             anchor: VILLAGE_ANCHOR_TILE,
             claimed_area: Default::default(),
             area_gate: None,
+            staged_wall_edges: HashSet::new(),
             gate: pos(6, 10),
             walk_tiles: colony
                 .world_tiles
@@ -25390,7 +25700,7 @@ mod tests {
                 policy,
                 seed,
             );
-            let expansion = colony
+            let mut expansion = colony
                 .jobs
                 .iter()
                 .rev()
@@ -25408,6 +25718,15 @@ mod tests {
                 } if source == &build_id
             ));
             now += expansion.duration_ms.max(1_000);
+            if let JobMetadata::Expansion {
+                accepted,
+                wall_work_ms,
+                ..
+            } = &mut expansion.metadata
+            {
+                *accepted = true;
+                *wall_work_ms = expansion.duration_ms.max(1);
+            }
             complete_village_expansion(colony, &expansion, production_gate(60, now), seed);
             let completed = colony
                 .jobs
@@ -25718,6 +26037,321 @@ mod tests {
         );
     }
 
+    fn staged_expansion_fixture(seed: u32) -> (ColonyRuntime, TilePos) {
+        let mut colony = found_colony(seed, "staged-wall", 1_000, seed);
+        let center = shrine_center_tile(colony.anchor);
+        let target = TilePos {
+            x: center.x,
+            y: center.y - VILLAGE_START_RADIUS - 1,
+        };
+        let worker = colony.cats[0].id.clone();
+        colony.cats[0].activity = CatActivity::Working;
+        colony.cats[0].current_task = Some(TaskType::Explore);
+        colony.jobs.push(JobRuntime {
+            id: "staged-expansion".to_owned(),
+            kind: JobKind::ExpandVillage,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Player,
+            assigned_cat: Some(worker),
+            duration_ms: 3_000,
+            started_at: Some(1_000),
+            ends_at: None,
+            metadata: JobMetadata::Expansion {
+                target,
+                accepted: true,
+                source_build_job_id: None,
+                wall_work_ms: 0,
+            },
+            ..JobRuntime::default()
+        });
+        (colony, target)
+    }
+
+    fn assert_one_closed_south_gate(colony: &ColonyRuntime) {
+        let area = claimed_area(colony);
+        let gate = gate_placement_default(&area).expect("walled settlement has a gate");
+        assert_eq!(
+            gate.side,
+            Side::S,
+            "the sole gate remains on the south side"
+        );
+        let perimeter = fence_perimeter(&area, Some(gate));
+        assert_eq!(perimeter.iter().filter(|segment| segment.gate).count(), 1);
+        for segment in perimeter {
+            let delta = side_delta(segment.side);
+            let from = GridPos {
+                x: segment.x,
+                y: segment.y,
+            };
+            let to = GridPos {
+                x: segment.x + delta.x,
+                y: segment.y + delta.y,
+            };
+            assert_eq!(
+                crate::village_area::fence_blocks_move(from, to, &area, Some(gate)),
+                !segment.gate,
+                "every perimeter edge except the one gate must hard-block movement"
+            );
+        }
+    }
+
+    #[test]
+    fn staged_wall_growth_keeps_old_enclosure_until_outer_ring_is_complete() {
+        let seed = 42;
+        let (mut colony, target) = staged_expansion_fixture(seed);
+        let old_area = claimed_area(&colony);
+        let old_wall = fence_perimeter(&old_area, gate_placement_default(&old_area))
+            .into_iter()
+            .filter(|segment| !segment.gate)
+            .map(segment_key)
+            .collect::<HashSet<_>>();
+        let outer = prospective_outer_wall_segments(&colony, target);
+        assert_eq!(
+            outer.len(),
+            3,
+            "one convex tile needs three new outer edges"
+        );
+        assert_one_closed_south_gate(&colony);
+
+        phase_28b_advance_staged_wall_work(&mut colony, production_gate(1, 2_000));
+        assert!(!colony.claimed_tiles.contains(&target));
+        let during = effective_wall_segments(&colony);
+        assert!(old_wall.iter().all(|edge| {
+            during
+                .iter()
+                .any(|entry| segment_key(entry.segment) == *edge)
+        }));
+        assert_eq!(during.iter().filter(|entry| entry.newly_built).count(), 1);
+        let staged_edges = staged_wall_fence_edges(&colony);
+        let completed_segment = during
+            .iter()
+            .find(|entry| entry.newly_built)
+            .expect("one completed outer segment")
+            .segment;
+        let delta = side_delta(completed_segment.side);
+        let area = pathfinding_area(&old_area);
+        let area_gate = gate_placement_default(&old_area).map(pathfinding_gate);
+        let grid = build_colony_walk_grid(ColonyGridParams {
+            tiles: &[],
+            anchor: PathTilePos { x: 0, y: 0 },
+            ring_radius: 0,
+            gate: PathTilePos { x: 0, y: 0 },
+            area: Some(&area),
+            area_gate,
+            extra_fence_edges: Some(&staged_edges),
+            terrain: None,
+            mountains_unlocked: false,
+            shipping_unlocked: false,
+            soft_obstacles: None,
+            soft_obstacle_field: None,
+        });
+        assert!(pathfinding::WalkGrid::fence_blocks_step(
+            &grid,
+            completed_segment.x,
+            completed_segment.y,
+            completed_segment.x + delta.x,
+            completed_segment.y + delta.y,
+        ));
+        assert!(pathfinding::WalkGrid::fence_blocks_step(
+            &grid,
+            completed_segment.x + delta.x,
+            completed_segment.y + delta.y,
+            completed_segment.x,
+            completed_segment.y,
+        ));
+        assert_one_closed_south_gate(&colony);
+
+        phase_28b_advance_staged_wall_work(&mut colony, production_gate(2, 4_000));
+        assert_eq!(
+            effective_wall_segments(&colony)
+                .iter()
+                .filter(|entry| entry.newly_built)
+                .count(),
+            3,
+            "the complete prospective outer boundary exists before claim mutation"
+        );
+        phase_29_due_completion_gathering_explore_expansion(
+            &mut colony,
+            production_gate(2, 4_000),
+            seed,
+        );
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            &mut colony,
+            production_gate(2, 4_000),
+        );
+
+        assert!(colony.claimed_tiles.contains(&target));
+        assert_one_closed_south_gate(&colony);
+        let final_geometry = effective_wall_segments(&colony)
+            .into_iter()
+            .map(|entry| segment_key(entry.segment))
+            .collect::<HashSet<_>>();
+        let retired_inner = FenceSegment {
+            x: target.x,
+            y: target.y + 1,
+            side: Side::N,
+            axis: crate::village_area::FenceAxis::X,
+            gate: false,
+        };
+        assert!(
+            !final_geometry.contains(&segment_key(retired_inner)),
+            "the now-interior shared wall retires only after outer completion"
+        );
+    }
+
+    #[test]
+    fn staged_wall_work_survives_death_and_resumes_deterministically() {
+        let seed = 77;
+        let (mut left, target) = staged_expansion_fixture(seed);
+        phase_28b_advance_staged_wall_work(&mut left, production_gate(1, 2_000));
+        let mut right = left.clone();
+        let dead = left.jobs[0].assigned_cat.clone().expect("worker");
+        for colony in [&mut left, &mut right] {
+            colony
+                .cats
+                .iter_mut()
+                .find(|cat| cat.id == dead)
+                .expect("worker exists")
+                .death_time = Some(2_100);
+            cancel_cat_jobs(colony, &dead, 2_100);
+            assert_eq!(colony.jobs[0].status, JobStatus::Queued);
+            assert!(matches!(
+                colony.jobs[0].metadata,
+                JobMetadata::Expansion {
+                    wall_work_ms: 1_000,
+                    accepted: false,
+                    ..
+                }
+            ));
+            assert_eq!(
+                effective_wall_segments(colony)
+                    .iter()
+                    .filter(|entry| entry.newly_built)
+                    .count(),
+                1
+            );
+            phase_14_promote_queued_jobs_and_break_ground(colony, production_gate(1, 3_000), seed);
+            let replacement = colony.jobs[0]
+                .assigned_cat
+                .clone()
+                .expect("a living replacement resumes the job");
+            assert_ne!(replacement, dead);
+            accept_job(colony, 0);
+            phase_28b_advance_staged_wall_work(colony, production_gate(2, 5_000));
+            phase_29_due_completion_gathering_explore_expansion(
+                colony,
+                production_gate(2, 5_000),
+                seed,
+            );
+            phase_30_due_completion_build_ritual_training_return_mark_done(
+                colony,
+                production_gate(2, 5_000),
+            );
+        }
+        assert!(left.claimed_tiles.contains(&target));
+        assert_eq!(
+            left, right,
+            "interrupted deterministic twins finish identically"
+        );
+    }
+
+    #[test]
+    fn staged_wall_work_survives_officer_interruption() {
+        let (mut colony, _) = staged_expansion_fixture(78);
+        colony.jobs[0].requested_by = JobRequester::Leader;
+        phase_28b_advance_staged_wall_work(&mut colony, production_gate(1, 2_000));
+        let before = effective_wall_segments(&colony);
+        let worker = colony.jobs[0].assigned_cat.clone().expect("worker");
+
+        release_role_automation(&mut colony, OfficerRole::Steward, 2_100);
+
+        assert_eq!(colony.jobs[0].status, JobStatus::Queued);
+        assert_eq!(colony.jobs[0].assigned_cat, None);
+        assert_eq!(colony.jobs[0].completed_at, None);
+        assert!(matches!(
+            colony.jobs[0].metadata,
+            JobMetadata::Expansion {
+                accepted: false,
+                wall_work_ms: 1_000,
+                ..
+            }
+        ));
+        assert_eq!(effective_wall_segments(&colony), before);
+        assert_eq!(
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == worker)
+                .expect("worker remains alive")
+                .activity,
+            CatActivity::Idle
+        );
+
+        colony.jobs[0].status = JobStatus::Active;
+        colony.jobs[0].assigned_cat = Some(worker.clone());
+        if let JobMetadata::Expansion { accepted, .. } = &mut colony.jobs[0].metadata {
+            *accepted = true;
+        }
+        colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == worker)
+            .expect("worker remains alive")
+            .activity = CatActivity::Working;
+        phase_28b_advance_staged_wall_work(&mut colony, production_gate(2, 4_000));
+        assert!(matches!(
+            colony.jobs[0].metadata,
+            JobMetadata::Expansion {
+                wall_work_ms: 3_000,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn field_linked_claim_is_agricultural_and_never_moves_the_wall() {
+        let seed = 91;
+        let (mut colony, target) = staged_expansion_fixture(seed);
+        colony.jobs.insert(
+            0,
+            JobRuntime {
+                id: "field-build".to_owned(),
+                kind: JobKind::BuildHouse,
+                status: JobStatus::Queued,
+                metadata: JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    building_type: BuildingType::Field,
+                    building_id: None,
+                    site: Some(target),
+                },
+                ..JobRuntime::default()
+            },
+        );
+        if let JobMetadata::Expansion {
+            source_build_job_id,
+            wall_work_ms,
+            ..
+        } = &mut colony.jobs[1].metadata
+        {
+            *source_build_job_id = Some("field-build".to_owned());
+            *wall_work_ms = 3_000;
+        }
+        let before = claimed_area(&colony);
+        let before_wall = effective_wall_segments(&colony);
+        let expansion = colony.jobs[1].clone();
+        complete_village_expansion(&mut colony, &expansion, production_gate(1, 4_000), seed);
+
+        assert!(colony.claimed_tiles.contains(&target));
+        assert!(colony.agricultural_tiles.contains(&target));
+        assert_eq!(
+            claimed_area(&colony),
+            before,
+            "farm land stays outside the wall"
+        );
+        assert_eq!(effective_wall_segments(&colony), before_wall);
+        assert_one_closed_south_gate(&colony);
+    }
+
     #[test]
     fn expansion_clears_a_tree_before_connecting_the_new_gate() {
         let target = pos(7, 14);
@@ -25736,6 +26370,7 @@ mod tests {
                 target,
                 accepted: true,
                 source_build_job_id: None,
+                wall_work_ms: 1,
             },
             ..JobRuntime::default()
         };

@@ -145,6 +145,33 @@ pub struct GatePlacement {
     pub side: FenceSide,
 }
 
+/// One explicit hard-blocking edge, used while a replacement perimeter is only
+/// partially built and cannot yet be represented by the authoritative village area.
+/// Endpoints are canonicalized so movement is blocked in both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FenceEdge {
+    pub ax: i32,
+    pub ay: i32,
+    pub bx: i32,
+    pub by: i32,
+}
+
+impl FenceEdge {
+    #[must_use]
+    pub const fn new(ax: i32, ay: i32, bx: i32, by: i32) -> Self {
+        if ax < bx || (ax == bx && ay <= by) {
+            Self { ax, ay, bx, by }
+        } else {
+            Self {
+                ax: bx,
+                ay: by,
+                bx: ax,
+                by: ay,
+            }
+        }
+    }
+}
+
 pub type VillageArea = HashSet<TilePos>;
 
 pub struct ColonyGridParams<'a> {
@@ -154,6 +181,8 @@ pub struct ColonyGridParams<'a> {
     pub gate: TilePos,
     pub area: Option<&'a VillageArea>,
     pub area_gate: Option<GatePlacement>,
+    /// Extra physical wall edges not yet part of `area` (staged expansion).
+    pub extra_fence_edges: Option<&'a HashSet<FenceEdge>>,
     pub terrain: Option<&'a dyn TerrainWalkField>,
     /// Whether the colony has unlocked mountaineering/mining. While `false`,
     /// mountain-biome tiles are impassable; once `true` they are walkable but slow.
@@ -182,6 +211,7 @@ pub struct ColonyWalkGrid<'a> {
     gate: TilePos,
     area: Option<&'a VillageArea>,
     area_gate: Option<GatePlacement>,
+    extra_fence_edges: Option<&'a HashSet<FenceEdge>>,
     terrain: Option<&'a dyn TerrainWalkField>,
     mountains_unlocked: bool,
     shipping_unlocked: bool,
@@ -214,6 +244,7 @@ pub fn build_colony_walk_grid(params: ColonyGridParams<'_>) -> ColonyWalkGrid<'_
         gate: params.gate,
         area: params.area,
         area_gate: params.area_gate,
+        extra_fence_edges: params.extra_fence_edges,
         terrain: params.terrain,
         mountains_unlocked: params.mountains_unlocked,
         shipping_unlocked: params.shipping_unlocked,
@@ -393,6 +424,12 @@ impl WalkGrid for ColonyWalkGrid<'_> {
     }
 
     fn fence_blocks_step(&self, fx: i32, fy: i32, tx: i32, ty: i32) -> bool {
+        if self
+            .extra_fence_edges
+            .is_some_and(|edges| edges.contains(&FenceEdge::new(fx, fy, tx, ty)))
+        {
+            return true;
+        }
         self.area
             .is_some_and(|area| fence_blocks_move(fx, fy, tx, ty, area, self.area_gate))
     }
@@ -898,6 +935,7 @@ mod tests {
             gate: TilePos { x: 0, y: 1 },
             area: None,
             area_gate: None,
+            extra_fence_edges: None,
             terrain: None,
             mountains_unlocked,
             shipping_unlocked,
@@ -992,6 +1030,7 @@ mod tests {
             gate: TilePos { x: 0, y: 1 },
             area: None,
             area_gate: None,
+            extra_fence_edges: None,
             terrain: None,
             mountains_unlocked: false,
             shipping_unlocked: false,
@@ -1011,6 +1050,7 @@ mod tests {
             gate: TilePos { x: 0, y: 1 },
             area: None,
             area_gate: None,
+            extra_fence_edges: None,
             terrain: None,
             mountains_unlocked: false,
             shipping_unlocked: true,
@@ -1187,6 +1227,7 @@ mod tests {
             gate: TilePos { x: 0, y: 1 },
             area: None,
             area_gate: None,
+            extra_fence_edges: None,
             terrain: None,
             mountains_unlocked: false,
             shipping_unlocked: false,
@@ -1219,6 +1260,7 @@ mod tests {
             gate: TilePos { x: 0, y: 1 },
             area: None,
             area_gate: None,
+            extra_fence_edges: None,
             terrain: None,
             mountains_unlocked: false,
             shipping_unlocked: false,
@@ -1248,6 +1290,7 @@ mod tests {
             gate,
             area: None,
             area_gate: None,
+            extra_fence_edges: None,
             terrain: None,
             mountains_unlocked: false,
             shipping_unlocked: false,
@@ -1292,6 +1335,7 @@ mod tests {
                 gate,
                 area: area_ref,
                 area_gate,
+                extra_fence_edges: None,
                 terrain: None,
                 mountains_unlocked: false,
                 shipping_unlocked: false,
