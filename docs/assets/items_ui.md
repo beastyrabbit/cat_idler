@@ -40,8 +40,11 @@ no semantic names, so mapping is manual.
 
 ## Resource / goods icons — live semantic copies
 
-The tracked icon set currently contains `armor`, `blessings`, `blocks`, `food`, `goods`, `herbs`,
-`materials`, `planks`, `refined`, `tools`, `water`, and `weapons`. The Goods panel also exposes
+The tracked resource icon set contains one unique semantic PNG for every maintained HUD row:
+`armor`, `blessings`, `blocks`, `bone`, `catnip`, `cloth`, `fibre`, `fish`, `flour`, `food`,
+`grain`, `herbs`, `hide`, `leather`, `logs`, `lumber`, `materials`, `metal`, `ore`, `planks`,
+`refined`, `stone`, `tools`, `water`, and `weapons`. `goods` remains a separate fallback for
+finite crafted-item kinds that do not yet have their own glyph. The Goods panel also exposes
 each finite item's physical weight, condition range, damaged/broken counts, and a repair action
 when a valid staffed workshop and matching visible material are available.
 
@@ -59,6 +62,7 @@ Vector recolor source: `Icons/Board Game Icons/Vector/Icons/`.
 | **Wood / logs** | `resource_wood.png` | Rolled log. |
 | **Lumber (worked wood)** | `resource_lumber.png` | Bundled timber; use if you split raw vs worked wood. |
 | **Stone** | `resource_iron.png` | Ingot-in-hexagon; tint grey for stone / steel-blue for metal. |
+| **Bone** | Fish Pack `fish_blue_skeleton.png` | Clear 128 px skeleton silhouette; tint warm ivory in the HUD. |
 | **Materials (generic)** | `token.png` | Neutral disc token; the catch-all goods glyph. |
 | **Refined goods** | `resource_planks.png` | Stacked planks/bricks = processed output. |
 | **Cloth / fibre** | `pouch.png` (alt tint) or Generic Items bolt | Sack tinted, or a colored cloth from Generic Items fallback. |
@@ -94,8 +98,7 @@ Small overlays for cats in transit (hunt/quarry/water/wood hauling). Keep ~16–
 | **Sack** (water/grain/materials) | Board Game `pouch.png` | Cinched sack; tint by cargo (blue=water, gold=grain). |
 | **Stone** (quarry haul) | Board Game `resource_iron.png` | Ingot/block; tint grey. |
 
-Fish Pack also has `fish_*_skeleton.png` (bones) — cute "empty larder / starvation" flourish
-for the newspaper or a famine event.
+Fish Pack's `PNG/Double/fish_blue_skeleton.png` is the maintained Bone resource glyph.
 
 ---
 

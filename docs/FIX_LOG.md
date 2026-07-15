@@ -15,13 +15,31 @@ and any changed Bevy visuals have been verified.
 | Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads bind the station-local Mill, Sawmill, Workshop, and Smelter queues. Four legacy studies now also own the maintained aggregate recipes: Textiles→Clothier fibre→cloth and Tannery hide→leather, Weaponsmithing→Smithy weapons, and Armorsmithing→Smithy armor. Fresh rules-v1 villages require each exact study before time, progress, or input consumption; old/missing rules-v0 saves are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Forester replanting is absent | `GAME_VISION.md` assigns felling, replanting, and lumber to the Forester. Completed logging permanently writes `overlay_feature = "stump"`, and the logging scan excludes stump tiles; no maintained phase turns one back into a tree. Add a finite, persisted Forester replant route with growth timing and terrain/occupancy safeguards, then prove depletion, regrowth, restart, vacancy/manual ownership, and long-run sustainability. | queued |
-| Thirteen HUD resources lack semantic icons | P18 and `docs/assets/items_ui.md` promise Board Game/Fish glyphs copied into the tracked icon directory. Of 25 maintained resource rows, 11 retain the prior terrain/farm/prop/furniture substitutions and the new Stone/Bone rows use a stone pile and generic goods glyph rather than resource-specific art. Copy/select one truthful semantic HUD icon per resource, retain distinct labels/paths/tints/values, and verify all 25 in the client's own framebuffer at supported bounds. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Bone now has a finite physical hunt source, storage/trade/persistence/HUD identity, and conserved final haul, but its crafting variants remain incomplete; Gem, clay, and sand still lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
 | Authored road building is instant | `actions::build_road` validates a shrine-connected mapped path, paints every new tile immediately, and subtracts one aggregate Material per tile without a cat, cargo, or construction phase. Preserve the verified placement, surface, connectivity, and speed rules while adding a physical build route if roadwork is promoted to the full DF-style logistics contract. This is a P2 physical-consistency enhancement, not a blocker under the current P16 wording. | queued (P2) |
 
 ## Verified fixes
+
+## 2026-07-15 — All 25 HUD resources use semantic tracked icons
+
+**Problem:** Thirteen resource rows still borrowed map terrain, farm stages, furniture, world props,
+or the generic-goods glyph. Stone and Bone were especially misleading: raw Stone reused its map
+pile and Bone reused a catch-all sack, despite the HUD contract requiring an icon readable before
+the adjacent label.
+
+**Fix:** Every maintained resource now resolves to a unique PNG under
+`public/images/game/icons/`. Stone uses the tracked block/ingot glyph and Bone uses Kenney Fish
+Pack's 128 px blue fish-skeleton glyph. The remaining substitutions were replaced with the
+documented Board Game/Fish symbols for Fish, Catnip, Grain, Flour, Logs, Lumber, Fibre, Hide,
+Cloth, Leather, Ore, and Metal. The client keeps the distinct labels, values, and resource-specific
+tints while an exhaustive test locks the 25-entry protocol/HUD bijection and rejects paths outside
+the semantic icon directory.
+
+**Evidence:** All 135 `cat-client` tests, strict all-target Clippy, formatting, and diff checks
+pass. The client's own exact 1024×768 framebuffer at `/tmp/semantic-hud-25-final.png` shows all
+25 icon/value rows within the parchment panel without overlap or clipping.
 
 ## 2026-07-15 — Raw Stone and source byproducts are finite physical cargo
 

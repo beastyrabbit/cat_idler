@@ -3262,34 +3262,33 @@ impl IconArt {
     }
 }
 
-/// A distinct tracked sprite for every maintained resource. Several are tiny
-/// world props rather than abstract glyphs on purpose: ore looks like an ore
-/// pile, fibre like a haystack, and metal like the smithy's basin even before a
-/// player reads the adjacent label.
+/// A distinct semantic glyph for every maintained resource. Runtime HUD art stays
+/// under the tracked icon set; terrain, farm, furniture, and world-prop sprites must
+/// never stand in for resource identity here.
 fn resource_icon_path(kind: HudRes) -> &'static str {
     match kind {
         HudRes::Food => "public/images/game/icons/food.png",
-        HudRes::Fish => "public/images/game/terrain/water_edge.png",
+        HudRes::Fish => "public/images/game/icons/fish.png",
         HudRes::Water => "public/images/game/icons/water.png",
-        HudRes::Catnip => "public/images/resources/herbs.png",
-        HudRes::Grain => "public/images/game/farm/crop_mature.png",
-        HudRes::Flour => "public/images/game/props/sack.png",
+        HudRes::Catnip => "public/images/game/icons/catnip.png",
+        HudRes::Grain => "public/images/game/icons/grain.png",
+        HudRes::Flour => "public/images/game/icons/flour.png",
         HudRes::Materials => "public/images/game/icons/materials.png",
-        HudRes::Stone => "public/images/game/props/stone_pile.png",
+        HudRes::Stone => "public/images/game/icons/stone.png",
         HudRes::Refined => "public/images/game/icons/refined.png",
-        HudRes::Planks => "public/images/game/interior/floor_wood.png",
+        HudRes::Planks => "public/images/game/icons/planks.png",
         HudRes::Blocks => "public/images/game/icons/blocks.png",
         HudRes::Tools => "public/images/game/icons/tools.png",
-        HudRes::Logs => "public/images/game/props/log_pile.png",
-        HudRes::Lumber => "public/images/game/icons/planks.png",
+        HudRes::Logs => "public/images/game/icons/logs.png",
+        HudRes::Lumber => "public/images/game/icons/lumber.png",
         HudRes::Herbs => "public/images/game/icons/herbs.png",
-        HudRes::Fibre => "public/images/game/props/haystack.png",
-        HudRes::Hide => "public/images/game/interior/bed-orange.png",
-        HudRes::Bone => "public/images/game/icons/goods.png",
-        HudRes::Cloth => "public/images/game/interior/scroll.png",
-        HudRes::Leather => "public/images/game/interior/stool-square.png",
-        HudRes::Ore => "public/images/game/props/ore_pile.png",
-        HudRes::Metal => "public/images/game/interior/metal-basin.png",
+        HudRes::Fibre => "public/images/game/icons/fibre.png",
+        HudRes::Hide => "public/images/game/icons/hide.png",
+        HudRes::Bone => "public/images/game/icons/bone.png",
+        HudRes::Cloth => "public/images/game/icons/cloth.png",
+        HudRes::Leather => "public/images/game/icons/leather.png",
+        HudRes::Ore => "public/images/game/icons/ore.png",
+        HudRes::Metal => "public/images/game/icons/metal.png",
         HudRes::Weapons => "public/images/game/icons/weapons.png",
         HudRes::Armor => "public/images/game/icons/armor.png",
         HudRes::Blessings => "public/images/game/icons/blessings.png",
@@ -13539,6 +13538,7 @@ mod tests {
             .iter()
             .map(|kind| hud_resource_label(*kind))
             .collect::<HashSet<_>>();
+        assert_eq!(HUD_RESOURCES.len(), 25);
         assert_eq!(HUD_RESOURCES.len(), MAINTAINED_RESOURCE_KINDS.len());
         assert_eq!(paths.len(), HUD_RESOURCES.len(), "no icon-path aliases");
         assert_eq!(labels.len(), HUD_RESOURCES.len(), "no label aliases");
@@ -13550,6 +13550,24 @@ mod tests {
         assert_eq!(hud_resource_label(HudRes::Ore), "Ore");
         assert_eq!(hud_resource_label(HudRes::Metal), "Metal");
         assert_eq!(hud_resource_label(HudRes::Stone), "Stone");
+    }
+
+    #[test]
+    fn every_resource_icon_is_a_resolved_tracked_semantic_png() {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for kind in HUD_RESOURCES {
+            let path = resource_icon_path(kind);
+            assert!(
+                path.starts_with("public/images/game/icons/") && path.ends_with(".png"),
+                "{kind:?} escaped the tracked semantic icon set: {path}"
+            );
+            let bytes = std::fs::read(workspace.join(path))
+                .unwrap_or_else(|error| panic!("{kind:?} icon {path} did not resolve: {error}"));
+            assert!(
+                bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+                "{kind:?} icon {path} is not a PNG"
+            );
+        }
     }
 
     #[test]

@@ -215,11 +215,13 @@ so a correct scout route cannot conceal a missing founding dispatch.
    the whole validated path and removes aggregate Materials without a worker or cargo. Treat a
    physical road-building route as a P2 consistency enhancement unless the maintained vision is
    tightened to make road hauling a core acceptance condition.
-4. **Finish semantic HUD art, then prove the whole game.** Thirteen of the 25 resource mappings still
-   lack resource-specific glyphs: 11 reuse the prior terrain/farm/prop/furniture sprites, while
-   Stone uses a stone pile and Bone a generic goods glyph. Replace them with truthful tracked
-   Board Game/Fish glyphs and own-framebuffer-check all 25 at supported
-   bounds. Rerun unattended true-live and long proxy campaigns after every
+4. **Keep the verified semantic HUD complete while proving the whole game.** All 25 maintained
+   resource mappings now use unique, truthful tracked Board Game/Fish glyphs under the semantic
+   icon directory; Stone has a block glyph and Bone a fish-skeleton glyph. The exact 1024×768
+   client-owned frame `/tmp/semantic-hud-25-final.png` shows every row without clipping. Preserve
+   the exhaustive 25-entry mapping/path tests as new resources land, and continue whole-game
+   visual/playtesting passes across supported bounds.
+   Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality
    workflow is committed; its first pushed run is still unverified. Transfer-weight optimization

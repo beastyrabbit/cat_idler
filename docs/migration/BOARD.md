@@ -41,7 +41,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, authoritative election schedule visibility, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns with optimized-browser and signed-native shrine-return confirmation; four physical processors are complete while broader stations remain |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, physical gate-routed migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, physical farm labor, and physical shoreline fishing are verified; broader physical production work remains in progress |
 | P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, exterior plots, finite persisted fish habitats, and cached fine-biome path/movement costs are live; Rail/Shipping studies grant neutral blueprints rather than magical walking effects, while built routes/vehicles remain open |
-| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | in progress — persistent map plaques, building compositions, the Adventure skin, research ledger, staged wall cutover, exterior agriculture, and optimized-WASM interaction are verified; 13 of 25 HUD resources still use terrain/furniture/world-prop/generic-goods art instead of resource-specific semantic glyphs |
+| P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done — persistent map plaques, building compositions, the Adventure skin, research ledger, staged wall cutover, exterior agriculture, optimized-WASM interaction, and unique tracked semantic glyphs for all 25 maintained HUD resources are framebuffer-verified |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — the canonical source/station/taxonomy contract now reconciles P12 and P16 while preserving stable IDs and open-top buildings; raw Stone, physical quarry Stone/rubble/Ore and hunt Hide cargo, finite fresh Fish, physical scaffold inputs, useful tools, trade goods, a shrine-visiting physical trader with finite persisted stock/purse/wagon, coin, and stable weighted item units with wear/break/repair are live. Six remaining physical station queues, finite functional-equipment authority, recipe/material breadth, and broader local inventories remain |
 
 **Notes on P12–P19**: these phases were decomposed and executed after this board's card
@@ -737,11 +737,11 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   crop stages are framebuffer-verified; a legal integrated Accounting Tent retains all three
   founding Dens and renders as a separate open ledger/desk station. The staged wall/agricultural
   sequence is accepted at native resolution.
-- The semantic resource-icon card remains open. Although all 25 HUD rows have distinct labels,
-  paths, tints, and values, the prior 11 terrain/farm/prop/furniture substitutions plus Stone's
-  world pile and Bone's generic-goods glyph leave 13 rows without resource-specific semantic art;
-  replace them with glyphs copied into `public/images/game/icons/` and recheck every supported
-  framebuffer bound before returning P18 to done.
+- The semantic resource-icon card is verified. All 25 HUD rows have unique labels, paths, tints,
+  values, and resource-specific Board Game/Fish glyphs copied into
+  `public/images/game/icons/`; Stone uses the block/ingot glyph and Bone the fish-skeleton glyph.
+  Exhaustive mapping/path tests and the inspected exact 1024×768 client-owned framebuffer cover
+  the supported lower bound without overlap or clipping.
 
 ### P19 — Item/material economy (spec: `docs/migration/specs/p19-items-materials-trade.md`)
 - The spec's canonical production table is the resource/taxonomy authority. Logs are raw timber,
