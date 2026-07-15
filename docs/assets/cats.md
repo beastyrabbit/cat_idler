@@ -26,11 +26,12 @@ The client loads four `32x32` role hats and follows the interpolated body with t
 | Ritualist | `public/images/cats/hat-ritualist.png` |
 | Warrior | `public/images/cats/hat-warrior.png` |
 
-Materials and Blessings use dedicated carry icons; most other carried resources still use a small
-resource-colored square rather than a semantic cargo glyph or separate carry animation. Exhaustive
-semantic cargo identity is queued in `docs/FIX_LOG.md`. Player-priority cats receive a gold marker,
-and the selected cat receives a selection marker. Those markers are runtime geometry, not
-additional sheet frames.
+Carried resources use a small semantic glyph above the interpolated body. All twenty physical
+`CarryingKind` values reuse their exact tracked HUD resource PNG and tint; there is no generic
+colored-square or world-prop fallback. An exhaustive identity/file test and the inspected exact
+1024×768 client-owned cargo fixture verify the maintained contract. Player-priority cats receive
+a gold marker, and the selected cat receives a selection marker. These are follower overlays,
+not additional sheet frames.
 
 ## Static portraits and retired placeholders
 

@@ -1797,8 +1797,7 @@ struct SpriteSheets {
     hat_architect: Handle<Image>,
     hat_ritualist: Handle<Image>,
     hat_warrior: Handle<Image>,
-    carry_materials: Handle<Image>,
-    carry_blessings: Handle<Image>,
+    carry_icons: Vec<(CarryingKind, Handle<Image>)>,
 }
 
 impl SpriteSheets {
@@ -1818,12 +1817,10 @@ impl SpriteSheets {
             hat_architect: assets.load("public/images/cats/hat-architect.png"),
             hat_ritualist: assets.load("public/images/cats/hat-ritualist.png"),
             hat_warrior: assets.load("public/images/cats/hat-warrior.png"),
-            carry_materials: assets.load(
-                carrying_icon_path(CarryingKind::Materials).expect("materials icon is mapped"),
-            ),
-            carry_blessings: assets.load(
-                carrying_icon_path(CarryingKind::Blessings).expect("blessings icon is mapped"),
-            ),
+            carry_icons: CARRYING_KINDS
+                .into_iter()
+                .map(|kind| (kind, assets.load(carrying_icon_path(kind))))
+                .collect(),
         }
     }
 
@@ -1836,12 +1833,11 @@ impl SpriteSheets {
         }
     }
 
-    fn carrying_icon(&self, kind: CarryingKind) -> Option<Handle<Image>> {
-        match kind {
-            CarryingKind::Materials => Some(self.carry_materials.clone()),
-            CarryingKind::Blessings => Some(self.carry_blessings.clone()),
-            _ => None,
-        }
+    fn carrying_icon(&self, kind: CarryingKind) -> Handle<Image> {
+        self.carry_icons
+            .iter()
+            .find_map(|(mapped, image)| (*mapped == kind).then(|| image.clone()))
+            .expect("every carrying kind has a loaded semantic icon")
     }
 }
 
@@ -7151,14 +7147,12 @@ fn sync_cats(
             );
         }
         if let Some(carrying) = &cat.carrying {
-            let sprite = sheets.carrying_icon(carrying.kind).map_or_else(
-                || Sprite::from_color(carrying_color(carrying.kind), Vec2::splat(TILE * 0.28)),
-                |image| Sprite {
-                    image,
-                    custom_size: Some(Vec2::splat(TILE * 0.42)),
-                    ..default()
-                },
-            );
+            let sprite = Sprite {
+                image: sheets.carrying_icon(carrying.kind),
+                color: carrying_color(carrying.kind),
+                custom_size: Some(Vec2::splat(TILE * 0.55)),
+                ..default()
+            };
             spawn_cat_overlay(
                 &mut commands,
                 &cat.id,
@@ -10892,36 +10886,62 @@ fn atlas_index(group: usize, frame: usize) -> usize {
 }
 
 fn carrying_color(kind: CarryingKind) -> Color {
+    resource_icon_tint(carrying_hud_res(kind))
+}
+
+const CARRYING_KINDS: [CarryingKind; 20] = [
+    CarryingKind::Food,
+    CarryingKind::Fish,
+    CarryingKind::Blessings,
+    CarryingKind::Materials,
+    CarryingKind::Stone,
+    CarryingKind::Refined,
+    CarryingKind::Logs,
+    CarryingKind::Lumber,
+    CarryingKind::Planks,
+    CarryingKind::Blocks,
+    CarryingKind::Tools,
+    CarryingKind::Water,
+    CarryingKind::Catnip,
+    CarryingKind::Grain,
+    CarryingKind::Flour,
+    CarryingKind::Herbs,
+    CarryingKind::Hide,
+    CarryingKind::Bone,
+    CarryingKind::Ore,
+    CarryingKind::Metal,
+];
+
+/// Exact resource identity for the glyph shown above a hauling cat. Keeping this
+/// exhaustive prevents a new wire cargo kind from silently degrading to generic
+/// shape art.
+fn carrying_hud_res(kind: CarryingKind) -> HudRes {
     match kind {
-        CarryingKind::Food => Color::srgb(0.95, 0.55, 0.25),
-        CarryingKind::Fish => Color::srgb(0.28, 0.68, 0.82),
-        CarryingKind::Water => Color::srgb(0.35, 0.65, 0.95),
-        CarryingKind::Materials => Color::srgb(0.70, 0.55, 0.35),
-        CarryingKind::Stone => Color::srgb(0.62, 0.64, 0.66),
-        CarryingKind::Refined => Color::srgb(0.78, 0.73, 0.62),
-        CarryingKind::Blessings => Color::srgb(0.95, 0.85, 0.40),
-        CarryingKind::Logs => Color::srgb(0.45, 0.29, 0.17),
-        CarryingKind::Lumber | CarryingKind::Planks => Color::srgb(0.70, 0.47, 0.25),
-        CarryingKind::Blocks => Color::srgb(0.58, 0.60, 0.64),
-        CarryingKind::Tools => Color::srgb(0.76, 0.78, 0.84),
-        CarryingKind::Catnip => Color::srgb(0.78, 0.60, 0.92),
-        CarryingKind::Grain => Color::srgb(0.96, 0.78, 0.34),
-        CarryingKind::Flour => Color::srgb(0.94, 0.91, 0.77),
-        CarryingKind::Herbs => Color::srgb(0.55, 0.88, 0.48),
-        CarryingKind::Hide => Color::srgb(0.72, 0.50, 0.34),
-        CarryingKind::Bone => Color::srgb(0.90, 0.86, 0.74),
-        CarryingKind::Ore => Color::srgb(0.42, 0.36, 0.32),
-        CarryingKind::Metal => Color::srgb(0.68, 0.72, 0.78),
+        CarryingKind::Food => HudRes::Food,
+        CarryingKind::Fish => HudRes::Fish,
+        CarryingKind::Blessings => HudRes::Blessings,
+        CarryingKind::Materials => HudRes::Materials,
+        CarryingKind::Stone => HudRes::Stone,
+        CarryingKind::Refined => HudRes::Refined,
+        CarryingKind::Logs => HudRes::Logs,
+        CarryingKind::Lumber => HudRes::Lumber,
+        CarryingKind::Planks => HudRes::Planks,
+        CarryingKind::Blocks => HudRes::Blocks,
+        CarryingKind::Tools => HudRes::Tools,
+        CarryingKind::Water => HudRes::Water,
+        CarryingKind::Catnip => HudRes::Catnip,
+        CarryingKind::Grain => HudRes::Grain,
+        CarryingKind::Flour => HudRes::Flour,
+        CarryingKind::Herbs => HudRes::Herbs,
+        CarryingKind::Hide => HudRes::Hide,
+        CarryingKind::Bone => HudRes::Bone,
+        CarryingKind::Ore => HudRes::Ore,
+        CarryingKind::Metal => HudRes::Metal,
     }
 }
 
-fn carrying_icon_path(kind: CarryingKind) -> Option<&'static str> {
-    match kind {
-        CarryingKind::Materials => Some("public/images/game/icons/materials.png"),
-        CarryingKind::Stone => Some("public/images/game/props/stone_pile.png"),
-        CarryingKind::Blessings => Some("public/images/game/icons/blessings.png"),
-        _ => None,
-    }
+fn carrying_icon_path(kind: CarryingKind) -> &'static str {
+    resource_icon_path(carrying_hud_res(kind))
 }
 
 fn zone_color(kind: ZoneKind) -> Color {
@@ -12617,16 +12637,55 @@ mod tests {
     }
 
     #[test]
-    fn offering_cargo_uses_recognizable_resource_icons() {
+    fn every_cargo_kind_uses_a_unique_tracked_semantic_png() {
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert_eq!(CARRYING_KINDS.len(), 20, "wire cargo cardinality changed");
+        let paths = CARRYING_KINDS
+            .into_iter()
+            .map(carrying_icon_path)
+            .collect::<HashSet<_>>();
+        assert_eq!(paths.len(), CARRYING_KINDS.len(), "no cargo icon aliases");
+
+        let mut image_contents = HashSet::new();
+        for kind in CARRYING_KINDS {
+            let path = carrying_icon_path(kind);
+            assert!(
+                path.starts_with("public/images/game/icons/") && path.ends_with(".png"),
+                "{kind:?} escaped the tracked semantic icon set: {path}"
+            );
+            let bytes = std::fs::read(workspace.join(path)).unwrap_or_else(|error| {
+                panic!("{kind:?} cargo icon {path} did not resolve: {error}")
+            });
+            assert!(
+                bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+                "{kind:?} cargo icon {path} is not a PNG"
+            );
+            assert!(
+                image_contents.insert(bytes),
+                "{kind:?} cargo icon {path} aliases another cargo image"
+            );
+        }
+
         assert_eq!(
             carrying_icon_path(CarryingKind::Materials),
-            Some("public/images/game/icons/materials.png")
+            "public/images/game/icons/materials.png"
         );
         assert_eq!(
             carrying_icon_path(CarryingKind::Blessings),
-            Some("public/images/game/icons/blessings.png")
+            "public/images/game/icons/blessings.png"
         );
-        assert_eq!(carrying_icon_path(CarryingKind::Food), None);
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Stone),
+            "public/images/game/icons/stone.png"
+        );
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Bone),
+            "public/images/game/icons/bone.png"
+        );
+        assert_ne!(
+            carrying_icon_path(CarryingKind::Lumber),
+            carrying_icon_path(CarryingKind::Planks)
+        );
     }
 
     #[test]

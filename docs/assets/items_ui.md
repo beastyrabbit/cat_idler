@@ -87,18 +87,18 @@ blessings currency chip only.
 
 ---
 
-## Cat carry-glyphs (what a cat visibly hauls)
+## Cat carry-glyphs (what a cat visibly hauls) — verified
 
-Small overlays for cats in transit (hunt/quarry/water/wood hauling). Keep ~16–24px on-map.
+Every physical cargo overlay reuses the exact tracked semantic resource PNG named above rather
+than a second carry-only vocabulary. This covers Food, Fish, Water, Materials, Stone, Refined,
+Blessings, Logs, Lumber, Planks, Blocks, Tools, Catnip, Grain, Flour, Herbs, Hide, Bone, Ore, and
+Metal. Their existing resource tints remain legible at the on-map overlay size, while icon shape
+is authoritative: Lumber and Planks, for example, keep separate symbols. The runtime has no
+colored-square, terrain, farm, furniture, or world-prop fallback for cargo.
 
-| Carry | Source file | Verdict |
-|---|---|---|
-| **Log** | Board Game `resource_wood.png` (128px) | Log silhouette; reads at tiny size. |
-| **Fish** (hunt/food haul) | Fish Pack `PNG/Double/fish_blue.png` | Clean flat fish; the signature cat-food glyph. Variants: `fish_green.png`, `fish_brown.png`, `fish_grey.png`. |
-| **Sack** (water/grain/materials) | Board Game `pouch.png` | Cinched sack; tint by cargo (blue=water, gold=grain). |
-| **Stone** (quarry haul) | Board Game `resource_iron.png` | Ingot/block; tint grey. |
-
-Fish Pack's `PNG/Double/fish_blue_skeleton.png` is the maintained Bone resource glyph.
+The exhaustive mapping/file/identity test and the inspected client-owned
+`/tmp/semantic-cargo-icons-1024.png` frame verify ten simultaneous representative loads at the
+supported 1024×768 lower bound.
 
 ---
 

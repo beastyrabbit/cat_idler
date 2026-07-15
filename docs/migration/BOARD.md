@@ -744,6 +744,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   `public/images/game/icons/`; Stone uses the block/ingot glyph and Bone the fish-skeleton glyph.
   Exhaustive mapping/path tests and the inspected exact 1024×768 client-owned framebuffer cover
   the supported lower bound without overlap or clipping.
+- Visible hauling now uses the same semantic authority: every one of the 20 `CarryingKind` values
+  loads its exact tracked resource glyph, with no colored-square or world-prop fallback. Exhaustive
+  uniqueness/file tests and `/tmp/semantic-cargo-icons-1024.png` verify ten simultaneous distinct
+  loads in the client's own exact 1024×768 framebuffer.
 
 ### P19 — Item/material economy (spec: `docs/migration/specs/p19-items-materials-trade.md`)
 - The spec's canonical production table is the resource/taxonomy authority. Logs are raw timber,

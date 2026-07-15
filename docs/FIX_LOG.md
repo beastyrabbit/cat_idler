@@ -9,7 +9,6 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Carried cargo lacks semantic visual identity | The DF-readability pillar requires a player to recognize what a moving cat is hauling. Materials and Blessings have dedicated carry icons, but most other `CarryingKind` values still fall back to resource-colored squares, and the declared Stone mapping is not loaded. Give every physical cargo kind an exhaustive, tracked semantic glyph without borrowing terrain, farm, furniture, or world-prop art. Verify representative distinct loads in an exact 1024x768 client-owned framebuffer on native and WASM. | queued (high priority) |
 | Six maintained benches still bypass the physical station contract | Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Their C2.0 descriptor scaffold is live: stable recipe IDs, canonical resource domains, deterministic default queues, exact catalog availability, selected-recipe block reasons, rules-v0 grandfathering, and generic snapshot/persistence fields exist while `aggregate_timer_compatibility` truthfully marks the unchanged behavior. Next give each station local input/output/transit state and one-worker/one-selected-recipe advancement. Preserve every existing `BuildingType`, queue identity, and open-top visual identity. | in progress |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
@@ -22,6 +21,25 @@ and any changed Bevy visuals have been verified.
 | Wall art needs a stronger top-down treatment | The staged palisade, closed perimeter, single-gate cutover, collision, and visual campaign are verified, but the current wall selection does not meet the player's requested quality bar. Compare the tracked public candidates in `docs/sprite-review.html`, select a coherent top-down wall and gate set, and preserve exact autotiling, staged-work color, gate placement, and authoritative collision. Re-verify native and WASM framebuffers before replacing the current art. | queued (low priority) |
 
 ## Verified fixes
+
+## 2026-07-15 — Every carried resource has a semantic tracked glyph
+
+**Problem:** Only Materials and Blessings loaded their declared carry art. The other eighteen
+`CarryingKind` values rendered as colored squares, including Stone even though it declared a
+world-prop path that `SpriteSheets` never loaded. A moving cat therefore did not truthfully show
+what it was hauling.
+
+**Fix:** All twenty physical cargo identities now use the exact corresponding maintained HUD
+glyph under `public/images/game/icons/`. One exhaustive mapping owns both path and tint, every
+handle loads at startup, and the square fallback no longer exists. Food, Fish, Water, Materials,
+Stone, Refined, Blessings, Logs, Lumber, Planks, Blocks, Tools, Catnip, Grain, Flour, Herbs, Hide,
+Bone, Ore, and Metal remain visually distinct; notably Lumber and Planks retain separate tracked
+symbols rather than sharing a generic wood mark.
+
+**Evidence:** An exhaustive client test rejects a missing cargo kind, path aliases, non-icon
+paths, missing files, and non-PNG files. The client's own exact 1024×768 framebuffer at
+`/tmp/semantic-cargo-icons-1024.png` shows ten simultaneous truthful loads, including Food, Fish,
+Water, Stone, Logs, Lumber, Planks, Grain, Bone, and Metal, without fallback squares or clipping.
 
 ## 2026-07-15 — All 25 HUD resources use semantic tracked icons
 

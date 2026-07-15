@@ -229,8 +229,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    resource mappings now use unique, truthful tracked Board Game/Fish glyphs under the semantic
    icon directory; Stone has a block glyph and Bone a fish-skeleton glyph. The exact 1024×768
    client-owned frame `/tmp/semantic-hud-25-final.png` shows every row without clipping. Preserve
-   the exhaustive 25-entry mapping/path tests as new resources land, and continue whole-game
-   visual/playtesting passes across supported bounds.
+   the exhaustive 25-entry mapping/path tests as new resources land. Every one of the twenty
+   physical `CarryingKind` values also reuses its exact tracked HUD identity above moving cats;
+   the inspected exact 1024×768 frame `/tmp/semantic-cargo-icons-1024.png` shows ten distinct
+   simultaneous loads and no colored-square fallback. Preserve that exhaustive cargo mapping and
+   continue whole-game visual/playtesting passes across supported bounds.
    Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

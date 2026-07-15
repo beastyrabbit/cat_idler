@@ -97,7 +97,9 @@ renderers.
 tracked PNGs used by the Bevy HUD. Semantic Adventure panel, button, progress, minimap, and
 32px cursor PNGs are tracked under `public/images/game/ui/` and integrated through Bevy sliced
 images and custom cursors. Native and optimized-WASM framebuffers are verified, including the
-staged wall/agricultural campaign, the integrated Accounting Tent, and the physical Mill.
+staged wall/agricultural campaign, the integrated Accounting Tent, and the physical Mill. Moving
+cats reuse the exact tracked resource icon for all twenty physical cargo kinds; the prior
+colored-square fallback is retired and framebuffer-verified.
 
 ## Source mapping
 
