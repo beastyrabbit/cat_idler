@@ -853,6 +853,8 @@ pub enum CarryingKind {
     Herbs,
     Hide,
     Leather,
+    Fibre,
+    Cloth,
     Bone,
     Ore,
     Metal,
@@ -3304,6 +3306,8 @@ mod tests {
             (CarryingKind::Bone, "bone"),
             (CarryingKind::Hide, "hide"),
             (CarryingKind::Leather, "leather"),
+            (CarryingKind::Fibre, "fibre"),
+            (CarryingKind::Cloth, "cloth"),
             (CarryingKind::Ore, "ore"),
             (CarryingKind::Metal, "metal"),
         ] {

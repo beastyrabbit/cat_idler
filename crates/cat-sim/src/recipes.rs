@@ -16,14 +16,20 @@
 //! - [`STONE_TRADE_RECIPE`]: StonePrep bench, [`crate::items::Material::Stone`], spends
 //!   blocks, kinds rotate through Bowl / Trinket.
 //!
-//! Clothing (spec's third material-good line, P16/P19 deferred slice) lands via two more
-//! benches once the raw fibre/hide → cloth/leather chain exists
-//! ([`crate::entities::Resources::fibre`]/`hide`/`cloth`/`leather`,
+//! Clothing (spec's third material-good line) also has two reserved compatibility
+//! descriptors for cloth/leather
+//! ([`crate::entities::Resources::cloth`]/`leather`,
 //! [`crate::types::BuildingType::Clothier`]/[`Tannery`](crate::types::BuildingType::Tannery)):
 //! - [`CLOTH_TRADE_RECIPE`]: Clothier bench, [`crate::items::Material::Fibre`], spends
 //!   cloth, kinds: Clothing.
 //! - [`LEATHER_TRADE_RECIPE`]: Tannery bench, [`crate::items::Material::Leather`], spends
 //!   leather, kinds: Clothing.
+//!
+//! Those two clothing constants and their pure [`advance_craft`] tests are reserved
+//! compatibility helpers only. The authoritative world tick does not invoke them:
+//! Clothier and Tannery now own finite station-local Fibre → Cloth and Hide → Leather
+//! routes, and their legacy additive clothing timers are frozen so physical output is
+//! never accompanied by hidden item minting.
 
 use crate::items::{ItemKind, ItemStore, MAX_QUALITY, Material};
 use crate::life_sim::trade_level;
@@ -72,11 +78,12 @@ pub const STONE_TRADE_RECIPE: CraftRecipe = CraftRecipe {
     surplus_reserve: 20.0,
 };
 
-/// Clothier bench: cloth → clothing (P16/P19 clothing chain slice). The clothier has
+/// Reserved compatibility descriptor for cloth → clothing. The clothier has
 /// no functional (non-trade) recipe competing for cloth — unlike planks/blocks, cloth
 /// only ever feeds this trade craft — so the reserve exists purely to keep a small
 /// buffer against the clothier's own refine cycle (fibre → cloth) outproducing this
 /// craft cycle in a single tick. Mirrors [`WOOD_TRADE_RECIPE`]'s cadence/reserve shape.
+/// No authoritative world-tick path invokes this descriptor.
 pub const CLOTH_TRADE_RECIPE: CraftRecipe = CraftRecipe {
     material: Material::Fibre,
     kinds: &[ItemKind::Clothing],
@@ -85,8 +92,9 @@ pub const CLOTH_TRADE_RECIPE: CraftRecipe = CraftRecipe {
     surplus_reserve: 20.0,
 };
 
-/// Tannery bench: leather → clothing. Mirrors [`CLOTH_TRADE_RECIPE`]'s reasoning for
-/// the tannery's own hide → leather refine.
+/// Reserved compatibility descriptor for leather → clothing. Mirrors
+/// [`CLOTH_TRADE_RECIPE`]'s reasoning for the tannery's own hide → leather refine. No
+/// authoritative world-tick path invokes this descriptor.
 pub const LEATHER_TRADE_RECIPE: CraftRecipe = CraftRecipe {
     material: Material::Leather,
     kinds: &[ItemKind::Clothing],

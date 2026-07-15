@@ -69,12 +69,10 @@ use crate::{
     },
     production::{
         FIELD_CATS_PER_FIELD, FIELD_MATERIAL_BUFFER, FIELD_MIN_COUNT, FIELD_STOCK_TARGET_RATIO,
-        WORKSHOP_MATERIALS_PER_CYCLE, WorkshopOptions, advance_workshop,
+        WORKSHOP_MATERIALS_PER_CYCLE,
     },
     productivity::{productive_duration_ms, productive_elapsed},
-    recipes::{
-        CLOTH_TRADE_RECIPE, CraftOptions, advance_craft, craft_quality_from_skill, next_trade_kind,
-    },
+    recipes::craft_quality_from_skill,
     research_catalog::research_catalog,
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{self, RoadCorridorOptions, RoadTile, select_road_corridor},
@@ -6525,7 +6523,6 @@ fn phase_20_leader_labor_assignments_and_staffing(
         (OfficerRole::Steward, BuildingType::Workshop),
         (OfficerRole::Accountant, BuildingType::AccountingTent),
         (OfficerRole::Forester, BuildingType::Sawmill),
-        (OfficerRole::ClothLeader, BuildingType::Clothier),
     ] {
         if has_officer(colony, role) {
             auto_staff_idle_buildings(colony, building_type, gate.processed_through, true);
@@ -6540,13 +6537,13 @@ fn phase_20_leader_labor_assignments_and_staffing(
     if has_officer(colony, OfficerRole::Forester) {
         release_raw_material_workshop_workers(colony);
     }
-    release_unrunnable_tannery_workers(colony);
+    release_unrunnable_textile_workers(colony);
     if has_officer(colony, OfficerRole::ClothLeader) {
         // Reserve one genuinely runnable physical leather route before the
         // director's 95% employment fill consumes every remaining idle paw.
         // Emergency preemption still treats this officer-owned luxury worker
         // like the other non-survival stations.
-        auto_staff_one_runnable_tannery(colony, gate.processed_through);
+        auto_staff_one_runnable_textile_bench(colony, gate.processed_through);
     }
     // Food emergencies differ from water emergencies: fields and mills are part
     // of the long-run food loop, but their sticky workers cannot be allowed to
@@ -8311,12 +8308,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
             }
         }
     }
-    // P16/P19 clothing chain slice: the clothier/tannery are luxury benches like the
-    // generic Workshop/AccountingTent above — staffed only from genuine surplus, sticky
-    // (not released every tick like the raw-material trio), announced like Workshop.
+    // Physical textile benches are non-sticky luxury work: staff only routes that can
+    // fetch a complete input load or finish already-committed station cargo/output.
     if has_officer(colony, OfficerRole::ClothLeader) {
-        auto_staff_idle_buildings(colony, BuildingType::Clothier, gate.processed_through, true);
-        auto_staff_runnable_tanneries(colony, gate.processed_through);
+        auto_staff_runnable_textile_benches(colony, gate.processed_through);
     }
 
     let research_effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
@@ -8326,7 +8321,6 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     ensure_farmer_plots(colony, world_seed, gate.processed_through);
     advance_designated_farms(colony, gate, world_seed, production_elapsed);
     let productive_tools = usable_tool_stock(colony);
-    let crafting_elapsed = productive_elapsed(production_elapsed, productive_tools);
     let building_ids = colony
         .buildings
         .iter()
@@ -8561,96 +8555,16 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 );
             }
             BuildingType::Clothier => {
-                // P16/P19 clothing chain slice: raw fibre → cloth, on the same
-                // refinement-workshop cadence as the wood-cutter/stone-prep benches
-                // (`advance_workshop` is generic over which resource it refines).
-                let worker = assigned_worker(colony, &building_id);
-                let textile_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Textile));
-                let recipe_available =
-                    catalog_recipe_entitlement(colony, CLOTHIER_RECIPE_ID).available;
-                let step = advance_workshop(
-                    colony.buildings[building_index].production_progress,
-                    skilled_station_elapsed(crafting_elapsed, textile_skill),
-                    WorkshopOptions {
-                        has_worker: worker.is_some() && recipe_available,
-                        worker_is_architect: worker.is_some_and(|cat| {
-                            cat.specialization == Some(CatSpecialization::Architect)
-                        }),
-                        materials_available: colony.resources.fibre,
-                    },
+                // Fibre and cloth now use the finite source → local input → local
+                // output → storage route. The former additive clothing timer remains
+                // persisted but frozen until Clothing has a finite item authority.
+                advance_physical_refiner(
+                    colony,
+                    building_index,
+                    gate,
+                    building_crafting_elapsed,
+                    productive_tools >= 1.0,
                 );
-                if step.refined_produced > 0.0 {
-                    if productive_tools >= 1.0 {
-                        wear_functional_items(
-                            colony,
-                            ItemKind::Tool,
-                            step.refined_produced as u32,
-                            gate.processed_through,
-                        );
-                    }
-                    colony.resources.fibre =
-                        (colony.resources.fibre - step.materials_used).max(0.0);
-                    colony.resources.cloth += step.refined_produced;
-                    append_event(
-                        colony,
-                        gate.processed_through,
-                        EventKind::Production,
-                        format!(
-                            "The clothier wove {} fibre into {} cloth.",
-                            step.materials_used, step.refined_produced,
-                        ),
-                    );
-                    grant_building_skill(
-                        colony,
-                        &building_id,
-                        Labor::Textile,
-                        step.refined_produced * SKILL_GAIN_PER_JOB,
-                    );
-                }
-                colony.buildings[building_index].production_progress = step.next_progress;
-
-                // Additive trade craft — same bench/worker, its own cycle timer
-                // (`colony.clothier_craft_progress`), spends only *surplus* cloth above
-                // CLOTH_TRADE_RECIPE's reserve. Mirrors the woodworking bench's
-                // wood-trade craft tail exactly.
-                let craft_worker = assigned_worker(colony, &building_id);
-                let craft_has_worker = craft_worker.is_some();
-                let craft_is_architect = craft_worker
-                    .is_some_and(|cat| cat.specialization == Some(CatSpecialization::Architect));
-                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Textile));
-                let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
-                let craft_step = advance_craft(
-                    colony.clothier_craft_progress,
-                    skilled_station_elapsed(crafting_elapsed, craft_skill),
-                    CraftOptions {
-                        has_worker: craft_has_worker,
-                        worker_is_architect: craft_is_architect,
-                        intermediate_available: colony.resources.cloth,
-                    },
-                    &CLOTH_TRADE_RECIPE,
-                );
-                colony.clothier_craft_progress = craft_step.next_progress;
-                if craft_step.items_produced > 0 {
-                    if productive_tools >= 1.0 {
-                        wear_functional_items(
-                            colony,
-                            ItemKind::Tool,
-                            craft_step.items_produced,
-                            gate.processed_through,
-                        );
-                    }
-                    colony.resources.cloth =
-                        (colony.resources.cloth - craft_step.intermediate_used).max(0.0);
-                    credit_trade_craft(
-                        colony,
-                        gate,
-                        &CLOTH_TRADE_RECIPE,
-                        craft_skill,
-                        craft_worker_id.map(|id| (id, Labor::Textile)),
-                        craft_step.items_produced,
-                        "clothier",
-                    );
-                }
             }
             BuildingType::Tannery => {
                 // Hide and leather now use the finite source → local input → local
@@ -8730,10 +8644,23 @@ fn dispatch_officer_resource_jobs(
     });
     let fibre_in_flight = active_or_queued_jobs(colony)
         .iter()
-        .any(|job| job.kind == JobKind::ForageFibre);
+        .any(|job| job.kind == JobKind::ForageFibre)
+        || colony.cats.iter().any(|cat| {
+            cat.death_time.is_none()
+                && cat.carrying.as_ref().is_some_and(|cargo| {
+                    cargo.kind == CarryingKind::Fibre && cargo.source_gather_spot.is_none()
+                })
+        });
+    let carried_fibre = colony
+        .cats
+        .iter()
+        .filter_map(|cat| cat.carrying.as_ref())
+        .filter(|cargo| cargo.kind == CarryingKind::Fibre && cargo.source_gather_spot.is_none())
+        .map(|cargo| cargo.amount.max(0.0))
+        .sum::<f64>();
     if has_officer(colony, OfficerRole::Farmer)
         && has_textile_bench
-        && colony.resources.fibre < 5.0
+        && colony.resources.fibre + carried_fibre < 5.0
         && !fibre_in_flight
         && let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Hunter))
     {
@@ -8788,49 +8715,6 @@ fn dispatch_officer_resource_jobs(
             JobMetadata::None,
         );
     }
-}
-
-/// Shared item-crediting tail for a completed trade-craft cycle (P19 slice 2): picks
-/// the next rotating [`ItemKind`] from the colony's item store ([`next_trade_kind`]),
-/// derives quality from the assigned crafter's `Labor::Craft` skill
-/// ([`craft_quality_from_skill`]), credits the item into `colony.items`, trains that
-/// skill (ties the long-reserved [`Labor::Craft`] into the sim for the first time), and
-/// logs the craft. Called once a bench's [`advance_craft`] step reports
-/// `items_produced > 0`; the caller has already applied its own resource subtraction
-/// (planks vs blocks) since that is the one thing that differs between the wood and
-/// stone benches.
-fn credit_trade_craft(
-    colony: &mut ColonyRuntime,
-    gate: TickGate,
-    recipe: &crate::recipes::CraftRecipe,
-    craft_skill: f64,
-    craft_worker: Option<(CatId, Labor)>,
-    items_produced: u32,
-    bench_label: &str,
-) {
-    let kind = next_trade_kind(&colony.items, recipe);
-    let quality = craft_quality_from_skill(craft_skill);
-    let item = Item::new(kind, recipe.material, quality);
-    colony.add_crafted_item(item, items_produced);
-    if let Some((id, labor)) = craft_worker
-        && let Some(idx) = colony
-            .cats
-            .iter()
-            .position(|cat| cat.id == id && cat.death_time.is_none())
-    {
-        colony.cats[idx].gain_skill(labor, f64::from(items_produced) * SKILL_GAIN_PER_JOB);
-    }
-    append_event(
-        colony,
-        gate.processed_through,
-        EventKind::Production,
-        format!(
-            "The {bench_label} crafted {} {} {} for trade.",
-            items_produced,
-            recipe.material.as_str(),
-            kind.as_str()
-        ),
-    );
 }
 
 /// Deposit a produced `amount` of `kind` into the nearest accepting stockpile to `at`
@@ -11940,6 +11824,8 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Hide => Some(CarryingKind::Hide),
         ResourceKind::Bone => Some(CarryingKind::Bone),
         ResourceKind::Leather => Some(CarryingKind::Leather),
+        ResourceKind::Fibre => Some(CarryingKind::Fibre),
+        ResourceKind::Cloth => Some(CarryingKind::Cloth),
         ResourceKind::Catnip => Some(CarryingKind::Catnip),
         ResourceKind::Grain => Some(CarryingKind::Grain),
         ResourceKind::Flour => Some(CarryingKind::Flour),
@@ -11949,11 +11835,7 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Tools => Some(CarryingKind::Tools),
         ResourceKind::Ore => Some(CarryingKind::Ore),
         ResourceKind::Metal => Some(CarryingKind::Metal),
-        ResourceKind::Weapons
-        | ResourceKind::Armor
-        | ResourceKind::Fibre
-        | ResourceKind::Cloth
-        | ResourceKind::Blessings => None,
+        ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => None,
     }
 }
 
@@ -18276,10 +18158,18 @@ fn automation_role_for_building(building_type: BuildingType) -> Option<OfficerRo
     }
 }
 
-/// Whether a physical Tannery has work that already exists outside an ordinary
-/// stockpile. Such work keeps (or recruits) its Cloth Leader worker even after a
-/// non-repeating queue entry is consumed, so cargo/output/progress cannot strand.
-fn physical_tannery_route_committed(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
+/// Whether a physical textile bench owns work outside an ordinary stockpile. Such
+/// work keeps (or recruits) its Cloth Leader worker after a non-repeating queue entry
+/// is consumed, so cargo, local output, and committed progress cannot strand.
+fn physical_textile_route_committed(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
+    let Some(recipe) = single_input_physical_recipe(building.building_type).filter(|_| {
+        matches!(
+            building.building_type,
+            BuildingType::Clothier | BuildingType::Tannery
+        )
+    }) else {
+        return false;
+    };
     let station_cargo = colony.cats.iter().any(|cat| {
         cat.death_time.is_none()
             && cat.carrying.as_ref().is_some_and(|cargo| {
@@ -18287,84 +18177,93 @@ fn physical_tannery_route_committed(colony: &ColonyRuntime, building: &BuildingR
                     .is_some_and(|(_, building_id, _)| building_id == building.id)
             })
     });
-    let local_output = station_inventory_amount(colony, &building.id, true, ResourceKind::Leather)
+    let local_output = station_inventory_amount(colony, &building.id, true, recipe.output_kind)
         > f64::EPSILON
         && nearest_output_pile(
             colony,
-            ResourceKind::Leather,
+            recipe.output_kind,
             tile_pos_to_world(building.position),
         )
-        .is_some_and(|index| {
-            stockpile_headroom(colony, index, ResourceKind::Leather) > f64::EPSILON
-        });
-    let local_hide = station_inventory_amount(colony, &building.id, false, ResourceKind::Hide);
+        .is_some_and(|index| stockpile_headroom(colony, index, recipe.output_kind) > f64::EPSILON);
+    let local_input = station_inventory_amount(colony, &building.id, false, recipe.input_kind);
     let active_progress = building.production_progress > f64::EPSILON
-        && local_hide + f64::EPSILON >= crate::production::TANNERY_HIDE_PER_CYCLE
-        && colony.resources.hide + f64::EPSILON >= crate::production::TANNERY_HIDE_PER_CYCLE
+        && local_input + f64::EPSILON >= recipe.input_per_cycle
+        && stockpiles::resource_amount(&colony.resources, recipe.input_kind) + f64::EPSILON
+            >= recipe.input_per_cycle
         && !building.production_paused
         && building.production_queue.first().is_some_and(|entry| {
-            entry.recipe_id == TANNERY_RECIPE_ID
-                && production_recipe_availability(colony, BuildingType::Tannery, TANNERY_RECIPE_ID)
-                    .is_some_and(|recipe| recipe.available)
+            entry.recipe_id == recipe.recipe_id
+                && production_recipe_availability(colony, building.building_type, recipe.recipe_id)
+                    .is_some_and(|availability| availability.available)
         });
     station_cargo || local_output || active_progress
 }
 
-/// A Cloth Leader should claim a fresh Tannery worker only when one complete
-/// 5-Hide batch can be fetched and its 1-Leather output has a real destination.
-fn physical_tannery_runnable(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
-    if building.building_type != BuildingType::Tannery
+/// A Cloth Leader claims a fresh worker only when one complete physical batch can
+/// be fetched and its whole output has a real finite destination.
+fn physical_textile_runnable(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
+    let Some(recipe) = single_input_physical_recipe(building.building_type).filter(|_| {
+        matches!(
+            building.building_type,
+            BuildingType::Clothier | BuildingType::Tannery
+        )
+    }) else {
+        return false;
+    };
+    if !raw_chain_survival_reserve_met(colony)
         || building.construction_progress < 100
         || building.production_paused
         || !building.production_queue.first().is_some_and(|entry| {
-            entry.recipe_id == TANNERY_RECIPE_ID
-                && production_recipe_availability(colony, BuildingType::Tannery, TANNERY_RECIPE_ID)
-                    .is_some_and(|recipe| recipe.available)
+            entry.recipe_id == recipe.recipe_id
+                && production_recipe_availability(colony, building.building_type, recipe.recipe_id)
+                    .is_some_and(|availability| availability.available)
         })
     {
         return false;
     }
-    let local_hide = station_inventory_amount(colony, &building.id, false, ResourceKind::Hide);
-    let required = crate::production::TANNERY_HIDE_PER_CYCLE;
-    if colony.resources.hide + f64::EPSILON < required {
+    let local_input = station_inventory_amount(colony, &building.id, false, recipe.input_kind);
+    let required = recipe.input_per_cycle;
+    if stockpiles::resource_amount(&colony.resources, recipe.input_kind) + f64::EPSILON < required {
         return false;
     }
-    let fetchable = local_hide + f64::EPSILON >= required
+    let fetchable = local_input + f64::EPSILON >= required
         || nearest_source_pile(
             colony,
-            ResourceKind::Hide,
-            (required - local_hide).max(0.0),
+            recipe.input_kind,
+            (required - local_input).max(0.0),
             tile_pos_to_world(building.position),
         )
         .is_some();
     let output_has_room = nearest_output_pile(
         colony,
-        ResourceKind::Leather,
+        recipe.output_kind,
         tile_pos_to_world(building.position),
     )
     .is_some_and(|index| {
-        stockpile_headroom(colony, index, ResourceKind::Leather) + f64::EPSILON
-            >= crate::production::TANNERY_LEATHER_PER_CYCLE
+        stockpile_headroom(colony, index, recipe.output_kind) + f64::EPSILON
+            >= recipe.output_per_cycle
     });
     fetchable && output_has_room
 }
 
-fn physical_tannery_needs_worker(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
-    physical_tannery_route_committed(colony, building)
-        || physical_tannery_runnable(colony, building)
+fn physical_textile_needs_worker(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
+    physical_textile_route_committed(colony, building)
+        || physical_textile_runnable(colony, building)
 }
 
-/// Release only officer-owned luxury workers. A player-assigned Tannery remains
+/// Release only officer-owned luxury workers. A player-assigned textile bench remains
 /// authoritative even when paused, locked, starved, or deliberately queue-empty.
-fn release_unrunnable_tannery_workers(colony: &mut ColonyRuntime) {
+fn release_unrunnable_textile_workers(colony: &mut ColonyRuntime) {
     let office_filled = has_officer(colony, OfficerRole::ClothLeader);
     let release = colony
         .buildings
         .iter()
         .enumerate()
         .filter(|(_, building)| {
-            building.building_type == BuildingType::Tannery
-                && building.automated_by == Some(OfficerRole::ClothLeader)
+            matches!(
+                building.building_type,
+                BuildingType::Clothier | BuildingType::Tannery
+            ) && building.automated_by == Some(OfficerRole::ClothLeader)
                 && {
                     let carrier_committed = colony.cats.iter().any(|cat| {
                         cat.death_time.is_none()
@@ -18374,7 +18273,7 @@ fn release_unrunnable_tannery_workers(colony: &mut ColonyRuntime) {
                             })
                     });
                     !carrier_committed
-                        && (!office_filled || !physical_tannery_needs_worker(colony, building))
+                        && (!office_filled || !physical_textile_needs_worker(colony, building))
                 }
         })
         .map(|(index, building)| (index, building.assigned_cat.clone()))
@@ -18402,28 +18301,100 @@ fn release_unrunnable_tannery_workers(colony: &mut ColonyRuntime) {
     }
 }
 
-fn auto_staff_runnable_tanneries(colony: &mut ColonyRuntime, now_ms: i64) {
-    auto_staff_runnable_tanneries_bounded(colony, now_ms, usize::MAX);
+fn auto_staff_runnable_textile_benches(colony: &mut ColonyRuntime, now_ms: i64) {
+    for building_type in [BuildingType::Tannery, BuildingType::Clothier] {
+        auto_staff_runnable_textile_type_bounded(colony, building_type, now_ms, usize::MAX);
+    }
 }
 
-fn auto_staff_one_runnable_tannery(colony: &mut ColonyRuntime, now_ms: i64) {
-    auto_staff_runnable_tanneries_bounded(colony, now_ms, 1);
+fn auto_staff_one_runnable_textile_bench(colony: &mut ColonyRuntime, now_ms: i64) {
+    let mut candidates = colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.assigned_cat.is_none() && physical_textile_needs_worker(colony, building)
+        })
+        .filter_map(|building| {
+            let recipe = single_input_physical_recipe(building.building_type)?;
+            let output_cargo_kind = carrying_kind_for_resource(recipe.output_kind)?;
+            let committed = physical_textile_route_committed(colony, building);
+            let local_output =
+                station_inventory_amount(colony, &building.id, true, recipe.output_kind);
+            let outbound = colony
+                .cats
+                .iter()
+                .filter_map(|cat| cat.carrying.as_ref())
+                .filter(|cargo| cargo.kind == output_cargo_kind)
+                .filter(|cargo| {
+                    parse_station_cargo(cargo.source_gather_spot.as_deref()).is_some_and(
+                        |(direction, building_id, _)| {
+                            direction == "out" && building_id == building.id
+                        },
+                    )
+                })
+                .map(|cargo| cargo.amount.max(0.0))
+                .sum::<f64>();
+            let completed = stockpiles::resource_amount(&colony.resources, recipe.output_kind)
+                + local_output
+                + outbound;
+            Some((
+                building.building_type,
+                committed,
+                completed,
+                building.id.clone(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.2.total_cmp(&right.2))
+            .then_with(|| {
+                let rank = |kind| match kind {
+                    BuildingType::Tannery => 0,
+                    BuildingType::Clothier => 1,
+                    _ => 2,
+                };
+                rank(left.0).cmp(&rank(right.0))
+            })
+            .then_with(|| left.3.cmp(&right.3))
+    });
+    if let Some((building_type, _, _, _)) = candidates.first() {
+        auto_staff_runnable_textile_type_bounded(colony, *building_type, now_ms, 1);
+    }
 }
 
-fn auto_staff_runnable_tanneries_bounded(
+fn auto_staff_runnable_textile_type_bounded(
     colony: &mut ColonyRuntime,
+    building_type: BuildingType,
     now_ms: i64,
     max_assignments: usize,
 ) {
     auto_staff_idle_buildings_matching(
         colony,
-        BuildingType::Tannery,
+        building_type,
         now_ms,
         true,
         max_assignments,
-        physical_tannery_needs_worker,
+        physical_textile_needs_worker,
         |_, _| true,
     );
+}
+
+#[cfg(test)]
+fn release_unrunnable_tannery_workers(colony: &mut ColonyRuntime) {
+    release_unrunnable_textile_workers(colony);
+}
+
+#[cfg(test)]
+fn auto_staff_one_runnable_tannery(colony: &mut ColonyRuntime, now_ms: i64) {
+    auto_staff_runnable_textile_type_bounded(colony, BuildingType::Tannery, now_ms, 1);
+}
+
+#[cfg(test)]
+fn auto_staff_runnable_tanneries(colony: &mut ColonyRuntime, now_ms: i64) {
+    auto_staff_runnable_textile_type_bounded(colony, BuildingType::Tannery, now_ms, usize::MAX);
 }
 
 fn auto_staff_idle_buildings(
@@ -18946,22 +18917,34 @@ fn complete_fishing(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate
     });
 }
 
-/// Finish one explicit textile-foraging shift. Fibre used to appear as an invisible
-/// per-tick Farmer bonus; making it a bounded job means a vacant office genuinely leaves
-/// the decision to the player while a filled Farmer can automate the exact same work.
-fn complete_fibre_forage(colony: &mut ColonyRuntime, job: &JobRuntime, _gate: TickGate) {
+/// Finish one explicit textile-foraging shift with the harvest in the worker's paws.
+/// Fibre joins the aggregate ledger only when this carrier reaches a finite accepting
+/// pile; aggregate stock and already in-flight Fibre bound the newly admitted load.
+fn complete_fibre_forage(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
     let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
         return;
     };
     let cap = storage_caps(colony).fibre;
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let in_flight = colony
+        .cats
+        .iter()
+        .filter_map(|cat| cat.carrying.as_ref())
+        .filter(|cargo| cargo.kind == CarryingKind::Fibre && cargo.source_gather_spot.is_none())
+        .map(|cargo| cargo.amount.max(0.0))
+        .sum::<f64>();
     let reward = (skill_scaled_yield(&colony.cats[cat_index], job.kind, FIBRE_FORAGE_YIELD)
         * effects.gather_yield_mult.max(0.0))
-    .min((cap - colony.resources.fibre).max(0.0));
-    colony.resources.fibre += reward;
+    .min((cap - colony.resources.fibre - in_flight).max(0.0));
     if reward > 0.0 {
         colony.cats[cat_index].gain_skill(Labor::Forage, SKILL_GAIN_PER_JOB);
     }
+    colony.cats[cat_index].carrying = (reward > 0.0).then_some(Carrying {
+        kind: CarryingKind::Fibre,
+        amount: reward,
+        job_ended_at: gate.processed_through,
+        source_gather_spot: None,
+    });
 }
 
 /// Fraction of a quarry's raw Stone reward that also comes back as a final physical Ore
@@ -19336,6 +19319,7 @@ fn return_assigned_cat(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickG
             | JobKind::Quarry
             | JobKind::GatherLogs
             | JobKind::Fish
+            | JobKind::ForageFibre
             | JobKind::FetchWater
     ) {
         // The completing gatherer carries its final trip's yield home; route it to the pile
@@ -19494,6 +19478,7 @@ fn carrying_kind_for_job(kind: JobKind) -> CarryingKind {
         JobKind::Quarry => CarryingKind::Stone,
         JobKind::GatherLogs => CarryingKind::Logs,
         JobKind::Fish => CarryingKind::Fish,
+        JobKind::ForageFibre => CarryingKind::Fibre,
         _ => CarryingKind::Food,
     }
 }
@@ -19825,6 +19810,19 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
             missing_reason: "missing_hide",
             source_name: "hide",
             output_name: "leather",
+        }),
+        BuildingType::Clothier => Some(SingleInputPhysicalRecipe {
+            recipe_id: CLOTHIER_RECIPE_ID,
+            input_kind: ResourceKind::Fibre,
+            input_per_cycle: crate::production::CLOTHIER_FIBRE_PER_CYCLE,
+            output_kind: ResourceKind::Cloth,
+            output_per_cycle: crate::production::CLOTHIER_CLOTH_PER_CYCLE,
+            labor: Labor::Textile,
+            input_budget: StationInputBudget::Aggregate,
+            fetching_reason: "fetching_fibre",
+            missing_reason: "missing_fibre",
+            source_name: "fibre",
+            output_name: "cloth",
         }),
         _ => None,
     }
@@ -21001,15 +20999,22 @@ fn advance_physical_refiner(
     let mut available_output = output_headroom;
     let mut queue_preview = building.production_queue.clone();
     let mut queue_cycles = 0_usize;
-    let finish_committed_batch_only = RAW_MATERIAL_WORKSHOPS.contains(&building_type)
+    let textile_survival_stop = matches!(
+        building_type,
+        BuildingType::Clothier | BuildingType::Tannery
+    ) && building.automated_by == Some(OfficerRole::ClothLeader)
+        && !raw_chain_survival_reserve_met(colony);
+    let finish_committed_batch_only = (RAW_MATERIAL_WORKSHOPS.contains(&building_type)
         && building.automated_by == Some(OfficerRole::Forester)
+        || textile_survival_stop)
         && !raw_chain_survival_reserve_met(colony);
     while queue_preview
         .first()
         .is_some_and(|entry| entry.recipe_id == recipe.recipe_id)
         && available_input + f64::EPSILON >= recipe.input_per_cycle
         && available_output + f64::EPSILON >= recipe.output_per_cycle
-        && (!finish_committed_batch_only || queue_cycles == 0)
+        && (!finish_committed_batch_only
+            || queue_cycles == 0 && (!textile_survival_stop || progress > f64::EPSILON))
     {
         let rate = work_rate_multiplier(base_skill + queue_cycles as f64 * SKILL_GAIN_PER_JOB)
             * architect_rate;
@@ -21042,7 +21047,8 @@ fn advance_physical_refiner(
             .first()
             .is_some_and(|entry| entry.recipe_id == recipe.recipe_id)
         && available_output + f64::EPSILON >= recipe.output_per_cycle
-        && (!finish_committed_batch_only || queue_cycles == 0)
+        && (!finish_committed_batch_only
+            || queue_cycles == 0 && (!textile_survival_stop || progress > f64::EPSILON))
     {
         let rate = work_rate_multiplier(base_skill + queue_cycles as f64 * SKILL_GAIN_PER_JOB)
             * architect_rate;
@@ -21604,6 +21610,8 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
         CarryingKind::Herbs => Some(ResourceKind::Herbs),
         CarryingKind::Hide => Some(ResourceKind::Hide),
         CarryingKind::Leather => Some(ResourceKind::Leather),
+        CarryingKind::Fibre => Some(ResourceKind::Fibre),
+        CarryingKind::Cloth => Some(ResourceKind::Cloth),
         CarryingKind::Bone => Some(ResourceKind::Bone),
         CarryingKind::Ore => Some(ResourceKind::Ore),
         CarryingKind::Metal => Some(ResourceKind::Metal),
@@ -22423,6 +22431,8 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         CarryingKind::Herbs => ResourceKind::Herbs,
         CarryingKind::Hide => ResourceKind::Hide,
         CarryingKind::Leather => ResourceKind::Leather,
+        CarryingKind::Fibre => ResourceKind::Fibre,
+        CarryingKind::Cloth => ResourceKind::Cloth,
         CarryingKind::Bone => ResourceKind::Bone,
         CarryingKind::Ore => ResourceKind::Ore,
         CarryingKind::Metal => ResourceKind::Metal,
@@ -22673,6 +22683,8 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
         CarryingKind::Herbs => format!("{cat_id} hauled {} herbs.", carrying.amount),
         CarryingKind::Hide => format!("{cat_id} hauled {} hide.", carrying.amount),
         CarryingKind::Leather => format!("{cat_id} hauled {} leather.", carrying.amount),
+        CarryingKind::Fibre => format!("{cat_id} hauled {} fibre.", carrying.amount),
+        CarryingKind::Cloth => format!("{cat_id} hauled {} cloth.", carrying.amount),
         CarryingKind::Bone => format!("{cat_id} hauled {} bone.", carrying.amount),
         CarryingKind::Ore => format!("{cat_id} hauled {} ore.", carrying.amount),
         CarryingKind::Metal => format!("{cat_id} hauled {} metal bars.", carrying.amount),
@@ -22723,7 +22735,7 @@ mod tests {
     use crate::{
         actions::{ActionCtx, apply_action, build_snapshot},
         entities::{CatActivity, CatNeeds, CatStats, MapType},
-        items::{ItemKind, MAX_QUALITY, Material},
+        items::{ItemKind, Material},
         storage::BASE_CAPACITY,
     };
     use cat_protocol as proto;
@@ -23135,6 +23147,13 @@ mod tests {
                     BuildingType::FoodStorage,
                 );
             }
+            for index in 0..2 {
+                install_completed_fixture_building(
+                    &mut control.colonies[0],
+                    format!("matrix-water-{index}"),
+                    BuildingType::WaterBowl,
+                );
+            }
             assert_fixture_buildings_do_not_overlap(&control.colonies[0]);
 
             let colony = &mut control.colonies[0];
@@ -23159,6 +23178,9 @@ mod tests {
             colony.resources.tools = caps.tools;
             colony.upgrade_tree.research_points = 1_000.0;
             colony.last_leader_research_choice_at = None;
+            reconcile_colony_stockpiles(colony);
+            colony.resources.food = 500.0;
+            colony.resources.water = 500.0;
 
             // Satisfy Captain demand for every row except the Captain row itself.
             // That row deliberately leaves the roster untrained so its autonomous
@@ -23182,6 +23204,15 @@ mod tests {
                     .id
                     .clone()
             });
+            if role == OfficerRole::ClothLeader
+                && let Some(building_id) = target_building_id.as_deref()
+                && let Some(building) = colony
+                    .buildings
+                    .iter_mut()
+                    .find(|building| building.id == building_id)
+            {
+                building.production_queue = default_production_queue(BuildingType::Clothier);
+            }
 
             // Keep exactly the removed holder free. Every unrelated staffable building
             // has a distinct living worker; Forester's three non-sticky raw benches may
@@ -24861,8 +24892,22 @@ mod tests {
         let mut forage_control = control.clone();
         complete_fibre_forage(&mut forage_control, &forage_job, production_gate(1, 1_000));
         complete_fibre_forage(&mut forage_upgrade, &forage_job, production_gate(1, 1_000));
-        assert_eq!(forage_control.resources.fibre, FIBRE_FORAGE_YIELD);
-        assert_eq!(forage_upgrade.resources.fibre, FIBRE_FORAGE_YIELD * 1.15);
+        assert_eq!(forage_control.resources.fibre, 0.0);
+        assert_eq!(forage_upgrade.resources.fibre, 0.0);
+        assert_eq!(
+            forage_control.cats[0]
+                .carrying
+                .as_ref()
+                .map(|cargo| (cargo.kind, cargo.amount)),
+            Some((CarryingKind::Fibre, FIBRE_FORAGE_YIELD))
+        );
+        assert_eq!(
+            forage_upgrade.cats[0]
+                .carrying
+                .as_ref()
+                .map(|cargo| (cargo.kind, cargo.amount)),
+            Some((CarryingKind::Fibre, FIBRE_FORAGE_YIELD * 1.15))
+        );
 
         let quarry = quarry_job_at(mountain, &cat.id);
         let mut logging = quarry.clone();
@@ -24903,6 +24948,124 @@ mod tests {
             total_yield_for_job(&material_upgrade, &quarry, 0, seed).to_bits(),
             total_yield_for_job(&material_upgrade.clone(), &quarry, 0, seed).to_bits(),
             "same upgrade state and seed must resolve byte-identical loads"
+        );
+    }
+
+    #[test]
+    fn fibre_forage_reserves_real_capacity_across_simultaneous_due_workers() {
+        let mut colony = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: BASE_CAPACITY.fibre - 1.0,
+                ..Resources::default()
+            },
+            false,
+        );
+        colony.cats = vec![
+            adult_idle_cat("forager-a", "colony-1"),
+            adult_idle_cat("forager-b", "colony-1"),
+        ];
+        for cat_id in ["forager-a", "forager-b"] {
+            complete_fibre_forage(
+                &mut colony,
+                &JobRuntime {
+                    kind: JobKind::ForageFibre,
+                    assigned_cat: Some(cat_id.to_owned()),
+                    ..JobRuntime::default()
+                },
+                production_gate(1, 1_000),
+            );
+        }
+        let carried = colony
+            .cats
+            .iter()
+            .filter_map(|cat| cat.carrying.as_ref())
+            .map(|cargo| cargo.amount)
+            .sum::<f64>();
+        assert_eq!(carried, 1.0);
+        assert_eq!(colony.resources.fibre + carried, BASE_CAPACITY.fibre);
+        assert_eq!(
+            colony
+                .cats
+                .iter()
+                .filter(|cat| cat.carrying.is_some())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn fibre_forage_at_full_capacity_mints_no_cargo_and_no_skill() {
+        let mut colony = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: BASE_CAPACITY.fibre,
+                ..Resources::default()
+            },
+            false,
+        );
+        let before = colony.cats[0].skill(Labor::Forage);
+        let job = JobRuntime {
+            kind: JobKind::ForageFibre,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            ..JobRuntime::default()
+        };
+        complete_fibre_forage(&mut colony, &job, production_gate(1, 1_000));
+        assert!(colony.cats[0].carrying.is_none());
+        assert_eq!(
+            colony.cats[0].skill(Labor::Forage).to_bits(),
+            before.to_bits()
+        );
+        assert_eq!(colony.resources.fibre, BASE_CAPACITY.fibre);
+    }
+
+    #[test]
+    fn fibre_forage_cap_counts_raw_source_cargo_but_not_aggregate_station_transit_twice() {
+        let mut colony = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: BASE_CAPACITY.fibre - 2.0,
+                ..Resources::default()
+            },
+            false,
+        );
+        colony.cats = vec![
+            adult_idle_cat("raw", "colony-1"),
+            adult_idle_cat("station", "colony-1"),
+            adult_idle_cat("new", "colony-1"),
+        ];
+        colony.cats[0].carrying = Some(Carrying {
+            kind: CarryingKind::Fibre,
+            amount: 1.0,
+            job_ended_at: 0,
+            source_gather_spot: None,
+        });
+        colony.cats[1].carrying = Some(Carrying {
+            kind: CarryingKind::Fibre,
+            amount: 1.0,
+            job_ended_at: 0,
+            source_gather_spot: Some("station-in|chain-1|station-transit:chain-1".to_owned()),
+        });
+        complete_fibre_forage(
+            &mut colony,
+            &JobRuntime {
+                kind: JobKind::ForageFibre,
+                assigned_cat: Some("new".to_owned()),
+                ..JobRuntime::default()
+            },
+            production_gate(1, 1_000),
+        );
+        assert_eq!(colony.cats[2].carrying.as_ref().unwrap().amount, 1.0);
+        assert_eq!(
+            colony.resources.fibre
+                + colony
+                    .cats
+                    .iter()
+                    .filter_map(|cat| cat.carrying.as_ref())
+                    .filter(|cargo| cargo.source_gather_spot.is_none())
+                    .map(|cargo| cargo.amount)
+                    .sum::<f64>(),
+            BASE_CAPACITY.fibre
         );
     }
 
@@ -29361,10 +29524,21 @@ mod tests {
                     ..Resources::default()
                 },
             ),
+            (
+                BuildingType::Clothier,
+                ResourceKind::Fibre,
+                Resources {
+                    fibre: 5.0,
+                    ..Resources::default()
+                },
+            ),
         ] {
             let mut colony = chain_colony(building_type, resources, true);
             colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
-            let delivered = if building_type == BuildingType::Tannery {
+            let delivered = if matches!(
+                building_type,
+                BuildingType::Tannery | BuildingType::Clothier
+            ) {
                 5.0
             } else {
                 4.0
@@ -29384,6 +29558,7 @@ mod tests {
                 BuildingType::WoodCutter
                 | BuildingType::Workshop
                 | BuildingType::Smelter
+                | BuildingType::Clothier
                 | BuildingType::Tannery => advance_physical_refiner(
                     &mut colony,
                     0,
@@ -29554,7 +29729,7 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_clothier_queue_block_reason_is_entitlement_aware_but_behavior_neutral() {
+    fn physical_clothier_queue_block_reason_is_entitlement_aware() {
         let mut colony = chain_colony(BuildingType::Clothier, Resources::default(), true);
         colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
         assert_eq!(
@@ -29571,13 +29746,13 @@ mod tests {
             .push("textiles".to_owned());
         assert_eq!(
             building_production_block_reason(&colony, &colony.buildings[0]),
-            Some("aggregate_timer_compatibility".to_owned())
+            Some("missing_fibre".to_owned())
         );
         colony.recipe_entitlement_rules_version = 0;
         colony.upgrade_tree.owned_node_ids.clear();
         assert_eq!(
             building_production_block_reason(&colony, &colony.buildings[0]),
-            Some("aggregate_timer_compatibility".to_owned())
+            Some("missing_fibre".to_owned())
         );
     }
 
@@ -29719,42 +29894,28 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_queue_state_does_not_yet_replace_two_aggregate_timers() {
-        for (building_type, resources) in [
-            (
-                BuildingType::Clothier,
-                Resources {
-                    fibre: 50.0,
-                    cloth: 30.0,
-                    ..Resources::default()
-                },
-            ),
-            (
-                BuildingType::Smithy,
-                Resources {
-                    materials: 30.0,
-                    refined: 20.0,
-                    metal: 20.0,
-                    ..Resources::default()
-                },
-            ),
-        ] {
-            let mut queued = chain_colony(building_type, resources, true);
-            let mut compatibility = queued.clone();
-            compatibility.buildings[0].production_queue.clear();
-            compatibility.buildings[0].production_paused = true;
+    fn descriptor_queue_state_does_not_yet_replace_the_smithy_aggregate_timer() {
+        let building_type = BuildingType::Smithy;
+        let resources = Resources {
+            materials: 30.0,
+            refined: 20.0,
+            metal: 20.0,
+            ..Resources::default()
+        };
+        let mut queued = chain_colony(building_type, resources, true);
+        let mut compatibility = queued.clone();
+        compatibility.buildings[0].production_queue.clear();
+        compatibility.buildings[0].production_paused = true;
 
-            phase_23_production(&mut queued, production_gate(30, 30_000), 123);
-            phase_23_production(&mut compatibility, production_gate(30, 30_000), 123);
+        phase_23_production(&mut queued, production_gate(30, 30_000), 123);
+        phase_23_production(&mut compatibility, production_gate(30, 30_000), 123);
 
-            compatibility.buildings[0].production_queue =
-                queued.buildings[0].production_queue.clone();
-            compatibility.buildings[0].production_paused = false;
-            assert_eq!(
-                compatibility, queued,
-                "{building_type:?} must keep its aggregate behavior until its physical slice"
-            );
-        }
+        compatibility.buildings[0].production_queue = queued.buildings[0].production_queue.clone();
+        compatibility.buildings[0].production_paused = false;
+        assert_eq!(
+            compatibility, queued,
+            "Smithy must keep its aggregate behavior until its physical slice"
+        );
     }
 
     #[test]
@@ -29781,9 +29942,16 @@ mod tests {
             .upgrade_tree
             .owned_node_ids
             .push("textiles".to_owned());
+        place_chain_worker_at_seeded_store(&mut colony);
         phase_23_production(&mut colony, production_gate(30, 60_000), 123);
-        assert_eq!(colony.resources.fibre, 45.0);
-        assert_eq!(colony.resources.cloth, 1.0);
+        assert_eq!(colony.resources.fibre, 50.0);
+        assert_eq!(colony.resources.cloth, 0.0);
+        assert!(
+            colony.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Fibre)
+        );
     }
 
     fn smithy_entitlement_cycle(rules_version: u32, studies: &[&str]) -> ColonyRuntime {
@@ -29857,8 +30025,14 @@ mod tests {
             true,
         );
         assert_eq!(clothier.recipe_entitlement_rules_version, 0);
+        place_chain_worker_at_seeded_store(&mut clothier);
         phase_23_production(&mut clothier, production_gate(30, 30_000), 123);
-        assert!(clothier.buildings[0].production_progress < 590.0);
+        assert!(
+            clothier.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Fibre)
+        );
 
         let mut tannery = chain_colony(
             BuildingType::Tannery,
@@ -34195,6 +34369,106 @@ mod tests {
         assert_eq!(stable(&runs[0]), stable(&runs[2]));
     }
 
+    fn run_one_full_clothier_route(cadence_sec: i64) -> (ColonyRuntime, [bool; 4]) {
+        let mut colony = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: crate::production::CLOTHIER_FIBRE_PER_CYCLE,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: CLOTHIER_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        colony.clothier_craft_progress = 317.25;
+        place_chain_worker_at_seeded_store(&mut colony);
+        let mut stages = [false; 4];
+        for step in 1..=3_600 / cadence_sec {
+            let gate = production_gate(cadence_sec, step * cadence_sec * 1_000);
+            stages[1] |= station_inventory_amount(
+                &colony,
+                &colony.buildings[0].id,
+                false,
+                ResourceKind::Fibre,
+            ) > f64::EPSILON;
+            phase_23_production(&mut colony, gate, 123);
+            stages[0] |= colony.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Fibre);
+            stages[2] |= station_inventory_amount(
+                &colony,
+                &colony.buildings[0].id,
+                true,
+                ResourceKind::Cloth,
+            ) > f64::EPSILON;
+            stages[3] |= colony.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Cloth);
+            let mut movement = phase_32_movement_setup_and_village_expansion_queue(
+                &mut colony,
+                gate,
+                normal_policy(),
+                123,
+            );
+            phase_33_movement_deposits_and_no_destination_wander(&mut colony, gate, &mut movement);
+            phase_34_movement_travel_job_acceptance_reveal_path_wear(&mut colony, gate, &movement);
+            if colony.buildings[0].production_queue.is_empty()
+                && colony.resources.cloth >= crate::production::CLOTHIER_CLOTH_PER_CYCLE
+                && colony.cats[0].carrying.is_none()
+            {
+                break;
+            }
+        }
+        (colony, stages)
+    }
+
+    #[test]
+    fn full_clothier_route_converges_at_one_five_and_sixty_second_cadence() {
+        let runs = [1, 5, 60].map(run_one_full_clothier_route);
+        for (colony, stages) in &runs {
+            assert_eq!(*stages, [true; 4]);
+            assert_eq!(colony.resources.fibre, 0.0);
+            assert_eq!(
+                colony.resources.cloth,
+                crate::production::CLOTHIER_CLOTH_PER_CYCLE
+            );
+            assert!(colony.buildings[0].production_queue.is_empty());
+            assert_eq!(colony.buildings[0].production_progress, 0.0);
+            assert_eq!(
+                colony.clothier_craft_progress.to_bits(),
+                317.25_f64.to_bits()
+            );
+            assert!(colony.cats[0].carrying.is_none());
+            assert!(building_station_inventory(colony, &colony.buildings[0], false).is_empty());
+            assert!(building_station_inventory(colony, &colony.buildings[0], true).is_empty());
+            assert_eq!(
+                colony
+                    .stockpiles
+                    .iter()
+                    .map(|pile| pile.contents.cloth)
+                    .sum::<f64>(),
+                crate::production::CLOTHIER_CLOTH_PER_CYCLE
+            );
+        }
+        let stable = |(colony, _): &(ColonyRuntime, [bool; 4])| {
+            (
+                colony.resources.clone(),
+                colony.stockpiles.clone(),
+                colony.buildings[0].production_queue.clone(),
+                colony.buildings[0].production_progress.to_bits(),
+                colony.cats[0].skill(Labor::Textile).to_bits(),
+                colony.cats[0].skill(Labor::Haul).to_bits(),
+                colony.clothier_craft_progress.to_bits(),
+            )
+        };
+        assert_eq!(stable(&runs[0]), stable(&runs[1]));
+        assert_eq!(stable(&runs[0]), stable(&runs[2]));
+    }
+
     #[test]
     fn physical_tannery_pause_empty_and_nonrepeat_queue_are_exact() {
         for empty in [false, true] {
@@ -34226,6 +34500,8 @@ mod tests {
             BuildingType::Tannery,
             Resources {
                 hide: 10.0,
+                food: 100.0,
+                water: 100.0,
                 ..Resources::default()
             },
             true,
@@ -34254,6 +34530,34 @@ mod tests {
             building_station_inventory(&one, &one.buildings[0], true),
             [(ResourceKind::Leather, 1.0)]
         );
+    }
+
+    #[test]
+    fn physical_clothier_pause_and_empty_queue_never_fetch_or_advance() {
+        for empty in [false, true] {
+            let mut colony = chain_colony(
+                BuildingType::Clothier,
+                Resources {
+                    fibre: 5.0,
+                    ..Resources::default()
+                },
+                true,
+            );
+            place_chain_worker_at_seeded_store(&mut colony);
+            colony.buildings[0].production_progress = 317.5;
+            if empty {
+                colony.buildings[0].production_queue.clear();
+            } else {
+                colony.buildings[0].production_paused = true;
+            }
+            ensure_station_stores(&mut colony, 0);
+            let before = colony.clone();
+            phase_23_production(&mut colony, production_gate(60, 60_000), 123);
+            assert_eq!(colony.resources, before.resources);
+            assert_eq!(colony.stockpiles, before.stockpiles);
+            assert_eq!(colony.buildings[0].production_progress, 317.5);
+            assert!(colony.cats[0].carrying.is_none());
+        }
     }
 
     #[test]
@@ -34335,6 +34639,8 @@ mod tests {
             BuildingType::Tannery,
             Resources {
                 hide: 10.0,
+                food: 100.0,
+                water: 100.0,
                 ..Resources::default()
             },
             false,
@@ -34372,6 +34678,109 @@ mod tests {
                 .count(),
             2,
             "the surplus helper may use genuine surplus for the second bench"
+        );
+    }
+
+    #[test]
+    fn low_comfort_textile_automation_starts_nothing_finishes_one_committed_batch_and_manual_runs()
+    {
+        let make = |progress: f64, automated: bool, fibre: f64| {
+            let mut colony = chain_colony(
+                BuildingType::Clothier,
+                Resources {
+                    fibre,
+                    ..Resources::default()
+                },
+                true,
+            );
+            colony.buildings[0].production_progress = progress;
+            colony.buildings[0].automated_by = automated.then_some(OfficerRole::ClothLeader);
+            move_general_stock_to_station_input(&mut colony, ResourceKind::Fibre, fibre);
+            colony.cats[0].position = position_from_world(station_work_point(&colony.buildings[0]));
+            colony
+        };
+
+        let mut unstarted = make(0.0, true, 5.0);
+        let before = unstarted.clone();
+        advance_physical_refiner(
+            &mut unstarted,
+            0,
+            production_gate(1_200, 1_200_000),
+            1_200.0,
+            false,
+        );
+        assert_eq!(unstarted.resources, before.resources);
+        assert_eq!(unstarted.stockpiles, before.stockpiles);
+        assert_eq!(unstarted.buildings[0].production_progress, 0.0);
+
+        let mut one_tick = make(300.0, true, 10.0);
+        let mut partitioned = one_tick.clone();
+        advance_physical_refiner(
+            &mut one_tick,
+            0,
+            production_gate(1_200, 1_200_000),
+            1_200.0,
+            false,
+        );
+        for (elapsed, now) in [(600.0, 600_000), (600.0, 1_200_000)] {
+            advance_physical_refiner(
+                &mut partitioned,
+                0,
+                production_gate(600, now),
+                elapsed,
+                false,
+            );
+        }
+        for colony in [&one_tick, &partitioned] {
+            assert_eq!(colony.resources.fibre, 5.0);
+            assert_eq!(colony.buildings[0].production_progress, 0.0);
+            assert_eq!(
+                building_station_inventory(colony, &colony.buildings[0], false),
+                [(ResourceKind::Fibre, 5.0)]
+            );
+            let local_cloth = station_inventory_amount(
+                colony,
+                &colony.buildings[0].id,
+                true,
+                ResourceKind::Cloth,
+            );
+            let carried_cloth = colony
+                .cats
+                .iter()
+                .filter_map(|cat| cat.carrying.as_ref())
+                .filter(|cargo| cargo.kind == CarryingKind::Cloth)
+                .map(|cargo| cargo.amount)
+                .sum::<f64>();
+            assert_eq!(local_cloth + carried_cloth, 1.0);
+        }
+        assert_eq!(one_tick.resources, partitioned.resources);
+        assert_eq!(
+            one_tick.buildings[0].production_queue,
+            partitioned.buildings[0].production_queue
+        );
+        assert_eq!(
+            one_tick.cats[0].skill(Labor::Textile).to_bits(),
+            partitioned.cats[0].skill(Labor::Textile).to_bits()
+        );
+
+        let mut manual = make(0.0, false, 5.0);
+        advance_physical_refiner(&mut manual, 0, production_gate(600, 600_000), 600.0, false);
+        assert_eq!(manual.resources.fibre, 0.0);
+        assert_eq!(
+            building_station_inventory(&manual, &manual.buildings[0], true),
+            [(ResourceKind::Cloth, 1.0)]
+        );
+
+        let mut auto_release = make(0.0, true, 5.0);
+        release_unrunnable_textile_workers(&mut auto_release);
+        assert!(auto_release.buildings[0].assigned_cat.is_none());
+        assert!(auto_release.buildings[0].automated_by.is_none());
+        assert!(can_take_new_job_with_busy(&auto_release.cats[0], &[]));
+        let mut manual_kept = make(0.0, false, 5.0);
+        release_unrunnable_textile_workers(&mut manual_kept);
+        assert_eq!(
+            manual_kept.buildings[0].assigned_cat.as_deref(),
+            Some("crafter")
         );
     }
 
@@ -34552,6 +34961,176 @@ mod tests {
                 .sum::<f64>(),
             1.0
         );
+    }
+
+    #[test]
+    fn clothier_death_removal_full_output_and_replacement_conserve_fibre_and_cloth() {
+        let mut inbound = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: 5.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        place_chain_worker_at_seeded_store(&mut inbound);
+        phase_23_production(&mut inbound, production_gate(1, 1_000), 123);
+        let fibre = inbound.cats[0].carrying.clone().expect("Fibre inbound");
+        assert_eq!((fibre.kind, fibre.amount), (CarryingKind::Fibre, 5.0));
+        let death_site = position_to_world(inbound.anchor, inbound.cats[0].position);
+        assert!(salvage_station_cargo(&mut inbound, &fibre, death_site));
+        inbound.cats[0].carrying = None;
+        reconcile_colony_stockpiles(&mut inbound);
+        assert_eq!(inbound.resources.fibre, 5.0);
+        assert_eq!(inbound.resources.cloth, 0.0);
+
+        let mut outbound = chain_colony(BuildingType::Clothier, Resources::default(), true);
+        ensure_station_stores(&mut outbound, 0);
+        let building = outbound.buildings[0].clone();
+        let output_id = stockpiles::station_output_id(&building.id);
+        stockpiles::add_resource(
+            &mut outbound
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == output_id)
+                .unwrap()
+                .contents,
+            ResourceKind::Cloth,
+            1.0,
+        );
+        outbound.cats[0].position = position_from_world(station_work_point(&building));
+        phase_23_production(&mut outbound, production_gate(1, 1_000), 123);
+        let cloth = outbound.cats[0].carrying.clone().expect("Cloth outbound");
+        assert_eq!((cloth.kind, cloth.amount), (CarryingKind::Cloth, 1.0));
+        assert!(salvage_station_cargo(
+            &mut outbound,
+            &cloth,
+            station_work_point(&building)
+        ));
+        assert_eq!(outbound.resources.cloth, 0.0);
+        assert_eq!(
+            building_station_inventory(&outbound, &building, true),
+            [(ResourceKind::Cloth, 1.0)]
+        );
+
+        let mut removed = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: 5.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        move_general_stock_to_station_input(&mut removed, ResourceKind::Fibre, 5.0);
+        ensure_station_stores(&mut removed, 0);
+        let removed_building = removed.buildings[0].clone();
+        let input_id = stockpiles::station_input_id(&removed_building.id);
+        let output_id = stockpiles::station_output_id(&removed_building.id);
+        stockpiles::add_resource(
+            &mut removed
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == output_id)
+                .unwrap()
+                .contents,
+            ResourceKind::Cloth,
+            1.0,
+        );
+        removed.buildings.clear();
+        for (now, source_id) in [(2_000, &input_id), (3_000, &output_id)] {
+            let source = removed
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == *source_id)
+                .map(|pile| {
+                    let (x, y) = pile.center();
+                    WorldPos { x, y }
+                })
+                .unwrap();
+            removed.cats[0].position = position_from_world(source);
+            removed.cats[0].activity = CatActivity::Idle;
+            removed.cats[0].carrying = None;
+            recover_orphaned_station_stores(&mut removed, production_gate(1, now));
+            let cargo = removed.cats[0]
+                .carrying
+                .clone()
+                .expect("orphan textile cargo");
+            let target = haul_deposit_target(&removed, &cargo, source);
+            assert_eq!(credit_carrying(&mut removed, &cargo, target), 0.0);
+            removed.cats[0].carrying = None;
+        }
+        recover_orphaned_station_stores(&mut removed, production_gate(1, 4_000));
+        assert_eq!(removed.resources.fibre, 5.0);
+        assert_eq!(removed.resources.cloth, 1.0);
+        assert!(removed.stockpiles.iter().all(|pile| pile.id != input_id));
+        assert!(removed.stockpiles.iter().all(|pile| pile.id != output_id));
+
+        let mut blocked = chain_colony(
+            BuildingType::Clothier,
+            Resources {
+                fibre: 5.0,
+                cloth: BASE_CAPACITY.cloth,
+                food: 100.0,
+                water: 100.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        blocked
+            .officers
+            .insert(OfficerRole::ClothLeader, "crafter".to_owned());
+        blocked.buildings[0].automated_by = Some(OfficerRole::ClothLeader);
+        blocked.buildings[0].production_queue.clear();
+        ensure_station_stores(&mut blocked, 0);
+        let blocked_output = stockpiles::station_output_id(&blocked.buildings[0].id);
+        stockpiles::add_resource(
+            &mut blocked
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == blocked_output)
+                .unwrap()
+                .contents,
+            ResourceKind::Cloth,
+            1.0,
+        );
+        release_unrunnable_textile_workers(&mut blocked);
+        assert!(blocked.buildings[0].assigned_cat.is_none());
+        stockpiles::add_resource(&mut blocked.resources, ResourceKind::Cloth, -1.0);
+        let general = blocked
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap();
+        stockpiles::add_resource(&mut general.contents, ResourceKind::Cloth, -1.0);
+        auto_staff_runnable_textile_benches(&mut blocked, 5_000);
+        assert_eq!(
+            blocked.buildings[0].assigned_cat.as_deref(),
+            Some("crafter")
+        );
+        blocked.cats.push(adult_idle_cat("replacement", "colony-1"));
+        mark_cat_dead(&mut blocked, "crafter", 6_000);
+        auto_staff_runnable_textile_benches(&mut blocked, 7_000);
+        assert_eq!(
+            blocked.buildings[0].assigned_cat.as_deref(),
+            Some("replacement")
+        );
+        let replacement = blocked
+            .cats
+            .iter()
+            .position(|cat| cat.id == "replacement")
+            .unwrap();
+        blocked.cats[replacement].position =
+            position_from_world(station_work_point(&blocked.buildings[0]));
+        phase_23_production(&mut blocked, production_gate(1, 8_000), 123);
+        assert_eq!(
+            blocked.cats[replacement]
+                .carrying
+                .as_ref()
+                .map(|cargo| (cargo.kind, cargo.amount)),
+            Some((CarryingKind::Cloth, 1.0))
+        );
+        deliver_all_station_cargo_to_current_targets(&mut blocked);
+        assert_eq!(blocked.resources.cloth, BASE_CAPACITY.cloth);
     }
 
     fn run_one_full_woodworking_route(cadence_sec: i64) -> (ColonyRuntime, [bool; 6]) {
@@ -36366,7 +36945,7 @@ mod tests {
     // ---- P16/P19 clothing chain slice: clothier/tannery refine + trade craft ----
 
     #[test]
-    fn clothier_refines_fibre_into_cloth_when_it_has_a_worker() {
+    fn clothier_starts_with_a_real_fibre_fetch_and_no_early_cloth_credit() {
         let mut staffed = chain_colony(
             BuildingType::Clothier,
             Resources {
@@ -36375,9 +36954,16 @@ mod tests {
             },
             true,
         );
+        place_chain_worker_at_seeded_store(&mut staffed);
         phase_23_production(&mut staffed, production_gate(30, 30_000), 123);
-        assert_eq!(staffed.resources.cloth, 1.0);
-        assert_eq!(staffed.resources.fibre, 45.0);
+        assert_eq!(staffed.resources.cloth, 0.0);
+        assert_eq!(staffed.resources.fibre, 50.0);
+        assert!(
+            staffed.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Fibre && cargo.amount == 5.0)
+        );
 
         // With no worker at all, the bench makes nothing.
         let mut no_worker = chain_colony(
@@ -36413,7 +36999,7 @@ mod tests {
     }
 
     #[test]
-    fn clothier_bench_crafts_a_clothing_trade_good_from_surplus_cloth() {
+    fn physical_clothier_freezes_the_legacy_hidden_clothing_timer() {
         let mut colony = chain_colony(
             BuildingType::Clothier,
             Resources {
@@ -36426,28 +37012,12 @@ mod tests {
         colony.clothier_craft_progress = 890.0;
         phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
-        // The functional refine (unchanged) also completes this tick and adds 1 cloth
-        // (21 + 1 = 22), then the trade craft spends 1 of the surplus: 22 - 1 = 21.
         assert_eq!(colony.resources.cloth, 21.0);
-
-        let clothing_items: Vec<(&Item, &u32)> = colony
-            .items
-            .iter()
-            .filter(|(item, _)| item.material == Material::Fibre)
-            .collect();
         assert_eq!(
-            clothing_items.len(),
-            1,
-            "exactly one fibre clothing stack crafted"
+            colony.clothier_craft_progress.to_bits(),
+            890.0_f64.to_bits()
         );
-        let (item, count) = clothing_items[0];
-        assert_eq!(*count, 1);
-        assert_eq!(item.kind, ItemKind::Clothing);
-
-        // Both weaving and clothing craft train the textile labor.
-        let worker = colony.cats.iter().find(|cat| cat.id == "crafter").unwrap();
-        assert_eq!(worker.skill(Labor::Textile), 2.0 * SKILL_GAIN_PER_JOB);
-        assert_eq!(worker.skill(Labor::Craft), 0.0);
+        assert!(colony.items.is_empty());
     }
 
     #[test]
@@ -36504,8 +37074,8 @@ mod tests {
     }
 
     #[test]
-    fn clothing_trade_good_quality_reflects_the_assigned_crafters_skill() {
-        fn quality_after_one_cycle(craft_skill: f64) -> u8 {
+    fn frozen_clothier_timer_is_skill_independent_and_bit_exact() {
+        fn frozen_after_tick(craft_skill: f64) -> (u64, ItemStore) {
             let mut colony = chain_colony(
                 BuildingType::Clothier,
                 Resources {
@@ -36518,29 +37088,15 @@ mod tests {
             colony.cats[0].gain_skill(Labor::Textile, craft_skill);
             colony.clothier_craft_progress = 890.0;
             phase_23_production(&mut colony, production_gate(30, 30_000), 123);
-            colony
-                .items
-                .iter()
-                .find(|(item, _)| item.material == Material::Fibre)
-                .expect("a fibre clothing item was crafted")
-                .0
-                .quality
+            (colony.clothier_craft_progress.to_bits(), colony.items)
         }
 
-        let low_skill_quality = quality_after_one_cycle(0.0);
-        let high_skill_quality = quality_after_one_cycle(400.0);
-        assert_eq!(
-            low_skill_quality, 0,
-            "an untrained crafter yields the crude band"
-        );
-        assert_eq!(
-            high_skill_quality, MAX_QUALITY,
-            "400 craft xp yields masterwork"
-        );
-        assert!(
-            high_skill_quality > low_skill_quality,
-            "a more-skilled crafter must never yield lower quality for the same recipe"
-        );
+        let low = frozen_after_tick(0.0);
+        let high = frozen_after_tick(400.0);
+        assert_eq!(low.0, 890.0_f64.to_bits());
+        assert_eq!(high.0, 890.0_f64.to_bits());
+        assert!(low.1.is_empty());
+        assert!(high.1.is_empty());
     }
 
     #[test]
@@ -36593,8 +37149,8 @@ mod tests {
             "identical runs (including the items store and cat skills) must be byte-identical"
         );
         assert!(
-            !left.items.is_empty(),
-            "the horizon should have completed at least one clothing trade-craft cycle"
+            left.items.is_empty(),
+            "the frozen timer must mint no hidden items"
         );
     }
 
@@ -36628,6 +37184,33 @@ mod tests {
         let gate = production_gate(1, 1_000);
         phase_29_due_completion_gathering_explore_expansion(&mut colony, gate, 123);
         phase_30_due_completion_build_ritual_training_return_mark_done(&mut colony, gate);
+        assert_eq!(colony.resources.fibre, 0.0, "no source completion credit");
+        let cargo = colony.cats[0]
+            .carrying
+            .clone()
+            .expect("physical Fibre load");
+        assert_eq!(
+            (cargo.kind, cargo.amount),
+            (CarryingKind::Fibre, FIBRE_FORAGE_YIELD)
+        );
+        dispatch_officer_resource_jobs(&mut colony, 2_000, 123, true);
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .filter(|job| job.kind == JobKind::ForageFibre)
+                .count(),
+            1,
+            "an undelivered raw Fibre load suppresses redundant forage"
+        );
+        let (x, y) = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap()
+            .center();
+        assert_eq!(credit_carrying(&mut colony, &cargo, WorldPos { x, y }), 0.0);
+        colony.cats[0].carrying = None;
         assert_eq!(colony.resources.fibre, FIBRE_FORAGE_YIELD);
         assert_eq!(colony.jobs[0].status, JobStatus::Completed);
     }

@@ -3318,7 +3318,9 @@ fn resource_icon_path(kind: HudRes) -> &'static str {
         HudRes::Logs => "public/images/game/icons/logs.png",
         HudRes::Lumber => "public/images/game/icons/lumber.png",
         HudRes::Herbs => "public/images/game/icons/herbs.png",
-        HudRes::Fibre => "public/images/game/icons/fibre.png",
+        // The tracked haystack is the public pack's distinct raw-plant-fibre
+        // silhouette. Do not alias the flour sack: carriers must read uniquely.
+        HudRes::Fibre => "public/images/game/props/haystack.png",
         HudRes::Hide => "public/images/game/icons/hide.png",
         HudRes::Bone => "public/images/game/icons/bone.png",
         HudRes::Cloth => "public/images/game/icons/cloth.png",
@@ -10916,7 +10918,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
     resource_icon_tint(carrying_hud_res(kind))
 }
 
-const CARRYING_KINDS: [CarryingKind; 21] = [
+const CARRYING_KINDS: [CarryingKind; 23] = [
     CarryingKind::Food,
     CarryingKind::Fish,
     CarryingKind::Blessings,
@@ -10935,6 +10937,8 @@ const CARRYING_KINDS: [CarryingKind; 21] = [
     CarryingKind::Herbs,
     CarryingKind::Hide,
     CarryingKind::Leather,
+    CarryingKind::Fibre,
+    CarryingKind::Cloth,
     CarryingKind::Bone,
     CarryingKind::Ore,
     CarryingKind::Metal,
@@ -10963,6 +10967,8 @@ fn carrying_hud_res(kind: CarryingKind) -> HudRes {
         CarryingKind::Herbs => HudRes::Herbs,
         CarryingKind::Hide => HudRes::Hide,
         CarryingKind::Leather => HudRes::Leather,
+        CarryingKind::Fibre => HudRes::Fibre,
+        CarryingKind::Cloth => HudRes::Cloth,
         CarryingKind::Bone => HudRes::Bone,
         CarryingKind::Ore => HudRes::Ore,
         CarryingKind::Metal => HudRes::Metal,
@@ -12686,7 +12692,7 @@ mod tests {
     #[test]
     fn every_cargo_kind_uses_a_unique_tracked_semantic_png() {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        assert_eq!(CARRYING_KINDS.len(), 21, "wire cargo cardinality changed");
+        assert_eq!(CARRYING_KINDS.len(), 23, "wire cargo cardinality changed");
         let paths = CARRYING_KINDS
             .into_iter()
             .map(carrying_icon_path)
@@ -12697,7 +12703,9 @@ mod tests {
         for kind in CARRYING_KINDS {
             let path = carrying_icon_path(kind);
             assert!(
-                path.starts_with("public/images/game/icons/") && path.ends_with(".png"),
+                (path.starts_with("public/images/game/icons/")
+                    || path == "public/images/game/props/haystack.png")
+                    && path.ends_with(".png"),
                 "{kind:?} escaped the tracked semantic icon set: {path}"
             );
             let bytes = std::fs::read(workspace.join(path)).unwrap_or_else(|error| {
@@ -13729,7 +13737,9 @@ mod tests {
         for kind in HUD_RESOURCES {
             let path = resource_icon_path(kind);
             assert!(
-                path.starts_with("public/images/game/icons/") && path.ends_with(".png"),
+                (path.starts_with("public/images/game/icons/")
+                    || path == "public/images/game/props/haystack.png")
+                    && path.ends_with(".png"),
                 "{kind:?} escaped the tracked semantic icon set: {path}"
             );
             let bytes = std::fs::read(workspace.join(path))
@@ -14675,6 +14685,50 @@ mod tests {
         assert_eq!(
             carrying_icon_path(CarryingKind::Leather),
             resource_icon_path(HudRes::Leather)
+        );
+        let mut clothier = tannery.clone();
+        clothier.building_type = BuildingType::Clothier;
+        clothier.production_output = Some("Cloth".to_owned());
+        clothier.input_inventory = vec![ResourceStackSnapshot {
+            kind: ResourceKind::Fibre,
+            amount: 5.0,
+        }];
+        clothier.output_inventory = vec![ResourceStackSnapshot {
+            kind: ResourceKind::Cloth,
+            amount: 1.0,
+        }];
+        clothier.inbound_cargo = clothier.input_inventory.clone();
+        clothier.outbound_cargo = clothier.output_inventory.clone();
+        clothier.production_queue = vec![cat_protocol::ProductionQueueEntrySnapshot {
+            recipe_id: "fibre_to_cloth".to_owned(),
+            repeat: true,
+        }];
+        clothier.available_recipes = vec!["fibre_to_cloth".to_owned()];
+        let text = building_inspector_text(&clothier, colony);
+        assert!(text.contains("making Cloth"));
+        assert!(text.contains("local input: fibre 5.0"));
+        assert!(text.contains("local output: cloth 1.0"));
+        assert!(text.contains("outbound cargo: cloth 1.0"));
+        assert!(text.contains("queue: fibre_to_cloth*"));
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("clothier-queue-session"),
+                &clothier,
+                0,
+                StationQueueButton::Add,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                edit: ProductionQueueEdit::Add { recipe_id, repeat: true },
+                ..
+            }) if recipe_id == "fibre_to_cloth"
+        ));
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Fibre),
+            resource_icon_path(HudRes::Fibre)
+        );
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Cloth),
+            resource_icon_path(HudRes::Cloth)
         );
         // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);

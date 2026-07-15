@@ -38,15 +38,18 @@ no semantic names, so mapping is manual.
 
 ---
 
-## Resource / goods icons — live semantic copies
+## Resource / goods art — live semantic copies
 
-The tracked resource icon set contains one unique semantic PNG for every maintained HUD row:
-`armor`, `blessings`, `blocks`, `bone`, `catnip`, `cloth`, `fibre`, `fish`, `flour`, `food`,
+The tracked semantic-art mapping contains one unique PNG for every maintained HUD row. Most live
+under `game/icons/`:
+`armor`, `blessings`, `blocks`, `bone`, `catnip`, `cloth`, `fish`, `flour`, `food`,
 `grain`, `herbs`, `hide`, `leather`, `logs`, `lumber`, `materials`, `metal`, `ore`, `planks`,
 `refined`, `stone`, `tools`, `water`, and `weapons`. `goods` remains a separate fallback for
 finite crafted-item kinds that do not yet have their own glyph. The Goods panel also exposes
 each finite item's physical weight, condition range, damaged/broken counts, and a repair action
 when a valid staffed workshop and matching visible material are available.
+Raw Fibre intentionally maps to the tracked public-pack `game/props/haystack.png`, whose bundled
+plant silhouette stays distinct from both the Flour pouch and finished Cloth.
 
 Source dir: `public/Kenney Game Assets All-in-1 3.5.0/Icons/Board Game Icons/PNG/`
 Two sizes: `Default (64px)/` and `Double (128px)/`. Ship **128px** (crisp, downscales clean).
@@ -65,7 +68,8 @@ Vector recolor source: `Icons/Board Game Icons/Vector/Icons/`.
 | **Bone** | Fish Pack `fish_blue_skeleton.png` | Clear 128 px skeleton silhouette; tint warm ivory in the HUD. |
 | **Materials (generic)** | `token.png` | Neutral disc token; the catch-all goods glyph. |
 | **Refined goods** | `resource_planks.png` | Stacked planks/bricks = processed output. |
-| **Cloth / fibre** | `pouch.png` (alt tint) or Generic Items bolt | Sack tinted, or a colored cloth from Generic Items fallback. |
+| **Cloth** | `pouch.png` (alt tint) or Generic Items bolt | Finished textile; the tracked Cloth glyph remains distinct from raw Fibre. |
+| **Fibre** | tracked `game/props/haystack.png` | Public-pack plant bundle with a unique silhouette; used directly so Fibre never aliases the Flour pouch. |
 | **Weapons** | `sword.png` (or `bow.png`) | Sword primary, bow for ranged. |
 | **Armour** | `shield.png` | Shield. |
 | **Tools** | Generic Items `genericItem_color_*` (hammer/axe/saw) | Board Game has no tool glyph; pull one colored tool from Generic Items, or reuse `sword` as "equipment". |
@@ -91,10 +95,12 @@ blessings currency chip only.
 
 Every physical cargo overlay reuses the exact tracked semantic resource PNG named above rather
 than a second carry-only vocabulary. This covers Food, Fish, Water, Materials, Stone, Refined,
-Blessings, Logs, Lumber, Planks, Blocks, Tools, Catnip, Grain, Flour, Herbs, Hide, Bone, Ore, and
-Metal. Their existing resource tints remain legible at the on-map overlay size, while icon shape
+Blessings, Logs, Lumber, Planks, Blocks, Tools, Catnip, Grain, Flour, Herbs, Fibre, Hide, Bone,
+Cloth, Leather, Ore, and Metal. Fibre deliberately uses the tracked public-pack haystack prop as
+its raw-plant bundle while Cloth keeps its finished-textile icon; both therefore remain distinct
+from the Flour pouch. Their existing resource tints remain legible at the on-map overlay size, while icon shape
 is authoritative: Lumber and Planks, for example, keep separate symbols. The runtime has no
-colored-square, terrain, farm, furniture, or world-prop fallback for cargo.
+colored-square, terrain, farm, or furniture fallback for cargo.
 
 The exhaustive mapping/file/identity test and the inspected client-owned
 `/tmp/semantic-cargo-icons-1024.png` frame verify ten simultaneous representative loads at the

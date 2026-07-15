@@ -9,10 +9,10 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Two maintained benches still bypass the physical station contract | Clothier and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Their C2.0 descriptor scaffold is live, and Wood Cutter, Stone Prep, Woodworking, and Tannery now demonstrate the shared station-local conversion seam. Next give each remaining station local input/output/transit state and one-worker/one-selected-recipe advancement. Preserve every existing `BuildingType`, queue identity, and open-top visual identity. | in progress |
+| One maintained bench still bypasses the physical station contract | Smithy still consumes colony-global aggregates and advances parallel hidden cycles. The other maintained processors, including Clothier, now use station-local one-worker selected queues. Convert Smithy without changing its open-top identity or two authored recipe IDs. | in progress |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
-| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop, Smelter, and Tannery station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
-| Research recipe/resource breadth remains incomplete | Eleven maintained recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. Five physical queue recipes plus three aggregate Clothier/Smithy recipes enforce their rules-v1 entitlement before work; old/missing rules-v0 saves are grandfathered. The Wood Cutter, Stone Prep, and Woodworking baseline recipes are explicitly founding-available; their catalog studies are reserved for later recipes and do not block this early chain. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
+| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop, Smelter, Tannery, and Clothier station-local input/output stores remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
+| Research recipe/resource breadth remains incomplete | Eleven maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: eight are research-gated and three are founding baselines. Nine recipes execute through physical queues; the aggregate Smithy bench retains two selected recipes. Old/missing rules-v0 saves are grandfathered. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
@@ -21,6 +21,31 @@ and any changed Bevy visuals have been verified.
 | Wall art needs a stronger top-down treatment | The staged palisade, closed perimeter, single-gate cutover, collision, and visual campaign are verified, but the current wall selection does not meet the player's requested quality bar. Compare the tracked public candidates in `docs/sprite-review.html`, select a coherent top-down wall and gate set, and preserve exact autotiling, staged-work color, gate placement, and authoritative collision. Re-verify native and WASM framebuffers before replacing the current art. | queued (low priority) |
 
 ## Verified fixes
+
+## 2026-07-15 — Fibre and Clothier production are finite physical routes
+
+**Problem:** Fibre forage credited the colony at job completion, while Clothier spent that global
+counter and minted Cloth plus hidden Clothing through parallel timers. Queue, worker, cargo, and
+inspector state therefore did not own the visible batch.
+
+**Fix:** A completed forage now leaves bounded Fibre in the gatherer's paws and credits it only on
+finite pile delivery. One Textile worker carries exactly five Fibre into the selected Clothier,
+works one 600-game-second `fibre_to_cloth` batch, and carries one Cloth to finite storage. The
+legacy Clothing timer is bit-frozen. Cloth Leader staffing is comfort-gated, non-sticky, bounded
+before director fill, and deterministically alternates need across Clothier and Tannery while
+committed cargo/work may finish. Rules-v5 persistence is version-only and preserves exact v4
+queue order, repeat, pause, progress, and intentional emptiness.
+
+**Evidence:** The complete physical route is verified at one-second, five-second, and 60-second
+cadence. Five signed guided forages exercise physical Fibre delivery into the chain. An authentic
+HMAC campaign crosses SQLite restart without losing authored queue or route state, and established
+no-input runs produce Cloth at both 60-second and five-minute cadence. The accepted client-owned
+1024×768 framebuffer `/tmp/physical-clothier-c2.png` (SHA-256
+`2c00b7edaacb24037c81acb3d8bc262e9a4f165163c1ccf64326288f4e649ccd`) shows the selected
+open-top Clothier, Moss and distinct Fibre/Cloth carrier art, 40% progress, inbound/local Fibre 5,
+local/outbound Cloth 1, and every queue control without clipping or overlap.
+Final gates pass 1,226 simulation, 44 protocol, 91 server, and 136 client tests plus strict
+four-crate Clippy, formatting, and diff checks.
 
 ## 2026-07-15 — Tannery physically converts hunted Hide into Leather
 
@@ -385,8 +410,9 @@ recipe entitlement, not permission to place another bench.
 each bench while retaining the exact 167 Building / 167 RecipeResource / 166 Upgrade split and the
 first durability payload. Deterministic signed personal/communal plans, exact scaffold payment,
 reservation/overlap and mutation-free denial, authenticated server HMAC, and SQLite restart tests
-cover placement without altering current aggregate production. The remaining three station-local
-queues and finite-equipment authority work stays open below.
+cover placement without altering production behavior at that slice. All three founding queues are
+now physical; the aggregate Smithy's two selected recipes and finite-equipment authority remain
+open below.
 
 ## 2026-07-15 — Prosperity migrants physically enter and leave through the gate
 
@@ -430,12 +456,13 @@ index drives both signed logging and Forester automation; denial is mutation-fre
 Sawmill. Fetch Water, Explore, manual research, and Barracks training remain founding/building
 capabilities. Water Carriers, Textiles, and Den Insulation were reclassified without changing
 stable identity, cost, prerequisites, order, or the live `housingPerDen` effect, preserving the
-exact 167 Building / 167 RecipeResource / 166 Upgrade split. At that slice Textiles owned the
-then-aggregate Clothier and Tannery recipes, while Weaponsmithing and Armorsmithing independently
-owned the two Smithy outputs. Tannery has since moved to the entitlement-backed physical queue
-contract; Clothier and Smithy remain aggregate. Fresh rules-v1 production cannot advance or spend inputs before its exact study;
-rules-v0 saves remain grandfathered. These aggregate recipes do not appear in editable station
-queues.
+exact 167 Building / 167 RecipeResource / 166 Upgrade split. At that slice Textiles first received
+the Clothier and Tannery recipe entitlements, while Weaponsmithing and Armorsmithing independently
+owned the two Smithy outputs. Tannery and Clothier have since moved to entitlement-backed physical
+queues; Smithy alone remains aggregate with two selected recipes. Fresh rules-v1 production cannot
+advance or spend inputs before its exact study; rules-v0 saves remain grandfathered. Smithy's
+editable queue persists selected intent but does not replace its aggregate timers until the next
+physical-station slice.
 
 **Evidence:** Catalog uniqueness/runtime-ID/category and full 500-node purchase checks, signed
 logging denial/success, Forester non-bypass, founding personal/communal capability regressions,

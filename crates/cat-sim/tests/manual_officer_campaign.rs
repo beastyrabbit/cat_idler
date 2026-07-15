@@ -875,9 +875,11 @@ fn staged_officer_handoff_reduces_manual_frequency_one_role_at_a_time() {
             .officers
             .retain(|filled, _| *filled == sim_role(role));
         reset_work(&mut automated);
-        automated.colonies[0].resources.food = 50.0;
-        automated.colonies[0].resources.water = 50.0;
         automated.colonies[0].resources.materials = 0.0;
+        automated.colonies[0].resources.fibre = 5.0;
+        automated.colonies[0].resources.food = 500.0;
+        automated.colonies[0].resources.water = 200.0;
+        cat_sim::world_tick::reconcile_colony_stockpiles(&mut automated.colonies[0]);
         for attempt in 1..=30i64 {
             let now = 100_000 + attempt * 60_000;
             let _ = world_tick(&mut automated, now);

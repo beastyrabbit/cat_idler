@@ -89,6 +89,12 @@ pub enum CarryingKind {
     /// Finished leather moving from a Tannery to physical storage.
     #[serde(rename = "leather")]
     Leather,
+    /// Raw plant fibre carried home from a bounded forage shift.
+    #[serde(rename = "fibre")]
+    Fibre,
+    /// Finished cloth moving from a Clothier to physical storage.
+    #[serde(rename = "cloth")]
+    Cloth,
     /// Raw bone carried home alongside a hunt's food and hide.
     #[serde(rename = "bone")]
     Bone,

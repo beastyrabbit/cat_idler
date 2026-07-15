@@ -286,7 +286,215 @@ fn signed_player_guides_a_real_hunt_hide_through_tannery_to_leather() {
     );
 }
 
-fn run_passive_established_tannery(seed: u32) -> WorldState {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct ClothRouteObservations {
+    forage_fibre_in_paws: bool,
+    delivered_fibre: bool,
+    station_fibre_in_paws: bool,
+    local_fibre: bool,
+    local_cloth: bool,
+    station_cloth_in_paws: bool,
+    delivered_cloth: bool,
+}
+
+fn run_signed_forage_to_cloth(seed: u32) -> (WorldState, ClothRouteObservations) {
+    let mut world = new_world(seed);
+    world
+        .colonies
+        .push(found_colony(seed, "colony-1", START, seed));
+    let colony = &mut world.colonies[0];
+    colony.resources.food = 100.0;
+    colony.resources.water = 100.0;
+    colony
+        .upgrade_tree
+        .owned_node_ids
+        .push("textiles".to_owned());
+    let anchor = colony.anchor;
+    let clothier_id = "guided-clothier".to_owned();
+    colony.buildings.push(BuildingRuntime {
+        id: clothier_id.clone(),
+        building_type: BuildingType::Clothier,
+        position: TilePos {
+            x: anchor.x + 6,
+            y: anchor.y + 6,
+        },
+        is_complete: true,
+        construction_progress: 100,
+        production_queue: default_production_queue(BuildingType::Clothier),
+        ..BuildingRuntime::default()
+    });
+    reconcile_colony_stockpiles(colony);
+    let accelerated = apply_action(
+        &mut world,
+        &proto::ClientAction::SetTestAcceleration {
+            preset: proto::AccelerationPreset::Hyper,
+        },
+        &ctx(START),
+    );
+    assert!(accelerated.ok);
+    let worker_id = world.colonies[0].cats.last().unwrap().id.clone();
+    for edit in [
+        proto::ProductionQueueEdit::Remove { index: 0 },
+        proto::ProductionQueueEdit::Add {
+            recipe_id: cat_sim::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID.to_owned(),
+            repeat: false,
+        },
+        proto::ProductionQueueEdit::SetPaused { paused: true },
+    ] {
+        let result = apply_action(
+            &mut world,
+            &proto::ClientAction::EditProductionQueue {
+                session_id: "source-cargo-session".to_owned(),
+                nickname: "Weaver".to_owned(),
+                sig: "pure-sim".to_owned(),
+                building_id: clothier_id.clone(),
+                edit,
+            },
+            &ctx(START + 1),
+        );
+        assert!(result.ok, "signed Clothier queue: {result:?}");
+    }
+    let assigned = apply_action(
+        &mut world,
+        &proto::ClientAction::AssignWorker {
+            session_id: "source-cargo-session".to_owned(),
+            nickname: "Weaver".to_owned(),
+            sig: "pure-sim".to_owned(),
+            cat_id: worker_id,
+            building_id: Some(clothier_id.clone()),
+        },
+        &ctx(START + 1),
+    );
+    assert!(assigned.ok);
+    let mut now = START + 2;
+    let mut seen = ClothRouteObservations::default();
+    for request in 0..5 {
+        let foraged = apply_action(
+            &mut world,
+            &proto::ClientAction::RequestJob {
+                session_id: "source-cargo-session".to_owned(),
+                nickname: "Weaver".to_owned(),
+                sig: "pure-sim".to_owned(),
+                kind: proto::JobKind::ForageFibre,
+            },
+            &ctx(now),
+        );
+        assert!(foraged.ok, "signed Fibre forage {request}: {foraged:?}");
+        let expected = f64::from(request + 1);
+        for _ in 0..600 {
+            now += 1_000;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None);
+            let colony = &world.colonies[0];
+            seen.forage_fibre_in_paws |= colony.cats.iter().any(|cat| {
+                cat.carrying.as_ref().is_some_and(|cargo| {
+                    cargo.kind == CarryingKind::Fibre && cargo.source_gather_spot.is_none()
+                })
+            });
+            seen.delivered_fibre |= colony.resources.fibre > 0.0;
+            if colony.resources.fibre >= expected {
+                break;
+            }
+        }
+        assert!(
+            world.colonies[0].resources.fibre >= expected,
+            "signed Fibre forage {request} did not return to storage"
+        );
+    }
+    let resumed = apply_action(
+        &mut world,
+        &proto::ClientAction::EditProductionQueue {
+            session_id: "source-cargo-session".to_owned(),
+            nickname: "Weaver".to_owned(),
+            sig: "pure-sim".to_owned(),
+            building_id: clothier_id.clone(),
+            edit: proto::ProductionQueueEdit::SetPaused { paused: false },
+        },
+        &ctx(now + 1),
+    );
+    assert!(resumed.ok, "signed Clothier resume: {resumed:?}");
+    let input_id = station_input_id(&clothier_id);
+    let output_id = station_output_id(&clothier_id);
+    for _ in 0..1_800 {
+        now += 1_000;
+        let reports = world_tick(&mut world, now);
+        assert_eq!(reports[0].reset_reason, None);
+        let colony = &world.colonies[0];
+        seen.forage_fibre_in_paws |= colony.cats.iter().any(|cat| {
+            cat.carrying.as_ref().is_some_and(|cargo| {
+                cargo.kind == CarryingKind::Fibre && cargo.source_gather_spot.is_none()
+            })
+        });
+        seen.delivered_fibre |= colony.resources.fibre > 0.0;
+        seen.station_fibre_in_paws |= colony.cats.iter().any(|cat| {
+            cat.carrying.as_ref().is_some_and(|cargo| {
+                cargo.kind == CarryingKind::Fibre
+                    && cargo.source_gather_spot.as_deref().is_some_and(|marker| {
+                        marker.starts_with(&format!("station-in|{clothier_id}|"))
+                    })
+            })
+        });
+        seen.local_fibre |= colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == input_id)
+            .is_some_and(|pile| pile.contents.fibre > 0.0);
+        seen.local_cloth |= colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == output_id)
+            .is_some_and(|pile| pile.contents.cloth > 0.0);
+        seen.station_cloth_in_paws |= colony.cats.iter().any(|cat| {
+            cat.carrying.as_ref().is_some_and(|cargo| {
+                cargo.kind == CarryingKind::Cloth
+                    && cargo.source_gather_spot.as_deref().is_some_and(|marker| {
+                        marker.starts_with(&format!("station-out|{clothier_id}|"))
+                    })
+            })
+        });
+        seen.delivered_cloth |= colony.resources.cloth > 0.0;
+        if seen
+            == (ClothRouteObservations {
+                forage_fibre_in_paws: true,
+                delivered_fibre: true,
+                station_fibre_in_paws: true,
+                local_fibre: true,
+                local_cloth: true,
+                station_cloth_in_paws: true,
+                delivered_cloth: true,
+            })
+        {
+            break;
+        }
+    }
+    (world, seen)
+}
+
+#[test]
+fn signed_player_guides_real_fibre_forage_through_clothier_to_cloth() {
+    let (left, left_seen) = run_signed_forage_to_cloth(0xC107_41E2);
+    let (right, right_seen) = run_signed_forage_to_cloth(0xC107_41E2);
+    assert_eq!(left, right);
+    assert_eq!(left_seen, right_seen);
+    assert_eq!(
+        left_seen,
+        ClothRouteObservations {
+            forage_fibre_in_paws: true,
+            delivered_fibre: true,
+            station_fibre_in_paws: true,
+            local_fibre: true,
+            local_cloth: true,
+            station_cloth_in_paws: true,
+            delivered_cloth: true,
+        }
+    );
+}
+
+fn run_passive_established_textiles(
+    seed: u32,
+    cadence_minutes: i64,
+    horizon_hours: i64,
+) -> WorldState {
     let mut world = new_world(seed);
     world
         .colonies
@@ -296,6 +504,10 @@ fn run_passive_established_tannery(seed: u32) -> WorldState {
         .upgrade_tree
         .owned_node_ids
         .push("textiles".to_owned());
+    colony
+        .upgrade_tree
+        .owned_node_ids
+        .push("irrigation".to_owned());
     let anchor = colony.anchor;
     colony.buildings.push(BuildingRuntime {
         id: "passive-tannery".to_owned(),
@@ -321,12 +533,69 @@ fn run_passive_established_tannery(seed: u32) -> WorldState {
         production_queue: default_production_queue(BuildingType::Clothier),
         ..BuildingRuntime::default()
     });
-    let holder = colony.cats[0].id.clone();
-    colony.officers.insert(OfficerRole::ClothLeader, holder);
-    for minute in 1..=48 * 60i64 {
+    colony.buildings.extend([
+        BuildingRuntime {
+            id: "passive-established-granary".to_owned(),
+            building_type: BuildingType::FoodStorage,
+            level: 10,
+            position: TilePos {
+                x: anchor.x + 12,
+                y: anchor.y,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        },
+        BuildingRuntime {
+            id: "passive-established-water-bowl".to_owned(),
+            building_type: BuildingType::WaterBowl,
+            level: 10,
+            position: TilePos {
+                x: anchor.x - 12,
+                y: anchor.y,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        },
+        BuildingRuntime {
+            id: "passive-established-field".to_owned(),
+            building_type: BuildingType::Field,
+            position: TilePos {
+                x: anchor.x,
+                y: anchor.y + 12,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        },
+    ]);
+    colony.resources.food = 1_000.0;
+    colony.resources.water = 1_000.0;
+    let cloth_holder = colony.cats[0].id.clone();
+    let farmer_holder = colony.cats[1].id.clone();
+    colony
+        .officers
+        .insert(OfficerRole::ClothLeader, cloth_holder);
+    colony.officers.insert(OfficerRole::Farmer, farmer_holder);
+    reconcile_colony_stockpiles(colony);
+    for minute in
+        (cadence_minutes..=horizon_hours * 60).step_by(cadence_minutes.try_into().unwrap())
+    {
         let reports = world_tick(&mut world, START + minute * 60_000);
         assert_eq!(reports[0].reset_reason, None, "passive minute {minute}");
-        if world.colonies[0].resources.leather > 0.0 {
+        let colony = &world.colonies[0];
+        let alive = colony
+            .cats
+            .iter()
+            .filter(|cat| cat.death_time.is_none())
+            .count() as f64;
+        assert!(
+            colony.resources.food + colony.resources.fish >= (alive * 5.0).max(20.0)
+                && colony.resources.water >= (alive * 6.0).max(20.0),
+            "textile automation crossed the comfort reserve at minute {minute}"
+        );
+        if world.colonies[0].resources.leather > 0.0 && world.colonies[0].resources.cloth > 0.0 {
             break;
         }
     }
@@ -334,9 +603,9 @@ fn run_passive_established_tannery(seed: u32) -> WorldState {
 }
 
 #[test]
-fn established_cloth_leader_produces_leather_without_further_player_input() {
-    let left = run_passive_established_tannery(7);
-    let right = run_passive_established_tannery(7);
+fn established_farmer_and_cloth_leader_produce_leather_and_cloth_without_further_input() {
+    let left = run_passive_established_textiles(7, 5, 18);
+    let right = run_passive_established_textiles(7, 5, 18);
     assert_eq!(left, right);
     let colony = &left.colonies[0];
     let tannery = colony
@@ -368,6 +637,16 @@ fn established_cloth_leader_produces_leather_without_further_player_input() {
             .iter()
             .find(|pile| pile.id == station_output_id(&tannery.id))
             .map(|pile| pile.contents.leather),
+    );
+    assert!(
+        colony.resources.cloth > 0.0,
+        "unattended Farmer/ClothLeader never completed Fibre -> Cloth"
+    );
+    let minute_cadence = run_passive_established_textiles(7, 1, 18);
+    assert!(
+        minute_cadence.colonies[0].resources.leather > 0.0
+            && minute_cadence.colonies[0].resources.cloth > 0.0,
+        "one-minute unattended campaign never completed both physical textile routes"
     );
 }
 

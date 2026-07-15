@@ -55,7 +55,7 @@ every workshop remains an open-top, function-readable map station.
   instances are the eventual condition/identity authority. New crafting must not create two
   independent inventories for one physical object.
 - One assigned cat advances one selected recipe. Woodworking, Smithy, Clothier, Tannery, and every
-  future bench must use the same ordered/repeatable/pausable queue contract as the eight completed
+  future bench must use the same ordered/repeatable/pausable queue contract as the nine completed
   physical processors.
 
 The C2.0 scaffold gives all eleven maintained station recipes stable data-owned descriptors,
@@ -64,14 +64,17 @@ availability. C2.1 completes Wood Cutter's five-Logs-to-one-Plank physical route
 Stone Prep's five-Stone-to-one-Block physical route. C2.3 completes Woodworking's sequential
 two-Planks plus two-Blocks route into one whole scalar Tool after one 600-game-second Craft batch.
 P19.C2.4 completes Tannery's five-Hide-to-one-Leather physical route after one 600-game-second
-Textile batch, with no aggregate credit before outbound delivery. All four make their
+Textile batch, with no aggregate credit before outbound delivery. P19.C2.5 completes Clothier:
+five separately foraged and delivered Fibre travel through local input, one 600-game-second
+Textile batch produces one Cloth, and aggregate credit waits for its outbound delivery. All five make their
 ordered/repeatable/pausable selected queues authoritative. Their
 `logs_to_planks`, `stone_to_blocks`, and `planks_and_blocks_to_tools` recipes are
 founding-available in fresh rules-v1 colonies; their studies gate later recipes. Tannery requires
-the Textiles entitlement. Rules-v0 saves remain grandfathered. Clothier and Smithy still execute
-their old aggregate/parallel timers and report `aggregate_timer_compatibility`; their queue edits
-remain persisted future intent until each follows the reusable local-input/work/
-local-output/delivery seam. Woodworking's old `wood_craft_progress` timer is frozen and preserved
+the Textiles entitlement, as does Clothier. Rules-v0 saves remain grandfathered. Smithy alone still
+executes its old aggregate/parallel weapon and armor timers and reports
+`aggregate_timer_compatibility`; its queue edits remain persisted future intent until it follows
+the reusable local-input/work/local-output/delivery seam. Woodworking's old
+`wood_craft_progress` timer and Clothier's old hidden clothing timer are frozen and preserved
 only for save compatibility. Its output remains the existing scalar Tool until C3 establishes one
 finite equipment authority without double-counting. Separate additive trade-craft timers are not
 selected queue recipes.
@@ -88,7 +91,8 @@ restart, and the Goods panel makes condition and repair visible.
 One signed caravan sale may transfer at most 20,000 grams of items. That bounded-load seam and the
 finite-item loop are implemented foundations; they do not make the catalog complete. Bone item
 variants, gem/clay sources and variants, broader metal variants, finished functional equipment
-chains, and physical station-local logistics for Clothier and Smithy are still product work.
+chains, and physical station-local logistics for Smithy's two selected recipes are still product
+work.
 
 ## Resource / item taxonomy (DF breadth, cat-flavoured)
 Three tiers (reconciles P16's founding benches with P12's Sawmill chain):

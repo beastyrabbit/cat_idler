@@ -3398,6 +3398,239 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signed_hmac_fibre_forage_and_clothier_route_survives_restart_to_delivered_cloth() {
+        let started_at = now_ms();
+        let secret = "guided-clothier-secret";
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-clothier-route-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let mut world = starter_world(started_at);
+        let colony = &mut world.colonies[0];
+        colony.resources.food = 100.0;
+        colony.resources.water = 100.0;
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("textiles".to_owned());
+        let anchor = colony.anchor;
+        let clothier_id = "signed-guided-clothier".to_owned();
+        colony.buildings.push(cat_sim::world_tick::BuildingRuntime {
+            id: clothier_id.clone(),
+            building_type: cat_sim::types::BuildingType::Clothier,
+            position: cat_sim::world_tick::TilePos {
+                x: anchor.x + 6,
+                y: anchor.y + 6,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: cat_sim::world_tick::default_production_queue(
+                cat_sim::types::BuildingType::Clothier,
+            ),
+            ..cat_sim::world_tick::BuildingRuntime::default()
+        });
+        cat_sim::world_tick::reconcile_colony_stockpiles(colony);
+        let cat_id = colony.cats.last().unwrap().id.clone();
+        let conn = Connection::open(&path).expect("guided Clothier database");
+        persistence::init_schema(&conn).expect("guided Clothier schema");
+        let state = build_state_from_world(world, conn, secret.to_owned(), true, started_at);
+        let signed = signed_session("guided-clothier-session".to_owned(), secret);
+        let mut connection = ConnectionContext::new(
+            "guided-clothier-socket".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        connection.identity = Some(signed.clone());
+        assert!(
+            send_action(
+                &state,
+                &mut connection,
+                &ClientAction::SetTestAcceleration {
+                    preset: cat_protocol::AccelerationPreset::Hyper,
+                },
+            )
+            .await
+            .result
+            .ok
+        );
+        let queue_action = |edit| ClientAction::EditProductionQueue {
+            session_id: signed.session_id.clone(),
+            nickname: "Weaver".to_owned(),
+            sig: signed.sig.clone(),
+            building_id: clothier_id.clone(),
+            edit,
+        };
+        for edit in [
+            cat_protocol::ProductionQueueEdit::Remove { index: 0 },
+            cat_protocol::ProductionQueueEdit::Add {
+                recipe_id: cat_sim::station_recipes::FIBRE_TO_CLOTH_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
+            cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
+        ] {
+            let result = send_action(&state, &mut connection, &queue_action(edit)).await;
+            assert!(result.result.ok, "signed Clothier queue: {result:?}");
+        }
+        assert!(
+            send_action(
+                &state,
+                &mut connection,
+                &ClientAction::AssignWorker {
+                    session_id: signed.session_id.clone(),
+                    nickname: "Weaver".to_owned(),
+                    sig: signed.sig.clone(),
+                    cat_id,
+                    building_id: Some(clothier_id.clone()),
+                },
+            )
+            .await
+            .result
+            .ok
+        );
+        let mut now = started_at;
+        let mut saw_raw_fibre = false;
+        for request in 0..5 {
+            let result = send_action(
+                &state,
+                &mut connection,
+                &ClientAction::RequestJob {
+                    session_id: signed.session_id.clone(),
+                    nickname: "Weaver".to_owned(),
+                    sig: signed.sig.clone(),
+                    kind: cat_protocol::JobKind::ForageFibre,
+                },
+            )
+            .await;
+            assert!(
+                result.result.ok,
+                "signed Fibre forage {request}: {result:?}"
+            );
+            let expected = f64::from(request + 1);
+            for _ in 0..600 {
+                now += 1_000;
+                let mut world = state.world.lock().await;
+                let reports = world_tick(&mut world, now);
+                assert_eq!(reports[0].reset_reason, None);
+                let colony = &world.colonies[0];
+                saw_raw_fibre |= colony.cats.iter().any(|cat| {
+                    cat.carrying.as_ref().is_some_and(|cargo| {
+                        cargo.kind == cat_sim::entities::CarryingKind::Fibre
+                            && cargo.source_gather_spot.is_none()
+                    })
+                });
+                if colony.resources.fibre >= expected {
+                    break;
+                }
+            }
+            assert!(
+                state.world.lock().await.colonies[0].resources.fibre >= expected,
+                "signed Fibre forage {request} did not return to storage"
+            );
+        }
+        {
+            let world = state.world.lock().await;
+            assert!(saw_raw_fibre, "signed forage never placed Fibre in paws");
+            assert!(world.colonies[0].resources.fibre >= 5.0);
+        }
+        save_current_world(&state)
+            .await
+            .expect("persist delivered Fibre");
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen Clothier route database");
+        persistence::init_schema(&conn).expect("migrate Clothier route database");
+        let restarted = build_state_from_connection(now, conn, secret.to_owned())
+            .expect("restart delivered Fibre");
+        {
+            let world = restarted.world.lock().await;
+            let colony = &world.colonies[0];
+            let clothier = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == clothier_id)
+                .expect("restored authored Clothier");
+            assert!(clothier.production_paused);
+            assert_eq!(clothier.production_queue.len(), 1);
+            assert!(!clothier.production_queue[0].repeat);
+            assert_eq!(colony.resources.cloth, 0.0);
+            assert!(colony.resources.fibre >= 5.0);
+        }
+        let mut reconnected = ConnectionContext::new(
+            "guided-clothier-reconnected".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        let presence = send_action(
+            &restarted,
+            &mut reconnected,
+            &ClientAction::Presence {
+                session_id: signed.session_id.clone(),
+                nickname: "Weaver".to_owned(),
+                sig: Some(signed.sig.clone()),
+            },
+        )
+        .await;
+        assert!(
+            presence.result.ok,
+            "Clothier bearer reconnect: {presence:?}"
+        );
+        assert_eq!(presence.fields.get("playerId"), Some(&signed.player_id));
+        assert!(
+            send_action(
+                &restarted,
+                &mut reconnected,
+                &queue_action(cat_protocol::ProductionQueueEdit::SetPaused { paused: false }),
+            )
+            .await
+            .result
+            .ok
+        );
+        let mut stages = [false; 5];
+        for second in 1..=1_800_i64 {
+            let mut world = restarted.world.lock().await;
+            let reports = world_tick(&mut world, now + second * 1_000);
+            assert_eq!(reports[0].reset_reason, None);
+            let colony = &world.colonies[0];
+            let building = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == clothier_id)
+                .unwrap();
+            let inbound = cat_sim::world_tick::building_station_cargo(colony, building, "in");
+            let local_input =
+                cat_sim::world_tick::building_station_inventory(colony, building, false);
+            let local_output =
+                cat_sim::world_tick::building_station_inventory(colony, building, true);
+            let outbound = cat_sim::world_tick::building_station_cargo(colony, building, "out");
+            stages[0] |= inbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Fibre && *amount >= 5.0
+            });
+            stages[1] |= local_input.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Fibre && *amount >= 5.0
+            });
+            stages[2] |= local_output.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Cloth && *amount >= 1.0
+            });
+            stages[3] |= outbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Cloth && *amount >= 1.0
+            });
+            stages[4] |= colony.resources.cloth >= 1.0;
+            if stages.iter().all(|seen| *seen) {
+                break;
+            }
+        }
+        let world = restarted.world.lock().await;
+        assert_eq!(
+            stages, [true; 5],
+            "restart missed a physical Clothier stage"
+        );
+        assert_eq!(world.colonies[0].resources.cloth, 1.0);
+        drop(world);
+        drop(restarted);
+        fs::remove_file(path).expect("remove Clothier route database");
+    }
+
+    #[tokio::test]
     async fn signed_trader_buy_sell_depletes_exact_finite_stock_across_restart() {
         let path = std::env::temp_dir().join(format!(
             "cat-server-trader-restart-{}-{}.db",

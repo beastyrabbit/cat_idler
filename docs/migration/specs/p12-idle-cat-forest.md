@@ -114,7 +114,7 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
   present; escalating cost math; unlock gating; determinism.
 
 **Verified physical subset:** Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop,
-Smelter, and Tannery no longer convert aggregate colony counters in place. Each reserves visible finite stock,
+Smelter, Tannery, and Clothier no longer convert aggregate colony counters in place. Each reserves visible finite stock,
 carries input to a station-local
 store, works there under its durable ordered/repeatable/pausable queue, places output in a
 station-local store, and carries it to compatible finite storage before aggregate credit. Their
@@ -122,8 +122,10 @@ snapshot/inspector state includes the worker, progress, queue, local inventory, 
 block reason. Woodworking's founding recipe is the two-input case: two Planks and two Blocks arrive
 sequentially and are consumed atomically into one whole scalar Tool. Tannery likewise carries five
 Hide into local input, performs one selected 600-second Textile batch, and carries one Leather out
-before credit. Apply this contract to the
-remaining production stations rather than reopening these completed routes; finite Tool identity
+before credit. Clothier sources Fibre through explicit physical forage, carries five Fibre into
+local input, performs one selected 600-second Textile batch, and carries one Cloth out before
+credit. Apply this contract to the aggregate Smithy bench's two selected recipes rather than
+reopening these completed routes; finite Tool identity
 and condition authority remain P19.C3.
 
 ## P12.5 — Visible farm plots
