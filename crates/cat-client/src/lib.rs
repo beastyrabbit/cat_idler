@@ -34,7 +34,8 @@ use cat_protocol::{
     OfficerRole, ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts,
     ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource,
     Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderVisitState, VillageKind, VillageScale, WorldSnapshot, ZoneKind,
+    TraderSellOffer, TraderSnapshot, TraderVisitState, VillageKind, VillageScale, WorldSnapshot,
+    ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -675,7 +676,7 @@ struct CensusUi {
 /// Number of text lines the census panel renders (see `census_report_lines`).
 const CENSUS_LINES: usize = 18;
 
-/// Trade menu (open while a trader is at the gate). `closed` lets the player
+/// Trade menu (open while a trader is visiting). `closed` lets the player
 /// dismiss it during a visit; it resets when the trader leaves so the next visit
 /// auto-opens.
 #[derive(Resource, Default)]
@@ -685,7 +686,7 @@ struct TradeUi {
 
 /// Max sell rows (crafted stacks) and buy rows (resource kinds) the menu shows.
 const TRADE_SELL_ROWS: usize = 6;
-const TRADE_BUY_ROWS: usize = 8;
+const TRADE_BUY_ROWS: usize = 16;
 
 /// The appointable officer roles, in display order.
 const ALL_OFFICER_ROLES: [OfficerRole; 7] = [
@@ -2587,10 +2588,21 @@ fn sell_offer_label(offer: &TraderBuyOffer) -> String {
 /// can't afford one unit.
 fn buy_offer_label(offer: &TraderSellOffer, coin: f64) -> String {
     let name = capitalize_word(resource_kind_name(offer.resource));
+    if offer.sold_out || offer.available <= f64::EPSILON {
+        return format!("{name} · SOLD OUT");
+    }
     if can_afford(coin, offer.unit_price) {
-        format!("{name} - {:.0}g ea", offer.unit_price)
+        format!(
+            "{name} x{available:.0} · {price:.0}g ea",
+            available = offer.available,
+            price = offer.unit_price
+        )
     } else {
-        format!("{name} - {:.0}g ea  (low coin)", offer.unit_price)
+        format!(
+            "{name} x{available:.0} · {price:.0}g ea  (low coin)",
+            available = offer.available,
+            price = offer.unit_price
+        )
     }
 }
 
@@ -2599,9 +2611,49 @@ fn can_afford(coin: f64, unit_price: f64) -> bool {
     coin + 1e-6 >= unit_price
 }
 
-/// The prominent coin readout in the trade menu.
-fn coin_line(coin: f64) -> String {
-    format!("Coin: {coin:.0}g")
+fn trader_status_line(trader: &TraderSnapshot, colony_coin: f64, now_ms: i64) -> String {
+    let destination = trader.destination.map_or_else(
+        || "route target unavailable".to_owned(),
+        |tile| format!("target {},{}", tile.x, tile.y),
+    );
+    let exterior = trader.route_exterior.map_or_else(
+        || "exterior unavailable".to_owned(),
+        |tile| format!("exterior {},{}", tile.x, tile.y),
+    );
+    let phase = match trader.state {
+        TraderVisitState::Arriving => {
+            format!("ARRIVING · {exterior} → {destination} · trade locked until shrine contact")
+        }
+        TraderVisitState::Trading => {
+            let remaining = trader.visit_ends_at.map_or_else(
+                || "deadline unavailable".to_owned(),
+                |deadline| {
+                    format!(
+                        "leaves in {}",
+                        compact_election_duration(deadline.saturating_sub(now_ms))
+                    )
+                },
+            );
+            format!("AT SHRINE · {remaining} · {destination}")
+        }
+        TraderVisitState::Departing => format!(
+            "DEPARTING · current {},{} → {exterior}",
+            trader.position.x, trader.position.y
+        ),
+    };
+    let sold_out = trader.stock.iter().filter(|offer| offer.sold_out).count();
+    let item_units = trader
+        .cargo_items
+        .iter()
+        .map(|stack| stack.count)
+        .sum::<u32>();
+    format!(
+        "Visit #{visit} · {phase}\nColony {colony_coin:.0}g · merchant purse {merchant_coin:.0}g · wagon {weight:.1}/{capacity:.1} kg · {item_units} bought item(s) · {sold_out} sold out",
+        visit = trader.visit_number,
+        merchant_coin = trader.coin,
+        weight = trader.cargo_weight_grams / 1_000.0,
+        capacity = trader.cargo_capacity_grams / 1_000.0,
+    )
 }
 
 /// A manual-action button and the action it enqueues when clicked.
@@ -3871,7 +3923,8 @@ fn setup(
             });
         });
 
-    // Trade menu (centre), shown only while a trader is Trading at the gate.
+    // Trade menu (centre), shown throughout a trader visit; action buttons are
+    // enabled only while the wagon is physically parked at the shrine.
     let row_node = || Node {
         width: Val::Percent(100.0),
         align_items: AlignItems::Center,
@@ -3930,6 +3983,7 @@ fn setup(
                         row.spawn((
                             ui_button_small(),
                             BuyButton(i),
+                            KitDisabled { disabled: true },
                             children![ui_text("Buy 1", FS_SMALL, UI_INK)],
                         ));
                     });
@@ -7077,7 +7131,7 @@ fn sync_raiders(
 
 /// Reconcile the visiting-trader body (a gold-tinted merchant cat with a pack):
 /// present only while a trader is visiting, gliding to its position (arriving ->
-/// gate, trading = idle at the gate, departing -> away).
+/// shrine, trading = idle at the shrine, departing -> the persisted exterior).
 fn sync_trader(
     mut commands: Commands,
     latest: Res<LatestSnapshot>,
@@ -9184,8 +9238,8 @@ fn handle_goods_repair_buttons(
     }
 }
 
-/// Show the trade menu while a trader is at the gate (Trading) and repaint coin +
-/// the sell/buy offer rows live from the snapshot.
+/// Show a truthful merchant inspector throughout arrival/stay/departure. Offers remain
+/// empty and actions remain invalid until physical shrine contact (`Trading`).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_trade_menu(
     latest: Res<LatestSnapshot>,
@@ -9203,16 +9257,17 @@ fn update_trade_menu(
     mut sell_texts: Query<(&SellRowText, &mut Text), (Without<TradeCoinText>, Without<BuyRowText>)>,
     mut buy_rows: Query<(&BuyRow, &mut Node), (Without<TradeMenuPanel>, Without<SellRow>)>,
     mut buy_texts: Query<(&BuyRowText, &mut Text), (Without<TradeCoinText>, Without<SellRowText>)>,
+    mut buy_buttons: Query<(&BuyButton, &mut KitDisabled)>,
 ) {
+    let now_ms = latest.0.as_ref().map_or(0, |world| world.now);
     let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
     let trader = colony.and_then(|c| c.trader.as_ref());
-    let trading = trader.is_some_and(|t| matches!(t.state, TraderVisitState::Trading));
-    // Once the trader stops trading, clear any manual dismissal so the next visit
-    // auto-opens.
-    if !trading && trade_ui.closed {
+    let trading = trader.is_some_and(|trader| trader.state == TraderVisitState::Trading);
+    // Once the trader is physically gone, clear dismissal so the next visit auto-opens.
+    if trader.is_none() && trade_ui.closed {
         trade_ui.closed = false;
     }
-    let open = trading && !trade_ui.closed;
+    let open = trader.is_some() && !trade_ui.closed;
     if let Ok(mut node) = panel.single_mut() {
         node.display = if open { Display::Flex } else { Display::None };
     }
@@ -9223,7 +9278,7 @@ fn update_trade_menu(
         return;
     }
     if let Ok(mut text) = coin.single_mut() {
-        text.0 = coin_line(colony.coin);
+        text.0 = trader_status_line(trader, colony.coin, now_ms);
     }
     for (row, mut node) in &mut sell_rows {
         node.display = if row.0 < trader.buy_offers.len() {
@@ -9251,6 +9306,14 @@ fn update_trade_menu(
             .get(label.0)
             .map_or_else(String::new, |o| buy_offer_label(o, colony.coin));
     }
+    for (button, mut disabled) in &mut buy_buttons {
+        disabled.disabled = !trading
+            || trader.sell_offers.get(button.0).is_none_or(|offer| {
+                offer.sold_out
+                    || offer.available < 1.0
+                    || !can_afford(colony.coin, offer.unit_price)
+            });
+    }
 }
 
 /// Dispatch Sell/Buy actions from the trade-menu buttons (resolved against the
@@ -9272,8 +9335,9 @@ fn handle_trade_buttons(
     let Some(trader) = colony.trader.as_ref() else {
         return;
     };
+    let trading = trader.state == TraderVisitState::Trading;
     for (interaction, button) in &sell_buttons {
-        if *interaction != Interaction::Pressed {
+        if !trading || *interaction != Interaction::Pressed {
             continue;
         }
         if let Some(offer) = trader.buy_offers.get(button.row) {
@@ -9292,10 +9356,12 @@ fn handle_trade_buttons(
         }
     }
     for (interaction, button) in &buy_buttons {
-        if *interaction != Interaction::Pressed {
+        if !trading || *interaction != Interaction::Pressed {
             continue;
         }
         if let Some(offer) = trader.sell_offers.get(button.0)
+            && !offer.sold_out
+            && offer.available >= 1.0
             && can_afford(colony.coin, offer.unit_price)
         {
             outgoing.0.push(ClientAction::BuyResource {
@@ -13151,17 +13217,70 @@ mod tests {
         let buy = TraderSellOffer {
             resource: ResourceKind::Food,
             unit_price: 5.0,
+            available: 4.0,
+            sold_out: false,
         };
         // Affordable and unaffordable buy labels.
-        assert_eq!(buy_offer_label(&buy, 20.0), "Food - 5g ea");
+        assert_eq!(buy_offer_label(&buy, 20.0), "Food x4 · 5g ea");
         assert!(buy_offer_label(&buy, 2.0).contains("low coin"));
+        let sold_out = TraderSellOffer {
+            available: 0.0,
+            sold_out: true,
+            ..buy
+        };
+        assert_eq!(buy_offer_label(&sold_out, 20.0), "Food · SOLD OUT");
 
         assert!(can_afford(5.0, 5.0));
         assert!(can_afford(10.0, 5.0));
         assert!(!can_afford(4.0, 5.0));
+    }
 
-        assert_eq!(coin_line(42.0), "Coin: 42g");
-        assert_eq!(coin_line(0.0), "Coin: 0g");
+    #[test]
+    fn trader_status_reports_route_phase_deadline_purse_and_capacity() {
+        let mut trader = TraderSnapshot {
+            id: "merchant-2".to_owned(),
+            position: TilePoint { x: 9, y: 10 },
+            state: TraderVisitState::Arriving,
+            destination: Some(TilePoint { x: 7, y: 8 }),
+            route_exterior: Some(TilePoint { x: 7, y: 20 }),
+            visit_number: 2,
+            arrived_at: None,
+            visit_ends_at: None,
+            coin: 75.0,
+            cargo_weight_grams: 42_000.0,
+            cargo_capacity_grams: 100_000.0,
+            cargo_items: Vec::new(),
+            stock: vec![cat_protocol::TraderStockSnapshot {
+                resource: ResourceKind::Food,
+                available: 0.0,
+                sold_out: true,
+            }],
+            buy_offers: Vec::new(),
+            sell_offers: vec![TraderSellOffer {
+                resource: ResourceKind::Food,
+                unit_price: 1.5,
+                available: 0.0,
+                sold_out: true,
+            }],
+        };
+        let arriving = trader_status_line(&trader, 12.0, 1_000);
+        assert!(arriving.contains("Visit #2 · ARRIVING"));
+        assert!(arriving.contains("exterior 7,20 → target 7,8"));
+        assert!(arriving.contains("trade locked"));
+        assert!(arriving.contains("merchant purse 75g"));
+        assert!(arriving.contains("wagon 42.0/100.0 kg"));
+        assert!(arriving.contains("1 sold out"));
+
+        trader.state = TraderVisitState::Trading;
+        trader.arrived_at = Some(1_000);
+        trader.visit_ends_at = Some(3_601_000);
+        let trading = trader_status_line(&trader, 12.0, 1_000);
+        assert!(trading.contains("AT SHRINE · leaves in 1h"));
+
+        trader.state = TraderVisitState::Departing;
+        trader.destination = trader.route_exterior;
+        let departing = trader_status_line(&trader, 12.0, 1_000);
+        assert!(departing.contains("DEPARTING · current 9,10 → exterior 7,20"));
     }
 
     #[test]

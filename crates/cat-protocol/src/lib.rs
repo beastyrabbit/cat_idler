@@ -218,12 +218,38 @@ pub struct TraderSnapshot {
     pub id: String,
     pub position: TilePoint,
     pub state: TraderVisitState,
+    /// Current physical route target (shrine contact while arriving, persisted exterior
+    /// while departing). `None` for legacy payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<TilePoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_exterior: Option<TilePoint>,
+    #[serde(default)]
+    pub visit_number: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrived_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visit_ends_at: Option<i64>,
+    #[serde(default)]
+    pub coin: f64,
+    #[serde(default)]
+    pub cargo_weight_grams: f64,
+    #[serde(default)]
+    pub cargo_capacity_grams: f64,
+    /// Exact item stacks already acquired by this finite visit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cargo_items: Vec<ItemStackSnapshot>,
+    /// Full finite resource manifest in every phase. `sell_offers` below is the
+    /// actionable at-shrine projection; this inventory remains visible while the wagon
+    /// approaches or departs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stock: Vec<TraderStockSnapshot>,
     /// Crafted-item stacks the colony currently holds and could sell to the trader
     /// (empty while `state != trading`, since selling is only valid then). Mirrors
     /// [`ItemStackSnapshot`]'s `kind`/`material`/`quality` string convention.
     pub buy_offers: Vec<TraderBuyOffer>,
-    /// Resource kinds the trader stocks and the colony could buy (constant across a
-    /// visit; empty while `state != trading`).
+    /// Resource manifest with stable prices and finite quantities in every phase.
+    /// Actions remain valid only while `state == trading`.
     pub sell_offers: Vec<TraderSellOffer>,
 }
 
@@ -258,6 +284,20 @@ pub struct TraderSellOffer {
     pub resource: ResourceKind,
     /// Coin the trader charges per unit.
     pub unit_price: f64,
+    /// Exact finite amount remaining in this visit's wagon manifest.
+    #[serde(default)]
+    pub available: f64,
+    #[serde(default)]
+    pub sold_out: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraderStockSnapshot {
+    pub resource: ResourceKind,
+    pub available: f64,
+    #[serde(default)]
+    pub sold_out: bool,
 }
 
 /// One distinct crafted-item stack: kind × material × quality, with how many the
@@ -2013,6 +2053,20 @@ mod tests {
             id: "trader-1".to_string(),
             position: TilePoint { x: 6, y: 12 },
             state: TraderVisitState::Trading,
+            destination: Some(TilePoint { x: 7, y: 8 }),
+            route_exterior: Some(TilePoint { x: 7, y: 20 }),
+            visit_number: 3,
+            arrived_at: Some(100),
+            visit_ends_at: Some(200),
+            coin: 99.0,
+            cargo_weight_grams: 25_000.0,
+            cargo_capacity_grams: 100_000.0,
+            cargo_items: Vec::new(),
+            stock: vec![TraderStockSnapshot {
+                resource: ResourceKind::Food,
+                available: 4.0,
+                sold_out: false,
+            }],
             buy_offers: vec![TraderBuyOffer {
                 kind: "mug".to_string(),
                 material: "wood".to_string(),
@@ -2024,6 +2078,8 @@ mod tests {
             sell_offers: vec![TraderSellOffer {
                 resource: ResourceKind::Food,
                 unit_price: 1.5,
+                available: 4.0,
+                sold_out: false,
             }],
         };
 

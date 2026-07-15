@@ -151,6 +151,15 @@ so a correct scout route cannot conceal a missing founding dispatch.
    editable queues are live; extend the generic queue control as additional physical recipes land.
    Preserve the verified tool productivity, type-local escalating costs, shrine faucets, and
    research pacing in balance campaigns.
+
+   The NPC visiting-trader correction is implemented and focused-verified: each deterministic
+   visit owns a reachable exterior, ordinary A* route through the retained gate to shrine contact,
+   finite resource manifest, finite purse and wagon capacity, exact purchased item-unit cargo,
+   physical return route, and restart-persistent phase/deadline/stock. Signed guided actions prove
+   exact depletion and sold-out denial, and a seed-41 live-cadence 60-hour passive twin observed one
+   arrival, shrine trading window, and departure with identical replay and no deaths or resets.
+   Before closing this slice, run the broad touched-crate gates and accept the client-owned
+   framebuffer with the merchant at the shrine and finite/sold-out inventory visible.
 2. **Deepen the shared world.** The durable 30-cat/six-Den/19×19 communal hub is mechanically
    larger than exact 15-cat/three-Den personal villages. Replace per-colony duplicated mutable
    terrain with an authoritative shared spatial model where appropriate, then turn summary contact

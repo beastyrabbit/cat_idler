@@ -101,6 +101,9 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             gatherSpots TEXT,
             stockLedger TEXT,
             coin REAL,
+            trader TEXT,
+            lastTraderDepartedAt INTEGER,
+            traderVisitCount INTEGER,
             items TEXT,
             woodCraftProgress REAL,
             stoneCraftProgress REAL,
@@ -293,6 +296,9 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "agriculturalTiles", "TEXT"),
         ("colonies", "provisionalTiles", "TEXT"),
         ("colonies", "coin", "REAL"),
+        ("colonies", "trader", "TEXT"),
+        ("colonies", "lastTraderDepartedAt", "INTEGER"),
+        ("colonies", "traderVisitCount", "INTEGER"),
         ("colonies", "items", "TEXT"),
         ("colonies", "woodCraftProgress", "REAL"),
         ("colonies", "stoneCraftProgress", "REAL"),
@@ -499,7 +505,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, farms, gatherSpots,
-                stockLedger, coin, items, woodCraftProgress, stoneCraftProgress,
+                stockLedger, coin, trader, lastTraderDepartedAt, traderVisitCount, items, woodCraftProgress, stoneCraftProgress,
                 clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY,
                 migrationState, migrationDepartures, knownVillageIds, villageTradeOffers, fishHabitats
          FROM colonies
@@ -541,7 +547,8 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             criticalSince, claimedTiles, agriculturalTiles, revealedTiles, provisionalTiles, threatPressure, lastRaidAt,
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
-            stockpiles, farms, gatherSpots, stockLedger, coin, items, woodCraftProgress,
+            stockpiles, farms, gatherSpots, stockLedger, coin, trader, lastTraderDepartedAt,
+            traderVisitCount, items, woodCraftProgress,
             stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
             anchorX, anchorY, migrationState, migrationDepartures, isGlobal, ownerPlayerId,
             knownVillageIds, villageTradeOffers, foundingScale, fishHabitats
@@ -549,7 +556,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
             ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
-            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56
+            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59
         )",
         params![
             colony.id,
@@ -592,6 +599,14 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             serde_json::to_string(&colony.gather_spots).map_err(to_sql_json)?,
             serde_json::to_string(&colony.stock_ledger).map_err(to_sql_json)?,
             colony.coin,
+            colony
+                .trader
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(to_sql_json)?,
+            colony.last_trader_departed_at,
+            i64::try_from(colony.trader_visit_count).unwrap_or(i64::MAX),
             serde_json::to_string(&colony.items).map_err(to_sql_json)?,
             colony.wood_craft_progress,
             colony.stone_craft_progress,
@@ -664,6 +679,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
     let gather_spots_json: Option<String> = row.get("gatherSpots")?;
     let stock_ledger_json: Option<String> = row.get("stockLedger")?;
     let items_json: Option<String> = row.get("items")?;
+    let trader_json: Option<String> = row.get("trader")?;
     let migration_state_json: Option<String> = row.get("migrationState")?;
     let known_village_ids_json: Option<String> = row.get("knownVillageIds")?;
     let village_trade_offers_json: Option<String> = row.get("villageTradeOffers")?;
@@ -804,15 +820,18 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         metal_forge_progress: row
             .get::<_, Option<f64>>("metalForgeProgress")?
             .unwrap_or(0.0),
-        // P19 slice 3: `coin` is real player-facing wealth, so it gets a column (see
-        // `migrate_add_missing_columns`). The in-progress trader visit + its schedule
-        // reference (`last_trader_departed_at`) are NOT persisted this slice, matching
-        // the `items`/craft-progress precedent above — a restart drops any mid-visit
-        // trader and the next visit's game-time schedule falls back to counting from
-        // `run_started_at` (see `world_tick::phase_36b_trader_lifecycle`).
+        // Trader position, phase, deadline, finite purse/manifest/item identities and
+        // schedule cursor are gameplay state. An additive JSON column resumes the exact
+        // visit; missing legacy columns default to no in-flight visit/count zero.
         coin: row.get::<_, Option<f64>>("coin")?.unwrap_or(0.0),
-        trader: None,
-        last_trader_departed_at: None,
+        trader: trader_json
+            .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+            .transpose()?,
+        trader_visit_count: row
+            .get::<_, Option<i64>>("traderVisitCount")?
+            .unwrap_or(0)
+            .max(0) as u64,
+        last_trader_departed_at: row.get("lastTraderDepartedAt")?,
         migration_state: migration_state_json
             .map(|raw| serde_json::from_str::<MigrationState>(&raw).map_err(from_sql_json))
             .transpose()?
@@ -3532,6 +3551,9 @@ mod tests {
             ("colonies", "stockLedger"),
             ("colonies", "provisionalTiles"),
             ("colonies", "coin"),
+            ("colonies", "trader"),
+            ("colonies", "lastTraderDepartedAt"),
+            ("colonies", "traderVisitCount"),
             ("colonies", "migrationState"),
             ("colonies", "migrationDepartures"),
             ("colonies", "isGlobal"),
@@ -3562,6 +3584,9 @@ mod tests {
             ("colonies", "stockLedger"),
             ("colonies", "provisionalTiles"),
             ("colonies", "coin"),
+            ("colonies", "trader"),
+            ("colonies", "lastTraderDepartedAt"),
+            ("colonies", "traderVisitCount"),
             ("colonies", "migrationState"),
             ("colonies", "migrationDepartures"),
             ("colonies", "isGlobal"),
@@ -3607,6 +3632,81 @@ mod tests {
             .expect("load migrated world")
             .expect("saved world exists");
         assert_eq!(loaded, world);
+    }
+
+    #[test]
+    fn legacy_null_trader_columns_default_without_fabricating_a_visit_or_restock() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(42);
+        world
+            .colonies
+            .push(found_colony(42, "legacy-trader", 1_000_000, 9));
+        save_world(&conn, &world).expect("save current row");
+        conn.execute(
+            "UPDATE colonies SET trader = NULL, lastTraderDepartedAt = NULL, traderVisitCount = NULL",
+            [],
+        )
+        .expect("simulate newly-added nullable columns on a legacy row");
+
+        let loaded = load_world(&conn).expect("load").expect("world");
+        let colony = &loaded.colonies[0];
+        assert!(colony.trader.is_none());
+        assert_eq!(colony.last_trader_departed_at, None);
+        assert_eq!(colony.trader_visit_count, 0);
+    }
+
+    #[test]
+    fn restart_mid_visit_preserves_exact_depleted_manifest_purse_items_and_deadline() {
+        use cat_sim::{
+            entities::MapType,
+            items::{Item, ItemKind, ItemStore, Material},
+            stockpiles::ResourceKind,
+            trader::TraderState,
+            world_tick::TraderRuntime,
+        };
+
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(73);
+        let mut colony = found_colony(73, "restart-trader", 1_000_000, 9);
+        let mut cargo = ItemStore::default();
+        cargo.add(Item::new(ItemKind::Mug, Material::Wood, 1), 1, 1.0);
+        colony.trader_visit_count = 4;
+        colony.last_trader_departed_at = Some(900_000);
+        colony.trader = Some(TraderRuntime {
+            id: "trader-4".to_owned(),
+            position: Position {
+                map: MapType::World,
+                x: 7.0,
+                y: 8.0,
+            },
+            destination: Some(Position {
+                map: MapType::World,
+                x: 7.0,
+                y: 8.0,
+            }),
+            state: TraderState::Trading,
+            arrived_at: Some(1_100_000),
+            depart_at: Some(2_000_000),
+            route_exterior: Some([7, 20]),
+            visit_destination: Some([7, 8]),
+            visit_number: 4,
+            stock: BTreeMap::from([(ResourceKind::Food, 0.0), (ResourceKind::Logs, 2.0)]),
+            items: cargo,
+            coin: 17.5,
+        });
+        let expected_trader = colony.trader.clone();
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save depleted visit");
+
+        let loaded = load_world(&conn).expect("load").expect("world");
+        assert_eq!(loaded.colonies[0].trader, expected_trader);
+        assert_eq!(loaded.colonies[0].trader_visit_count, 4);
+        assert_eq!(loaded.colonies[0].last_trader_departed_at, Some(900_000));
+        assert_eq!(
+            loaded.colonies[0].trader.as_ref().unwrap().stock[&ResourceKind::Food],
+            0.0,
+            "restart must not call fresh-manifest restocking"
+        );
     }
 
     #[test]
@@ -4815,13 +4915,9 @@ mod tests {
     /// (either by comparison against a stale expectation, or because the loaded value
     /// stays at its `Default` while the saved value does not).
     ///
-    /// `trader`, `last_trader_departed_at`, and the end-of-tick-only
-    /// `pending_scout_delivery_tiles` are intentionally excluded from the round trip
-    /// (see the doc comments on `ColonyRuntime` and in `load_colony`). A restart is
-    /// documented to drop an in-flight trader visit. Scout notebooks persist because
-    /// dropping them can make a returning scout deliver no knowledge after a restart.
-    /// This test asserts that documented contract explicitly so a future change shows
-    /// up here too.
+    /// Only end-of-tick `pending_scout_delivery_tiles` is intentionally excluded from
+    /// the round trip. In-flight traders, their finite manifests/item identities,
+    /// purse, phase/deadline/route and schedule cursors are durable gameplay state.
     #[test]
     fn save_world_load_world_round_trips_every_field_in_the_persistence_audit() {
         use cat_sim::{
@@ -4831,7 +4927,8 @@ mod tests {
             officers::OfficerRole,
             stockpiles::{GatherSpot, ResourceKind, Stockpile},
             world_tick::{
-                ElectionKind, ElectionRuntime, RaiderRuntime, UpgradeLevels, VoteRuntime,
+                ElectionKind, ElectionRuntime, RaiderRuntime, TraderRuntime, UpgradeLevels,
+                VoteRuntime,
             },
             zones::{ZoneKind, ZoneRect},
         };
@@ -4882,6 +4979,32 @@ mod tests {
         colony.active_raid = Some("raid-1".to_owned());
         colony.raid_clicks = 4.0;
         colony.coin = 88.5;
+        colony.trader_visit_count = 7;
+        colony.last_trader_departed_at = Some(5_123_456);
+        let mut trader_items = cat_sim::items::ItemStore::default();
+        trader_items.add(Item::new(ItemKind::Mug, Material::Stone, 2), 2, 1.0);
+        colony.trader = Some(TraderRuntime {
+            id: "trader-audit".to_owned(),
+            position: Position {
+                map: MapType::World,
+                x: 9.25,
+                y: 17.5,
+            },
+            destination: Some(Position {
+                map: MapType::World,
+                x: 7.0,
+                y: 8.0,
+            }),
+            state: cat_sim::trader::TraderState::Trading,
+            arrived_at: Some(5_400_000),
+            depart_at: Some(5_900_000),
+            route_exterior: Some([7, 19]),
+            visit_destination: Some([7, 8]),
+            visit_number: 7,
+            stock: BTreeMap::from([(ResourceKind::Food, 2.0), (ResourceKind::Logs, 4.0)]),
+            items: trader_items,
+            coin: 123.5,
+        });
         colony.wood_craft_progress = 111.0;
         colony.stone_craft_progress = 222.0;
         colony.clothier_craft_progress = 333.0;
@@ -5124,13 +5247,8 @@ mod tests {
         let loaded_colony = &loaded.colonies[0];
         let expected_colony = &expected.colonies[0];
 
-        // Every field except the three documented-transient ones must round-trip
-        // exactly. Compare via a clone with those fields reset to what
-        // `load_colony` is documented to produce, so any other drift fails the
-        // `assert_eq!` on the whole struct.
+        // Every field except the one end-of-tick transient must round-trip exactly.
         let mut expected_after_reload = expected_colony.clone();
-        expected_after_reload.trader = None;
-        expected_after_reload.last_trader_departed_at = None;
         expected_after_reload.pending_scout_delivery_tiles.clear();
 
         assert_eq!(loaded_colony, &expected_after_reload);
@@ -5163,6 +5281,15 @@ mod tests {
             expected_colony.metal_forge_progress
         );
         assert_eq!(loaded_colony.coin, expected_colony.coin);
+        assert_eq!(loaded_colony.trader, expected_colony.trader);
+        assert_eq!(
+            loaded_colony.last_trader_departed_at,
+            expected_colony.last_trader_departed_at
+        );
+        assert_eq!(
+            loaded_colony.trader_visit_count,
+            expected_colony.trader_visit_count
+        );
         assert_eq!(
             loaded_colony.last_leader_research_choice_at,
             expected_colony.last_leader_research_choice_at
@@ -5177,10 +5304,8 @@ mod tests {
             expected_colony.provisional_tiles
         );
 
-        // Documented transient fields: confirm the *reset*, not just its absence from
-        // the equality check above.
-        assert_eq!(loaded_colony.trader, None);
-        assert_eq!(loaded_colony.last_trader_departed_at, None);
+        // Documented transient field: confirm the reset, not just its absence from the
+        // equality check above.
         assert!(loaded_colony.pending_scout_delivery_tiles.is_empty());
     }
 }

@@ -1,9 +1,10 @@
 # P19 — DF-scale item economy (cat-themed): materials, material-variant crafting, traders
 
-> **Living target spec.** The item/material model, a small recipe subset, visiting traders, and
-> basic buy/sell actions exist. Stable item-unit identity, weight, finite durability, work wear,
-> material-backed repair, a 20 kg trader load limit, persistence, and Goods-panel condition
-> controls are verified. Full source/crafting breadth, local physical inventories, and built
+> **Living target spec.** The item/material model, a small recipe subset, and physical finite
+> visiting traders with buy/sell actions exist. Stable item-unit identity, weight, finite
+> durability, work wear, material-backed repair, exact caravan cargo transfer, finite trader
+> stock/purse/capacity, persistence, and Goods/trade-panel truth are implemented. Full
+> source/crafting breadth, local physical inventories, and built
 > transport remain open. Finite fresh-Fish habitats and the
 > physical shore→store route are verified. Configurable, consensual inter-village
 > resource barter is verified with a 32-open-offer cap and atomic inventory/storage rechecks;
@@ -94,6 +95,19 @@ shrine/market), **stays a while**, and opens a **trade menu** — sell your surp
 value/coin, buy goods/materials you lack (esp. things from biomes you can't yet reach). A simple
 value/coin economy; relations/price could deepen later. Ties to: the market building, the goods
 above, and reaching distant-biome resources (P17) before you have transport (P16 trains/ships).
+
+The implemented physical contract is stricter than the original sketch. Each visit receives a
+deterministic bounded-search exterior that is genuinely passable and routeable to the existing
+shrine contact tile; no new market building is implied. The wagon uses ordinary obstacle-aware
+A* through the retained gate, waits and replans when closed, never gains water walking from
+Shipping, and receives no abstract Rail speed bonus. Trade actions remain invalid until physical
+shrine arrival. The exact arrival phase, destination, exterior, visit number, trading deadline,
+finite resource manifest, purse, and purchased item cargo persist across restart. Buying removes
+exact stock and can sell out; selling transfers exact stable item IDs and is bounded by the
+merchant's remaining coin and 100 kg wagon capacity (with the existing 20 kg per-action item-load
+limit). Restocking happens only when a new deterministic visit begins. When the deadline expires,
+the wagon follows the same physical rules back to its persisted exterior and despawns only on
+arrival.
 
 ## Scope / sequencing (big — builds on P12.4b)
 This is the large economy layer. Realistically staged:

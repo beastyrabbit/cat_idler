@@ -756,10 +756,10 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Slice 2: workshops craft material-variant trade goods.
 - Slice 3/4: visiting traders + a coin economy + sell/buy actions; the client renders the
   visiting trader (merchant cat + minimap mark), a goods/inventory panel, item glyphs, and an
-  always-visible HUD treasury total. The current merchant walks straight to the south gate and
-  resource purchases use an effectively unbounded catalog. P19's maintained physical destination
-  and inventory contract still requires obstacle-aware travel to the shrine/market, finite visit
-  stock, deterministic restocking, and conserved departure/restart behavior.
+  always-visible HUD treasury total. The current correction gives every visit a bounded
+  deterministic reachable exterior, ordinary A* travel through the retained gate to physical
+  shrine contact, a finite manifest/purse/100 kg wagon, exact item-unit cargo, persisted
+  phase/route/deadline/stock, sold-out truth, and a physical return to that same exterior.
 - Finite-condition extension: stable item-unit IDs, physical weight, work-driven durability wear,
   persistent broken units, staffed material-backed repair with a live durability-research
   multiplier, a 20 kg trader item-load limit, signed/persisted controls, and truthful Goods-panel
@@ -786,7 +786,7 @@ These cards record runtime work; reconciling the specs did not complete them.
 | P19.C2 — remaining physical stations | in progress | The legacy `basic_tools` placement check is removed from P16's three placement-available founding benches, with unique catalog markers plus personal/communal signed and restart guardrails; future studies gate their recipes, not later copies. Still convert Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy to local input/output/transit state and ordered repeatable pausable queues. One cat advances one selected recipe; death, removal, full storage, restart, signed controls, and inspectors conserve and expose every unit. |
 | P19.C3 — finite functional equipment | todo | Complete material-backed tools/weapons/armor while retaining their stable scalar fields for old-save compatibility. Finite item units become the identity/condition authority with no duplicate counts across crafting, use, repair, storage, trade, protocol, persistence, or UI. |
 | P19.C4 — physical scaffold inputs | done | Exact player and autonomous placement preserve pinned type-local cost, escalation, atomic footprint validation, and paid-scaffold recovery while reserving finite Lumber/Planks plus Blocks from visible sources. A living assigned builder carries bounded loads through persisted transit/input ledgers and progress waits for full delivery. Conservation, empty-paw/loaded blocked-route reopen, recovery, pinned speed, reservation safety, cadence, restart, signed HMAC, protocol/client, full touched-crate gates, strict Clippy, and the accepted 2048×1152 selected-scaffold own-framebuffer are verified. |
-| P19.C5 — physical finite-stock trader | todo | Replace the obstacle-blind gate walk and unbounded resource catalog with an arrival/departure route to the maintained shrine/market destination plus finite persisted visit inventory and deterministic restocking. Prove purchase depletion, load limits, departure/restart conservation, signed controls, and a guided visual campaign. |
+| P19.C5 — physical finite visiting trader | in progress | The implementation and focused gates are complete: ordinary obstacle-aware A* exterior→gate→shrine→same-exterior travel, arrival-gated trade, finite deterministic resource stock, finite purse/cargo, exact item identity transfer, sold-out denial, persistence/restart, signed guided depletion, protocol/client state, and a deterministic passive 60h full visit pass. Close only after the broad touched-crate gates and own-framebuffer acceptance show the merchant at the shrine with finite or sold-out inventory visible. |
 
 #### Physical-consistency enhancement outside P19 completion
 

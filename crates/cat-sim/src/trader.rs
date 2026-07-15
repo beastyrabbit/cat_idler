@@ -1,8 +1,7 @@
 //! Visiting trader / caravan economy (P19 slice 3) — a periodic friendly NPC plus a
-//! simple coin economy. Lifecycle-and-movement-wise this is a much simpler analogue of
-//! the raider warband in [`crate::world_tick`]'s threat/raid director (spawn off-map,
-//! walk in on the same [`crate::movement::walk_path`] primitive, linger, walk back out,
-//! despawn) — no combat, no threat interaction.
+//! simple coin economy. The merchant owns a persisted physical exterior, obstacle-aware
+//! route to a shrine contact, bounded stay, finite wagon manifest/purse, and a physical
+//! route back out — no combat or threat interaction.
 //!
 //! Per `docs/migration/specs/p19-items-materials-trade.md`'s "Traders / caravans"
 //! section: a trader arrives at the village (walks to the gate), stays a while, and
@@ -11,14 +10,16 @@
 //! economy; relations/price could deepen later" — this module is exactly that: flat,
 //! documented, RNG-free price functions.
 //!
-//! **No RNG.** The spawn schedule is a game-time threshold, movement is the same
-//! deterministic straight-line [`crate::movement::walk_path`] raiders use (no obstacle
-//! rolls), and pricing is pure percent math — there is nothing here that needs a forked
-//! seeded chain. (The card's "if the trader needs any roll" guidance is conditional;
-//! this slice needs none, which keeps the determinism story trivial: same seed, same
-//! tick sequence, same trader schedule, always.)
+//! **No RNG stream consumption.** Visit manifests are stable hashes of
+//! `(world_seed, colony_id, visit_number)`, route ordering is deterministic, and pricing
+//! is pure percent math. Same state and tick sequence therefore produce the same visit.
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 use crate::{
+    items::ItemStore,
     items::{Item, item_value, item_weight_grams},
     stockpiles::ResourceKind,
 };
@@ -29,7 +30,7 @@ use crate::{
 /// as a calm, occasional counterpart to raids rather than a constant presence.
 pub const TRADER_VISIT_INTERVAL_GAME_HOURS: f64 = 48.0;
 
-/// Game-hours a trader lingers in [`TraderState::Trading`] at the gate before it starts
+/// Game-hours a trader lingers in [`TraderState::Trading`] at the shrine before it starts
 /// departing — a real window for the player to notice it and trade.
 pub const TRADER_LINGER_GAME_HOURS: f64 = 6.0;
 
@@ -37,15 +38,6 @@ pub const TRADER_LINGER_GAME_HOURS: f64 = 6.0;
 /// raiding warband's march (`RAIDER_SPEED_TILES_PER_SEC` = 0.4 in `world_tick.rs`) since
 /// it's a lone wagon, not a formation.
 pub const TRADER_SPEED_TILES_PER_SEC: f64 = 0.5;
-
-/// Off-map standoff distance (tiles) the trader spawns at / departs to, due west of the
-/// village gate. Mirrors `world_tick::RAID_SPAWN_DISTANCE`'s role for raiders (though
-/// traders always approach from the same fixed heading — see the module doc's "no RNG").
-pub const TRADER_SPAWN_DISTANCE: f64 = 12.0;
-
-/// Chebyshev range at which the trader counts as "arrived" (Arriving -> Trading) or
-/// "gone" (Departing -> despawned). Mirrors `world_tick::ENGAGE_RANGE`.
-pub const TRADER_ARRIVE_RANGE: f64 = 1.5;
 
 /// Percent of an item's [`item_value`] the trader pays when it *buys* that item from the
 /// colony (its resale margin — it sells on at full value elsewhere). Flat and documented
@@ -61,20 +53,89 @@ pub const TRADER_SELL_PRICE_PCT: u32 = 150;
 /// load seam: a player may make multiple bounded loads while the trader is present.
 pub const TRADER_ITEM_LOAD_LIMIT_GRAMS: u32 = 20_000;
 
+/// Total physical wagon capacity. Resource units weigh one kilogram; crafted items use
+/// their exact maintained item weight. The starting manifest deliberately leaves room
+/// for several player sales instead of pretending the merchant has an infinite hold.
+pub const TRADER_CARGO_CAPACITY_GRAMS: f64 = 100_000.0;
+pub const TRADER_RESOURCE_UNIT_WEIGHT_GRAMS: f64 = 1_000.0;
+/// Finite purse carried by each fresh visit. Player sales debit it; player purchases
+/// replenish it. A restart resumes the same purse instead of minting more coin.
+pub const TRADER_STARTING_COIN: f64 = 240.0;
+
 #[must_use]
 pub fn max_item_units_per_load(item: Item) -> u32 {
     TRADER_ITEM_LOAD_LIMIT_GRAMS / item_weight_grams(item).max(1)
 }
 
 /// A visiting trader's lifecycle state, in visit order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TraderState {
-    /// Walking in from the off-map spawn point toward the village gate.
+    /// Walking in from a persisted reachable exterior point toward the village shrine.
     Arriving,
-    /// Parked at the gate; `SellGoods` / `BuyResource` are valid while in this state.
+    /// Parked at the shrine; `SellGoods` / `BuyResource` are valid while in this state.
     Trading,
-    /// Walking back out to the off-map spawn point; despawns on arrival.
+    /// Walking back to the same persisted exterior point; despawns on arrival.
     Departing,
+}
+
+/// Deterministic finite resource manifest for one visit. The visit number rotates
+/// quantities by one or two units so a new caravan is visibly a fresh manifest while
+/// identical histories remain byte-identical. No tick or action ever calls this again
+/// for an in-progress visit.
+#[must_use]
+pub fn stock_for_visit(
+    world_seed: u32,
+    colony_id: &str,
+    visit_number: u64,
+) -> BTreeMap<ResourceKind, f64> {
+    let mut manifest_seed = u64::from(world_seed) ^ visit_number.rotate_left(17);
+    for byte in b"idle-cat-forest/trader-manifest/v1"
+        .iter()
+        .chain(colony_id.as_bytes())
+    {
+        manifest_seed ^= u64::from(*byte);
+        manifest_seed = manifest_seed.wrapping_mul(1_099_511_628_211);
+    }
+    ResourceKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| resource_unit_price(*kind).is_some())
+        .enumerate()
+        .map(|(index, kind)| {
+            let rotation = manifest_seed
+                .wrapping_add(index as u64 * 2)
+                .rotate_left((index % 63) as u32)
+                % 3;
+            (kind, 3.0 + rotation as f64)
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn coin_for_visit(world_seed: u32, colony_id: &str, visit_number: u64) -> f64 {
+    let manifest = stock_for_visit(world_seed, colony_id, visit_number);
+    TRADER_STARTING_COIN
+        + manifest
+            .iter()
+            .enumerate()
+            .map(|(index, (_, amount))| *amount * (index % 3) as f64)
+            .sum::<f64>()
+}
+
+/// Physical cargo weight of the merchant's remaining resources plus every item bought
+/// from the colony. ItemStore identity/condition stays intact while aboard the wagon.
+#[must_use]
+pub fn cargo_weight_grams(stock: &BTreeMap<ResourceKind, f64>, items: &ItemStore) -> f64 {
+    let resources = stock
+        .values()
+        .map(|amount| amount.max(0.0) * TRADER_RESOURCE_UNIT_WEIGHT_GRAMS)
+        .sum::<f64>();
+    let item_weight = items
+        .iter()
+        .map(|(item, count)| f64::from(item_weight_grams(*item)) * f64::from(*count))
+        .sum::<f64>();
+    resources + item_weight
 }
 
 /// Coin the trader pays the colony for `count` of `item` (the trader's buy price).
@@ -172,5 +233,37 @@ mod tests {
     #[test]
     fn trader_sell_price_of_zero_amount_is_zero_not_none() {
         assert_eq!(trader_sell_price(ResourceKind::Food, 0.0), Some(0.0));
+    }
+
+    #[test]
+    fn every_manifest_in_a_seed_colony_visit_matrix_has_a_full_sale_load_of_headroom() {
+        for world_seed in [0, 1, 99, 0xdead_beef, u32::MAX] {
+            for colony_id in ["colony-1", "global", "personal-far-away"] {
+                for visit in 1..=1_024 {
+                    let left = stock_for_visit(world_seed, colony_id, visit);
+                    let right = stock_for_visit(world_seed, colony_id, visit);
+                    assert_eq!(left, right);
+                    assert!(
+                        left.values()
+                            .all(|amount| amount.is_finite() && *amount > 0.0)
+                    );
+                    assert!(
+                        cargo_weight_grams(&left, &crate::items::ItemStore::default())
+                            + f64::from(TRADER_ITEM_LOAD_LIMIT_GRAMS)
+                            <= TRADER_CARGO_CAPACITY_GRAMS,
+                        "seed={world_seed} colony={colony_id} visit={visit}"
+                    );
+                    assert!(coin_for_visit(world_seed, colony_id, visit) > 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn next_visit_restock_is_deterministic_but_is_a_fresh_manifest() {
+        let first = stock_for_visit(99, "colony-1", 1);
+        let second = stock_for_visit(99, "colony-1", 2);
+        assert_ne!(first, second);
+        assert_eq!(second, stock_for_visit(99, "colony-1", 2));
     }
 }

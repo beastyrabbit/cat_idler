@@ -1976,6 +1976,11 @@ fn sell_goods(
     if count > trader::max_item_units_per_load(item) {
         return fail("That load is too heavy for one caravan transfer.");
     }
+    let added_weight = f64::from(item_weight_grams(item)) * f64::from(count);
+    let cargo_weight = trader::cargo_weight_grams(&trader_unit.stock, &trader_unit.items);
+    if cargo_weight + added_weight > trader::TRADER_CARGO_CAPACITY_GRAMS + f64::EPSILON {
+        return fail("The trader's wagon has no room for that load.");
+    }
     let functional_kind = functional_resource_for_item(item);
     if let Some(kind) = functional_kind
         && visible_resource_amount(colony, kind) + f64::EPSILON < f64::from(count)
@@ -1985,12 +1990,25 @@ fn sell_goods(
 
     let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let payout = trader::trader_buy_price(item, count) * effects.trade_value_mult;
+    if trader_unit.coin + f64::EPSILON < payout {
+        return fail("The trader cannot afford that load.");
+    }
+    let (colony_items, trader_unit) = (
+        &mut colony.items,
+        colony.trader.as_mut().expect("checked trader above"),
+    );
+    if !colony_items.transfer_pristine_to(&mut trader_unit.items, item, count) {
+        return fail("The exact goods are no longer available.");
+    }
     if let Some(kind) = functional_kind {
         let removed_physical = deduct_visible_resource(colony, kind, f64::from(count));
         debug_assert!(removed_physical, "checked physical availability above");
     }
-    let removed = colony.items.remove_pristine(item, count);
-    debug_assert!(removed, "checked availability above");
+    colony
+        .trader
+        .as_mut()
+        .expect("trader remains through atomic sale")
+        .coin -= payout;
     colony.coin += payout;
     colony.last_player_activity_at = Some(ctx.now_ms);
     append_event(
@@ -2156,9 +2174,29 @@ fn buy_resource(
     if colony.coin < cost {
         return fail("Not enough coin.");
     }
+    let available = trader_unit
+        .stock
+        .get(&resource_kind)
+        .copied()
+        .unwrap_or(0.0);
+    if available + f64::EPSILON < amount {
+        return fail("The trader is sold out of that amount.");
+    }
+    let Some(deposit_plan) = trade_deposit_plan(colony, resource_kind, amount) else {
+        return fail("No player-visible storage has room for that purchase.");
+    };
 
     colony.coin -= cost;
-    stockpiles::add_resource(&mut colony.resources, resource_kind, amount);
+    {
+        let trader_unit = colony
+            .trader
+            .as_mut()
+            .expect("trader remains through atomic purchase");
+        let stock = trader_unit.stock.entry(resource_kind).or_default();
+        *stock = (*stock - amount).max(0.0);
+        trader_unit.coin += cost;
+    }
+    store_trade_incoming(colony, resource_kind, amount, &deposit_plan);
     colony.last_player_activity_at = Some(ctx.now_ms);
     append_event(
         colony,
@@ -2996,11 +3034,24 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
 }
 
 /// Builds the visiting-trader snapshot (P19 slice 3), or `None` when no trader is
-/// present. Offers are only populated while `Trading` (selling/buying is only valid
-/// then) — `Arriving`/`Departing` traders report an empty offer list.
+/// present. The finite manifest and sell catalogue remain visible throughout the
+/// visit, but selling/buying is only valid while `Trading` at the shrine.
 fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
     let trader_unit = colony.trader.as_ref()?;
     let is_trading = trader_unit.state == trader::TraderState::Trading;
+    let stock = stockpiles::ResourceKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| trader::resource_unit_price(*kind).is_some())
+        .map(|kind| {
+            let available = trader_unit.stock.get(&kind).copied().unwrap_or(0.0);
+            proto::TraderStockSnapshot {
+                resource: sim_to_proto_resource_kind(kind),
+                available,
+                sold_out: available <= f64::EPSILON,
+            }
+        })
+        .collect::<Vec<_>>();
 
     let buy_offers = if is_trading {
         colony
@@ -3010,7 +3061,20 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
                 let available = colony
                     .items
                     .pristine_count(*item)
-                    .min(trader::max_item_units_per_load(*item));
+                    .min(trader::max_item_units_per_load(*item))
+                    .min(
+                        (trader_unit.coin / trader::trader_buy_price(*item, 1))
+                            .floor()
+                            .clamp(0.0, f64::from(u32::MAX)) as u32,
+                    )
+                    .min(
+                        ((trader::TRADER_CARGO_CAPACITY_GRAMS
+                            - trader::cargo_weight_grams(&trader_unit.stock, &trader_unit.items))
+                        .max(0.0)
+                            / f64::from(item_weight_grams(*item)))
+                        .floor()
+                        .clamp(0.0, f64::from(u32::MAX)) as u32,
+                    );
                 (available > 0).then(|| proto::TraderBuyOffer {
                     kind: item.kind.as_str().to_owned(),
                     material: item.material.as_str().to_owned(),
@@ -3025,19 +3089,20 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
         Vec::new()
     };
 
-    let sell_offers = if is_trading {
-        stockpiles::ResourceKind::ALL
-            .iter()
-            .filter_map(|&kind| {
-                trader::trader_sell_price(kind, 1.0).map(|unit_price| proto::TraderSellOffer {
+    let sell_offers = stockpiles::ResourceKind::ALL
+        .iter()
+        .filter_map(|&kind| {
+            trader::trader_sell_price(kind, 1.0).map(|unit_price| {
+                let available = trader_unit.stock.get(&kind).copied().unwrap_or(0.0);
+                proto::TraderSellOffer {
                     resource: sim_to_proto_resource_kind(kind),
                     unit_price,
-                })
+                    available,
+                    sold_out: available <= f64::EPSILON,
+                }
             })
-            .collect()
-    } else {
-        Vec::new()
-    };
+        })
+        .collect();
 
     Some(proto::TraderSnapshot {
         id: trader_unit.id.clone(),
@@ -3046,6 +3111,21 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
             y: trader_unit.position.y.round() as i32,
         },
         state: sim_to_proto_trader_state(trader_unit.state),
+        destination: trader_unit.destination.map(|position| proto::TilePoint {
+            x: position.x.round() as i32,
+            y: position.y.round() as i32,
+        }),
+        route_exterior: trader_unit
+            .route_exterior
+            .map(|[x, y]| proto::TilePoint { x, y }),
+        visit_number: trader_unit.visit_number,
+        arrived_at: trader_unit.arrived_at,
+        visit_ends_at: trader_unit.depart_at,
+        coin: trader_unit.coin,
+        cargo_weight_grams: trader::cargo_weight_grams(&trader_unit.stock, &trader_unit.items),
+        cargo_capacity_grams: trader::TRADER_CARGO_CAPACITY_GRAMS,
+        cargo_items: items_snapshot(&trader_unit.items),
+        stock,
         buy_offers,
         sell_offers,
     })
@@ -7829,6 +7909,13 @@ mod tests {
             destination: None,
             state: trader::TraderState::Trading,
             arrived_at: Some(0),
+            depart_at: Some(10_000_000),
+            route_exterior: Some([6, 20]),
+            visit_destination: Some([7, 8]),
+            visit_number: 1,
+            stock: BTreeMap::from([(stockpiles::ResourceKind::Food, 25.0)]),
+            items: ItemStore::default(),
+            coin: 500.0,
         }
     }
 
@@ -7891,7 +7978,7 @@ mod tests {
     }
 
     #[test]
-    fn build_snapshot_reports_no_offers_while_the_trader_is_still_arriving() {
+    fn arriving_snapshot_exposes_manifest_but_no_colony_sale_offers() {
         let mut world = world_with_one_colony();
         let colony = &mut world.colonies[0];
         colony.add_item(Item::new(ItemKind::Mug, Material::Wood, 1), 3);
@@ -7905,7 +7992,8 @@ mod tests {
         let trader_snap = snap.colonies[0].trader.as_ref().expect("trader present");
         assert_eq!(trader_snap.state, proto::TraderVisitState::Arriving);
         assert!(trader_snap.buy_offers.is_empty());
-        assert!(trader_snap.sell_offers.is_empty());
+        assert!(!trader_snap.sell_offers.is_empty());
+        assert!(!trader_snap.stock.is_empty());
     }
 
     #[test]
@@ -7913,12 +8001,41 @@ mod tests {
         let mut world = world_with_one_colony();
         let item = Item::new(ItemKind::Mug, Material::Wood, 1);
         world.colonies[0].add_item(item, 5);
+        let source_ids = world.colonies[0]
+            .items
+            .instances()
+            .take(3)
+            .map(|instance| instance.id.clone())
+            .collect::<Vec<_>>();
         world.colonies[0].trader = Some(trading_trader());
+        let total_coin_before =
+            world.colonies[0].coin + world.colonies[0].trader.as_ref().unwrap().coin;
 
         let res = apply_action(&mut world, &sell_goods_action("mug", "wood", 1, 3), &ctx());
         assert!(res.ok, "{res:?}");
         assert_eq!(world.colonies[0].items.get(&item), Some(&2));
         assert_eq!(world.colonies[0].coin, trader::trader_buy_price(item, 3));
+        assert_eq!(
+            world.colonies[0].trader.as_ref().unwrap().items.get(&item),
+            Some(&3)
+        );
+        assert_eq!(
+            world.colonies[0]
+                .trader
+                .as_ref()
+                .unwrap()
+                .items
+                .instances()
+                .map(|instance| instance.id.clone())
+                .collect::<Vec<_>>(),
+            source_ids,
+            "signed sale moves the exact finite identities"
+        );
+        assert_eq!(
+            world.colonies[0].coin + world.colonies[0].trader.as_ref().unwrap().coin,
+            total_coin_before,
+            "coin moves between finite purses without minting"
+        );
     }
 
     #[test]
@@ -8197,6 +8314,10 @@ mod tests {
         world.colonies[0].coin = 100.0;
         let starting_food = world.colonies[0].resources.food;
         world.colonies[0].trader = Some(trading_trader());
+        let total_food_before = starting_food
+            + world.colonies[0].trader.as_ref().unwrap().stock[&stockpiles::ResourceKind::Food];
+        let total_coin_before =
+            world.colonies[0].coin + world.colonies[0].trader.as_ref().unwrap().coin;
 
         let cost = trader::trader_sell_price(stockpiles::ResourceKind::Food, 20.0).unwrap();
         let res = apply_action(
@@ -8207,6 +8328,52 @@ mod tests {
         assert!(res.ok, "{res:?}");
         assert_eq!(world.colonies[0].resources.food, starting_food + 20.0);
         assert_eq!(world.colonies[0].coin, 100.0 - cost);
+        let trader = world.colonies[0].trader.as_ref().unwrap();
+        assert_eq!(trader.stock[&stockpiles::ResourceKind::Food], 5.0);
+        assert_eq!(trader.coin, 500.0 + cost);
+        assert_eq!(
+            world.colonies[0].resources.food + trader.stock[&stockpiles::ResourceKind::Food],
+            total_food_before
+        );
+        assert_eq!(world.colonies[0].coin + trader.coin, total_coin_before);
+    }
+
+    #[test]
+    fn finite_resource_stock_depletes_to_a_truthful_sold_out_offer() {
+        let mut world = world_with_one_colony();
+        world.colonies[0].coin = 100.0;
+        let mut visit = trading_trader();
+        visit.stock = BTreeMap::from([(stockpiles::ResourceKind::Food, 2.0)]);
+        world.colonies[0].trader = Some(visit);
+
+        let first = apply_action(
+            &mut world,
+            &buy_resource_action(proto::ResourceKind::Food, 2.0),
+            &ctx(),
+        );
+        assert!(first.ok, "{first:?}");
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let food = snapshot.colonies[0]
+            .trader
+            .as_ref()
+            .unwrap()
+            .sell_offers
+            .iter()
+            .find(|offer| offer.resource == proto::ResourceKind::Food)
+            .unwrap();
+        assert_eq!(food.available, 0.0);
+        assert!(food.sold_out);
+
+        let resources_before = world.colonies[0].resources.clone();
+        let coin_before = world.colonies[0].coin;
+        let second = apply_action(
+            &mut world,
+            &buy_resource_action(proto::ResourceKind::Food, 1.0),
+            &ctx(),
+        );
+        assert!(!second.ok);
+        assert_eq!(world.colonies[0].resources, resources_before);
+        assert_eq!(world.colonies[0].coin, coin_before);
     }
 
     #[test]

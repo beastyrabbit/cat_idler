@@ -556,6 +556,39 @@ impl ItemStore {
         true
     }
 
+    /// Atomically move exact pristine unit identities into another finite ledger.
+    /// This is the visiting-trader handoff: no unit is reconstructed from an aggregate
+    /// count, so a signed sale cannot duplicate identity or reset condition.
+    pub fn transfer_pristine_to(&mut self, destination: &mut Self, item: Item, count: u32) -> bool {
+        if count == 0 {
+            return true;
+        }
+        let ids = self
+            .instances
+            .iter()
+            .filter(|(_, instance)| instance.item == item && instance.is_pristine())
+            .map(|(id, _)| id.clone())
+            .take(count as usize)
+            .collect::<Vec<_>>();
+        if ids.len() != count as usize
+            || ids.iter().any(|id| destination.instances.contains_key(id))
+        {
+            return false;
+        }
+        for id in ids {
+            let instance = self
+                .instances
+                .remove(&id)
+                .expect("selected source unit still exists");
+            destination.next_serial = destination.next_serial.max(serial_from_id(&id));
+            destination.instances.insert(id, instance);
+        }
+        self.decrement_stack(item, count);
+        let destination_count = destination.stacks.entry(item).or_insert(0);
+        *destination_count = destination_count.saturating_add(count);
+        true
+    }
+
     fn decrement_stack(&mut self, item: Item, count: u32) {
         let remaining = self
             .stacks
@@ -938,5 +971,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn pristine_transfer_moves_exact_units_without_duplication() {
+        let item = Item::new(ItemKind::Mug, Material::Wood, 2);
+        let mut source = ItemStore::default();
+        source.add(item, 3, 1.0);
+        let original_ids = source
+            .instances()
+            .map(|instance| instance.id.clone())
+            .collect::<Vec<_>>();
+        let mut destination = ItemStore::default();
+
+        assert!(source.transfer_pristine_to(&mut destination, item, 2));
+        assert_eq!(source.get(&item), Some(&1));
+        assert_eq!(destination.get(&item), Some(&2));
+        let moved_ids = destination
+            .instances()
+            .map(|instance| instance.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(moved_ids, original_ids[..2]);
+        assert!(
+            source
+                .instances()
+                .all(|instance| !moved_ids.contains(&instance.id))
+        );
     }
 }

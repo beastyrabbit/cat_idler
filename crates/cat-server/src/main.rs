@@ -2930,6 +2930,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signed_trader_buy_sell_depletes_exact_finite_stock_across_restart() {
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-trader-restart-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let secret = "trader-restart-secret";
+        let signed = signed_session("trader-session".to_owned(), secret);
+        let mut world = starter_world(1_000_000);
+        let item = cat_sim::items::Item::new(
+            cat_sim::items::ItemKind::Mug,
+            cat_sim::items::Material::Wood,
+            1,
+        );
+        world.colonies[0].add_item(item, 1);
+        let item_id = world.colonies[0]
+            .items
+            .instances()
+            .next()
+            .unwrap()
+            .id
+            .clone();
+        world.colonies[0].coin = 20.0;
+        world.colonies[0].trader_visit_count = 3;
+        world.colonies[0].trader = Some(cat_sim::world_tick::TraderRuntime {
+            id: "signed-trader-3".to_owned(),
+            position: cat_sim::entities::Position {
+                map: cat_sim::entities::MapType::World,
+                x: 7.0,
+                y: 8.0,
+            },
+            destination: Some(cat_sim::entities::Position {
+                map: cat_sim::entities::MapType::World,
+                x: 7.0,
+                y: 8.0,
+            }),
+            state: cat_sim::trader::TraderState::Trading,
+            arrived_at: Some(1_000_000),
+            depart_at: Some(i64::MAX),
+            route_exterior: Some([7, 20]),
+            visit_destination: Some([7, 8]),
+            visit_number: 3,
+            stock: std::collections::BTreeMap::from([(
+                cat_sim::stockpiles::ResourceKind::Food,
+                2.0,
+            )]),
+            items: cat_sim::items::ItemStore::default(),
+            coin: 50.0,
+        });
+        let conn = Connection::open(&path).expect("open trader database");
+        persistence::init_schema(&conn).expect("init trader database");
+        let state = build_state_from_world(world, conn, secret.to_owned(), false, 1_000_000);
+        let mut connection =
+            ConnectionContext::new("trader-socket".to_owned(), STARTER_COLONY_ID.to_owned());
+        connection.identity = Some(signed.clone());
+
+        let sold = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::SellGoods {
+                session_id: signed.session_id.clone(),
+                nickname: "Trader Guide".to_owned(),
+                sig: signed.sig.clone(),
+                kind: "mug".to_owned(),
+                material: "wood".to_owned(),
+                quality: 1,
+                count: 1,
+            },
+        )
+        .await;
+        assert!(sold.result.ok, "signed sale failed: {sold:?}");
+        let bought = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::BuyResource {
+                session_id: signed.session_id.clone(),
+                nickname: "Trader Guide".to_owned(),
+                sig: signed.sig.clone(),
+                resource: ResourceKind::Food,
+                amount: 1.0,
+            },
+        )
+        .await;
+        assert!(bought.result.ok, "signed purchase failed: {bought:?}");
+        save_current_world(&state).await.expect("persist mid-visit");
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen trader database");
+        persistence::init_schema(&conn).expect("migrate trader database");
+        let restarted = build_state_from_connection(2_000_000, conn, secret.to_owned())
+            .expect("restore trader visit");
+        {
+            let restored = restarted.world.lock().await;
+            let trader = restored.colonies[0].trader.as_ref().expect("same visit");
+            assert_eq!(trader.visit_number, 3);
+            assert_eq!(trader.stock[&cat_sim::stockpiles::ResourceKind::Food], 1.0);
+            assert_eq!(
+                trader.items.instances().next().unwrap().id,
+                item_id,
+                "restart preserves the exact sold item identity"
+            );
+        }
+        let mut restarted_connection =
+            ConnectionContext::new("trader-socket-2".to_owned(), STARTER_COLONY_ID.to_owned());
+        restarted_connection.identity = Some(signed.clone());
+        let final_buy = ClientAction::BuyResource {
+            session_id: signed.session_id.clone(),
+            nickname: "Trader Guide".to_owned(),
+            sig: signed.sig.clone(),
+            resource: ResourceKind::Food,
+            amount: 1.0,
+        };
+        let depleted = send_action(&restarted, &mut restarted_connection, &final_buy).await;
+        assert!(
+            depleted.result.ok,
+            "final finite purchase failed: {depleted:?}"
+        );
+        let denied = send_action(&restarted, &mut restarted_connection, &final_buy).await;
+        assert!(
+            !denied.result.ok,
+            "sold-out manifest accepted another purchase"
+        );
+        let snapshot = {
+            let world = restarted.world.lock().await;
+            build_snapshot(&world, 2_000_000, 1)
+        };
+        let food = snapshot.colonies[0]
+            .trader
+            .as_ref()
+            .unwrap()
+            .sell_offers
+            .iter()
+            .find(|offer| offer.resource == ResourceKind::Food)
+            .unwrap();
+        assert_eq!(food.available, 0.0);
+        assert!(food.sold_out);
+        drop(restarted);
+        fs::remove_file(path).expect("remove trader database");
+    }
+
+    #[tokio::test]
     async fn authenticated_manual_accountant_resumes_the_same_physical_round_after_restart() {
         let path = std::env::temp_dir().join(format!(
             "cat-server-accountant-restart-{}-{}.db",

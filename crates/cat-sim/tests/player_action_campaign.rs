@@ -11,7 +11,7 @@ use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, apply_action, build_snapshot},
     entities::{CatActivity, MapType, Position},
-    items::{Item, ItemKind, Material},
+    items::{Item, ItemKind, ItemStore, Material},
     officers::OfficerRole,
     terrain_gen::tile_climate_biome,
     trader::{self, TraderState},
@@ -1225,6 +1225,13 @@ fn run_action_campaign() -> WorldState {
         destination: None,
         state: TraderState::Trading,
         arrived_at: Some(8_300),
+        depart_at: Some(99_999),
+        route_exterior: Some([0, 12]),
+        visit_destination: Some([7, 8]),
+        visit_number: 1,
+        stock: trader::stock_for_visit(world.world_seed, "colony-1", 1),
+        items: ItemStore::default(),
+        coin: trader::coin_for_visit(world.world_seed, "colony-1", 1),
     });
     let (session_id, nickname, sig) = signed_fields();
     apply_ok(
