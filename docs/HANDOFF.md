@@ -12,7 +12,7 @@ TypeScript/Next.js game was removed from this tree and is preserved — runnable
 `archive/web-game` (tag `web-final`, `8d3bc5a`). Reference only, never the target. The Rust
 module doc-comments' "ported from `lib/game/*.ts`" citations point into that branch.
 
-## State of the game (verified 2026-07-14)
+## State of the game (verified 2026-07-15)
 
 The **migration and P11 cutover are complete**; the maintained game is still pre-release and
 several P12–P19 product promises remain partial. Do not turn a phase label or compiling crate
@@ -78,7 +78,10 @@ Verified foundations include:
 - the complete founding lifecycle: exactly 15 adult cats in three five-bed Dens, slow
   reserved-bed breeding, prosperity migration with a 36-game-hour unhoused probation,
   240/288-game-hour old-age thresholds, atomic extinction recovery, and physical emergency
-  water fetching;
+  water fetching. Prosperity migrants now materialize at one deterministic dry exterior tile,
+  visibly follow the authoritative south-gate path before joining the census or simulation, and
+  reuse that persisted origin when an unhoused probation expires. A blocked gate pauses the
+  journey; housing begins only after entry, and departure/removal completes only after exit;
 - physical exterior farming: a living assigned cat walks through the retained village gate,
   plants, tends, harvests bounded baskets into a local handoff, and returns crop cargo to finite
   storage before aggregate credit. Farmer automation and signed manual assignment share this

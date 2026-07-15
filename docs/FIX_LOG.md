@@ -43,6 +43,35 @@ reservation/overlap and mutation-free denial, authenticated server HMAC, and SQL
 cover placement without altering current aggregate production. The remaining raw Stone, physical
 source cargo, six station-local queues, and finite-equipment authority work stays open below.
 
+## 2026-07-15 — Prosperity migrants physically enter and leave through the gate
+
+**Problem:** Prosperity migration created or removed cats directly in colony state. A new migrant
+could count as a resident, consume stores, take work, vote, fight, or claim housing before walking
+into the village; an expired unhoused migrant disappeared without releasing work or visibly
+leaving. The client therefore showed a probation countdown without a truthful physical journey.
+
+**Fix:** Each cohort now receives one deterministic dry/passable exterior origin near the south
+gate. The origin and `Arriving`/`Probationary`/`Departing` phase persist in the existing migration
+JSON, with legacy records defaulting to already-present probationers. Authoritative A* movement
+alone carries cats through the current gate, so a blocked route waits and resumes without
+consuming the cohort, Shipping never permits water walking, Rail remains neutral, and gate
+relocation uses the new wall topology. Only physical entry emits `MigrationArrived` and starts the
+36-game-hour housing clock. Expiry conserves cargo, cancels jobs and role ownership, then routes
+the cat back to its persisted origin; only physical exit removes it and emits
+`MigrationDeparted`. Arriving/departing cats are visible but excluded from needs, survival,
+labor, research, rituals, officer dispatch, elections, combat, housing, and signed assignments.
+
+**Evidence:** Focused migration, exact water/mountain passability, 120-second blocked-route
+performance/reopen, moved-gate, cadence partition, cargo/job recovery, death/reset, legacy serde,
+SQLite mid-arrival/mid-departure restart, protocol/client status, personal guided Den retention,
+signed server guided-vs-unattended, and three-seed organic 150-game-hour campaigns pass on the
+integrated transport/entitlement/Accountant base. The exact live-cadence 48-hour passive run kept
+all 15 cats healthy while completing hunt, water, Leader scout, shrine-delivery, and fog-expansion
+loops. The final touched-crate gate passed 1,363/1,363 tests with one intentional skip; strict
+Clippy and formatting passed. An inspected 3,826×2,105 client framebuffer selected an arriving
+cat walking through the south gate and showed the truthful `MIGRATION: ARRIVING THROUGH THE SOUTH
+GATE — NOT YET A RESIDENT` inspector state with needs, skills, and controls intact.
+
 ## 2026-07-15 — Truthful catalog job and aggregate-recipe entitlements
 
 **Problem:** Nine catalog job payloads were false: three founding/building capabilities were

@@ -19,6 +19,7 @@ use crate::{
         TITHE_FOOD_RESERVE_FLOOR, TITHE_FOOD_RESERVE_PER_CAT, TITHE_REFINED_AMOUNT,
     },
     life_sim::{can_work, get_life_stage},
+    migration::MigrantSpatialPhase,
     officers::{OfficerRole, prerequisite_for},
     production,
     productivity::productive_duration_ms,
@@ -651,7 +652,7 @@ fn cast_vote(
     let candidates = colony
         .cats
         .iter()
-        .filter(|cat| cat.death_time.is_none())
+        .filter(|cat| cat.death_time.is_none() && !cat_is_spatial_migrant(colony, &cat.id))
         .map(|cat| crate::elections::ElectionCandidate {
             id: cat.id.clone(),
             leadership: cat.stats.leadership,
@@ -1152,7 +1153,10 @@ fn assign_officer(
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
     if !colony.cats.iter().any(|cat| {
-        cat.id == cat_id && cat.death_time.is_none() && can_work(get_life_stage(cat.age_hours))
+        cat.id == cat_id
+            && cat.death_time.is_none()
+            && !cat_is_spatial_migrant(colony, &cat.id)
+            && can_work(get_life_stage(cat.age_hours))
     }) {
         return fail("That cat is not old enough and available to hold office.");
     }
@@ -2755,16 +2759,33 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
     let housing_buildings = housing_buildings(colony);
     let housing_capacity = housing::housing_capacity(&housing_buildings, effects.housing_per_den)
         * effects.housing_capacity_mult;
-    let population = alive_cats.len() as u32;
+    let migration_phases = colony
+        .migration_state
+        .probationary_migrants
+        .iter()
+        .map(|migrant| (migrant.id.as_str(), migrant.phase))
+        .collect::<BTreeMap<_, _>>();
+    let resident_cats = alive_cats
+        .iter()
+        .copied()
+        .filter(|cat| {
+            !matches!(
+                migration_phases.get(cat.id.as_str()),
+                Some(MigrantSpatialPhase::Arriving | MigrantSpatialPhase::Departing)
+            )
+        })
+        .collect::<Vec<_>>();
+    let population = resident_cats.len() as u32;
     let current_migration_minute = migration_game_minute_at(colony, now_ms);
     let probation_deadlines = colony
         .migration_state
         .probationary_migrants
         .iter()
+        .filter(|migrant| migrant.phase == MigrantSpatialPhase::Probationary)
         .map(|migrant| (migrant.id.as_str(), migrant.housing_deadline_game_minute))
         .collect::<BTreeMap<_, _>>();
     let probationary = u32::try_from(
-        alive_cats
+        resident_cats
             .iter()
             .filter(|cat| probation_deadlines.contains_key(cat.id.as_str()))
             .count(),
@@ -2773,7 +2794,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
     let permanent_population = population.saturating_sub(probationary);
     let housing_capacity_u32 = housing_capacity.max(0.0).floor() as u32;
     let housed = permanent_population.min(housing_capacity_u32);
-    let mut permanent_ids = alive_cats
+    let mut permanent_ids = resident_cats
         .iter()
         .filter(|cat| !probation_deadlines.contains_key(cat.id.as_str()))
         .map(|cat| cat.id.as_str())
@@ -2783,10 +2804,10 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
         .into_iter()
         .take(housing_capacity_u32 as usize)
         .collect::<BTreeSet<_>>();
-    let election_payload = election_snapshot(colony, &alive_cats);
+    let election_payload = election_snapshot(colony, &resident_cats);
     let election_schedule_payload = election_schedule_snapshot(colony, now_ms);
-    let vote_kick_payload = vote_kick_snapshot(colony, &alive_cats);
-    let warrior_count = alive_cats
+    let vote_kick_payload = vote_kick_snapshot(colony, &resident_cats);
+    let warrior_count = resident_cats
         .iter()
         .filter(|cat| cat.specialization == Some(CatSpecialization::Warrior))
         .count() as u32;
@@ -2836,12 +2857,20 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 refined: 5.0,
             },
         },
-        leader: leader_snapshot(colony, &alive_cats),
+        leader: leader_snapshot(colony, &resident_cats),
         cats: alive_cats
             .iter()
             .map(|cat| {
                 let deadline = probation_deadlines.get(cat.id.as_str()).copied();
-                let status = if deadline.is_some() {
+                let migration_status = match migration_phases.get(cat.id.as_str()).copied() {
+                    Some(MigrantSpatialPhase::Arriving) => proto::CatMigrationStatus::Arriving,
+                    Some(MigrantSpatialPhase::Probationary) => {
+                        proto::CatMigrationStatus::Probationary
+                    }
+                    Some(MigrantSpatialPhase::Departing) => proto::CatMigrationStatus::Departing,
+                    None => proto::CatMigrationStatus::Resident,
+                };
+                let status = if migration_status != proto::CatMigrationStatus::Resident {
                     proto::CatHousingStatus::Probationary
                 } else if housed_ids.contains(cat.id.as_str()) {
                     proto::CatHousingStatus::Housed
@@ -2852,6 +2881,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                     colony,
                     cat,
                     status,
+                    migration_status,
                     deadline.map(|deadline| deadline.saturating_sub(current_migration_minute)),
                 )
             })
@@ -3218,6 +3248,7 @@ fn cat_snapshot(
     colony: &ColonyRuntime,
     cat: &Cat,
     housing_status: proto::CatHousingStatus,
+    migration_status: proto::CatMigrationStatus,
     probation_remaining_game_minutes: Option<u64>,
 ) -> proto::CatSnapshot {
     proto::CatSnapshot {
@@ -3282,6 +3313,7 @@ fn cat_snapshot(
             .collect(),
         pregnant: cat.is_pregnant,
         housing_status,
+        migration_status,
         probation_remaining_game_minutes,
     }
 }
@@ -3883,12 +3915,27 @@ fn cat_can_take_assignment(colony: &ColonyRuntime, cat_index: usize) -> bool {
     let cat = &colony.cats[cat_index];
     let busy = busy_cat_ids(colony);
     cat.death_time.is_none()
+        && !cat_is_spatial_migrant(colony, &cat.id)
         && can_work(get_life_stage(cat.age_hours))
         && cat.activity == CatActivity::Idle
         && cat.current_task.is_none()
         && cat.carrying.is_none()
         && cat.destination.is_none()
         && !busy.contains(cat.id.as_str())
+}
+
+fn cat_is_spatial_migrant(colony: &ColonyRuntime, cat_id: &str) -> bool {
+    colony
+        .migration_state
+        .probationary_migrants
+        .iter()
+        .any(|migrant| {
+            migrant.id == cat_id
+                && matches!(
+                    migrant.phase,
+                    MigrantSpatialPhase::Arriving | MigrantSpatialPhase::Departing
+                )
+        })
 }
 
 fn busy_cat_ids(colony: &ColonyRuntime) -> HashSet<&str> {
@@ -6403,6 +6450,8 @@ mod tests {
                 id: "migrant-snapshot".to_owned(),
                 arrived_game_minute: 1_800,
                 housing_deadline_game_minute: 3_960,
+                phase: crate::migration::MigrantSpatialPhase::Probationary,
+                route_exterior: None,
             });
         colony.migration_departures = 2;
 
@@ -6423,6 +6472,15 @@ mod tests {
                 .unwrap()
                 .housing_status,
             proto::CatHousingStatus::Probationary
+        );
+        assert_eq!(
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == "migrant-snapshot")
+                .unwrap()
+                .migration_status,
+            proto::CatMigrationStatus::Probationary
         );
         assert_eq!(
             colony
@@ -6481,6 +6539,8 @@ mod tests {
                         id: format!("bulk-{index:04}"),
                         arrived_game_minute: 1_800,
                         housing_deadline_game_minute: 3_960,
+                        phase: crate::migration::MigrantSpatialPhase::Probationary,
+                        route_exterior: None,
                     },
                 );
             }
@@ -6588,6 +6648,77 @@ mod tests {
                 production_paused: false,
             });
         }
+    }
+
+    #[test]
+    fn signed_actions_cannot_vote_for_or_assign_an_in_transit_migrant() {
+        let mut world = world_with_one_colony();
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        world.colonies[0]
+            .migration_state
+            .probationary_migrants
+            .push(crate::migration::ProbationaryMigrant {
+                id: cat_id.clone(),
+                arrived_game_minute: 1,
+                housing_deadline_game_minute: 2_161,
+                phase: MigrantSpatialPhase::Arriving,
+                route_exterior: None,
+            });
+        world.colonies[0].cats[0].activity = CatActivity::Traveling;
+        world.colonies[0].cats[0].destination = Some(Position {
+            map: MapType::World,
+            x: 30.0,
+            y: 30.0,
+        });
+        world.colonies[0].elections.push(ElectionRuntime {
+            id: "migration-election".to_owned(),
+            opened_at: 900_000,
+            closes_at: 2_000_000,
+            resolved_at: None,
+            winner_cat_id: None,
+            kind: ElectionKind::Scheduled,
+        });
+        let vote = apply_action(
+            &mut world,
+            &proto::ClientAction::CastVote {
+                session_id: "sess_1".to_owned(),
+                nickname: "Voter".to_owned(),
+                sig: "signed".to_owned(),
+                election_id: "migration-election".to_owned(),
+                cat_id: cat_id.clone(),
+            },
+            &ctx(),
+        );
+        assert!(!vote.ok);
+        assert_eq!(vote.message.as_deref(), Some("Candidate not found."));
+
+        let workshop_id = world.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.building_type == BuildingType::Woodworking)
+            .unwrap()
+            .id
+            .clone();
+        let worker = apply_action(
+            &mut world,
+            &proto::ClientAction::AssignWorker {
+                session_id: "sess_1".to_owned(),
+                nickname: "Voter".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: cat_id.clone(),
+                building_id: Some(workshop_id),
+            },
+            &ctx(),
+        );
+        assert!(!worker.ok);
+
+        grant_officer_prerequisite(&mut world.colonies[0], OfficerRole::Farmer);
+        let officer = apply_action(
+            &mut world,
+            &assign_officer_action(proto::OfficerRole::Farmer, &cat_id),
+            &ctx(),
+        );
+        assert!(!officer.ok);
     }
 
     #[test]

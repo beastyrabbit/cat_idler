@@ -2033,7 +2033,7 @@ mod tests {
     use cat_protocol::{ClientAction, JobKind as ProtoJobKind};
     use cat_sim::{
         actions::{ActionCtx, apply_action, build_snapshot},
-        entities::CarryingKind,
+        entities::{CarryingKind, CatActivity, MapType, Position},
         migration::ProbationaryMigrant,
         world_tick::{
             RaidPhase, ScoutMission, ScoutResource, found_colony, found_colony_at,
@@ -2290,6 +2290,18 @@ mod tests {
                 id: "migrant-persisted".to_owned(),
                 arrived_game_minute: 1_800,
                 housing_deadline_game_minute: 3_960,
+                phase: cat_sim::migration::MigrantSpatialPhase::Departing,
+                route_exterior: Some([7, 30]),
+            });
+        colony
+            .migration_state
+            .probationary_migrants
+            .push(ProbationaryMigrant {
+                id: "migrant-arriving".to_owned(),
+                arrived_game_minute: 1_900,
+                housing_deadline_game_minute: 4_060,
+                phase: cat_sim::migration::MigrantSpatialPhase::Arriving,
+                route_exterior: Some([7, 30]),
             });
         colony.migration_departures = 3;
         world.colonies.push(colony);
@@ -2302,6 +2314,69 @@ mod tests {
             world.colonies[0].migration_state
         );
         assert_eq!(loaded.colonies[0].migration_departures, 3);
+    }
+
+    #[test]
+    fn restart_mid_arrival_and_departure_preserves_routes_and_next_tick_exactly() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(4_242);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 4_242);
+        for (id, phase, x, y) in [
+            (
+                "restart-arriving",
+                cat_sim::migration::MigrantSpatialPhase::Arriving,
+                6.0,
+                18.0,
+            ),
+            (
+                "restart-departing",
+                cat_sim::migration::MigrantSpatialPhase::Departing,
+                6.0,
+                6.0,
+            ),
+        ] {
+            let mut cat = colony.cats[0].clone();
+            cat.id = id.to_owned();
+            cat.name = id.to_owned();
+            cat.position = Position {
+                map: MapType::World,
+                x,
+                y,
+            };
+            cat.destination = Some(Position {
+                map: MapType::World,
+                x: 6.0,
+                y: if phase == cat_sim::migration::MigrantSpatialPhase::Arriving {
+                    6.0
+                } else {
+                    18.0
+                },
+            });
+            cat.activity = CatActivity::Traveling;
+            colony.cats.push(cat);
+            colony
+                .migration_state
+                .probationary_migrants
+                .push(ProbationaryMigrant {
+                    id: id.to_owned(),
+                    arrived_game_minute: 1,
+                    housing_deadline_game_minute: 2_161,
+                    phase,
+                    route_exterior: Some([7, 30]),
+                });
+        }
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save spatial migration");
+        let mut restarted = load_world(&conn)
+            .expect("load spatial migration")
+            .expect("persisted world");
+        assert_eq!(restarted, world);
+        assert_eq!(
+            world_tick(&mut restarted, 11_000),
+            world_tick(&mut world, 11_000)
+        );
+        assert_eq!(restarted, world);
     }
 
     #[test]

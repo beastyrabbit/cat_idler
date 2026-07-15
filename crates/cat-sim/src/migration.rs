@@ -124,6 +124,23 @@ pub struct ProbationaryMigrant {
     pub id: String,
     pub arrived_game_minute: u64,
     pub housing_deadline_game_minute: u64,
+    /// Physical journey through the village gate. Legacy saves predate spatial
+    /// migration and therefore deserialize as an already-present probationer.
+    pub phase: MigrantSpatialPhase,
+    /// Deterministic exterior landing/exit tile. Persisting the authored south
+    /// approach lets an arriving cat visibly wait on a blocked route and later
+    /// reuse the same physical origin when leaving.
+    #[serde(default)]
+    pub route_exterior: Option<[i32; 2]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrantSpatialPhase {
+    Arriving,
+    #[default]
+    Probationary,
+    Departing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -142,6 +159,42 @@ pub struct MigrationOutcome {
     pub arrivals: Vec<ProbationaryMigrant>,
     pub retained_migrant_ids: Vec<String>,
     pub departed_migrant_ids: Vec<String>,
+}
+
+#[must_use]
+pub fn migrant_phase(state: &MigrationState, id: &str) -> Option<MigrantSpatialPhase> {
+    state
+        .probationary_migrants
+        .iter()
+        .find(|migrant| migrant.id == id)
+        .map(|migrant| migrant.phase)
+}
+
+/// Begin the housing clock only once the arriving cat physically crosses the
+/// gate. A blocked route therefore cannot consume the promised 36-hour stay.
+pub fn mark_migrant_arrived(state: &mut MigrationState, id: &str, now: u64) -> bool {
+    let Some(migrant) = state
+        .probationary_migrants
+        .iter_mut()
+        .find(|migrant| migrant.id == id && migrant.phase == MigrantSpatialPhase::Arriving)
+    else {
+        return false;
+    };
+    let probation_duration = migrant
+        .housing_deadline_game_minute
+        .saturating_sub(migrant.arrived_game_minute);
+    migrant.arrived_game_minute = now;
+    migrant.housing_deadline_game_minute = now.saturating_add(probation_duration);
+    migrant.phase = MigrantSpatialPhase::Probationary;
+    true
+}
+
+pub fn finish_migrant_departure(state: &mut MigrationState, id: &str) -> bool {
+    let before = state.probationary_migrants.len();
+    state
+        .probationary_migrants
+        .retain(|migrant| migrant.id != id || migrant.phase != MigrantSpatialPhase::Departing);
+    state.probationary_migrants.len() != before
 }
 
 /// Evaluate one migration boundary and update only migration-owned state. The
@@ -211,7 +264,14 @@ fn is_prosperous_with_retained(
     input: &MigrationInputs,
     newly_retained: u32,
 ) -> bool {
-    let pending = u32::try_from(state.probationary_migrants.len()).unwrap_or(u32::MAX);
+    let pending = u32::try_from(
+        state
+            .probationary_migrants
+            .iter()
+            .filter(|migrant| migrant.phase != MigrantSpatialPhase::Departing)
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
     let population = input
         .resident_population
         .saturating_add(pending)
@@ -273,6 +333,8 @@ fn build_cohort(
             ),
             arrived_game_minute: input.elapsed_game_minutes,
             housing_deadline_game_minute: deadline,
+            phase: MigrantSpatialPhase::Arriving,
+            route_exterior: None,
         })
         .collect()
 }
@@ -290,14 +352,14 @@ fn expire_unhoused_migrants(state: &mut MigrationState, now: u64, departed: &mut
                 &right.id,
             ))
     });
-    state.probationary_migrants.retain(|migrant| {
-        if now >= migrant.housing_deadline_game_minute {
+    for migrant in &mut state.probationary_migrants {
+        if migrant.phase == MigrantSpatialPhase::Probationary
+            && now >= migrant.housing_deadline_game_minute
+        {
             departed.push(migrant.id.clone());
-            false
-        } else {
-            true
+            migrant.phase = MigrantSpatialPhase::Departing;
         }
-    });
+    }
 }
 
 fn allocate_vacancies(
@@ -311,15 +373,18 @@ fn allocate_vacancies(
     state.probationary_migrants.sort_by(|left, right| {
         (left.arrived_game_minute, &left.id).cmp(&(right.arrived_game_minute, &right.id))
     });
-    let retained_count = usize::try_from(*remaining_vacancies)
-        .unwrap_or(usize::MAX)
-        .min(state.probationary_migrants.len());
-    retained.extend(
-        state
-            .probationary_migrants
-            .drain(..retained_count)
-            .map(|migrant| migrant.id),
-    );
+    let retained_ids = state
+        .probationary_migrants
+        .iter()
+        .filter(|migrant| migrant.phase == MigrantSpatialPhase::Probationary)
+        .take(usize::try_from(*remaining_vacancies).unwrap_or(usize::MAX))
+        .map(|migrant| migrant.id.clone())
+        .collect::<Vec<_>>();
+    let retained_count = retained_ids.len();
+    retained.extend(retained_ids.iter().cloned());
+    state
+        .probationary_migrants
+        .retain(|migrant| !retained_ids.contains(&migrant.id));
     *remaining_vacancies =
         remaining_vacancies.saturating_sub(u32::try_from(retained_count).unwrap_or(u32::MAX));
 }
@@ -428,10 +493,17 @@ mod tests {
         assert!(!is_prosperous(&policy, &MigrationState::default(), &large));
 
         let mut state = MigrationState::default();
-        assert!(
-            !advance_migration(&policy, &mut state, &small)
-                .arrivals
-                .is_empty()
+        let first = advance_migration(&policy, &mut state, &small);
+        assert!(!first.arrivals.is_empty());
+        assert!(mark_migrant_arrived(
+            &mut state,
+            &first.arrivals[0].id,
+            small.elapsed_game_minutes
+        ));
+        let retained = advance_migration(&policy, &mut state, &small);
+        assert_eq!(
+            retained.retained_migrant_ids,
+            [first.arrivals[0].id.clone()]
         );
         assert!(
             advance_migration(&policy, &mut state, &small)
@@ -528,6 +600,11 @@ mod tests {
             &prosperous(policy.establishment_game_minutes),
         );
         let migrant = arrival.arrivals[0].clone();
+        assert!(mark_migrant_arrived(
+            &mut state,
+            &migrant.id,
+            policy.establishment_game_minutes
+        ));
         let mut housed = prosperous(migrant.housing_deadline_game_minute - 1);
         housed.housing_capacity += 1;
         let outcome = advance_migration(&policy, &mut state, &housed);
@@ -551,6 +628,11 @@ mod tests {
             &prosperous(policy.establishment_game_minutes),
         );
         let migrant = arrival.arrivals[0].clone();
+        assert!(mark_migrant_arrived(
+            &mut before_state,
+            &migrant.id,
+            policy.establishment_game_minutes
+        ));
 
         let before = advance_migration(
             &policy,
@@ -565,6 +647,11 @@ mod tests {
             &mut exact_state,
             &prosperous(policy.establishment_game_minutes),
         );
+        assert!(mark_migrant_arrived(
+            &mut exact_state,
+            &migrant.id,
+            policy.establishment_game_minutes
+        ));
         let exact = advance_migration(
             &policy,
             &mut exact_state,
@@ -581,6 +668,8 @@ mod tests {
                 id: "migrant-only".to_owned(),
                 arrived_game_minute: 1,
                 housing_deadline_game_minute: 10,
+                phase: MigrantSpatialPhase::Probationary,
+                route_exterior: None,
             }],
             ..MigrationState::default()
         };
@@ -602,11 +691,15 @@ mod tests {
                 id: "migrant-b".to_owned(),
                 arrived_game_minute: 5,
                 housing_deadline_game_minute: 100,
+                phase: MigrantSpatialPhase::Probationary,
+                route_exterior: None,
             },
             ProbationaryMigrant {
                 id: "migrant-a".to_owned(),
                 arrived_game_minute: 5,
                 housing_deadline_game_minute: 100,
+                phase: MigrantSpatialPhase::Probationary,
+                route_exterior: None,
             },
         ];
         let input = MigrationInputs {
@@ -637,6 +730,8 @@ mod tests {
             id: "old-pending".to_owned(),
             arrived_game_minute: 10,
             housing_deadline_game_minute: 10_000,
+            phase: MigrantSpatialPhase::Probationary,
+            route_exterior: None,
         };
         let mut state = MigrationState {
             probationary_migrants: vec![old.clone()],
@@ -721,11 +816,58 @@ mod tests {
         )
         .unwrap();
         assert_eq!(partial.last_evaluated_cohort_bucket, None);
+        assert_eq!(
+            partial.probationary_migrants[0].phase,
+            MigrantSpatialPhase::Probationary
+        );
+        assert_eq!(partial.probationary_migrants[0].route_exterior, None);
         let encoded = serde_json::to_string(&partial).unwrap();
         assert_eq!(
             serde_json::from_str::<MigrationState>(&encoded).unwrap(),
             partial
         );
+    }
+
+    #[test]
+    fn arriving_migrant_cannot_take_a_bed_or_expire_before_crossing_the_gate() {
+        let policy = MigrationPolicy::default();
+        let mut state = MigrationState::default();
+        let mut input = prosperous(policy.establishment_game_minutes);
+        input.housing_capacity += 1;
+        let arrival = advance_migration(&policy, &mut state, &input);
+        let migrant = &arrival.arrivals[0];
+        assert_eq!(migrant.phase, MigrantSpatialPhase::Arriving);
+        assert!(arrival.retained_migrant_ids.is_empty());
+
+        input.elapsed_game_minutes = migrant.housing_deadline_game_minute + 100;
+        let blocked = advance_migration(&policy, &mut state, &input);
+        assert!(blocked.departed_migrant_ids.is_empty());
+        assert_eq!(
+            migrant_phase(&state, &migrant.id),
+            Some(MigrantSpatialPhase::Arriving)
+        );
+    }
+
+    #[test]
+    fn departure_record_is_durable_until_the_physical_exit_finishes() {
+        let mut state = MigrationState {
+            probationary_migrants: vec![ProbationaryMigrant {
+                id: "leaving".to_owned(),
+                arrived_game_minute: 1,
+                housing_deadline_game_minute: 2,
+                phase: MigrantSpatialPhase::Probationary,
+                route_exterior: None,
+            }],
+            ..MigrationState::default()
+        };
+        let outcome = advance_migration(&MigrationPolicy::default(), &mut state, &prosperous(2));
+        assert_eq!(outcome.departed_migrant_ids, ["leaving"]);
+        assert_eq!(
+            migrant_phase(&state, "leaving"),
+            Some(MigrantSpatialPhase::Departing)
+        );
+        assert!(finish_migrant_departure(&mut state, "leaving"));
+        assert_eq!(migrant_phase(&state, "leaving"), None);
     }
 
     #[test]

@@ -662,6 +662,10 @@ pub struct CatSnapshot {
     /// work, but remain unhoused until a vacancy is allocated before their deadline.
     #[serde(default)]
     pub housing_status: CatHousingStatus,
+    /// Physical prosperity-migration journey. `resident` is the backward-
+    /// compatible default for snapshots written before cats walked through gates.
+    #[serde(default)]
+    pub migration_status: CatMigrationStatus,
     /// Remaining in-game minutes before an unhoused probationary arrival leaves.
     /// `None` for permanent residents and legacy snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -699,6 +703,16 @@ pub enum CatHousingStatus {
     Housed,
     Probationary,
     Unhoused,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CatMigrationStatus {
+    #[default]
+    Resident,
+    Arriving,
+    Probationary,
+    Departing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -2397,6 +2411,7 @@ mod tests {
                     preferred_labors: vec![Labor::Hunt],
                     pregnant: false,
                     housing_status: CatHousingStatus::Housed,
+                    migration_status: CatMigrationStatus::Resident,
                     probation_remaining_game_minutes: None,
                 }],
                 jobs: vec![JobSnapshot {
@@ -3125,6 +3140,7 @@ mod tests {
     fn cat_snapshot_probation_countdown_round_trips_and_defaults_absent() {
         let mut snap = sample_world_snapshot();
         snap.colonies[0].cats[0].housing_status = CatHousingStatus::Probationary;
+        snap.colonies[0].cats[0].migration_status = CatMigrationStatus::Departing;
         snap.colonies[0].cats[0].probation_remaining_game_minutes = Some(2_160);
         let encoded = serde_json::to_value(&snap).expect("serialize");
         assert_eq!(
@@ -3139,11 +3155,16 @@ mod tests {
             .as_object_mut()
             .expect("cat object");
         cat.remove("housingStatus");
+        cat.remove("migrationStatus");
         cat.remove("probationRemainingGameMinutes");
         let back: WorldSnapshot = serde_json::from_value(old).expect("deserialize");
         assert_eq!(
             back.colonies[0].cats[0].housing_status,
             CatHousingStatus::Housed
+        );
+        assert_eq!(
+            back.colonies[0].cats[0].migration_status,
+            CatMigrationStatus::Resident
         );
         assert_eq!(
             back.colonies[0].cats[0].probation_remaining_game_minutes,
@@ -3271,6 +3292,7 @@ mod tests {
             preferred_labors: Vec::new(),
             pregnant: false,
             housing_status: CatHousingStatus::Housed,
+            migration_status: CatMigrationStatus::Resident,
             probation_remaining_game_minutes: None,
         })
         .unwrap();

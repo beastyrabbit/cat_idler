@@ -10290,19 +10290,28 @@ fn inspector_text(cat: &CatSnapshot) -> String {
     } else {
         ""
     };
-    let housing = match cat.housing_status {
-        CatHousingStatus::Housed => "housing: housed".to_owned(),
-        CatHousingStatus::Unhoused => "housing: unhoused — build a den".to_owned(),
-        CatHousingStatus::Probationary => {
-            let remaining = cat.probation_remaining_game_minutes.unwrap_or(0);
-            let hours = remaining / 60;
-            let minutes = remaining % 60;
-            if remaining == 0 {
-                "housing: awaiting home — leaves now unless a den opens".to_owned()
-            } else {
-                format!("housing: awaiting home — {hours}h {minutes:02}m left; build a den")
-            }
+    let housing = match cat.migration_status {
+        cat_protocol::CatMigrationStatus::Arriving => {
+            "migration: arriving through the south gate — not yet a resident".to_owned()
         }
+        cat_protocol::CatMigrationStatus::Departing => {
+            "migration: departing through the south gate".to_owned()
+        }
+        cat_protocol::CatMigrationStatus::Resident
+        | cat_protocol::CatMigrationStatus::Probationary => match cat.housing_status {
+            CatHousingStatus::Housed => "housing: housed".to_owned(),
+            CatHousingStatus::Unhoused => "housing: unhoused — build a den".to_owned(),
+            CatHousingStatus::Probationary => {
+                let remaining = cat.probation_remaining_game_minutes.unwrap_or(0);
+                let hours = remaining / 60;
+                let minutes = remaining % 60;
+                if remaining == 0 {
+                    "housing: awaiting home — leaves now unless a den opens".to_owned()
+                } else {
+                    format!("housing: awaiting home — {hours}h {minutes:02}m left; build a den")
+                }
+            }
+        },
     };
     let preferred = if cat.preferred_labors.is_empty() {
         "none".to_owned()
@@ -11803,6 +11812,7 @@ mod tests {
             preferred_labors: Vec::new(),
             pregnant: false,
             housing_status: cat_protocol::CatHousingStatus::Housed,
+            migration_status: cat_protocol::CatMigrationStatus::Resident,
             probation_remaining_game_minutes: None,
         }
     }
@@ -11811,6 +11821,7 @@ mod tests {
     fn cat_inspector_makes_probation_deadline_and_housing_action_explicit() {
         let mut cat = census_cat(30.0, None, false);
         cat.housing_status = CatHousingStatus::Probationary;
+        cat.migration_status = cat_protocol::CatMigrationStatus::Probationary;
         cat.probation_remaining_game_minutes = Some(2_161);
         let waiting = inspector_text(&cat);
         assert!(waiting.contains("housing: awaiting home"));
@@ -11820,8 +11831,15 @@ mod tests {
         assert!(inspector_text(&cat).contains("leaves now unless a den opens"));
 
         cat.housing_status = CatHousingStatus::Housed;
+        cat.migration_status = cat_protocol::CatMigrationStatus::Resident;
         cat.probation_remaining_game_minutes = None;
         assert!(inspector_text(&cat).contains("housing: housed"));
+
+        cat.migration_status = cat_protocol::CatMigrationStatus::Arriving;
+        assert!(inspector_text(&cat).contains("arriving through the south gate"));
+        assert!(inspector_text(&cat).contains("not yet a resident"));
+        cat.migration_status = cat_protocol::CatMigrationStatus::Departing;
+        assert!(inspector_text(&cat).contains("departing through the south gate"));
     }
 
     #[test]

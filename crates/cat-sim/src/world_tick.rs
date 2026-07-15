@@ -48,7 +48,8 @@ use crate::{
         leadership_after_tenure, old_age_death_probability,
     },
     migration::{
-        MigrationInputs, MigrationPolicy, MigrationState, advance_migration,
+        MigrantSpatialPhase, MigrationInputs, MigrationPolicy, MigrationState, advance_migration,
+        finish_migrant_departure, mark_migrant_arrived, migrant_phase,
         migration_construction_wealth,
     },
     movement::{
@@ -1998,6 +1999,9 @@ pub fn inside_village_interior(colony: &ColonyRuntime, tile: TilePos) -> bool {
 const FOUNDING_REVEAL_RADIUS: i32 = 2;
 /// Water level stamped on a founding pond tile (a practically-infinite source).
 const FOUNDING_WATER: u32 = 999;
+/// Migrants materialize far enough beyond the one south gate that arrival and
+/// departure are visible journeys, while staying inside the generated local map.
+const MIGRANT_EXTERIOR_DISTANCE_TILES: i32 = 6;
 
 #[derive(Debug, Clone)]
 struct MovementPassContext {
@@ -3019,6 +3023,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_31_mid_job_hauling(colony, gate, world_seed);
         let mut movement =
             phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy, world_seed);
+        phase_32b_replan_migrant_routes(colony, &movement);
         phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
         phase_steward_stockpile_logistics(colony, gate, world_seed);
@@ -3155,22 +3160,24 @@ fn phase_4_leader_bootstrap_and_policy(colony: &mut ColonyRuntime, gate: TickGat
     let leader_missing_or_dead = colony
         .leader_id
         .as_ref()
-        .is_none_or(|leader_id| !alive_cats(&colony.cats).any(|cat| cat.id == *leader_id));
+        .is_none_or(|leader_id| !active_resident_cats(colony).any(|cat| cat.id == *leader_id));
 
     if leader_missing_or_dead {
         let mut best_leader: Option<&Cat> = None;
-        for candidate in alive_cats(&colony.cats) {
+        for candidate in active_resident_cats(colony) {
             if best_leader.is_none_or(|best| candidate.stats.leadership > best.stats.leadership) {
                 best_leader = Some(candidate);
             }
         }
         if let Some(leader) = best_leader {
-            colony.leader_id = Some(leader.id.clone());
+            let leader_id = leader.id.clone();
+            let leader_name = leader.name.clone();
+            colony.leader_id = Some(leader_id);
             append_event(
                 colony,
                 gate.processed_through,
                 EventKind::LeaderChange,
-                format!("{} is now the interim leader.", leader.name),
+                format!("{leader_name} is now the interim leader."),
             );
         }
     }
@@ -3179,7 +3186,7 @@ fn phase_4_leader_bootstrap_and_policy(colony: &mut ColonyRuntime, gate: TickGat
         .leader_id
         .as_ref()
         .and_then(|leader_id| {
-            alive_cats(&colony.cats)
+            active_resident_cats(colony)
                 .find(|cat| cat.id == *leader_id)
                 .map(|cat| cat.stats.leadership)
         })
@@ -3212,6 +3219,10 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
 
     let mut life_rng_seed = life_seed(colony.test_rng_seed.unwrap_or(1));
     let leader_id = colony.leader_id.clone();
+    let transit_ids = spatial_migrant_ids(colony)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
 
     // 1. Aging, old-age mortality, leadership tenure. Deaths are snapshotted here and
     // their salvage/job-cancel/event cleanup deferred until after the loop: those
@@ -3220,7 +3231,7 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     // uses for newborn insertion).
     let mut old_age_deaths: Vec<OldAgeDeath> = Vec::new();
     for cat in &mut colony.cats {
-        if cat.death_time.is_some() {
+        if cat.death_time.is_some() || transit_ids.contains(cat.id.as_str()) {
             continue;
         }
 
@@ -3585,7 +3596,7 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     colony: &mut ColonyRuntime,
     gate: TickGate,
 ) {
-    let cat_count = alive_cats(&colony.cats).count() as f64;
+    let cat_count = active_resident_cats(colony).count() as f64;
     let elapsed_for_decay = gate.elapsed_sec as f64 * normalize_resource_decay_multiplier(colony);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let spoilage_elapsed = elapsed_for_decay * (1.0 - effects.spoilage_resistance);
@@ -4813,7 +4824,7 @@ fn water_fetch_preemption_reserve(population: usize) -> f64 {
 }
 
 fn committed_water_fetcher_count(colony: &ColonyRuntime) -> usize {
-    let alive_ids = alive_cats(&colony.cats)
+    let alive_ids = active_resident_cats(colony)
         .map(|cat| cat.id.as_str())
         .collect::<HashSet<_>>();
     let mut committed = colony
@@ -4826,7 +4837,7 @@ fn committed_water_fetcher_count(colony: &ColonyRuntime) -> usize {
         .filter_map(|job| job.assigned_cat.as_deref())
         .filter(|cat_id| alive_ids.contains(*cat_id))
         .collect::<HashSet<_>>();
-    committed.extend(alive_cats(&colony.cats).filter_map(|cat| {
+    committed.extend(active_resident_cats(colony).filter_map(|cat| {
         (cat.activity == CatActivity::Returning
             && cat.carrying.as_ref().is_some_and(|carrying| {
                 carrying.kind == CarryingKind::Water && carrying.amount > 0.0
@@ -4922,7 +4933,7 @@ fn queue_deferred_water_fetch(colony: &mut ColonyRuntime, cat_id: CatId, now_ms:
 /// movement/hauling pipeline still performs every step and credits no water until the
 /// carrier deposits it.
 fn phase_17b_water_reserve_preemption(colony: &mut ColonyRuntime, gate: TickGate) {
-    let population = alive_cats(&colony.cats).count();
+    let population = active_resident_cats(colony).count();
     if population == 0
         || colony.resources.water >= water_fetch_preemption_reserve(population)
         || !has_water_site(colony)
@@ -4934,7 +4945,7 @@ fn phase_17b_water_reserve_preemption(colony: &mut ColonyRuntime, gate: TickGate
         return;
     }
 
-    let preemptible_ids = alive_cats(&colony.cats)
+    let preemptible_ids = active_resident_cats(colony)
         // Multi-trip gatherers remain Active while physically returning cargo.
         // Reassigning one here would let FetchWater overwrite already-earned goods.
         .filter(|cat| cat.activity != CatActivity::Returning && cat.carrying.is_none())
@@ -5029,7 +5040,7 @@ fn phase_17b_water_reserve_preemption(colony: &mut ColonyRuntime, gate: TickGate
             })
             .map(|(index, _)| index)
     });
-    let deferred_returners = alive_cats(&colony.cats)
+    let deferred_returners = active_resident_cats(colony)
         .filter(|cat| cat.activity == CatActivity::Returning && cat.carrying.is_some())
         .map(|cat| cat.id.as_str())
         .collect::<HashSet<_>>();
@@ -5151,7 +5162,7 @@ fn phase_17c_founding_wood_scout(colony: &mut ColonyRuntime, gate: TickGate) {
 /// jobs, staffing gaps, warriors, threat, and starvation flags.
 fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate) -> LeaderSnapshot {
     let caps = storage_caps(colony);
-    let alive = alive_cats(&colony.cats).collect::<Vec<_>>();
+    let alive = active_resident_cats(colony).collect::<Vec<_>>();
     let active_jobs = active_or_queued_jobs(colony);
     let busy_ids = active_jobs
         .iter()
@@ -6287,7 +6298,7 @@ fn automated_ritual_ready(colony: &ColonyRuntime, now_ms: i64) -> bool {
     if now_ms - colony.run_started_at < SHRINE_ESTABLISHMENT_MS {
         return false;
     }
-    let population = alive_cats(&colony.cats).count();
+    let population = active_resident_cats(colony).count();
     if population < MIN_RITUAL_POPULATION {
         return false;
     }
@@ -7976,7 +7987,7 @@ fn spendable_production_materials(colony: &ColonyRuntime) -> (f64, f64) {
 /// jobs are intentionally the same `JobKind`s a player can request: appointing an
 /// officer removes repetitive clicks; it does not create a private resource faucet.
 fn dispatch_officer_resource_jobs(colony: &mut ColonyRuntime, now_ms: i64, world_seed: u32) {
-    let population = alive_cats(&colony.cats).count() as f64;
+    let population = active_resident_cats(colony).count() as f64;
     let safe = population > 0.0
         && colony.resources.food + colony.resources.fish
             >= (population * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR)
@@ -8605,7 +8616,9 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
         water: colony.resources.water,
     };
 
-    let cat_ids: Vec<CatId> = alive_cats(&colony.cats).map(|cat| cat.id.clone()).collect();
+    let cat_ids: Vec<CatId> = active_resident_cats(colony)
+        .map(|cat| cat.id.clone())
+        .collect();
 
     for cat_id in cat_ids {
         let Some(index) = colony
@@ -8735,12 +8748,15 @@ fn phase_25b_prune_dead_scout_provisional_tiles(colony: &mut ColonyRuntime, _: T
     }
 }
 
-/// Admit prosperity migrants as real cats, then either integrate them into newly free
-/// permanent beds or remove them when their 36-game-hour probation expires. Probationers
-/// deliberately participate in needs, labor and danger like every other living cat; only
-/// permanent-housing and breeding counts exclude them.
+/// Admit prosperity migrants at a real exterior point, integrate cats that have
+/// crossed the gate into newly free beds, and start a physical exit when their
+/// 36-game-hour probation expires. Arriving/departing travelers do not consume
+/// village stores, work, vote, or fight; present probationers do.
 fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
-    let alive_ids = alive_cats(&colony.cats)
+    let alive_ids = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
         .map(|cat| cat.id.as_str())
         .collect::<HashSet<_>>();
     colony
@@ -8791,7 +8807,27 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
             || colony.active_raid.is_some()
             || matches!(colony.status, ColonyStatus::Struggling | ColonyStatus::Dead),
     };
-    let outcome = advance_migration(&policy, &mut colony.migration_state, &input);
+    let previous_cohort_bucket = colony.migration_state.last_evaluated_cohort_bucket;
+    let mut outcome = advance_migration(&policy, &mut colony.migration_state, &input);
+    let migration_exterior = (!outcome.arrivals.is_empty())
+        .then(|| migrant_exterior_tile(colony))
+        .flatten();
+    if !outcome.arrivals.is_empty() && migration_exterior.is_none() {
+        // A temporary staged fence or hazardous relocated gate must defer, not
+        // consume, this deterministic cohort. Retrying the same bucket recreates
+        // the same ids once the authoritative route opens.
+        colony.migration_state.last_evaluated_cohort_bucket = previous_cohort_bucket;
+        let blocked_ids = outcome
+            .arrivals
+            .iter()
+            .map(|arrival| arrival.id.as_str())
+            .collect::<HashSet<_>>();
+        colony
+            .migration_state
+            .probationary_migrants
+            .retain(|migrant| !blocked_ids.contains(migrant.id.as_str()));
+        outcome.arrivals.clear();
+    }
 
     for arrival in &outcome.arrivals {
         if colony.cats.iter().any(|cat| cat.id == arrival.id) {
@@ -8804,15 +8840,17 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
                 .retain(|pending| pending.id != arrival.id);
             continue;
         }
-        let cat = create_migrant_cat(colony, &arrival.id, gate.processed_through);
-        let name = cat.name.clone();
+        let exterior = migration_exterior.expect("arrivals require a passable exterior");
+        if let Some(persisted) = colony
+            .migration_state
+            .probationary_migrants
+            .iter_mut()
+            .find(|migrant| migrant.id == arrival.id)
+        {
+            persisted.route_exterior = Some([exterior.x, exterior.y]);
+        }
+        let cat = create_migrant_cat(colony, &arrival.id, gate.processed_through, exterior);
         colony.cats.push(cat);
-        append_event(
-            colony,
-            gate.processed_through,
-            EventKind::MigrationArrived,
-            format!("{name} arrived seeking a home and has 36 game-hours to find a bed."),
-        );
     }
 
     for retained_id in &outcome.retained_migrant_ids {
@@ -8830,7 +8868,7 @@ fn phase_25c_prosperity_migration(colony: &mut ColonyRuntime, gate: TickGate, wo
     }
 
     for departed_id in &outcome.departed_migrant_ids {
-        remove_departing_migrant(colony, departed_id, gate.processed_through);
+        begin_departing_migrant(colony, departed_id, gate.processed_through);
     }
 }
 
@@ -8867,7 +8905,7 @@ fn permanent_alive_population(colony: &ColonyRuntime) -> u32 {
     .unwrap_or(u32::MAX)
 }
 
-fn create_migrant_cat(colony: &ColonyRuntime, id: &str, now_ms: i64) -> Cat {
+fn create_migrant_cat(colony: &ColonyRuntime, id: &str, now_ms: i64, exterior: TilePos) -> Cat {
     let mut seed = stable_migrant_seed(id);
     let used_names = colony
         .cats
@@ -8897,7 +8935,7 @@ fn create_migrant_cat(colony: &ColonyRuntime, id: &str, now_ms: i64) -> Cat {
             .expect("bounded unique migrant-name fallback")
     });
     let mut rolls = SeededRollSource::new(seed);
-    let spot = starter_cat_spot(seed as usize);
+    let spot = exterior;
     Cat {
         id: id.to_owned(),
         colony_id: colony.id.clone(),
@@ -8922,14 +8960,10 @@ fn create_migrant_cat(colony: &ColonyRuntime, id: &str, now_ms: i64) -> Cat {
             health: 100.0,
         },
         current_task: None,
-        position: Position {
-            map: MapType::Colony,
-            x: f64::from(spot.x),
-            y: f64::from(spot.y),
-        },
-        destination: None,
+        position: position_from_world(tile_pos_to_world(spot)),
+        destination: Some(position_from_world(village_anchor_world(colony.anchor))),
         carrying: None,
-        activity: CatActivity::Idle,
+        activity: CatActivity::Traveling,
         is_pregnant: false,
         pregnancy_due_time: None,
         age_hours: 24.0 + f64::from(seed % 13),
@@ -8956,16 +8990,25 @@ fn stable_migrant_seed(id: &str) -> u32 {
     hash.max(1)
 }
 
-fn remove_departing_migrant(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
-    let Some(name) = colony
+fn begin_departing_migrant(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
+    let Some(_) = colony
         .cats
         .iter()
         .find(|cat| cat.id == cat_id && cat.death_time.is_none())
-        .map(|cat| cat.name.clone())
     else {
         return;
     };
     recover_offering_cargo_from_cat(colony, cat_id, now_ms);
+    let remaining_cargo = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id)
+        .and_then(|cat| {
+            cat.carrying
+                .clone()
+                .map(|carrying| (carrying, position_to_world(colony.anchor, cat.position)))
+        })
+        .and_then(|(carrying, at)| salvage_carried_cargo(colony, &carrying, at));
     cancel_cat_jobs(colony, cat_id, now_ms);
     for job in &mut colony.jobs {
         if job.assigned_cat.as_deref() == Some(cat_id) {
@@ -8982,14 +9025,83 @@ fn remove_departing_migrant(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i6
     if colony.leader_id.as_deref() == Some(cat_id) {
         colony.leader_id = None;
     }
+    if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+        cat.current_task = None;
+        // Finite stores may not fit the whole salvaged stack. Keep any exact
+        // remainder in the carrier's paws so phase 33 completes a normal
+        // physical deposit before the exterior route resumes.
+        cat.carrying = remaining_cargo;
+        cat.activity = CatActivity::Traveling;
+        // Phase 32 resolves the current authoritative gate and exterior endpoint.
+        cat.destination = None;
+    }
+}
+
+fn finish_departing_migrant(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
+    let Some(name) = colony
+        .cats
+        .iter()
+        .find(|cat| cat.id == cat_id && cat.death_time.is_none())
+        .map(|cat| cat.name.clone())
+    else {
+        return;
+    };
+    if !finish_migrant_departure(&mut colony.migration_state, cat_id) {
+        return;
+    }
     colony.cats.retain(|cat| cat.id != cat_id);
     colony.migration_departures = colony.migration_departures.saturating_add(1);
     append_event(
         colony,
         now_ms,
         EventKind::MigrationDeparted,
-        format!("{name} left after the village could not provide a permanent bed."),
+        format!("{name} passed through the south gate and left the village."),
     );
+}
+
+fn migrant_exterior_tile(colony: &ColonyRuntime) -> Option<TilePos> {
+    let gate = movement_gate(
+        colony.anchor,
+        retained_area_gate(colony),
+        village_ring_radius(colony.buildings.len() as i32),
+    );
+    let ideal = TilePos {
+        x: gate.x,
+        y: gate.y.saturating_add(MIGRANT_EXTERIOR_DISTANCE_TILES),
+    };
+    let mut candidates = colony
+        .world_tiles
+        .keys()
+        .copied()
+        .filter(|candidate| {
+            candidate.y >= gate.y.saturating_add(2)
+                && !colony.claimed_tiles.contains(candidate)
+                && candidate.x.abs_diff(gate.x) <= 12
+                && candidate.y.abs_diff(gate.y) <= 12
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|candidate| {
+        (
+            candidate.x.abs_diff(ideal.x) + candidate.y.abs_diff(ideal.y),
+            candidate.y,
+            candidate.x,
+        )
+    });
+    candidates
+        .into_iter()
+        .find(|candidate| migrant_exterior_is_passable(colony, *candidate))
+}
+
+fn migrant_exterior_is_passable(colony: &ColonyRuntime, candidate: TilePos) -> bool {
+    if colony.claimed_tiles.contains(&candidate) {
+        return false;
+    }
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    colony.world_tiles.get(&candidate).is_some_and(|tile| {
+        !tile_has_water(Some(tile))
+            && (tile.tile_type != TileType::Mountains
+                || effects.unlocked_capabilities.contains("mountain_travel"))
+    })
 }
 
 /// Phase 26: reset empty colonies and short-circuit the remaining phases.
@@ -8997,7 +9109,7 @@ fn phase_26_empty_colony_reset(
     colony: &mut ColonyRuntime,
     gate: TickGate,
 ) -> Option<RunResetReason> {
-    if alive_cats(&colony.cats).next().is_some() {
+    if active_resident_cats(colony).next().is_some() {
         return None;
     }
 
@@ -9575,7 +9687,7 @@ fn phase_32_movement_setup_and_village_expansion_queue(
     let construction_needs_land = blocked_construction_index.is_some();
 
     let ordinary_expansion_pressure = should_expand(
-        alive_cats(&colony.cats).count() as i32,
+        active_resident_cats(colony).count() as i32,
         claimed_area.len() as i32,
         colony.buildings.len() as i32,
     );
@@ -9779,7 +9891,6 @@ fn phase_33_movement_deposits_and_no_destination_wander(
                 .then_some((cat.id.clone(), cat.position, cat.carrying.clone()))
         })
         .collect::<Vec<_>>();
-
     for (cat_id, position, carrying) in cat_ids {
         if let Some(carrying) = carrying {
             let world_pos = position_to_world(colony.anchor, position);
@@ -9918,6 +10029,66 @@ fn phase_33_movement_deposits_and_no_destination_wander(
                 colony.cats[cat_index].destination = Some(position_from_world(target));
             }
             CatActivity::Working => {}
+        }
+    }
+}
+
+/// Reuse each migrant's persisted exterior origin. A temporary blockage is left
+/// to authoritative A* movement (and resumes when it opens); only a claimed or
+/// newly impassable endpoint selects a replacement near the current south gate.
+fn phase_32b_replan_migrant_routes(colony: &mut ColonyRuntime, _: &MovementPassContext) {
+    let invalid_departures = colony
+        .migration_state
+        .probationary_migrants
+        .iter()
+        .filter(|migrant| migrant.phase == MigrantSpatialPhase::Departing)
+        .filter(|migrant| {
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == migrant.id && cat.death_time.is_none())
+                .is_some_and(|cat| {
+                    cat.carrying.is_none()
+                        && migrant
+                            .route_exterior
+                            .map(|[x, y]| TilePos { x, y })
+                            .is_none_or(|tile| !migrant_exterior_is_passable(colony, tile))
+                })
+        })
+        .map(|migrant| migrant.id.clone())
+        .collect::<HashSet<_>>();
+    let replacement_exterior = (!invalid_departures.is_empty())
+        .then(|| migrant_exterior_tile(colony))
+        .flatten();
+    let inside = village_anchor_world(colony.anchor);
+    for migrant in &mut colony.migration_state.probationary_migrants {
+        let Some(cat) = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == migrant.id && cat.death_time.is_none())
+        else {
+            continue;
+        };
+        match migrant.phase {
+            MigrantSpatialPhase::Arriving => {
+                cat.current_task = None;
+                cat.activity = CatActivity::Traveling;
+                cat.destination = Some(position_from_world(inside));
+            }
+            MigrantSpatialPhase::Departing if cat.carrying.is_none() => {
+                cat.current_task = None;
+                cat.activity = CatActivity::Traveling;
+                let mut exterior = migrant.route_exterior.map(|[x, y]| TilePos { x, y });
+                if invalid_departures.contains(&migrant.id) {
+                    exterior = replacement_exterior;
+                    migrant.route_exterior = exterior.map(|tile| [tile.x, tile.y]);
+                }
+                let destination = exterior.map(|tile| position_from_world(tile_pos_to_world(tile)));
+                if cat.destination != destination {
+                    cat.destination = destination;
+                }
+            }
+            MigrantSpatialPhase::Probationary | MigrantSpatialPhase::Departing => {}
         }
     }
 }
@@ -10378,6 +10549,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         .iter()
         .filter_map(|cat| cat.death_time.is_none().then_some(cat.id.clone()))
         .collect::<Vec<_>>();
+    let mut completed_departures = Vec::new();
 
     #[cfg(test)]
     {
@@ -10414,6 +10586,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         let destination = position_to_world(colony.anchor, destination);
         let activity = colony.cats[cat_index].activity;
         let current_task = colony.cats[cat_index].current_task;
+        let spatial_migration_phase = migrant_phase(&colony.migration_state, &cat_id);
         let scout_speed_factor = scout_travel_speed_factor(colony, &cat_id, current_task, activity);
         let labor_speed_factor = if colony.cats[cat_index].carrying.is_some()
             || current_task == Some(TaskType::Build)
@@ -10456,7 +10629,14 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                     .is_some_and(|job_id| offering_job_is_active(colony, job_id))
             },
         );
-        let route = if current_task == Some(TaskType::Farm) || offering_route_required {
+        let migration_route_required = matches!(
+            spatial_migration_phase,
+            Some(MigrantSpatialPhase::Arriving | MigrantSpatialPhase::Departing)
+        );
+        let route = if current_task == Some(TaskType::Farm)
+            || offering_route_required
+            || migration_route_required
+        {
             find_farm_path(
                 pathfinding_pos(world_pos),
                 pathfinding_pos(destination),
@@ -10486,7 +10666,11 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                 .or_insert(1);
             debug.max_consecutive_traveling = debug.max_consecutive_traveling.max(*consecutive);
         }
-        if route.is_none() && (current_task == Some(TaskType::Farm) || offering_route_required) {
+        if route.is_none()
+            && (current_task == Some(TaskType::Farm)
+                || offering_route_required
+                || migration_route_required)
+        {
             // Physical farm and offering logistics never use the generic straight-line
             // fallback: a flooded route, closed staged wall, or newly impassable tile
             // suspends the trip until a real A* route exists instead of letting a carrier
@@ -10600,6 +10784,36 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         if arrived && activity == CatActivity::Returning {
             commit_scout_provisional_tiles(colony, &cat_id, gate.processed_through);
         }
+
+        if arrived {
+            match spatial_migration_phase {
+                Some(MigrantSpatialPhase::Arriving) => {
+                    let now = migration_game_minute_at(colony, gate.processed_through);
+                    if mark_migrant_arrived(&mut colony.migration_state, &cat_id, now) {
+                        let cat_name = colony.cats[cat_index].name.clone();
+                        colony.cats[cat_index].activity = CatActivity::Idle;
+                        append_event(
+                            colony,
+                            gate.processed_through,
+                            EventKind::MigrationArrived,
+                            format!(
+                                "{cat_name} crossed the south gate and has 36 game-hours to find a bed."
+                            ),
+                        );
+                    }
+                }
+                Some(MigrantSpatialPhase::Departing)
+                    if colony.cats[cat_index].carrying.is_none() =>
+                {
+                    completed_departures.push(cat_id.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for cat_id in completed_departures {
+        finish_departing_migrant(colony, &cat_id, gate.processed_through);
     }
 }
 
@@ -11935,7 +12149,7 @@ fn phase_36_threat_and_raid_director(
         resolve_active_raid(colony, gate, &active_raid_id, &mut next_raid_roll);
     }
 
-    if alive_cats(&colony.cats).next().is_none() {
+    if active_resident_cats(colony).next().is_none() {
         reset_run(colony, gate.processed_through, RunResetReason::RaidWipeout);
         return Some(RunResetReason::RaidWipeout);
     }
@@ -12222,9 +12436,9 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
         .iter()
         .map(|migrant| migrant.id.clone())
         .collect::<Vec<_>>();
-    for cat_id in probationary_ids {
-        remove_departing_migrant(colony, &cat_id, now_ms);
-    }
+    colony
+        .cats
+        .retain(|cat| !probationary_ids.contains(&cat.id));
     colony.migration_state = MigrationState::default();
     colony.jobs.clear();
     colony.raiders.clear();
@@ -12312,7 +12526,7 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     // ordinary all-dead, and a literally empty persisted roster all increment the
     // run once and leave this function with a playable 15-cat founding roster. An
     // unattended collapse with living survivors keeps those survivors instead.
-    if alive_cats(&colony.cats).next().is_none() {
+    if active_resident_cats(colony).next().is_none() {
         respawn_starter_roster(colony, now_ms);
     }
     colony.leader_id = choose_interim_leader_excluding(colony, None);
@@ -12835,7 +13049,7 @@ fn reset_reason_wire(reason: RunResetReason) -> &'static str {
 }
 
 fn threat_snapshot(colony: &ColonyRuntime, gate: TickGate) -> ThreatSnapshot {
-    let alive = alive_cats(&colony.cats).collect::<Vec<_>>();
+    let alive = active_resident_cats(colony).collect::<Vec<_>>();
     ThreatSnapshot {
         wealth: colony_wealth(&colony.resources),
         population: alive.len() as f64,
@@ -13034,7 +13248,7 @@ fn resolve_active_raid(
 }
 
 fn raid_combatants(colony: &ColonyRuntime) -> Vec<MusterCombatant> {
-    alive_cats(&colony.cats)
+    active_resident_cats(colony)
         .filter_map(|cat| {
             let stage = get_life_stage(cat.age_hours);
             (can_work(stage) && can_fight(cat.specialization)).then(|| MusterCombatant {
@@ -13069,7 +13283,7 @@ fn weakest_mustered_victim(mustered: &[crate::warriors::MusteredCat]) -> Option<
 }
 
 fn random_alive_cat(colony: &ColonyRuntime, roll: f64) -> Option<CatId> {
-    let alive = alive_cats(&colony.cats).collect::<Vec<_>>();
+    let alive = active_resident_cats(colony).collect::<Vec<_>>();
     if alive.is_empty() {
         return None;
     }
@@ -13253,6 +13467,35 @@ fn alive_cats(cats: &[Cat]) -> impl Iterator<Item = &Cat> {
     cats.iter().filter(|cat| cat.death_time.is_none())
 }
 
+fn spatial_migrant_ids(colony: &ColonyRuntime) -> HashSet<&str> {
+    colony
+        .migration_state
+        .probationary_migrants
+        .iter()
+        .filter(|migrant| {
+            matches!(
+                migrant.phase,
+                MigrantSpatialPhase::Arriving | MigrantSpatialPhase::Departing
+            )
+        })
+        .map(|migrant| migrant.id.as_str())
+        .collect()
+}
+
+fn migrant_is_in_transit(colony: &ColonyRuntime, cat_id: &str) -> bool {
+    matches!(
+        migrant_phase(&colony.migration_state, cat_id),
+        Some(MigrantSpatialPhase::Arriving | MigrantSpatialPhase::Departing)
+    )
+}
+
+fn active_resident_cats(colony: &ColonyRuntime) -> impl Iterator<Item = &Cat> {
+    colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none() && !migrant_is_in_transit(colony, &cat.id))
+}
+
 fn automated_job_role(colony: &ColonyRuntime, job: &JobRuntime) -> Option<OfficerRole> {
     match job.kind {
         JobKind::LeaderPlanHouse | JobKind::HaulGatherSpot => Some(OfficerRole::Steward),
@@ -13336,11 +13579,7 @@ pub(crate) fn release_role_automation(colony: &mut ColonyRuntime, role: OfficerR
     let mut preserved_hunts = 0usize;
     let mut preserved_water = 0usize;
     let mut preserved_scouts = 0usize;
-    let living_population = colony
-        .cats
-        .iter()
-        .filter(|cat| cat.death_time.is_none())
-        .count();
+    let living_population = active_resident_cats(colony).count();
     let cancelled_indices = colony
         .jobs
         .iter()
@@ -13465,6 +13704,7 @@ fn prune_invalid_officers(colony: &mut ColonyRuntime, now_ms: i64) {
             .find(|cat| {
                 cat.id == prior_holder
                     && cat.death_time.is_none()
+                    && !migrant_is_in_transit(colony, &cat.id)
                     && can_work(get_life_stage(cat.age_hours))
                     && !assigned_holders.contains(&cat.id)
             })
@@ -13475,6 +13715,7 @@ fn prune_invalid_officers(colony: &mut ColonyRuntime, now_ms: i64) {
                 .iter()
                 .find(|cat| {
                     cat.death_time.is_none()
+                        && !migrant_is_in_transit(colony, &cat.id)
                         && can_work(get_life_stage(cat.age_hours))
                         && !assigned_holders.contains(&cat.id)
                 })
@@ -13716,6 +13957,7 @@ fn select_best_cat_for_labor(
         .iter()
         .filter(|cat| {
             can_take_new_job_with_busy(cat, &busy_ids)
+                && !migrant_is_in_transit(colony, &cat.id)
                 && !assigned_building_ids.contains(&cat.id.as_str())
         })
         .collect::<Vec<_>>();
@@ -14210,7 +14452,7 @@ fn is_open_leadership_election(election: &ElectionRuntime) -> bool {
 }
 
 fn current_election_candidates(colony: &ColonyRuntime) -> Vec<ElectionCandidate> {
-    let candidates = alive_cats(&colony.cats)
+    let candidates = active_resident_cats(colony)
         .map(|cat| ElectionCandidate {
             id: cat.id.clone(),
             leadership: cat.stats.leadership,
@@ -14246,7 +14488,7 @@ fn choose_interim_leader_excluding(
     excluded_cat_id: Option<&str>,
 ) -> Option<CatId> {
     let mut best_leader: Option<&Cat> = None;
-    for candidate in alive_cats(&colony.cats) {
+    for candidate in active_resident_cats(colony) {
         if excluded_cat_id == Some(candidate.id.as_str()) {
             continue;
         }
@@ -16538,7 +16780,7 @@ fn research_worker_ids(colony: &ColonyRuntime) -> Vec<CatId> {
         })
         .filter_map(|building| building.assigned_cat.as_deref())
         .filter_map(|cat_id| colony.cats.iter().find(|cat| cat.id == cat_id))
-        .filter(|cat| cat.death_time.is_none())
+        .filter(|cat| cat.death_time.is_none() && !migrant_is_in_transit(colony, &cat.id))
         .filter(|cat| can_work(get_life_stage(cat.age_hours)))
         .map(|cat| cat.id.clone())
         .collect()
@@ -38566,7 +38808,23 @@ mod tests {
         phase_25c_prosperity_migration(&mut colony, production_gate(60, 30 * 60 * 60_000), 4242);
 
         assert!(alive_cats(&colony.cats).count() > before);
+        assert_eq!(
+            colony
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::MigrationArrived)
+                .count(),
+            0,
+            "exterior visibility is not a second accounting arrival"
+        );
         assert!(!colony.migration_state.probationary_migrants.is_empty());
+        assert!(
+            colony
+                .migration_state
+                .probationary_migrants
+                .iter()
+                .all(|migrant| migrant.phase == MigrantSpatialPhase::Arriving)
+        );
         let pending_ids = colony
             .migration_state
             .probationary_migrants
@@ -38586,6 +38844,434 @@ mod tests {
             permanent_alive_population(&colony),
             STARTER_CAT_COUNT as u32
         );
+        assert_eq!(active_resident_cats(&colony).count(), before);
+        let gate = movement_gate(
+            colony.anchor,
+            retained_area_gate(&colony),
+            village_ring_radius(colony.buildings.len() as i32),
+        );
+        for migrant in &colony.migration_state.probationary_migrants {
+            let cat = colony.cats.iter().find(|cat| cat.id == migrant.id).unwrap();
+            let position = world_pos_to_tile(position_to_world(colony.anchor, cat.position));
+            assert!(
+                position.y >= gate.y + 2,
+                "arrival starts beyond the south gate"
+            );
+            assert!(farm_route_is_reachable(
+                &colony,
+                4242,
+                tile_pos_to_world(gate),
+                tile_pos_to_world(position)
+            ));
+        }
+    }
+
+    fn advance_migrant_movement_only(
+        colony: &mut ColonyRuntime,
+        elapsed_sec: i64,
+        processed_through: i64,
+        world_seed: u32,
+    ) {
+        let gate = production_gate(elapsed_sec, processed_through);
+        let movement = phase_32_movement_setup_and_village_expansion_queue(
+            colony,
+            gate,
+            normal_policy(),
+            world_seed,
+        );
+        phase_32b_replan_migrant_routes(colony, &movement);
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
+    }
+
+    fn append_test_transit_migrant(
+        colony: &mut ColonyRuntime,
+        id: &str,
+        phase: MigrantSpatialPhase,
+    ) {
+        let mut cat = colony.cats[0].clone();
+        cat.id = id.to_owned();
+        cat.name = id.to_owned();
+        cat.activity = CatActivity::Traveling;
+        cat.destination = Some(position_from_world(village_anchor_world(colony.anchor)));
+        cat.current_task = None;
+        cat.carrying = None;
+        colony.cats.push(cat);
+        colony
+            .migration_state
+            .probationary_migrants
+            .push(crate::migration::ProbationaryMigrant {
+                id: id.to_owned(),
+                arrived_game_minute: 1,
+                housing_deadline_game_minute: 2_161,
+                phase,
+                route_exterior: None,
+            });
+    }
+
+    #[test]
+    fn arriving_cat_is_visible_but_not_yet_part_of_the_colony_simulation() {
+        let mut colony = found_colony(4242, "colony-1", 0, 4242);
+        colony.resources.food = 200.0;
+        colony.resources.water = 200.0;
+        colony.resources.materials = 200.0;
+        let mut resident_only = colony.clone();
+        phase_25c_prosperity_migration(&mut colony, production_gate(60, 30 * 60 * 60_000), 4242);
+        let migrant_id = colony.migration_state.probationary_migrants[0].id.clone();
+        let migrant_needs = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == migrant_id)
+            .unwrap()
+            .needs
+            .clone();
+
+        let gate = production_gate(1, 30 * 60 * 60_000 + 1_000);
+        phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(&mut colony, gate);
+        phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(&mut resident_only, gate);
+        assert_eq!(colony.resources, resident_only.resources);
+        phase_25_survival_deaths_and_carried_yield_salvage(&mut colony, gate, normal_policy());
+        assert_eq!(
+            colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == migrant_id)
+                .unwrap()
+                .needs,
+            migrant_needs
+        );
+        assert!(
+            !current_election_candidates(&colony)
+                .iter()
+                .any(|candidate| candidate.id == migrant_id)
+        );
+        assert!(
+            !raid_combatants(&colony)
+                .iter()
+                .any(|candidate| candidate.id == migrant_id)
+        );
+        assert_ne!(
+            select_best_cat(&colony, None).as_deref(),
+            Some(migrant_id.as_str())
+        );
+
+        let mut world = new_world(4242);
+        world.colonies.push(colony);
+        let snapshot = crate::actions::build_snapshot(&world, gate.processed_through, 1);
+        let colony = &snapshot.colonies[0];
+        assert_eq!(colony.housing.population, STARTER_CAT_COUNT as u32);
+        assert_eq!(colony.cats.len(), STARTER_CAT_COUNT + 1);
+        let migrant = colony.cats.iter().find(|cat| cat.id == migrant_id).unwrap();
+        assert_eq!(
+            migrant.migration_status,
+            cat_protocol::CatMigrationStatus::Arriving
+        );
+        assert_eq!(migrant.probation_remaining_game_minutes, None);
+    }
+
+    #[test]
+    fn transit_migrant_does_not_change_population_driven_automation_gates() {
+        let now = SHRINE_ESTABLISHMENT_MS + 1;
+        let mut ritual = found_colony(4242, "colony-1", 0, 4242);
+        let population = active_resident_cats(&ritual).count() as f64;
+        ritual.resources.food =
+            (population * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+        ritual.resources.water =
+            (population * RESEARCH_COMFORT_WATER_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+        let mut ritual_with_arrival = ritual.clone();
+        append_test_transit_migrant(
+            &mut ritual_with_arrival,
+            "ritual-arrival",
+            MigrantSpatialPhase::Arriving,
+        );
+        assert!(automated_ritual_ready(&ritual, now));
+        assert_eq!(
+            automated_ritual_ready(&ritual_with_arrival, now),
+            automated_ritual_ready(&ritual, now)
+        );
+
+        let mut water = found_colony(4242, "colony-1", 0, 4242);
+        let resident_id = water.cats[0].id.clone();
+        let resident_population = active_resident_cats(&water).count();
+        water.resources.water = water_fetch_preemption_reserve(resident_population) + 0.5;
+        water.jobs.push(JobRuntime {
+            id: "population-boundary-scout".to_owned(),
+            kind: JobKind::Explore,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Leader,
+            assigned_cat: Some(resident_id),
+            metadata: JobMetadata::Scout {
+                mission: ScoutMission::Explore,
+                target: None,
+                destination: None,
+                accepted: true,
+                found: false,
+            },
+            ..JobRuntime::default()
+        });
+        let mut water_with_arrival = water.clone();
+        append_test_transit_migrant(
+            &mut water_with_arrival,
+            "water-arrival",
+            MigrantSpatialPhase::Arriving,
+        );
+        let gate = production_gate(1, now);
+        phase_17b_water_reserve_preemption(&mut water, gate);
+        phase_17b_water_reserve_preemption(&mut water_with_arrival, gate);
+        assert_eq!(water.jobs, water_with_arrival.jobs);
+        assert_eq!(water.jobs[0].status, JobStatus::Active);
+        assert!(!water.jobs.iter().any(|job| job.kind == JobKind::FetchWater));
+
+        let mut dispatch = found_colony(4242, "colony-1", 0, 4242);
+        establish_all_offices(&mut dispatch);
+        let dispatch_population = active_resident_cats(&dispatch).count() as f64;
+        dispatch.resources.food =
+            (dispatch_population * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+        dispatch.resources.water =
+            (dispatch_population * RESEARCH_COMFORT_WATER_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+        dispatch.resources.logs = 0.0;
+        dispatch.resources.fibre = 0.0;
+        let mut dispatch_with_arrival = dispatch.clone();
+        append_test_transit_migrant(
+            &mut dispatch_with_arrival,
+            "dispatch-arrival",
+            MigrantSpatialPhase::Arriving,
+        );
+        dispatch_officer_resource_jobs(&mut dispatch, now, 4242);
+        dispatch_officer_resource_jobs(&mut dispatch_with_arrival, now, 4242);
+        assert!(!dispatch.jobs.is_empty(), "fixture must dispatch real work");
+        assert_eq!(dispatch.jobs, dispatch_with_arrival.jobs);
+        assert!(
+            dispatch_with_arrival
+                .jobs
+                .iter()
+                .all(|job| job.assigned_cat.as_deref() != Some("dispatch-arrival"))
+        );
+    }
+
+    #[test]
+    fn blocked_gate_suspends_arrival_then_replans_when_the_route_reopens() {
+        let mut colony = found_colony(4242, "colony-1", 0, 4242);
+        colony.resources.food = 200.0;
+        colony.resources.water = 200.0;
+        colony.resources.materials = 200.0;
+        phase_25c_prosperity_migration(&mut colony, production_gate(60, 30 * 60 * 60_000), 4242);
+        let migrant_id = colony.migration_state.probationary_migrants[0].id.clone();
+        let start = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == migrant_id)
+            .unwrap()
+            .position;
+        let persisted_exterior = colony.migration_state.probationary_migrants[0].route_exterior;
+        // Exercise two real-time minutes of one-second blocked retries. Endpoint
+        // selection must stay O(1), the cohort must not be consumed, and reopening
+        // the same gate (without relocating it) must resume the journey.
+        for second in 1..=120 {
+            let tick = production_gate(1, 30 * 60 * 60_000 + second * 1_000);
+            let mut movement = phase_32_movement_setup_and_village_expansion_queue(
+                &mut colony,
+                tick,
+                normal_policy(),
+                4242,
+            );
+            let gate = movement.area_gate.expect("retained south gate");
+            let outside = side_delta(gate.side);
+            movement
+                .staged_wall_edges
+                .insert(pathfinding::FenceEdge::new(
+                    gate.x,
+                    gate.y,
+                    gate.x + outside.x,
+                    gate.y + outside.y,
+                ));
+            phase_32b_replan_migrant_routes(&mut colony, &movement);
+            phase_34_movement_travel_job_acceptance_reveal_path_wear(&mut colony, tick, &movement);
+        }
+        let migrant = colony.cats.iter().find(|cat| cat.id == migrant_id).unwrap();
+        assert_eq!(migrant.position, start);
+        assert_eq!(
+            colony.migration_state.probationary_migrants[0].route_exterior,
+            persisted_exterior
+        );
+        assert_eq!(
+            migrant_phase(&colony.migration_state, &migrant_id),
+            Some(MigrantSpatialPhase::Arriving)
+        );
+
+        advance_migrant_movement_only(&mut colony, 120, 30 * 60 * 60_000 + 240_000, 4242);
+        assert_eq!(
+            migrant_phase(&colony.migration_state, &migrant_id),
+            Some(MigrantSpatialPhase::Probationary)
+        );
+    }
+
+    #[test]
+    fn migrant_exterior_requires_dry_ground_and_real_mountain_access() {
+        let mut colony = found_colony(7, "colony-1", 0, 7);
+        let exterior = migrant_exterior_tile(&colony).expect("seed 7 has a south approach");
+        assert!(migrant_exterior_is_passable(&colony, exterior));
+
+        colony.world_tiles.get_mut(&exterior).unwrap().tile_type = TileType::Mountains;
+        assert!(!migrant_exterior_is_passable(&colony, exterior));
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push(crate::upgrade_tree::MOUNTAINEERING_NODE_ID.to_owned());
+        assert!(migrant_exterior_is_passable(&colony, exterior));
+
+        let tile = colony.world_tiles.get_mut(&exterior).unwrap();
+        tile.tile_type = TileType::Meadow;
+        tile.resources.water = 1;
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push(crate::upgrade_tree::SHIPPING_NODE_ID.to_owned());
+        assert!(
+            !migrant_exterior_is_passable(&colony, exterior),
+            "shipping metadata cannot turn water into a physical cat route"
+        );
+
+        colony.world_tiles.get_mut(&exterior).unwrap().tile_type = TileType::Mountains;
+        assert!(
+            !migrant_exterior_is_passable(&colony, exterior),
+            "even mountaineering plus shipping cannot make a flooded mountain a landing"
+        );
+    }
+
+    #[test]
+    fn spatial_migrant_motion_is_identical_across_cadence_partitions() {
+        let make = || {
+            let mut colony = found_colony(4242, "colony-1", 0, 4242);
+            colony.resources.food = 200.0;
+            colony.resources.water = 200.0;
+            colony.resources.materials = 200.0;
+            phase_25c_prosperity_migration(
+                &mut colony,
+                production_gate(60, 30 * 60 * 60_000),
+                4242,
+            );
+            colony
+        };
+        let mut whole = make();
+        let mut split = make();
+        advance_migrant_movement_only(&mut whole, 2, 30 * 60 * 60_000 + 2_000, 4242);
+        advance_migrant_movement_only(&mut split, 1, 30 * 60 * 60_000 + 1_000, 4242);
+        advance_migrant_movement_only(&mut split, 1, 30 * 60 * 60_000 + 2_000, 4242);
+        let id = whole.migration_state.probationary_migrants[0].id.clone();
+        let whole_cat = whole.cats.iter().find(|cat| cat.id == id).unwrap();
+        let split_cat = split.cats.iter().find(|cat| cat.id == id).unwrap();
+        assert_eq!(whole_cat.position, split_cat.position);
+        assert_eq!(whole_cat.destination, split_cat.destination);
+        assert_eq!(whole.migration_state, split.migration_state);
+    }
+
+    #[test]
+    fn transit_death_and_colony_reset_clear_spatial_migration_without_resurrection() {
+        let make_arrival = || {
+            let mut colony = found_colony(4242, "colony-1", 0, 4242);
+            colony.resources.food = 200.0;
+            colony.resources.water = 200.0;
+            colony.resources.materials = 200.0;
+            phase_25c_prosperity_migration(
+                &mut colony,
+                production_gate(60, 30 * 60 * 60_000),
+                4242,
+            );
+            colony
+        };
+
+        for phase in [
+            MigrantSpatialPhase::Arriving,
+            MigrantSpatialPhase::Departing,
+        ] {
+            let mut death = make_arrival();
+            death.migration_state.probationary_migrants[0].phase = phase;
+            let migrant_id = death.migration_state.probationary_migrants[0].id.clone();
+            death
+                .cats
+                .iter_mut()
+                .find(|cat| cat.id == migrant_id)
+                .unwrap()
+                .death_time = Some(30 * 60 * 60_000 + 1);
+            phase_25c_prosperity_migration(
+                &mut death,
+                production_gate(1, 30 * 60 * 60_000 + 1_000),
+                4242,
+            );
+            assert_eq!(migrant_phase(&death.migration_state, &migrant_id), None);
+            assert!(
+                death
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == migrant_id && cat.death_time.is_some())
+            );
+        }
+
+        let mut reset = make_arrival();
+        let migrant_id = reset.migration_state.probationary_migrants[0].id.clone();
+        for cat in &mut reset.cats {
+            if cat.id != migrant_id {
+                cat.death_time = Some(30 * 60 * 60_000 + 1);
+            }
+        }
+        let reason =
+            phase_26_empty_colony_reset(&mut reset, production_gate(1, 30 * 60 * 60_000 + 1_000));
+        assert_eq!(reason, Some(RunResetReason::AllCatsDead));
+        assert!(reset.migration_state.probationary_migrants.is_empty());
+        assert!(!reset.cats.iter().any(|cat| cat.id == migrant_id));
+        assert_eq!(active_resident_cats(&reset).count(), STARTER_CAT_COUNT);
+    }
+
+    #[test]
+    fn departing_route_uses_the_relocated_authoritative_gate_without_losing_its_origin() {
+        let mut colony = found_colony(4242, "colony-1", 0, 4242);
+        colony.resources.food = 200.0;
+        colony.resources.water = 200.0;
+        colony.resources.materials = 200.0;
+        phase_25c_prosperity_migration(&mut colony, production_gate(60, 30 * 60 * 60_000), 4242);
+        let migrant_id = colony.migration_state.probationary_migrants[0].id.clone();
+        colony.migration_state.probationary_migrants[0].phase = MigrantSpatialPhase::Departing;
+
+        let tick = production_gate(1, 30 * 60 * 60_000 + 1_000);
+        let before = phase_32_movement_setup_and_village_expansion_queue(
+            &mut colony,
+            tick,
+            normal_policy(),
+            4242,
+        );
+        phase_32b_replan_migrant_routes(&mut colony, &before);
+        let old_destination = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == migrant_id)
+            .unwrap()
+            .destination;
+
+        // Commit the tile immediately outside the retained south gate. The
+        // expanded enclosure's one gate moves to that tile's south edge.
+        colony.claimed_tiles.push(before.gate);
+        let after = phase_32_movement_setup_and_village_expansion_queue(
+            &mut colony,
+            tick,
+            normal_policy(),
+            4242,
+        );
+        assert_ne!(after.gate, before.gate);
+        phase_32b_replan_migrant_routes(&mut colony, &after);
+        let new_destination = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == migrant_id)
+            .unwrap()
+            .destination;
+        assert_eq!(new_destination, old_destination);
+        let exterior = new_destination.expect("persisted exterior destination");
+        assert!(farm_route_is_reachable(
+            &colony,
+            4242,
+            village_anchor_world(colony.anchor),
+            position_to_world(colony.anchor, exterior),
+        ));
     }
 
     #[test]
@@ -38602,6 +39288,22 @@ mod tests {
             .map(|migrant| migrant.id.clone())
             .collect::<Vec<_>>();
         assert!(!migrant_ids.is_empty());
+        advance_migrant_movement_only(&mut colony, 120, 30 * 60 * 60_000 + 120_000, 4242);
+        assert!(
+            colony
+                .migration_state
+                .probationary_migrants
+                .iter()
+                .all(|migrant| migrant.phase == MigrantSpatialPhase::Probationary)
+        );
+        assert_eq!(
+            colony
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::MigrationArrived)
+                .count(),
+            migrant_ids.len()
+        );
         colony.buildings.push(BuildingRuntime {
             id: "player-den".to_owned(),
             building_type: BuildingType::Den,
@@ -38637,6 +39339,7 @@ mod tests {
         colony.resources.water = 200.0;
         colony.resources.materials = 200.0;
         phase_25c_prosperity_migration(&mut colony, production_gate(60, 30 * 60 * 60_000), 4242);
+        advance_migrant_movement_only(&mut colony, 120, 30 * 60 * 60_000 + 120_000, 4242);
         let cohort_ids = colony
             .migration_state
             .probationary_migrants
@@ -38644,6 +39347,17 @@ mod tests {
             .map(|migrant| migrant.id.clone())
             .collect::<Vec<_>>();
         let migrant = colony.migration_state.probationary_migrants[0].clone();
+        let migrant_index = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == migrant.id)
+            .unwrap();
+        colony.cats[migrant_index].carrying = Some(Carrying {
+            kind: CarryingKind::Food,
+            amount: 2.0,
+            job_ended_at: 1,
+            source_gather_spot: None,
+        });
         colony.jobs.push(JobRuntime {
             id: "probation-work".to_owned(),
             kind: JobKind::SupplyFood,
@@ -38667,11 +39381,37 @@ mod tests {
         assert!(
             cohort_ids
                 .iter()
+                .all(|id| colony.cats.iter().any(|cat| cat.id == *id))
+        );
+        assert!(
+            colony
+                .migration_state
+                .probationary_migrants
+                .iter()
+                .all(|pending| pending.phase == MigrantSpatialPhase::Departing)
+        );
+        assert_eq!(colony.migration_departures, 0);
+        assert!(colony.resources.food >= 2.0, "carried food was conserved");
+        assert_eq!(colony.jobs.last().unwrap().status, JobStatus::Cancelled);
+        assert_eq!(colony.jobs.last().unwrap().assigned_cat, None);
+
+        let exit_at =
+            i64::try_from(migrant.housing_deadline_game_minute).unwrap() * 60_000 + 120_000;
+        advance_migrant_movement_only(&mut colony, 120, exit_at, 4242);
+        assert!(
+            cohort_ids
+                .iter()
                 .all(|id| !colony.cats.iter().any(|cat| cat.id == *id))
         );
         assert_eq!(colony.migration_departures, cohort_ids.len() as u64);
-        assert_eq!(colony.jobs.last().unwrap().status, JobStatus::Cancelled);
-        assert_eq!(colony.jobs.last().unwrap().assigned_cat, None);
+        assert_eq!(
+            colony
+                .events
+                .iter()
+                .filter(|event| event.kind == EventKind::MigrationDeparted)
+                .count(),
+            cohort_ids.len()
+        );
     }
 
     #[test]
@@ -38727,7 +39467,8 @@ mod tests {
             .map(|cat| cat.name.as_str())
             .collect::<BTreeSet<_>>();
 
-        let migrant = create_migrant_cat(&colony, migrant_id, 2);
+        let exterior = migrant_exterior_tile(&colony).expect("passable exterior");
+        let migrant = create_migrant_cat(&colony, migrant_id, 2, exterior);
 
         assert!(migrant.name.starts_with("Wayfarer-"));
         assert!(!used.contains(migrant.name.as_str()));
@@ -38845,6 +39586,8 @@ mod tests {
                 id: "probation-breeding".to_owned(),
                 arrived_game_minute: 1,
                 housing_deadline_game_minute: 100,
+                phase: crate::migration::MigrantSpatialPhase::Probationary,
+                route_exterior: None,
             });
         for (index, cat) in colony.cats.iter().take(15).enumerate() {
             colony.jobs.push(JobRuntime {
