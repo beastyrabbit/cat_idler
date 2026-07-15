@@ -416,6 +416,19 @@ fn choose_crop(resources: &Resources) -> proto::CropKind {
     }
 }
 
+fn grant_fixture_research_chain(state: &mut upgrade_tree::UpgradeTreeState, node_id: &str) {
+    if upgrade_tree::is_owned(state, node_id) {
+        return;
+    }
+    let node = cat_sim::research_catalog::research_catalog()
+        .get(node_id)
+        .expect("guided fixture references a canonical research node");
+    for prerequisite in &node.prerequisites {
+        grant_fixture_research_chain(state, prerequisite);
+    }
+    state.owned_node_ids.push(node_id.to_owned());
+}
+
 fn run_guided_campaign(seed: u32) -> WorldState {
     let mut world = WorldState {
         world_seed: seed,
@@ -445,12 +458,9 @@ fn run_guided_campaign(seed: u32) -> WorldState {
     colony.resources.lumber = 0.0;
     colony.run_started_at = i64::MAX / 4;
     colony.created_at = i64::MAX / 4;
-    colony.upgrade_tree.owned_node_ids.extend([
-        "basic_tools".to_owned(),
-        "sawmill".to_owned(),
-        "milling".to_owned(),
-        "irrigation".to_owned(),
-    ]);
+    for study in ["carpentry_preparation", "grain_milling_preparation"] {
+        grant_fixture_research_chain(&mut colony.upgrade_tree, study);
+    }
     colony.buildings.retain(|building| {
         !matches!(
             building.building_type,
@@ -841,13 +851,19 @@ fn guided_farming_forestry_processing_campaign_is_multi_seed_and_deterministic()
     }
 }
 
-fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
+fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState {
     const STEP_SECONDS: u64 = 15 * 60;
     const MAX_STEPS: usize = 2_400;
+    const PRE_EARNED_RESEARCH_POINTS: f64 = 200.0;
     let mut world = WorldState {
         world_seed: seed,
         colonies: vec![found_colony(seed, "colony-1", START_MS, seed)],
     };
+    // This campaign's scope is player-guided construction and physical production.
+    // Begin with a bounded bank earned before the observation window, but spend it
+    // only through signed ResearchNode actions below; no ownership is injected.
+    world.colonies[0].upgrade_tree.research_points = PRE_EARNED_RESEARCH_POINTS;
+    assert!(world.colonies[0].upgrade_tree.owned_node_ids.is_empty());
     let founding_reveal = world.colonies[0].revealed_tiles.len();
     let mut now_ms = START_MS;
     let mut manual_access_road_built = false;
@@ -904,87 +920,22 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
         // accidentally consumed by a fresh quarry/scout order on the same decision tick.
         // Every mutation below crosses the signed action boundary; state is only inspected
         // to decide which button a real player would press next.
-        let research_hut_complete = world.colonies[0].buildings.iter().any(|building| {
-            building.building_type == BuildingType::ResearchHut && building.is_complete
-        });
-        if !research_hut_complete {
-            if !has_pending_building(&world.colonies[0], BuildingType::ResearchHut) {
-                let _ =
-                    try_plan_at_claimed_site(&mut world, proto::BuildingType::ResearchHut, now_ms);
-            }
-            manual_access_road_built |=
-                try_pave_reserved_build_access(&mut world, BuildingType::ResearchHut, now_ms);
-        }
-
-        if !upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, "research_hut") {
+        for node_id in [
+            "research_hut",
+            "basic_tools",
+            "water_carriers",
+            "irrigation",
+            "milling",
+            "foraging_lore",
+            "sawmill",
+            "masonry",
+            "grain_milling_sources",
+            "grain_milling_preparation",
+        ] {
+            let was_owned = upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, node_id);
+            let points_before = world.colonies[0].upgrade_tree.research_points;
             let (session_id, nickname, sig) = signed();
-            let _ = try_action(
-                &mut world,
-                proto::ClientAction::OfferTithe {
-                    session_id,
-                    nickname,
-                    sig,
-                },
-                now_ms,
-            );
-            let (session_id, nickname, sig) = signed();
-            let _ = try_action(
-                &mut world,
-                proto::ClientAction::UnlockNode {
-                    session_id,
-                    nickname,
-                    sig,
-                    node_id: "research_hut".to_owned(),
-                },
-                now_ms,
-            );
-        }
-
-        // Staff each completed research hut manually. Assigned cats are skipped so this
-        // does not silently steal a worker from one of the founding material benches.
-        for building_id in world.colonies[0]
-            .buildings
-            .iter()
-            .filter(|building| {
-                building.building_type == BuildingType::ResearchHut
-                    && building.is_complete
-                    && building.assigned_cat.is_none()
-            })
-            .map(|building| building.id.clone())
-            .collect::<Vec<_>>()
-        {
-            let assigned = world.colonies[0]
-                .buildings
-                .iter()
-                .filter_map(|building| building.assigned_cat.clone())
-                .collect::<BTreeSet<_>>();
-            for cat_id in world.colonies[0]
-                .cats
-                .iter()
-                .filter(|cat| cat.death_time.is_none() && !assigned.contains(&cat.id))
-                .map(|cat| cat.id.clone())
-                .collect::<Vec<_>>()
-            {
-                let (session_id, nickname, sig) = signed();
-                if try_action(
-                    &mut world,
-                    proto::ClientAction::AssignWorker {
-                        session_id,
-                        nickname,
-                        sig,
-                        cat_id,
-                        building_id: Some(building_id.clone()),
-                    },
-                    now_ms,
-                ) {
-                    break;
-                }
-            }
-        }
-
-        for node_id in ["basic_tools", "water_carriers", "irrigation", "milling"] {
-            let (session_id, nickname, sig) = signed();
-            let _ = try_action(
+            let succeeded = try_action(
                 &mut world,
                 proto::ClientAction::ResearchNode {
                     session_id,
@@ -993,6 +944,28 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
                     node_id: node_id.to_owned(),
                 },
                 now_ms,
+            );
+            if !was_owned && succeeded {
+                let cost = cat_sim::research_catalog::research_catalog()
+                    .get(node_id)
+                    .expect("signed path uses canonical studies")
+                    .cost;
+                let spent = points_before - world.colonies[0].upgrade_tree.research_points;
+                assert!(
+                    (spent - cost).abs() <= f64::EPSILON,
+                    "signed purchase {node_id} must spend exactly {cost}, spent {spent}"
+                );
+            }
+        }
+        if upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, "grain_milling_preparation") {
+            assert!(
+                cat_sim::world_tick::production_recipe_availability(
+                    &world.colonies[0],
+                    BuildingType::Mill,
+                    cat_sim::world_tick::MILL_RECIPE_ID,
+                )
+                .is_some_and(|recipe| recipe.available),
+                "the signed preparation purchase must flip the authoritative Mill entitlement"
             );
         }
         let basic_tools = upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, "basic_tools");
@@ -1335,7 +1308,7 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
         })
         .collect::<Vec<_>>();
     panic!(
-        "no-cheat farm→Mill smoke timed out: alive={} food={} flour={} water={} blessings={} research={} delivered_flour={} delivered_food={} owned={:?} buildings={:?} farms={:?} agricultural_routes={agricultural_route_diagnostics:?} visible_routes={visible_route_diagnostics:?}",
+        "signed pre-earned-research farm→Mill smoke timed out: alive={} food={} flour={} water={} blessings={} research={} delivered_flour={} delivered_food={} owned={:?} buildings={:?} farms={:?} agricultural_routes={agricultural_route_diagnostics:?} visible_routes={visible_route_diagnostics:?}",
         colony
             .cats
             .iter()
@@ -1359,9 +1332,10 @@ fn run_no_cheat_player_farm_smoke(seed: u32) -> WorldState {
 }
 
 #[test]
-fn no_cheat_player_guidance_reaches_physical_farm_to_mill_delivery_deterministically() {
-    let first = run_no_cheat_player_farm_smoke(42);
-    let second = run_no_cheat_player_farm_smoke(42);
+fn signed_player_guidance_from_preearned_research_reaches_physical_farm_to_mill_deterministically()
+{
+    let first = run_signed_player_farm_smoke_from_preearned_research(42);
+    let second = run_signed_player_farm_smoke_from_preearned_research(42);
     assert_eq!(first, second);
 }
 

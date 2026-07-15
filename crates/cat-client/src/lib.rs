@@ -6700,7 +6700,9 @@ fn update_station_queue_controls(
             .and_then(|world| world.colonies.first())
             .and_then(|colony| colony.buildings.iter().find(|building| building.id == id))
     });
-    let Some(building) = building.filter(|building| !building.available_recipes.is_empty()) else {
+    let Some(building) = building.filter(|building| {
+        !building.available_recipes.is_empty() || !building.production_queue.is_empty()
+    }) else {
         panel.display = Display::None;
         ui.selected = 0;
         return;
@@ -6782,7 +6784,7 @@ fn station_queue_action(
     selected: usize,
     button: StationQueueButton,
 ) -> Option<ClientAction> {
-    if !session.ready || building.available_recipes.is_empty() {
+    if !session.ready {
         return None;
     }
     let edit = match button {
@@ -9897,6 +9899,12 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
     }
     if let Some(reason) = &building.production_block_reason {
         out.push_str(&format!("\nblocked: {}", reason.replace('_', " ")));
+    }
+    if let Some(study) = &building.required_recipe_study {
+        out.push_str(&format!(
+            "\nneeds study: {} ({}; {:.1} points)",
+            study.name, study.id, study.cost
+        ));
     }
     if let Some(travel) = &building.worker_travel {
         out.push_str(&format!("\nworker: {travel}"));
@@ -13701,6 +13709,42 @@ mod tests {
             ),
             Some(ClientAction::EditProductionQueue {
                 edit: ProductionQueueEdit::SetPaused { paused: true },
+                ..
+            })
+        ));
+        let mut locked = workshop.clone();
+        locked.available_recipes.clear();
+        locked.production_block_reason = Some("research_locked".to_owned());
+        locked.required_recipe_study = Some(cat_protocol::ResearchTarget {
+            id: "carpentry_preparation".to_owned(),
+            name: "Carpentry Preparation".to_owned(),
+            cost: 19.5,
+        });
+        let locked_text = building_inspector_text(&locked, colony);
+        assert!(locked_text.contains("blocked: research locked"));
+        assert!(
+            locked_text.contains(
+                "needs study: Carpentry Preparation (carpentry_preparation; 19.5 points)"
+            )
+        );
+        assert!(
+            station_queue_action(
+                &signed_session("locked-session"),
+                &locked,
+                0,
+                StationQueueButton::Add,
+            )
+            .is_none()
+        );
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("locked-session"),
+                &locked,
+                0,
+                StationQueueButton::Remove,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                edit: ProductionQueueEdit::Remove { index: 0 },
                 ..
             })
         ));

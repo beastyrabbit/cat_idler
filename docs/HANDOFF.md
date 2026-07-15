@@ -130,7 +130,8 @@ so a correct scout route cannot conceal a missing founding dispatch.
    target-correct across clamp, physical routing, snapshot, trade, and persistence. Keep the other
    22 generated `*_stores` studies and the fixed 10-unit Mill/Sawmill/Workshop/Smelter local stores
    explicitly open until each has a real physical domain. Then turn the remaining registry-only
-   research payloads (100 recipes, 64 resources, ten jobs, and 25 worker-slot modifiers) into
+   research payloads (96 generated-only recipes, 64 resources, ten jobs, and 25 worker-slot
+   modifiers) into
    observable behavior without advertising IDs that have no runtime object.
 4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,

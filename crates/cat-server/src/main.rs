@@ -2208,44 +2208,44 @@ mod tests {
         let _ = fs::remove_file(&path);
         let secret = "guidance-restart-secret";
         let mut world = starter_world(1_000_000);
-        world.colonies[0]
-            .buildings
-            .push(cat_sim::world_tick::BuildingRuntime {
-                id: "guidance-sawmill".to_owned(),
-                building_type: cat_sim::types::BuildingType::Sawmill,
-                position: cat_sim::world_tick::TilePos { x: 40, y: 40 },
-                is_complete: true,
-                construction_progress: 100,
-                production_queue: cat_sim::world_tick::default_production_queue(
-                    cat_sim::types::BuildingType::Sawmill,
-                ),
-                ..cat_sim::world_tick::BuildingRuntime::default()
-            });
-        world.colonies[0]
-            .buildings
-            .push(cat_sim::world_tick::BuildingRuntime {
-                id: "guidance-mill".to_owned(),
-                building_type: cat_sim::types::BuildingType::Mill,
-                position: cat_sim::world_tick::TilePos { x: 44, y: 40 },
-                is_complete: true,
-                construction_progress: 100,
-                production_queue: cat_sim::world_tick::default_production_queue(
-                    cat_sim::types::BuildingType::Mill,
-                ),
-                ..cat_sim::world_tick::BuildingRuntime::default()
-            });
+        for (id, building_type, x) in [
+            (
+                "guidance-sawmill",
+                cat_sim::types::BuildingType::Sawmill,
+                40,
+            ),
+            ("guidance-mill", cat_sim::types::BuildingType::Mill, 44),
+            (
+                "guidance-workshop",
+                cat_sim::types::BuildingType::Workshop,
+                48,
+            ),
+            (
+                "guidance-smelter",
+                cat_sim::types::BuildingType::Smelter,
+                52,
+            ),
+        ] {
+            world.colonies[0]
+                .buildings
+                .push(cat_sim::world_tick::BuildingRuntime {
+                    id: id.to_owned(),
+                    building_type,
+                    position: cat_sim::world_tick::TilePos { x, y: 40 },
+                    is_complete: true,
+                    construction_progress: 100,
+                    production_queue: Vec::new(),
+                    ..cat_sim::world_tick::BuildingRuntime::default()
+                });
+        }
+        world.colonies[0].upgrade_tree.research_points = 1_000.0;
         let cat_id = world.colonies[0].cats[0].id.clone();
-        let sawmill_id = world.colonies[0]
-            .buildings
-            .iter()
-            .find(|building| {
-                building.building_type == cat_sim::types::BuildingType::Sawmill
-                    && building.is_complete
-            })
-            .expect("starter village has its complete Sawmill")
-            .id
-            .clone();
-        let mill_id = "guidance-mill".to_owned();
+        let station_recipes = [
+            ("guidance-sawmill", cat_sim::world_tick::SAWMILL_RECIPE_ID),
+            ("guidance-mill", cat_sim::world_tick::MILL_RECIPE_ID),
+            ("guidance-workshop", cat_sim::world_tick::WORKSHOP_RECIPE_ID),
+            ("guidance-smelter", cat_sim::world_tick::SMELTER_RECIPE_ID),
+        ];
         let conn = Connection::open(&path).expect("open guidance database");
         persistence::init_schema(&conn).expect("init guidance database");
         let state = build_state_from_world(world, conn, secret.to_owned(), false, 1_000_000);
@@ -2254,52 +2254,91 @@ mod tests {
             ConnectionContext::new("guidance-socket".to_owned(), STARTER_COLONY_ID.to_owned());
         connection.identity = Some(signed.clone());
 
-        for action in [
-            ClientAction::SetCatLaborPreference {
-                session_id: signed.session_id.clone(),
-                nickname: "Guide".to_owned(),
-                sig: signed.sig.clone(),
-                cat_id: cat_id.clone(),
-                labor: cat_protocol::Labor::Process,
-                enabled: true,
-            },
-            ClientAction::EditProductionQueue {
-                session_id: signed.session_id.clone(),
-                nickname: "Guide".to_owned(),
-                sig: signed.sig.clone(),
-                building_id: sawmill_id.clone(),
-                edit: cat_protocol::ProductionQueueEdit::SetRepeat {
-                    index: 0,
-                    repeat: false,
-                },
-            },
-            ClientAction::EditProductionQueue {
-                session_id: signed.session_id.clone(),
-                nickname: "Guide".to_owned(),
-                sig: signed.sig.clone(),
-                building_id: sawmill_id.clone(),
-                edit: cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
-            },
-            ClientAction::EditProductionQueue {
-                session_id: signed.session_id.clone(),
-                nickname: "Guide".to_owned(),
-                sig: signed.sig.clone(),
-                building_id: mill_id.clone(),
-                edit: cat_protocol::ProductionQueueEdit::SetRepeat {
-                    index: 0,
-                    repeat: false,
-                },
-            },
-            ClientAction::EditProductionQueue {
-                session_id: signed.session_id.clone(),
-                nickname: "Guide".to_owned(),
-                sig: signed.sig.clone(),
-                building_id: mill_id.clone(),
-                edit: cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
-            },
+        for node_id in [
+            "research_hut",
+            "basic_tools",
+            "water_carriers",
+            "den_insulation",
+            "foraging_lore",
+            "sawmill",
+            "masonry",
+            "irrigation",
+            "mountaineering",
+            "smelting",
+            "school",
+            "advanced_storage",
+            "carpentry_sources",
+            "carpentry_preparation",
+            "grain_milling_sources",
+            "grain_milling_preparation",
+            "metallurgy_sources",
+            "metallurgy_preparation",
+            "trade_goods_sources",
+            "trade_goods_preparation",
         ] {
+            let result = send_action(
+                &state,
+                &mut connection,
+                &ClientAction::ResearchNode {
+                    session_id: signed.session_id.clone(),
+                    nickname: "Guide".to_owned(),
+                    sig: signed.sig.clone(),
+                    node_id: node_id.to_owned(),
+                },
+            )
+            .await;
+            assert!(
+                result.result.ok,
+                "signed research {node_id} failed: {result:?}"
+            );
+        }
+
+        let preference = ClientAction::SetCatLaborPreference {
+            session_id: signed.session_id.clone(),
+            nickname: "Guide".to_owned(),
+            sig: signed.sig.clone(),
+            cat_id: cat_id.clone(),
+            labor: cat_protocol::Labor::Process,
+            enabled: true,
+        };
+        let result = send_action(&state, &mut connection, &preference).await;
+        assert!(result.result.ok, "signed preference failed: {result:?}");
+        for (index, (building_id, recipe_id)) in station_recipes.iter().enumerate() {
+            let action = ClientAction::EditProductionQueue {
+                session_id: signed.session_id.clone(),
+                nickname: "Guide".to_owned(),
+                sig: signed.sig.clone(),
+                building_id: (*building_id).to_owned(),
+                edit: cat_protocol::ProductionQueueEdit::Add {
+                    recipe_id: (*recipe_id).to_owned(),
+                    repeat: true,
+                },
+            };
             let result = send_action(&state, &mut connection, &action).await;
-            assert!(result.result.ok, "signed guidance failed: {result:?}");
+            assert!(result.result.ok, "signed queue add failed: {result:?}");
+            if index < 2 {
+                for edit in [
+                    cat_protocol::ProductionQueueEdit::SetRepeat {
+                        index: 0,
+                        repeat: false,
+                    },
+                    cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
+                ] {
+                    let result = send_action(
+                        &state,
+                        &mut connection,
+                        &ClientAction::EditProductionQueue {
+                            session_id: signed.session_id.clone(),
+                            nickname: "Guide".to_owned(),
+                            sig: signed.sig.clone(),
+                            building_id: (*building_id).to_owned(),
+                            edit,
+                        },
+                    )
+                    .await;
+                    assert!(result.result.ok, "signed queue edit failed: {result:?}");
+                }
+            }
         }
         save_current_world(&state)
             .await
@@ -2321,26 +2360,34 @@ mod tests {
                 .preferred_labors
                 .contains(&cat_sim::skills::Labor::Process)
         );
-        let sawmill = colony
-            .buildings
-            .iter()
-            .find(|building| building.id == sawmill_id)
-            .expect("guided Sawmill restored");
-        assert!(sawmill.production_paused);
-        assert_eq!(sawmill.production_queue.len(), 1);
-        assert!(!sawmill.production_queue[0].repeat);
-        let mill = colony
-            .buildings
-            .iter()
-            .find(|building| building.id == mill_id)
-            .expect("guided Mill restored");
-        assert!(mill.production_paused);
-        assert_eq!(mill.production_queue.len(), 1);
+        for (index, (building_id, recipe_id)) in station_recipes.iter().enumerate() {
+            let building = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == *building_id)
+                .expect("guided station restored");
+            assert_eq!(building.production_queue.len(), 1);
+            assert_eq!(building.production_queue[0].recipe_id, *recipe_id);
+            assert_eq!(building.production_queue[0].repeat, index >= 2);
+            assert_eq!(building.production_paused, index < 2);
+        }
+        for study in [
+            "carpentry_preparation",
+            "grain_milling_preparation",
+            "metallurgy_preparation",
+            "trade_goods_preparation",
+        ] {
+            assert!(
+                colony
+                    .upgrade_tree
+                    .owned_node_ids
+                    .contains(&study.to_owned())
+            );
+        }
         assert_eq!(
-            mill.production_queue[0].recipe_id,
-            cat_sim::world_tick::MILL_RECIPE_ID
+            colony.recipe_entitlement_rules_version,
+            cat_sim::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION
         );
-        assert!(!mill.production_queue[0].repeat);
         drop(restored);
         drop(restarted);
         fs::remove_file(path).expect("remove guidance database");

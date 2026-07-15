@@ -1101,6 +1101,10 @@ pub struct BuildingSnapshot {
     /// must use this list rather than duplicating station knowledge in the client.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub available_recipes: Vec<String>,
+    /// Catalog study required by the queued implemented recipe. `None` for
+    /// legacy-grandfathered snapshots and non-production buildings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_recipe_study: Option<ResearchTarget>,
     /// Pausing prevents a new recipe cycle while still allowing already-finished
     /// output to be physically hauled away.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -2974,6 +2978,7 @@ mod tests {
         assert_eq!(decoded.production_output, None);
         assert_eq!(decoded.inbound_haul, 0.0);
         assert!(decoded.available_recipes.is_empty());
+        assert_eq!(decoded.required_recipe_study, None);
         // The pre-existing footprint back-compat default is untouched by this change.
         assert_eq!(
             decoded.footprint,
@@ -3003,6 +3008,27 @@ mod tests {
             serde_json::to_value(CarryingKind::Flour).unwrap(),
             json!("flour")
         );
+    }
+
+    #[test]
+    fn locked_station_required_study_is_additive_and_round_trips() {
+        let building = BuildingSnapshot {
+            id: "sawmill-locked".to_owned(),
+            building_type: BuildingType::Sawmill,
+            required_recipe_study: Some(ResearchTarget {
+                id: "carpentry_preparation".to_owned(),
+                name: "Carpentry Preparation".to_owned(),
+                cost: 19.5,
+            }),
+            ..BuildingSnapshot::default()
+        };
+        let encoded = serde_json::to_value(&building).expect("serialize locked station");
+        assert_eq!(
+            encoded["requiredRecipeStudy"]["id"],
+            json!("carpentry_preparation")
+        );
+        let decoded: BuildingSnapshot = serde_json::from_value(encoded).expect("round trip");
+        assert_eq!(decoded, building);
     }
 
     #[test]

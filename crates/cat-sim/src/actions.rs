@@ -1290,21 +1290,23 @@ fn edit_production_queue(
     edit: &proto::ProductionQueueEdit,
     ctx: &ActionCtx,
 ) -> proto::ActionResult {
-    let Some(building) = colony.buildings.iter_mut().find(|building| {
+    let Some(building_index) = colony.buildings.iter().position(|building| {
         building.id == building_id
             && building.construction_progress >= 100
             && !crate::world_tick::available_production_recipes(building.building_type).is_empty()
     }) else {
         return fail("That building has no editable production queue.");
     };
+    let building_type = colony.buildings[building_index].building_type;
 
     match edit {
         proto::ProductionQueueEdit::Add { recipe_id, repeat } => {
-            if !crate::world_tick::available_production_recipes(building.building_type)
-                .contains(&recipe_id.as_str())
+            if !crate::world_tick::production_recipe_availability(colony, building_type, recipe_id)
+                .is_some_and(|recipe| recipe.available)
             {
                 return fail("That recipe is not available at this station.");
             }
+            let building = &mut colony.buildings[building_index];
             if building.production_queue.len() >= 32 {
                 return fail("That production queue is full.");
             }
@@ -1316,6 +1318,7 @@ fn edit_production_queue(
                 });
         }
         proto::ProductionQueueEdit::Remove { index } => {
+            let building = &mut colony.buildings[building_index];
             if *index >= building.production_queue.len() {
                 return fail("That queue entry no longer exists.");
             }
@@ -1325,6 +1328,7 @@ fn edit_production_queue(
             }
         }
         proto::ProductionQueueEdit::Move { index, direction } => {
+            let building = &mut colony.buildings[building_index];
             let target = match direction {
                 proto::QueueMoveDirection::Up => index.checked_sub(1),
                 proto::QueueMoveDirection::Down => index.checked_add(1),
@@ -1339,12 +1343,14 @@ fn edit_production_queue(
             }
         }
         proto::ProductionQueueEdit::SetRepeat { index, repeat } => {
+            let building = &mut colony.buildings[building_index];
             let Some(entry) = building.production_queue.get_mut(*index) else {
                 return fail("That queue entry no longer exists.");
             };
             entry.repeat = *repeat;
         }
         proto::ProductionQueueEdit::SetPaused { paused } => {
+            let building = &mut colony.buildings[building_index];
             building.production_paused = *paused;
         }
     }
@@ -3592,6 +3598,27 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 .map_or(0.0, |cycle_sec| {
                     (building.production_progress / cycle_sec).clamp(0.0, 1.0)
                 });
+            let recipe_availability =
+                crate::world_tick::available_production_recipes(building.building_type)
+                    .iter()
+                    .filter_map(|recipe_id| {
+                        crate::world_tick::production_recipe_availability(
+                            colony,
+                            building.building_type,
+                            recipe_id,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+            let required_recipe_study = recipe_availability
+                .iter()
+                .find(|recipe| !recipe.available)
+                .and_then(|recipe| recipe.required_study_id)
+                .and_then(|id| crate::research_catalog::research_catalog().get(id))
+                .map(|node| proto::ResearchTarget {
+                    id: node.id.clone(),
+                    name: node.name.clone(),
+                    cost: node.cost,
+                });
             Some(proto::BuildingSnapshot {
                 id: building.id.clone(),
                 building_type,
@@ -3635,16 +3662,19 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                         repeat: entry.repeat,
                     })
                     .collect(),
-                available_recipes: crate::world_tick::available_production_recipes(
-                    building.building_type,
-                )
-                .iter()
-                .map(|recipe| (*recipe).to_owned())
-                .collect(),
+                available_recipes: recipe_availability
+                    .iter()
+                    .filter(|recipe| recipe.available)
+                    .map(|recipe| recipe.recipe_id.to_owned())
+                    .collect(),
+                required_recipe_study,
                 production_paused: building.production_paused,
-                production_block_reason: crate::world_tick::building_production_block_reason(
-                    colony, building,
-                ),
+                production_block_reason:
+                    crate::world_tick::building_production_block_reason_with_availability(
+                        colony,
+                        building,
+                        &recipe_availability,
+                    ),
                 worker_travel: crate::world_tick::building_worker_travel(colony, building),
                 inbound_cargo: crate::world_tick::building_station_cargo(colony, building, "in")
                     .into_iter()
@@ -7845,6 +7875,7 @@ mod tests {
     #[test]
     fn guided_station_queue_edits_are_ordered_recipe_scoped_and_exact() {
         let mut world = world_with_one_colony();
+        world.colonies[0].recipe_entitlement_rules_version = 0;
         let colony = &mut world.colonies[0];
         colony.buildings.push(BuildingRuntime {
             id: "sawmill-player".to_owned(),
@@ -8034,6 +8065,98 @@ mod tests {
             .ok,
             "Workshop recipe cannot cross into a Smelter"
         );
+    }
+
+    #[test]
+    fn signed_queue_add_is_denied_until_signed_research_unlocks_the_recipe() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.recipe_entitlement_rules_version =
+            crate::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        colony.buildings.push(BuildingRuntime {
+            id: "locked-sawmill".to_owned(),
+            building_type: BuildingType::Sawmill,
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: Vec::new(),
+            ..BuildingRuntime::default()
+        });
+        let add = proto::ClientAction::EditProductionQueue {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "signed".to_owned(),
+            building_id: "locked-sawmill".to_owned(),
+            edit: proto::ProductionQueueEdit::Add {
+                recipe_id: crate::world_tick::SAWMILL_RECIPE_ID.to_owned(),
+                repeat: true,
+            },
+        };
+
+        let before = world.colonies[0].buildings.last().unwrap().clone();
+        let denied = apply_action(&mut world, &add, &ctx());
+        assert!(!denied.ok);
+        assert_eq!(world.colonies[0].buildings.last().unwrap(), &before);
+        let locked_snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let locked = locked_snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "locked-sawmill")
+            .unwrap();
+        assert!(locked.available_recipes.is_empty());
+        assert_eq!(
+            locked.production_block_reason.as_deref(),
+            Some("research_locked")
+        );
+        assert_eq!(
+            locked
+                .required_recipe_study
+                .as_ref()
+                .map(|study| study.id.as_str()),
+            Some("carpentry_preparation")
+        );
+
+        world.colonies[0].upgrade_tree.research_points = 100.0;
+        for node_id in [
+            "research_hut",
+            "basic_tools",
+            "foraging_lore",
+            "sawmill",
+            "carpentry_sources",
+            "carpentry_preparation",
+        ] {
+            assert!(
+                crate::upgrade_tree::can_unlock(&world.colonies[0].upgrade_tree, node_id),
+                "{node_id} not unlockable from {:?}",
+                world.colonies[0].upgrade_tree.owned_node_ids
+            );
+            let research = proto::ClientAction::ResearchNode {
+                session_id: "sess_1".to_owned(),
+                nickname: "Player".to_owned(),
+                sig: "signed".to_owned(),
+                node_id: node_id.to_owned(),
+            };
+            assert!(apply_action(&mut world, &research, &ctx()).ok, "{node_id}");
+        }
+        assert!(apply_action(&mut world, &add, &ctx()).ok);
+        assert_eq!(
+            world.colonies[0].buildings.last().unwrap().production_queue,
+            [crate::world_tick::ProductionQueueEntry {
+                recipe_id: crate::world_tick::SAWMILL_RECIPE_ID.to_owned(),
+                repeat: true,
+            }]
+        );
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let sawmill = snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "locked-sawmill")
+            .unwrap();
+        assert_eq!(
+            sawmill.available_recipes,
+            [crate::world_tick::SAWMILL_RECIPE_ID]
+        );
+        assert_eq!(sawmill.required_recipe_study, None);
     }
 
     #[test]

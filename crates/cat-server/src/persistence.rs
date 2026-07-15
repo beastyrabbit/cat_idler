@@ -78,6 +78,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             automationTier REAL,
             globalUpgradePoints REAL,
             upgradeTree TEXT,
+            recipeEntitlementRulesVersion INTEGER NOT NULL DEFAULT 0,
             upgradeLevels TEXT,
             ritualRequestedAt INTEGER,
             criticalSince INTEGER,
@@ -307,6 +308,11 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("colonies", "lastLoremasterUnlockAt", "INTEGER"),
         ("colonies", "lastTitheAt", "INTEGER"),
         ("colonies", "lastOfferingAt", "INTEGER"),
+        (
+            "colonies",
+            "recipeEntitlementRulesVersion",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
         ("cats", "skills", "TEXT"),
         ("cats", "boosted", "INTEGER NOT NULL DEFAULT 0"),
         ("cats", "preferredLabors", "TEXT"),
@@ -486,7 +492,7 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
         "SELECT id, name, leaderId, status, resources, createdAt, lastTick,
                 worldSeed, isGlobal, foundingScale, ownerPlayerId, runNumber, runStartedAt, lastPlayerActivityAt,
                 lastLoremasterUnlockAt, lastTitheAt, lastOfferingAt,
-                automationTier, globalUpgradePoints, upgradeTree, upgradeLevels,
+                automationTier, globalUpgradePoints, upgradeTree, recipeEntitlementRulesVersion, upgradeLevels,
                 ritualRequestedAt, criticalSince, claimedTiles, agriculturalTiles, revealedTiles, provisionalTiles,
                 threatPressure, lastRaidAt, activeRaidId, raidClicks, testTimeScale,
                 testResourceDecayMultiplier, testResilienceHoursOverride,
@@ -529,7 +535,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             id, name, leaderId, status, resources, createdAt, lastTick, worldSeed,
             runNumber, runStartedAt, lastPlayerActivityAt, lastLoremasterUnlockAt, lastTitheAt,
             lastOfferingAt, automationTier,
-            globalUpgradePoints, upgradeTree, upgradeLevels, ritualRequestedAt,
+            globalUpgradePoints, upgradeTree, recipeEntitlementRulesVersion, upgradeLevels, ritualRequestedAt,
             criticalSince, claimedTiles, agriculturalTiles, revealedTiles, provisionalTiles, threatPressure, lastRaidAt,
             activeRaidId, raidClicks, testTimeScale, testResourceDecayMultiplier,
             testResilienceHoursOverride, testCriticalMsOverride, testRngSeed, officers,
@@ -541,7 +547,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
             ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
-            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55
+            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56
         )",
         params![
             colony.id,
@@ -561,6 +567,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             colony.automation_tier,
             colony.global_upgrade_points,
             serde_json::to_string(&colony.upgrade_tree).map_err(to_sql_json)?,
+            i64::from(colony.recipe_entitlement_rules_version),
             upgrade_levels_json(colony),
             colony.ritual_requested_at,
             colony.critical_since,
@@ -708,6 +715,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         raiders: load_raiders(conn, &id)?,
         upgrade_levels: parse_upgrade_levels(upgrade_levels_json.as_deref())?,
         upgrade_tree: parse_upgrade_tree(upgrade_tree_json.as_deref())?,
+        recipe_entitlement_rules_version: row
+            .get::<_, Option<i64>>("recipeEntitlementRulesVersion")?
+            .and_then(|version| u32::try_from(version).ok())
+            .unwrap_or(0),
         automation_tier: row.get::<_, Option<f64>>("automationTier")?.unwrap_or(0.0),
         global_upgrade_points: row
             .get::<_, Option<f64>>("globalUpgradePoints")?
@@ -3175,6 +3186,7 @@ mod tests {
             ("colonies", "lastLoremasterUnlockAt"),
             ("colonies", "lastTitheAt"),
             ("colonies", "lastOfferingAt"),
+            ("colonies", "recipeEntitlementRulesVersion"),
             ("cats", "skills"),
             ("cats", "boosted"),
             ("buildings", "automatedOfficerRole"),
@@ -3204,6 +3216,7 @@ mod tests {
             ("colonies", "lastLoremasterUnlockAt"),
             ("colonies", "lastTitheAt"),
             ("colonies", "lastOfferingAt"),
+            ("colonies", "recipeEntitlementRulesVersion"),
             ("cats", "skills"),
             ("cats", "boosted"),
             ("buildings", "automatedOfficerRole"),
@@ -3238,6 +3251,135 @@ mod tests {
             .expect("load migrated world")
             .expect("saved world exists");
         assert_eq!(loaded, world);
+    }
+
+    #[test]
+    fn recipe_entitlement_version_queue_ownership_and_timestamp_survive_restart() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(42);
+        let mut colony = found_colony(42, "entitlement", 1_000_000, 42);
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("carpentry_preparation".to_owned());
+        colony.last_loremaster_unlock_at = Some(1_234_567);
+        colony.buildings.push(BuildingRuntime {
+            id: "persisted-sawmill".to_owned(),
+            building_type: BuildingType::Sawmill,
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: vec![ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
+                repeat: false,
+            }],
+            ..BuildingRuntime::default()
+        });
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save");
+
+        let loaded = load_world(&conn).expect("load").expect("world");
+        let colony = &loaded.colonies[0];
+        assert_eq!(
+            colony.recipe_entitlement_rules_version,
+            cat_sim::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION
+        );
+        assert!(
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .contains(&"carpentry_preparation".to_owned())
+        );
+        assert_eq!(colony.last_loremaster_unlock_at, Some(1_234_567));
+        assert_eq!(
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == "persisted-sawmill")
+                .unwrap()
+                .production_queue,
+            [ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
+                repeat: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn missing_recipe_entitlement_version_migrates_to_legacy_grandfathering() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(42);
+        let mut colony = found_colony(42, "legacy-entitlement", 1_000_000, 42);
+        colony.buildings.push(BuildingRuntime {
+            id: "legacy-sawmill".to_owned(),
+            building_type: BuildingType::Sawmill,
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: vec![ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
+                repeat: true,
+            }],
+            ..BuildingRuntime::default()
+        });
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save current row");
+        conn.execute_batch("ALTER TABLE colonies DROP COLUMN recipeEntitlementRulesVersion;")
+            .expect("simulate old schema");
+        init_schema(&conn).expect("migrate missing version");
+
+        let loaded = load_world(&conn).expect("load").expect("world");
+        let colony = &loaded.colonies[0];
+        assert_eq!(colony.recipe_entitlement_rules_version, 0);
+        assert!(colony.upgrade_tree.owned_node_ids.is_empty());
+        let sawmill = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "legacy-sawmill")
+            .unwrap();
+        assert_eq!(
+            sawmill.production_queue,
+            [ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
+                repeat: true,
+            }]
+        );
+        assert!(
+            cat_sim::world_tick::production_recipe_availability(
+                colony,
+                BuildingType::Sawmill,
+                cat_sim::world_tick::SAWMILL_RECIPE_ID
+            )
+            .is_some_and(|recipe| recipe.available)
+        );
+    }
+
+    #[test]
+    fn malformed_recipe_entitlement_versions_fall_back_to_legacy_grandfathering() {
+        for malformed in [-1_i64, i64::from(u32::MAX) + 1] {
+            let conn = open_database(":memory:").expect("database");
+            let mut world = new_world(42);
+            world
+                .colonies
+                .push(found_colony(42, "malformed-entitlement", 1_000_000, 42));
+            save_world(&conn, &world).expect("save current row");
+            conn.execute(
+                "UPDATE colonies SET recipeEntitlementRulesVersion = ?1",
+                [malformed],
+            )
+            .expect("inject malformed version");
+
+            let loaded = load_world(&conn).expect("load").expect("world");
+            let colony = &loaded.colonies[0];
+            assert_eq!(colony.recipe_entitlement_rules_version, 0, "{malformed}");
+            assert!(
+                cat_sim::world_tick::production_recipe_availability(
+                    colony,
+                    BuildingType::Sawmill,
+                    cat_sim::world_tick::SAWMILL_RECIPE_ID,
+                )
+                .is_some_and(|recipe| recipe.available),
+                "malformed version {malformed} must retain legacy production"
+            );
+        }
     }
 
     #[test]

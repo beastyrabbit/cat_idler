@@ -77,6 +77,7 @@ use crate::{
         CLOTH_TRADE_RECIPE, CraftOptions, LEATHER_TRADE_RECIPE, STONE_TRADE_RECIPE,
         WOOD_TRADE_RECIPE, advance_craft, craft_quality_from_skill, next_trade_kind,
     },
+    research_catalog::research_catalog,
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{self, RoadCorridorOptions, RoadTile, select_road_corridor},
     shrine::is_at_shrine,
@@ -198,6 +199,10 @@ pub struct ColonyRuntime {
     pub raiders: Vec<RaiderRuntime>,
     pub upgrade_levels: UpgradeLevels,
     pub upgrade_tree: UpgradeTreeState,
+    /// Version 0 predates recipe entitlements and grandfathers every implemented
+    /// station recipe. Fresh colonies use version 1 and must own the catalog study
+    /// whose typed payload unlocks the recipe. Persisted queues are never rewritten.
+    pub recipe_entitlement_rules_version: u32,
     pub automation_tier: f64,
     pub global_upgrade_points: f64,
     pub ritual_requested_at: Option<i64>,
@@ -496,13 +501,16 @@ pub const SAWMILL_RECIPE_ID: &str = "logs_to_lumber";
 pub const MILL_RECIPE_ID: &str = "grain_to_flour_and_food";
 pub const WORKSHOP_RECIPE_ID: &str = "materials_to_refined";
 pub const SMELTER_RECIPE_ID: &str = "ore_to_metal";
+/// Fresh-colony ruleset: implemented station recipes require their catalog study.
+pub const CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION: u32 = 1;
 
 const SAWMILL_RECIPES: &[&str] = &[SAWMILL_RECIPE_ID];
 const MILL_RECIPES: &[&str] = &[MILL_RECIPE_ID];
 const WORKSHOP_RECIPES: &[&str] = &[WORKSHOP_RECIPE_ID];
 const SMELTER_RECIPES: &[&str] = &[SMELTER_RECIPE_ID];
 
-/// Stable recipe ids accepted by the authoritative station implementation.
+/// Stable recipe ids implemented by each authoritative station. Entitlement is
+/// colony-specific and must be checked through [`production_recipe_availability`].
 #[must_use]
 pub fn available_production_recipes(building_type: BuildingType) -> &'static [&'static str] {
     match building_type {
@@ -512,6 +520,42 @@ pub fn available_production_recipes(building_type: BuildingType) -> &'static [&'
         BuildingType::Smelter => SMELTER_RECIPES,
         _ => &[],
     }
+}
+
+/// Catalog-backed entitlement for one implemented station recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductionRecipeAvailability {
+    /// The exact recipe ID accepted by the physical station implementation.
+    pub recipe_id: &'static str,
+    /// Study whose typed payload unlocks the recipe, if the catalog owns one.
+    pub required_study_id: Option<&'static str>,
+    /// Whether this colony may advance or newly queue this recipe.
+    pub available: bool,
+}
+
+/// Resolve the one authoritative recipe entitlement view used by snapshots,
+/// signed queue edits, block reasons, and physical production. Requirement
+/// ownership comes from catalog payload data, never a parallel recipe→study map.
+#[must_use]
+pub fn production_recipe_availability(
+    colony: &ColonyRuntime,
+    building_type: BuildingType,
+    recipe_id: &str,
+) -> Option<ProductionRecipeAvailability> {
+    let recipe_id = available_production_recipes(building_type)
+        .iter()
+        .copied()
+        .find(|implemented| *implemented == recipe_id)?;
+    let required_study_id = research_catalog()
+        .recipe_unlock_study(recipe_id)
+        .map(|node| node.id.as_str());
+    let available = colony.recipe_entitlement_rules_version == 0
+        || required_study_id.is_some_and(|study| is_owned(&colony.upgrade_tree, study));
+    Some(ProductionRecipeAvailability {
+        recipe_id,
+        required_study_id,
+        available,
+    })
 }
 
 #[must_use]
@@ -1976,6 +2020,7 @@ impl Default for ColonyRuntime {
             raiders: Vec::new(),
             upgrade_levels: UpgradeLevels::default(),
             upgrade_tree: create_upgrade_tree_state(),
+            recipe_entitlement_rules_version: 0,
             automation_tier: 0.0,
             global_upgrade_points: 0.0,
             ritual_requested_at: None,
@@ -2219,6 +2264,7 @@ fn found_colony_with_kind(
         cats: create_starter_cats(&colony_id, now_ms, seed, scale),
         anchor,
         buildings: starter_buildings(anchor, world_seed, scale),
+        recipe_entitlement_rules_version: CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
         world_tiles: starter_world_tiles(anchor, world_seed),
         claimed_tiles: founding_claimed_tiles(anchor, founding_radius(scale)),
         run_number: 1,
@@ -18149,6 +18195,13 @@ fn advance_physical_mill(
             return;
         }
     }
+    if !production_recipe_availability(colony, building.building_type, MILL_RECIPE_ID)
+        .is_some_and(|recipe| recipe.available)
+    {
+        colony.cats[cat_index].activity = CatActivity::Idle;
+        colony.cats[cat_index].destination = None;
+        return;
+    }
     if building.production_paused
         || building
             .production_queue
@@ -18310,6 +18363,14 @@ fn advance_physical_sawmill(
         return;
     }
 
+    if !production_recipe_availability(colony, building.building_type, SAWMILL_RECIPE_ID)
+        .is_some_and(|recipe| recipe.available)
+    {
+        colony.cats[cat_index].activity = CatActivity::Idle;
+        colony.cats[cat_index].destination = None;
+        return;
+    }
+
     if building.production_paused
         || building
             .production_queue
@@ -18467,6 +18528,13 @@ fn advance_physical_refiner(
     }
 
     if begin_station_output_haul(colony, &building, cat_index, output_kind, gate) {
+        return;
+    }
+    if !production_recipe_availability(colony, building.building_type, recipe_id)
+        .is_some_and(|recipe| recipe.available)
+    {
+        colony.cats[cat_index].activity = CatActivity::Idle;
+        colony.cats[cat_index].destination = None;
         return;
     }
     if building.production_paused
@@ -19195,8 +19263,26 @@ pub fn building_production_block_reason(
     colony: &ColonyRuntime,
     building: &BuildingRuntime,
 ) -> Option<String> {
+    let availability = available_production_recipes(building.building_type)
+        .iter()
+        .filter_map(|recipe_id| {
+            production_recipe_availability(colony, building.building_type, recipe_id)
+        })
+        .collect::<Vec<_>>();
+    building_production_block_reason_with_availability(colony, building, &availability)
+}
+
+/// Snapshot fast path using the availability already projected for this building.
+pub(crate) fn building_production_block_reason_with_availability(
+    colony: &ColonyRuntime,
+    building: &BuildingRuntime,
+    availability: &[ProductionRecipeAvailability],
+) -> Option<String> {
     if !is_physical_station(building.building_type) {
         return None;
+    }
+    if availability.iter().any(|recipe| !recipe.available) {
+        return Some("research_locked".to_owned());
     }
     let Some(cat_id) = building.assigned_cat.as_deref() else {
         return Some("no_worker".to_owned());
@@ -19919,9 +20005,10 @@ mod tests {
         if is_owned(state, node_id) {
             return;
         }
-        let node = crate::upgrade_tree::get_node(node_id)
-            .expect("officer fixture references a canonical upgrade node");
-        for prerequisite in node.prerequisites {
+        let node = crate::research_catalog::research_catalog()
+            .get(node_id)
+            .expect("fixture references a canonical research node");
+        for prerequisite in &node.prerequisites {
             grant_fixture_node_chain(state, prerequisite);
         }
         state.owned_node_ids.push(node_id.to_owned());
@@ -25476,6 +25563,251 @@ mod tests {
         assert_eq!(credit_carrying(colony, &carrying, target), 0.0);
         colony.cats[0].carrying = None;
         colony.cats[0].destination = None;
+    }
+
+    fn seed_station_input_at_worker(colony: &mut ColonyRuntime, kind: ResourceKind, amount: f64) {
+        ensure_station_stores(colony, 0);
+        let building = colony.buildings[0].clone();
+        let source = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("general storehouse");
+        stockpiles::add_resource(&mut source.contents, kind, -amount);
+        let input_id = stockpiles::station_input_id(&building.id);
+        let input = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == input_id)
+            .expect("station input store");
+        stockpiles::add_resource(&mut input.contents, kind, amount);
+        colony.cats[0].position = position_from_world(station_work_point(&building));
+    }
+
+    #[test]
+    fn v1_research_locked_physical_recipes_consume_nothing_and_gain_no_progress() {
+        for (building_type, input_kind, resources) in [
+            (
+                BuildingType::Mill,
+                ResourceKind::Grain,
+                Resources {
+                    grain: 4.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Sawmill,
+                ResourceKind::Logs,
+                Resources {
+                    logs: 5.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Workshop,
+                ResourceKind::Materials,
+                Resources {
+                    materials: 5.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Smelter,
+                ResourceKind::Ore,
+                Resources {
+                    ore: 5.0,
+                    ..Resources::default()
+                },
+            ),
+        ] {
+            let mut colony = chain_colony(building_type, resources, true);
+            colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+            seed_station_input_at_worker(&mut colony, input_kind, 4.0);
+            let before_resources = colony.resources.clone();
+            let before_piles = colony.stockpiles.clone();
+            let before_progress = colony.buildings[0].production_progress;
+
+            match building_type {
+                BuildingType::Mill => {
+                    advance_physical_mill(&mut colony, 0, production_gate(30, 30_000), 30.0)
+                }
+                BuildingType::Sawmill => {
+                    advance_physical_sawmill(&mut colony, 0, production_gate(30, 30_000), 30.0)
+                }
+                BuildingType::Workshop | BuildingType::Smelter => advance_physical_refiner(
+                    &mut colony,
+                    0,
+                    production_gate(30, 30_000),
+                    30.0,
+                    false,
+                ),
+                _ => unreachable!(),
+            }
+
+            assert_eq!(colony.resources, before_resources, "{building_type:?}");
+            assert_eq!(colony.stockpiles, before_piles, "{building_type:?}");
+            assert_eq!(
+                colony.buildings[0].production_progress, before_progress,
+                "{building_type:?}"
+            );
+            assert_eq!(
+                building_production_block_reason(&colony, &colony.buildings[0]),
+                Some("research_locked".to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn recipe_availability_uses_the_catalog_reverse_index_without_parallel_ids() {
+        for (building_type, recipe_id, study_id) in [
+            (
+                BuildingType::Mill,
+                MILL_RECIPE_ID,
+                "grain_milling_preparation",
+            ),
+            (
+                BuildingType::Sawmill,
+                SAWMILL_RECIPE_ID,
+                "carpentry_preparation",
+            ),
+            (
+                BuildingType::Workshop,
+                WORKSHOP_RECIPE_ID,
+                "trade_goods_preparation",
+            ),
+            (
+                BuildingType::Smelter,
+                SMELTER_RECIPE_ID,
+                "metallurgy_preparation",
+            ),
+        ] {
+            let mut colony = ColonyRuntime {
+                recipe_entitlement_rules_version: CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
+                ..ColonyRuntime::default()
+            };
+            let locked = production_recipe_availability(&colony, building_type, recipe_id)
+                .expect("implemented recipe");
+            assert_eq!(locked.required_study_id, Some(study_id));
+            assert!(!locked.available);
+            colony.upgrade_tree.owned_node_ids.push(study_id.to_owned());
+            assert!(
+                production_recipe_availability(&colony, building_type, recipe_id)
+                    .is_some_and(|recipe| recipe.available)
+            );
+        }
+        assert!(
+            production_recipe_availability(
+                &ColonyRuntime::default(),
+                BuildingType::Mill,
+                "parallel_or_unknown_recipe"
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn v1_owned_studies_advance_all_four_physical_station_recipes() {
+        for (building_type, input_kind, input_amount, study_id, resources) in [
+            (
+                BuildingType::Mill,
+                ResourceKind::Grain,
+                4.0,
+                "grain_milling_preparation",
+                Resources {
+                    grain: 4.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Sawmill,
+                ResourceKind::Logs,
+                5.0,
+                "carpentry_preparation",
+                Resources {
+                    logs: 5.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Workshop,
+                ResourceKind::Materials,
+                5.0,
+                "trade_goods_preparation",
+                Resources {
+                    materials: 5.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Smelter,
+                ResourceKind::Ore,
+                5.0,
+                "metallurgy_preparation",
+                Resources {
+                    ore: 5.0,
+                    ..Resources::default()
+                },
+            ),
+        ] {
+            let starting_input = stockpiles::resource_amount(&resources, input_kind);
+            let mut colony = chain_colony(building_type, resources, true);
+            colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+            colony.upgrade_tree.owned_node_ids.push(study_id.to_owned());
+            seed_station_input_at_worker(&mut colony, input_kind, input_amount);
+
+            match building_type {
+                BuildingType::Mill => advance_physical_mill(
+                    &mut colony,
+                    0,
+                    production_gate(2_000, 2_000_000),
+                    2_000.0,
+                ),
+                BuildingType::Sawmill => advance_physical_sawmill(
+                    &mut colony,
+                    0,
+                    production_gate(2_000, 2_000_000),
+                    2_000.0,
+                ),
+                BuildingType::Workshop | BuildingType::Smelter => advance_physical_refiner(
+                    &mut colony,
+                    0,
+                    production_gate(2_000, 2_000_000),
+                    2_000.0,
+                    false,
+                ),
+                _ => unreachable!(),
+            }
+
+            assert!(
+                stockpiles::resource_amount(&colony.resources, input_kind) < starting_input,
+                "{building_type:?} did not consume its delivered input"
+            );
+            assert!(
+                !building_station_inventory(&colony, &colony.buildings[0], true).is_empty(),
+                "{building_type:?} did not create station-local output"
+            );
+        }
+    }
+
+    #[test]
+    fn v0_legacy_station_queue_keeps_producing_without_research() {
+        let mut colony = chain_colony(
+            BuildingType::Sawmill,
+            Resources {
+                logs: 5.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        assert_eq!(colony.recipe_entitlement_rules_version, 0);
+        seed_station_input_at_worker(&mut colony, ResourceKind::Logs, 5.0);
+        advance_physical_sawmill(&mut colony, 0, production_gate(30, 30_000), 30.0);
+        assert_eq!(colony.resources.logs, 0.0);
+        assert!(
+            building_station_inventory(&colony, &colony.buildings[0], true)
+                .iter()
+                .any(|(kind, amount)| *kind == ResourceKind::Lumber && *amount > 0.0)
+        );
     }
 
     #[test]
@@ -31780,14 +32112,7 @@ mod tests {
     fn ore_chain_colony(world_seed: u32) -> WorldState {
         let mut world = new_world(world_seed);
         let mut colony = found_colony(world.world_seed, "colony-1", 1_000, 42);
-        colony
-            .upgrade_tree
-            .owned_node_ids
-            .push(crate::upgrade_tree::MOUNTAINEERING_NODE_ID.to_owned());
-        colony
-            .upgrade_tree
-            .owned_node_ids
-            .push(crate::upgrade_tree::SMELTING_NODE_ID.to_owned());
+        grant_fixture_node_chain(&mut colony.upgrade_tree, "metallurgy_preparation");
         colony.resources.ore = 200.0;
         // Assign a smelter worker directly rather than relying on the leader's
         // idle-surplus mop-up to eventually claim the bench — the founding roster's
@@ -32792,6 +33117,46 @@ mod tests {
             colony.upgrade_tree.owned_node_ids.len(),
             starting_owned + 3,
             "a multi-day offline jump grants one current-day unlock, not backlog"
+        );
+    }
+
+    #[test]
+    fn loremaster_unlocks_a_recipe_at_the_exact_daily_boundary_deterministically() {
+        let prepare = || {
+            let mut colony = found_colony(77, "colony-1", 10_000, 77);
+            establish_office(&mut colony, OfficerRole::Loremaster);
+            let target = research_catalog().get("carpentry_preparation").unwrap();
+            colony.upgrade_tree.owned_node_ids = research_catalog()
+                .nodes()
+                .iter()
+                .filter(|node| node.id != target.id)
+                .map(|node| node.id.clone())
+                .collect();
+            colony.upgrade_tree.research_points = target.cost;
+            colony.last_loremaster_unlock_at = Some(100_000);
+            colony
+        };
+        let mut left = prepare();
+        let mut right = prepare();
+        let before = 100_000 + LOREMASTER_UNLOCK_INTERVAL_MS - 1;
+        phase_24_research(&mut left, production_gate(1, before));
+        phase_24_research(&mut right, production_gate(1, before));
+        assert!(!is_owned(&left.upgrade_tree, "carpentry_preparation"));
+        assert_eq!(left.upgrade_tree, right.upgrade_tree);
+
+        let boundary = 100_000 + LOREMASTER_UNLOCK_INTERVAL_MS;
+        phase_24_research(&mut left, production_gate(1, boundary));
+        phase_24_research(&mut right, production_gate(1, boundary));
+        assert!(is_owned(&left.upgrade_tree, "carpentry_preparation"));
+        assert!(
+            production_recipe_availability(&left, BuildingType::Sawmill, SAWMILL_RECIPE_ID)
+                .is_some_and(|recipe| recipe.available)
+        );
+        assert_eq!(left.upgrade_tree, right.upgrade_tree);
+        assert_eq!(left.last_loremaster_unlock_at, Some(boundary));
+        assert_eq!(
+            left.last_loremaster_unlock_at,
+            right.last_loremaster_unlock_at
         );
     }
 
@@ -42055,6 +42420,7 @@ mod tests {
         // Grain only becomes edible after the researched Mill recipe, so install that real
         // chain instead of relying on the removed passive Field food faucet.
         grant_fixture_node_chain(&mut established.upgrade_tree, "milling");
+        grant_fixture_node_chain(&mut established.upgrade_tree, "grain_milling_preparation");
         install_completed_fixture_building(
             &mut established,
             "established-population-mill",

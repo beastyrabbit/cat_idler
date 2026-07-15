@@ -1550,6 +1550,22 @@ mod tests {
     }
 
     #[test]
+    fn physical_recipe_studies_resolve_only_their_authoritative_recipe_ids() {
+        for (study, recipe) in [
+            ("grain_milling_preparation", "grain_to_flour_and_food"),
+            ("carpentry_preparation", "logs_to_lumber"),
+            ("metallurgy_preparation", "ore_to_metal"),
+            ("trade_goods_preparation", "materials_to_refined"),
+        ] {
+            let effects = resolve_effects([study]);
+            assert_eq!(
+                effects.unlocked_recipes,
+                std::collections::BTreeSet::from([recipe.to_owned()])
+            );
+        }
+    }
+
+    #[test]
     fn generated_ownership_survives_legacy_save_shape() {
         let restored = deserialize_upgrade_tree_state(json!({
             "ownedNodeIds": ["research_hut", "research_hut_foundations", "logistics_basics"],

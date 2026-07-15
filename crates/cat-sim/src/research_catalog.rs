@@ -203,6 +203,7 @@ type StableIndex = HashMap<String, usize, StableBuildHasher>;
 pub struct ResearchCatalog {
     nodes: Vec<ResearchNode>,
     by_id: StableIndex,
+    recipe_unlocks: StableIndex,
 }
 
 impl ResearchCatalog {
@@ -228,6 +229,15 @@ impl ResearchCatalog {
             .iter()
             .filter(|node| node.category == category)
             .count()
+    }
+
+    /// O(1) reverse lookup for the study whose typed payload unlocks `recipe_id`.
+    /// Built once with the catalog, so production hot loops never scan 500 nodes.
+    #[must_use]
+    pub fn recipe_unlock_study(&self, recipe_id: &str) -> Option<&ResearchNode> {
+        self.recipe_unlocks
+            .get(recipe_id)
+            .map(|index| &self.nodes[*index])
     }
 
     /// Test AND-prerequisite ownership without imposing a collection type on a
@@ -321,6 +331,10 @@ struct RecipeFamily {
     cost_base: f64,
     layout_x: i32,
     leader_priority_base: u16,
+    /// Data-owned bindings from a generated stage id to an already-implemented
+    /// authoritative recipe id. Unlisted stages keep their catalog registry id.
+    #[serde(default)]
+    payload_overrides: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -431,7 +445,12 @@ fn expand_recipe_family(
         } else {
             vec![nodes[index - 1].id.clone()]
         };
-        let payload_id = format!("{}_{}", family.id, stage.id);
+        let generated_payload_id = format!("{}_{}", family.id, stage.id);
+        let payload_id = family
+            .payload_overrides
+            .get(&stage.id)
+            .cloned()
+            .unwrap_or(generated_payload_id);
         let payload = match stage.payload {
             RecipePayloadKind::Recipe => ResearchPayload::UnlockRecipe {
                 recipe_id: payload_id,
@@ -518,6 +537,8 @@ fn validate_and_index(nodes: Vec<ResearchNode>) -> Result<ResearchCatalog, Strin
 
     let mut by_id =
         StableIndex::with_capacity_and_hasher(nodes.len(), StableBuildHasher::default());
+    let mut recipe_unlocks =
+        StableIndex::with_capacity_and_hasher(nodes.len(), StableBuildHasher::default());
     let mut layouts = BTreeSet::new();
     for (index, node) in nodes.iter().enumerate() {
         validate_node(node)?;
@@ -530,11 +551,22 @@ fn validate_and_index(nodes: Vec<ResearchNode>) -> Result<ResearchCatalog, Strin
                 node.layout.x, node.layout.y
             ));
         }
+        for payload in &node.payloads {
+            if let ResearchPayload::UnlockRecipe { recipe_id } = payload
+                && recipe_unlocks.insert(recipe_id.clone(), index).is_some()
+            {
+                return Err(format!("duplicate recipe unlock {recipe_id}"));
+            }
+        }
     }
 
     validate_categories(&nodes)?;
     validate_topology(&nodes, &by_id)?;
-    Ok(ResearchCatalog { nodes, by_id })
+    Ok(ResearchCatalog {
+        nodes,
+        by_id,
+        recipe_unlocks,
+    })
 }
 
 fn validate_node(node: &ResearchNode) -> Result<(), String> {
@@ -886,6 +918,31 @@ mod tests {
     }
 
     #[test]
+    fn preparation_nodes_unlock_the_four_authoritative_physical_recipes() {
+        for (node_id, recipe_id) in [
+            ("grain_milling_preparation", "grain_to_flour_and_food"),
+            ("carpentry_preparation", "logs_to_lumber"),
+            ("metallurgy_preparation", "ore_to_metal"),
+            ("trade_goods_preparation", "materials_to_refined"),
+        ] {
+            let node = research_catalog().get(node_id).expect("study exists");
+            assert_eq!(
+                node.payloads,
+                [ResearchPayload::UnlockRecipe {
+                    recipe_id: recipe_id.to_owned(),
+                }],
+                "{node_id} must bind the implemented recipe rather than a parallel registry id"
+            );
+            assert_eq!(
+                research_catalog()
+                    .recipe_unlock_study(recipe_id)
+                    .map(|node| node.id.as_str()),
+                Some(node_id)
+            );
+        }
+    }
+
+    #[test]
     fn prerequisite_checks_use_and_semantics() {
         let catalog = research_catalog();
         let node = catalog
@@ -911,5 +968,6 @@ mod tests {
         for node in &left.nodes {
             assert_eq!(left.by_id.get(&node.id), right.by_id.get(&node.id));
         }
+        assert_eq!(left.recipe_unlocks, right.recipe_unlocks);
     }
 }
