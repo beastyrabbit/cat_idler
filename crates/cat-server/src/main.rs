@@ -1477,6 +1477,146 @@ mod tests {
         )
     }
 
+    fn steward_stockpile_campaign_world(seed: u32, started_at: i64) -> WorldState {
+        let mut world = new_world(seed);
+        let mut colony = found_colony(seed, STARTER_COLONY_ID, started_at, seed);
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("basic_tools".to_owned());
+        for (from, into) in [
+            (
+                cat_sim::types::BuildingType::Woodworking,
+                cat_sim::types::BuildingType::Workshop,
+            ),
+            (
+                cat_sim::types::BuildingType::StonePrep,
+                cat_sim::types::BuildingType::Mill,
+            ),
+            (
+                cat_sim::types::BuildingType::WoodCutter,
+                cat_sim::types::BuildingType::Sawmill,
+            ),
+            (
+                cat_sim::types::BuildingType::Den,
+                cat_sim::types::BuildingType::Smelter,
+            ),
+        ] {
+            let building = colony
+                .buildings
+                .iter_mut()
+                .find(|building| building.building_type == from)
+                .expect("founding fixture has a convertible station");
+            building.building_type = into;
+            building.is_complete = true;
+            building.construction_progress = 100;
+            building.assigned_cat = None;
+            building.production_queue = cat_sim::world_tick::default_production_queue(into);
+        }
+        colony.resources.grain = 60.0;
+        colony.resources.flour = 40.0;
+        colony.resources.materials = 60.0;
+        colony.resources.refined = 40.0;
+        colony.resources.logs = 60.0;
+        colony.resources.lumber = 40.0;
+        colony.resources.ore = 60.0;
+        colony.resources.metal = 40.0;
+        cat_sim::world_tick::reconcile_colony_stockpiles(&mut colony);
+        world.colonies.push(colony);
+        world
+    }
+
+    #[tokio::test]
+    async fn signed_steward_campaign_creates_persisted_physical_piles_while_passive_twin_does_not()
+    {
+        let started_at = 1_000_000;
+        let initial = steward_stockpile_campaign_world(77, started_at);
+        let guided = build_test_state_from_world(initial.clone(), started_at);
+        let passive = build_test_state_from_world(initial, started_at);
+        let mut connection =
+            ConnectionContext::new("steward-player".to_owned(), STARTER_COLONY_ID.to_owned());
+        let presence = send_action(
+            &guided,
+            &mut connection,
+            &ClientAction::Presence {
+                session_id: String::new(),
+                nickname: "Logistics Cat".to_owned(),
+                sig: None,
+            },
+        )
+        .await;
+        assert!(
+            presence.result.ok,
+            "presence handshake failed: {presence:?}"
+        );
+        let signed = connection
+            .identity
+            .as_ref()
+            .expect("presence binds signed identity")
+            .clone();
+        let steward_id = guided.world.lock().await.colonies[0].cats[0].id.clone();
+        let appointed = send_action(
+            &guided,
+            &mut connection,
+            &ClientAction::AssignOfficer {
+                session_id: signed.session_id,
+                nickname: "Logistics Cat".to_owned(),
+                sig: signed.sig,
+                role: OfficerRole::Steward,
+                cat_id: steward_id,
+            },
+        )
+        .await;
+        assert!(
+            appointed.result.ok,
+            "signed appointment failed: {appointed:?}"
+        );
+
+        {
+            let mut world = guided.world.lock().await;
+            let _ = world_tick(&mut world, started_at + 1_000);
+            let colony = &world.colonies[0];
+            assert_eq!(colony.stock_ledger.steward_managed_piles.len(), 9);
+            assert!(colony.jobs.iter().any(|job| matches!(
+                job.metadata,
+                cat_sim::world_tick::JobMetadata::StockpileHaul { .. }
+            )));
+            let conn = guided.db.lock().await;
+            persistence::save_world(&conn, &world).expect("save guided Steward world");
+        }
+        {
+            let mut world = passive.world.lock().await;
+            let _ = world_tick(&mut world, started_at + 1_000);
+            assert!(
+                world.colonies[0]
+                    .stock_ledger
+                    .steward_managed_piles
+                    .is_empty()
+            );
+            assert!(!world.colonies[0].jobs.iter().any(|job| matches!(
+                job.metadata,
+                cat_sim::world_tick::JobMetadata::StockpileHaul { .. }
+            )));
+        }
+        let restarted = {
+            let conn = guided.db.lock().await;
+            persistence::load_world(&conn)
+                .expect("load guided Steward world")
+                .expect("saved world exists")
+        };
+        let current = guided.world.lock().await.clone();
+        assert_eq!(
+            restarted.colonies[0].stock_ledger, current.colonies[0].stock_ledger,
+            "restart preserves managed provenance"
+        );
+        assert_eq!(
+            restarted.colonies[0].stockpiles,
+            current.colonies[0].stockpiles
+        );
+        assert_eq!(restarted.colonies[0].jobs, current.colonies[0].jobs);
+        assert_eq!(restarted.colonies[0].officers, current.colonies[0].officers);
+    }
+
     fn establish_campaign_core(colony: &mut cat_sim::world_tick::ColonyRuntime) {
         colony.resources.materials = 1_000.0;
         colony.resources.lumber = 100.0;

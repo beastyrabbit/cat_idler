@@ -1614,6 +1614,24 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
             "site": site.as_ref().map(tile_pos_json),
             "accepted": accepted,
         }),
+        JobMetadata::StockpileHaul {
+            source_stockpile_id,
+            destination_stockpile_id,
+            kind,
+            site,
+            accepted,
+            transit_id,
+            amount_in_transit,
+        } => json!({
+            "kind": "stockpileHaul",
+            "sourceStockpileId": source_stockpile_id,
+            "destinationStockpileId": destination_stockpile_id,
+            "resourceKind": kind,
+            "site": site.as_ref().map(tile_pos_json),
+            "accepted": accepted,
+            "transitId": transit_id,
+            "amountInTransit": amount_in_transit,
+        }),
         JobMetadata::OfferingCarry {
             source_stockpile_id,
             site,
@@ -1731,6 +1749,44 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
                 .get("accepted")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+        }),
+        Some("stockpileHaul") => Ok(JobMetadata::StockpileHaul {
+            source_stockpile_id: value
+                .get("sourceStockpileId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            destination_stockpile_id: value
+                .get("destinationStockpileId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            kind: serde_json::from_value(
+                value
+                    .get("resourceKind")
+                    .cloned()
+                    .unwrap_or_else(|| Value::String("food".to_owned())),
+            )
+            .map_err(from_sql_json)?,
+            site: value
+                .get("site")
+                .filter(|site| !site.is_null())
+                .map(parse_tile_pos_value)
+                .transpose()?,
+            accepted: value
+                .get("accepted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            transit_id: value
+                .get("transitId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            amount_in_transit: value
+                .get("amountInTransit")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+                .max(0.0),
         }),
         Some("offeringCarry") => Ok(JobMetadata::OfferingCarry {
             source_stockpile_id: value
@@ -3498,6 +3554,49 @@ mod tests {
             &world.colonies[0].stockpiles,
             1_000_000,
         );
+        world.colonies[0].stock_ledger.steward_managed_piles.insert(
+            "stockpile-a".to_owned(),
+            cat_sim::ledger::StewardManagedPile {
+                station_id: "mill-restart".to_owned(),
+                resource: cat_sim::stockpiles::ResourceKind::Food,
+                active: false,
+            },
+        );
+        let steward_transit_id = cat_sim::stockpiles::station_transit_id("steward:job-balance");
+        world.colonies[0]
+            .stockpiles
+            .push(cat_sim::stockpiles::make_station_store(
+                steward_transit_id.clone(),
+                ZoneRect {
+                    x1: 8,
+                    y1: 8,
+                    x2: 8,
+                    y2: 8,
+                },
+                [cat_sim::stockpiles::ResourceKind::Food],
+            ));
+        world.colonies[0]
+            .stockpiles
+            .last_mut()
+            .expect("transit inserted")
+            .contents
+            .food = 3.0;
+        world.colonies[0].jobs.push(JobRuntime {
+            id: "job-balance".to_owned(),
+            kind: JobKind::HaulGatherSpot,
+            status: JobStatus::Cancelled,
+            requested_by: cat_sim::world_tick::JobRequester::System,
+            metadata: JobMetadata::StockpileHaul {
+                source_stockpile_id: "stockpile-a".to_owned(),
+                destination_stockpile_id: cat_sim::stockpiles::GENERAL_STOREHOUSE_ID.to_owned(),
+                kind: cat_sim::stockpiles::ResourceKind::Food,
+                site: Some(TilePos { x: 8, y: 8 }),
+                accepted: true,
+                transit_id: steward_transit_id,
+                amount_in_transit: 3.0,
+            },
+            ..JobRuntime::default()
+        });
         world.colonies[0].stock_ledger.active_round = Some(cat_sim::ledger::AccountingRound {
             worker_id: world.colonies[0].cats[0].id.clone(),
             tent_id: "accounting-restart".to_owned(),
@@ -3779,6 +3878,13 @@ mod tests {
         assert_eq!(loaded.colonies[0].stock_ledger.last_counted, 999_000);
         assert!(loaded.colonies[0].stock_ledger.pile_reports.is_empty());
         assert!(loaded.colonies[0].stock_ledger.active_round.is_none());
+        assert!(
+            loaded.colonies[0]
+                .stock_ledger
+                .steward_managed_piles
+                .is_empty(),
+            "legacy aggregate ledgers do not fabricate Steward ownership"
+        );
     }
 
     #[test]

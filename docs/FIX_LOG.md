@@ -9,7 +9,6 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Production stations pull every input from general storage | Steward-managed limited piles must appear beside every physical processor and be filled by real source→destination balancing trips. Vacancy, removal, full storage, death, cancellation, and restart must preserve exact physical provenance and transit. | in progress |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research advertises recipes and resources that do not exist | All 100 generated recipe IDs and 64 generated resource IDs currently enter registries with no consumer, and none names a maintained queue recipe or `ResourceKind`. First bind research to real physical recipes, then add only physically sourced resource/recipe breadth. | queued |
 | Research job unlocks do not gate jobs truthfully | All ten `UnlockJob` payloads are unread. Fetch Water and Explore work before their claimed unlocks, while six advertised IDs are not runtime job kinds. Align catalog wording/IDs and authoritative action gates. | queued |
@@ -64,6 +63,29 @@ cadence partitioning, legacy queue migration, SQLite restart, removal/death/full
 protocol/client coverage, 1,286 four-crate tests, strict Clippy, and formatting pass. Accepted
 1920×1080 own-framebuffers show the selected roofless Workshop and Smelter with their real local
 ledgers, outbound cargo, repeating recipes, and workers in transit.
+
+## 2026-07-15 — Steward-managed physical station stockpiles
+
+**Problem:** Physical processors still pulled inputs directly from the general storehouse. The
+Steward did not create the limited local reserves promised by the role, and a naive implementation
+could teleport goods, consume the player's stockpile budget, or lose cargo when an office, station,
+route, carrier, or destination disappeared.
+
+**Fix:** An appointed Steward now creates provenance-tracked, one-tile, exact-resource piles beside
+every physical Mill, Sawmill, Workshop, and Smelter. Nine distinct piles cover one of each station;
+the separate automation budget is sixteen. One durable source→transit→destination job balances
+input deficits before output surplus, never rewrites player pile definitions, and never changes the
+aggregate resource total. Vacating the office or removing a station leaves its pile and contents
+dormant. Cancellation restores only available source headroom and persists any blocked remainder.
+
+**Player visibility and evidence:** Active/dormant ownership, station provenance, carried resource,
+route phase, and recovery blockage are visible in the stockpile inspector; unsafe removal is denied.
+Deterministic all-four-station, priority, full-storage, partial-recovery, vacancy, station-removal,
+death, signed HMAC, SQLite restart, protocol-compatibility, and client tests pass. Own-framebuffer
+`/tmp/steward-stockpiles-final.png` shows a selected Sawmill Logs pile with resolved station
+provenance; the other managed zones remain sprite/overlay-readable without persistent text plaques
+over the open workshops. The unchanged no-cheat farm→Mill guided campaign passes in 87.793s after
+topology-gated, minute-bounded, one-route-at-a-time planning.
 
 ## 2026-07-14 — Finite item wear, breakage, and material-backed repair
 

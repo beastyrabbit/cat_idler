@@ -31,7 +31,8 @@ Verified foundations include:
   distinct roofless processing stations, persisted outside-wall agriculture, and an accepted
   before/during/after staged-wall cutover. Mill, Sawmill, Workshop, and Smelter now have complete
   physical finite-store→station-local input→on-site work→station-local output→finite-store routes,
-  durable editable queues, conserved transit, and truthful inspectors. The selected Mill's accepted
+  editable queues, conserved transit, and truthful inspectors. Steward-managed local reserves feed
+  those processors through durable physical balancing trips. The selected Mill's accepted
   1920×1080 client framebuffer shows Grain 4.0 locally, Flour 2.0 locally, Flour 1.5 outbound,
   the repeating recipe, half progress, and its worker hauling output;
 - exact founding fog plus signed resource/general scouting whose provisional knowledge commits
@@ -100,7 +101,9 @@ so a correct scout route cannot conceal a missing founding dispatch.
    ledgers, transit reservation, delivery-before-credit, death conservation, restart persistence,
    real editable queues, and live inspectors.
    Exterior farming now follows the same physical truth through plot work, bounded baskets, local
-   handoff, and storage delivery. Apply that contract to every remaining workshop, make the
+   handoff, and storage delivery. Steward-managed exact-resource piles now feed all four physical
+   processors through conserved balancing trips without consuming the player's designation budget.
+   Apply that contract to every remaining workshop, make the
    remaining production chains carry and deliver their inputs and outputs, and complete
    recipes/materials. Physical Accountant rounds now keep reports truthful one visited pile at a
    time. All 19 maintained labor skills have truthful gain sources, bounded effects, persistence,

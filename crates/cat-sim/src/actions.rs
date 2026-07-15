@@ -1657,7 +1657,13 @@ fn designate_stockpile(
         .stockpiles
         .iter()
         .filter(|pile| {
-            !pile.is_shrine() && !pile.is_station_local() && !gather_ids.contains(pile.id.as_str())
+            !pile.is_shrine()
+                && !pile.is_station_local()
+                && !gather_ids.contains(pile.id.as_str())
+                && !colony
+                    .stock_ledger
+                    .steward_managed_piles
+                    .contains_key(&pile.id)
         })
         .count();
     if designated >= stockpiles::MAX_DESIGNATED_STOCKPILES {
@@ -1717,6 +1723,32 @@ fn remove_stockpile(
     {
         return fail("Station-local storage cannot be removed directly.");
     }
+    if let Some(managed) = colony.stock_ledger.steward_managed_piles.get(stockpile_id) {
+        if managed.active {
+            return fail(
+                "This limited pile is actively managed by the Steward; vacate that office first.",
+            );
+        }
+        let contains_goods = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == stockpile_id)
+            .is_some_and(|pile| {
+                stockpiles::ResourceKind::ALL
+                    .iter()
+                    .any(|kind| stockpiles::resource_amount(&pile.contents, *kind) > f64::EPSILON)
+            });
+        if contains_goods {
+            return fail(
+                "This dormant Steward pile still contains goods; move them before removing it.",
+            );
+        }
+        colony
+            .stock_ledger
+            .steward_managed_piles
+            .remove(stockpile_id);
+    }
+    crate::world_tick::cancel_stockpile_balance_jobs_for_pile(colony, stockpile_id, ctx.now_ms);
     colony
         .stockpiles
         .retain(|pile| pile.id != stockpile_id || pile.is_shrine());
@@ -1926,6 +1958,7 @@ fn remove_gather_spot(
         return fail("Unknown gather spot.");
     }
     crate::world_tick::cancel_fishing_jobs_for_spot(colony, stockpile_id, ctx.now_ms);
+    crate::world_tick::cancel_stockpile_balance_jobs_for_pile(colony, stockpile_id, ctx.now_ms);
     colony
         .gather_spots
         .retain(|spot| spot.stockpile_id != stockpile_id);
@@ -2944,6 +2977,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .filter(|pile| !pile.is_station_local())
             .map(|pile| stockpile_snapshot(pile, colony))
             .collect(),
+        active_stockpile_haul: active_stockpile_haul_snapshot(colony),
         farms: colony
             .farms
             .iter()
@@ -3159,7 +3193,60 @@ fn stockpile_snapshot(
                     })
                     .flatten(),
             }),
+        steward_managed: colony.stock_ledger.steward_managed_piles.get(&pile.id).map(
+            |provenance| proto::StewardManagedPileSnapshot {
+                station_id: provenance.station_id.clone(),
+                resource: sim_to_proto_resource_kind(provenance.resource),
+                active: provenance.active,
+            },
+        ),
     }
+}
+
+fn active_stockpile_haul_snapshot(colony: &ColonyRuntime) -> Option<proto::StockpileHaulSnapshot> {
+    colony.jobs.iter().find_map(|job| {
+        let JobMetadata::StockpileHaul {
+            source_stockpile_id,
+            destination_stockpile_id,
+            kind,
+            amount_in_transit,
+            ..
+        } = &job.metadata
+        else {
+            return None;
+        };
+        let is_recovery = !matches!(job.status, JobStatus::Queued | JobStatus::Active);
+        if is_recovery && *amount_in_transit <= f64::EPSILON {
+            return None;
+        }
+        let worker_id = job
+            .assigned_cat
+            .clone()
+            .unwrap_or_else(|| "unassigned".to_owned());
+        let carrying = colony.cats.iter().any(|cat| {
+            cat.id == worker_id
+                && cat.carrying.as_ref().and_then(|cargo| {
+                    crate::world_tick::steward_haul_job_id_for_snapshot(
+                        cargo.source_gather_spot.as_deref(),
+                    )
+                }) == Some(job.id.as_str())
+        });
+        Some(proto::StockpileHaulSnapshot {
+            job_id: job.id.clone(),
+            worker_id,
+            source_stockpile_id: source_stockpile_id.clone(),
+            destination_stockpile_id: destination_stockpile_id.clone(),
+            resource: sim_to_proto_resource_kind(*kind),
+            amount: *amount_in_transit,
+            phase: if is_recovery {
+                proto::StockpileHaulPhase::RecoveryBlocked
+            } else if carrying {
+                proto::StockpileHaulPhase::CarryingToDestination
+            } else {
+                proto::StockpileHaulPhase::TravelingToSource
+            },
+        })
+    })
 }
 
 fn cat_snapshot(
@@ -6746,6 +6833,98 @@ mod tests {
                 .stockpiles
                 .iter()
                 .any(|pile| pile.id == station_id)
+        );
+    }
+
+    #[test]
+    fn remove_stockpile_truthfully_handles_active_and_dormant_steward_piles() {
+        let mut world = world_with_one_colony();
+        let (a, b) = open_stockpile_points(&world, 1, 1);
+        assert!(
+            apply_action(
+                &mut world,
+                &designate_action(a, b, vec![proto::ResourceKind::Grain]),
+                &ctx(),
+            )
+            .ok
+        );
+        let pile_id = world.colonies[0]
+            .stockpiles
+            .iter()
+            .find(|pile| !pile.is_general_storehouse())
+            .expect("designated pile")
+            .id
+            .clone();
+        world.colonies[0].stock_ledger.steward_managed_piles.insert(
+            pile_id.clone(),
+            crate::ledger::StewardManagedPile {
+                station_id: "mill-a".to_owned(),
+                resource: stockpiles::ResourceKind::Grain,
+                active: true,
+            },
+        );
+        let remove = || proto::ClientAction::RemoveStockpile {
+            session_id: "sess_1".to_owned(),
+            nickname: "Guest".to_owned(),
+            sig: "signed".to_owned(),
+            stockpile_id: pile_id.clone(),
+        };
+        let active = apply_action(&mut world, &remove(), &ctx());
+        assert!(!active.ok);
+        assert!(
+            active
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("actively managed")
+        );
+
+        world.colonies[0]
+            .stock_ledger
+            .steward_managed_piles
+            .get_mut(&pile_id)
+            .unwrap()
+            .active = false;
+        world.colonies[0]
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == pile_id)
+            .unwrap()
+            .contents
+            .grain = 1.0;
+        let occupied = apply_action(&mut world, &remove(), &ctx());
+        assert!(!occupied.ok);
+        assert!(
+            occupied
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("still contains goods")
+        );
+
+        world.colonies[0]
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == pile_id)
+            .unwrap()
+            .contents
+            .grain = 0.0;
+        let empty = apply_action(&mut world, &remove(), &ctx());
+        assert!(
+            empty.ok,
+            "empty dormant piles are player-removable: {empty:?}"
+        );
+        assert!(
+            !world.colonies[0]
+                .stock_ledger
+                .steward_managed_piles
+                .contains_key(&pile_id)
+        );
+        assert!(
+            !world.colonies[0]
+                .stockpiles
+                .iter()
+                .any(|pile| pile.id == pile_id)
         );
     }
 

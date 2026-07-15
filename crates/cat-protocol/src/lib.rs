@@ -175,6 +175,9 @@ pub struct ColonySnapshot {
     /// piles sized to contents. Empty/absent for pre-P12.3 snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stockpiles: Vec<StockpileSnapshot>,
+    /// Current physical pile-to-pile balancing route, if the Steward has one in flight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_stockpile_haul: Option<StockpileHaulSnapshot>,
     /// Visible farm designations and their current crop stage (P12.5). Empty for
     /// legacy snapshots and colonies without designated plots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -330,6 +333,37 @@ pub struct StockpileReportSnapshot {
     pub accurate: bool,
 }
 
+/// Why an officer-created limited pile exists. Player designations omit this field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StewardManagedPileSnapshot {
+    pub station_id: String,
+    pub resource: ResourceKind,
+    #[serde(default)]
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StockpileHaulPhase {
+    TravelingToSource,
+    CarryingToDestination,
+    RecoveryBlocked,
+}
+
+/// The one physical balancing transfer a Steward currently coordinates.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockpileHaulSnapshot {
+    pub job_id: String,
+    pub worker_id: String,
+    pub source_stockpile_id: String,
+    pub destination_stockpile_id: String,
+    pub resource: ResourceKind,
+    pub amount: f64,
+    pub phase: StockpileHaulPhase,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StockpileSnapshot {
@@ -350,6 +384,9 @@ pub struct StockpileSnapshot {
     /// every general player stockpile, and for pre-P16 snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gather_spot: Option<GatherSpotSnapshot>,
+    /// Explicit persisted officer ownership; absent means player/system-owned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steward_managed: Option<StewardManagedPileSnapshot>,
 }
 
 /// A gather spot's P16-specific bookkeeping (see [`StockpileSnapshot::gather_spot`]):
@@ -2484,6 +2521,7 @@ mod tests {
                 anchor: TilePoint { x: 6, y: 6 },
                 officers: BTreeMap::new(),
                 stockpiles: Vec::new(),
+                active_stockpile_haul: None,
                 farms: Vec::new(),
                 stock_ledger: None,
                 items: Vec::new(),
@@ -2690,6 +2728,7 @@ mod tests {
             .remove("stockpiles");
         let back: WorldSnapshot = serde_json::from_value(value).expect("deserialize");
         assert!(back.colonies[0].stockpiles.is_empty());
+        assert!(back.colonies[0].active_stockpile_haul.is_none());
 
         // A populated stockpile round-trips.
         let mut snap = sample_world_snapshot();
@@ -2704,14 +2743,40 @@ mod tests {
             contents,
             report: None,
             gather_spot: None,
+            steward_managed: Some(StewardManagedPileSnapshot {
+                station_id: "mill-a".to_owned(),
+                resource: ResourceKind::Food,
+                active: true,
+            }),
+        });
+        snap.colonies[0].active_stockpile_haul = Some(StockpileHaulSnapshot {
+            job_id: "job-balance".to_owned(),
+            worker_id: "cat-1".to_owned(),
+            source_stockpile_id: "stockpile-storehouse".to_owned(),
+            destination_stockpile_id: "stockpile-shrine".to_owned(),
+            resource: ResourceKind::Food,
+            amount: 7.5,
+            phase: StockpileHaulPhase::CarryingToDestination,
         });
         let encoded = serde_json::to_value(&snap).expect("serialize");
         assert_eq!(
             encoded["colonies"][0]["stockpiles"][0]["id"],
             json!("stockpile-shrine")
         );
+        assert_eq!(
+            encoded["colonies"][0]["stockpiles"][0]["stewardManaged"]["stationId"],
+            json!("mill-a")
+        );
+        assert_eq!(
+            encoded["colonies"][0]["activeStockpileHaul"]["phase"],
+            json!("carrying_to_destination")
+        );
         let round: WorldSnapshot = serde_json::from_value(encoded).expect("round-trip");
         assert_eq!(round.colonies[0].stockpiles, snap.colonies[0].stockpiles);
+        assert_eq!(
+            round.colonies[0].active_stockpile_haul,
+            snap.colonies[0].active_stockpile_haul
+        );
     }
 
     #[test]

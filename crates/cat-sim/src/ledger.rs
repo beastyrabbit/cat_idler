@@ -9,7 +9,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{entities::Resources, stockpiles::Stockpile};
+use crate::{
+    entities::Resources,
+    stockpiles::{ResourceKind, Stockpile},
+};
 
 /// How long (ms of game time) an *unstaffed* ledger may go before its background recount.
 pub const UNSTAFFED_RECOUNT_INTERVAL_MS: i64 = 30_000;
@@ -57,6 +60,21 @@ pub struct AccountingRound {
     pub topology_signature: u64,
 }
 
+/// Persisted provenance for a limited pile created and owned by Steward automation.
+/// The pile itself remains an ordinary physical [`Stockpile`]; keeping ownership in the
+/// already-additive ledger JSON lets legacy stockpile rows remain byte-compatible while
+/// making it impossible to mistake an officer pile for a player designation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StewardManagedPile {
+    pub station_id: String,
+    pub resource: ResourceKind,
+    /// False after Steward vacancy or station removal. The physical pile and its
+    /// contents remain in place; reappointment may reclaim a still-relevant pile.
+    #[serde(default)]
+    pub active: bool,
+}
+
 /// The colony's reported totals, independently fresh pile reports, and any physical round.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +85,8 @@ pub struct StockLedger {
     pub pile_reports: BTreeMap<String, PileReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_round: Option<AccountingRound>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub steward_managed_piles: BTreeMap<String, StewardManagedPile>,
 }
 
 impl StockLedger {

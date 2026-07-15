@@ -5862,20 +5862,27 @@ fn render_stockpiles(
                 ));
             }
         }
-        commands.spawn((
-            Text2d::new(label),
-            TextFont {
-                font_size: FontSize::Px(5.0),
-                ..default()
-            },
-            TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
-            Transform::from_xyz(
-                cx,
-                cy - h / 2.0 - TILE * 0.25,
-                ysort_z(cy, depth_origin) + 0.5,
-            ),
-            StockpileVis,
-        ));
+        // The Steward may create nine adjacent one-tile zones around the first four
+        // processors. Persistent labels for all of them collapse into a text plaque
+        // over the open workshops, defeating the sprite-first top-down design. Their
+        // typed overlay/prop stays visible; map text appears only for the selected pile
+        // (hover still has the ordinary tooltip).
+        if stockpile_map_label_visible(pile, selection.selected.as_deref()) {
+            commands.spawn((
+                Text2d::new(label),
+                TextFont {
+                    font_size: FontSize::Px(5.0),
+                    ..default()
+                },
+                TextColor(Color::srgba(1.0, 0.92, 0.72, 0.95)),
+                Transform::from_xyz(
+                    cx,
+                    cy - h / 2.0 - TILE * 0.25,
+                    ysort_z(cy, depth_origin) + 0.5,
+                ),
+                StockpileVis,
+            ));
+        }
 
         // A gather spot (P16) is a temporary, resource-typed drop — often out
         // beyond the claimed area. Fly a little resource-icon flag above it so it
@@ -5915,6 +5922,10 @@ fn render_stockpiles(
     }
 }
 
+fn stockpile_map_label_visible(pile: &StockpileSnapshot, selected: Option<&str>) -> bool {
+    pile.steward_managed.is_none() || selected == Some(pile.id.as_str())
+}
+
 /// Show/hide the remove-stockpile panel for the selected (non-shrine) pile, and
 /// clear the selection if the pile is gone.
 fn update_remove_panel(
@@ -5922,11 +5933,16 @@ fn update_remove_panel(
     mut selection: ResMut<StockpileSelection>,
     mut panel: Query<&mut Node, With<RemovePanel>>,
     mut text: Query<&mut Text, With<RemovePanelText>>,
+    mut remove_button: Query<&mut Node, (With<RemoveStockpileButton>, Without<RemovePanel>)>,
 ) {
     if !latest.is_changed() && !selection.is_changed() {
         return;
     }
-    let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
+    let (Ok(mut node), Ok(mut text), Ok(mut remove_button)) = (
+        panel.single_mut(),
+        text.single_mut(),
+        remove_button.single_mut(),
+    ) else {
         return;
     };
     let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
@@ -5941,12 +5957,25 @@ fn update_remove_panel(
     match (pile, farm) {
         (Some(pile), _) => {
             node.display = Display::Flex;
-            let title = match pile.gather_spot.as_ref().map(|spot| spot.purpose) {
-                Some(GatherSpotPurpose::Fishing) => "Fishing shore",
-                Some(GatherSpotPurpose::General) => "Gather spot",
-                None => "Stockpile",
+            let title = match (
+                pile.steward_managed.as_ref(),
+                pile.gather_spot.as_ref().map(|spot| spot.purpose),
+            ) {
+                (Some(managed), _) if managed.active => format!(
+                    "Steward-managed {} pile",
+                    resource_kind_name(managed.resource)
+                ),
+                (Some(managed), _) => {
+                    format!(
+                        "Dormant Steward {} pile",
+                        resource_kind_name(managed.resource)
+                    )
+                }
+                (_, Some(GatherSpotPurpose::Fishing)) => "Fishing shore".to_owned(),
+                (_, Some(GatherSpotPurpose::General)) => "Gather spot".to_owned(),
+                (_, None) => "Stockpile".to_owned(),
             };
-            text.0 = pile
+            let mut detail = pile
                 .gather_spot
                 .as_ref()
                 .and_then(|spot| spot.fish_population)
@@ -5961,9 +5990,48 @@ fn update_remove_panel(
                         )
                     },
                 );
+            if let Some(managed) = &pile.steward_managed {
+                detail.push_str(&format!(
+                    "\nstation: {}",
+                    building_name_for_id(
+                        &colony.expect("managed pile belongs to colony").buildings,
+                        &managed.station_id
+                    )
+                ));
+            }
+            if let Some(haul) = colony.and_then(|colony| colony.active_stockpile_haul.as_ref())
+                && (haul.source_stockpile_id == pile.id || haul.destination_stockpile_id == pile.id)
+            {
+                let colony = colony.expect("active haul belongs to colony");
+                detail.push_str(&format!(
+                    "\nhaul: {} · {} {:.1}\n{} -> {}",
+                    stockpile_haul_phase_name(haul.phase),
+                    resource_kind_name(haul.resource),
+                    haul.amount,
+                    pile_name_for_id(&colony.stockpiles, &haul.source_stockpile_id, "source"),
+                    pile_name_for_id(
+                        &colony.stockpiles,
+                        &haul.destination_stockpile_id,
+                        "destination"
+                    ),
+                ));
+                if haul.worker_id != "unassigned" {
+                    detail.push_str(&format!("\nworker: {}", haul.worker_id));
+                }
+            }
+            text.0 = detail;
+            let managed_removable = pile.steward_managed.as_ref().is_none_or(|managed| {
+                !managed.active && resource_total(&pile.contents) <= f64::EPSILON
+            });
+            remove_button.display = if managed_removable {
+                Display::Flex
+            } else {
+                Display::None
+            };
         }
         (_, Some(farm)) => {
             node.display = Display::Flex;
+            remove_button.display = Display::Flex;
             let worker = farm.worker_id.as_deref().unwrap_or("none");
             let input = if farm.input_inventory.is_empty() {
                 "none".to_owned()
@@ -5997,6 +6065,7 @@ fn update_remove_panel(
         }
         (None, None) => {
             node.display = Display::None;
+            remove_button.display = Display::None;
             if selection.selected.is_some() {
                 selection.selected = None;
             }
@@ -7659,19 +7728,7 @@ fn building_tooltip(building: &BuildingSnapshot) -> String {
 
 /// Compact hover text for a stockpile: what it accepts + rough contents.
 fn stockpile_tooltip(pile: &StockpileSnapshot) -> String {
-    let title = if pile
-        .gather_spot
-        .as_ref()
-        .is_some_and(|spot| spot.purpose == GatherSpotPurpose::Fishing)
-    {
-        "Fishing shore"
-    } else if pile.id == GENERAL_STOREHOUSE_ID {
-        "Village storehouse"
-    } else if pile.id == SHRINE_STOCKPILE_ID {
-        "Legacy shrine store"
-    } else {
-        "Stockpile"
-    };
+    let title = stockpile_title(pile);
     let mut tooltip = format!(
         "{title}\naccepts {accepts}\ncontents: {contents}",
         accepts = accepts_label(&pile.accepts),
@@ -7688,6 +7745,59 @@ fn stockpile_tooltip(pile: &StockpileSnapshot) -> String {
         ));
     }
     tooltip
+}
+
+fn stockpile_title(pile: &StockpileSnapshot) -> String {
+    if let Some(managed) = &pile.steward_managed {
+        if managed.active {
+            format!(
+                "Steward-managed {} pile",
+                resource_kind_name(managed.resource)
+            )
+        } else {
+            format!(
+                "Dormant Steward {} pile",
+                resource_kind_name(managed.resource)
+            )
+        }
+    } else if pile
+        .gather_spot
+        .as_ref()
+        .is_some_and(|spot| spot.purpose == GatherSpotPurpose::Fishing)
+    {
+        "Fishing shore".to_owned()
+    } else if pile.id == GENERAL_STOREHOUSE_ID {
+        "Village storehouse".to_owned()
+    } else if pile.id == SHRINE_STOCKPILE_ID {
+        "Legacy shrine store".to_owned()
+    } else {
+        "Stockpile".to_owned()
+    }
+}
+
+fn building_name_for_id(buildings: &[BuildingSnapshot], building_id: &str) -> String {
+    buildings
+        .iter()
+        .find(|building| building.id == building_id)
+        .map_or_else(
+            || building_id.to_owned(),
+            |building| capitalize_word(building_label(building.building_type)),
+        )
+}
+
+fn pile_name_for_id(piles: &[StockpileSnapshot], pile_id: &str, fallback: &str) -> String {
+    piles
+        .iter()
+        .find(|pile| pile.id == pile_id)
+        .map_or_else(|| fallback.to_owned(), stockpile_title)
+}
+
+fn stockpile_haul_phase_name(phase: cat_protocol::StockpileHaulPhase) -> &'static str {
+    match phase {
+        cat_protocol::StockpileHaulPhase::TravelingToSource => "going to source",
+        cat_protocol::StockpileHaulPhase::CarryingToDestination => "carrying",
+        cat_protocol::StockpileHaulPhase::RecoveryBlocked => "recovery blocked",
+    }
 }
 
 fn reported_pile_contents(pile: &StockpileSnapshot) -> String {
@@ -12382,6 +12492,7 @@ mod tests {
             contents: amounts(0.0, 0.0, 0.0),
             report: None,
             gather_spot: None,
+            steward_managed: None,
         };
         assert!(point_in_stockpile((3, 4), &pile));
         assert!(point_in_stockpile((2, 3), &pile));
@@ -13157,11 +13268,56 @@ mod tests {
                 accurate: true,
             }),
             gather_spot: None,
+            steward_managed: None,
         };
         let tip = stockpile_tooltip(&pile);
         assert!(tip.contains("Stockpile"));
         assert!(tip.contains("food only"));
         assert!(tip.contains("contents: food 12.0"));
+
+        let mut managed = pile.clone();
+        managed.steward_managed = Some(cat_protocol::StewardManagedPileSnapshot {
+            station_id: "mill-a".to_owned(),
+            resource: ResourceKind::Food,
+            active: true,
+        });
+        assert!(stockpile_tooltip(&managed).contains("Steward-managed food pile"));
+        assert!(
+            !stockpile_map_label_visible(&managed, None),
+            "managed zones do not become persistent text plaques over workshops"
+        );
+        assert!(stockpile_map_label_visible(
+            &managed,
+            Some(managed.id.as_str())
+        ));
+        assert!(stockpile_map_label_visible(&pile, None));
+        let station = BuildingSnapshot {
+            id: "mill-a".to_owned(),
+            building_type: BuildingType::Sawmill,
+            ..BuildingSnapshot::default()
+        };
+        assert_eq!(
+            building_name_for_id(std::slice::from_ref(&station), "mill-a"),
+            "Sawmill"
+        );
+        assert_eq!(
+            building_name_for_id(std::slice::from_ref(&station), "missing-station"),
+            "missing-station"
+        );
+        assert_eq!(
+            pile_name_for_id(std::slice::from_ref(&managed), &managed.id, "source"),
+            "Steward-managed food pile"
+        );
+        assert_eq!(
+            pile_name_for_id(&[], "missing-pile", "destination"),
+            "destination"
+        );
+        managed.steward_managed.as_mut().unwrap().active = false;
+        assert!(stockpile_tooltip(&managed).contains("Dormant Steward food pile"));
+        assert_eq!(
+            stockpile_haul_phase_name(cat_protocol::StockpileHaulPhase::RecoveryBlocked),
+            "recovery blocked"
+        );
 
         let mut mature = pile.clone();
         mature.contents.food = 0.0;

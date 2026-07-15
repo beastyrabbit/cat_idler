@@ -39,7 +39,7 @@ use crate::{
         match_cats_to_slots_with_officers, officer_role_for,
     },
     ledger::{
-        AccountingPhase, AccountingRound, PILE_COUNT_DWELL_MS, StockLedger,
+        AccountingPhase, AccountingRound, PILE_COUNT_DWELL_MS, StewardManagedPile, StockLedger,
         UNSTAFFED_RECOUNT_INTERVAL_MS, refresh_ledger,
     },
     life_sim::{
@@ -397,6 +397,18 @@ pub enum JobMetadata {
         site: Option<TilePos>,
         accepted: bool,
     },
+    /// A Steward-dispatched physical transfer between two visible stockpiles. Cargo
+    /// moves through `transit_id`, a hidden persisted physical store, so rearranging
+    /// existing goods never changes the colony aggregate while the cat is walking.
+    StockpileHaul {
+        source_stockpile_id: String,
+        destination_stockpile_id: String,
+        kind: ResourceKind,
+        site: Option<TilePos>,
+        accepted: bool,
+        transit_id: String,
+        amount_in_transit: f64,
+    },
     /// Physical material offering delivery. `source_stockpile_id` identifies the next
     /// visible pile to collect from; partial deliveries accumulate only in the persisted
     /// station-local `escrow_id` at the shrine. `delivered` mirrors that escrow for
@@ -687,6 +699,9 @@ pub struct DecorationCache {
     /// Shared physical-accounting connectivity, keyed by authoritative topology. A round
     /// asks for this once and then persists its deterministic target queue.
     accounting_route_component: RefCell<Option<(u64, HashSet<PathTilePos>)>>,
+    /// Derived reachability for Steward source/destination pairs. Resource quantities do
+    /// not affect the key, so an unreachable route is not recomputed every decision tick.
+    steward_route_reachability: RefCell<BTreeMap<u64, bool>>,
     #[cfg(test)]
     farm_route_debug: FarmRouteDebug,
     #[cfg(test)]
@@ -804,6 +819,7 @@ struct SpatialOccupancyContext {
     walled_claimed: HashSet<TilePos>,
     building_tiles: HashSet<TilePos>,
     stockpile_rects: Vec<ZoneRect>,
+    road_blocking_stockpile_rects: Vec<ZoneRect>,
     farm_rects: Vec<ZoneRect>,
     water_tiles: HashSet<TilePos>,
     cleared_tree_tiles: HashSet<TilePos>,
@@ -834,6 +850,24 @@ impl SpatialOccupancyContext {
             // transit ledger as a second pile at the general store could sever the only
             // gate-to-shrine road during expansion.
             .filter(|pile| !pile.is_shrine() && !pile.is_station_local())
+            .map(|pile| pile.rect)
+            .collect::<Vec<_>>();
+        // Steward-managed piles are floor zones rather than hard map furniture. They
+        // continue to reserve their tile from buildings, farms, and other stockpiles,
+        // but a road designation may cross one without severing an otherwise unique
+        // shrine-to-gate corridor. Ordinary player piles keep their stricter collision
+        // rule, so automation never changes the meaning of a player-authored zone.
+        let road_blocking_stockpile_rects = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| {
+                !pile.is_shrine()
+                    && !pile.is_station_local()
+                    && !colony
+                        .stock_ledger
+                        .steward_managed_piles
+                        .contains_key(&pile.id)
+            })
             .map(|pile| pile.rect)
             .collect();
         let farm_rects = colony.farms.iter().map(|farm| farm.rect).collect();
@@ -893,6 +927,7 @@ impl SpatialOccupancyContext {
             walled_claimed,
             building_tiles,
             stockpile_rects,
+            road_blocking_stockpile_rects,
             farm_rects,
             water_tiles,
             cleared_tree_tiles,
@@ -962,6 +997,12 @@ impl SpatialOccupancyContext {
 
     fn has_stockpile(&self, tile: TilePos) -> bool {
         self.stockpile_rects
+            .iter()
+            .any(|&rect| stockpiles::rect_contains(rect, tile.x, tile.y))
+    }
+
+    fn has_road_blocking_stockpile(&self, tile: TilePos) -> bool {
+        self.road_blocking_stockpile_rects
             .iter()
             .any(|&rect| stockpiles::rect_contains(rect, tile.x, tile.y))
     }
@@ -1094,7 +1135,7 @@ impl SpatialOccupancyContext {
         if self.building_tiles.contains(&tile) {
             return Some(SpatialPlacementError::Building);
         }
-        if self.has_stockpile(tile) {
+        if self.has_road_blocking_stockpile(tile) {
             return Some(SpatialPlacementError::Stockpile);
         }
         if self.has_farm(tile) {
@@ -2909,6 +2950,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
             phase_32_movement_setup_and_village_expansion_queue(colony, gate, policy, world_seed);
         phase_33_movement_deposits_and_no_destination_wander(colony, gate, &mut movement);
         phase_34_movement_travel_job_acceptance_reveal_path_wear(colony, gate, &movement);
+        phase_steward_stockpile_logistics(colony, gate, world_seed);
         phase_p16_gather_spot_logistics(colony, gate, world_seed);
         phase_35_deliberate_roads(colony, gate);
         phase_35b_road_accessibility(colony, gate, world_seed);
@@ -4401,6 +4443,14 @@ fn phase_15_assign_promoted_job_destinations(
                     let (cx, cy) = pile.center();
                     WorldPos { x: cx, y: cy }
                 }),
+            JobMetadata::StockpileHaul {
+                source_stockpile_id,
+                ..
+            } => colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == *source_stockpile_id)
+                .map(stockpile_work_point),
             _ => None,
         };
         // A scout's first leg is selected from seeded movement rolls alone. In
@@ -4500,6 +4550,22 @@ fn phase_15_assign_promoted_job_destinations(
                     stockpile_id,
                     site: Some(site),
                     accepted: false,
+                },
+                JobMetadata::StockpileHaul {
+                    source_stockpile_id,
+                    destination_stockpile_id,
+                    kind,
+                    transit_id,
+                    amount_in_transit,
+                    ..
+                } => JobMetadata::StockpileHaul {
+                    source_stockpile_id,
+                    destination_stockpile_id,
+                    kind,
+                    site: Some(site),
+                    accepted: false,
+                    transit_id,
+                    amount_in_transit,
                 },
                 _ => JobMetadata::Site {
                     site,
@@ -14915,6 +14981,11 @@ fn unaccepted_active_job_site(colony: &ColonyRuntime, cat_id: &str) -> Option<(u
                 site: Some(site),
                 accepted: false,
                 ..
+            }
+            | JobMetadata::StockpileHaul {
+                site: Some(site),
+                accepted: false,
+                ..
             } => Some((index, site)),
             JobMetadata::OfferingCarry {
                 site: Some(site),
@@ -14977,6 +15048,23 @@ fn accept_job(colony: &mut ColonyRuntime, job_index: usize, now_ms: i64) {
             stockpile_id,
             site,
             accepted: true,
+        },
+        JobMetadata::StockpileHaul {
+            source_stockpile_id,
+            destination_stockpile_id,
+            kind,
+            site,
+            transit_id,
+            amount_in_transit,
+            ..
+        } => JobMetadata::StockpileHaul {
+            source_stockpile_id,
+            destination_stockpile_id,
+            kind,
+            site,
+            accepted: true,
+            transit_id,
+            amount_in_transit,
         },
         JobMetadata::OfferingCarry {
             source_stockpile_id,
@@ -15757,7 +15845,8 @@ fn job_has_destination_metadata(job: &JobRuntime) -> bool {
         }
         | JobMetadata::Site { .. }
         | JobMetadata::Expansion { accepted: _, .. } => true,
-        JobMetadata::GatherHaul { site: Some(_), .. } => true,
+        JobMetadata::GatherHaul { site: Some(_), .. }
+        | JobMetadata::StockpileHaul { site: Some(_), .. } => true,
         JobMetadata::OfferingCarry { site: Some(_), .. } | JobMetadata::OfferingRitual { .. } => {
             true
         }
@@ -17172,6 +17261,7 @@ fn general_storehouse_rect(colony: &ColonyRuntime) -> ZoneRect {
 
 const STATION_IN_CARGO_PREFIX: &str = "station-in|";
 const STATION_OUT_CARGO_PREFIX: &str = "station-out|";
+const STEWARD_HAUL_CARGO_PREFIX: &str = "steward-haul|";
 const FARM_OUT_CARGO_PREFIX: &str = "farm-out|";
 const FARM_GATHER_SPOT_PREFIX: &str = "farm-gather:";
 
@@ -17190,6 +17280,18 @@ fn parse_station_cargo(marker: Option<&str>) -> Option<(&str, &str, &str)> {
     };
     let (building_id, pile_id) = rest.split_once('|')?;
     Some((direction, building_id, pile_id))
+}
+
+fn steward_haul_cargo_marker(job_id: &str) -> String {
+    format!("{STEWARD_HAUL_CARGO_PREFIX}{job_id}")
+}
+
+fn steward_haul_job_id(marker: Option<&str>) -> Option<&str> {
+    marker?.strip_prefix(STEWARD_HAUL_CARGO_PREFIX)
+}
+
+pub(crate) fn steward_haul_job_id_for_snapshot(marker: Option<&str>) -> Option<&str> {
+    steward_haul_job_id(marker)
 }
 
 fn farm_cargo_marker(plot_id: &str, pile_id: &str) -> String {
@@ -18852,6 +18954,22 @@ fn haul_deposit_target(
     carrying: &Carrying,
     from_pos: WorldPos,
 ) -> WorldPos {
+    if let Some(job_id) = steward_haul_job_id(carrying.source_gather_spot.as_deref())
+        && let Some(destination_id) = colony.jobs.iter().find_map(|job| {
+            (job.id == job_id && job.status == JobStatus::Active)
+                .then_some(&job.metadata)
+                .and_then(|metadata| match metadata {
+                    JobMetadata::StockpileHaul {
+                        destination_stockpile_id,
+                        ..
+                    } => Some(destination_stockpile_id.as_str()),
+                    _ => None,
+                })
+        })
+        && let Some(destination) = visible_stockpile(colony, destination_id)
+    {
+        return stockpile_work_point(destination);
+    }
     if offering_cargo_job_id(carrying.source_gather_spot.as_deref())
         .is_some_and(|job_id| offering_job_is_active(colony, job_id))
     {
@@ -19273,6 +19391,9 @@ fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
 /// accept. Returns the amount still physically carried; callers with a living
 /// carrier must retain and reroute it instead of clearing the stack.
 fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: WorldPos) -> f64 {
+    if steward_haul_job_id(carrying.source_gather_spot.as_deref()).is_some() {
+        return credit_steward_haul_carrying(colony, carrying);
+    }
     if let Some((plot_id, pile_id)) = parse_farm_cargo(carrying.source_gather_spot.as_deref()) {
         let Some(kind) = carrying_resource_kind(carrying.kind) else {
             return carrying.amount;
@@ -19439,6 +19560,82 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
     carrying.amount
 }
 
+/// Move already-owned cargo from its hidden transit store into the fixed balancing
+/// destination. Neither pickup nor delivery changes `colony.resources`: this is only a
+/// physical rearrangement of stock the colony already owns.
+fn credit_steward_haul_carrying(colony: &mut ColonyRuntime, carrying: &Carrying) -> f64 {
+    let Some(job_id) = steward_haul_job_id(carrying.source_gather_spot.as_deref()) else {
+        return carrying.amount;
+    };
+    let Some((job_index, destination_id, kind, transit_id)) =
+        colony.jobs.iter().enumerate().find_map(|(index, job)| {
+            if job.id != job_id || job.status != JobStatus::Active {
+                return None;
+            }
+            match &job.metadata {
+                JobMetadata::StockpileHaul {
+                    destination_stockpile_id,
+                    kind,
+                    transit_id,
+                    ..
+                } => Some((
+                    index,
+                    destination_stockpile_id.clone(),
+                    *kind,
+                    transit_id.clone(),
+                )),
+                _ => None,
+            }
+        })
+    else {
+        return carrying.amount;
+    };
+    let available = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == transit_id)
+        .map_or(0.0, |pile| {
+            stockpiles::resource_amount(&pile.contents, kind)
+        });
+    let headroom = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == destination_id && !pile.is_station_local())
+        .map_or(0.0, |pile| pile.headroom(kind));
+    let delivered = carrying.amount.min(available).min(headroom);
+    if delivered <= f64::EPSILON {
+        return carrying.amount;
+    }
+    if let Some(transit) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == transit_id)
+    {
+        stockpiles::add_resource(&mut transit.contents, kind, -delivered);
+    }
+    if let Some(destination) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == destination_id)
+    {
+        stockpiles::add_resource(&mut destination.contents, kind, delivered);
+    }
+    let remaining = (carrying.amount - delivered).max(0.0);
+    if let JobMetadata::StockpileHaul {
+        amount_in_transit, ..
+    } = &mut colony.jobs[job_index].metadata
+    {
+        *amount_in_transit = remaining;
+    }
+    if remaining <= f64::EPSILON {
+        colony.jobs[job_index].status = JobStatus::Completed;
+        colony.jobs[job_index].completed_at = Some(carrying.job_ended_at);
+        colony.stockpiles.retain(|pile| pile.id != transit_id);
+        return 0.0;
+    }
+    remaining
+}
+
 /// Salvage carried goods at a death site without violating finite capacity. Anything
 /// that fits is credited through the ordinary physical deposit path; any remainder is
 /// returned to the caller to remain on the corpse as a persisted world spill.
@@ -19464,6 +19661,10 @@ fn salvage_carried_cargo(
 /// removed from the station's uncredited output store. Returning either one avoids the
 /// generic salvage path crediting it a second time or teleporting it to its destination.
 fn salvage_station_cargo(colony: &mut ColonyRuntime, carrying: &Carrying, _at: WorldPos) -> bool {
+    if let Some(job_id) = steward_haul_job_id(carrying.source_gather_spot.as_deref()) {
+        cancel_stockpile_balance_job_by_id(colony, job_id, carrying.job_ended_at);
+        return true;
+    }
     if let Some((plot_id, _)) = parse_farm_cargo(carrying.source_gather_spot.as_deref()) {
         if let Some(plot) = colony.farms.iter_mut().find(|plot| plot.id == plot_id) {
             plot.pending_output += carrying.amount;
@@ -24067,6 +24268,652 @@ mod tests {
             .officers
             .insert(OfficerRole::Steward, "steward-cat".to_owned());
         colony
+    }
+
+    fn steward_station_colony(with_steward: bool) -> ColonyRuntime {
+        let mut world_tiles = BTreeMap::new();
+        let mut claimed_tiles = Vec::new();
+        let mut revealed_tiles = BTreeSet::new();
+        for y in -4..=28 {
+            for x in -4..=28 {
+                let at = TilePos { x, y };
+                let mut ground = fresh_ground_tile(at);
+                ground.tile_type = TileType::Field;
+                world_tiles.insert(at, ground);
+                claimed_tiles.push(at);
+                revealed_tiles.insert(at);
+            }
+        }
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            resources: Resources {
+                food: 50.0,
+                grain: 50.0,
+                flour: 50.0,
+                materials: 50.0,
+                refined: 50.0,
+                logs: 50.0,
+                lumber: 50.0,
+                ore: 50.0,
+                metal: 50.0,
+                ..Resources::default()
+            },
+            cats: vec![
+                adult_idle_cat("steward-cat", "colony-1"),
+                adult_idle_cat("mover-cat", "colony-1"),
+            ],
+            buildings: vec![
+                BuildingRuntime {
+                    id: "mill-a".to_owned(),
+                    building_type: BuildingType::Mill,
+                    position: TilePos { x: 12, y: 12 },
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                },
+                BuildingRuntime {
+                    id: "sawmill-a".to_owned(),
+                    building_type: BuildingType::Sawmill,
+                    position: TilePos { x: 19, y: 12 },
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                },
+                BuildingRuntime {
+                    id: "workshop-a".to_owned(),
+                    building_type: BuildingType::Workshop,
+                    position: TilePos { x: 12, y: 20 },
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                },
+                BuildingRuntime {
+                    id: "smelter-a".to_owned(),
+                    building_type: BuildingType::Smelter,
+                    position: TilePos { x: 19, y: 20 },
+                    is_complete: true,
+                    construction_progress: 100,
+                    ..BuildingRuntime::default()
+                },
+            ],
+            world_tiles,
+            claimed_tiles,
+            revealed_tiles,
+            ..ColonyRuntime::default()
+        };
+        reconcile_colony_stockpiles(&mut colony);
+        if with_steward {
+            colony
+                .officers
+                .insert(OfficerRole::Steward, "steward-cat".to_owned());
+        }
+        colony
+    }
+
+    fn prepare_stockpile_balance_pickup(colony: &mut ColonyRuntime) -> (String, String, String) {
+        sync_steward_managed_piles(colony, 1_000, 7);
+        dispatch_stockpile_balance_haul(colony, 1_000, 7);
+        let job_index = colony
+            .jobs
+            .iter()
+            .position(|job| matches!(job.metadata, JobMetadata::StockpileHaul { .. }))
+            .expect("Steward dispatched a physical balance haul");
+        colony.jobs[job_index].status = JobStatus::Active;
+        let (source, destination, transit) = match &mut colony.jobs[job_index].metadata {
+            JobMetadata::StockpileHaul {
+                source_stockpile_id,
+                destination_stockpile_id,
+                transit_id,
+                accepted,
+                ..
+            } => {
+                *accepted = true;
+                (
+                    source_stockpile_id.clone(),
+                    destination_stockpile_id.clone(),
+                    transit_id.clone(),
+                )
+            }
+            _ => unreachable!(),
+        };
+        complete_arrived_stockpile_balance_haul(colony, 2_000);
+        (source, destination, transit)
+    }
+
+    #[test]
+    fn steward_station_piles_are_additive_bounded_and_deterministic() {
+        let mut passive = steward_station_colony(false);
+        let before = passive.clone();
+        sync_steward_managed_piles(&mut passive, 1_000, 7);
+        assert_eq!(passive, before, "a vacant Steward office is a true no-op");
+
+        let mut left = steward_station_colony(true);
+        let mut right = left.clone();
+        sync_steward_managed_piles(&mut left, 1_000, 7);
+        sync_steward_managed_piles(&mut right, 1_000, 7);
+        assert_eq!(left.stockpiles, right.stockpiles);
+        assert_eq!(left.stock_ledger, right.stock_ledger);
+        assert_eq!(left.stock_ledger.steward_managed_piles.len(), 9);
+        let actual = left
+            .stock_ledger
+            .steward_managed_piles
+            .values()
+            .map(|provenance| (provenance.station_id.as_str(), provenance.resource))
+            .collect::<BTreeSet<_>>();
+        let expected = BTreeSet::from([
+            ("mill-a", ResourceKind::Food),
+            ("mill-a", ResourceKind::Flour),
+            ("mill-a", ResourceKind::Grain),
+            ("sawmill-a", ResourceKind::Logs),
+            ("sawmill-a", ResourceKind::Lumber),
+            ("smelter-a", ResourceKind::Ore),
+            ("smelter-a", ResourceKind::Metal),
+            ("workshop-a", ResourceKind::Materials),
+            ("workshop-a", ResourceKind::Refined),
+        ]);
+        assert_eq!(
+            actual, expected,
+            "every physical station gets exact provenance"
+        );
+        assert!(left.stockpiles.iter().any(Stockpile::is_general_storehouse));
+        for (id, provenance) in &left.stock_ledger.steward_managed_piles {
+            let pile = left
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == *id)
+                .expect("managed provenance names a physical pile");
+            assert_eq!(pile.accepts, BTreeSet::from([provenance.resource]));
+            assert!(provenance.active);
+            assert_eq!(pile.rect.x1, pile.rect.x2);
+            assert_eq!(pile.rect.y1, pile.rect.y2);
+        }
+    }
+
+    #[test]
+    fn steward_topology_reconciles_only_when_physical_ownership_changes() {
+        let mut colony = steward_station_colony(true);
+        assert!(steward_managed_topology_needs_sync(&colony));
+        sync_steward_managed_piles(&mut colony, 1_000, 7);
+        assert!(
+            !steward_managed_topology_needs_sync(&colony),
+            "stable routes skip the expensive placement reconciliation"
+        );
+
+        colony.buildings.retain(|building| building.id != "mill-a");
+        assert!(steward_managed_topology_needs_sync(&colony));
+        sync_steward_managed_piles(&mut colony, 2_000, 7);
+        assert!(!steward_managed_topology_needs_sync(&colony));
+
+        colony.officers.remove(&OfficerRole::Steward);
+        assert!(steward_managed_topology_needs_sync(&colony));
+        sync_steward_managed_piles(&mut colony, 3_000, 7);
+        assert!(!steward_managed_topology_needs_sync(&colony));
+    }
+
+    #[test]
+    fn steward_idle_dispatch_is_minute_bounded_and_reuses_route_truth() {
+        let mut colony = steward_station_colony(true);
+        sync_steward_managed_piles(&mut colony, 0, 7);
+        phase_steward_stockpile_logistics(&mut colony, production_gate(1, 1_000), 7);
+        assert!(
+            !colony
+                .jobs
+                .iter()
+                .any(|job| matches!(job.metadata, JobMetadata::StockpileHaul { .. })),
+            "a stable live tick does not run the route planner"
+        );
+
+        colony.last_tick = 1_000;
+        phase_steward_stockpile_logistics(&mut colony, production_gate(59, 60_000), 7);
+        assert!(
+            colony
+                .jobs
+                .iter()
+                .any(|job| matches!(job.metadata, JobMetadata::StockpileHaul { .. })),
+            "crossing the minute boundary dispatches promptly"
+        );
+
+        colony.jobs.clear();
+        for cat in &mut colony.cats {
+            cat.current_task = None;
+            cat.activity = CatActivity::Idle;
+            cat.destination = None;
+        }
+        let traversals = colony
+            .decoration_cache
+            .accounting_route_component_traversals
+            .get();
+        let _ = next_stockpile_balance_plan(&colony, 7);
+        assert_eq!(
+            colony
+                .decoration_cache
+                .accounting_route_component_traversals
+                .get(),
+            traversals,
+            "the unchanged source/destination pair reuses derived reachability"
+        );
+    }
+
+    #[test]
+    fn steward_floor_piles_reserve_build_space_but_never_sever_roads() {
+        let mut colony = steward_station_colony(true);
+        sync_steward_managed_piles(&mut colony, 1_000, 7);
+        let managed = colony
+            .stockpiles
+            .iter()
+            .find(|pile| {
+                colony
+                    .stock_ledger
+                    .steward_managed_piles
+                    .contains_key(&pile.id)
+            })
+            .expect("managed floor pile")
+            .rect;
+        let tile = TilePos {
+            x: managed.x1,
+            y: managed.y1,
+        };
+        assert_eq!(road_placement_error(&colony, tile, 7), None);
+        assert_eq!(
+            stockpile_placement_error(&colony, managed, 7, true),
+            Some(SpatialPlacementError::Stockpile),
+            "the same floor remains reserved from buildings and other piles"
+        );
+
+        let player_rect = tile_rect(5, 5);
+        colony.stockpiles.push(designated_pile(
+            "player-pile",
+            player_rect,
+            &[ResourceKind::Food],
+        ));
+        assert_eq!(
+            road_placement_error(&colony, TilePos { x: 5, y: 5 }, 7),
+            Some(SpatialPlacementError::Stockpile),
+            "player-authored stockpiles retain the strict road collision rule"
+        );
+    }
+
+    #[test]
+    fn steward_prioritizes_real_station_inputs_then_physically_delivers() {
+        let mut colony = steward_station_colony(true);
+        sync_steward_managed_piles(&mut colony, 1_000, 7);
+        let traversals_before = colony
+            .decoration_cache
+            .accounting_route_component_traversals
+            .get();
+        let plan = next_stockpile_balance_plan(&colony, 7).expect("input deficit plan");
+        assert_eq!(
+            colony
+                .decoration_cache
+                .accounting_route_component_traversals
+                .get()
+                - traversals_before,
+            1,
+            "priority sorting is cheap and only the selected route runs A*"
+        );
+        assert_eq!(plan.priority, 0);
+        assert_eq!(plan.station_id, "mill-a");
+        assert_eq!(plan.kind, ResourceKind::Grain);
+        assert_eq!(plan.source_id, stockpiles::GENERAL_STOREHOUSE_ID);
+
+        let aggregate_before = colony.resources.clone();
+        let (source, destination, transit) = prepare_stockpile_balance_pickup(&mut colony);
+        assert_eq!(source, stockpiles::GENERAL_STOREHOUSE_ID);
+        assert_eq!(
+            destination,
+            steward_managed_pile_id("mill-a", ResourceKind::Grain)
+        );
+        assert_eq!(colony.resources, aggregate_before);
+        assert_eq!(
+            stockpiles::resource_amount(
+                &colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == transit)
+                    .expect("durable transit store")
+                    .contents,
+                ResourceKind::Grain,
+            ),
+            10.0
+        );
+        let carrying = colony
+            .cats
+            .iter()
+            .find_map(|cat| cat.carrying.clone())
+            .expect("mover carries the transit cargo marker");
+        assert_eq!(credit_steward_haul_carrying(&mut colony, &carrying), 0.0);
+        assert_eq!(colony.resources, aggregate_before);
+        assert_eq!(
+            stockpiles::resource_amount(
+                &colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == destination)
+                    .expect("managed destination remains")
+                    .contents,
+                ResourceKind::Grain,
+            ),
+            10.0
+        );
+        assert!(!colony.stockpiles.iter().any(|pile| pile.id == transit));
+    }
+
+    #[test]
+    fn steward_general_store_delivery_uses_targeted_research_capacity() {
+        let mut colony = steward_station_colony(true);
+        colony.buildings.push(BuildingRuntime {
+            id: "food-store-a".to_owned(),
+            building_type: BuildingType::FoodStorage,
+            position: TilePos { x: 4, y: 4 },
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        });
+        sync_steward_managed_piles(&mut colony, 1_000, 7);
+
+        let managed = colony
+            .stock_ledger
+            .steward_managed_piles
+            .iter()
+            .map(|(id, provenance)| (id.clone(), provenance.resource))
+            .collect::<Vec<_>>();
+        for (id, kind) in managed {
+            let pile = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == id)
+                .expect("managed pile");
+            stockpiles::set_resource(&mut pile.contents, kind, STEWARD_INPUT_TARGET);
+        }
+        let output_id = steward_managed_pile_id("workshop-a", ResourceKind::Refined);
+        stockpiles::set_resource(
+            &mut colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == output_id)
+                .expect("Workshop output pile")
+                .contents,
+            ResourceKind::Refined,
+            STEWARD_OUTPUT_RESERVE + 5.0,
+        );
+
+        let baseline = storage_caps(&colony);
+        let general = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("general storehouse");
+        let baseline_capacity = stockpiles::capacity_for(general, ResourceKind::Refined, &baseline)
+            .expect("finite authoritative capacity");
+        stockpiles::set_resource(
+            &mut general.contents,
+            ResourceKind::Refined,
+            baseline_capacity,
+        );
+        assert_eq!(
+            next_stockpile_balance_plan(&colony, 7),
+            None,
+            "a physically full baseline store rejects the managed output"
+        );
+
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("food_storage_stores".to_owned());
+        let plan = next_stockpile_balance_plan(&colony, 7)
+            .expect("the target-correct Food Storage study creates real refined headroom");
+        assert_eq!(plan.priority, 1);
+        assert_eq!(plan.source_id, output_id);
+        assert_eq!(plan.destination_id, stockpiles::GENERAL_STOREHOUSE_ID);
+        assert_eq!(plan.kind, ResourceKind::Refined);
+        assert_eq!(plan.amount, 5.0);
+    }
+
+    #[test]
+    fn blocked_balance_recovery_never_overfills_and_remains_durable() {
+        let mut colony = steward_station_colony(true);
+        let (source, destination, transit) = prepare_stockpile_balance_pickup(&mut colony);
+        let capacities = storage_caps(&colony);
+        let source_capacity = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == source)
+            .and_then(|pile| stockpiles::capacity_for(pile, ResourceKind::Grain, &capacities))
+            .expect("finite source");
+        let destination_capacity = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == destination)
+            .and_then(|pile| stockpiles::capacity_for(pile, ResourceKind::Grain, &capacities))
+            .expect("finite destination");
+        for pile in &mut colony.stockpiles {
+            if pile.id == source {
+                stockpiles::set_resource(&mut pile.contents, ResourceKind::Grain, source_capacity);
+            } else if pile.id == destination {
+                stockpiles::set_resource(
+                    &mut pile.contents,
+                    ResourceKind::Grain,
+                    destination_capacity,
+                );
+            }
+        }
+        let job_id = colony
+            .jobs
+            .iter()
+            .find(|job| matches!(job.metadata, JobMetadata::StockpileHaul { .. }))
+            .expect("haul job")
+            .id
+            .clone();
+        cancel_stockpile_balance_job_by_id(&mut colony, &job_id, 3_000);
+        assert_eq!(
+            stockpiles::resource_amount(
+                &colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == transit)
+                    .expect("blocked cargo stays persisted")
+                    .contents,
+                ResourceKind::Grain,
+            ),
+            10.0
+        );
+        assert_eq!(
+            stockpiles::resource_amount(
+                &colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == source)
+                    .expect("source")
+                    .contents,
+                ResourceKind::Grain,
+            ),
+            source_capacity
+        );
+
+        let source_pile = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == source)
+            .expect("source");
+        stockpiles::set_resource(
+            &mut source_pile.contents,
+            ResourceKind::Grain,
+            source_capacity - 4.0,
+        );
+        cleanup_invalid_stockpile_balance_hauls(&mut colony, 4_000);
+        assert_eq!(
+            stockpiles::resource_amount(
+                &colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == transit)
+                    .expect("partial recovery remains durable")
+                    .contents,
+                ResourceKind::Grain,
+            ),
+            6.0
+        );
+        let source_pile = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == source)
+            .expect("source");
+        stockpiles::set_resource(
+            &mut source_pile.contents,
+            ResourceKind::Grain,
+            source_capacity - 6.0,
+        );
+        cleanup_invalid_stockpile_balance_hauls(&mut colony, 5_000);
+        assert!(!colony.stockpiles.iter().any(|pile| pile.id == transit));
+    }
+
+    #[test]
+    fn vacancy_and_station_removal_leave_managed_piles_physical_and_reclaimable() {
+        let mut colony = steward_station_colony(true);
+        sync_steward_managed_piles(&mut colony, 1_000, 7);
+        let pile_id = steward_managed_pile_id("mill-a", ResourceKind::Grain);
+        let pile = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == pile_id)
+            .expect("managed pile");
+        stockpiles::add_resource(&mut pile.contents, ResourceKind::Grain, 7.0);
+
+        colony.officers.remove(&OfficerRole::Steward);
+        sync_steward_managed_piles(&mut colony, 2_000, 7);
+        assert!(colony.stockpiles.iter().any(|pile| pile.id == pile_id));
+        assert!(!colony.stock_ledger.steward_managed_piles[&pile_id].active);
+        assert_eq!(
+            stockpiles::resource_amount(
+                &colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == pile_id)
+                    .expect("dormant pile")
+                    .contents,
+                ResourceKind::Grain,
+            ),
+            7.0
+        );
+
+        colony
+            .officers
+            .insert(OfficerRole::Steward, "steward-cat".to_owned());
+        sync_steward_managed_piles(&mut colony, 3_000, 7);
+        assert!(colony.stock_ledger.steward_managed_piles[&pile_id].active);
+        colony.buildings.retain(|building| building.id != "mill-a");
+        sync_steward_managed_piles(&mut colony, 4_000, 7);
+        assert!(colony.stockpiles.iter().any(|pile| pile.id == pile_id));
+        assert!(!colony.stock_ledger.steward_managed_piles[&pile_id].active);
+    }
+
+    #[test]
+    fn removed_balance_source_keeps_in_transit_cargo_without_duplication() {
+        let mut colony = steward_station_colony(true);
+        let (source, _, transit) = prepare_stockpile_balance_pickup(&mut colony);
+        colony.stockpiles.retain(|pile| pile.id != source);
+        cleanup_invalid_stockpile_balance_hauls(&mut colony, 3_000);
+        assert_eq!(
+            stockpiles::resource_amount(
+                &colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == transit)
+                    .expect("orphaned cargo remains persisted")
+                    .contents,
+                ResourceKind::Grain,
+            ),
+            10.0
+        );
+        cleanup_invalid_stockpile_balance_hauls(&mut colony, 4_000);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .filter(|pile| pile.id == transit)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn vacancy_death_and_station_removal_midcarry_preserve_one_durable_cargo() {
+        let mut colony = steward_station_colony(true);
+        let (source, destination, transit) = prepare_stockpile_balance_pickup(&mut colony);
+        let carrying = colony
+            .cats
+            .iter()
+            .find_map(|cat| cat.carrying.clone())
+            .expect("haul is in flight");
+        let source_capacity = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == source)
+            .and_then(Stockpile::capacity)
+            .unwrap();
+        stockpiles::set_resource(
+            &mut colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == source)
+                .unwrap()
+                .contents,
+            ResourceKind::Grain,
+            source_capacity,
+        );
+
+        colony.officers.remove(&OfficerRole::Steward);
+        sync_steward_managed_piles(&mut colony, 3_000, 7);
+        assert!(!colony.stock_ledger.steward_managed_piles[&destination].active);
+        assert!(colony.stockpiles.iter().any(|pile| pile.id == destination));
+        assert_eq!(
+            stockpiles::resource_amount(
+                &colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == transit)
+                    .expect("vacancy leaves blocked transit")
+                    .contents,
+                ResourceKind::Grain,
+            ),
+            carrying.amount
+        );
+
+        assert!(salvage_station_cargo(
+            &mut colony,
+            &carrying,
+            WorldPos { x: 0.0, y: 0.0 }
+        ));
+        assert_eq!(
+            stockpiles::resource_amount(
+                &colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == transit)
+                    .expect("death does not duplicate or delete blocked transit")
+                    .contents,
+                ResourceKind::Grain,
+            ),
+            carrying.amount
+        );
+
+        colony
+            .officers
+            .insert(OfficerRole::Steward, "steward-cat".to_owned());
+        colony.buildings.retain(|building| building.id != "mill-a");
+        sync_steward_managed_piles(&mut colony, 4_000, 7);
+        assert!(colony.stockpiles.iter().any(|pile| pile.id == destination));
+        assert!(!colony.stock_ledger.steward_managed_piles[&destination].active);
+        dispatch_stockpile_balance_haul(&mut colony, 5_000, 7);
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .filter(|job| matches!(job.metadata, JobMetadata::StockpileHaul { .. }))
+                .count(),
+            1,
+            "unresolved cargo blocks a second balancing route"
+        );
     }
 
     fn reveal_open_cardinal_neighbors(colony: &mut ColonyRuntime, site: TilePos) {
@@ -42831,5 +43678,769 @@ mod tests {
 
         assert_eq!(colony.resources.food, before + 2.0);
         assert_eq!(colony.cats[0].carrying.as_ref().unwrap().amount, 2.0);
+    }
+}
+
+/// Separate from the player's designated-pile budget. One Mill, Sawmill, Workshop,
+/// and Smelter require nine exact-resource piles; sixteen leaves deterministic room
+/// for a second production station without silently truncating the first full set.
+const MAX_STEWARD_MANAGED_PILES: usize = 16;
+const STEWARD_INPUT_TARGET: f64 = 10.0;
+const STEWARD_OUTPUT_RESERVE: f64 = 20.0;
+const STEWARD_BALANCE_LOAD: f64 = stockpiles::STATION_LOCAL_CAPACITY;
+const STEWARD_DISPATCH_INTERVAL_MS: i64 = 60_000;
+
+#[derive(Debug, Clone, PartialEq)]
+struct StockpileBalancePlan {
+    priority: u8,
+    station_id: String,
+    source_id: String,
+    destination_id: String,
+    kind: ResourceKind,
+    amount: f64,
+    source_distance_sq: f64,
+}
+
+/// Steward-owned P12.6 logistics. The officer creates a bounded set of one-tile,
+/// single-resource piles next to real physical production stations, then coordinates at
+/// most one durable pile-to-pile transfer at a time. Player pile definitions are read as
+/// possible sources but never rewritten, removed, or retyped.
+fn phase_steward_stockpile_logistics(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
+    // Rebuilding placement candidates is topology work, not transfer work. Keep route
+    // cleanup/progression live every tick, but reconcile the managed zones only when an
+    // officer, station, provenance record, or physical pile actually changed.
+    let topology_changed = steward_managed_topology_needs_sync(colony);
+    if topology_changed {
+        sync_steward_managed_piles(colony, gate.processed_through, world_seed);
+    }
+    cleanup_invalid_stockpile_balance_hauls(colony, gate.processed_through);
+    complete_arrived_stockpile_balance_haul(colony, gate.processed_through);
+    if has_officer(colony, OfficerRole::Steward)
+        && (topology_changed
+            || gate.elapsed_sec.saturating_mul(1_000) >= STEWARD_DISPATCH_INTERVAL_MS
+            || gate
+                .processed_through
+                .div_euclid(STEWARD_DISPATCH_INTERVAL_MS)
+                != colony.last_tick.div_euclid(STEWARD_DISPATCH_INTERVAL_MS))
+    {
+        dispatch_stockpile_balance_haul(colony, gate.processed_through, world_seed);
+    }
+}
+
+fn steward_managed_topology_needs_sync(colony: &ColonyRuntime) -> bool {
+    let active = colony
+        .stock_ledger
+        .steward_managed_piles
+        .values()
+        .filter(|provenance| provenance.active)
+        .count();
+    if !has_officer(colony, OfficerRole::Steward) {
+        return active != 0;
+    }
+
+    let desired = colony
+        .buildings
+        .iter()
+        .filter(|building| building.construction_progress >= 100)
+        .filter_map(|building| {
+            station_resource_sets(building.building_type).map(|(inputs, outputs)| {
+                inputs.len() + outputs.iter().filter(|kind| !inputs.contains(kind)).count()
+            })
+        })
+        .sum::<usize>()
+        .min(MAX_STEWARD_MANAGED_PILES);
+    if active != desired {
+        return true;
+    }
+
+    colony
+        .stock_ledger
+        .steward_managed_piles
+        .iter()
+        .filter(|(_, provenance)| provenance.active)
+        .any(|(pile_id, provenance)| {
+            !colony.stockpiles.iter().any(|pile| pile.id == *pile_id)
+                || !colony.buildings.iter().any(|building| {
+                    building.id == provenance.station_id
+                        && building.construction_progress >= 100
+                        && station_resource_sets(building.building_type).is_some_and(
+                            |(inputs, outputs)| {
+                                inputs.contains(&provenance.resource)
+                                    || outputs.contains(&provenance.resource)
+                            },
+                        )
+                })
+        })
+}
+
+fn steward_resource_key(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Food => "food",
+        ResourceKind::Grain => "grain",
+        ResourceKind::Flour => "flour",
+        ResourceKind::Materials => "materials",
+        ResourceKind::Refined => "refined",
+        ResourceKind::Logs => "logs",
+        ResourceKind::Lumber => "lumber",
+        ResourceKind::Ore => "ore",
+        ResourceKind::Metal => "metal",
+        _ => "unsupported",
+    }
+}
+
+fn steward_managed_pile_id(station_id: &str, kind: ResourceKind) -> String {
+    format!("steward-pile:{station_id}:{}", steward_resource_key(kind))
+}
+
+fn steward_pile_candidates(building: &BuildingRuntime) -> Vec<TilePos> {
+    let (width, height) = footprint_for(building.building_type);
+    let mut candidates = Vec::new();
+    for ring in 1..=4 {
+        let left = building.position.x - ring;
+        let right = building.position.x + width - 1 + ring;
+        let top = building.position.y - ring;
+        let bottom = building.position.y + height - 1 + ring;
+        for x in left..=right {
+            candidates.push(TilePos { x, y: top });
+            candidates.push(TilePos { x, y: bottom });
+        }
+        for y in (top + 1)..bottom {
+            candidates.push(TilePos { x: left, y });
+            candidates.push(TilePos { x: right, y });
+        }
+    }
+    let work = world_pos_to_tile(station_work_point(building));
+    candidates.sort_by_key(|tile| {
+        (
+            (tile.x - work.x).abs() + (tile.y - work.y).abs(),
+            tile.y,
+            tile.x,
+        )
+    });
+    candidates.dedup();
+    candidates
+}
+
+fn sync_steward_managed_piles(colony: &mut ColonyRuntime, now_ms: i64, world_seed: u32) {
+    if !has_officer(colony, OfficerRole::Steward) {
+        let active_ids = colony
+            .stock_ledger
+            .steward_managed_piles
+            .iter_mut()
+            .filter_map(|(id, provenance)| {
+                let was_active = provenance.active;
+                provenance.active = false;
+                was_active.then_some(id.clone())
+            })
+            .collect::<Vec<_>>();
+        for id in &active_ids {
+            cancel_stockpile_balance_jobs_for_pile(colony, id, now_ms);
+        }
+        return;
+    }
+
+    let mut stations = colony
+        .buildings
+        .iter()
+        .filter(|building| {
+            building.construction_progress >= 100
+                && station_resource_sets(building.building_type).is_some()
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    stations.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut desired = Vec::new();
+    for station in &stations {
+        let (inputs, outputs) = station_resource_sets(station.building_type)
+            .expect("filtered physical production station");
+        let kinds = inputs
+            .iter()
+            .chain(outputs.iter())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        for kind in kinds {
+            desired.push((station.clone(), kind));
+        }
+    }
+    let desired_pairs = desired
+        .iter()
+        .map(|(station, kind)| (station.id.clone(), *kind))
+        .collect::<BTreeSet<_>>();
+    let missing = colony
+        .stock_ledger
+        .steward_managed_piles
+        .keys()
+        .filter_map(|pile_id| {
+            (!colony.stockpiles.iter().any(|pile| pile.id == *pile_id)).then_some(pile_id.clone())
+        })
+        .collect::<Vec<_>>();
+    for id in missing {
+        cancel_stockpile_balance_jobs_for_pile(colony, &id, now_ms);
+        colony.stock_ledger.steward_managed_piles.remove(&id);
+        colony.stock_ledger.pile_reports.remove(&id);
+    }
+    let obsolete = colony
+        .stock_ledger
+        .steward_managed_piles
+        .iter_mut()
+        .filter_map(|(pile_id, provenance)| {
+            let desired =
+                desired_pairs.contains(&(provenance.station_id.clone(), provenance.resource));
+            provenance.active = desired;
+            (!desired).then_some(pile_id.clone())
+        })
+        .collect::<Vec<_>>();
+    for id in obsolete {
+        cancel_stockpile_balance_jobs_for_pile(colony, &id, now_ms);
+    }
+
+    let mut active_count = colony
+        .stock_ledger
+        .steward_managed_piles
+        .values()
+        .filter(|provenance| provenance.active)
+        .count();
+    let mut changed = false;
+    for (station, kind) in desired {
+        if active_count >= MAX_STEWARD_MANAGED_PILES {
+            break;
+        }
+        let id = steward_managed_pile_id(&station.id, kind);
+        if colony.stockpiles.iter().any(|pile| pile.id == id) {
+            if let Some(provenance) = colony.stock_ledger.steward_managed_piles.get_mut(&id) {
+                provenance.station_id = station.id.clone();
+                provenance.resource = kind;
+                if !provenance.active {
+                    provenance.active = true;
+                    active_count += 1;
+                }
+            }
+            continue;
+        }
+        let Some(site) = steward_pile_candidates(&station).into_iter().find(|site| {
+            stockpile_placement_error(
+                colony,
+                ZoneRect {
+                    x1: site.x,
+                    y1: site.y,
+                    x2: site.x,
+                    y2: site.y,
+                },
+                world_seed,
+                true,
+            )
+            .is_none()
+        }) else {
+            continue;
+        };
+        colony.stockpiles.push(Stockpile {
+            id: id.clone(),
+            rect: ZoneRect {
+                x1: site.x,
+                y1: site.y,
+                x2: site.x,
+                y2: site.y,
+            },
+            accepts: BTreeSet::from([kind]),
+            contents: Resources::default(),
+        });
+        colony.stock_ledger.steward_managed_piles.insert(
+            id,
+            StewardManagedPile {
+                station_id: station.id.clone(),
+                resource: kind,
+                active: true,
+            },
+        );
+        active_count += 1;
+        changed = true;
+    }
+    if changed || !colony.stock_ledger.steward_managed_piles.is_empty() {
+        reconcile_colony_stockpiles(colony);
+    }
+}
+
+fn stockpile_balance_route_exists(
+    colony: &ColonyRuntime,
+    source: &Stockpile,
+    destination: &Stockpile,
+    world_seed: u32,
+) -> bool {
+    let start = stockpile_work_point(source);
+    let target = stockpile_work_point(destination);
+    let mut signature = accounting_topology_signature(colony, world_seed);
+    for value in [
+        source.rect.x1,
+        source.rect.y1,
+        destination.rect.x1,
+        destination.rect.y1,
+    ] {
+        signature = signature.rotate_left(9) ^ value as u32 as u64;
+    }
+    if let Some(reachable) = colony
+        .decoration_cache
+        .steward_route_reachability
+        .borrow()
+        .get(&signature)
+        .copied()
+    {
+        return reachable;
+    }
+    let piles = vec![destination];
+    let reachable = accounting_reachable_component(colony, signature, start, &piles)
+        .contains(&path_tile_for_world(target));
+    let mut cache = colony
+        .decoration_cache
+        .steward_route_reachability
+        .borrow_mut();
+    if cache.len() >= 128 {
+        cache.clear();
+    }
+    cache.insert(signature, reachable);
+    reachable
+}
+
+fn source_surplus_for_managed_pile(
+    colony: &ColonyRuntime,
+    pile: &Stockpile,
+    kind: ResourceKind,
+) -> f64 {
+    let amount = stockpiles::resource_amount(&pile.contents, kind);
+    let provenance = colony.stock_ledger.steward_managed_piles.get(&pile.id);
+    if provenance.is_some_and(|provenance| !provenance.active) {
+        return 0.0;
+    }
+    let reserve = provenance
+        .and_then(|provenance| {
+            colony
+                .buildings
+                .iter()
+                .find(|building| building.id == provenance.station_id)
+        })
+        .and_then(|building| station_resource_sets(building.building_type))
+        .map_or(0.0, |(inputs, _)| {
+            if inputs.contains(&kind) {
+                STEWARD_INPUT_TARGET
+            } else {
+                0.0
+            }
+        });
+    (amount - reserve).max(0.0)
+}
+
+fn balance_sources<'a>(
+    colony: &'a ColonyRuntime,
+    destination: &Stockpile,
+    kind: ResourceKind,
+) -> Vec<(&'a Stockpile, f64, f64)> {
+    let (dx, dy) = destination.center();
+    let mut sources = colony
+        .stockpiles
+        .iter()
+        .filter(|pile| {
+            pile.id != destination.id
+                && !pile.is_station_local()
+                && !colony
+                    .gather_spots
+                    .iter()
+                    .any(|spot| spot.stockpile_id == pile.id)
+        })
+        .filter_map(|pile| {
+            let surplus = source_surplus_for_managed_pile(colony, pile, kind);
+            (surplus > f64::EPSILON).then(|| {
+                let (x, y) = pile.center();
+                (pile, surplus, (x - dx).powi(2) + (y - dy).powi(2))
+            })
+        })
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| {
+        left.2
+            .total_cmp(&right.2)
+            .then_with(|| left.0.id.cmp(&right.0.id))
+    });
+    sources
+}
+
+fn next_stockpile_balance_plan(
+    colony: &ColonyRuntime,
+    world_seed: u32,
+) -> Option<StockpileBalancePlan> {
+    let capacities = storage_caps(colony);
+    let mut plans = Vec::new();
+    for (pile_id, provenance) in &colony.stock_ledger.steward_managed_piles {
+        if !provenance.active {
+            continue;
+        }
+        let Some(pile) = visible_stockpile(colony, pile_id) else {
+            continue;
+        };
+        let Some(station) = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == provenance.station_id)
+        else {
+            continue;
+        };
+        let Some((inputs, outputs)) = station_resource_sets(station.building_type) else {
+            continue;
+        };
+        let held = stockpiles::resource_amount(&pile.contents, provenance.resource);
+        if inputs.contains(&provenance.resource) && held + f64::EPSILON < STEWARD_INPUT_TARGET {
+            for (source, surplus, distance_sq) in balance_sources(colony, pile, provenance.resource)
+            {
+                let amount = (STEWARD_INPUT_TARGET - held)
+                    .min(surplus)
+                    .min(stockpiles::headroom_for(
+                        pile,
+                        provenance.resource,
+                        &capacities,
+                    ))
+                    .min(STEWARD_BALANCE_LOAD);
+                if amount > f64::EPSILON {
+                    plans.push(StockpileBalancePlan {
+                        priority: 0,
+                        station_id: station.id.clone(),
+                        source_id: source.id.clone(),
+                        destination_id: pile.id.clone(),
+                        kind: provenance.resource,
+                        amount,
+                        source_distance_sq: distance_sq,
+                    });
+                }
+            }
+        }
+        if outputs.contains(&provenance.resource) && held > STEWARD_OUTPUT_RESERVE {
+            let Some(general) = colony
+                .stockpiles
+                .iter()
+                .find(|candidate| candidate.is_general_storehouse())
+            else {
+                continue;
+            };
+            let amount = (held - STEWARD_OUTPUT_RESERVE)
+                .min(stockpiles::headroom_for(
+                    general,
+                    provenance.resource,
+                    &capacities,
+                ))
+                .min(STEWARD_BALANCE_LOAD);
+            if amount > f64::EPSILON {
+                plans.push(StockpileBalancePlan {
+                    priority: 1,
+                    station_id: station.id.clone(),
+                    source_id: pile.id.clone(),
+                    destination_id: general.id.clone(),
+                    kind: provenance.resource,
+                    amount,
+                    source_distance_sq: {
+                        let (sx, sy) = pile.center();
+                        let (dx, dy) = general.center();
+                        (sx - dx).powi(2) + (sy - dy).powi(2)
+                    },
+                });
+            }
+        }
+    }
+    plans.sort_by(|left, right| {
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| left.station_id.cmp(&right.station_id))
+            .then_with(|| left.kind.cmp(&right.kind))
+            .then_with(|| left.source_distance_sq.total_cmp(&right.source_distance_sq))
+            .then_with(|| left.source_id.cmp(&right.source_id))
+    });
+    plans.into_iter().find(|plan| {
+        let Some(source) = visible_stockpile(colony, &plan.source_id) else {
+            return false;
+        };
+        let Some(destination) = visible_stockpile(colony, &plan.destination_id) else {
+            return false;
+        };
+        stockpile_balance_route_exists(colony, source, destination, world_seed)
+    })
+}
+
+fn dispatch_stockpile_balance_haul(colony: &mut ColonyRuntime, now_ms: i64, world_seed: u32) {
+    if colony.jobs.iter().any(|job| {
+        matches!(
+            job.metadata,
+            JobMetadata::StockpileHaul {
+                amount_in_transit,
+                ..
+            } if matches!(job.status, JobStatus::Queued | JobStatus::Active)
+                || amount_in_transit > f64::EPSILON
+        )
+    }) {
+        return;
+    }
+    // Cat availability is the cheap gate. Never build walk grids/A* components while
+    // every paw is already committed to survival, construction, or production.
+    let Some(cat_id) = select_best_cat(colony, None) else {
+        return;
+    };
+    let Some(plan) = next_stockpile_balance_plan(colony, world_seed) else {
+        return;
+    };
+    let job_id = format!("job-{now_ms}-{}", colony.jobs.len() + 1);
+    let transit_id = stockpiles::station_transit_id(&format!("steward:{job_id}"));
+    queue_job_requested_by(
+        colony,
+        now_ms,
+        JobKind::HaulGatherSpot,
+        JobRequester::System,
+        Some(cat_id),
+        JobMetadata::StockpileHaul {
+            source_stockpile_id: plan.source_id,
+            destination_stockpile_id: plan.destination_id,
+            kind: plan.kind,
+            site: None,
+            accepted: false,
+            transit_id,
+            amount_in_transit: plan.amount,
+        },
+    );
+}
+
+fn complete_arrived_stockpile_balance_haul(colony: &mut ColonyRuntime, now_ms: i64) {
+    let candidate = colony.jobs.iter().enumerate().find_map(|(index, job)| {
+        if job.status != JobStatus::Active {
+            return None;
+        }
+        let JobMetadata::StockpileHaul {
+            source_stockpile_id,
+            destination_stockpile_id,
+            kind,
+            accepted: true,
+            transit_id,
+            amount_in_transit,
+            ..
+        } = &job.metadata
+        else {
+            return None;
+        };
+        Some((
+            index,
+            job.id.clone(),
+            job.assigned_cat.clone()?,
+            source_stockpile_id.clone(),
+            destination_stockpile_id.clone(),
+            *kind,
+            transit_id.clone(),
+            *amount_in_transit,
+        ))
+    });
+    let Some((job_index, job_id, cat_id, source_id, destination_id, kind, transit_id, planned)) =
+        candidate
+    else {
+        return;
+    };
+    let Some(cat_index) = colony
+        .cats
+        .iter()
+        .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+    else {
+        cancel_stockpile_balance_job_by_id(colony, &job_id, now_ms);
+        return;
+    };
+    if colony.cats[cat_index].carrying.is_some() {
+        return;
+    }
+    let Some(source_index) = colony
+        .stockpiles
+        .iter()
+        .position(|pile| pile.id == source_id)
+    else {
+        cancel_stockpile_balance_job_by_id(colony, &job_id, now_ms);
+        return;
+    };
+    let Some(destination_index) = colony
+        .stockpiles
+        .iter()
+        .position(|pile| pile.id == destination_id && !pile.is_station_local())
+    else {
+        cancel_stockpile_balance_job_by_id(colony, &job_id, now_ms);
+        return;
+    };
+    let amount = planned
+        .min(stockpiles::resource_amount(
+            &colony.stockpiles[source_index].contents,
+            kind,
+        ))
+        .min(stockpile_headroom(colony, destination_index, kind))
+        .min(STEWARD_BALANCE_LOAD);
+    let Some(carrying_kind) = carrying_kind_for_resource(kind) else {
+        cancel_stockpile_balance_job_by_id(colony, &job_id, now_ms);
+        return;
+    };
+    if amount <= f64::EPSILON {
+        cancel_stockpile_balance_job_by_id(colony, &job_id, now_ms);
+        return;
+    }
+    let source_rect = colony.stockpiles[source_index].rect;
+    colony.stockpiles.push(stockpiles::make_station_store(
+        transit_id.clone(),
+        source_rect,
+        [kind],
+    ));
+    stockpiles::add_resource(&mut colony.stockpiles[source_index].contents, kind, -amount);
+    let transit_index = colony
+        .stockpiles
+        .iter()
+        .position(|pile| pile.id == transit_id)
+        .expect("Steward transit store was just inserted");
+    stockpiles::add_resource(&mut colony.stockpiles[transit_index].contents, kind, amount);
+    let destination = stockpile_work_point(&colony.stockpiles[destination_index]);
+    colony.cats[cat_index].gain_skill(Labor::Haul, HAUL_SKILL_GAIN);
+    colony.cats[cat_index].carrying = Some(Carrying {
+        kind: carrying_kind,
+        amount,
+        job_ended_at: now_ms,
+        source_gather_spot: Some(steward_haul_cargo_marker(&job_id)),
+    });
+    colony.cats[cat_index].destination = Some(position_from_world(destination));
+    colony.cats[cat_index].activity = CatActivity::Returning;
+    if let JobMetadata::StockpileHaul {
+        amount_in_transit, ..
+    } = &mut colony.jobs[job_index].metadata
+    {
+        *amount_in_transit = amount;
+    }
+}
+
+fn cleanup_invalid_stockpile_balance_hauls(colony: &mut ColonyRuntime, now_ms: i64) {
+    let valid_steward = has_officer(colony, OfficerRole::Steward);
+    let capacities = storage_caps(colony);
+    let invalid = colony
+        .jobs
+        .iter()
+        .filter_map(|job| {
+            let JobMetadata::StockpileHaul {
+                source_stockpile_id,
+                destination_stockpile_id,
+                kind,
+                transit_id,
+                amount_in_transit,
+                ..
+            } = &job.metadata
+            else {
+                return None;
+            };
+            let active = matches!(job.status, JobStatus::Queued | JobStatus::Active);
+            let source_exists = visible_stockpile(colony, source_stockpile_id).is_some();
+            let destination = visible_stockpile(colony, destination_stockpile_id);
+            let transit_exists = colony.stockpiles.iter().any(|pile| pile.id == *transit_id);
+            if !active {
+                return transit_exists.then_some(job.id.clone());
+            }
+            let destination_blocked = *amount_in_transit > 0.0
+                && transit_exists
+                && destination.is_none_or(|pile| {
+                    stockpiles::headroom_for(pile, *kind, &capacities) <= f64::EPSILON
+                });
+            (!valid_steward || !source_exists || destination.is_none() || destination_blocked)
+                .then_some(job.id.clone())
+        })
+        .collect::<Vec<_>>();
+    for job_id in invalid {
+        cancel_stockpile_balance_job_by_id(colony, &job_id, now_ms);
+    }
+}
+
+pub(crate) fn cancel_stockpile_balance_jobs_for_pile(
+    colony: &mut ColonyRuntime,
+    stockpile_id: &str,
+    now_ms: i64,
+) {
+    let jobs = colony
+        .jobs
+        .iter()
+        .filter_map(|job| match &job.metadata {
+            JobMetadata::StockpileHaul {
+                source_stockpile_id,
+                destination_stockpile_id,
+                ..
+            } if source_stockpile_id == stockpile_id
+                || destination_stockpile_id == stockpile_id =>
+            {
+                Some(job.id.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for job_id in jobs {
+        cancel_stockpile_balance_job_by_id(colony, &job_id, now_ms);
+    }
+}
+
+fn cancel_stockpile_balance_job_by_id(colony: &mut ColonyRuntime, job_id: &str, now_ms: i64) {
+    let Some(job_index) = colony.jobs.iter().position(|job| job.id == job_id) else {
+        return;
+    };
+    let JobMetadata::StockpileHaul {
+        source_stockpile_id,
+        kind,
+        transit_id,
+        ..
+    } = colony.jobs[job_index].metadata.clone()
+    else {
+        return;
+    };
+    let amount = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == transit_id)
+        .map_or(0.0, |pile| {
+            stockpiles::resource_amount(&pile.contents, kind)
+        });
+    let restored = if amount > f64::EPSILON {
+        colony
+            .stockpiles
+            .iter()
+            .position(|pile| pile.id == source_stockpile_id && !pile.is_station_local())
+            .map_or(0.0, |source_index| {
+                amount.min(stockpile_headroom(colony, source_index, kind).max(0.0))
+            })
+    } else {
+        0.0
+    };
+    if restored > f64::EPSILON
+        && let Some(source) = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == source_stockpile_id)
+    {
+        stockpiles::add_resource(&mut source.contents, kind, restored);
+    }
+    let remaining = (amount - restored).max(0.0);
+    if remaining <= f64::EPSILON {
+        colony.stockpiles.retain(|pile| pile.id != transit_id);
+    } else if let Some(transit) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == transit_id)
+    {
+        stockpiles::set_resource(&mut transit.contents, kind, remaining);
+    }
+    let cat_id = colony.jobs[job_index].assigned_cat.clone();
+    if let Some(cat_id) = cat_id
+        && let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id)
+        && cat
+            .carrying
+            .as_ref()
+            .and_then(|cargo| steward_haul_job_id(cargo.source_gather_spot.as_deref()))
+            == Some(job_id)
+    {
+        cat.carrying = None;
+        cat.current_task = None;
+        cat.destination = None;
+        cat.activity = CatActivity::Idle;
+    }
+    colony.jobs[job_index].status = JobStatus::Cancelled;
+    colony.jobs[job_index].completed_at = Some(now_ms);
+    if let JobMetadata::StockpileHaul {
+        amount_in_transit, ..
+    } = &mut colony.jobs[job_index].metadata
+    {
+        *amount_in_transit = remaining;
     }
 }
