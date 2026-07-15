@@ -130,39 +130,25 @@ curves, pathfinding cost model, world_tick phase list, per-phase P12–P19 gamep
 in `docs/migration/specs/` — read the relevant spec before touching a system, don't rely on
 memory of the old TS code.
 
-**Leader director** (`leader_director.rs`, per `docs/LEADER_AI_DESIGN.md` design intent) is a
-utility-AI (IAUS-style) that scores colony goals on one [0,1] scale from response curves, then
-hands a shared labor budget to the highest-scoring goals. It's the seed of a planned
-role/officer system (Steward/Forester/Farmer/Captain/Loremaster, per `docs/GAME_VISION.md`)
-that would split automation into assignable roles — `officers.rs` and
-`AssignOfficer`/`UnassignOfficer` actions are scaffolded but the director is not yet fully
-split; most labor allocation still runs through the single director.
+**Leader and officers.** The utility-AI director retains only the bounded founding safety floor
+for hunting, emergency water, and scouting. Steward, Accountant, Forester, Farmer, Captain,
+Loremaster, and Cloth Leader are live assignable roles with researched building gates; a vacant
+specialist office returns its domain to signed manual play. `docs/LEADER_AI_DESIGN.md` is historical
+design provenance. Current authority and verification live in
+[`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md).
 
-### Maintained product gaps
+### Maintained product status
 
-- **Officers and manual play:** roles are additive; a vacant office does not yet return its
-  category to real player control, role-building/unlock gates are incomplete, and most typed
-  actions have no usable exact client tool.
-- **Physical economy:** workshop workers do not path to stations and station inputs/outputs use
-  colony-global resources; skills cover only four legacy labors and recipe/material breadth is
-  partial.
-- **Research and founding:** the full-page 500-study ledger is live, but generated studies are
-  read-only. The maintained founding integration is 15 adult cats in three five-bed Dens, slow
-  pregnancy with a reserved permanent bed, prosperity migration with a 36-game-hour unhoused
-  probation, deterministic reset, and physical emergency water fetching; its complete
-  persistence/guided/framebuffer gate is still in progress.
-- **World model and transport:** selected-village routing works, while global/personal ownership,
-  discovery, direct inter-village trade, visible traffic dirt roads, and real rail/ship/fishing
-  routes remain.
-- **Visual breadth:** the 24 protocol building variants have explicit roofed/open treatments and
-  the maintained Adventure panel/button/progress/minimap/cursor foundation is native-framebuffer
-  verified. Accounting Tent is not snapshot-reachable, and remaining menus/WASM interactions
-  still need the same visual gate.
-
-Verified infrastructure includes Research Hut/School faucets, exterior farms and logging,
-distinct Mill/Sawmill production, selected-village routing, responsive tick/persistence
-scheduling, and a same-origin browser/server image. The evidence and remaining acceptance
-campaigns live in `docs/IMPLEMENTATION_AUDIT.md`.
+Do not maintain a second detailed backlog in this file. The evidence-backed status source is
+[`docs/IMPLEMENTATION_AUDIT.md`](docs/IMPLEMENTATION_AUDIT.md), and the concrete correction queue is
+[`docs/FIX_LOG.md`](docs/FIX_LOG.md). In summary, seven-role manual-to-officer ownership, the
+15-adult/three-Den founding lifecycle, spatial stockpiles, physical farming/fishing and four
+station-local processors, the purchasable 500-study ledger, global/personal village routing, exact
+roads, all 25 building compositions, and native/optimized-WASM Adventure UI campaigns are live.
+The maintained backlog deepens those foundations: remaining physical sources and benches,
+scaffold-material delivery, finite equipment and research-payload breadth, authoritative shared
+terrain and physical trade, finite-stock trader travel, real rail/ship routes, and exhaustive
+guided play. Treat the linked trackers—not older phase prose—as authoritative.
 
 ### cat-protocol — the wire contract
 
@@ -201,8 +187,9 @@ terrain generated client-side from the shared `world_seed` (via `cat_sim::genera
 specialization, carrying marker), label-free roofed homes and typed open stations,
 stockpiles/gather spots, crop stages, raiders, and zone overlays. The HUD covers resources,
 census, events, trade, officers, persistent village selection, and inspectors. A full-page
-500-study ledger supports filter/search/pan/zoom; generated studies display an explicit runtime
-integration-pending state rather than pretending they can be bought.
+500-study ledger supports filter/search/pan/zoom and signed purchase of every affordable study.
+Payload copy distinguishes live effects from registry-only future content; the unresolved consumer
+matrix is tracked in `docs/IMPLEMENTATION_AUDIT.md` and `docs/FIX_LOG.md`.
 
 Art: curated pixel sprites under
 `public/images/game/{terrain,nature,buildings,interior,infra,props,farm,enemies}/` plus the
@@ -318,6 +305,8 @@ The world ticks once a second (fixed; not currently configurable via env var).
 - `docs/GAME_VISION.md` — design pillars for "Idle Cat Forest" (manual → role-automation,
   visible workplaces, production chains)
 - `docs/HANDOFF.md` — migration status + hard-won Bevy/codex build lessons
+- `docs/IMPLEMENTATION_AUDIT.md` — authoritative shipped/open status and verification matrix
+- `docs/FIX_LOG.md` — reproduced correction queue and evidence-backed verified fixes
 - `docs/migration/BOARD.md` — phase-by-phase task board (P0–P9 tracked in detail; later phases
   tracked in `docs/migration/specs/` and the git log)
 - `docs/migration/specs/` — design specs for pathfinding, leader director, `world_tick`, and
@@ -330,11 +319,7 @@ The world ticks once a second (fixed; not currently configurable via env var).
 
 ## Status
 
-Pre-release, with the migration and P11 cutover complete. Verified slices include the responsive
-authoritative server, selected-village routing, combined browser/server image, bounded world
-streaming, label-free open stations, the full-page 500-study ledger, and exterior
-farming/logging/Mill/Sawmill production. The maintained product is not feature-complete: manual
-officer ownership, physical local logistics, generated-study effects, global/personal villages,
-founding housing/migration, exact roads/transport, recipe breadth, remaining UI states, and
-exhaustive guided play remain. A Forgejo quality workflow is committed; its first pushed run is
-still unverified. Treat `docs/IMPLEMENTATION_AUDIT.md` as the detailed status source.
+Pre-release; the Rust/Bevy migration and P11 cutover are complete. This file intentionally does not
+duplicate fast-moving feature status. Use `docs/IMPLEMENTATION_AUDIT.md` for the authoritative
+shipped/open matrix and `docs/FIX_LOG.md` for the current correction queue. The Forgejo quality
+workflow is committed; its first pushed run remains unverified.

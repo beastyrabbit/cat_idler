@@ -119,7 +119,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    recipe. Preserve the now-verified rule that the three P16 founding benches need no placement
    study and that future studies gate recipes instead. Migrate tools/weapons/armor toward finite
    item authority without double-counting the
-   compatibility scalar fields.
+   compatibility scalar fields. Construction is not yet part of that physical contract: plan-time
+   costs are pinned, but player commit and autonomous break-ground subtract aggregate Lumber or
+   Planks plus Blocks before the builder travels. Reserve finite source goods, carry them to a
+   scaffold-local input store, and require delivery before on-site progress while preserving paid
+   scaffold recovery and exact plan-time escalation.
 
    The finite founding storehouse and complete physical
    logs→Sawmill→lumber, grain→Mill→flour+food, Materials→Workshop→Refined, and
@@ -141,7 +145,10 @@ so a correct scout route cannot conceal a missing founding dispatch.
    terrain with an authoritative shared spatial model where appropriate, then turn summary contact
    and atomic scalar barter into physical meeting, item trade, and routes. Deterministic
    knowledge-blind scout search is verified; preserve its physical-observation and shrine-return
-   contracts as shared-world depth grows.
+   contracts as shared-world depth grows. Visiting traders are also only a partial physical slice:
+   they currently move straight to the south gate and resource buying uses an unbounded catalog.
+   Route each visit around real obstacles to the maintained shrine/market destination, persist a
+   finite inventory, and make restocking, purchases, departure, and restart conserve that stock.
 3. **Close remaining world-system gaps.** Baseline Leader hunt/water/scout survival, optimized
    browser and signed-native shrine-return fog, staged closed-perimeter growth, integrated
    Accounting Tent, and persisted outside-wall agriculture are verified. Fine-biome factors now
@@ -162,6 +169,10 @@ so a correct scout route cannot conceal a missing founding dispatch.
    catalog-derived Sawmill logging entitlement and the verified authority split: the Leader owns
    the daily strategic study choice, while
    research labor/building automation and rituals remain Loremaster-owned.
+   Authored stone-road placement is mechanically exact but still instant: one signed action paints
+   the whole validated path and removes aggregate Materials without a worker or cargo. Treat a
+   physical road-building route as a P2 consistency enhancement unless the maintained vision is
+   tightened to make road hauling a core acceptance condition.
 4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

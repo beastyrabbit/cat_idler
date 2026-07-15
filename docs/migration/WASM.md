@@ -2,12 +2,12 @@
 
 Status: **DONE — runs in a browser, verified end-to-end.** `scripts/build-web.sh`
 (→ `trunk build --release`) produces a working `dist/`, and the game renders +
-streams live in headless Chromium (Playwright): WebGL2, the sprite-atlas cats,
-the current **"cozy ledger" UI kit** (top command bar, Colony HUD, Upgrade Tree,
-cat inspector, Dispatches, minimap, bottom command bar), the top-down
-cutaway-interior buildings, and the WebSocket snapshot stream (live HUD: online
-count, pop, jobs, event feed). Native `cargo dev` is unaffected (wasm is a
-separate target).
+streams live in headless Chromium (Playwright): WebGL2, sprite-atlas cats, the current
+**Adventure UI** (HUD, inspectors, full-page research ledger, Dispatches, minimap, and command
+surfaces), top-down roofed homes plus label-free open stations, and the WebSocket snapshot stream.
+Native `cargo dev` is unaffected (wasm is a separate target). Current feature-level browser
+evidence is maintained in [`docs/IMPLEMENTATION_AUDIT.md`](../IMPLEMENTATION_AUDIT.md); this file
+owns the build and packaging recipe.
 
 ## Reproduce
 
@@ -20,16 +20,16 @@ separate target).
   host over `dist/` — no COOP/COEP needed (single-threaded wasm, no
   SharedArrayBuffer). Run `cargo run -p cat-server` on `:8787` for a live colony.
 
-## Verified running build (Playwright smoke test)
+## Historical 1280×800 Playwright smoke (retained as build evidence)
 
-Re-verified end-to-end after the UI redesign (the new kit renders identically in
-the browser). Method: `trunk serve --release` over the release bundle + a local
-`cat-server`, loaded in Chromium at 1280×800 via Playwright.
+This snapshot predates the 15-cat founding blueprint and Adventure-skin closeout. Its old UI names
+and `5/16` population are historical observations, not current product status. The transport and
+error-free WebGL2 evidence remains useful. Method: `trunk serve --release` over the release bundle
+and a local `cat-server`, loaded in Chromium at 1280×800 via Playwright.
 
-- Canvas comes up at full size on WebGL2; the full scene renders (terrain, the
-  founded village with cutaway-interior buildings, sprite-atlas cats, roads) and
-  the new-kit HUD shows live snapshot data (pop 5/16, "thriving", dispatches
-  streaming) — i.e. the WS stream is connected and driving the render.
+- Canvas came up at full size on WebGL2; terrain, the then-current village/buildings,
+  sprite-atlas cats, roads, and the historical HUD (`5/16`, “thriving,” streaming Dispatches)
+  rendered from live snapshot data.
 - **0 console errors.** The former `*.png.meta` 404 flood is gone
   (`AssetMetaCheck::Never` on the client `AssetPlugin`; the game ships no `.meta`
   sidecars) and the favicon 404 is gone (a pixel-cat `favicon.png` is bundled +

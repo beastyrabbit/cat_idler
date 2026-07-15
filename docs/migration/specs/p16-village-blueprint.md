@@ -85,8 +85,10 @@ New resource types + chains:
 - **Water = impassable** (cats cannot move through — already enforced in pathfinding).
 - **Mountain = impassable at first**, becomes passable/mineable only after an **upgrade** (new
   terrain type gated by the upgrade tree; blocks the walk grid until unlocked).
-- **Fields can only be placed on grass** tiles (farm-plot placement validates grass, like the
-  building footprint occupancy checks).
+- **Historical P16 rule:** fields can only be placed on grass tiles (farm-plot placement validates
+  grass, like the building footprint occupancy checks). **P17 supersedes this placement rule:**
+  fields may use any biome marked farmable, and that biome's fertility scales crop growth. See
+  [`p17-biome-generator.md`](p17-biome-generator.md).
 
 ## Gather spots (temp drop points — decouple gathering from hauling)
 - Player/leader can **build a "gather spot"** — a **temporary**, resource-specific drop point that
