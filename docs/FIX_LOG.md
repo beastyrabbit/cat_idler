@@ -11,14 +11,33 @@ and any changed Bevy visuals have been verified.
 | --- | --- | --- |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads now bind the maintained physical recipes: Grain Milling→`grain_to_flour_and_food`, Carpentry→`logs_to_lumber`, Metallurgy→`ore_to_metal`, and Trade Goods→`materials_to_refined`. Fresh rules-v1 villages require the exact study for snapshots, signed queue additions, block reasons, and physical station advance; old/missing rules-v0 saves retain their queues and are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no physical consumer. Add only physically sourced resource/recipe breadth. | in progress |
-| Research job unlocks do not gate jobs truthfully | All ten `UnlockJob` payloads are unread. Fetch Water and Explore work before their claimed unlocks, while six advertised IDs are not runtime job kinds. Align catalog wording/IDs and authoritative action gates. | queued |
-| Some building unlock studies lie or duplicate another gate | Research Hut is intentionally available for bootstrap despite an unlock payload; `mill_foundations` cannot independently unlock the Mill because `milling` remains mandatory. Make the catalog and placement rules agree while preserving a playable bootstrap. | queued |
+| Research job unlocks do not gate jobs truthfully | Nine `UnlockJob` payloads are false or unread: the three real `JobKind` claims (Fetch Water, Explore, and Train Warrior) intentionally work before their studies, while six advertised IDs have no runtime `JobKind`. Only Sawmill→Gather Logs agrees with live placement/action behavior. Remove the false claims without taking away founding survival or manual work. | queued |
+| Daily autonomous research belongs to the wrong authority | `GAME_VISION.md` and the player feedback require the living, always-present Leader to choose at most one study per rolling real-life day, but runtime currently requires an appointed Loremaster. Move only the daily node-selection authority, conservatively reuse the persisted last-unlock timestamp, and stop presenting the priority hint as an already selected “Studying next” node. Research-point labor in huts/schools and ritual automation remain Loremaster-owned. | queued |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains; rail and shipping have modifiers but no tracks, trains, vessels, or routes. | queued |
 
 ## Verified fixes
+
+## 2026-07-15 — Truthful catalog-derived building placement research
+
+**Problem:** The Research Hut was intentionally placeable before research could begin, but its
+root study falsely claimed to unlock the hut. The generated `mill_foundations` study also claimed
+to unlock the Mill even though the legacy `milling` study remained separately mandatory.
+
+**Fix:** The catalog now marks the Research Hut explicitly available from founding. `milling` is
+the sole Mill placement unlock, while `mill_foundations` is once again its declared durability
+study with the same stable ID, cost, prerequisites, and daily-selection order. One catalog-derived
+resolver drives signed placement acceptance and names the actual missing study in denial text;
+catalog validation rejects competing founding/research placement sources.
+
+**Evidence:** Exhaustive placement-source, catalog, signed deterministic, guided purchase/place,
+unchanged daily-selection order/boundary, 48-hour unattended, server HMAC, SQLite restart, and client-copy tests
+pass without changing the four live recipe entitlements or rules-v0 save grandfathering. The
+accepted own-framebuffer `/tmp/research-building-unlock-truth.png` shows the full-page ledger's
+Research Hut inspector saying `Available from founding: Research Hut`; the temporary capture hook
+and processes were removed. Remaining daily Leader authority is tracked separately above.
 
 ## 2026-07-15 — Target-correct storage-capacity research
 

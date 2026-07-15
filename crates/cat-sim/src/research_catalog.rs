@@ -110,6 +110,11 @@ pub enum BuildingAttribute {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResearchPayload {
+    /// Placement truth for a building that exists before this study is owned.
+    /// Unlike `UnlockBuilding`, purchasing the node does not grant this access.
+    BuildingAvailableAtFounding {
+        building_id: String,
+    },
     UnlockBuilding {
         building_id: String,
     },
@@ -141,6 +146,7 @@ pub enum ResearchPayload {
 impl ResearchPayload {
     fn is_non_inert(&self) -> bool {
         match self {
+            Self::BuildingAvailableAtFounding { building_id } => !building_id.is_empty(),
             Self::UnlockBuilding { building_id } => !building_id.is_empty(),
             Self::UnlockRecipe { recipe_id } => !recipe_id.is_empty(),
             Self::UnlockResource { resource_id } => !resource_id.is_empty(),
@@ -561,6 +567,7 @@ fn validate_and_index(nodes: Vec<ResearchNode>) -> Result<ResearchCatalog, Strin
     }
 
     validate_categories(&nodes)?;
+    validate_building_placement_sources(&nodes)?;
     validate_topology(&nodes, &by_id)?;
     Ok(ResearchCatalog {
         nodes,
@@ -581,7 +588,8 @@ fn validate_node(node: &ResearchNode) -> Result<(), String> {
     }
     for payload in &node.payloads {
         match payload {
-            ResearchPayload::UnlockBuilding { building_id }
+            ResearchPayload::BuildingAvailableAtFounding { building_id }
+            | ResearchPayload::UnlockBuilding { building_id }
             | ResearchPayload::ModifyBuilding { building_id, .. }
                 if !APPROVED_BUILDING_IDS.contains(&building_id.as_str()) =>
             {
@@ -605,7 +613,9 @@ fn validate_node(node: &ResearchNode) -> Result<(), String> {
         ResearchCategory::Building => node.payloads.iter().any(|payload| {
             matches!(
                 payload,
-                ResearchPayload::UnlockBuilding { .. } | ResearchPayload::ModifyBuilding { .. }
+                ResearchPayload::BuildingAvailableAtFounding { .. }
+                    | ResearchPayload::UnlockBuilding { .. }
+                    | ResearchPayload::ModifyBuilding { .. }
             )
         }),
         ResearchCategory::RecipeResource => node.payloads.iter().any(|payload| {
@@ -640,6 +650,39 @@ fn validate_categories(nodes: &[ResearchNode]) -> Result<(), String> {
         .count();
     if buildings * 3 < nodes.len() || recipes * 3 < nodes.len() {
         return Err("building and recipe/resource categories must each fill one third".to_owned());
+    }
+    Ok(())
+}
+
+/// A building may have exactly one placement source: either it is available at
+/// founding or one study unlocks it. This prevents a generated family node from
+/// silently competing with a legacy placement gate.
+fn validate_building_placement_sources(nodes: &[ResearchNode]) -> Result<(), String> {
+    let mut sources: HashMap<&str, (&str, bool)> = HashMap::new();
+    for node in nodes {
+        for payload in &node.payloads {
+            let (building_id, founding) = match payload {
+                ResearchPayload::BuildingAvailableAtFounding { building_id } => {
+                    (building_id.as_str(), true)
+                }
+                ResearchPayload::UnlockBuilding { building_id } => (building_id.as_str(), false),
+                _ => continue,
+            };
+            if let Some((prior_node, prior_founding)) =
+                sources.insert(building_id, (node.id.as_str(), founding))
+            {
+                let prior_kind = if prior_founding {
+                    "founding"
+                } else {
+                    "research"
+                };
+                let kind = if founding { "founding" } else { "research" };
+                return Err(format!(
+                    "building {building_id} has competing placement sources: {prior_kind} node {prior_node} and {kind} node {}",
+                    node.id
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -769,6 +812,54 @@ mod tests {
             }
         }
         validate_topology(catalog.nodes(), &catalog.by_id).expect("acyclic reachable graph");
+    }
+
+    #[test]
+    fn bootstrap_hut_and_mill_foundations_do_not_claim_false_building_unlocks() {
+        let catalog = research_catalog();
+        let research_hut = catalog.get("research_hut").expect("research root");
+        assert!(
+            research_hut.payloads.iter().all(|payload| !matches!(
+                payload,
+                ResearchPayload::UnlockBuilding { building_id } if building_id == "research_hut"
+            )),
+            "the hut is placeable before its root study and must not claim to unlock itself"
+        );
+        assert!(
+            research_hut.description.contains("available from founding"),
+            "the player-visible root copy must explain the bootstrap"
+        );
+
+        let mill_foundations = catalog
+            .get("mill_foundations")
+            .expect("generated mill foundations study");
+        assert!(mill_foundations.payloads.iter().any(|payload| matches!(
+            payload,
+            ResearchPayload::ModifyBuilding {
+                building_id,
+                attribute: BuildingAttribute::Durability,
+                ..
+            } if building_id == "mill"
+        )));
+        assert!(mill_foundations.payloads.iter().all(|payload| !matches!(
+            payload,
+            ResearchPayload::UnlockBuilding { building_id } if building_id == "mill"
+        )));
+
+        let mill_unlockers = catalog
+            .nodes()
+            .iter()
+            .filter(|node| {
+                node.payloads.iter().any(|payload| {
+                    matches!(
+                        payload,
+                        ResearchPayload::UnlockBuilding { building_id } if building_id == "mill"
+                    )
+                })
+            })
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(mill_unlockers, ["milling"]);
     }
 
     #[test]

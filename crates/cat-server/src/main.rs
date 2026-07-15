@@ -1456,6 +1456,55 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn signed_building_plans_report_the_catalogs_founding_and_milling_truth() {
+        let hut_state = build_state(1_000_000);
+        let (mut hut_connection, hut_session) = authenticated_connection(&hut_state);
+        let hut = send_action(
+            &hut_state,
+            &mut hut_connection,
+            &ClientAction::PlanBuilding {
+                session_id: hut_session.session_id.clone(),
+                nickname: "Builder".to_owned(),
+                sig: hut_session.sig.clone(),
+                building_type: cat_protocol::BuildingType::ResearchHut,
+                site: None,
+            },
+        )
+        .await;
+        assert!(hut.result.ok, "signed founding hut denied: {hut:?}");
+
+        let mill_state = build_state(1_000_000);
+        mill_state.world.lock().await.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("mill_foundations".to_owned());
+        let (mut mill_connection, mill_session) = authenticated_connection(&mill_state);
+        let mill_action = ClientAction::PlanBuilding {
+            session_id: mill_session.session_id.clone(),
+            nickname: "Builder".to_owned(),
+            sig: mill_session.sig.clone(),
+            building_type: cat_protocol::BuildingType::Mill,
+            site: None,
+        };
+        let denied = send_action(&mill_state, &mut mill_connection, &mill_action).await;
+        assert!(!denied.result.ok);
+        assert_eq!(
+            denied.result.message.as_deref(),
+            Some("Research Milling before construction.")
+        );
+
+        mill_state.world.lock().await.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("milling".to_owned());
+        let accepted = send_action(&mill_state, &mut mill_connection, &mill_action).await;
+        assert!(
+            accepted.result.ok,
+            "Milling did not unlock Mill: {accepted:?}"
+        );
+    }
+
     async fn send_action(
         state: &AppState,
         connection: &mut ConnectionContext,

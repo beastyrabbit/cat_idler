@@ -834,52 +834,18 @@ fn plan_building(
             _ => "Building is locked.",
         });
     }
-    let research_effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
-    if building_type != BuildingType::ResearchHut
-        && upgrade_tree::building_has_research_gate(building_type.as_str())
-        && !research_effects.unlocks_building(building_type.as_str())
+    if let upgrade_tree::BuildingPlacementResearch::Requires { node_name, .. } =
+        upgrade_tree::building_placement_research(&colony.upgrade_tree, building_type.as_str())
     {
-        return fail("That building must be researched before construction.");
-    }
-    if matches!(
-        building_type,
-        BuildingType::Smithy | BuildingType::Barracks | BuildingType::School
-    ) && !upgrade_tree::is_owned(&colony.upgrade_tree, building_type.as_str())
-    {
-        return fail("That building must be researched or granted by the gods first.");
+        return fail(format!("Research {node_name} before construction."));
     }
     let civic_node = match building_type {
-        BuildingType::AccountingTent => Some("basic_tools"),
         BuildingType::WoodCutter | BuildingType::StonePrep | BuildingType::Woodworking => {
             Some("basic_tools")
         }
-        BuildingType::Field => Some("irrigation"),
         _ => None,
     };
     if civic_node.is_some_and(|node| !upgrade_tree::is_owned(&colony.upgrade_tree, node)) {
-        return fail("That building must be researched or granted by the gods first.");
-    }
-    if matches!(
-        building_type,
-        BuildingType::Clothier | BuildingType::Tannery
-    ) && !upgrade_tree::is_owned(&colony.upgrade_tree, "textiles")
-    {
-        return fail("That building must be researched or granted by the gods first.");
-    }
-    // P17/P19 ore→metal chain: the smelter's node id ("smelting") intentionally differs
-    // from the building's own wire string ("smelter"), so it needs its own check rather
-    // than reusing `building_type.as_str()` like the smithy/barracks gate above.
-    if building_type == BuildingType::Smelter
-        && !upgrade_tree::is_owned(&colony.upgrade_tree, upgrade_tree::SMELTING_NODE_ID)
-    {
-        return fail("That building must be researched or granted by the gods first.");
-    }
-    let processing_node = match building_type {
-        BuildingType::Mill => Some("milling"),
-        BuildingType::Sawmill => Some("sawmill"),
-        _ => None,
-    };
-    if processing_node.is_some_and(|node| !upgrade_tree::is_owned(&colony.upgrade_tree, node)) {
         return fail("That building must be researched or granted by the gods first.");
     }
     if active_or_queued_jobs(colony)
@@ -4665,6 +4631,122 @@ mod tests {
             production_queue: crate::world_tick::default_production_queue(building_type),
             production_paused: false,
         }
+    }
+
+    fn signed_plan(building_type: proto::BuildingType) -> proto::ClientAction {
+        proto::ClientAction::PlanBuilding {
+            session_id: "sess_1".to_owned(),
+            nickname: "Builder".to_owned(),
+            sig: "server-verified".to_owned(),
+            building_type,
+            site: None,
+        }
+    }
+
+    #[test]
+    fn signed_building_plans_use_the_catalogs_single_bootstrap_and_mill_rules() {
+        let mut bootstrap = world_with_one_colony();
+        let mut bootstrap_twin = bootstrap.clone();
+        let hut = signed_plan(proto::BuildingType::ResearchHut);
+        let accepted = apply_action(&mut bootstrap, &hut, &ctx());
+        let twin_accepted = apply_action(&mut bootstrap_twin, &hut, &ctx());
+        assert!(accepted.ok, "founding hut was blocked: {accepted:?}");
+        assert_eq!(accepted, twin_accepted);
+        assert_eq!(
+            bootstrap, bootstrap_twin,
+            "signed bootstrap is deterministic"
+        );
+        assert_eq!(
+            bootstrap.colonies[0].jobs.last().unwrap().kind,
+            JobKind::BuildHouse
+        );
+
+        let mill = signed_plan(proto::BuildingType::Mill);
+        let mut locked = world_with_one_colony();
+        let denied = apply_action(&mut locked, &mill, &ctx());
+        assert!(!denied.ok);
+        assert_eq!(
+            denied.message.as_deref(),
+            Some("Research Milling before construction.")
+        );
+
+        locked.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("mill_foundations".to_owned());
+        let still_denied = apply_action(&mut locked, &mill, &ctx());
+        assert!(!still_denied.ok);
+        assert_eq!(still_denied.message, denied.message);
+
+        locked.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("milling".to_owned());
+        let accepted = apply_action(&mut locked, &mill, &ctx());
+        assert!(accepted.ok, "Milling did not unlock its mill: {accepted:?}");
+    }
+
+    #[test]
+    fn guided_player_can_bootstrap_research_then_purchase_and_place_a_mill() {
+        let mut guided = world_with_one_colony();
+        guided.colonies[0].upgrade_tree.research_points = 100.0;
+        let mut twin = guided.clone();
+        let actions = [
+            signed_plan(proto::BuildingType::ResearchHut),
+            proto::ClientAction::ResearchNode {
+                session_id: "sess_1".to_owned(),
+                nickname: "Scholar".to_owned(),
+                sig: "server-verified".to_owned(),
+                node_id: "research_hut".to_owned(),
+            },
+            proto::ClientAction::ResearchNode {
+                session_id: "sess_1".to_owned(),
+                nickname: "Scholar".to_owned(),
+                sig: "server-verified".to_owned(),
+                node_id: "water_carriers".to_owned(),
+            },
+            proto::ClientAction::ResearchNode {
+                session_id: "sess_1".to_owned(),
+                nickname: "Scholar".to_owned(),
+                sig: "server-verified".to_owned(),
+                node_id: "irrigation".to_owned(),
+            },
+            proto::ClientAction::ResearchNode {
+                session_id: "sess_1".to_owned(),
+                nickname: "Scholar".to_owned(),
+                sig: "server-verified".to_owned(),
+                node_id: "milling".to_owned(),
+            },
+            signed_plan(proto::BuildingType::Mill),
+        ];
+        for action in actions {
+            let accepted = apply_action(&mut guided, &action, &ctx());
+            let twin_accepted = apply_action(&mut twin, &action, &ctx());
+            assert!(
+                accepted.ok,
+                "guided action failed: {action:?}: {accepted:?}"
+            );
+            assert_eq!(accepted, twin_accepted);
+        }
+        assert_eq!(guided, twin, "guided research/build campaign diverged");
+        assert!(
+            guided.colonies[0]
+                .upgrade_tree
+                .owned_node_ids
+                .iter()
+                .any(|id| id == "milling")
+        );
+        assert_eq!(
+            guided.colonies[0].last_loremaster_unlock_at, None,
+            "manual purchases must not consume the Loremaster's daily choice"
+        );
+        assert!(guided.colonies[0].jobs.iter().any(|job| {
+            job.kind == JobKind::BuildHouse
+                && job_building_type(job) == Some(BuildingType::ResearchHut)
+        }));
+        assert!(guided.colonies[0].jobs.iter().any(|job| {
+            job.kind == JobKind::BuildHouse && job_building_type(job) == Some(BuildingType::Mill)
+        }));
     }
 
     #[test]

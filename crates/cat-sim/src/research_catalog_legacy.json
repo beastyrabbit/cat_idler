@@ -3,7 +3,7 @@
     {
       "id": "research_hut",
       "name": "Research Hut",
-      "description": "Build the research hut and assign a scholar. The root of the whole tree — nothing is researched until a mouth is spared to study.",
+      "description": "The research hut is available from founding. Assign a scholar, then codify the colony's first study — nothing advances until a mouth is spared to learn.",
       "category": "building",
       "cost": 5.0,
       "prerequisites": [],
@@ -11,7 +11,7 @@
       "layout": { "x": 0, "y": 0 },
       "leaderPriority": 100,
       "payloads": [
-        { "kind": "unlock_building", "building_id": "research_hut" },
+        { "kind": "building_available_at_founding", "building_id": "research_hut" },
         { "kind": "unlock_job", "job_id": "research" }
       ]
     },

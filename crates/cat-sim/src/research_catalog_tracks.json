@@ -32,7 +32,7 @@
     { "buildingId": "tannery", "displayName": "Tannery", "count": 6, "unlockFirst": false, "rootPrerequisites": ["textiles"], "eraStart": 2, "costBase": 15.0, "layoutX": 40, "leaderPriorityBase": 500 },
     { "buildingId": "smelter", "displayName": "Smelter", "count": 6, "unlockFirst": false, "rootPrerequisites": ["smelting"], "eraStart": 3, "costBase": 20.0, "layoutX": 41, "leaderPriorityBase": 510 },
     { "buildingId": "accounting_tent", "displayName": "Accounting Tent", "count": 6, "unlockFirst": true, "rootPrerequisites": ["school", "advanced_storage"], "eraStart": 3, "costBase": 20.0, "layoutX": 42, "leaderPriorityBase": 520 },
-    { "buildingId": "mill", "displayName": "Grain Mill", "count": 6, "unlockFirst": true, "rootPrerequisites": ["irrigation", "masonry"], "eraStart": 3, "costBase": 20.0, "layoutX": 43, "leaderPriorityBase": 530 },
+    { "buildingId": "mill", "displayName": "Grain Mill", "count": 6, "unlockFirst": false, "rootPrerequisites": ["irrigation", "masonry"], "eraStart": 3, "costBase": 20.0, "layoutX": 43, "leaderPriorityBase": 530 },
     { "buildingId": "sawmill", "displayName": "Sawmill", "count": 5, "unlockFirst": false, "rootPrerequisites": ["sawmill"], "eraStart": 2, "costBase": 15.0, "layoutX": 44, "leaderPriorityBase": 540 }
   ],
   "recipeStages": [

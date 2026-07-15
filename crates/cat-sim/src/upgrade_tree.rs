@@ -166,23 +166,21 @@ pub const RAIL_NODE_ID: &str = "rail";
 /// `ColonyGridParams::shipping_unlocked` call site.
 pub const SHIPPING_NODE_ID: &str = "shipping";
 
-/// Tech node that unlocks the smelter building (P17/P19 ore→metal chain). Checked
-/// directly at the `actions::plan_building` call site, like [`MOUNTAINEERING_NODE_ID`]
-/// and the smithy/barracks ownership gate — the node id ("smelting") intentionally
-/// differs from the building's own wire string ("smelter") so it can't reuse
-/// `BuildingType::as_str()` the way the smithy/barracks nodes do.
+/// Tech node that unlocks the smelter building (P17/P19 ore→metal chain). Its
+/// catalog payload targets the wire building id (`smelter`), so the shared
+/// catalog-derived placement resolver handles the differing node id.
 pub const SMELTING_NODE_ID: &str = "smelting";
 
 pub const UPGRADE_NODES: &[UpgradeNode] = &[
     UpgradeNode {
         id: "research_hut",
         name: "Research Hut",
-        description: "Build the research hut and assign a scholar. The root of the whole tree — nothing is researched until a mouth is spared to study.",
+        description: "The research hut is available from founding. Assign a scholar, then codify the colony's first study — nothing advances until a mouth is spared to learn.",
         era: 1,
         cost: 5.0,
         prerequisites: &[],
         unlocks: UpgradeUnlocks {
-            buildings: Some(&["research_hut"]),
+            buildings: None,
             jobs: Some(&["research"]),
             effects: None,
         },
@@ -641,12 +639,48 @@ pub fn is_owned(state: &UpgradeTreeState, id: &str) -> bool {
     state.owned_node_ids.iter().any(|owned| owned == id)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildingPlacementResearch {
+    Available,
+    Requires {
+        node_id: &'static str,
+        node_name: &'static str,
+    },
+}
+
+/// Resolve the catalog's single authoritative research rule for placing a
+/// building. A founding marker is available before its node is owned; an unlock
+/// payload requires ownership of the node that carries it; buildings without
+/// either declaration have no direct catalog research gate.
 #[must_use]
-pub fn building_has_research_gate(building_id: &str) -> bool {
-    research_catalog().nodes().iter().any(|node| {
-        node.payloads.iter().any(|payload| {
-            matches!(payload, ResearchPayload::UnlockBuilding { building_id: id } if id == building_id)
-        })
+pub fn building_placement_research(
+    state: &UpgradeTreeState,
+    building_id: &str,
+) -> BuildingPlacementResearch {
+    let mut required = None;
+    for node in research_catalog().nodes() {
+        for payload in &node.payloads {
+            match payload {
+                ResearchPayload::BuildingAvailableAtFounding { building_id: id }
+                    if id == building_id =>
+                {
+                    return BuildingPlacementResearch::Available;
+                }
+                ResearchPayload::UnlockBuilding { building_id: id } if id == building_id => {
+                    if is_owned(state, &node.id) {
+                        return BuildingPlacementResearch::Available;
+                    }
+                    required = Some(node);
+                }
+                _ => {}
+            }
+        }
+    }
+    required.map_or(BuildingPlacementResearch::Available, |node| {
+        BuildingPlacementResearch::Requires {
+            node_id: node.id.as_str(),
+            node_name: node.name.as_str(),
+        }
     })
 }
 
@@ -960,6 +994,7 @@ impl ResolvedEffects {
 
     fn apply_payload(&mut self, payload: &ResearchPayload) {
         match payload {
+            ResearchPayload::BuildingAvailableAtFounding { .. } => {}
             ResearchPayload::UnlockBuilding { building_id } => {
                 self.unlocked_buildings.insert(building_id.clone());
             }
@@ -1095,11 +1130,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        EffectKey, EffectKind, MOUNTAINEERING_NODE_ID, PurchaseFailureReason, RAIL_NODE_ID,
-        RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK, RESEARCH_POINTS_PER_SECOND, SHIPPING_NODE_ID,
-        UPGRADE_NODE_BY_ID, UPGRADE_NODES, WEEK_SECONDS, accrue_research, can_unlock,
-        cat_auto_unlock, cat_purchase, create_upgrade_tree_state, deserialize_upgrade_tree_state,
-        effect_kind, get_node, god_purchase, is_owned, neutral_effects, next_research_target,
+        BuildingPlacementResearch, EffectKey, EffectKind, MOUNTAINEERING_NODE_ID,
+        PurchaseFailureReason, RAIL_NODE_ID, RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK,
+        RESEARCH_POINTS_PER_SECOND, SHIPPING_NODE_ID, UPGRADE_NODE_BY_ID, UPGRADE_NODES,
+        WEEK_SECONDS, accrue_research, building_placement_research, can_unlock, cat_auto_unlock,
+        cat_purchase, create_upgrade_tree_state, deserialize_upgrade_tree_state, effect_kind,
+        get_node, god_purchase, is_owned, neutral_effects, next_research_target,
         points_per_tick_for, points_per_tick_for_default, prerequisites_met, resolve_effects,
         serialize_upgrade_tree_state, unlockable_nodes,
     };
@@ -1166,14 +1202,16 @@ mod tests {
     }
 
     #[test]
-    fn node_table_matches_the_typescript_tree_shape() {
+    fn node_table_preserves_the_legacy_tree_shape_with_truthful_bootstrap_metadata() {
         // 18 TS-parity nodes + the Rust-side `mountaineering` node (unlocks
         // mountain-tile traversal in pathfinding) + the Rust-side `textiles` node
         // (unlocks the clothier/tannery clothing chain, P16/P19 deferred slice) +
         // the Rust-side `rail`/`shipping` P17 transport-upgrade pair (long-haul
         // speed + water traversal, both gates checked directly at their pathfinding/
         // movement call sites like `mountaineering`) + the Rust-side `smelting` node
-        // (unlocks the smelter building, P17/P19 ore→metal chain).
+        // (unlocks the smelter building, P17/P19 ore→metal chain). The stable
+        // Research Hut root no longer claims it grants a building that is
+        // deliberately available before the root study can be purchased.
         assert_eq!(UPGRADE_NODES.len(), 24);
         assert_eq!(EffectKey::ALL.len(), 11);
         assert_eq!(effect_kind(EffectKey::HuntYieldMult), EffectKind::Mult);
@@ -1207,7 +1245,11 @@ mod tests {
                 .expect("research_hut node")
                 .unlocks
                 .buildings,
-            Some(&["research_hut"][..])
+            None
+        );
+        assert_eq!(
+            building_placement_research(&create_upgrade_tree_state(), "research_hut"),
+            BuildingPlacementResearch::Available
         );
         assert_eq!(
             get_node("sawmill").expect("sawmill node").unlocks.jobs,
@@ -1252,6 +1294,86 @@ mod tests {
             .map(|node| node.id)
             .collect::<Vec<_>>();
         assert_eq!(ids, ["basic_tools", "water_carriers", "den_insulation"]);
+    }
+
+    #[test]
+    fn catalog_placement_rule_keeps_the_hut_bootstrapped_and_milling_authoritative() {
+        let fresh = create_upgrade_tree_state();
+        assert_eq!(
+            building_placement_research(&fresh, BuildingType::ResearchHut.as_str()),
+            BuildingPlacementResearch::Available
+        );
+        assert_eq!(
+            building_placement_research(&fresh, BuildingType::Mill.as_str()),
+            BuildingPlacementResearch::Requires {
+                node_id: "milling",
+                node_name: "Milling",
+            }
+        );
+
+        let foundations_only = state_with(&["mill_foundations"], 0.0);
+        assert_eq!(
+            building_placement_research(&foundations_only, BuildingType::Mill.as_str()),
+            BuildingPlacementResearch::Requires {
+                node_id: "milling",
+                node_name: "Milling",
+            },
+            "the generated durability study must not become an alternate placement gate"
+        );
+        let milling = state_with(&["milling"], 0.0);
+        assert_eq!(
+            building_placement_research(&milling, BuildingType::Mill.as_str()),
+            BuildingPlacementResearch::Available
+        );
+    }
+
+    #[test]
+    fn every_declared_building_has_one_catalog_placement_source() {
+        use std::collections::BTreeMap;
+
+        let mut sources = BTreeMap::<&str, (&str, bool)>::new();
+        for node in crate::research_catalog::research_catalog().nodes() {
+            for payload in &node.payloads {
+                let (building_id, founding) = match payload {
+                    crate::research_catalog::ResearchPayload::BuildingAvailableAtFounding {
+                        building_id,
+                    } => (building_id.as_str(), true),
+                    crate::research_catalog::ResearchPayload::UnlockBuilding { building_id } => {
+                        (building_id.as_str(), false)
+                    }
+                    _ => continue,
+                };
+                assert!(
+                    sources.insert(building_id, (&node.id, founding)).is_none(),
+                    "{building_id} has competing placement declarations"
+                );
+
+                let fresh = create_upgrade_tree_state();
+                if founding {
+                    assert_eq!(
+                        building_placement_research(&fresh, building_id),
+                        BuildingPlacementResearch::Available
+                    );
+                } else {
+                    assert_eq!(
+                        building_placement_research(&fresh, building_id),
+                        BuildingPlacementResearch::Requires {
+                            node_id: node.id.as_str(),
+                            node_name: node.name.as_str(),
+                        }
+                    );
+                    assert_eq!(
+                        building_placement_research(
+                            &state_with(&[node.id.as_str()], 0.0),
+                            building_id
+                        ),
+                        BuildingPlacementResearch::Available
+                    );
+                }
+            }
+        }
+        assert_eq!(sources.get("research_hut"), Some(&("research_hut", true)));
+        assert_eq!(sources.get("mill"), Some(&("milling", false)));
     }
 
     #[test]
@@ -1406,7 +1528,11 @@ mod tests {
 
         let resolved = resolve_effects(["ghost", "research_hut", "smithy"]);
         assert_eq!(resolved.hunt_yield_mult, 1.0);
-        assert!(resolved.unlocked_buildings.contains("research_hut"));
+        assert!(!resolved.unlocked_buildings.contains("research_hut"));
+        assert_eq!(
+            building_placement_research(&create_upgrade_tree_state(), "research_hut"),
+            BuildingPlacementResearch::Available
+        );
         assert!(resolved.unlocked_buildings.contains("smithy"));
         assert!(resolved.unlocked_jobs.contains("research"));
     }
@@ -1513,6 +1639,12 @@ mod tests {
             let resolved = resolve_effects([node.id.as_str()]);
             for payload in &node.payloads {
                 match payload {
+                    ResearchPayload::BuildingAvailableAtFounding { building_id } => {
+                        assert_eq!(
+                            building_placement_research(&create_upgrade_tree_state(), building_id),
+                            BuildingPlacementResearch::Available
+                        );
+                    }
                     ResearchPayload::UnlockBuilding { building_id } => {
                         assert!(resolved.unlocked_buildings.contains(building_id));
                     }

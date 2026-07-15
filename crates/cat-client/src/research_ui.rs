@@ -1151,7 +1151,13 @@ pub(super) fn update_research_snapshot(
 
 fn payload_line(payload: &ResearchPayload) -> String {
     match payload {
-        ResearchPayload::UnlockBuilding { building_id } => format!("Build {building_id}"),
+        ResearchPayload::BuildingAvailableAtFounding { building_id } => format!(
+            "Available from founding: {}",
+            title_case_identifier(building_id)
+        ),
+        ResearchPayload::UnlockBuilding { building_id } => {
+            format!("Unlock building: {}", title_case_identifier(building_id))
+        }
         ResearchPayload::UnlockRecipe { recipe_id } => format!("Recipe: {recipe_id}"),
         ResearchPayload::UnlockResource { resource_id } => format!("Resource: {resource_id}"),
         ResearchPayload::UnlockJob { job_id } => format!("Job: {job_id}"),
@@ -1170,6 +1176,20 @@ fn payload_line(payload: &ResearchPayload) -> String {
             format!("Capability: {capability_id}")
         }
     }
+}
+
+fn title_case_identifier(identifier: &str) -> String {
+    identifier
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().collect::<String>() + chars.as_str()
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Repaint only the one-node inspector.
@@ -1407,6 +1427,36 @@ mod tests {
         assert_eq!(
             model.state_of("basic_tools", &rooted),
             CatalogNodeState::Available
+        );
+    }
+
+    #[test]
+    fn inspector_copy_distinguishes_founding_access_from_a_research_unlock() {
+        let research_hut = research_catalog().get("research_hut").unwrap();
+        let founding_line = research_hut
+            .payloads
+            .iter()
+            .map(payload_line)
+            .find(|line| line.starts_with("Available from founding:"))
+            .expect("research hut founding placement copy");
+        assert_eq!(founding_line, "Available from founding: Research Hut");
+
+        let milling = research_catalog().get("milling").unwrap();
+        assert!(
+            milling
+                .payloads
+                .iter()
+                .map(payload_line)
+                .any(|line| line == "Unlock building: Mill")
+        );
+        assert!(
+            research_catalog()
+                .get("mill_foundations")
+                .unwrap()
+                .payloads
+                .iter()
+                .map(payload_line)
+                .all(|line| !line.starts_with("Unlock building:"))
         );
     }
 

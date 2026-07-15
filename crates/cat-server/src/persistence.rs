@@ -2030,7 +2030,7 @@ fn to_sql_io(err: std::io::Error) -> rusqlite::Error {
 mod tests {
     use cat_protocol::{ClientAction, JobKind as ProtoJobKind};
     use cat_sim::{
-        actions::{apply_action, build_snapshot},
+        actions::{ActionCtx, apply_action, build_snapshot},
         entities::CarryingKind,
         migration::ProbationaryMigrant,
         world_tick::{
@@ -2114,6 +2114,73 @@ mod tests {
         assert_eq!(after, before);
         assert_eq!(after.term_length_ms, 4_320_000);
         assert_eq!(after.next_election_at, 5_270_000);
+    }
+
+    #[test]
+    fn founding_hut_and_milling_placement_truth_survive_restart() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(20_260_715);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000_000, 43));
+        world.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("mill_foundations".to_owned());
+        save_world(&conn, &world).expect("save world");
+        let mut restarted = load_world(&conn)
+            .expect("load world")
+            .expect("persisted world");
+        assert_eq!(
+            restarted.colonies[0].upgrade_tree.owned_node_ids,
+            ["mill_foundations"]
+        );
+
+        let ctx = ActionCtx {
+            session_id: "restart-session".to_owned(),
+            player_id: "restart-player".to_owned(),
+            colony_id: "colony-1".to_owned(),
+            now_ms: 1_001_000,
+        };
+        let plan = |building_type| ClientAction::PlanBuilding {
+            session_id: ctx.session_id.clone(),
+            nickname: "Restart Builder".to_owned(),
+            sig: "server-verified".to_owned(),
+            building_type,
+            site: None,
+        };
+        let mut hut_world = restarted.clone();
+        let hut = apply_action(
+            &mut hut_world,
+            &plan(cat_protocol::BuildingType::ResearchHut),
+            &ctx,
+        );
+        assert!(hut.ok, "founding access disappeared on restart: {hut:?}");
+
+        let mill = apply_action(
+            &mut restarted,
+            &plan(cat_protocol::BuildingType::Mill),
+            &ctx,
+        );
+        assert!(!mill.ok);
+        assert_eq!(
+            mill.message.as_deref(),
+            Some("Research Milling before construction.")
+        );
+        restarted.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("milling".to_owned());
+        let mill = apply_action(
+            &mut restarted,
+            &plan(cat_protocol::BuildingType::Mill),
+            &ctx,
+        );
+        assert!(
+            mill.ok,
+            "persisted colony could not place researched mill: {mill:?}"
+        );
     }
 
     #[test]

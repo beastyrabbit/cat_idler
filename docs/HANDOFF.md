@@ -41,8 +41,12 @@ Verified foundations include:
   prove permanent growth from the exact 289-tile founding baseline;
 - a complete 500-node research runtime and full-page searchable/filterable/pannable client ledger.
   Every study can be purchased with research points and persists; a Loremaster may complete at
-  most one affordable full-catalog node per rolling real-life day. Typed modeled effects are live,
-  while future recipe/resource/job IDs remain truthful registries until those systems exist;
+  most one affordable full-catalog node per rolling real-life day. Four preparation studies now
+  gate the maintained physical recipes in fresh villages, with rules-v0 save grandfathering;
+  96 other recipe IDs and all 64 generated resource IDs remain incomplete. Research Hut is
+  explicitly founding-placeable, `milling` is the sole Mill placement unlock, and generated Mill
+  Foundations is durability only. The design's always-present Leader (not the currently required
+  Loremaster) still needs to own the once-per-real-day automatic node choice;
 - specialist manual-to-officer ownership across Steward, Accountant, Forester, Farmer, Captain,
   Loremaster, and Cloth Leader: beyond the founding Leader's hunt/water/scout safety floor, a
   vacant office leaves its category manual. Appointment requires the matching researched and
@@ -130,9 +134,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    target-correct across clamp, physical routing, snapshot, trade, and persistence. Keep the other
    22 generated `*_stores` studies and the fixed 10-unit Mill/Sawmill/Workshop/Smelter local stores
    explicitly open until each has a real physical domain. Then turn the remaining registry-only
-   research payloads (96 generated-only recipes, 64 resources, ten jobs, and 25 worker-slot
-   modifiers) into
+   research payloads (96 generated-only recipes, 64 resources, nine false/unread job claims, and
+   25 worker-slot modifiers) into
    observable behavior without advertising IDs that have no runtime object.
+   Move the once-per-real-day automatic study choice from the appointed Loremaster to the Leader;
+   keep research labor and ritual automation Loremaster-owned.
 4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

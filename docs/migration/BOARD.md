@@ -611,7 +611,11 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - Crop/timber HUD state, visible farm growth stages, and distinct roofless processing stations.
 - A full-page 500-study ledger with dependencies, filter/search/pan/zoom. Every study supports
   research-point purchase and persistence; daily Loremaster automation selects across the full
-  catalog, with typed modeled effects and truthful future-content registries.
+  catalog. Research Hut is explicitly available from founding; `milling` is the sole Mill
+  placement unlock, generated Mill Foundations is durability only, and one catalog-derived rule
+  drives placement denial text. Four physical recipes have fresh-village entitlements; 96 recipes,
+  64 resources, nine false/unread job claims, and the design's still-missing Leader-owned daily
+  choice remain open.
 
 ### P14 — Spatial placement (spec: `docs/migration/specs/p14-spatial-placement.md`)
 - **Verified slice:** atomic player/leader validation and commit, exclusive future footprints,
