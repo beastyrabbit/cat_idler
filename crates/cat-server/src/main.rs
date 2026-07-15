@@ -1083,6 +1083,9 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
         | ClientAction::EditProductionQueue {
             session_id, sig, ..
         }
+        | ClientAction::EditProductionWorkSlot {
+            session_id, sig, ..
+        }
         | ClientAction::AssignOfficer {
             session_id, sig, ..
         }

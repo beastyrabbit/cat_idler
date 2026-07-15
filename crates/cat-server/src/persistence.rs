@@ -179,6 +179,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             isComplete INTEGER NOT NULL DEFAULT 0,
             assignedCatId TEXT,
             automatedOfficerRole TEXT,
+            additionalWorkSlots TEXT,
             productionQueue TEXT,
             productionPaused INTEGER NOT NULL DEFAULT 0,
             productionQueueInitialized INTEGER NOT NULL DEFAULT 0,
@@ -332,6 +333,7 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("cats", "preferredLabors", "TEXT"),
         ("world_tiles", "revealed", "INTEGER NOT NULL DEFAULT 0"),
         ("buildings", "automatedOfficerRole", "TEXT"),
+        ("buildings", "additionalWorkSlots", "TEXT"),
         ("buildings", "productionQueue", "TEXT"),
         (
             "buildings",
@@ -1256,10 +1258,10 @@ fn save_building(
         "INSERT INTO buildings (
             id, colonyId, type, level, position, constructionProgress,
             productionProgress, isComplete, assignedCatId, automatedOfficerRole,
-            productionQueue, productionPaused, productionQueueInitialized,
+            additionalWorkSlots, productionQueue, productionPaused, productionQueueInitialized,
             physicalRefinerQueueInitialized, physicalStationRulesVersion,
             constructionCargo
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, 5, ?13)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1, 1, 5, ?14)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -1271,6 +1273,7 @@ fn save_building(
             building.is_complete,
             building.assigned_cat,
             automated_officer_role,
+            serde_json::to_string(&building.additional_work_slots).map_err(to_sql_json)?,
             serde_json::to_string(&building.production_queue).map_err(to_sql_json)?,
             building.production_paused,
             building
@@ -1287,7 +1290,7 @@ fn save_building(
 fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<BuildingRuntime>> {
     let mut stmt = conn.prepare(
         "SELECT id, type, level, position, constructionProgress, productionProgress,
-                isComplete, assignedCatId, automatedOfficerRole, productionQueue,
+                isComplete, assignedCatId, automatedOfficerRole, additionalWorkSlots, productionQueue,
                 productionPaused, constructionCargo
          FROM buildings WHERE colonyId = ?1 ORDER BY rowid",
     )?;
@@ -1315,6 +1318,11 @@ fn load_buildings(conn: &Connection, colony_id: &str) -> rusqlite::Result<Vec<Bu
                 .get::<_, Option<String>>("automatedOfficerRole")?
                 .map(|raw| serde_json::from_str::<OfficerRole>(&raw).map_err(from_sql_json))
                 .transpose()?,
+            additional_work_slots: row
+                .get::<_, Option<String>>("additionalWorkSlots")?
+                .map(|raw| serde_json::from_str(&raw).map_err(from_sql_json))
+                .transpose()?
+                .unwrap_or_default(),
             production_queue,
             production_paused: row.get("productionPaused")?,
             construction_cargo: row
@@ -2274,8 +2282,8 @@ mod tests {
         entities::{CarryingKind, CatActivity, MapType, Position},
         migration::ProbationaryMigrant,
         world_tick::{
-            RaidPhase, ScoutMission, ScoutResource, found_colony, found_colony_at,
-            found_global_colony, founding_revealed_tiles, new_world, world_tick,
+            ProductionWorkSlot, RaidPhase, ScoutMission, ScoutResource, found_colony,
+            found_colony_at, found_global_colony, founding_revealed_tiles, new_world, world_tick,
         },
     };
 
@@ -2885,6 +2893,16 @@ mod tests {
             construction_progress: 100,
             production_progress: 317.5,
             assigned_cat: Some(colony.cats[0].id.clone()),
+            additional_work_slots: vec![ProductionWorkSlot {
+                assigned_cat: colony.cats[1].id.clone(),
+                automated_by: Some(OfficerRole::Forester),
+                production_progress: 123.25,
+                production_queue: vec![ProductionQueueEntry {
+                    recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
+                    repeat: true,
+                }],
+                production_paused: false,
+            }],
             production_queue: vec![ProductionQueueEntry {
                 recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
                 repeat: false,
@@ -2949,6 +2967,12 @@ mod tests {
         assert_eq!(colony.buildings.last().unwrap().production_queue.len(), 1);
         assert!(!colony.buildings.last().unwrap().production_queue[0].repeat);
         assert!(colony.buildings.last().unwrap().production_paused);
+        let extra = &colony.buildings.last().unwrap().additional_work_slots[0];
+        assert_eq!(extra.assigned_cat, colony.cats[1].id);
+        assert_eq!(extra.automated_by, Some(OfficerRole::Forester));
+        assert_eq!(extra.production_progress, 123.25);
+        assert_eq!(extra.production_queue.len(), 1);
+        assert!(extra.production_queue[0].repeat);
     }
 
     #[test]
@@ -6590,6 +6614,7 @@ mod tests {
             production_progress: 5.5,
             assigned_cat: Some(colony.cats[3].id.clone()),
             automated_by: Some(OfficerRole::Captain),
+            additional_work_slots: Vec::new(),
             production_queue: Vec::new(),
             production_paused: false,
             construction_cargo: None,

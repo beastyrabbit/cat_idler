@@ -326,6 +326,14 @@ pub fn apply_action(
         } => with_colony(world, ctx, |colony| {
             edit_production_queue(colony, building_id, edit, ctx)
         }),
+        proto::ClientAction::EditProductionWorkSlot {
+            building_id,
+            cat_id,
+            edit,
+            ..
+        } => with_colony(world, ctx, |colony| {
+            edit_production_work_slot(colony, building_id, cat_id, edit, ctx)
+        }),
     }
 }
 
@@ -1125,10 +1133,7 @@ fn assign_worker(
     if building_id.is_none() {
         release_farm_worker(colony, cat_id);
         for building in &mut colony.buildings {
-            if building.assigned_cat.as_deref() == Some(cat_id) {
-                building.assigned_cat = None;
-                building.automated_by = None;
-            }
+            building.remove_worker(cat_id);
         }
         colony.last_player_activity_at = Some(ctx.now_ms);
         return ok();
@@ -1142,10 +1147,18 @@ fn assign_worker(
     let Some(building_index) = colony.buildings.iter().position(|building| {
         building.id == building_id
             && building.construction_progress >= 100
-            && production::building_staff_cap(building.building_type) > 0
+            && crate::world_tick::building_staff_cap(colony, building) > 0
     }) else {
         return fail("That building cannot take a worker.");
     };
+    if colony.buildings[building_index].has_worker(cat_id) {
+        return ok();
+    }
+    if colony.buildings[building_index].worker_count()
+        >= crate::world_tick::building_staff_cap(colony, &colony.buildings[building_index]) as usize
+    {
+        return fail("That building has no open worker station.");
+    }
 
     let displaced_farmer = (colony.buildings[building_index].building_type == BuildingType::Field)
         .then(|| colony.buildings[building_index].assigned_cat.clone())
@@ -1156,13 +1169,9 @@ fn assign_worker(
     }
     release_farm_worker(colony, cat_id);
     for building in &mut colony.buildings {
-        if building.assigned_cat.as_deref() == Some(cat_id) {
-            building.assigned_cat = None;
-            building.automated_by = None;
-        }
+        building.remove_worker(cat_id);
     }
-    colony.buildings[building_index].assigned_cat = Some(cat_id.to_owned());
-    colony.buildings[building_index].automated_by = None;
+    colony.buildings[building_index].add_worker(cat_id.to_owned(), None);
     colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
@@ -1285,63 +1294,118 @@ fn edit_production_queue(
         return fail("That building has no editable production queue.");
     };
     let building_type = colony.buildings[building_index].building_type;
+    if let proto::ProductionQueueEdit::Add { recipe_id, .. } = edit
+        && !crate::world_tick::production_recipe_availability(colony, building_type, recipe_id)
+            .is_some_and(|recipe| recipe.available)
+    {
+        return fail("That recipe is not available at this station.");
+    }
+    let building = &mut colony.buildings[building_index];
+    let result = apply_production_queue_edit(
+        &mut building.production_queue,
+        &mut building.production_progress,
+        &mut building.production_paused,
+        edit,
+    );
+    if !result.ok {
+        return result;
+    }
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
 
+fn edit_production_work_slot(
+    colony: &mut ColonyRuntime,
+    building_id: &str,
+    cat_id: &str,
+    edit: &proto::ProductionQueueEdit,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(building_index) = colony.buildings.iter().position(|building| {
+        building.id == building_id
+            && building.construction_progress >= 100
+            && !crate::world_tick::available_production_recipes(building.building_type).is_empty()
+    }) else {
+        return fail("That building has no editable production queue.");
+    };
+    if colony.buildings[building_index].assigned_cat.as_deref() == Some(cat_id) {
+        return edit_production_queue(colony, building_id, edit, ctx);
+    }
+    let building_type = colony.buildings[building_index].building_type;
+    if let proto::ProductionQueueEdit::Add { recipe_id, .. } = edit
+        && !crate::world_tick::production_recipe_availability(colony, building_type, recipe_id)
+            .is_some_and(|recipe| recipe.available)
+    {
+        return fail("That recipe is not available at this station.");
+    }
+    let Some(slot) = colony.buildings[building_index]
+        .additional_work_slots
+        .iter_mut()
+        .find(|slot| slot.assigned_cat == cat_id)
+    else {
+        return fail("That cat does not own a station slot here.");
+    };
+    let result = apply_production_queue_edit(
+        &mut slot.production_queue,
+        &mut slot.production_progress,
+        &mut slot.production_paused,
+        edit,
+    );
+    if !result.ok {
+        return result;
+    }
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    ok()
+}
+
+fn apply_production_queue_edit(
+    queue: &mut Vec<crate::world_tick::ProductionQueueEntry>,
+    progress: &mut f64,
+    is_paused: &mut bool,
+    edit: &proto::ProductionQueueEdit,
+) -> proto::ActionResult {
     match edit {
         proto::ProductionQueueEdit::Add { recipe_id, repeat } => {
-            if !crate::world_tick::production_recipe_availability(colony, building_type, recipe_id)
-                .is_some_and(|recipe| recipe.available)
-            {
-                return fail("That recipe is not available at this station.");
-            }
-            let building = &mut colony.buildings[building_index];
-            if building.production_queue.len() >= 32 {
+            if queue.len() >= 32 {
                 return fail("That production queue is full.");
             }
-            building
-                .production_queue
-                .push(crate::world_tick::ProductionQueueEntry {
-                    recipe_id: recipe_id.clone(),
-                    repeat: *repeat,
-                });
+            queue.push(crate::world_tick::ProductionQueueEntry {
+                recipe_id: recipe_id.clone(),
+                repeat: *repeat,
+            });
         }
         proto::ProductionQueueEdit::Remove { index } => {
-            let building = &mut colony.buildings[building_index];
-            if *index >= building.production_queue.len() {
+            if *index >= queue.len() {
                 return fail("That queue entry no longer exists.");
             }
-            building.production_queue.remove(*index);
+            queue.remove(*index);
             if *index == 0 {
-                building.production_progress = 0.0;
+                *progress = 0.0;
             }
         }
         proto::ProductionQueueEdit::Move { index, direction } => {
-            let building = &mut colony.buildings[building_index];
             let target = match direction {
                 proto::QueueMoveDirection::Up => index.checked_sub(1),
                 proto::QueueMoveDirection::Down => index.checked_add(1),
             };
-            let Some(target) = target.filter(|target| *target < building.production_queue.len())
-            else {
+            let Some(target) = target.filter(|target| *target < queue.len()) else {
                 return fail("That queue entry cannot move farther.");
             };
-            building.production_queue.swap(*index, target);
+            queue.swap(*index, target);
             if *index == 0 || target == 0 {
-                building.production_progress = 0.0;
+                *progress = 0.0;
             }
         }
         proto::ProductionQueueEdit::SetRepeat { index, repeat } => {
-            let building = &mut colony.buildings[building_index];
-            let Some(entry) = building.production_queue.get_mut(*index) else {
+            let Some(entry) = queue.get_mut(*index) else {
                 return fail("That queue entry no longer exists.");
             };
             entry.repeat = *repeat;
         }
         proto::ProductionQueueEdit::SetPaused { paused } => {
-            let building = &mut colony.buildings[building_index];
-            building.production_paused = *paused;
+            *is_paused = *paused;
         }
     }
-    colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
 
@@ -3737,7 +3801,7 @@ fn cat_snapshot(
         assigned_building_id: colony
             .buildings
             .iter()
-            .find(|building| building.assigned_cat.as_deref() == Some(cat.id.as_str()))
+            .find(|building| building.has_worker(&cat.id))
             .map(|building| building.id.clone()),
         role_xp: proto::RoleXp {
             hunter: cat.role_xp.hunter,
@@ -4051,13 +4115,62 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
             // A cat only counts as staffing this building while it's still alive —
             // mirrors `world_tick::assigned_worker`, which the production phase itself
             // uses to decide whether a bench/smithy has a live worker this tick.
-            let has_live_worker = building.assigned_cat.as_deref().is_some_and(|cat_id| {
-                colony
-                    .cats
-                    .iter()
-                    .any(|cat| cat.id == cat_id && cat.death_time.is_none())
-            });
-            let staff_cap = production::building_staff_cap(building.building_type);
+            let staff_count = building
+                .assigned_cat
+                .as_deref()
+                .into_iter()
+                .chain(
+                    building
+                        .additional_work_slots
+                        .iter()
+                        .map(|slot| slot.assigned_cat.as_str()),
+                )
+                .filter(|cat_id| {
+                    colony
+                        .cats
+                        .iter()
+                        .any(|cat| cat.id == **cat_id && cat.death_time.is_none())
+                })
+                .count() as u32;
+            let staff_cap = crate::world_tick::building_staff_cap(colony, building);
+            let cycle_sec = production::building_cycle_sec(building.building_type);
+            let mut work_slots = Vec::new();
+            if let Some(cat_id) = building.assigned_cat.as_ref() {
+                work_slots.push(proto::ProductionWorkSlotSnapshot {
+                    cat_id: cat_id.clone(),
+                    production_progress: cycle_sec.map_or(0.0, |cycle| {
+                        (building.production_progress / cycle).clamp(0.0, 1.0)
+                    }),
+                    production_queue: building
+                        .production_queue
+                        .iter()
+                        .map(|entry| proto::ProductionQueueEntrySnapshot {
+                            recipe_id: entry.recipe_id.clone(),
+                            repeat: entry.repeat,
+                        })
+                        .collect(),
+                    production_paused: building.production_paused,
+                    automated_by: building.automated_by.map(sim_to_proto_officer_role),
+                });
+            }
+            work_slots.extend(building.additional_work_slots.iter().map(|slot| {
+                proto::ProductionWorkSlotSnapshot {
+                    cat_id: slot.assigned_cat.clone(),
+                    production_progress: cycle_sec.map_or(0.0, |cycle| {
+                        (slot.production_progress / cycle).clamp(0.0, 1.0)
+                    }),
+                    production_queue: slot
+                        .production_queue
+                        .iter()
+                        .map(|entry| proto::ProductionQueueEntrySnapshot {
+                            recipe_id: entry.recipe_id.clone(),
+                            repeat: entry.repeat,
+                        })
+                        .collect(),
+                    production_paused: slot.production_paused,
+                    automated_by: slot.automated_by.map(sim_to_proto_officer_role),
+                }
+            }));
             let production_progress = production::building_cycle_sec(building.building_type)
                 .map_or(0.0, |cycle_sec| {
                     (building.production_progress / cycle_sec).clamp(0.0, 1.0)
@@ -4113,8 +4226,9 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 world_position: tile_point(&building.position),
                 position: tile_point(&building.position),
                 footprint: proto::FootprintSize { width, height },
-                staff_count: u32::from(has_live_worker),
+                staff_count,
                 staff_cap,
+                work_slots,
                 production_progress,
                 production_output: production_output.map(str::to_owned),
                 // Live sum of carried cargo whose haul target resolves to this building's
@@ -4511,7 +4625,19 @@ fn assigned_building_cat_ids(colony: &ColonyRuntime) -> HashSet<&str> {
     colony
         .buildings
         .iter()
-        .filter_map(|building| building.assigned_cat.as_deref())
+        .flat_map(|building| {
+            building
+                .assigned_cat
+                .as_deref()
+                .into_iter()
+                .chain(
+                    building
+                        .additional_work_slots
+                        .iter()
+                        .map(|slot| slot.assigned_cat.as_str()),
+                )
+                .filter(|cat_id| !cat_id.is_empty())
+        })
         .collect()
 }
 
@@ -5275,6 +5401,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(building_type),
             production_paused: false,
             construction_cargo: None,
@@ -7133,6 +7260,7 @@ mod tests {
             production_progress: 300.0,
             assigned_cat: Some(worker_id),
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
             construction_cargo: None,
@@ -7189,6 +7317,102 @@ mod tests {
             .unwrap();
         assert_eq!(building.assigned_cat.as_deref(), Some(cat_id.as_str()));
         assert_eq!(building.automated_by, None);
+    }
+
+    #[test]
+    fn signed_researched_station_assigns_and_edits_two_independent_workers() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("sawmill_crews".to_owned());
+        let worker_ids = colony
+            .cats
+            .iter()
+            .take(3)
+            .map(|cat| cat.id.clone())
+            .collect::<Vec<_>>();
+        for cat in colony
+            .cats
+            .iter_mut()
+            .filter(|cat| worker_ids.contains(&cat.id))
+        {
+            cat.age_hours = 24.0;
+            cat.activity = CatActivity::Idle;
+            cat.current_task = None;
+            cat.destination = None;
+            cat.carrying = None;
+        }
+        let building_id = "crewed-sawmill".to_owned();
+        colony.buildings.push(crate::world_tick::BuildingRuntime {
+            id: building_id.clone(),
+            building_type: BuildingType::Sawmill,
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: crate::world_tick::default_production_queue(BuildingType::Sawmill),
+            ..crate::world_tick::BuildingRuntime::default()
+        });
+
+        for cat_id in &worker_ids[..2] {
+            let result = apply_action(
+                &mut world,
+                &proto::ClientAction::AssignWorker {
+                    session_id: "sess_1".to_owned(),
+                    nickname: "Guest".to_owned(),
+                    sig: "signed".to_owned(),
+                    cat_id: cat_id.clone(),
+                    building_id: Some(building_id.clone()),
+                },
+                &ctx(),
+            );
+            assert!(result.ok, "second researched slot rejected: {result:?}");
+        }
+        let rejected = apply_action(
+            &mut world,
+            &proto::ClientAction::AssignWorker {
+                session_id: "sess_1".to_owned(),
+                nickname: "Guest".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: worker_ids[2].clone(),
+                building_id: Some(building_id.clone()),
+            },
+            &ctx(),
+        );
+        assert!(!rejected.ok, "study adds exactly one station");
+
+        let edited = apply_action(
+            &mut world,
+            &proto::ClientAction::EditProductionWorkSlot {
+                session_id: "sess_1".to_owned(),
+                nickname: "Guest".to_owned(),
+                sig: "signed".to_owned(),
+                building_id: building_id.clone(),
+                cat_id: worker_ids[1].clone(),
+                edit: proto::ProductionQueueEdit::SetPaused { paused: true },
+            },
+            &ctx(),
+        );
+        assert!(edited.ok, "exact slot edit failed: {edited:?}");
+        let building = world.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .unwrap();
+        assert!(!building.production_paused);
+        assert!(building.additional_work_slots[0].production_paused);
+
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let building = snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .unwrap();
+        assert_eq!(building.staff_count, 2);
+        assert_eq!(building.staff_cap, 2);
+        assert_eq!(building.work_slots.len(), 2);
+        assert_eq!(building.work_slots[1].cat_id, worker_ids[1]);
+        assert!(building.work_slots[1].production_paused);
     }
 
     #[test]
@@ -7485,6 +7709,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(
                     prerequisite.building,
                 ),

@@ -503,6 +503,12 @@ pub struct BuildingRuntime {
     /// Manual AssignWorker writes `None`, allowing vacancy reconciliation to stop
     /// sticky automated production without stripping a player's explicit worker.
     pub automated_by: Option<OfficerRole>,
+    /// Additional researched worker stations. The legacy fields above remain slot zero
+    /// so old saves and clients keep their exact shape; every added slot owns its worker,
+    /// automation provenance, selected queue, pause state, and fractional work. Station
+    /// input/output stores remain shared and finite, so slots contend in stable order
+    /// instead of receiving hidden aggregate materials.
+    pub additional_work_slots: Vec<ProductionWorkSlot>,
     /// Ordered, durable station instructions. Only recipe ids backed by a real
     /// implementation may enter this queue.
     pub production_queue: Vec<ProductionQueueEntry>,
@@ -513,6 +519,102 @@ pub struct BuildingRuntime {
     /// construction logistics is grandfathered as already funded and is never
     /// charged a second time.
     pub construction_cargo: Option<ConstructionCargoState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionWorkSlot {
+    pub assigned_cat: CatId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automated_by: Option<OfficerRole>,
+    #[serde(default)]
+    pub production_progress: f64,
+    #[serde(default)]
+    pub production_queue: Vec<ProductionQueueEntry>,
+    #[serde(default)]
+    pub production_paused: bool,
+}
+
+impl BuildingRuntime {
+    #[must_use]
+    pub fn has_worker(&self, cat_id: &str) -> bool {
+        building_worker_ids(self).any(|assigned| assigned == cat_id)
+    }
+
+    #[must_use]
+    pub fn worker_count(&self) -> usize {
+        usize::from(self.assigned_cat.is_some())
+            + self
+                .additional_work_slots
+                .iter()
+                .filter(|slot| !slot.assigned_cat.is_empty())
+                .count()
+    }
+
+    /// Remove one exact worker while preserving every remaining slot's owned work.
+    /// If legacy slot zero is vacated, the oldest added slot is promoted atomically.
+    pub fn remove_worker(&mut self, cat_id: &str) -> bool {
+        if self.assigned_cat.as_deref() == Some(cat_id) {
+            if let Some(index) = self
+                .additional_work_slots
+                .iter()
+                .position(|slot| !slot.assigned_cat.is_empty())
+            {
+                let promoted = self.additional_work_slots.remove(index);
+                let vacant = ProductionWorkSlot {
+                    assigned_cat: String::new(),
+                    automated_by: None,
+                    production_progress: self.production_progress,
+                    production_queue: std::mem::take(&mut self.production_queue),
+                    production_paused: self.production_paused,
+                };
+                self.assigned_cat = Some(promoted.assigned_cat);
+                self.automated_by = promoted.automated_by;
+                self.production_progress = promoted.production_progress;
+                self.production_queue = promoted.production_queue;
+                self.production_paused = promoted.production_paused;
+                self.additional_work_slots.insert(index, vacant);
+            } else {
+                self.assigned_cat = None;
+                self.automated_by = None;
+            }
+            return true;
+        }
+        let Some(slot) = self
+            .additional_work_slots
+            .iter_mut()
+            .find(|slot| slot.assigned_cat == cat_id)
+        else {
+            return false;
+        };
+        slot.assigned_cat.clear();
+        slot.automated_by = None;
+        true
+    }
+
+    pub fn add_worker(&mut self, cat_id: CatId, automated_by: Option<OfficerRole>) {
+        if self.assigned_cat.is_none() {
+            self.assigned_cat = Some(cat_id);
+            self.automated_by = automated_by;
+            return;
+        }
+        if let Some(slot) = self
+            .additional_work_slots
+            .iter_mut()
+            .find(|slot| slot.assigned_cat.is_empty())
+        {
+            slot.assigned_cat = cat_id;
+            slot.automated_by = automated_by;
+            return;
+        }
+        self.additional_work_slots.push(ProductionWorkSlot {
+            assigned_cat: cat_id,
+            automated_by,
+            production_progress: 0.0,
+            production_queue: default_production_queue(self.building_type),
+            production_paused: false,
+        });
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2324,6 +2426,7 @@ impl Default for BuildingRuntime {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: Vec::new(),
             production_paused: false,
             construction_cargo: None,
@@ -3729,6 +3832,7 @@ fn starter_buildings(
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: default_production_queue(building_type),
                 production_paused: false,
                 construction_cargo: None,
@@ -5282,6 +5386,7 @@ pub(crate) fn commit_player_scaffold(
         production_progress: 0.0,
         assigned_cat: None,
         automated_by: None,
+        additional_work_slots: Vec::new(),
         production_queue: default_production_queue(building_type),
         production_paused: false,
         construction_cargo: Some(construction_cargo),
@@ -5715,6 +5820,7 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: default_production_queue(scaffold_type),
                 production_paused: false,
                 construction_cargo: Some(construction_cargo),
@@ -7395,7 +7501,7 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
     let assigned_building_ids = colony
         .buildings
         .iter()
-        .filter_map(|building| building.assigned_cat.as_deref())
+        .flat_map(building_worker_ids)
         .collect::<Vec<_>>();
 
     let work_capable = alive
@@ -7775,7 +7881,7 @@ fn phase_20_leader_labor_assignments_and_staffing(
     let assigned_building_ids = colony
         .buildings
         .iter()
-        .filter_map(|building| building.assigned_cat.as_deref())
+        .flat_map(building_worker_ids)
         .collect::<Vec<_>>();
     let available_idle = colony
         .cats
@@ -8112,10 +8218,19 @@ fn release_research_staff_unless_comfortable(
         if matches!(
             building.building_type,
             BuildingType::ResearchHut | BuildingType::School
-        ) && building.automated_by == Some(OfficerRole::Loremaster)
-        {
-            building.assigned_cat = None;
-            building.automated_by = None;
+        ) {
+            while building.automated_by == Some(OfficerRole::Loremaster) {
+                let Some(cat_id) = building.assigned_cat.clone() else {
+                    break;
+                };
+                building.remove_worker(&cat_id);
+            }
+            for slot in &mut building.additional_work_slots {
+                if slot.automated_by == Some(OfficerRole::Loremaster) {
+                    slot.assigned_cat.clear();
+                    slot.automated_by = None;
+                }
+            }
         }
     }
 }
@@ -9454,6 +9569,7 @@ fn mean_farm_fertility(colony: &ColonyRuntime, world_seed: u32, rect: ZoneRect) 
 /// Phase 23: run fields, workshops, and smithies against patched resources and
 /// building progress.
 fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
+    reconcile_building_work_slots(colony);
     // Idle mop-up (P12.4a/b). The generic workshop, the accounting tent, and the P16
     // raw-material chains (wood-cutter / stone-prep / woodworking) are all filled here
     // from cats that phase 20 left genuinely idle. The raw chains were released back to
@@ -9548,89 +9664,24 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         let modifiers = research_effects.building(building_type.as_str());
         let building_elapsed = production_elapsed * modifiers.output_mult
             / modifiers.cycle_time_mult.max(f64::EPSILON);
-        let productive_tools = colony.buildings[building_index]
-            .assigned_cat
-            .as_deref()
-            .map_or(0.0, |cat_id| cat_usable_tool_stock(colony, cat_id));
-        let building_crafting_elapsed = productive_elapsed(building_elapsed, productive_tools);
-        match building_type {
-            BuildingType::Field => {
-                // The Field is a role station, not an invisible food faucet. Its worker
-                // is consumed by `advance_designated_farms`, which physically visits
-                // one exterior designation and hauls that plot's selected crop.
+        advance_primary_production_slot(colony, building_index, gate, building_elapsed, true);
+
+        // Each researched slot owns the exact same state shape as legacy slot zero.
+        // Temporarily present it to the proven one-cat state machine, then put the
+        // resulting queue/progress/provenance back. Shared finite station stores are
+        // intentionally not swapped: earlier slots reserve/consume first in stable
+        // assignment order and later slots observe the remaining real inventory.
+        let extra_slot_count = colony.buildings[building_index].additional_work_slots.len();
+        for slot_index in 0..extra_slot_count {
+            if colony.buildings[building_index].additional_work_slots[slot_index]
+                .assigned_cat
+                .is_empty()
+            {
+                continue;
             }
-            BuildingType::Mill => {
-                advance_physical_mill(colony, building_index, gate, building_elapsed);
-            }
-            BuildingType::Sawmill => {
-                // Keep the research catalog's output/cycle modifiers while routing the
-                // actual inputs and outputs through the physical station inventories.
-                advance_physical_sawmill(colony, building_index, gate, building_elapsed);
-            }
-            BuildingType::WoodCutter | BuildingType::StonePrep | BuildingType::Workshop => {
-                advance_physical_refiner(
-                    colony,
-                    building_index,
-                    gate,
-                    building_crafting_elapsed,
-                    productive_tools >= 1.0,
-                );
-            }
-            BuildingType::Smithy => {
-                // The compatibility aggregate timers remain persisted but frozen.
-                // One selected recipe now owns Metal fetch, local work, local output,
-                // and whole-unit delivery; finite ItemStore identity follows in C3.
-                advance_physical_refiner(
-                    colony,
-                    building_index,
-                    gate,
-                    building_crafting_elapsed,
-                    productive_tools >= 1.0,
-                );
-            }
-            BuildingType::Woodworking => {
-                advance_physical_woodworking(
-                    colony,
-                    building_index,
-                    gate,
-                    building_crafting_elapsed,
-                    productive_tools >= 1.0,
-                );
-            }
-            BuildingType::Smelter => {
-                advance_physical_refiner(
-                    colony,
-                    building_index,
-                    gate,
-                    building_crafting_elapsed,
-                    productive_tools >= 1.0,
-                );
-            }
-            BuildingType::Clothier => {
-                // Fibre and cloth now use the finite source → local input → local
-                // output → storage route. The former additive clothing timer remains
-                // persisted but frozen until Clothing has a finite item authority.
-                advance_physical_refiner(
-                    colony,
-                    building_index,
-                    gate,
-                    building_crafting_elapsed,
-                    productive_tools >= 1.0,
-                );
-            }
-            BuildingType::Tannery => {
-                // Hide and leather now use the finite source → local input → local
-                // output → storage route. The former additive leather-goods timer
-                // remains persisted but frozen until C3 gives clothing finite identity.
-                advance_physical_refiner(
-                    colony,
-                    building_index,
-                    gate,
-                    building_crafting_elapsed,
-                    productive_tools >= 1.0,
-                );
-            }
-            _ => {}
+            swap_primary_and_additional_slot(colony, building_index, slot_index);
+            advance_primary_production_slot(colony, building_index, gate, building_elapsed, false);
+            swap_primary_and_additional_slot(colony, building_index, slot_index);
         }
     }
 
@@ -9640,6 +9691,95 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     // durable tent → pile(s) → tent round. Without one, the books remain stale. Neither
     // path mutates authoritative resources or pile contents.
     advance_accounting_round(colony, gate, world_seed);
+}
+
+fn swap_primary_and_additional_slot(
+    colony: &mut ColonyRuntime,
+    building_index: usize,
+    slot_index: usize,
+) {
+    let building = &mut colony.buildings[building_index];
+    let slot = &mut building.additional_work_slots[slot_index];
+    let extra_cat = slot.assigned_cat.clone();
+    let primary_cat = building
+        .assigned_cat
+        .replace(extra_cat)
+        .expect("an additional work slot always has a cat");
+    slot.assigned_cat = primary_cat;
+    std::mem::swap(&mut building.automated_by, &mut slot.automated_by);
+    std::mem::swap(
+        &mut building.production_progress,
+        &mut slot.production_progress,
+    );
+    std::mem::swap(&mut building.production_queue, &mut slot.production_queue);
+    std::mem::swap(&mut building.production_paused, &mut slot.production_paused);
+}
+
+fn advance_primary_production_slot(
+    colony: &mut ColonyRuntime,
+    building_index: usize,
+    gate: TickGate,
+    building_elapsed: f64,
+    allow_output_haul: bool,
+) {
+    let building_type = colony.buildings[building_index].building_type;
+    let productive_tools = colony.buildings[building_index]
+        .assigned_cat
+        .as_deref()
+        .map_or(0.0, |cat_id| cat_usable_tool_stock(colony, cat_id));
+    let building_crafting_elapsed = productive_elapsed(building_elapsed, productive_tools);
+    match building_type {
+        BuildingType::Field => {
+            // The Field is a role station, not an invisible food faucet. Its worker
+            // is consumed by `advance_designated_farms`, which physically visits
+            // one exterior designation and hauls that plot's selected crop.
+        }
+        BuildingType::Mill => {
+            advance_physical_mill_slot(
+                colony,
+                building_index,
+                gate,
+                building_elapsed,
+                allow_output_haul,
+            );
+        }
+        BuildingType::Sawmill => {
+            advance_physical_sawmill_slot(
+                colony,
+                building_index,
+                gate,
+                building_elapsed,
+                allow_output_haul,
+            );
+        }
+        BuildingType::WoodCutter
+        | BuildingType::StonePrep
+        | BuildingType::Workshop
+        | BuildingType::Smithy
+        | BuildingType::Smelter
+        | BuildingType::Clothier
+        | BuildingType::Tannery => {
+            advance_physical_refiner_slot(
+                colony,
+                building_index,
+                gate,
+                building_crafting_elapsed,
+                productive_tools >= 1.0,
+                allow_output_haul,
+            );
+        }
+        BuildingType::Woodworking => {
+            advance_physical_woodworking_slot(
+                colony,
+                building_index,
+                gate,
+                building_crafting_elapsed,
+                productive_tools >= 1.0,
+                allow_output_haul,
+            );
+        }
+        _ => {}
+    }
 }
 
 fn spendable_production_materials(colony: &ColonyRuntime) -> (f64, f64) {
@@ -13736,6 +13876,7 @@ fn candidate_building_road_route_with_context(
         production_progress: 0.0,
         assigned_cat: None,
         automated_by: None,
+        additional_work_slots: Vec::new(),
         production_queue: default_production_queue(building_type),
         production_paused: false,
         construction_cargo: None,
@@ -15839,9 +15980,17 @@ pub(crate) fn release_role_automation(colony: &mut ColonyRuntime, role: OfficerR
         .filter_map(|building| building.assigned_cat.clone())
         .collect::<BTreeSet<_>>();
     for building in &mut colony.buildings {
-        if building.automated_by == Some(role) {
-            building.assigned_cat = None;
-            building.automated_by = None;
+        while building.automated_by == Some(role) {
+            let Some(cat_id) = building.assigned_cat.clone() else {
+                break;
+            };
+            building.remove_worker(&cat_id);
+        }
+        for slot in &mut building.additional_work_slots {
+            if slot.automated_by == Some(role) {
+                slot.assigned_cat.clear();
+                slot.automated_by = None;
+            }
         }
     }
     for cat_id in farm_workers {
@@ -16253,7 +16402,7 @@ fn select_best_cat_for_labor(
     let assigned_building_ids = colony
         .buildings
         .iter()
-        .filter_map(|building| building.assigned_cat.as_deref())
+        .flat_map(building_worker_ids)
         .collect::<Vec<_>>();
     let available = colony
         .cats
@@ -16564,15 +16713,10 @@ fn queue_job_requested_by(
 
     if let Some(cat_id) = assigned_cat.as_deref() {
         let removed_from_field = colony.buildings.iter().any(|building| {
-            building.assigned_cat.as_deref() == Some(cat_id)
-                && building.building_type == BuildingType::Field
+            building.has_worker(cat_id) && building.building_type == BuildingType::Field
         });
         for building in &mut colony.buildings {
-            if building.assigned_cat.as_deref() == Some(cat_id)
-                && crate::production::building_staff_cap(building.building_type) > 0
-            {
-                building.assigned_cat = None;
-            }
+            building.remove_worker(cat_id);
         }
         if removed_from_field {
             release_farm_worker(colony, cat_id);
@@ -16659,14 +16803,13 @@ fn buildings_needing_workers(
         .buildings
         .iter()
         .filter(|building| {
-            building.building_type == building_type
-                && building.construction_progress >= 100
-                // A persisted worker id is not an occupied station after that cat dies or
-                // disappears from the roster. Treat stale assignments as open so the
-                // normal idle-worker mop-up can replace them deterministically.
-                && assigned_worker(colony, &building.id).is_none()
+            building.building_type == building_type && building.construction_progress >= 100
         })
-        .map(|building| building.id.clone())
+        .flat_map(|building| {
+            let openings = building_staff_cap(colony, building)
+                .saturating_sub(building.worker_count() as u32) as usize;
+            std::iter::repeat_n(building.id.clone(), openings)
+        })
         .collect()
 }
 
@@ -16683,8 +16826,7 @@ fn staff_building(
         .iter_mut()
         .find(|building| building.id == building_id)
     {
-        building.assigned_cat = Some(cat_id.to_owned());
-        building.automated_by = Some(automated_by);
+        building.add_worker(cat_id.to_owned(), Some(automated_by));
     }
     // The raw-material benches are released and re-staffed every tick, so they pass
     // `announce = false` to avoid flooding the log with a per-tick "worker assigned".
@@ -16695,6 +16837,52 @@ fn staff_building(
             EventKind::WorkerAssigned,
             "The leader assigned a worker.",
         );
+    }
+}
+
+fn reconcile_building_work_slots(colony: &mut ColonyRuntime) {
+    let living = colony
+        .cats
+        .iter()
+        .filter(|cat| cat.death_time.is_none())
+        .map(|cat| cat.id.as_str())
+        .collect::<BTreeSet<_>>();
+    for building in &mut colony.buildings {
+        for slot in &mut building.additional_work_slots {
+            if !slot.assigned_cat.is_empty() && !living.contains(slot.assigned_cat.as_str()) {
+                slot.assigned_cat.clear();
+                slot.automated_by = None;
+            }
+        }
+        while building
+            .assigned_cat
+            .as_deref()
+            .is_some_and(|cat_id| !living.contains(cat_id))
+        {
+            let stale = building.assigned_cat.clone().expect("checked as some");
+            building.remove_worker(&stale);
+        }
+        if building.assigned_cat.is_none()
+            && let Some(index) = building
+                .additional_work_slots
+                .iter()
+                .position(|slot| !slot.assigned_cat.is_empty())
+        {
+            let promoted = building.additional_work_slots.remove(index);
+            let vacant = ProductionWorkSlot {
+                assigned_cat: String::new(),
+                automated_by: None,
+                production_progress: building.production_progress,
+                production_queue: std::mem::take(&mut building.production_queue),
+                production_paused: building.production_paused,
+            };
+            building.assigned_cat = Some(promoted.assigned_cat);
+            building.automated_by = promoted.automated_by;
+            building.production_progress = promoted.production_progress;
+            building.production_queue = promoted.production_queue;
+            building.production_paused = promoted.production_paused;
+            building.additional_work_slots.insert(index, vacant);
+        }
     }
 }
 
@@ -18029,6 +18217,7 @@ fn next_claimed_building_site(
                         production_progress: 0.0,
                         assigned_cat: None,
                         automated_by: None,
+                        additional_work_slots: Vec::new(),
                         production_queue: default_production_queue(building_type),
                         production_paused: false,
                         construction_cargo: None,
@@ -19091,11 +19280,26 @@ fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
                 || active_physical_queue && building.production_progress > f64::EPSILON
         });
         if RAW_MATERIAL_WORKSHOPS.contains(&building.building_type)
-            && building.automated_by == Some(OfficerRole::Forester)
+            && (building.automated_by == Some(OfficerRole::Forester)
+                || building
+                    .additional_work_slots
+                    .iter()
+                    .any(|slot| slot.automated_by == Some(OfficerRole::Forester)))
             && !committed_physical_route
         {
-            colony.buildings[index].assigned_cat = None;
-            colony.buildings[index].automated_by = None;
+            while colony.buildings[index].automated_by == Some(OfficerRole::Forester) {
+                let cat_id = colony.buildings[index]
+                    .assigned_cat
+                    .clone()
+                    .expect("automated slot has worker");
+                colony.buildings[index].remove_worker(&cat_id);
+            }
+            for slot in &mut colony.buildings[index].additional_work_slots {
+                if slot.automated_by == Some(OfficerRole::Forester) {
+                    slot.assigned_cat.clear();
+                    slot.automated_by = None;
+                }
+            }
         }
     }
 
@@ -19108,7 +19312,7 @@ fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
             colony
                 .buildings
                 .iter()
-                .filter_map(|building| building.assigned_cat.clone()),
+                .flat_map(|building| building_worker_ids(building).map(str::to_owned)),
         )
         .collect::<BTreeSet<_>>();
     // Compatibility repair for saves produced before raw-bench release also cleared
@@ -19383,16 +19587,33 @@ fn physical_textile_route_committed(colony: &ColonyRuntime, building: &BuildingR
         )
         .is_some_and(|index| stockpile_headroom(colony, index, recipe.output_kind) > f64::EPSILON);
     let local_input = station_inventory_amount(colony, &building.id, false, recipe.input_kind);
-    let active_progress = building.production_progress > f64::EPSILON
-        && local_input + f64::EPSILON >= recipe.input_per_cycle
+    let slot_has_active_progress = |progress: f64, paused: bool, queue: &[ProductionQueueEntry]| {
+        progress > f64::EPSILON
+            && !paused
+            && queue.first().is_some_and(|entry| {
+                entry.recipe_id == recipe.recipe_id
+                    && production_recipe_availability(
+                        colony,
+                        building.building_type,
+                        recipe.recipe_id,
+                    )
+                    .is_some_and(|availability| availability.available)
+            })
+    };
+    let active_progress = local_input + f64::EPSILON >= recipe.input_per_cycle
         && stockpiles::resource_amount(&colony.resources, recipe.input_kind) + f64::EPSILON
             >= recipe.input_per_cycle
-        && !building.production_paused
-        && building.production_queue.first().is_some_and(|entry| {
-            entry.recipe_id == recipe.recipe_id
-                && production_recipe_availability(colony, building.building_type, recipe.recipe_id)
-                    .is_some_and(|availability| availability.available)
-        });
+        && (slot_has_active_progress(
+            building.production_progress,
+            building.production_paused,
+            &building.production_queue,
+        ) || building.additional_work_slots.iter().any(|slot| {
+            slot_has_active_progress(
+                slot.production_progress,
+                slot.production_paused,
+                &slot.production_queue,
+            )
+        }));
     station_cargo || local_output || active_progress
 }
 
@@ -19460,7 +19681,11 @@ fn release_unrunnable_textile_workers(colony: &mut ColonyRuntime) {
             matches!(
                 building.building_type,
                 BuildingType::Clothier | BuildingType::Tannery
-            ) && building.automated_by == Some(OfficerRole::ClothLeader)
+            ) && (building.automated_by == Some(OfficerRole::ClothLeader)
+                || building
+                    .additional_work_slots
+                    .iter()
+                    .any(|slot| slot.automated_by == Some(OfficerRole::ClothLeader)))
                 && {
                     let carrier_committed = colony.cats.iter().any(|cat| {
                         cat.death_time.is_none()
@@ -19473,27 +19698,13 @@ fn release_unrunnable_textile_workers(colony: &mut ColonyRuntime) {
                         && (!office_filled || !physical_textile_needs_worker(colony, building))
                 }
         })
-        .map(|(index, building)| (index, building.assigned_cat.clone()))
+        .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    for (index, cat_id) in release {
-        colony.buildings[index].assigned_cat = None;
-        colony.buildings[index].automated_by = None;
-        let Some(cat_id) = cat_id else {
-            continue;
-        };
-        let job_bound = colony.jobs.iter().any(|job| {
-            matches!(job.status, JobStatus::Active | JobStatus::Queued)
-                && job.assigned_cat.as_deref() == Some(cat_id.as_str())
-        });
-        if !job_bound
-            && let Some(cat) = colony
-                .cats
-                .iter_mut()
-                .find(|cat| cat.id == cat_id && cat.death_time.is_none() && cat.carrying.is_none())
-        {
-            cat.activity = CatActivity::Idle;
-            cat.current_task = None;
-            cat.destination = None;
+    for index in release {
+        let cat_ids = automated_worker_ids(&colony.buildings[index], OfficerRole::ClothLeader);
+        for cat_id in cat_ids {
+            colony.buildings[index].remove_worker(&cat_id);
+            release_idle_building_cat(colony, &cat_id);
         }
     }
 }
@@ -19509,7 +19720,8 @@ fn auto_staff_one_runnable_textile_bench(colony: &mut ColonyRuntime, now_ms: i64
         .buildings
         .iter()
         .filter(|building| {
-            building.assigned_cat.is_none() && physical_textile_needs_worker(colony, building)
+            building.worker_count() < building_staff_cap(colony, building) as usize
+                && physical_textile_needs_worker(colony, building)
         })
         .filter_map(|building| {
             let recipe = active_single_input_physical_recipe(building)?;
@@ -19604,16 +19816,33 @@ fn physical_smithy_route_committed(colony: &ColonyRuntime, building: &BuildingRu
             && nearest_output_pile(colony, kind, tile_pos_to_world(building.position))
                 .is_some_and(|index| stockpile_headroom(colony, index, kind).floor() >= 1.0)
     });
-    let active_progress = active_single_input_physical_recipe(building).is_some_and(|recipe| {
-        building.production_progress > f64::EPSILON
+    let slot_has_active_progress = |progress: f64, paused: bool, queue: &[ProductionQueueEntry]| {
+        let Some(recipe) = queue
+            .first()
+            .and_then(|entry| smithy_physical_recipe(&entry.recipe_id))
+        else {
+            return false;
+        };
+        progress > f64::EPSILON
+            && !paused
             && station_inventory_amount(colony, &building.id, false, recipe.input_kind)
                 + f64::EPSILON
                 >= recipe.input_per_cycle
             && stockpiles::resource_amount(&colony.resources, recipe.input_kind) + f64::EPSILON
                 >= recipe.input_per_cycle
-            && !building.production_paused
             && production_recipe_availability(colony, building.building_type, recipe.recipe_id)
                 .is_some_and(|availability| availability.available)
+    };
+    let active_progress = slot_has_active_progress(
+        building.production_progress,
+        building.production_paused,
+        &building.production_queue,
+    ) || building.additional_work_slots.iter().any(|slot| {
+        slot_has_active_progress(
+            slot.production_progress,
+            slot.production_paused,
+            &slot.production_queue,
+        )
     });
     station_cargo || local_output || active_progress
 }
@@ -19669,7 +19898,11 @@ fn release_unrunnable_smithy_workers(colony: &mut ColonyRuntime) {
         .enumerate()
         .filter(|(_, building)| {
             building.building_type == BuildingType::Smithy
-                && building.automated_by == Some(OfficerRole::Captain)
+                && (building.automated_by == Some(OfficerRole::Captain)
+                    || building
+                        .additional_work_slots
+                        .iter()
+                        .any(|slot| slot.automated_by == Some(OfficerRole::Captain)))
                 && {
                     let carrier_committed = colony.cats.iter().any(|cat| {
                         cat.death_time.is_none()
@@ -19682,28 +19915,47 @@ fn release_unrunnable_smithy_workers(colony: &mut ColonyRuntime) {
                         && (!office_filled || !physical_smithy_needs_worker(colony, building))
                 }
         })
-        .map(|(index, building)| (index, building.assigned_cat.clone()))
+        .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    for (index, cat_id) in release {
-        colony.buildings[index].assigned_cat = None;
-        colony.buildings[index].automated_by = None;
-        let Some(cat_id) = cat_id else {
-            continue;
-        };
-        let job_bound = colony.jobs.iter().any(|job| {
-            matches!(job.status, JobStatus::Active | JobStatus::Queued)
-                && job.assigned_cat.as_deref() == Some(cat_id.as_str())
-        });
-        if !job_bound
-            && let Some(cat) = colony
-                .cats
-                .iter_mut()
-                .find(|cat| cat.id == cat_id && cat.death_time.is_none() && cat.carrying.is_none())
-        {
-            cat.activity = CatActivity::Idle;
-            cat.current_task = None;
-            cat.destination = None;
+    for index in release {
+        let cat_ids = automated_worker_ids(&colony.buildings[index], OfficerRole::Captain);
+        for cat_id in cat_ids {
+            colony.buildings[index].remove_worker(&cat_id);
+            release_idle_building_cat(colony, &cat_id);
         }
+    }
+}
+
+fn automated_worker_ids(building: &BuildingRuntime, role: OfficerRole) -> Vec<CatId> {
+    building
+        .assigned_cat
+        .iter()
+        .filter(|_| building.automated_by == Some(role))
+        .cloned()
+        .chain(
+            building
+                .additional_work_slots
+                .iter()
+                .filter(|slot| slot.automated_by == Some(role) && !slot.assigned_cat.is_empty())
+                .map(|slot| slot.assigned_cat.clone()),
+        )
+        .collect()
+}
+
+fn release_idle_building_cat(colony: &mut ColonyRuntime, cat_id: &str) {
+    let job_bound = colony.jobs.iter().any(|job| {
+        matches!(job.status, JobStatus::Active | JobStatus::Queued)
+            && job.assigned_cat.as_deref() == Some(cat_id)
+    });
+    if !job_bound
+        && let Some(cat) = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == cat_id && cat.death_time.is_none() && cat.carrying.is_none())
+    {
+        cat.activity = CatActivity::Idle;
+        cat.current_task = None;
+        cat.destination = None;
     }
 }
 
@@ -19796,6 +20048,7 @@ fn auto_staff_idle_buildings_matching(
     mut building_allowed: impl FnMut(&ColonyRuntime, &BuildingRuntime) -> bool,
     mut candidate_allowed: impl FnMut(&ColonyRuntime, &Cat) -> bool,
 ) {
+    reconcile_building_work_slots(colony);
     let Some(automated_by) = automation_role_for_building(building_type) else {
         return;
     };
@@ -19875,6 +20128,58 @@ fn assigned_worker<'a>(colony: &'a ColonyRuntime, building_id: &str) -> Option<&
         .find(|cat| cat.id == assigned_cat && cat.death_time.is_none())
 }
 
+/// Buildings whose existing simulation owns one real work station per cat. A researched
+/// slot is enabled only for these domains; passive/storage buildings and the one-route
+/// Field/Accounting state machines must never advertise a worker that cannot act.
+#[must_use]
+pub const fn supports_researched_worker_slots(building_type: BuildingType) -> bool {
+    matches!(
+        building_type,
+        BuildingType::Workshop
+            | BuildingType::WoodCutter
+            | BuildingType::StonePrep
+            | BuildingType::Woodworking
+            | BuildingType::Smithy
+            | BuildingType::Clothier
+            | BuildingType::Tannery
+            | BuildingType::Smelter
+            | BuildingType::Mill
+            | BuildingType::Sawmill
+            | BuildingType::ResearchHut
+            | BuildingType::School
+    )
+}
+
+/// Effective, research-aware worker occupancy. The base slot remains the legacy
+/// `assigned_cat`; each `worker_slots +1` modifier adds exactly one independent station.
+#[must_use]
+pub fn building_staff_cap(colony: &ColonyRuntime, building: &BuildingRuntime) -> u32 {
+    let base = crate::production::building_staff_cap(building.building_type);
+    if base == 0 || !supports_researched_worker_slots(building.building_type) {
+        return base;
+    }
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    base.saturating_add(
+        effects
+            .building(building.building_type.as_str())
+            .worker_slots,
+    )
+}
+
+fn building_worker_ids(building: &BuildingRuntime) -> impl Iterator<Item = &str> {
+    building
+        .assigned_cat
+        .as_deref()
+        .into_iter()
+        .chain(
+            building
+                .additional_work_slots
+                .iter()
+                .map(|slot| slot.assigned_cat.as_str()),
+        )
+        .filter(|cat_id| !cat_id.is_empty())
+}
+
 fn skilled_station_elapsed(base_elapsed: f64, skill: f64) -> f64 {
     base_elapsed * work_rate_multiplier(skill)
 }
@@ -19928,7 +20233,7 @@ fn research_worker_ids(colony: &ColonyRuntime) -> Vec<CatId> {
                 BuildingType::ResearchHut | BuildingType::School
             ) && building.construction_progress >= 100
         })
-        .filter_map(|building| building.assigned_cat.as_deref())
+        .flat_map(building_worker_ids)
         .filter_map(|cat_id| colony.cats.iter().find(|cat| cat.id == cat_id))
         .filter(|cat| cat.death_time.is_none() && !migrant_is_in_transit(colony, &cat.id))
         .filter(|cat| can_work(get_life_stage(cat.age_hours)))
@@ -22040,11 +22345,22 @@ fn begin_station_input_haul(
     true
 }
 
+#[cfg(test)]
 fn advance_physical_mill(
     colony: &mut ColonyRuntime,
     building_index: usize,
     gate: TickGate,
     production_elapsed: f64,
+) {
+    advance_physical_mill_slot(colony, building_index, gate, production_elapsed, true);
+}
+
+fn advance_physical_mill_slot(
+    colony: &mut ColonyRuntime,
+    building_index: usize,
+    gate: TickGate,
+    production_elapsed: f64,
+    allow_output_haul: bool,
 ) {
     ensure_station_stores(colony, building_index);
     let building = colony.buildings[building_index].clone();
@@ -22067,6 +22383,9 @@ fn advance_physical_mill(
     // Finished food leaves first; residual flour is then physically banked before it
     // may return as input for a later flour-first baking cycle.
     for kind in [ResourceKind::Food, ResourceKind::Flour] {
+        if !allow_output_haul {
+            break;
+        }
         if begin_station_output_haul(colony, &building, cat_index, kind, gate) {
             return;
         }
@@ -22230,11 +22549,22 @@ fn advance_physical_mill(
     }
 }
 
+#[cfg(test)]
 fn advance_physical_sawmill(
     colony: &mut ColonyRuntime,
     building_index: usize,
     gate: TickGate,
     production_elapsed: f64,
+) {
+    advance_physical_sawmill_slot(colony, building_index, gate, production_elapsed, true);
+}
+
+fn advance_physical_sawmill_slot(
+    colony: &mut ColonyRuntime,
+    building_index: usize,
+    gate: TickGate,
+    production_elapsed: f64,
+    allow_output_haul: bool,
 ) {
     ensure_station_stores(colony, building_index);
     let building = colony.buildings[building_index].clone();
@@ -22254,7 +22584,9 @@ fn advance_physical_sawmill(
         return;
     }
 
-    if begin_station_output_haul(colony, &building, cat_index, ResourceKind::Lumber, gate) {
+    if allow_output_haul
+        && begin_station_output_haul(colony, &building, cat_index, ResourceKind::Lumber, gate)
+    {
         return;
     }
 
@@ -22371,12 +22703,31 @@ fn advance_physical_sawmill(
 /// of the aggregate ledger while visible in ordinary, transit, or station-input
 /// storage; outputs become aggregate stock only after their outbound carrier
 /// reaches a finite accepting pile.
+#[cfg(test)]
 fn advance_physical_refiner(
     colony: &mut ColonyRuntime,
     building_index: usize,
     gate: TickGate,
     production_elapsed: f64,
     tools_contributed: bool,
+) {
+    advance_physical_refiner_slot(
+        colony,
+        building_index,
+        gate,
+        production_elapsed,
+        tools_contributed,
+        true,
+    );
+}
+
+fn advance_physical_refiner_slot(
+    colony: &mut ColonyRuntime,
+    building_index: usize,
+    gate: TickGate,
+    production_elapsed: f64,
+    tools_contributed: bool,
+    allow_output_haul: bool,
 ) {
     let building_type = colony.buildings[building_index].building_type;
     ensure_station_stores(colony, building_index);
@@ -22397,7 +22748,7 @@ fn advance_physical_refiner(
         return;
     }
 
-    if building_type == BuildingType::Smithy {
+    if allow_output_haul && building_type == BuildingType::Smithy {
         for kind in [
             ResourceKind::Weapons,
             ResourceKind::Armor,
@@ -22407,7 +22758,8 @@ fn advance_physical_refiner(
                 return;
             }
         }
-    } else if let Some(recipe) = single_input_physical_recipe(building_type)
+    } else if allow_output_haul
+        && let Some(recipe) = single_input_physical_recipe(building_type)
         && begin_station_output_haul(colony, &building, cat_index, recipe.output_kind, gate)
     {
         return;
@@ -22605,12 +22957,31 @@ fn advance_physical_refiner(
 /// inputs. Planks and Blocks remain aggregate stock while moving between finite
 /// locations, are consumed atomically at the bench, and become scalar Tools only
 /// after the finished whole unit reaches ordinary storage.
+#[cfg(test)]
 fn advance_physical_woodworking(
     colony: &mut ColonyRuntime,
     building_index: usize,
     gate: TickGate,
     production_elapsed: f64,
     tools_contributed: bool,
+) {
+    advance_physical_woodworking_slot(
+        colony,
+        building_index,
+        gate,
+        production_elapsed,
+        tools_contributed,
+        true,
+    );
+}
+
+fn advance_physical_woodworking_slot(
+    colony: &mut ColonyRuntime,
+    building_index: usize,
+    gate: TickGate,
+    production_elapsed: f64,
+    tools_contributed: bool,
+    allow_output_haul: bool,
 ) {
     let building_type = colony.buildings[building_index].building_type;
     let Some(recipe) = twin_input_physical_recipe(building_type) else {
@@ -22634,7 +23005,9 @@ fn advance_physical_woodworking(
         return;
     }
 
-    if begin_station_output_haul(colony, &building, cat_index, recipe.output_kind, gate) {
+    if allow_output_haul
+        && begin_station_output_haul(colony, &building, cat_index, recipe.output_kind, gate)
+    {
         return;
     }
     if !production_recipe_availability(colony, building_type, recipe.recipe_id)
@@ -26086,6 +26459,7 @@ mod tests {
                         production_progress: 0.0,
                         assigned_cat: None,
                         automated_by: None,
+                        additional_work_slots: Vec::new(),
                         production_queue: crate::world_tick::default_production_queue(
                             BuildingType::Shrine,
                         ),
@@ -26102,6 +26476,7 @@ mod tests {
                         production_progress: 0.0,
                         assigned_cat: None,
                         automated_by: None,
+                        additional_work_slots: Vec::new(),
                         production_queue: crate::world_tick::default_production_queue(
                             BuildingType::Field,
                         ),
@@ -28354,6 +28729,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
             construction_cargo: None,
@@ -31018,6 +31394,7 @@ mod tests {
                 production_progress: 590.0,
                 assigned_cat: Some("smith".to_owned()),
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(
                     BuildingType::Workshop,
                 ),
@@ -31269,6 +31646,7 @@ mod tests {
                 production_progress: 590.0,
                 assigned_cat: staffed.then(|| "crafter".to_owned()),
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: default_production_queue(building_type),
                 production_paused: false,
                 construction_cargo: None,
@@ -31279,6 +31657,176 @@ mod tests {
         };
         reconcile_colony_stockpiles(&mut colony);
         colony
+    }
+
+    fn two_worker_wood_cutter() -> ColonyRuntime {
+        let mut colony = chain_colony(
+            BuildingType::WoodCutter,
+            Resources {
+                logs: 10.0,
+                food: 100.0,
+                water: 100.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.buildings[0].production_progress = 0.0;
+        colony.buildings[0].production_queue[0].repeat = false;
+        colony.cats.push(adult_idle_cat("second", "colony-1"));
+        colony.buildings[0].additional_work_slots = vec![ProductionWorkSlot {
+            assigned_cat: "second".to_owned(),
+            automated_by: None,
+            production_progress: 0.0,
+            production_queue: vec![ProductionQueueEntry {
+                recipe_id: crate::station_recipes::LOGS_TO_PLANKS_RECIPE_ID.to_owned(),
+                repeat: false,
+            }],
+            production_paused: false,
+        }];
+        seed_station_input_at_worker(&mut colony, ResourceKind::Logs, 10.0);
+        let work = station_work_point(&colony.buildings[0]);
+        for cat in &mut colony.cats {
+            cat.position = position_from_world(work);
+            cat.activity = CatActivity::Idle;
+            cat.destination = None;
+            cat.carrying = None;
+        }
+        colony
+    }
+
+    #[test]
+    fn worker_slot_studies_raise_only_real_station_caps() {
+        let mut colony = ColonyRuntime::default();
+        for (id, building_type) in [
+            ("workshop", BuildingType::Workshop),
+            ("research", BuildingType::ResearchHut),
+            ("den", BuildingType::Den),
+            ("field", BuildingType::Field),
+            ("accounting", BuildingType::AccountingTent),
+        ] {
+            colony.buildings.push(BuildingRuntime {
+                id: id.to_owned(),
+                building_type,
+                is_complete: true,
+                construction_progress: 100,
+                ..BuildingRuntime::default()
+            });
+        }
+        for study in [
+            "workshop_crews",
+            "research_hut_crews",
+            "den_crews",
+            "field_crews",
+            "accounting_tent_crews",
+        ] {
+            grant_fixture_node_chain(&mut colony.upgrade_tree, study);
+        }
+
+        let cap = |id| {
+            let building = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == id)
+                .unwrap();
+            building_staff_cap(&colony, building)
+        };
+        assert_eq!(cap("workshop"), 2);
+        assert_eq!(cap("research"), 2);
+        assert_eq!(cap("den"), 0);
+        assert_eq!(cap("field"), 1);
+        assert_eq!(cap("accounting"), 1);
+    }
+
+    #[test]
+    fn two_physical_workers_own_independent_work_and_conserve_shared_inputs() {
+        let mut colony = two_worker_wood_cutter();
+        phase_23_production(&mut colony, production_gate(600, 600_000), 1);
+
+        assert_eq!(
+            building_station_inventory(&colony, &colony.buildings[0], true),
+            [(ResourceKind::Planks, 2.0)]
+        );
+        assert_eq!(colony.resources.logs, 0.0);
+        assert!(colony.buildings[0].production_queue.is_empty());
+        assert!(
+            colony.buildings[0].additional_work_slots[0]
+                .production_queue
+                .is_empty()
+        );
+        assert!(colony.cats[0].skill(Labor::Process) > 0.0);
+        assert!(colony.cats[1].skill(Labor::Process) > 0.0);
+    }
+
+    #[test]
+    fn multi_worker_station_is_tick_partition_invariant() {
+        let mut single = two_worker_wood_cutter();
+        let mut partitioned = single.clone();
+
+        phase_23_production(&mut single, production_gate(600, 600_000), 1);
+        for second in 1..=60 {
+            phase_23_production(&mut partitioned, production_gate(10, second * 10_000), 1);
+        }
+
+        assert_eq!(single.resources, partitioned.resources);
+        assert_eq!(single.stockpiles, partitioned.stockpiles);
+        assert_eq!(single.buildings, partitioned.buildings);
+        assert_eq!(single.cats[0].skills, partitioned.cats[0].skills);
+        assert_eq!(single.cats[1].skills, partitioned.cats[1].skills);
+    }
+
+    #[test]
+    fn dead_primary_promotes_the_oldest_slot_without_losing_owned_work() {
+        let mut colony = two_worker_wood_cutter();
+        colony.buildings[0].additional_work_slots[0].production_progress = 123.0;
+        colony.cats[0].death_time = Some(50_000);
+
+        reconcile_building_work_slots(&mut colony);
+
+        let building = &colony.buildings[0];
+        assert_eq!(building.assigned_cat.as_deref(), Some("second"));
+        assert_eq!(building.production_progress, 123.0);
+        assert_eq!(building.additional_work_slots.len(), 1);
+        assert!(building.additional_work_slots[0].assigned_cat.is_empty());
+        assert_eq!(building.additional_work_slots[0].production_progress, 0.0);
+    }
+
+    fn run_passive_crews_campaign(seed: u32) -> (ColonyRuntime, bool) {
+        let mut world = new_world(seed);
+        let mut colony = found_colony(seed, "colony-1", 10_000, seed);
+        grant_fixture_node_chain(&mut colony.upgrade_tree, "wood_cutter_crews");
+        establish_office(&mut colony, OfficerRole::Forester);
+        colony.resources.food = 200.0;
+        colony.resources.water = 200.0;
+        colony.resources.logs = 40.0;
+        reconcile_colony_stockpiles(&mut colony);
+        world.colonies.push(colony);
+
+        let mut saw_two_workers = false;
+        for minute in 1..=120 {
+            let now = 10_000 + i64::from(minute) * 60_000;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None, "passive minute {minute}");
+            saw_two_workers |= world.colonies[0].buildings.iter().any(|building| {
+                building.building_type == BuildingType::WoodCutter && building.worker_count() == 2
+            });
+        }
+        (world.colonies.remove(0), saw_two_workers)
+    }
+
+    #[test]
+    fn passive_officer_crews_campaign_is_deterministic_and_uses_the_researched_station() {
+        let left = run_passive_crews_campaign(4_242);
+        let right = run_passive_crews_campaign(4_242);
+
+        assert_eq!(left, right, "passive Crews campaign diverged");
+        assert!(
+            left.1,
+            "Forester never filled the researched second station"
+        );
+        assert!(
+            left.0.resources.planks > 0.0,
+            "passive multi-worker campaign produced no physical planks"
+        );
     }
 
     fn place_chain_worker_at_seeded_store(colony: &mut ColonyRuntime) {
@@ -31485,6 +32033,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: default_production_queue(BuildingType::Field),
                 production_paused: false,
                 construction_cargo: None,
@@ -32724,6 +33273,7 @@ mod tests {
                         production_progress: 590.0,
                         assigned_cat: Some(format!("raw-{}", if index == 0 { 'a' } else { 'b' })),
                         automated_by: None,
+                        additional_work_slots: Vec::new(),
                         production_queue: default_production_queue(building_type),
                         production_paused: false,
                         construction_cargo: None,
@@ -32809,6 +33359,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: Some("farmer".to_owned()),
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
             production_paused: false,
             construction_cargo: None,
@@ -33402,6 +33953,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: Some("farmer".to_owned()),
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: Vec::new(),
                 production_paused: false,
                 construction_cargo: None,
@@ -33526,6 +34078,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: Some("farmer".to_owned()),
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: Vec::new(),
                 production_paused: false,
                 construction_cargo: None,
@@ -35514,6 +36067,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Sawmill),
             production_paused: false,
             construction_cargo: None,
@@ -37450,6 +38004,73 @@ mod tests {
             manual_kept.buildings[0].assigned_cat.as_deref(),
             Some("crafter")
         );
+    }
+
+    #[test]
+    fn automated_extra_station_is_kept_for_committed_work_then_released_without_touching_manual() {
+        for (building_type, role, input_kind, input_amount, progress) in [
+            (
+                BuildingType::Clothier,
+                OfficerRole::ClothLeader,
+                ResourceKind::Fibre,
+                5.0,
+                300.0,
+            ),
+            (
+                BuildingType::Smithy,
+                OfficerRole::Captain,
+                ResourceKind::Metal,
+                2.0,
+                450.0,
+            ),
+        ] {
+            let mut resources = Resources::default();
+            stockpiles::set_resource(&mut resources, input_kind, input_amount);
+            let mut colony = chain_colony(building_type, resources, true);
+            colony.buildings[0].production_progress = 0.0;
+            if building_type == BuildingType::Smithy {
+                colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+                    recipe_id: SMITHY_WEAPON_RECIPE_ID.to_owned(),
+                    repeat: true,
+                }];
+            }
+            colony
+                .cats
+                .push(adult_idle_cat("automated-extra", "colony-1"));
+            colony.officers.insert(role, "crafter".to_owned());
+            let queue = colony.buildings[0].production_queue.clone();
+            colony.buildings[0].additional_work_slots = vec![ProductionWorkSlot {
+                assigned_cat: "automated-extra".to_owned(),
+                automated_by: Some(role),
+                production_progress: progress,
+                production_queue: queue,
+                production_paused: false,
+            }];
+            move_general_stock_to_station_input(&mut colony, input_kind, input_amount);
+
+            match building_type {
+                BuildingType::Clothier => release_unrunnable_textile_workers(&mut colony),
+                BuildingType::Smithy => release_unrunnable_smithy_workers(&mut colony),
+                _ => unreachable!(),
+            }
+            assert!(
+                colony.buildings[0].has_worker("automated-extra"),
+                "{building_type:?} stranded committed extra-slot work"
+            );
+
+            colony.buildings[0].additional_work_slots[0].production_progress = 0.0;
+            match building_type {
+                BuildingType::Clothier => release_unrunnable_textile_workers(&mut colony),
+                BuildingType::Smithy => release_unrunnable_smithy_workers(&mut colony),
+                _ => unreachable!(),
+            }
+            assert!(!colony.buildings[0].has_worker("automated-extra"));
+            assert_eq!(
+                colony.buildings[0].assigned_cat.as_deref(),
+                Some("crafter"),
+                "manual primary must survive officer release"
+            );
+        }
     }
 
     #[test]
@@ -40583,6 +41204,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: default_production_queue(BuildingType::Field),
             production_paused: false,
             construction_cargo: None,
@@ -40646,6 +41268,7 @@ mod tests {
             production_progress: 590.0,
             assigned_cat: Some("stone-worker".to_owned()),
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::StonePrep),
             production_paused: false,
             construction_cargo: None,
@@ -40723,6 +41346,7 @@ mod tests {
             production_progress: 590.0,
             assigned_cat: Some("stone-worker".to_owned()),
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::StonePrep),
             production_paused: false,
             construction_cargo: None,
@@ -40785,6 +41409,7 @@ mod tests {
             production_progress: 590.0,
             assigned_cat: Some("smith".to_owned()),
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Smithy),
             production_paused: false,
             construction_cargo: None,
@@ -42466,6 +43091,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
             construction_cargo: None,
@@ -42501,6 +43127,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(
                     BuildingType::Workshop,
                 ),
@@ -43085,6 +43712,7 @@ mod tests {
                     production_progress: 0.0,
                     assigned_cat: Some("book".to_owned()),
                     automated_by: None,
+                    additional_work_slots: Vec::new(),
                     production_queue: crate::world_tick::default_production_queue(
                         BuildingType::AccountingTent,
                     ),
@@ -44387,6 +45015,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: Some(smelter_cat_id),
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Smelter),
             production_paused: false,
             construction_cargo: None,
@@ -45069,6 +45698,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(
                 BuildingType::ResearchHut,
             ),
@@ -45229,6 +45859,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
             construction_cargo: None,
@@ -46557,6 +47188,7 @@ mod tests {
                     production_progress: 0.0,
                     assigned_cat: None,
                     automated_by: None,
+                    additional_work_slots: Vec::new(),
                     production_queue: crate::world_tick::default_production_queue(
                         BuildingType::Shrine,
                     ),
@@ -46573,6 +47205,7 @@ mod tests {
                     production_progress: 0.0,
                     assigned_cat: None,
                     automated_by: None,
+                    additional_work_slots: Vec::new(),
                     production_queue: crate::world_tick::default_production_queue(
                         BuildingType::Den,
                     ),
@@ -46669,6 +47302,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
             construction_cargo: None,
@@ -47199,6 +47833,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
             construction_cargo: None,
@@ -50986,6 +51621,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: Some("farmer".to_owned()),
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
                 production_paused: false,
                 construction_cargo: None,
@@ -52020,6 +52656,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
             construction_cargo: None,
@@ -52209,6 +52846,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
             construction_cargo: None,
@@ -52241,6 +52879,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
             construction_cargo: None,
@@ -52280,6 +52919,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
             construction_cargo: None,
@@ -52442,6 +53082,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
                 production_paused: false,
                 construction_cargo: None,
@@ -52610,6 +53251,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(
                     BuildingType::Workshop,
                 ),
@@ -52634,6 +53276,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
             construction_cargo: None,
@@ -52649,6 +53292,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Beds),
                 production_paused: false,
                 construction_cargo: None,
@@ -52884,6 +53528,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
                 production_paused: false,
                 construction_cargo: None,
@@ -56138,6 +56783,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Shrine),
             production_paused: false,
             construction_cargo: None,
@@ -56152,6 +56798,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
             construction_cargo: None,
@@ -56166,6 +56813,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Workshop),
             production_paused: false,
             construction_cargo: None,
@@ -56345,6 +56993,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Shrine),
             production_paused: false,
             construction_cargo: None,
@@ -56359,6 +57008,7 @@ mod tests {
             production_progress: 0.0,
             assigned_cat: None,
             automated_by: None,
+            additional_work_slots: Vec::new(),
             production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
             production_paused: false,
             construction_cargo: None,
@@ -56726,6 +57376,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
                 production_paused: false,
                 construction_cargo: None,
@@ -56805,6 +57456,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Field),
                 production_paused: false,
                 construction_cargo: None,
@@ -56891,6 +57543,7 @@ mod tests {
                 production_progress: 0.0,
                 assigned_cat: None,
                 automated_by: None,
+                additional_work_slots: Vec::new(),
                 production_queue: crate::world_tick::default_production_queue(BuildingType::Den),
                 production_paused: false,
                 construction_cargo: None,

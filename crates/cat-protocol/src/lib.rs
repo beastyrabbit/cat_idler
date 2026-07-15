@@ -1244,6 +1244,10 @@ pub struct BuildingSnapshot {
     /// to 0 for pre-staffing snapshots.
     #[serde(default)]
     pub staff_cap: u32,
+    /// Per-cat durable station state. Slot zero mirrors the legacy building-level
+    /// queue/progress fields; researched slots follow in deterministic assignment order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_slots: Vec<ProductionWorkSlotSnapshot>,
     /// 0.0..=1.0 through the current production cycle, for buildings that craft on a
     /// timer (workshop/benches/smithy). 0.0 for buildings with no active cycle,
     /// including fields (which add yield continuously rather than completing cycles)
@@ -1319,6 +1323,20 @@ pub struct BuildingSnapshot {
     /// Stable physical logistics state for the scaffold inspector.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub construction_block_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionWorkSlotSnapshot {
+    pub cat_id: String,
+    #[serde(default)]
+    pub production_progress: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub production_queue: Vec<ProductionQueueEntrySnapshot>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub production_paused: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automated_by: Option<OfficerRole>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1893,6 +1911,16 @@ pub enum ClientAction {
         building_id: String,
         edit: ProductionQueueEdit,
     },
+    /// Edit one exact cat-owned station slot. Additive counterpart to the legacy
+    /// building-level action, which continues to address slot zero.
+    EditProductionWorkSlot {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        building_id: String,
+        cat_id: String,
+        edit: ProductionQueueEdit,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2038,6 +2066,14 @@ mod tests {
                     index: 3,
                     direction: QueueMoveDirection::Up,
                 },
+            },
+            ClientAction::EditProductionWorkSlot {
+                session_id: "session_1".to_owned(),
+                nickname: "Player".to_owned(),
+                sig: "signed".to_owned(),
+                building_id: "sawmill_2".to_owned(),
+                cat_id: "cat_8".to_owned(),
+                edit: ProductionQueueEdit::SetPaused { paused: true },
             },
         ];
         for action in actions {
@@ -3361,6 +3397,7 @@ mod tests {
             serde_json::from_value(old_payload).expect("deserialize old payload");
         assert_eq!(decoded.staff_count, 0);
         assert_eq!(decoded.staff_cap, 0);
+        assert!(decoded.work_slots.is_empty());
         assert_eq!(decoded.production_progress, 0.0);
         assert_eq!(decoded.production_output, None);
         assert_eq!(decoded.inbound_haul, 0.0);

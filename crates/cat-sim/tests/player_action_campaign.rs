@@ -26,7 +26,7 @@ use cat_sim::{
     zones::ZoneRect,
 };
 
-const EXPECTED_ACTIONS: [&str; 40] = [
+const EXPECTED_ACTIONS: [&str; 41] = [
     "advance_time",
     "assign_officer",
     "assign_worker",
@@ -44,6 +44,7 @@ const EXPECTED_ACTIONS: [&str; 40] = [
     "designate_stockpile",
     "dispatch_scout",
     "edit_production_queue",
+    "edit_production_work_slot",
     "ensure",
     "found_village",
     "haul_gather_spot",
@@ -113,6 +114,7 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::BoostCat { .. } => "boost_cat",
         proto::ClientAction::SetCatLaborPreference { .. } => "set_cat_labor_preference",
         proto::ClientAction::EditProductionQueue { .. } => "edit_production_queue",
+        proto::ClientAction::EditProductionWorkSlot { .. } => "edit_production_work_slot",
         proto::ClientAction::RepairItem { .. } => "repair_item",
         proto::ClientAction::EquipItem { .. } => "equip_item",
         proto::ClientAction::UnequipItem { .. } => "unequip_item",
@@ -159,6 +161,11 @@ fn reset_workers(world: &mut WorldState) {
     }
     for building in &mut colony.buildings {
         building.assigned_cat = None;
+        building.automated_by = None;
+        for slot in &mut building.additional_work_slots {
+            slot.assigned_cat.clear();
+            slot.automated_by = None;
+        }
     }
 }
 
@@ -173,6 +180,7 @@ fn complete_building(id: impl Into<String>, building_type: BuildingType) -> Buil
         production_progress: 0.0,
         assigned_cat: None,
         automated_by: None,
+        additional_work_slots: Vec::new(),
         production_queue: cat_sim::world_tick::default_production_queue(building_type),
         production_paused: false,
         construction_cargo: None,
@@ -762,6 +770,51 @@ fn run_action_campaign() -> WorldState {
             .expect("campaign sawmill")
             .production_paused
     );
+
+    // Crews research exposes a second independently controlled station through the
+    // same signed player boundary used by the live client.
+    world.colonies[0]
+        .upgrade_tree
+        .owned_node_ids
+        .push("sawmill_crews".to_owned());
+    let second_worker_id = world.colonies[0].cats[1].id.clone();
+    for cat_id in [&worker_id, &second_worker_id] {
+        let (session_id, nickname, sig) = signed_fields();
+        apply_ok(
+            &mut world,
+            &mut coverage,
+            proto::ClientAction::AssignWorker {
+                session_id,
+                nickname,
+                sig,
+                cat_id: cat_id.clone(),
+                building_id: Some("campaign-sawmill".to_owned()),
+            },
+            &ctx(6_280),
+        );
+    }
+    let (session_id, nickname, sig) = signed_fields();
+    apply_ok(
+        &mut world,
+        &mut coverage,
+        proto::ClientAction::EditProductionWorkSlot {
+            session_id,
+            nickname,
+            sig,
+            building_id: "campaign-sawmill".to_owned(),
+            cat_id: second_worker_id.clone(),
+            edit: proto::ProductionQueueEdit::SetPaused { paused: true },
+        },
+        &ctx(6_285),
+    );
+    let sawmill = world.colonies[0]
+        .buildings
+        .iter()
+        .find(|building| building.id == "campaign-sawmill")
+        .expect("campaign sawmill");
+    assert_eq!(sawmill.worker_count(), 2);
+    assert!(sawmill.additional_work_slots[0].production_paused);
+    reset_workers(&mut world);
 
     for role in [
         proto::OfficerRole::Steward,

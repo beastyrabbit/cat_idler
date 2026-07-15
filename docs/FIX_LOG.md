@@ -10,7 +10,6 @@ and any changed Bevy visuals have been verified.
 | Finding | Required correction | State |
 | --- | --- | --- |
 | Research recipe/resource breadth remains incomplete | Thirteen maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: ten are research-gated and three are founding baselines. All thirteen execute through physical queues. The explicit Grain→Flour, Flour→Food, and Metal→exact Tool routes are live. The other 91 generated recipe IDs and all 64 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
-| Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Bone now has a finite physical hunt source, storage/trade/persistence/HUD identity, and conserved final haul, but its crafting variants remain incomplete; Gem, clay, and sand still lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
@@ -77,6 +76,41 @@ every card is marked FUTURE, the selected inspector says “Planned content — 
 and the frame is rendered rather than black. The temporary staging/capture systems were removed.
 Final gates pass 1,267 simulation (one intentional skip), 46 protocol, 98 server, and 145 client
 tests plus strict four-crate Clippy, formatting, and diff checks.
+
+## 2026-07-15 — Crews research owns real independent work stations
+
+**Problem:** Every generated building family advertised a `worker_slots +1` Crews study, but
+the runtime, save, socket, and client could represent only one worker. Buying any of those 25
+studies therefore produced no observable effect.
+
+**Fix:** The twelve building families which already own real physical labor now gain one durable
+station when their exact Crews study is owned: Workshop, Wood Cutter, Stone Prep, Woodworking,
+Smithy, Clothier, Tannery, Smelter, Mill, Sawmill, Research Hut, and School. Each station owns its
+worker, automation provenance, selected recipe queue, pause state, and fractional progress.
+Physical processor stations share the building's finite input/output stores and contend in stable
+slot order, so a second paw can neither duplicate inputs nor mint output. Player assignment,
+officer automation, death, release, reassignment, old saves, SQLite restart, snapshots, and the
+Bevy station inspector all use that same state. The inspector lets the player select a station and
+edit only its queue.
+
+The other thirteen catalog nodes remain visible and explicitly say `(future)`, but cannot be
+purchased and cannot block the following study: Den, Food Storage, Water Bowl, Beds, Herb Garden,
+Nursery, Elder Corner, Walls, Mouse Farm, Shrine, Field, Accounting Tent, and Barracks do not yet
+own an independent labor station. This is deliberate truthfulness, not invented work for passive
+storage, housing, walls, or ritual structures. Field and Accounting Tent retain their existing
+single physical route until those state machines can safely support concurrent ownership.
+
+**Evidence:** Research-cap isolation, independent same/different queues, finite shared-input
+conservation, per-worker skill/tool attribution, death promotion without lost work, deterministic
+tick partitioning, signed assignment and exact-station controls, legacy/default wire shapes, and
+SQLite restart are regression-covered. Passive officer and signed player-guided campaigns exercise
+the no-input and directed paths. The accepted client-owned 1090×2105 RGB framebuffer
+`/tmp/crews-work-stations.png` (SHA-256
+`9b4082ce125d7ef64420ed8c66c003c5070b8ed95f12b69ea6feb730b0125b75`) was captured against a
+booted authoritative server and visually inspected: the selected Woodworking inspector shows
+`staffed: 2/2`, two independently progressed stations (35% and 68%, the second paused), and the
+worker selector plus exact queue controls without clipping. The capture-only staging system and
+both processes were removed before the final gates.
 
 ## 2026-07-15 — Functional equipment has one finite physical authority
 

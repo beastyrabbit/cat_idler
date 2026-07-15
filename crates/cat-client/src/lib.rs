@@ -2187,6 +2187,7 @@ struct StationQueueText;
 #[derive(Component, Clone, Copy)]
 enum StationQueueButton {
     Add,
+    SelectWorker,
     SelectNext,
     MoveUp,
     MoveDown,
@@ -2197,6 +2198,7 @@ enum StationQueueButton {
 #[derive(Resource, Default)]
 struct StationQueueUi {
     selected: usize,
+    worker_selected: usize,
 }
 /// Marker for the HUD colony header text (name / leader / pop / threat).
 #[derive(Component)]
@@ -4766,6 +4768,7 @@ fn setup(
                     controls.spawn(bottom_bar_row_node()).with_children(|row| {
                         for (kind, label) in [
                             (StationQueueButton::Add, "+ recipe"),
+                            (StationQueueButton::SelectWorker, "worker"),
                             (StationQueueButton::SelectNext, "next"),
                             (StationQueueButton::MoveUp, "up"),
                             (StationQueueButton::MoveDown, "down"),
@@ -7542,35 +7545,49 @@ fn update_station_queue_controls(
         return;
     };
     panel.display = Display::Flex;
-    if building.production_queue.is_empty() {
+    ui.worker_selected = ui
+        .worker_selected
+        .min(building.work_slots.len().saturating_sub(1));
+    let slot = building.work_slots.get(ui.worker_selected);
+    let queue = slot.map_or(building.production_queue.as_slice(), |slot| {
+        slot.production_queue.as_slice()
+    });
+    let paused = slot.map_or(building.production_paused, |slot| slot.production_paused);
+    let worker_label = slot.map_or_else(
+        || "legacy slot".to_owned(),
+        |slot| {
+            if slot.cat_id.is_empty() {
+                return "open station".to_owned();
+            }
+            latest
+                .0
+                .as_ref()
+                .and_then(|world| world.colonies.first())
+                .and_then(|colony| colony.cats.iter().find(|cat| cat.id == slot.cat_id))
+                .map_or_else(|| slot.cat_id.clone(), |cat| cat.name.clone())
+        },
+    );
+    if queue.is_empty() {
         ui.selected = 0;
         text.0 = format!(
-            "queue empty — add {} | {}",
+            "{worker_label} — queue empty — add {} | {}",
             building
                 .available_recipes
                 .first()
                 .map_or("recipe", |recipe| recipe.as_str())
                 .replace('_', " "),
-            if building.production_paused {
-                "paused"
-            } else {
-                "running"
-            }
+            if paused { "paused" } else { "running" }
         );
     } else {
-        ui.selected = ui.selected.min(building.production_queue.len() - 1);
-        let entry = &building.production_queue[ui.selected];
+        ui.selected = ui.selected.min(queue.len() - 1);
+        let entry = &queue[ui.selected];
         text.0 = format!(
-            "queue {}/{}: {}{} | {}",
+            "{worker_label} — queue {}/{}: {}{} | {}",
             ui.selected + 1,
-            building.production_queue.len(),
+            queue.len(),
             entry.recipe_id.replace('_', " "),
             if entry.repeat { " (repeat)" } else { " (once)" },
-            if building.production_paused {
-                "paused"
-            } else {
-                "running"
-            },
+            if paused { "paused" } else { "running" },
         );
     }
 }
@@ -7596,31 +7613,56 @@ fn handle_station_queue_buttons(
         if *interaction != Interaction::Pressed {
             continue;
         }
+        if matches!(button, StationQueueButton::SelectWorker) {
+            if !building.work_slots.is_empty() {
+                ui.worker_selected = (ui.worker_selected + 1) % building.work_slots.len();
+                ui.selected = 0;
+            }
+            continue;
+        }
         if matches!(button, StationQueueButton::SelectNext) {
-            if !building.production_queue.is_empty() {
-                ui.selected = (ui.selected + 1) % building.production_queue.len();
+            let queue_len = building
+                .work_slots
+                .get(ui.worker_selected)
+                .map_or(building.production_queue.len(), |slot| {
+                    slot.production_queue.len()
+                });
+            if queue_len > 0 {
+                ui.selected = (ui.selected + 1) % queue_len;
             }
             continue;
         }
         if !session.ready {
             continue;
         }
-        let Some(action) = station_queue_action(&session, building, ui.selected, *button) else {
+        let Some(action) = station_queue_action_for_worker(
+            &session,
+            building,
+            ui.worker_selected,
+            ui.selected,
+            *button,
+        ) else {
             continue;
         };
         outgoing.0.push(action);
     }
 }
 
-fn station_queue_action(
+fn station_queue_action_for_worker(
     session: &Session,
     building: &BuildingSnapshot,
+    worker_selected: usize,
     selected: usize,
     button: StationQueueButton,
 ) -> Option<ClientAction> {
     if !session.ready {
         return None;
     }
+    let slot = building.work_slots.get(worker_selected);
+    let queue = slot.map_or(building.production_queue.as_slice(), |slot| {
+        slot.production_queue.as_slice()
+    });
+    let paused = slot.map_or(building.production_paused, |slot| slot.production_paused);
     let edit = match button {
         StationQueueButton::Add => ProductionQueueEdit::Add {
             recipe_id: building.available_recipes.first()?.clone(),
@@ -7636,24 +7678,43 @@ fn station_queue_action(
         },
         StationQueueButton::Remove => ProductionQueueEdit::Remove { index: selected },
         StationQueueButton::ToggleRepeat => {
-            let entry = building.production_queue.get(selected)?;
+            let entry = queue.get(selected)?;
             ProductionQueueEdit::SetRepeat {
                 index: selected,
                 repeat: !entry.repeat,
             }
         }
-        StationQueueButton::TogglePause => ProductionQueueEdit::SetPaused {
-            paused: !building.production_paused,
-        },
-        StationQueueButton::SelectNext => return None,
+        StationQueueButton::TogglePause => ProductionQueueEdit::SetPaused { paused: !paused },
+        StationQueueButton::SelectWorker | StationQueueButton::SelectNext => return None,
     };
-    Some(ClientAction::EditProductionQueue {
-        session_id: session.session_id.clone(),
-        nickname: "Desktop Cat".to_owned(),
-        sig: session.sig.clone(),
-        building_id: building.id.clone(),
-        edit,
+    Some(if let Some(slot) = slot {
+        ClientAction::EditProductionWorkSlot {
+            session_id: session.session_id.clone(),
+            nickname: "Desktop Cat".to_owned(),
+            sig: session.sig.clone(),
+            building_id: building.id.clone(),
+            cat_id: slot.cat_id.clone(),
+            edit,
+        }
+    } else {
+        ClientAction::EditProductionQueue {
+            session_id: session.session_id.clone(),
+            nickname: "Desktop Cat".to_owned(),
+            sig: session.sig.clone(),
+            building_id: building.id.clone(),
+            edit,
+        }
     })
+}
+
+#[cfg(test)]
+fn station_queue_action(
+    session: &Session,
+    building: &BuildingSnapshot,
+    selected: usize,
+    button: StationQueueButton,
+) -> Option<ClientAction> {
+    station_queue_action_for_worker(session, building, 0, selected, button)
 }
 
 /// The currently selected, still-living cat in the latest snapshot (if any).
@@ -10906,6 +10967,36 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
                 .collect::<Vec<_>>()
                 .join(" -> ")
         ));
+    }
+    if building.work_slots.len() > 1 {
+        out.push_str("\nwork stations:");
+        for (index, slot) in building.work_slots.iter().enumerate() {
+            let worker = if slot.cat_id.is_empty() {
+                "open station"
+            } else {
+                colony
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == slot.cat_id)
+                    .map_or(slot.cat_id.as_str(), |cat| cat.name.as_str())
+            };
+            let recipe = slot
+                .production_queue
+                .first()
+                .map_or("idle", |entry| entry.recipe_id.as_str());
+            out.push_str(&format!(
+                "\n  {}. {} — {} — {:>3.0}%{}",
+                index + 1,
+                worker,
+                recipe.replace('_', " "),
+                slot.production_progress.clamp(0.0, 1.0) * 100.0,
+                if slot.production_paused {
+                    " paused"
+                } else {
+                    ""
+                },
+            ));
+        }
     }
     if building.production_paused {
         out.push_str("\nproduction paused");
@@ -15665,6 +15756,40 @@ mod tests {
                 edit: ProductionQueueEdit::SetPaused { paused: true },
                 ..
             })
+        ));
+        let mut crewed = workshop.clone();
+        crewed.staff_count = 2;
+        crewed.staff_cap = 2;
+        crewed.work_slots = vec![
+            cat_protocol::ProductionWorkSlotSnapshot {
+                cat_id: "c1".to_owned(),
+                production_progress: 0.4,
+                production_queue: crewed.production_queue.clone(),
+                production_paused: false,
+                automated_by: None,
+            },
+            cat_protocol::ProductionWorkSlotSnapshot {
+                cat_id: "c2".to_owned(),
+                production_progress: 0.25,
+                production_queue: crewed.production_queue.clone(),
+                production_paused: true,
+                automated_by: Some(OfficerRole::Forester),
+            },
+        ];
+        assert!(building_inspector_text(&crewed, colony).contains("work stations:"));
+        assert!(matches!(
+            station_queue_action_for_worker(
+                &signed_session("queue-session"),
+                &crewed,
+                1,
+                0,
+                StationQueueButton::TogglePause,
+            ),
+            Some(ClientAction::EditProductionWorkSlot {
+                cat_id,
+                edit: ProductionQueueEdit::SetPaused { paused: false },
+                ..
+            }) if cat_id == "c2"
         ));
         let mut locked = workshop.clone();
         locked.available_recipes.clear();

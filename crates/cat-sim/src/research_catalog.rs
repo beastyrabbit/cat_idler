@@ -193,6 +193,11 @@ impl ResearchNode {
             // Existing physical sources are unlocked by their maintained job/building
             // contracts instead of these generic family-stage placeholders.
             ResearchPayload::UnlockResource { .. } => true,
+            ResearchPayload::ModifyBuilding {
+                building_id,
+                attribute: BuildingAttribute::WorkerSlots,
+                ..
+            } => !worker_slots_building_is_implemented(building_id),
             _ => false,
         })
     }
@@ -437,7 +442,12 @@ fn expand_building_family(
         let prerequisites = if nodes.is_empty() {
             family.root_prerequisites.clone()
         } else {
-            vec![nodes.last().expect("non-empty family").id.clone()]
+            let previous = nodes
+                .iter()
+                .rev()
+                .find(|node| !node.is_future_content())
+                .expect("non-empty family has a supported predecessor");
+            vec![previous.id.clone()]
         };
         let era_offset = u8::try_from(index / 2)
             .map_err(|_| format!("building era overflow for {}", family.building_id))?;
@@ -472,10 +482,24 @@ fn expand_building_family(
                 },
             );
         }
+        let future_worker_study = stage.attribute == BuildingAttribute::WorkerSlots
+            && !worker_slots_building_is_implemented(&family.building_id);
         nodes.push(ResearchNode {
             id,
-            name: format!("{} {}", family.display_name, stage.name),
-            description: format!("{} {}", family.display_name, stage.description),
+            name: format!(
+                "{} {}{}",
+                family.display_name,
+                stage.name,
+                if future_worker_study { " (future)" } else { "" }
+            ),
+            description: if future_worker_study {
+                format!(
+                    "Future study: {} has no independent physical worker station yet; this node cannot be purchased.",
+                    family.display_name
+                )
+            } else {
+                format!("{} {}", family.display_name, stage.description)
+            },
             category: ResearchCategory::Building,
             cost: family.cost_base + 4.0 * index as f64,
             prerequisites,
@@ -490,6 +514,33 @@ fn expand_building_family(
         });
     }
     Ok(nodes)
+}
+
+/// Building families with a real independent worker-state consumer. Generated
+/// `*_crews` studies for every other family stay catalog-visible as future work but
+/// cannot be purchased or become a hidden no-op.
+#[must_use]
+pub fn worker_slots_building_is_implemented(building_id: &str) -> bool {
+    matches!(
+        building_id,
+        "workshop"
+            | "wood_cutter"
+            | "stone_prep"
+            | "woodworking"
+            | "smithy"
+            | "clothier"
+            | "tannery"
+            | "smelter"
+            | "mill"
+            | "sawmill"
+            | "research_hut"
+            | "school"
+    )
+}
+
+#[must_use]
+pub fn research_node_is_implemented(node: &ResearchNode) -> bool {
+    !node.is_future_content()
 }
 
 fn expand_recipe_family(

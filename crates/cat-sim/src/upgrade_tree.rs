@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     research_catalog::{
         BuildingAttribute, EffectOperation, ResearchNode as CatalogNode, ResearchPayload,
-        research_catalog,
+        research_catalog, research_node_is_implemented,
     },
     types::{BuildingType, JobKind},
 };
@@ -720,9 +720,11 @@ pub fn prerequisites_met(state: &UpgradeTreeState, id: &str) -> bool {
 
 #[must_use]
 pub fn can_unlock(state: &UpgradeTreeState, id: &str) -> bool {
-    research_catalog().get(id).is_some_and(|node| {
-        !node.is_future_content() && !is_owned(state, id) && prerequisites_met(state, id)
-    })
+    research_catalog()
+        .get(id)
+        .is_some_and(research_node_is_implemented)
+        && !is_owned(state, id)
+        && prerequisites_met(state, id)
 }
 
 /// Every currently available study in stable catalog order.
@@ -1061,7 +1063,11 @@ impl ResolvedEffects {
                         Self::apply_value(&mut modifiers.cycle_time_mult, *operation, *value)
                     }
                     BuildingAttribute::WorkerSlots => {
-                        if *operation == EffectOperation::Add {
+                        if *operation == EffectOperation::Add
+                            && crate::research_catalog::worker_slots_building_is_implemented(
+                                building_id,
+                            )
+                        {
                             modifiers.worker_slots = modifiers
                                 .worker_slots
                                 .saturating_add(value.max(0.0).floor() as u32);
@@ -1678,29 +1684,37 @@ mod tests {
     }
 
     #[test]
-    fn every_non_future_catalog_study_with_supported_dependencies_is_buyable() {
+    fn every_implemented_catalog_study_is_buyable_in_dependency_order() {
         let mut state = state_with(&[], 1_000_000.0);
-        while let Some(next) = crate::research_catalog::research_catalog()
+        let implemented_count = crate::research_catalog::research_catalog()
             .nodes()
             .iter()
-            .find(|node| can_unlock(&state, &node.id))
-        {
+            .filter(|node| crate::research_catalog::research_node_is_implemented(node))
+            .count();
+        assert_eq!(implemented_count, 319);
+        while state.owned_node_ids.len() < implemented_count {
+            let next = crate::research_catalog::research_catalog()
+                .nodes()
+                .iter()
+                .find(|node| can_unlock(&state, &node.id))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "catalog stalled after {} owned studies",
+                        state.owned_node_ids.len()
+                    )
+                });
             let result = cat_purchase(&state, &next.id);
             assert!(result.ok, "{} must be purchasable", next.id);
             state = result.state;
         }
-        let catalog = crate::research_catalog::research_catalog();
-        for node in catalog.nodes() {
-            if !is_owned(&state, &node.id) {
-                assert!(
-                    node.is_future_content()
-                        || node.prerequisites.iter().any(|id| !is_owned(&state, id)),
-                    "supported node {} stalled with satisfied dependencies",
-                    node.id
-                );
-            }
-        }
-        assert!(state.owned_node_ids.len() < crate::research_catalog::RESEARCH_NODE_COUNT);
+        assert_eq!(state.owned_node_ids.len(), implemented_count);
+        assert!(
+            crate::research_catalog::research_catalog()
+                .nodes()
+                .iter()
+                .filter(|node| !crate::research_catalog::research_node_is_implemented(node))
+                .all(|node| !is_owned(&state, &node.id))
+        );
     }
 
     #[test]
@@ -1732,11 +1746,21 @@ mod tests {
                     ResearchPayload::UnlockCapability { capability_id } => {
                         assert!(resolved.unlocked_capabilities.contains(capability_id));
                     }
-                    ResearchPayload::ModifyBuilding { building_id, .. } => {
+                    ResearchPayload::ModifyBuilding { building_id, .. }
+                        if crate::research_catalog::research_node_is_implemented(node) =>
+                    {
                         assert!(resolved.building_modifiers.contains_key(building_id));
                         assert_ne!(
                             resolved.building(building_id),
                             super::BuildingModifiers::default()
+                        );
+                    }
+                    ResearchPayload::ModifyBuilding { building_id, .. } => {
+                        assert_eq!(
+                            resolved.building(building_id),
+                            super::BuildingModifiers::default(),
+                            "future worker study {} must not resolve a hidden effect",
+                            node.id
                         );
                     }
                     ResearchPayload::Modify { effect_id, .. } => {

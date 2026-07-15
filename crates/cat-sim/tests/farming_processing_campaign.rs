@@ -48,6 +48,7 @@ fn building(
         production_progress: 0.0,
         assigned_cat: None,
         automated_by: None,
+        additional_work_slots: Vec::new(),
         production_queue: cat_sim::world_tick::default_production_queue(building_type),
         production_paused: false,
         construction_cargo: None,
