@@ -14,7 +14,6 @@ and any changed Bevy visuals have been verified.
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Eleven maintained recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. The four physical queue recipes plus four existing aggregate textile/Smithy recipes enforce their rules-v1 entitlement before work; old/missing rules-v0 saves are grandfathered. Carpentry Staples, Stonecraft Preparation, and Toolmaking Preparation own the new Wood Cutter, Stone Prep, and Woodworking descriptors, but those behavior-neutral queue entries do not yet gate their compatibility aggregate timers. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
-| Forester replanting is absent | `GAME_VISION.md` assigns felling, replanting, and lumber to the Forester. Completed logging permanently writes `overlay_feature = "stump"`, and the logging scan excludes stump tiles; no maintained phase turns one back into a tree. Add a finite, persisted Forester replant route with growth timing and terrain/occupancy safeguards, then prove depletion, regrowth, restart, vacancy/manual ownership, and long-run sustainability. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Bone now has a finite physical hunt source, storage/trade/persistence/HUD identity, and conserved final haul, but its crafting variants remain incomplete; Gem, clay, and sand still lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
@@ -146,6 +145,36 @@ defaulted persisted blocked-route marker now gives the reopened route only the n
 while timestamping contact/departure at that observation boundary. Both exact reopen guardrails,
 all 23 trader tests, the full 1,153 simulation tests, all 80 server tests, strict touched-crate
 Clippy, formatting, and diff checks pass.
+
+## 2026-07-15 — Foresters physically replant felled trees
+
+**Problem:** Logging converted every generated tree into a permanent stump. The maintained design
+assigns felling, replanting, and lumber to the Forester, but there was no replant job, growth clock,
+or visual/persisted route back to the deterministic forest.
+
+**Fix:** `ReplantTree` is one signed manual order and one Forester-owned automation job. Manual
+orders remain available while the office is vacant; the founding Leader never plants. A worker
+must have a real route from the shrine, walk to the exact mapped/revealed stump, accept it, and
+complete thirty game-minutes on site. The finite input is that stump's surviving coppice/root
+stock: completion atomically changes the existing persisted tile from `stump` to `sapling` and
+records `planted_at` in its existing `last_depleted` clock without inventing a seed resource.
+After 24 game-hours the sapling restores the same seed-derived mature tree. Buildings, farms,
+stockpiles, agriculture, water, mountains, roads, perimeter walls, village interiors, and rocks
+delay growth without deleting it. Stumps and saplings cannot be logged as mature trees.
+
+**Player visibility and evidence:** Snapshots expose separate stump/sapling anchor sets; Bevy hides
+the mature canopy and renders tracked top-down stump/sprout art until growth completes. Manual and
+officer campaign tests cover vacancy ownership, bounded automation, reachable-site denial,
+arrival-controlled work timing, death/cancellation, finite mutation, delayed and obstructed retry,
+reveal-clock idempotence, cadence partition determinism, SQLite job/tile restart, and the final
+`overlay = None` becoming the exact original generated logging target again. The integrated full
+gates pass 1,176 simulation, 43 protocol, 82 server, and 135 client tests. The later conflict-free
+recipe-descriptor rebase passes 18 focused Forester/source-cargo/descriptor tests, all 44 protocol
+tests, strict four-crate Clippy, formatting, and diff checks. The accepted own-framebuffer capture
+used temporary render-only
+lifecycle anchors inside the visible village to
+isolate stump/sapling readability and canopy suppression; it does not imply that simulation-valid
+replanting or regrowth may bypass the authoritative village-interior and occupancy safeguards.
 
 ## 2026-07-15 — Accountant reports are the player-wire inventory boundary
 

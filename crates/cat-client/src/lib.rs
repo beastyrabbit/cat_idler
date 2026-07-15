@@ -898,6 +898,8 @@ struct TerrainArt {
     tree_pine: Handle<Image>,
     tree_snow_pine: Handle<Image>,
     tree_dead: Handle<Image>,
+    stump: Handle<Image>,
+    sapling: Handle<Image>,
     rock: Handle<Image>,
 }
 
@@ -921,6 +923,8 @@ impl TerrainArt {
             tree_pine: assets.load("public/images/game/nature/tree_pine.png"),
             tree_snow_pine: assets.load("public/images/game/nature/tree_snow_pine.png"),
             tree_dead: assets.load("public/images/game/nature/tree_dead.png"),
+            stump: assets.load("public/images/game/nature/stump.png"),
+            sapling: assets.load("public/images/game/farm/crop_sprout.png"),
             rock: assets.load("public/images/game/props/stone_pile.png"),
         }
     }
@@ -2151,6 +2155,10 @@ struct TerrainDecoration {
     y: i32,
     role: DecorationRole,
 }
+
+/// Persisted stump/sapling prop rebuilt from each authoritative snapshot.
+#[derive(Component)]
+struct TreeLifecycleVisual;
 /// A fog-of-war tile sprite, keyed by tile for incremental updates.
 #[derive(Component, Clone, Copy)]
 struct FogTile {
@@ -2820,6 +2828,7 @@ enum OrderAction {
     FetchWater,
     Quarry,
     GatherLogs,
+    ReplantTree,
     ForageFibre,
     ExpandVillage,
     Ritual,
@@ -2835,12 +2844,13 @@ enum OrderAction {
 
 impl OrderAction {
     #[cfg(test)]
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Hunt,
         Self::Fish,
         Self::FetchWater,
         Self::Quarry,
         Self::GatherLogs,
+        Self::ReplantTree,
         Self::ForageFibre,
         Self::ExpandVillage,
         Self::Ritual,
@@ -2853,12 +2863,13 @@ impl OrderAction {
         Self::TrainSelected,
         Self::DefendRaid,
     ];
-    const JOBS: [Self; 8] = [
+    const JOBS: [Self; 9] = [
         Self::Hunt,
         Self::Fish,
         Self::FetchWater,
         Self::Quarry,
         Self::GatherLogs,
+        Self::ReplantTree,
         Self::ForageFibre,
         Self::ExpandVillage,
         Self::Ritual,
@@ -2880,6 +2891,7 @@ impl OrderAction {
             Self::FetchWater => "Fetch water",
             Self::Quarry => "Quarry",
             Self::GatherLogs => "Gather logs",
+            Self::ReplantTree => "Replant tree",
             Self::ForageFibre => "Forage fibre",
             Self::ExpandVillage => "Expand village",
             Self::Ritual => "Request ritual",
@@ -3038,6 +3050,7 @@ pub fn run() {
                     (
                         sync_terrain_ground_surface,
                         sync_terrain_decoration_visibility,
+                        render_tree_lifecycle,
                     )
                         .after(spawn_terrain),
                     render_roads,
@@ -5163,19 +5176,64 @@ fn sync_terrain_decoration_visibility(
     };
     let revealed = revealed_lookup(&colony.revealed_tiles);
     let settlement_tiles = settlement_tile_lookup(colony);
+    let stumps = revealed_lookup(&colony.stump_tiles);
+    let saplings = revealed_lookup(&colony.sapling_tiles);
     for (tile, mut visibility) in &mut decorations {
-        *visibility = if procedural_decoration_visible(
-            colony.anchor,
-            Some(&settlement_tiles),
-            tile.x,
-            tile.y,
-            tile.role,
-        ) && decoration_is_revealed(&revealed, tile.x, tile.y, tile.role)
+        *visibility = if !stumps.contains(&(tile.x, tile.y))
+            && !saplings.contains(&(tile.x, tile.y))
+            && procedural_decoration_visible(
+                colony.anchor,
+                Some(&settlement_tiles),
+                tile.x,
+                tile.y,
+                tile.role,
+            )
+            && decoration_is_revealed(&revealed, tile.x, tile.y, tile.role)
         {
             Visibility::Inherited
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+fn render_tree_lifecycle(
+    mut commands: Commands,
+    latest: Res<LatestSnapshot>,
+    art: Option<Res<TerrainArt>>,
+    existing: Query<Entity, With<TreeLifecycleVisual>>,
+) {
+    if !latest.is_changed() {
+        return;
+    }
+    for entity in &existing {
+        commands.entity(entity).despawn();
+    }
+    let (Some(colony), Some(art)) = (latest.0.as_ref().and_then(|w| w.colonies.first()), art)
+    else {
+        return;
+    };
+    let revealed = revealed_lookup(&colony.revealed_tiles);
+    let depth_origin = ysort_origin(colony.anchor);
+    for (tiles, image, size) in [
+        (&colony.stump_tiles, art.stump.clone(), TILE * 0.8),
+        (&colony.sapling_tiles, art.sapling.clone(), TILE * 0.65),
+    ] {
+        for tile in tiles {
+            if !revealed.contains(&(tile.x, tile.y)) {
+                continue;
+            }
+            let pos = grid_to_world(tile.x, tile.y);
+            commands.spawn((
+                Sprite {
+                    image: image.clone(),
+                    custom_size: Some(Vec2::splat(size)),
+                    ..default()
+                },
+                Transform::from_xyz(pos.x, pos.y, ysort_z(pos.y, depth_origin) + 0.1),
+                TreeLifecycleVisual,
+            ));
+        }
     }
 }
 
@@ -6547,6 +6605,7 @@ fn build_order_action(
         OrderAction::FetchWater => request(JobKind::FetchWater),
         OrderAction::Quarry => request(JobKind::Quarry),
         OrderAction::GatherLogs => request(JobKind::GatherLogs),
+        OrderAction::ReplantTree => request(JobKind::ReplantTree),
         OrderAction::ForageFibre => request(JobKind::ForageFibre),
         OrderAction::ExpandVillage => request(JobKind::ExpandVillage),
         OrderAction::Ritual => request(JobKind::Ritual),
@@ -10981,6 +11040,12 @@ mod tests {
                 nickname: "Desktop Cat".to_owned(),
                 sig: "signed".to_owned(),
                 kind: JobKind::GatherLogs,
+            },
+            ClientAction::RequestJob {
+                session_id: "session-1".to_owned(),
+                nickname: "Desktop Cat".to_owned(),
+                sig: "signed".to_owned(),
+                kind: JobKind::ReplantTree,
             },
             ClientAction::RequestJob {
                 session_id: "session-1".to_owned(),

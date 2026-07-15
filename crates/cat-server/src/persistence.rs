@@ -4297,6 +4297,29 @@ mod tests {
             dwell_elapsed_ms: 2_000,
             topology_signature: 77,
         });
+        let sapling_site = *world.colonies[0]
+            .world_tiles
+            .keys()
+            .next()
+            .expect("founding terrain");
+        let sapling = world.colonies[0]
+            .world_tiles
+            .get_mut(&sapling_site)
+            .unwrap();
+        sapling.overlay_feature = Some("sapling".to_owned());
+        sapling.last_depleted = 1_050_000;
+        world.colonies[0].jobs.push(JobRuntime {
+            id: "job-replant-restart".to_owned(),
+            kind: JobKind::ReplantTree,
+            status: JobStatus::Queued,
+            created_at: 1_040_000,
+            duration_ms: 1_800_000,
+            metadata: JobMetadata::Site {
+                site: sapling_site,
+                accepted: false,
+            },
+            ..JobRuntime::default()
+        });
 
         save_world(&conn, &world).expect("save world");
         let mut loaded = load_world(&conn)
@@ -4315,6 +4338,16 @@ mod tests {
         assert_eq!(loaded.colonies[0].cats, world.colonies[0].cats);
         assert!(loaded.colonies[0].cats[0].boosted, "boosted flag persists");
         assert_eq!(loaded.colonies[0].jobs, world.colonies[0].jobs);
+        assert_eq!(
+            loaded.colonies[0].world_tiles[&sapling_site]
+                .overlay_feature
+                .as_deref(),
+            Some("sapling")
+        );
+        assert_eq!(
+            loaded.colonies[0].world_tiles[&sapling_site].last_depleted,
+            1_050_000
+        );
         assert_eq!(loaded.colonies[0].officers, world.colonies[0].officers);
         assert_eq!(loaded.colonies[0].stockpiles, world.colonies[0].stockpiles);
         assert_eq!(loaded.colonies[0].farms, world.colonies[0].farms);

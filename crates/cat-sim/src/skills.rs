@@ -84,7 +84,7 @@ impl Labor {
             JobKind::BuildHouse => Some(Self::Build),
             JobKind::Ritual => Some(Self::Ritual),
             JobKind::Quarry => Some(Self::Quarry),
-            JobKind::GatherLogs => Some(Self::Woodcut),
+            JobKind::GatherLogs | JobKind::ReplantTree => Some(Self::Woodcut),
             JobKind::ForageFibre => Some(Self::Forage),
             JobKind::FetchWater => Some(Self::FetchWater),
             JobKind::TrainWarrior => Some(Self::Train),
@@ -160,7 +160,9 @@ mod tests {
                 JobKind::BuildHouse => assert_eq!(mapped, Some(Labor::Build)),
                 JobKind::Ritual => assert_eq!(mapped, Some(Labor::Ritual)),
                 JobKind::Quarry => assert_eq!(mapped, Some(Labor::Quarry)),
-                JobKind::GatherLogs => assert_eq!(mapped, Some(Labor::Woodcut)),
+                JobKind::GatherLogs | JobKind::ReplantTree => {
+                    assert_eq!(mapped, Some(Labor::Woodcut));
+                }
                 JobKind::ForageFibre => assert_eq!(mapped, Some(Labor::Forage)),
                 JobKind::FetchWater => assert_eq!(mapped, Some(Labor::FetchWater)),
                 JobKind::TrainWarrior => assert_eq!(mapped, Some(Labor::Train)),

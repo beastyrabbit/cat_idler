@@ -160,6 +160,14 @@ pub struct ColonySnapshot {
     /// over these. Additive; empty/absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub road_tiles: Vec<TilePoint>,
+    /// Persisted felled tree anchors. Generated mature canopies are hidden and a
+    /// stump prop is rendered at these coordinates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stump_tiles: Vec<TilePoint>,
+    /// Persisted growing tree anchors. Generated mature canopies remain hidden
+    /// until the deterministic ecological timer matures them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sapling_tiles: Vec<TilePoint>,
     /// Traffic-formed dirt roads (`path_wear >= 70`) which have not been paved.
     /// They are distinct from authored stone roads and never form on stone ground.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -913,6 +921,9 @@ pub enum JobKind {
     /// Forest-site gathering job: fells and carries raw logs. This is the sole
     /// authoritative input source for the sawmill chain.
     GatherLogs,
+    /// Physical Forester work that converts one felled stump/root stock into a
+    /// persisted growing sapling. The player may order it without an officer.
+    ReplantTree,
     /// Physical shoreline food gathering into a designated fishing spot.
     Fish,
     /// Bounded foraging shift that gathers fibre for the textile chain.
@@ -2660,6 +2671,8 @@ mod tests {
                 revealed_tiles: vec![TilePoint { x: 6, y: 6 }],
                 provisional_tiles: vec![],
                 road_tiles: vec![],
+                stump_tiles: vec![],
+                sapling_tiles: vec![],
                 dirt_road_tiles: vec![],
                 village_gate: Some(GatePlacement {
                     x: 5,
@@ -2788,6 +2801,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(JobKind::GatherLogs).unwrap(),
             json!("gather_logs")
+        );
+        assert_eq!(
+            serde_json::to_value(JobKind::ReplantTree).unwrap(),
+            json!("replant_tree")
         );
         assert_eq!(
             serde_json::to_value(JobKind::ForageFibre).unwrap(),

@@ -39,11 +39,11 @@ use crate::{
         ZoneRuntime, election_schedule_timing, ensure_farm_gather_spot_at,
         farm_designation_route_is_reachable, farm_gather_spot_id, farm_rect_touches_claim_boundary,
         farm_route_is_reachable, found_colony_at, found_global_colony, has_frontier,
-        has_logging_site, has_quarry_site, has_water_site, inside_village_interior,
-        is_farm_gather_spot_id, legal_farm_gather_spots, material_offering_metadata,
-        migration_game_minute_at, occupied_farm_tiles, reconcile_colony_stockpiles,
-        release_farm_worker, release_role_automation, village_exterior_is_road_connected,
-        visible_offering_materials, world_tick,
+        has_logging_site, has_quarry_site, has_replant_site, has_water_site,
+        inside_village_interior, is_farm_gather_spot_id, legal_farm_gather_spots,
+        material_offering_metadata, migration_game_minute_at, occupied_farm_tiles,
+        reconcile_colony_stockpiles, release_farm_worker, release_role_automation,
+        village_exterior_is_road_connected, visible_offering_materials, world_tick,
     },
     zones,
 };
@@ -388,6 +388,7 @@ fn request_job(
             | JobKind::LeaderPlanHunt
             | JobKind::LeaderPlanHouse
             | JobKind::GatherLogs
+            | JobKind::ReplantTree
             | JobKind::Fish
             | JobKind::ForageFibre
             | JobKind::Ritual
@@ -412,6 +413,9 @@ fn request_job(
     }
     if kind == JobKind::GatherLogs && !has_logging_site(colony, world_seed) {
         return fail("No explored forest is available for logging.");
+    }
+    if kind == JobKind::ReplantTree && !has_replant_site(colony, world_seed) {
+        return fail("No reachable felled stump is available for replanting.");
     }
     if kind == JobKind::Fish && !crate::world_tick::has_fishing_site(colony) {
         return fail("Designate a revealed shoreline fishing spot first.");
@@ -487,6 +491,7 @@ fn request_job(
             select_best_cat_for_labor(colony, Some(CatSpecialization::Architect), labor)
         }
         JobKind::GatherLogs
+        | JobKind::ReplantTree
         | JobKind::Fish
         | JobKind::ForageFibre
         | JobKind::Explore
@@ -499,6 +504,7 @@ fn request_job(
         JobKind::HuntExpedition
             | JobKind::Quarry
             | JobKind::GatherLogs
+            | JobKind::ReplantTree
             | JobKind::Fish
             | JobKind::ForageFibre
             | JobKind::Explore
@@ -2998,6 +3004,18 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
             .filter(|(_, tile)| tile.overlay_feature.as_deref() == Some("road_built"))
             .map(|(pos, _)| tile_point(pos))
             .collect(),
+        stump_tiles: colony
+            .world_tiles
+            .iter()
+            .filter(|(_, tile)| tile.overlay_feature.as_deref() == Some("stump"))
+            .map(|(pos, _)| tile_point(pos))
+            .collect(),
+        sapling_tiles: colony
+            .world_tiles
+            .iter()
+            .filter(|(_, tile)| tile.overlay_feature.as_deref() == Some("sapling"))
+            .map(|(pos, _)| tile_point(pos))
+            .collect(),
         dirt_road_tiles: colony
             .world_tiles
             .iter()
@@ -3935,8 +3953,8 @@ fn queue_job(
         yield_amount: 1.0,
         click_count: 0,
         created_at: now_ms,
-        started_at: Some(now_ms),
-        ends_at: Some(now_ms + duration_ms),
+        started_at: (kind != JobKind::ReplantTree).then_some(now_ms),
+        ends_at: (kind != JobKind::ReplantTree).then_some(now_ms + duration_ms),
         completed_at: None,
         metadata,
     });
@@ -4288,7 +4306,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::Fish => Some(TaskType::Fish),
         JobKind::SupplyWater | JobKind::FetchWater => Some(TaskType::FetchWater),
         JobKind::LeaderPlanHouse | JobKind::BuildHouse | JobKind::Quarry => Some(TaskType::Build),
-        JobKind::GatherLogs => Some(TaskType::Build),
+        JobKind::GatherLogs | JobKind::ReplantTree => Some(TaskType::Build),
         JobKind::ForageFibre => Some(TaskType::Hunt),
         JobKind::Ritual | JobKind::PerformOffering => Some(TaskType::Guard),
         JobKind::CarryOffering => Some(TaskType::Build),
@@ -4594,6 +4612,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::Ritual => JobKind::Ritual,
         proto::JobKind::Quarry => JobKind::Quarry,
         proto::JobKind::GatherLogs => JobKind::GatherLogs,
+        proto::JobKind::ReplantTree => JobKind::ReplantTree,
         proto::JobKind::Fish => JobKind::Fish,
         proto::JobKind::ForageFibre => JobKind::ForageFibre,
         proto::JobKind::Explore => JobKind::Explore,
@@ -4617,6 +4636,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::Ritual => proto::JobKind::Ritual,
         JobKind::Quarry => proto::JobKind::Quarry,
         JobKind::GatherLogs => proto::JobKind::GatherLogs,
+        JobKind::ReplantTree => proto::JobKind::ReplantTree,
         JobKind::Fish => proto::JobKind::Fish,
         JobKind::ForageFibre => proto::JobKind::ForageFibre,
         JobKind::Explore => proto::JobKind::Explore,
@@ -5697,6 +5717,90 @@ mod tests {
             rejected.message.as_deref(),
             Some("No explored forest is available for logging.")
         );
+    }
+
+    #[test]
+    fn player_can_order_replanting_without_a_forester_but_needs_a_reachable_stump() {
+        let mut world = world_with_one_colony();
+        let seed = world.world_seed;
+        let anchor = world.colonies[0].anchor;
+        let template = world.colonies[0]
+            .world_tiles
+            .values()
+            .next()
+            .cloned()
+            .expect("founding terrain");
+        let min_x = anchor.x.saturating_sub(40);
+        let max_x = anchor.x.saturating_add(40);
+        let min_y = anchor.y.saturating_sub(40);
+        let max_y = anchor.y.saturating_add(40);
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let pos = TilePos { x, y };
+                let mut runtime = template.clone();
+                runtime.pos = pos;
+                runtime.tile_type = TileType::Meadow;
+                runtime.resources.water = 0;
+                runtime.overlay_feature = None;
+                world.colonies[0].world_tiles.insert(pos, runtime);
+                world.colonies[0].revealed_tiles.insert(pos);
+            }
+        }
+        let site = (min_y..=max_y)
+            .flat_map(|y| (min_x..=max_x).map(move |x| TilePos { x, y }))
+            .filter(|site| site.x.abs_diff(anchor.x).max(site.y.abs_diff(anchor.y)) > 8)
+            .filter(|site| crate::terrain_gen::tile_has_tree(seed, site.x, site.y))
+            .find(|site| {
+                world.colonies[0]
+                    .world_tiles
+                    .get_mut(site)
+                    .unwrap()
+                    .overlay_feature = Some("stump".to_owned());
+                let eligible = has_replant_site(&world.colonies[0], seed);
+                if !eligible {
+                    world.colonies[0]
+                        .world_tiles
+                        .get_mut(site)
+                        .unwrap()
+                        .overlay_feature = None;
+                }
+                eligible
+            })
+            .expect("mapped terrain contains a reachable replant stump");
+        assert!(
+            !world.colonies[0]
+                .officers
+                .contains_key(&OfficerRole::Forester)
+        );
+
+        let action = proto::ClientAction::RequestJob {
+            session_id: "sess_1".to_owned(),
+            nickname: "Tester".to_owned(),
+            sig: "server-verified".to_owned(),
+            kind: proto::JobKind::ReplantTree,
+        };
+        let accepted = apply_action(&mut world, &action, &ctx());
+        assert!(accepted.ok, "{accepted:?}");
+        let job = world.colonies[0].jobs.last().expect("replant queued");
+        assert_eq!(job.kind, JobKind::ReplantTree);
+        assert_eq!(job.requested_by, JobRequester::Player);
+        assert!(job.assigned_cat.is_some());
+        assert_eq!(job.started_at, None, "work clock begins only on arrival");
+
+        world.colonies[0].jobs.clear();
+        world.colonies[0]
+            .world_tiles
+            .get_mut(&site)
+            .unwrap()
+            .overlay_feature = Some("sapling".to_owned());
+        let before = world.clone();
+        let denied = apply_action(&mut world, &action, &ctx());
+        assert!(!denied.ok);
+        assert_eq!(
+            denied.message.as_deref(),
+            Some("No reachable felled stump is available for replanting.")
+        );
+        assert_eq!(world, before, "failed validation is mutation-free");
     }
 
     #[test]

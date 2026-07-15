@@ -217,9 +217,10 @@ so a correct scout route cannot conceal a missing founding dispatch.
    catalog-derived Sawmill logging entitlement and the verified authority split: the Leader owns
    the daily strategic study choice, while
    research labor/building automation and rituals remain Loremaster-owned.
-   Complete the maintained Forester contract as well: felled trees currently become permanent
-   stump overlays, so add physical replanting and timed regrowth without bypassing mapped-terrain,
-   occupancy, vacancy, or persistence rules.
+   The maintained Forester contract is complete: a manual or appointed-Forester physical route
+   consumes a persisted stump/root stock into a visible sapling, and unobstructed growth restores
+   the same deterministic tree after 24 game-hours. Preserve its mapped-terrain, occupancy,
+   vacancy, persistence, and exact-site guardrails while extending the remaining ecology.
    Authored stone-road placement is mechanically exact but still instant: one signed action paints
    the whole validated path and removes aggregate Materials without a worker or cargo. Treat a
    physical road-building route as a P2 consistency enhancement unless the maintained vision is

@@ -758,7 +758,7 @@ fn tile_has_paved_road(colony: &ColonyRuntime, tile: TilePos) -> bool {
 }
 
 fn runtime_decoration_cleared(tile: &WorldTileRuntime) -> bool {
-    tile.overlay_feature.as_deref() == Some("stump")
+    matches!(tile.overlay_feature.as_deref(), Some("stump" | "sapling"))
         || (tile.last_depleted > 0
             && (tile.tile_type == TileType::Field
                 || (tile.tile_type == TileType::Meadow
@@ -965,6 +965,7 @@ struct SpatialOccupancyContext {
     farm_rects: Vec<ZoneRect>,
     water_tiles: HashSet<TilePos>,
     cleared_tree_tiles: HashSet<TilePos>,
+    growing_tree_tiles: HashSet<TilePos>,
     mountain_tiles: HashSet<TilePos>,
     prepared_farm_tiles: HashSet<TilePos>,
     paved_road_tiles: HashSet<TilePos>,
@@ -1026,6 +1027,14 @@ impl SpatialOccupancyContext {
                     .then_some(pos)
             })
             .collect();
+        let growing_tree_tiles = colony
+            .world_tiles
+            .iter()
+            .filter_map(|(&pos, tile)| {
+                (tile.overlay_feature.as_deref() == Some("sapling")).then_some(pos)
+            })
+            .flat_map(tree_footprint_tiles)
+            .collect();
         let mountain_tiles = if resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
             .unlocked_capabilities
             .contains("mountain_travel")
@@ -1073,6 +1082,7 @@ impl SpatialOccupancyContext {
             farm_rects,
             water_tiles,
             cleared_tree_tiles,
+            growing_tree_tiles,
             mountain_tiles,
             prepared_farm_tiles,
             paved_road_tiles,
@@ -1199,6 +1209,7 @@ impl SpatialOccupancyContext {
             || self.has_stockpile(tile)
             || self.has_farm(tile)
             || self.water_tiles.contains(&tile)
+            || self.growing_tree_tiles.contains(&tile)
             || self.has_uncleared_tree(tile)
             || self.has_uncleared_rock(tile)
             || self.mountain_tiles.contains(&tile)
@@ -1213,6 +1224,7 @@ impl SpatialOccupancyContext {
             || self.has_stockpile(tile)
             || self.has_farm(tile)
             || self.water_tiles.contains(&tile)
+            || self.growing_tree_tiles.contains(&tile)
             || self.has_uncleared_tree(tile)
             || self.has_uncleared_rock(tile)
             || self.mountain_tiles.contains(&tile)
@@ -1245,6 +1257,12 @@ impl SpatialOccupancyContext {
         }
         if tiles.iter().any(|tile| self.water_tiles.contains(tile)) {
             return Some(SpatialPlacementError::Water);
+        }
+        if tiles
+            .iter()
+            .any(|tile| self.growing_tree_tiles.contains(tile))
+        {
+            return Some(SpatialPlacementError::Tree);
         }
         if tiles.iter().any(|&tile| self.has_uncleared_tree(tile)) {
             return Some(SpatialPlacementError::Tree);
@@ -1285,6 +1303,9 @@ impl SpatialOccupancyContext {
         }
         if self.water_tiles.contains(&tile) {
             return Some(SpatialPlacementError::Water);
+        }
+        if self.growing_tree_tiles.contains(&tile) {
+            return Some(SpatialPlacementError::Tree);
         }
         if self.has_uncleared_tree(tile) {
             return Some(SpatialPlacementError::Tree);
@@ -2026,6 +2047,10 @@ const EVENT_KEEP: usize = 2_000;
 const MAX_PATH_DECAY_PER_TICK: u32 = 2;
 const QUARRY_TOTAL_YIELD: f64 = 15.0;
 const LOGGING_TOTAL_YIELD: f64 = 15.0;
+/// A planted coppice becomes a mature generated tree after one game-day. The
+/// stump/root stock is the finite planting input; no abstract seed inventory is
+/// created by this lifecycle.
+const TREE_REGROWTH_GAME_HOURS: f64 = 24.0;
 /// One shoreline shift yields twelve food before skill/haul upgrades, split over
 /// three physical trips into the designated fishing gather spot.
 const FISHING_TOTAL_YIELD: f64 = 12.0;
@@ -3078,7 +3103,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_9_elections_lifecycle(colony, gate);
         phase_10_zones_and_event_pruning(colony, gate);
         phase_11_path_wear_decay(colony, gate);
-        phase_12_resource_regrowth(colony, gate);
+        phase_12_resource_regrowth(colony, gate, world_seed);
         phase_12b_fish_replenishment(colony, gate);
         phase_13_tick_local_target_caches(colony, gate);
         phase_14_promote_queued_jobs_and_break_ground(colony, gate, world_seed);
@@ -3897,20 +3922,20 @@ fn phase_11_path_wear_decay(colony: &mut ColonyRuntime, gate: TickGate) {
     }
 }
 
-/// Phase 12: regrow depleted non-forest food resources once per minute.
-fn phase_12_resource_regrowth(colony: &mut ColonyRuntime, gate: TickGate) {
+/// Phase 12: regrow depleted non-forest food resources and mature planted trees
+/// once per minute.
+fn phase_12_resource_regrowth(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
     if !gate.minute_rolled {
         return;
     }
 
-    let amount = regrowth_amount(gate.elapsed_sec as f64 * normalize_time_scale(colony)).floor();
-    if amount <= 0.0 {
-        return;
-    }
-    let amount = amount as u32;
+    let game_time_scale = normalize_time_scale(colony);
+    let amount = regrowth_amount(gate.elapsed_sec as f64 * game_time_scale)
+        .floor()
+        .max(0.0) as u32;
 
     for tile in colony.world_tiles.values_mut() {
-        if tile.last_depleted <= 0 || is_forest_type(tile.tile_type) {
+        if amount == 0 || tile.last_depleted <= 0 || is_forest_type(tile.tile_type) {
             continue;
         }
         tile.resources.food = tile
@@ -3918,6 +3943,40 @@ fn phase_12_resource_regrowth(colony: &mut ColonyRuntime, gate: TickGate) {
             .food
             .saturating_add(amount)
             .min(tile.max_resources.food);
+    }
+
+    let due_saplings = colony
+        .world_tiles
+        .iter()
+        .filter_map(|(&site, tile)| {
+            if tile.overlay_feature.as_deref() != Some("sapling") || tile.last_depleted <= 0 {
+                return None;
+            }
+            let elapsed_game_hours =
+                gate.processed_through.saturating_sub(tile.last_depleted) as f64 / 3_600_000.0
+                    * game_time_scale;
+            (elapsed_game_hours >= TREE_REGROWTH_GAME_HOURS).then_some(site)
+        })
+        .collect::<Vec<_>>();
+    if due_saplings.is_empty() {
+        return;
+    }
+    let chunks = due_saplings
+        .iter()
+        .map(|site| tile_to_chunk(site.x, site.y))
+        .map(|chunk| (chunk.chunk_x, chunk.chunk_y))
+        .collect::<BTreeSet<_>>();
+    let generated = generated_tree_targets(world_seed, chunks);
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    for site in due_saplings {
+        if generated.contains(&site)
+            && tree_regrowth_footprint_is_clear(colony, site, &occupancy)
+            && let Some(tile) = colony.world_tiles.get_mut(&site)
+            && tile.overlay_feature.as_deref() == Some("sapling")
+        {
+            tile.overlay_feature = None;
+            tile.last_depleted = 0;
+        }
     }
 }
 
@@ -4838,7 +4897,7 @@ fn queue_orphaned_scaffold_recovery(colony: &mut ColonyRuntime, now_ms: i64) {
 /// quarry/water/frontier targets, expansion targets, and shrine travel.
 fn phase_15_assign_promoted_job_destinations(
     colony: &mut ColonyRuntime,
-    _: TickGate,
+    gate: TickGate,
     world_seed: u32,
 ) {
     let active_indices = colony
@@ -4862,6 +4921,15 @@ fn phase_15_assign_promoted_job_destinations(
     let food_tiles = food_tiles_near_village(colony);
     let quarry_site = quarry_sites_near_village(colony).into_iter().next();
     let logging_site = first_logging_site_if_needed(colony, &active_indices, world_seed);
+    let replant_site = active_indices
+        .iter()
+        .any(|&index| colony.jobs[index].kind == JobKind::ReplantTree)
+        .then(|| {
+            replant_sites_near_village(colony, world_seed)
+                .into_iter()
+                .next()
+        })
+        .flatten();
     let fishing_site = fishable_sites(colony).into_iter().next();
     let water_site = active_indices
         .iter()
@@ -4971,6 +5039,7 @@ fn phase_15_assign_promoted_job_destinations(
             expansion_site,
             quarry_site: match job.kind {
                 JobKind::GatherLogs => logging_site,
+                JobKind::ReplantTree => replant_site,
                 JobKind::Fish => fishing_site,
                 _ => quarry_site,
             },
@@ -4980,6 +5049,9 @@ fn phase_15_assign_promoted_job_destinations(
         };
 
         let Some(destination) = destination_for_job(job.kind.as_str(), &context) else {
+            if job.kind == JobKind::ReplantTree {
+                fail_replant_job(colony, &job.id, gate.processed_through);
+            }
             continue;
         };
         let site = world_pos_to_tile(destination);
@@ -8276,7 +8348,17 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     // dispatch; otherwise that later job (or the existing quarry fill) consumes the
     // reservation and the non-sticky benches remain dark indefinitely.
     staff_reserved_raw_material_bench(colony, gate.processed_through);
-    dispatch_officer_resource_jobs(colony, gate.processed_through, world_seed);
+    dispatch_officer_resource_jobs(
+        colony,
+        gate.processed_through,
+        world_seed,
+        gate.minute_rolled
+            && gate.processed_through.div_euclid(5 * 60_000)
+                != gate
+                    .processed_through
+                    .saturating_sub(gate.elapsed_sec.saturating_mul(1_000))
+                    .div_euclid(5 * 60_000),
+    );
 
     if has_officer(colony, OfficerRole::Steward) {
         auto_staff_idle_buildings(colony, BuildingType::Workshop, gate.processed_through, true);
@@ -8956,7 +9038,12 @@ fn spendable_production_materials(colony: &ColonyRuntime) -> (f64, f64) {
 /// Dispatch bounded raw-input work for the officers that own those categories. The
 /// jobs are intentionally the same `JobKind`s a player can request: appointing an
 /// officer removes repetitive clicks; it does not create a private resource faucet.
-fn dispatch_officer_resource_jobs(colony: &mut ColonyRuntime, now_ms: i64, world_seed: u32) {
+fn dispatch_officer_resource_jobs(
+    colony: &mut ColonyRuntime,
+    now_ms: i64,
+    world_seed: u32,
+    scan_replant: bool,
+) {
     let population = active_resident_cats(colony).count() as f64;
     let safe = population > 0.0
         && colony.resources.food + colony.resources.fish
@@ -9011,6 +9098,25 @@ fn dispatch_officer_resource_jobs(colony: &mut ColonyRuntime, now_ms: i64, world
             colony,
             now_ms,
             JobKind::GatherLogs,
+            Some(cat_id),
+            JobMetadata::None,
+        );
+    }
+
+    let replant_in_flight = active_or_queued_jobs(colony)
+        .iter()
+        .any(|job| job.kind == JobKind::ReplantTree);
+    let replant_worker =
+        (has_officer(colony, OfficerRole::Forester) && scan_replant && !replant_in_flight)
+            .then(|| select_best_cat(colony, None))
+            .flatten();
+    if let Some(cat_id) = replant_worker
+        && has_replant_site(colony, world_seed)
+    {
+        queue_job(
+            colony,
+            now_ms,
+            JobKind::ReplantTree,
             Some(cat_id),
             JobMetadata::None,
         );
@@ -10301,6 +10407,7 @@ fn phase_29_due_completion_gathering_explore_expansion(
                 CarryingKind::Logs,
                 world_seed,
             ),
+            JobKind::ReplantTree => complete_replant_tree(colony, &job, gate, world_seed),
             JobKind::Fish => complete_fishing(colony, &job, gate),
             JobKind::ForageFibre => complete_fibre_forage(colony, &job, gate),
             JobKind::FetchWater => complete_fixed_yield_job(
@@ -10460,6 +10567,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
                 | JobKind::Ritual
                 | JobKind::Quarry
                 | JobKind::GatherLogs
+                | JobKind::ReplantTree
                 | JobKind::Fish
                 | JobKind::ForageFibre
                 | JobKind::Explore
@@ -14969,7 +15077,7 @@ fn automated_job_role(colony: &ColonyRuntime, job: &JobRuntime) -> Option<Office
         | JobKind::Fish
         | JobKind::FetchWater
         | JobKind::ForageFibre => Some(OfficerRole::Farmer),
-        JobKind::Quarry | JobKind::GatherLogs => Some(OfficerRole::Forester),
+        JobKind::Quarry | JobKind::GatherLogs | JobKind::ReplantTree => Some(OfficerRole::Forester),
         JobKind::TrainWarrior => Some(OfficerRole::Captain),
         JobKind::Explore | JobKind::Ritual | JobKind::CarryOffering | JobKind::PerformOffering => {
             Some(OfficerRole::Loremaster)
@@ -15711,8 +15819,8 @@ fn queue_job_requested_by(
         yield_amount: 1.0,
         click_count: 0,
         created_at: now_ms,
-        started_at: Some(now_ms),
-        ends_at: Some(now_ms + duration_ms),
+        started_at: (kind != JobKind::ReplantTree).then_some(now_ms),
+        ends_at: (kind != JobKind::ReplantTree).then_some(now_ms + duration_ms),
         completed_at: None,
         metadata,
     });
@@ -15729,9 +15837,11 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         JobKind::HuntExpedition | JobKind::LeaderPlanHunt => Some(TaskType::Hunt),
         JobKind::Fish => Some(TaskType::Fish),
         JobKind::FetchWater => Some(TaskType::FetchWater),
-        JobKind::Quarry | JobKind::GatherLogs | JobKind::BuildHouse | JobKind::LeaderPlanHouse => {
-            Some(TaskType::Build)
-        }
+        JobKind::Quarry
+        | JobKind::GatherLogs
+        | JobKind::ReplantTree
+        | JobKind::BuildHouse
+        | JobKind::LeaderPlanHouse => Some(TaskType::Build),
         JobKind::ForageFibre => Some(TaskType::Hunt),
         JobKind::Explore | JobKind::ExpandVillage => Some(TaskType::Explore),
         JobKind::TrainWarrior => Some(TaskType::Patrol),
@@ -16776,7 +16886,10 @@ fn unaccepted_active_job_site(colony: &ColonyRuntime, cat_id: &str) -> Option<(u
 }
 
 fn accept_job(colony: &mut ColonyRuntime, job_index: usize, now_ms: i64) {
-    if colony.jobs[job_index].kind == JobKind::Fish {
+    if matches!(
+        colony.jobs[job_index].kind,
+        JobKind::Fish | JobKind::ReplantTree
+    ) {
         colony.jobs[job_index].started_at = Some(now_ms);
         colony.jobs[job_index].ends_at =
             Some(now_ms.saturating_add(colony.jobs[job_index].duration_ms.max(1)));
@@ -17598,6 +17711,14 @@ pub fn is_reachable_fishing_shore(colony: &ColonyRuntime, site: TilePos, world_s
     if !is_valid_fishing_shore(colony, site) {
         return false;
     }
+    is_reachable_work_site(colony, site, world_seed)
+}
+
+/// Exact mutation-free route preflight shared by manual and automated physical
+/// wilderness jobs. A mapped target alone is not sufficient: the worker must be
+/// able to walk there from the shrine under the authoritative fence and terrain
+/// traversal rules.
+fn is_reachable_work_site(colony: &ColonyRuntime, site: TilePos, world_seed: u32) -> bool {
     let claimed = claimed_area(colony);
     let ring_radius = village_ring_radius(colony.buildings.len() as i32);
     let area_gate = (!claimed.is_empty())
@@ -17822,7 +17943,7 @@ fn logging_scan_inputs(colony: &ColonyRuntime) -> (BTreeSet<TilePos>, BTreeSet<(
                 // slot, so later road work may replace the visible stump marker.
                 && !matches!(
                     tile.overlay_feature.as_deref(),
-                    Some("stump" | "road_built")
+                    Some("stump" | "sapling" | "road_built")
                 )
         })
         .map(|tile| tile.pos)
@@ -17865,6 +17986,132 @@ fn first_logging_site_if_needed_with(
 #[must_use]
 pub fn has_logging_site(colony: &ColonyRuntime, world_seed: u32) -> bool {
     !logging_sites_near_village(colony, world_seed).is_empty()
+}
+
+fn tree_footprint_tiles(site: TilePos) -> Vec<TilePos> {
+    (0..crate::terrain_gen::TREE_FOOTPRINT_HEIGHT)
+        .flat_map(|dy| {
+            (0..crate::terrain_gen::TREE_FOOTPRINT_WIDTH).map(move |dx| TilePos {
+                x: site.x + dx,
+                y: site.y + dy,
+            })
+        })
+        .collect()
+}
+
+fn generated_tree_exists_at(world_seed: u32, site: TilePos) -> bool {
+    let chunk = tile_to_chunk(site.x, site.y);
+    generated_tree_targets(world_seed, [(chunk.chunk_x, chunk.chunk_y)]).contains(&site)
+}
+
+/// The physical footprint a mature tree would occupy must remain wilderness.
+/// A blocked sapling is retained and retried, so a temporary building/farm/road
+/// never deletes planted ecological state.
+fn tree_regrowth_site_is_clear(colony: &ColonyRuntime, site: TilePos, world_seed: u32) -> bool {
+    if !generated_tree_exists_at(world_seed, site) {
+        return false;
+    }
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    tree_regrowth_footprint_is_clear(colony, site, &occupancy)
+}
+
+fn tree_regrowth_footprint_is_clear(
+    colony: &ColonyRuntime,
+    site: TilePos,
+    occupancy: &SpatialOccupancyContext,
+) -> bool {
+    tree_footprint_tiles(site).into_iter().all(|tile| {
+        tile_coordinates_supported(tile)
+            && colony.world_tiles.contains_key(&tile)
+            && colony.revealed_tiles.contains(&tile)
+            && !inside_village_interior(colony, tile)
+            && !colony.agricultural_tiles.contains(&tile)
+            && !occupancy.building_tiles.contains(&tile)
+            && !occupancy.has_stockpile(tile)
+            && !occupancy.has_farm(tile)
+            && !occupancy.water_tiles.contains(&tile)
+            && !occupancy.mountain_tiles.contains(&tile)
+            && !occupancy.is_perimeter(tile)
+            && !occupancy.paved_road_tiles.contains(&tile)
+            && !occupancy.has_uncleared_rock(tile)
+    })
+}
+
+fn is_eligible_replant_stump(colony: &ColonyRuntime, site: TilePos, world_seed: u32) -> bool {
+    colony
+        .world_tiles
+        .get(&site)
+        .is_some_and(|tile| tile.overlay_feature.as_deref() == Some("stump"))
+        && !active_logging_sites(colony).contains(&site)
+        && generated_tree_exists_at(world_seed, site)
+        && tree_regrowth_site_is_clear(colony, site, world_seed)
+}
+
+fn active_logging_sites(colony: &ColonyRuntime) -> HashSet<TilePos> {
+    active_or_queued_jobs(colony)
+        .into_iter()
+        .filter(|job| job.kind == JobKind::GatherLogs)
+        .filter_map(|job| hauling_metadata(job).0)
+        .collect()
+}
+
+fn replant_sites_near_village(colony: &ColonyRuntime, world_seed: u32) -> Vec<WorldPos> {
+    let claimed_by_logging = active_logging_sites(colony);
+    let candidates = colony
+        .world_tiles
+        .iter()
+        .filter_map(|(&site, tile)| {
+            (tile.overlay_feature.as_deref() == Some("stump")
+                && !claimed_by_logging.contains(&site))
+            .then_some(site)
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let chunks = candidates
+        .iter()
+        .map(|site| tile_to_chunk(site.x, site.y))
+        .map(|chunk| (chunk.chunk_x, chunk.chunk_y))
+        .collect::<BTreeSet<_>>();
+    // Movement keeps the same decoration chunks warm. Reuse that authoritative
+    // cache so a colony with many synthetic cleared-ground stump markers does not
+    // regenerate its whole terrain map on every officer decision.
+    let mut generated = HashSet::new();
+    let mut missing_chunks = BTreeSet::new();
+    for &(chunk_x, chunk_y) in &chunks {
+        if let Some(anchors) = colony
+            .decoration_cache
+            .anchors(world_seed, chunk_x, chunk_y)
+        {
+            generated.extend(anchors.trees.iter().copied());
+        } else {
+            missing_chunks.insert((chunk_x, chunk_y));
+        }
+    }
+    generated.extend(generated_tree_targets(world_seed, missing_chunks));
+    if !candidates.iter().any(|site| generated.contains(site)) {
+        return Vec::new();
+    }
+    let occupancy = SpatialOccupancyContext::new(colony, world_seed);
+    let mut sites = candidates
+        .into_iter()
+        .filter(|site| generated.contains(site))
+        .filter(|&site| tree_regrowth_footprint_is_clear(colony, site, &occupancy))
+        .collect::<Vec<_>>();
+    sites.sort_by_key(|site| (cheb_from_anchor(colony.anchor, *site), site.y, site.x));
+    sites
+        .into_iter()
+        .filter(|&site| is_reachable_work_site(colony, site, world_seed))
+        .map(tile_pos_to_world)
+        .collect()
+}
+
+/// Whether one persisted stump/root stock can satisfy a fresh manual or Forester
+/// replanting request.
+#[must_use]
+pub fn has_replant_site(colony: &ColonyRuntime, world_seed: u32) -> bool {
+    !replant_sites_near_village(colony, world_seed).is_empty()
 }
 
 fn water_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
@@ -18605,6 +18852,65 @@ fn complete_fixed_yield_job(
         job_ended_at: gate.processed_through,
         source_gather_spot: None,
     });
+}
+
+/// Consume exactly one persisted stump/root stock into a persisted sapling. The
+/// mutation happens only after the assigned cat has physically accepted the site
+/// and remained there through the timed work period.
+fn complete_replant_tree(
+    colony: &mut ColonyRuntime,
+    job: &JobRuntime,
+    gate: TickGate,
+    world_seed: u32,
+) {
+    let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
+        fail_replant_job(colony, &job.id, gate.processed_through);
+        return;
+    };
+    let JobMetadata::Site {
+        site,
+        accepted: true,
+    } = job.metadata
+    else {
+        fail_replant_job(colony, &job.id, gate.processed_through);
+        return;
+    };
+    let cat_site = world_pos_to_tile(position_to_world(
+        colony.anchor,
+        colony.cats[cat_index].position,
+    ));
+    if cat_site != site || !is_eligible_replant_stump(colony, site, world_seed) {
+        fail_replant_job(colony, &job.id, gate.processed_through);
+        return;
+    }
+
+    let tile = colony
+        .world_tiles
+        .get_mut(&site)
+        .expect("eligible replant site remains mapped");
+    tile.overlay_feature = Some("sapling".to_owned());
+    tile.last_depleted = gate.processed_through;
+    colony.cats[cat_index].gain_skill(Labor::Woodcut, SKILL_GAIN_PER_JOB);
+}
+
+fn fail_replant_job(colony: &mut ColonyRuntime, job_id: &str, now_ms: i64) {
+    let assigned_cat = colony
+        .jobs
+        .iter()
+        .find(|job| job.id == job_id)
+        .and_then(|job| job.assigned_cat.clone());
+    if let Some(job) = colony.jobs.iter_mut().find(|job| job.id == job_id) {
+        job.status = JobStatus::Failed;
+        job.completed_at = Some(now_ms);
+    }
+    if let Some(cat) = assigned_cat
+        .as_deref()
+        .and_then(|cat_id| colony.cats.iter_mut().find(|cat| cat.id == cat_id))
+    {
+        cat.activity = CatActivity::Idle;
+        cat.current_task = None;
+        cat.destination = None;
+    }
 }
 
 /// Complete the final physical catch at the bank. Habitat is debited only at
@@ -30766,6 +31072,302 @@ mod tests {
         assert_eq!(colony.resources.planks, 0.0);
     }
 
+    fn mapped_replant_fixture(seed: u32) -> (ColonyRuntime, TilePos) {
+        let site = (-8..=8)
+            .flat_map(|chunk_y| (-8..=8).map(move |chunk_x| (chunk_x, chunk_y)))
+            .find_map(|(chunk_x, chunk_y)| {
+                crate::terrain_gen::generate_terrain_chunk(
+                    chunk_x,
+                    chunk_y,
+                    i64::from(seed),
+                    crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                )
+                .into_iter()
+                .find(|tile| {
+                    matches!(
+                        crate::terrain_gen::derive_biome_decoration(
+                            tile.x,
+                            tile.y,
+                            i64::from(seed),
+                            tile.climate_biome,
+                        ),
+                        Some(crate::terrain_gen::DecorationRole::Tree { .. })
+                    )
+                })
+                .map(|tile| TilePos {
+                    x: tile.x,
+                    y: tile.y,
+                })
+            })
+            .expect("bounded terrain contains a tree");
+        let mut colony = ColonyRuntime {
+            anchor: TilePos {
+                x: site.x - 20,
+                y: site.y - 20,
+            },
+            test_time_scale: 1.0,
+            ..ColonyRuntime::default()
+        };
+        for footprint in tree_footprint_tiles(site) {
+            colony
+                .world_tiles
+                .insert(footprint, tile(footprint.x, footprint.y, 63, None));
+            colony.revealed_tiles.insert(footprint);
+        }
+        let stump = colony.world_tiles.get_mut(&site).unwrap();
+        stump.overlay_feature = Some("stump".to_owned());
+        stump.last_depleted = 10;
+        (colony, site)
+    }
+
+    fn regrowth_gate(elapsed_sec: i64, processed_through: i64) -> TickGate {
+        TickGate {
+            minute_rolled: true,
+            ..production_gate(elapsed_sec, processed_through)
+        }
+    }
+
+    #[test]
+    fn replanting_consumes_one_stump_only_after_accepted_on_site_work() {
+        let seed = 123;
+        let (mut colony, site) = mapped_replant_fixture(seed);
+        let mut cat = adult_idle_cat("planter", "colony-1");
+        cat.position = position_from_world(tile_pos_to_world(site));
+        cat.activity = CatActivity::Working;
+        colony.cats.push(cat);
+        let mut job = JobRuntime {
+            id: "replant-1".to_owned(),
+            kind: JobKind::ReplantTree,
+            status: JobStatus::Active,
+            assigned_cat: Some("planter".to_owned()),
+            metadata: JobMetadata::Site {
+                site,
+                accepted: false,
+            },
+            ..JobRuntime::default()
+        };
+        colony.jobs.push(job.clone());
+
+        complete_replant_tree(&mut colony, &job, production_gate(1, 1_000), seed);
+        assert_eq!(
+            colony.world_tiles[&site].overlay_feature.as_deref(),
+            Some("stump"),
+            "unaccepted work cannot mutate terrain"
+        );
+
+        colony.jobs[0].status = JobStatus::Active;
+        job.metadata = JobMetadata::Site {
+            site,
+            accepted: true,
+        };
+        complete_replant_tree(&mut colony, &job, production_gate(1, 2_000), seed);
+        assert_eq!(
+            colony.world_tiles[&site].overlay_feature.as_deref(),
+            Some("sapling")
+        );
+        assert_eq!(colony.world_tiles[&site].last_depleted, 2_000);
+        assert_eq!(colony.resources, Resources::default());
+        assert_eq!(colony.cats[0].skill(Labor::Woodcut), SKILL_GAIN_PER_JOB);
+    }
+
+    #[test]
+    fn sapling_growth_is_delayed_blocked_retryable_and_restores_the_generated_tree() {
+        let seed = 123;
+        let (mut colony, site) = mapped_replant_fixture(seed);
+        let planted_at = 60_000;
+        colony.world_tiles.get_mut(&site).unwrap().overlay_feature = Some("sapling".to_owned());
+        colony.world_tiles.get_mut(&site).unwrap().last_depleted = planted_at;
+
+        // Re-revealing/repainting knowledge is idempotent and cannot reset the
+        // persisted ecological clock.
+        colony.revealed_tiles.insert(site);
+        phase_12_resource_regrowth(
+            &mut colony,
+            regrowth_gate(60, planted_at + 23 * 3_600_000),
+            seed,
+        );
+        assert_eq!(colony.world_tiles[&site].last_depleted, planted_at);
+        assert_eq!(
+            colony.world_tiles[&site].overlay_feature.as_deref(),
+            Some("sapling")
+        );
+        assert_eq!(
+            stockpile_placement_error(
+                &colony,
+                ZoneRect {
+                    x1: site.x,
+                    y1: site.y,
+                    x2: site.x,
+                    y2: site.y,
+                },
+                seed,
+                false,
+            ),
+            Some(SpatialPlacementError::Tree),
+            "new authored occupancy cannot overwrite a growing tree"
+        );
+
+        colony.buildings.push(BuildingRuntime {
+            id: "blocking-workshop".to_owned(),
+            building_type: BuildingType::Workshop,
+            position: site,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        });
+        phase_12_resource_regrowth(
+            &mut colony,
+            regrowth_gate(60, planted_at + 24 * 3_600_000),
+            seed,
+        );
+        assert_eq!(
+            colony.world_tiles[&site].overlay_feature.as_deref(),
+            Some("sapling"),
+            "blocked growth remains persisted for a later retry"
+        );
+
+        colony.buildings.clear();
+        phase_12_resource_regrowth(
+            &mut colony,
+            regrowth_gate(60, planted_at + 24 * 3_600_000 + 60_000),
+            seed,
+        );
+        assert_eq!(colony.world_tiles[&site].overlay_feature, None);
+        assert_eq!(colony.world_tiles[&site].last_depleted, 0);
+        assert!(
+            has_logging_site(&colony, seed),
+            "clearing the overlay must restore the exact deterministic mature tree/logging target"
+        );
+    }
+
+    #[test]
+    fn sapling_maturity_is_cadence_partition_deterministic() {
+        let seed = 123;
+        let (mut one_tick, site) = mapped_replant_fixture(seed);
+        one_tick.world_tiles.get_mut(&site).unwrap().overlay_feature = Some("sapling".to_owned());
+        one_tick.world_tiles.get_mut(&site).unwrap().last_depleted = 60_000;
+        let mut hourly = one_tick.clone();
+
+        phase_12_resource_regrowth(
+            &mut one_tick,
+            regrowth_gate(24 * 3_600, 60_000 + 24 * 3_600_000),
+            seed,
+        );
+        for hour in 1..=24 {
+            phase_12_resource_regrowth(
+                &mut hourly,
+                regrowth_gate(3_600, 60_000 + hour * 3_600_000),
+                seed,
+            );
+        }
+        assert_eq!(hourly.world_tiles, one_tick.world_tiles);
+    }
+
+    #[test]
+    fn only_an_appointed_forester_automates_replanting() {
+        let seed = 123;
+        let (mut colony, _) = mapped_replant_fixture(seed);
+        colony.resources.food = 100.0;
+        colony.resources.water = 100.0;
+        colony.cats.push(adult_idle_cat("officer", "colony-1"));
+        colony.cats.push(adult_idle_cat("worker", "colony-1"));
+
+        dispatch_officer_resource_jobs(&mut colony, 1_000, seed, true);
+        assert!(colony.jobs.is_empty(), "vacancy must remain fully manual");
+
+        colony
+            .officers
+            .insert(OfficerRole::Forester, "officer".to_owned());
+        dispatch_officer_resource_jobs(&mut colony, 2_000, seed, true);
+        let jobs = colony
+            .jobs
+            .iter()
+            .filter(|job| job.kind == JobKind::ReplantTree)
+            .collect::<Vec<_>>();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].requested_by, JobRequester::Leader);
+        assert!(jobs[0].assigned_cat.is_some());
+
+        dispatch_officer_resource_jobs(&mut colony, 3_000, seed, true);
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .filter(|job| job.kind == JobKind::ReplantTree)
+                .count(),
+            1,
+            "automation stays bounded to one active/queued planting job"
+        );
+    }
+
+    #[test]
+    fn active_or_queued_logging_claim_blocks_replanting_the_same_stump() {
+        let seed = 123;
+        for status in [JobStatus::Active, JobStatus::Queued] {
+            let (mut colony, site) = mapped_replant_fixture(seed);
+            colony.jobs.push(JobRuntime {
+                id: format!("logging-{status:?}"),
+                kind: JobKind::GatherLogs,
+                status,
+                metadata: JobMetadata::Hauling {
+                    site: Some(site),
+                    total_yield: Some(LOGGING_TOTAL_YIELD),
+                    trips_done: 1,
+                    next_trip_at: Some(1_000),
+                    accepted: true,
+                },
+                ..JobRuntime::default()
+            });
+
+            assert!(
+                !has_replant_site(&colony, seed),
+                "{status:?} logging still owns the stump"
+            );
+            assert!(
+                !is_eligible_replant_stump(&colony, site, seed),
+                "completion must revalidate the same logging claim"
+            );
+        }
+    }
+
+    #[test]
+    fn dead_or_cancelled_replanters_never_transform_the_stump() {
+        let seed = 123;
+        for cancelled in [false, true] {
+            let (mut colony, site) = mapped_replant_fixture(seed);
+            let mut cat = adult_idle_cat("planter", "colony-1");
+            cat.position = position_from_world(tile_pos_to_world(site));
+            cat.death_time = (!cancelled).then_some(500);
+            colony.cats.push(cat);
+            colony.jobs.push(JobRuntime {
+                id: "replant-stop".to_owned(),
+                kind: JobKind::ReplantTree,
+                status: if cancelled {
+                    JobStatus::Cancelled
+                } else {
+                    JobStatus::Active
+                },
+                assigned_cat: Some("planter".to_owned()),
+                started_at: Some(0),
+                ends_at: Some(1_000),
+                metadata: JobMetadata::Site {
+                    site,
+                    accepted: true,
+                },
+                ..JobRuntime::default()
+            });
+            phase_29_due_completion_gathering_explore_expansion(
+                &mut colony,
+                production_gate(1, 1_000),
+                seed,
+            );
+            assert_eq!(
+                colony.world_tiles[&site].overlay_feature.as_deref(),
+                Some("stump")
+            );
+            assert_ne!(colony.jobs[0].status, JobStatus::Completed);
+        }
+    }
+
     #[test]
     fn first_logging_trip_depletes_the_tree_and_death_or_cancel_cannot_retarget_it() {
         let seed = 0_u32;
@@ -31023,7 +31625,7 @@ mod tests {
         colony
             .officers
             .insert(OfficerRole::Forester, "forester".to_owned());
-        dispatch_officer_resource_jobs(&mut colony, 999, seed);
+        dispatch_officer_resource_jobs(&mut colony, 999, seed, true);
         assert!(
             colony.jobs.is_empty(),
             "a Forester must not bypass the catalog logging study"
@@ -31033,12 +31635,12 @@ mod tests {
             .upgrade_tree
             .owned_node_ids
             .push("sawmill".to_owned());
-        dispatch_officer_resource_jobs(&mut colony, 1_000, seed);
+        dispatch_officer_resource_jobs(&mut colony, 1_000, seed, true);
         assert!(colony.jobs.is_empty(), "vacant forestry remains manual");
         colony
             .officers
             .insert(OfficerRole::Forester, "forester".to_owned());
-        dispatch_officer_resource_jobs(&mut colony, 1_001, seed);
+        dispatch_officer_resource_jobs(&mut colony, 1_001, seed, true);
         assert_eq!(colony.jobs.len(), 1);
         assert_eq!(colony.jobs[0].kind, JobKind::GatherLogs);
     }
@@ -33317,13 +33919,13 @@ mod tests {
             adult_idle_cat("cat-1", "colony-1"),
             adult_idle_cat("cat-2", "colony-1"),
         ];
-        dispatch_officer_resource_jobs(&mut colony, 0, 123);
+        dispatch_officer_resource_jobs(&mut colony, 0, 123, true);
         assert!(colony.jobs.is_empty(), "a vacant Farmer must not forage");
 
         colony
             .officers
             .insert(OfficerRole::Farmer, "cat-1".to_owned());
-        dispatch_officer_resource_jobs(&mut colony, 0, 123);
+        dispatch_officer_resource_jobs(&mut colony, 0, 123, true);
         assert_eq!(colony.jobs.len(), 1);
         assert_eq!(colony.jobs[0].kind, JobKind::ForageFibre);
 
@@ -43692,8 +44294,8 @@ mod tests {
             "dispatch-arrival",
             MigrantSpatialPhase::Arriving,
         );
-        dispatch_officer_resource_jobs(&mut dispatch, now, 4242);
-        dispatch_officer_resource_jobs(&mut dispatch_with_arrival, now, 4242);
+        dispatch_officer_resource_jobs(&mut dispatch, now, 4242, true);
+        dispatch_officer_resource_jobs(&mut dispatch_with_arrival, now, 4242, true);
         assert!(!dispatch.jobs.is_empty(), "fixture must dispatch real work");
         assert_eq!(dispatch.jobs, dispatch_with_arrival.jobs);
         assert!(
