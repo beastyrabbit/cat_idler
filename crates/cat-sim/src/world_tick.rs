@@ -118,6 +118,12 @@ use crate::{
     zones::{Zone, ZoneKind, ZonePos, ZoneRect, filter_targets_by_zones, pick_target_with_zones},
 };
 
+pub use crate::station_recipes::{
+    FIBRE_TO_CLOTH_RECIPE_ID as CLOTHIER_RECIPE_ID, HIDE_TO_LEATHER_RECIPE_ID as TANNERY_RECIPE_ID,
+    MILL_RECIPE_ID, SAWMILL_RECIPE_ID, SMELTER_RECIPE_ID, SMITHY_ARMOR_RECIPE_ID,
+    SMITHY_WEAPON_RECIPE_ID, WORKSHOP_RECIPE_ID,
+};
+
 pub type ColonyId = String;
 pub type CatId = String;
 pub type JobId = String;
@@ -547,39 +553,22 @@ pub struct ProductionQueueEntry {
     pub repeat: bool,
 }
 
-pub const SAWMILL_RECIPE_ID: &str = "logs_to_lumber";
-pub const MILL_RECIPE_ID: &str = "grain_to_flour_and_food";
-pub const WORKSHOP_RECIPE_ID: &str = "materials_to_refined";
-pub const SMELTER_RECIPE_ID: &str = "ore_to_metal";
-pub const CLOTHIER_RECIPE_ID: &str = "fibre_to_cloth";
-pub const TANNERY_RECIPE_ID: &str = "hide_to_leather";
-pub const SMITHY_WEAPON_RECIPE_ID: &str = "smithy_weapon";
-pub const SMITHY_ARMOR_RECIPE_ID: &str = "smithy_armor";
 /// Fresh-colony ruleset: implemented station recipes require their catalog study.
 pub const CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION: u32 = 1;
-
-const SAWMILL_RECIPES: &[&str] = &[SAWMILL_RECIPE_ID];
-const MILL_RECIPES: &[&str] = &[MILL_RECIPE_ID];
-const WORKSHOP_RECIPES: &[&str] = &[WORKSHOP_RECIPE_ID];
-const SMELTER_RECIPES: &[&str] = &[SMELTER_RECIPE_ID];
 
 /// Stable recipe ids implemented by each authoritative station. Entitlement is
 /// colony-specific and must be checked through [`production_recipe_availability`].
 #[must_use]
-pub fn available_production_recipes(building_type: BuildingType) -> &'static [&'static str] {
-    match building_type {
-        BuildingType::Mill => MILL_RECIPES,
-        BuildingType::Sawmill => SAWMILL_RECIPES,
-        BuildingType::Workshop => WORKSHOP_RECIPES,
-        BuildingType::Smelter => SMELTER_RECIPES,
-        _ => &[],
-    }
+pub fn available_production_recipes(building_type: BuildingType) -> Vec<&'static str> {
+    crate::station_recipes::station_recipe_set(building_type).map_or_else(Vec::new, |station| {
+        station.recipes.iter().map(|recipe| recipe.id).collect()
+    })
 }
 
 /// Catalog-backed entitlement for one implemented station recipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductionRecipeAvailability {
-    /// The exact recipe ID accepted by the physical station implementation.
+    /// The exact stable recipe ID owned by this station's descriptor.
     pub recipe_id: &'static str,
     /// Study whose typed payload unlocks the recipe, if the catalog owns one.
     pub required_study_id: Option<&'static str>,
@@ -587,18 +576,17 @@ pub struct ProductionRecipeAvailability {
     pub available: bool,
 }
 
-/// Catalog entitlement shared by editable queue recipes and aggregate production
-/// that deliberately has no queue surface (cloth/leather refinement and the two
-/// independent Smithy designs).
+/// Catalog entitlement shared by editable descriptor queues and the compatibility
+/// aggregate production paths that still execute until each physical route lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CatalogRecipeEntitlement {
     pub required_study_id: Option<&'static str>,
     pub available: bool,
 }
 
-/// Resolve a physical recipe directly from the catalog reverse index. Rules-v0
-/// colonies are grandfathered exactly as the queue stations are; fresh rules-v1
-/// colonies require the study carrying that exact recipe payload.
+/// Resolve a maintained station recipe directly from the catalog reverse index.
+/// Rules-v0 colonies are grandfathered exactly as the queue stations are; fresh
+/// rules-v1 colonies require the study carrying that exact recipe payload.
 #[must_use]
 pub fn catalog_recipe_entitlement(
     colony: &ColonyRuntime,
@@ -624,10 +612,11 @@ pub fn production_recipe_availability(
     building_type: BuildingType,
     recipe_id: &str,
 ) -> Option<ProductionRecipeAvailability> {
-    let recipe_id = available_production_recipes(building_type)
+    let recipe_id = crate::station_recipes::station_recipe_set(building_type)?
+        .recipes
         .iter()
-        .copied()
-        .find(|implemented| *implemented == recipe_id)?;
+        .find(|implemented| implemented.id == recipe_id)?
+        .id;
     let entitlement = catalog_recipe_entitlement(colony, recipe_id);
     Some(ProductionRecipeAvailability {
         recipe_id,
@@ -638,16 +627,16 @@ pub fn production_recipe_availability(
 
 #[must_use]
 pub fn default_production_queue(building_type: BuildingType) -> Vec<ProductionQueueEntry> {
-    match building_type {
-        BuildingType::Mill
-        | BuildingType::Sawmill
-        | BuildingType::Workshop
-        | BuildingType::Smelter => vec![ProductionQueueEntry {
-            recipe_id: available_production_recipes(building_type)[0].to_owned(),
-            repeat: true,
-        }],
-        _ => Vec::new(),
-    }
+    crate::station_recipes::station_recipe_set(building_type).map_or_else(Vec::new, |station| {
+        station
+            .recipes
+            .iter()
+            .map(|recipe| ProductionQueueEntry {
+                recipe_id: recipe.id.to_owned(),
+                repeat: true,
+            })
+            .collect()
+    })
 }
 
 /// Tile footprint `(width, height)` a building of `building_type` occupies.
@@ -19401,28 +19390,29 @@ fn station_store_rect(building: &BuildingRuntime) -> ZoneRect {
     }
 }
 
+/// Descriptor-owned resource domains for every maintained queue station,
+/// including the six benches that still execute aggregate compatibility timers.
+#[must_use]
+pub fn production_station_resource_sets(
+    building_type: BuildingType,
+) -> Option<(&'static [ResourceKind], &'static [ResourceKind])> {
+    crate::station_recipes::station_recipe_set(building_type)
+        .map(|station| (station.input_resources, station.output_resources))
+}
+
+const fn is_physical_station(building_type: BuildingType) -> bool {
+    matches!(
+        building_type,
+        BuildingType::Mill | BuildingType::Sawmill | BuildingType::Workshop | BuildingType::Smelter
+    )
+}
+
 fn station_resource_sets(
     building_type: BuildingType,
 ) -> Option<(&'static [ResourceKind], &'static [ResourceKind])> {
-    const MILL_INPUTS: &[ResourceKind] = &[ResourceKind::Grain, ResourceKind::Flour];
-    const MILL_OUTPUTS: &[ResourceKind] = &[ResourceKind::Food, ResourceKind::Flour];
-    const SAWMILL_INPUTS: &[ResourceKind] = &[ResourceKind::Logs];
-    const SAWMILL_OUTPUTS: &[ResourceKind] = &[ResourceKind::Lumber];
-    const WORKSHOP_INPUTS: &[ResourceKind] = &[ResourceKind::Materials];
-    const WORKSHOP_OUTPUTS: &[ResourceKind] = &[ResourceKind::Refined];
-    const SMELTER_INPUTS: &[ResourceKind] = &[ResourceKind::Ore];
-    const SMELTER_OUTPUTS: &[ResourceKind] = &[ResourceKind::Metal];
-    match building_type {
-        BuildingType::Mill => Some((MILL_INPUTS, MILL_OUTPUTS)),
-        BuildingType::Sawmill => Some((SAWMILL_INPUTS, SAWMILL_OUTPUTS)),
-        BuildingType::Workshop => Some((WORKSHOP_INPUTS, WORKSHOP_OUTPUTS)),
-        BuildingType::Smelter => Some((SMELTER_INPUTS, SMELTER_OUTPUTS)),
-        _ => None,
-    }
-}
-
-fn is_physical_station(building_type: BuildingType) -> bool {
-    station_resource_sets(building_type).is_some()
+    is_physical_station(building_type)
+        .then(|| production_station_resource_sets(building_type))
+        .flatten()
 }
 
 fn ensure_station_stores(colony: &mut ColonyRuntime, building_index: usize) {
@@ -21386,11 +21376,31 @@ pub(crate) fn building_production_block_reason_with_availability(
     building: &BuildingRuntime,
     availability: &[ProductionRecipeAvailability],
 ) -> Option<String> {
-    if !is_physical_station(building.building_type) {
-        return None;
+    crate::station_recipes::station_recipe_set(building.building_type)?;
+    if building.production_paused {
+        return Some("paused".to_owned());
     }
-    if availability.iter().any(|recipe| !recipe.available) {
+    let Some(recipe) = building.production_queue.first() else {
+        return Some(
+            if !availability.is_empty() && availability.iter().all(|recipe| !recipe.available) {
+                "research_locked"
+            } else {
+                "queue_empty"
+            }
+            .to_owned(),
+        );
+    };
+    let Some(selected_availability) = availability
+        .iter()
+        .find(|available| available.recipe_id == recipe.recipe_id)
+    else {
+        return Some("unsupported_recipe".to_owned());
+    };
+    if !selected_availability.available {
         return Some("research_locked".to_owned());
+    }
+    if !is_physical_station(building.building_type) {
+        return Some("aggregate_timer_compatibility".to_owned());
     }
     let Some(cat_id) = building.assigned_cat.as_deref() else {
         return Some("no_worker".to_owned());
@@ -21428,15 +21438,6 @@ pub(crate) fn building_production_block_reason_with_availability(
             }
             .to_owned(),
         );
-    }
-    if building.production_paused {
-        return Some("paused".to_owned());
-    }
-    let Some(recipe) = building.production_queue.first() else {
-        return Some("queue_empty".to_owned());
-    };
-    if !available_production_recipes(building.building_type).contains(&recipe.recipe_id.as_str()) {
-        return Some("unsupported_recipe".to_owned());
     }
     if building.building_type == BuildingType::Mill {
         let input = building_station_inventory(colony, building, false);
@@ -28359,6 +28360,33 @@ mod tests {
                 SMELTER_RECIPE_ID,
                 "metallurgy_preparation",
             ),
+            (
+                BuildingType::WoodCutter,
+                crate::station_recipes::LOGS_TO_PLANKS_RECIPE_ID,
+                "carpentry_staples",
+            ),
+            (
+                BuildingType::StonePrep,
+                crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID,
+                "stonecraft_preparation",
+            ),
+            (
+                BuildingType::Woodworking,
+                crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
+                "toolmaking_preparation",
+            ),
+            (BuildingType::Clothier, CLOTHIER_RECIPE_ID, "textiles"),
+            (BuildingType::Tannery, TANNERY_RECIPE_ID, "textiles"),
+            (
+                BuildingType::Smithy,
+                SMITHY_WEAPON_RECIPE_ID,
+                "weaponsmithing",
+            ),
+            (
+                BuildingType::Smithy,
+                SMITHY_ARMOR_RECIPE_ID,
+                "armorsmithing",
+            ),
         ] {
             let mut colony = ColonyRuntime {
                 recipe_entitlement_rules_version: CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
@@ -28404,13 +28432,172 @@ mod tests {
             assert!(catalog_recipe_entitlement(&colony, recipe_id).available);
         }
 
-        for building_type in [
-            BuildingType::Clothier,
-            BuildingType::Tannery,
-            BuildingType::Smithy,
+        for (building_type, expected) in [
+            (
+                BuildingType::WoodCutter,
+                vec![crate::station_recipes::LOGS_TO_PLANKS_RECIPE_ID],
+            ),
+            (
+                BuildingType::StonePrep,
+                vec![crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID],
+            ),
+            (
+                BuildingType::Woodworking,
+                vec![crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID],
+            ),
+            (BuildingType::Clothier, vec![CLOTHIER_RECIPE_ID]),
+            (BuildingType::Tannery, vec![TANNERY_RECIPE_ID]),
+            (
+                BuildingType::Smithy,
+                vec![SMITHY_WEAPON_RECIPE_ID, SMITHY_ARMOR_RECIPE_ID],
+            ),
         ] {
-            assert!(available_production_recipes(building_type).is_empty());
-            assert!(default_production_queue(building_type).is_empty());
+            assert_eq!(available_production_recipes(building_type), expected);
+            assert_eq!(
+                default_production_queue(building_type),
+                expected
+                    .iter()
+                    .map(|recipe_id| ProductionQueueEntry {
+                        recipe_id: (*recipe_id).to_owned(),
+                        repeat: true,
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn compatibility_bench_queue_block_reason_is_entitlement_aware_but_behavior_neutral() {
+        for (building_type, recipe_id, study_id) in [
+            (
+                BuildingType::WoodCutter,
+                crate::station_recipes::LOGS_TO_PLANKS_RECIPE_ID,
+                "carpentry_staples",
+            ),
+            (
+                BuildingType::StonePrep,
+                crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID,
+                "stonecraft_preparation",
+            ),
+            (
+                BuildingType::Woodworking,
+                crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
+                "toolmaking_preparation",
+            ),
+            (BuildingType::Clothier, CLOTHIER_RECIPE_ID, "textiles"),
+            (BuildingType::Tannery, TANNERY_RECIPE_ID, "textiles"),
+        ] {
+            let mut colony = chain_colony(building_type, Resources::default(), true);
+            colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+            assert_eq!(colony.buildings[0].production_queue[0].recipe_id, recipe_id);
+            assert_eq!(
+                building_production_block_reason(&colony, &colony.buildings[0]),
+                Some("research_locked".to_owned()),
+                "{building_type:?}"
+            );
+            colony.upgrade_tree.owned_node_ids.push(study_id.to_owned());
+            assert_eq!(
+                building_production_block_reason(&colony, &colony.buildings[0]),
+                Some("aggregate_timer_compatibility".to_owned()),
+                "{building_type:?}"
+            );
+            colony.recipe_entitlement_rules_version = 0;
+            colony.upgrade_tree.owned_node_ids.clear();
+            assert_eq!(
+                building_production_block_reason(&colony, &colony.buildings[0]),
+                Some("aggregate_timer_compatibility".to_owned()),
+                "rules-v0 {building_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn smithy_queue_checks_only_the_selected_recipe_entitlement() {
+        let mut colony = chain_colony(BuildingType::Smithy, Resources::default(), true);
+        colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("weaponsmithing".to_owned());
+        assert_eq!(
+            building_production_block_reason(&colony, &colony.buildings[0]),
+            Some("aggregate_timer_compatibility".to_owned()),
+            "locked armor must not block the selected owned weapon recipe"
+        );
+        colony.buildings[0].production_queue.swap(0, 1);
+        assert_eq!(
+            building_production_block_reason(&colony, &colony.buildings[0]),
+            Some("research_locked".to_owned())
+        );
+    }
+
+    #[test]
+    fn descriptor_queue_state_does_not_yet_replace_six_aggregate_timers() {
+        for (building_type, resources) in [
+            (
+                BuildingType::WoodCutter,
+                Resources {
+                    materials: 50.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::StonePrep,
+                Resources {
+                    materials: 50.0,
+                    blocks: 30.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Woodworking,
+                Resources {
+                    planks: 50.0,
+                    blocks: 50.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Clothier,
+                Resources {
+                    fibre: 50.0,
+                    cloth: 30.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Tannery,
+                Resources {
+                    hide: 50.0,
+                    leather: 30.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Smithy,
+                Resources {
+                    materials: 30.0,
+                    refined: 20.0,
+                    metal: 20.0,
+                    ..Resources::default()
+                },
+            ),
+        ] {
+            let mut queued = chain_colony(building_type, resources, true);
+            let mut compatibility = queued.clone();
+            compatibility.buildings[0].production_queue.clear();
+            compatibility.buildings[0].production_paused = true;
+
+            phase_23_production(&mut queued, production_gate(30, 30_000), 123);
+            phase_23_production(&mut compatibility, production_gate(30, 30_000), 123);
+
+            compatibility.buildings[0].production_queue =
+                queued.buildings[0].production_queue.clone();
+            compatibility.buildings[0].production_paused = false;
+            assert_eq!(
+                compatibility, queued,
+                "{building_type:?} must keep its aggregate behavior until its physical slice"
+            );
         }
     }
 

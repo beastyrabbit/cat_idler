@@ -1218,20 +1218,29 @@ mod tests {
     }
 
     #[test]
-    fn preparation_nodes_unlock_the_four_authoritative_physical_recipes() {
+    fn catalog_nodes_unlock_every_maintained_station_recipe_by_stable_id() {
         for (node_id, recipe_id) in [
             ("grain_milling_preparation", "grain_to_flour_and_food"),
             ("carpentry_preparation", "logs_to_lumber"),
+            ("carpentry_staples", "logs_to_planks"),
+            ("stonecraft_preparation", "stone_to_blocks"),
+            ("toolmaking_preparation", "planks_and_blocks_to_tools"),
             ("metallurgy_preparation", "ore_to_metal"),
             ("trade_goods_preparation", "materials_to_refined"),
+            ("textiles", "fibre_to_cloth"),
+            ("textiles", "hide_to_leather"),
+            ("weaponsmithing", "smithy_weapon"),
+            ("armorsmithing", "smithy_armor"),
         ] {
             let node = research_catalog().get(node_id).expect("study exists");
-            assert_eq!(
-                node.payloads,
-                [ResearchPayload::UnlockRecipe {
-                    recipe_id: recipe_id.to_owned(),
-                }],
-                "{node_id} must bind the implemented recipe rather than a parallel registry id"
+            assert!(
+                node.payloads.iter().any(|payload| {
+                    payload
+                        == &ResearchPayload::UnlockRecipe {
+                            recipe_id: recipe_id.to_owned(),
+                        }
+                }),
+                "{node_id} must bind {recipe_id} rather than a parallel registry id"
             );
             assert_eq!(
                 research_catalog()

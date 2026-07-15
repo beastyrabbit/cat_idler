@@ -1182,16 +1182,19 @@ pub struct BuildingSnapshot {
     /// Durable recipes in deterministic execution order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub production_queue: Vec<ProductionQueueEntrySnapshot>,
-    /// Recipes the authoritative simulation accepts for this station. Queue controls
+    /// Recipes the authoritative descriptor accepts for this station. Queue controls
     /// must use this list rather than duplicating station knowledge in the client.
+    /// A stable `aggregate_timer_compatibility` block reason marks benches whose old
+    /// production timer has not yet been replaced by physical queue execution.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub available_recipes: Vec<String>,
     /// Catalog study required by the queued implemented recipe. `None` for
     /// legacy-grandfathered snapshots and non-production buildings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required_recipe_study: Option<ResearchTarget>,
-    /// Pausing prevents a new recipe cycle while still allowing already-finished
-    /// output to be physically hauled away.
+    /// Pausing prevents a new physical recipe cycle while still allowing already-
+    /// finished output to be hauled away. Compatibility aggregate timers retain
+    /// their old behavior until their physical route migration lands.
     #[serde(default, skip_serializing_if = "is_false")]
     pub production_paused: bool,
     /// Stable machine-readable reason that the queue cannot currently advance.
@@ -3217,6 +3220,41 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CarryingKind::Flour).unwrap(),
             json!("flour")
+        );
+    }
+
+    #[test]
+    fn multi_recipe_compatibility_station_snapshot_round_trips_queue_truth() {
+        let building = BuildingSnapshot {
+            id: "smithy-1".to_owned(),
+            building_type: BuildingType::Smithy,
+            production_queue: vec![
+                ProductionQueueEntrySnapshot {
+                    recipe_id: "smithy_weapon".to_owned(),
+                    repeat: true,
+                },
+                ProductionQueueEntrySnapshot {
+                    recipe_id: "smithy_armor".to_owned(),
+                    repeat: true,
+                },
+            ],
+            available_recipes: vec!["smithy_weapon".to_owned()],
+            production_block_reason: Some("aggregate_timer_compatibility".to_owned()),
+            ..BuildingSnapshot::default()
+        };
+        let encoded = serde_json::to_value(&building).expect("serialize Smithy descriptor");
+        assert_eq!(
+            encoded["productionQueue"][1]["recipeId"],
+            json!("smithy_armor")
+        );
+        assert_eq!(encoded["availableRecipes"], json!(["smithy_weapon"]));
+        assert_eq!(
+            encoded["productionBlockReason"],
+            json!("aggregate_timer_compatibility")
+        );
+        assert_eq!(
+            serde_json::from_value::<BuildingSnapshot>(encoded).unwrap(),
+            building
         );
     }
 

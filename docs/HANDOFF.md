@@ -47,10 +47,15 @@ Verified foundations include:
 - a complete 500-node research runtime and full-page searchable/filterable/pannable client ledger.
   Every study can be purchased with research points and persists; the living Leader may complete at
   most one affordable full-catalog node per rolling real-life day while research labor/building
-  automation and rituals remain Loremaster-owned. Four preparation studies gate the maintained
-  station-local queue recipes, while Textiles and the two Smithy design studies gate four
-  aggregate processor recipes; rules-v0 saves remain grandfathered. The other 96 generated
-  recipe IDs and all 64 generated resource IDs remain incomplete. Sawmill→Gather Logs is the
+  automation and rituals remain Loremaster-owned. Eleven maintained recipe IDs now have one
+  data-owned station descriptor, canonical input/output resource domains, deterministic default
+  queues, and exact catalog ownership metadata. Four preparation studies gate the physical
+  Mill/Sawmill/Workshop/Smelter queues, while Textiles and the two Smithy design studies enforce
+  four aggregate processor recipes. Carpentry Staples, Stonecraft Preparation, and Toolmaking
+  Preparation own the new Wood Cutter, Stone Prep, and Woodworking descriptor entries, but those
+  three aggregate compatibility timers deliberately remain behavior-unchanged until their physical
+  route slices land; rules-v0 metadata remains grandfathered. The other 93 generated recipe IDs and
+  all 64 generated resource IDs remain incomplete. Sawmill→Gather Logs is the
   sole catalog job entitlement; founding water/scouting, manual research, and Barracks training
   remain available without false job payloads. Research Hut is explicitly founding-placeable;
   Wood Cutter, Stone Prep, and Woodworking are data-declared placement-available without Basic
@@ -130,7 +135,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    Bone item variants and downstream recipes remain future breadth, not the raw source itself.
    Final gates pass 1,169 simulation, 43 protocol, 82 server, and 134 client tests plus strict
    Clippy for all four touched crates.
-   Next convert Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy to station-local
+   All six now own stable recipe descriptors, canonical resource sets, deterministic default queues,
+   selected-recipe research/block metadata, and the generic persisted queue surface. Their snapshots
+   explicitly report `aggregate_timer_compatibility`; queue edits and pause state do not yet replace
+   the existing aggregate timers. Next convert Wood Cutter, Stone Prep, Woodworking, Clothier,
+   Tannery, and Smithy to station-local
    input/work/output routes with one worker advancing one selected ordered/repeatable/pausable
    recipe. Preserve the now-verified rule that the three P16 founding benches need no placement
    study and that future studies gate recipes instead. Migrate tools/weapons/armor toward finite
@@ -203,7 +212,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
    target-correct across clamp, physical routing, snapshot, trade, and persistence. Keep the other
    22 generated `*_stores` studies and the fixed 10-unit Mill/Sawmill/Workshop/Smelter local stores
    explicitly open until each has a real physical domain. Then turn the remaining registry-only
-   research payloads (96 generated-only recipes, 64 resources, and 25 worker-slot modifiers) into
+   research payloads (93 generated-only recipes, 64 resources, and 25 worker-slot modifiers) into
    observable behavior without advertising IDs that have no runtime object. Preserve the
    catalog-derived Sawmill logging entitlement and the verified authority split: the Leader owns
    the daily strategic study choice, while

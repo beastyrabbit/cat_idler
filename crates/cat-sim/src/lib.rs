@@ -56,6 +56,7 @@ pub mod shrine;
 pub mod skills;
 pub mod smithy;
 pub mod spoilage;
+pub mod station_recipes;
 pub mod stockpiles;
 pub mod storage;
 pub mod trips;

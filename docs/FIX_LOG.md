@@ -9,10 +9,10 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Six maintained benches still bypass the physical station contract | Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Give each station-local input/output/transit state, an ordered repeatable pausable recipe queue, and one-worker/one-selected-recipe advancement. The three P16 founding benches are now placement-available without `basic_tools`; future studies must gate recipes rather than later station copies. Preserve every existing `BuildingType` and its open-top visual identity. | queued |
+| Six maintained benches still bypass the physical station contract | Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Their C2.0 descriptor scaffold is live: stable recipe IDs, canonical resource domains, deterministic default queues, exact catalog availability, selected-recipe block reasons, rules-v0 grandfathering, and generic snapshot/persistence fields exist while `aggregate_timer_compatibility` truthfully marks the unchanged behavior. Next give each station local input/output/transit state and one-worker/one-selected-recipe advancement. Preserve every existing `BuildingType`, queue identity, and open-top visual identity. | in progress |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
-| Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads bind the station-local Mill, Sawmill, Workshop, and Smelter queues. Four legacy studies now also own the maintained aggregate recipes: Textiles→Clothier fibre→cloth and Tannery hide→leather, Weaponsmithing→Smithy weapons, and Armorsmithing→Smithy armor. Fresh rules-v1 villages require each exact study before time, progress, or input consumption; old/missing rules-v0 saves are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
+| Research recipe/resource breadth remains incomplete | Eleven maintained recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. The four physical queue recipes plus four existing aggregate textile/Smithy recipes enforce their rules-v1 entitlement before work; old/missing rules-v0 saves are grandfathered. Carpentry Staples, Stonecraft Preparation, and Toolmaking Preparation own the new Wood Cutter, Stone Prep, and Woodworking descriptors, but those behavior-neutral queue entries do not yet gate their compatibility aggregate timers. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Forester replanting is absent | `GAME_VISION.md` assigns felling, replanting, and lumber to the Forester. Completed logging permanently writes `overlay_feature = "stump"`, and the logging scan excludes stump tiles; no maintained phase turns one back into a tree. Add a finite, persisted Forester replant route with growth timing and terrain/occupancy safeguards, then prove depletion, regrowth, restart, vacancy/manual ownership, and long-run sustainability. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
@@ -40,6 +40,27 @@ the semantic icon directory.
 **Evidence:** All 135 `cat-client` tests, strict all-target Clippy, formatting, and diff checks
 pass. The client's own exact 1024×768 framebuffer at `/tmp/semantic-hud-25-final.png` shows all
 25 icon/value rows within the parchment panel without overlap or clipping.
+
+## 2026-07-15 — Remaining stations own behavior-neutral recipe descriptors
+
+**Problem:** Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy had no common
+recipe/queue/resource-domain authority to receive the physical station contract. Moving each route
+directly would have repeated IDs, research maps, and block-reason logic while risking an accidental
+change to established aggregate production.
+
+**Fix:** One data module now owns all eleven maintained station recipe IDs and canonical resource
+sets. The six remaining benches receive deterministic default queues, generic signed queue and
+persistence state, exact catalog-derived rules-v1 availability, rules-v0 grandfathering, and
+selected-recipe snapshot/block metadata. Stone Prep's descriptor consumes the new raw Stone kind;
+Materials remain Supplies. The compatibility benches report `aggregate_timer_compatibility`, and
+an exact six-bench twin proves queue order, empty state, and pause state do not alter their existing
+aggregate timers. Additive trade-craft timers remain outside this bounded descriptor slice.
+
+**Evidence:** Descriptor uniqueness/resource-domain tests, exact catalog reverse-index tests,
+locked/owned/grandfathered block-reason tests, multi-recipe Smithy selection, signed snapshot and
+protocol round trips, all 1,175 executed simulation tests (one intentional skip), all 44 protocol
+tests, strict sim/protocol Clippy, formatting, and diff checks pass. This verifies C2.0 scaffolding
+only; station-local cargo/work/output conversion remains open above.
 
 ## 2026-07-15 — Raw Stone and source byproducts are finite physical cargo
 

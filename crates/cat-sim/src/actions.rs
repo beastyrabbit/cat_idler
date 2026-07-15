@@ -3719,9 +3719,22 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                         )
                     })
                     .collect::<Vec<_>>();
+            let selected_recipe_id = building
+                .production_queue
+                .first()
+                .map(|entry| entry.recipe_id.as_str());
             let required_recipe_study = recipe_availability
                 .iter()
-                .find(|recipe| !recipe.available)
+                .find(|recipe| {
+                    let selected_is_locked =
+                        Some(recipe.recipe_id) == selected_recipe_id && !recipe.available;
+                    let empty_queue_is_fully_locked = selected_recipe_id.is_none()
+                        && !recipe.available
+                        && recipe_availability
+                            .iter()
+                            .all(|available| !available.available);
+                    selected_is_locked || empty_queue_is_fully_locked
+                })
                 .and_then(|recipe| recipe.required_study_id)
                 .and_then(|id| crate::research_catalog::research_catalog().get(id))
                 .map(|node| proto::ResearchTarget {
@@ -9064,6 +9077,149 @@ mod tests {
             [crate::world_tick::SAWMILL_RECIPE_ID]
         );
         assert_eq!(sawmill.required_recipe_study, None);
+    }
+
+    #[test]
+    fn compatibility_bench_snapshots_project_descriptor_queues_and_exact_entitlements() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.recipe_entitlement_rules_version =
+            crate::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        colony.upgrade_tree.owned_node_ids.extend(
+            [
+                "carpentry_staples",
+                "stonecraft_preparation",
+                "toolmaking_preparation",
+                "textiles",
+                "weaponsmithing",
+            ]
+            .map(str::to_owned),
+        );
+        let cases = [
+            (
+                "wood-cutter-descriptor",
+                BuildingType::WoodCutter,
+                vec![crate::station_recipes::LOGS_TO_PLANKS_RECIPE_ID],
+            ),
+            (
+                "stone-prep-descriptor",
+                BuildingType::StonePrep,
+                vec![crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID],
+            ),
+            (
+                "woodworking-descriptor",
+                BuildingType::Woodworking,
+                vec![crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID],
+            ),
+            (
+                "clothier-descriptor",
+                BuildingType::Clothier,
+                vec![crate::world_tick::CLOTHIER_RECIPE_ID],
+            ),
+            (
+                "tannery-descriptor",
+                BuildingType::Tannery,
+                vec![crate::world_tick::TANNERY_RECIPE_ID],
+            ),
+            (
+                "smithy-descriptor",
+                BuildingType::Smithy,
+                vec![crate::world_tick::SMITHY_WEAPON_RECIPE_ID],
+            ),
+        ];
+        for (id, building_type, _) in &cases {
+            colony.buildings.push(BuildingRuntime {
+                id: (*id).to_owned(),
+                building_type: *building_type,
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: crate::world_tick::default_production_queue(*building_type),
+                ..BuildingRuntime::default()
+            });
+        }
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        for (id, _, expected_available) in &cases {
+            let building = snapshot.colonies[0]
+                .buildings
+                .iter()
+                .find(|building| building.id == *id)
+                .expect("descriptor-backed snapshot");
+            assert_eq!(&building.available_recipes, expected_available, "{id}");
+            assert_eq!(
+                building.production_block_reason.as_deref(),
+                Some("aggregate_timer_compatibility"),
+                "{id}"
+            );
+            assert_eq!(building.required_recipe_study, None, "{id}");
+            assert!(building.input_inventory.is_empty(), "{id}");
+            assert!(building.output_inventory.is_empty(), "{id}");
+        }
+        let smithy = snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "smithy-descriptor")
+            .unwrap();
+        assert_eq!(
+            smithy
+                .production_queue
+                .iter()
+                .map(|entry| entry.recipe_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                crate::world_tick::SMITHY_WEAPON_RECIPE_ID,
+                crate::world_tick::SMITHY_ARMOR_RECIPE_ID,
+            ]
+        );
+
+        let smithy_runtime = world.colonies[0]
+            .buildings
+            .iter_mut()
+            .find(|building| building.id == "smithy-descriptor")
+            .unwrap();
+        smithy_runtime.production_queue.swap(0, 1);
+        let locked_snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let locked = locked_snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "smithy-descriptor")
+            .unwrap();
+        assert_eq!(
+            locked.production_block_reason.as_deref(),
+            Some("research_locked")
+        );
+        assert_eq!(
+            locked
+                .required_recipe_study
+                .as_ref()
+                .map(|study| study.id.as_str()),
+            Some("armorsmithing")
+        );
+        assert_eq!(
+            locked.available_recipes,
+            [crate::world_tick::SMITHY_WEAPON_RECIPE_ID]
+        );
+
+        world.colonies[0].recipe_entitlement_rules_version = 0;
+        world.colonies[0].upgrade_tree.owned_node_ids.clear();
+        let grandfathered = build_snapshot(&world, ctx().now_ms, 1);
+        let smithy = grandfathered.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == "smithy-descriptor")
+            .unwrap();
+        assert_eq!(
+            smithy.available_recipes,
+            [
+                crate::world_tick::SMITHY_WEAPON_RECIPE_ID,
+                crate::world_tick::SMITHY_ARMOR_RECIPE_ID,
+            ]
+        );
+        assert_eq!(smithy.required_recipe_study, None);
+        assert_eq!(
+            smithy.production_block_reason.as_deref(),
+            Some("aggregate_timer_compatibility")
+        );
     }
 
     #[test]

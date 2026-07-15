@@ -58,6 +58,14 @@ every workshop remains an open-top, function-readable map station.
   future bench must use the same ordered/repeatable/pausable queue contract as the four completed
   physical processors.
 
+The C2.0 scaffold gives all eleven maintained station recipes stable data-owned descriptors,
+canonical input/output resource sets, deterministic default queues, and exact catalog-derived
+availability. The six remaining benches still execute their old aggregate/parallel timers and
+report `aggregate_timer_compatibility`; queue edits and pause state are persisted future intent,
+not physical execution yet. Rules-v0 metadata is grandfathered. This descriptor slice does not
+complete the station-local route requirement above or add the separate additive trade-craft timers
+to the selected queue.
+
 ## Implemented finite-item condition contract
 
 Each unit has a stable ID, material, kind, quality, value, physical weight, and current/maximum
