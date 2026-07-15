@@ -104,6 +104,12 @@ pub enum CarryingKind {
     /// Smelted bars moving from a Smelter to physical storage.
     #[serde(rename = "metal")]
     Metal,
+    /// A completed forged weapon moving from a Smithy to physical storage.
+    #[serde(rename = "weapons")]
+    Weapons,
+    /// A completed forged armor unit moving from a Smithy to physical storage.
+    #[serde(rename = "armor")]
+    Armor,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -177,7 +183,7 @@ pub struct Resources {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub ore: f64,
     /// Refined metal bars from the smelter (P17/P19 ore→metal chain: ore → metal).
-    /// Feeds the smithy's bonus metal-forge cycle (`smithy::advance_metal_forge`).
+    /// Two bars feed one selected physical Smithy Weapon or Armor batch.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub metal: f64,
     pub blessings: f64,

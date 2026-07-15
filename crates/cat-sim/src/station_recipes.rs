@@ -1,10 +1,8 @@
 //! Data-owned production recipe descriptors for staffed stations.
 //!
 //! The authoritative target contract is P19's canonical production table. This
-//! module describes recipe identity and resource domains only; `world_tick`
-//! deliberately keeps the four remaining compatibility benches on their existing
-//! aggregate timers until their physical route slices land. Wood Cutter and Stone
-//! Prep now follow finite physical routes.
+//! module describes recipe identity and resource domains only. Every maintained
+//! processor now follows a finite physical route through station-local stores.
 
 use crate::{stockpiles::ResourceKind, types::BuildingType};
 
@@ -20,8 +18,8 @@ pub const HIDE_TO_LEATHER_RECIPE_ID: &str = "hide_to_leather";
 pub const SMITHY_WEAPON_RECIPE_ID: &str = "smithy_weapon";
 pub const SMITHY_ARMOR_RECIPE_ID: &str = "smithy_armor";
 
-/// One stable queue recipe and the finite resource kinds it will eventually
-/// consume and produce through station-local stores.
+/// One stable queue recipe and the finite resource kinds it consumes and
+/// produces through station-local stores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StationRecipeDescriptor {
     pub id: &'static str,

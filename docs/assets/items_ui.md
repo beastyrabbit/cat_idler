@@ -95,8 +95,8 @@ blessings currency chip only.
 
 Every physical cargo overlay reuses the exact tracked semantic resource PNG named above rather
 than a second carry-only vocabulary. This covers Food, Fish, Water, Materials, Stone, Refined,
-Blessings, Logs, Lumber, Planks, Blocks, Tools, Catnip, Grain, Flour, Herbs, Fibre, Hide, Bone,
-Cloth, Leather, Ore, and Metal. Fibre deliberately uses the tracked public-pack haystack prop as
+Blessings, Logs, Lumber, Planks, Blocks, Tools, Weapons, Armor, Catnip, Grain, Flour, Herbs, Fibre,
+Hide, Bone, Cloth, Leather, Ore, and Metal. Fibre deliberately uses the tracked public-pack haystack prop as
 its raw-plant bundle while Cloth keeps its finished-textile icon; both therefore remain distinct
 from the Flour pouch. Their existing resource tints remain legible at the on-map overlay size, while icon shape
 is authoritative: Lumber and Planks, for example, keep separate symbols. The runtime has no

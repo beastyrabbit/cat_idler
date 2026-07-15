@@ -487,6 +487,15 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
          WHERE physicalStationRulesVersion < 5",
         [],
     )?;
+    // Smithy becomes physical in station-rules v6. Its two selected recipes were
+    // already player-editable under v5, so this boundary is version-only: preserve
+    // queue order/repeat, pause, progress, and intentional emptiness exactly.
+    conn.execute(
+        "UPDATE buildings
+         SET physicalStationRulesVersion = 6
+         WHERE physicalStationRulesVersion < 6",
+        [],
+    )?;
     Ok(())
 }
 
@@ -2851,7 +2860,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
             default_production_queue(BuildingType::StonePrep)
         );
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
 
         conn.execute(
             "UPDATE buildings SET productionQueue = '[]'
@@ -2869,7 +2878,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cleared, "[]", "Stone Prep empty queue remains player-owned");
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -2899,7 +2908,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(queue, "[]", "v2 player-empty queue is authoritative");
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         assert_eq!(progress.to_bits(), 417.5_f64.to_bits());
         assert_eq!(paused, 1);
 
@@ -2926,7 +2935,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&persisted).unwrap(),
             explicit_queue
         );
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -2968,7 +2977,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&stored).unwrap(),
             queue
         );
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         assert_eq!(progress.to_bits(), 417.5_f64.to_bits());
         assert_eq!(paused, 1);
 
@@ -2987,7 +2996,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, "[]");
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -3040,7 +3049,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&stored).unwrap(),
             queue
         );
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         assert_eq!(progress.to_bits(), 317.25_f64.to_bits());
         assert_eq!(paused, 1);
         let (empty, empty_version, empty_progress, empty_paused): (String, i64, f64, i64) = conn
@@ -3052,7 +3061,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(empty, "[]");
-        assert_eq!(empty_version, 5);
+        assert_eq!(empty_version, 6);
         assert_eq!(empty_progress.to_bits(), 211.5_f64.to_bits());
         assert_eq!(empty_paused, 1);
 
@@ -3065,6 +3074,76 @@ mod tests {
         let stored: String = conn
             .query_row(
                 "SELECT productionQueue FROM buildings WHERE id = 'legacy-clothier'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "[]");
+    }
+
+    #[test]
+    fn v5_smithy_authored_state_survives_the_v6_boundary_exactly() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        init_schema(&conn).expect("schema");
+        let queue = vec![
+            ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::SMITHY_ARMOR_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
+            ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::SMITHY_WEAPON_RECIPE_ID.to_owned(),
+                repeat: true,
+            },
+        ];
+        conn.execute(
+            "INSERT INTO buildings (
+                id, colonyId, type, level, position, constructionProgress,
+                productionProgress, isComplete, productionQueue, productionPaused,
+                productionQueueInitialized, physicalRefinerQueueInitialized,
+                physicalStationRulesVersion
+             ) VALUES ('legacy-smithy-v5', 'colony-1', 'smithy', 1, '{}',
+                 100, 731.25, 1, ?1, 1, 1, 1, 5)",
+            [serde_json::to_string(&queue).unwrap()],
+        )
+        .expect("station-rules v5 Smithy row");
+        conn.execute(
+            "INSERT INTO buildings (
+                id, colonyId, type, level, position, constructionProgress,
+                productionProgress, isComplete, productionQueue, productionPaused,
+                productionQueueInitialized, physicalRefinerQueueInitialized,
+                physicalStationRulesVersion
+             ) VALUES ('legacy-smithy-v5-empty', 'colony-1', 'smithy', 1, '{}',
+                 100, 211.5, 1, '[]', 1, 1, 1, 5)",
+            [],
+        )
+        .expect("station-rules v5 empty Smithy row");
+
+        migrate_add_missing_columns(&conn).expect("Smithy v6 boundary");
+        for (id, expected_queue, expected_progress) in [
+            (
+                "legacy-smithy-v5",
+                serde_json::to_string(&queue).unwrap(),
+                731.25_f64,
+            ),
+            ("legacy-smithy-v5-empty", "[]".to_owned(), 211.5_f64),
+        ] {
+            let (stored, version, progress, paused): (String, i64, f64, i64) = conn
+                .query_row(
+                    "SELECT productionQueue, physicalStationRulesVersion, productionProgress,
+                            productionPaused FROM buildings WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, expected_queue);
+            assert_eq!(version, 6);
+            assert_eq!(progress.to_bits(), expected_progress.to_bits());
+            assert_eq!(paused, 1);
+        }
+        migrate_add_missing_columns(&conn).expect("idempotent v6 restart");
+        let stored: String = conn
+            .query_row(
+                "SELECT productionQueue FROM buildings WHERE id = 'legacy-smithy-v5-empty'",
                 [],
                 |row| row.get(0),
             )
@@ -3163,7 +3242,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
             default_production_queue(BuildingType::WoodCutter)
         );
-        assert_eq!(initialized, 5);
+        assert_eq!(initialized, 6);
 
         conn.execute(
             "UPDATE buildings SET productionQueue = '[]' WHERE id = 'legacy-wood-cutter'",

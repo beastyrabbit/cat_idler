@@ -5,6 +5,9 @@ use crate::types::{BuildingType, CatSpecialization};
 pub const WORKSHOP_MATERIALS_PER_CYCLE: f64 = 5.0;
 pub const WORKSHOP_REFINED_PER_CYCLE: f64 = 1.0;
 pub const WORKSHOP_CYCLE_SEC: f64 = 600.0;
+pub const SMITHY_METAL_PER_CYCLE: f64 = 2.0;
+pub const SMITHY_OUTPUT_PER_CYCLE: f64 = 1.0;
+pub const SMITHY_CYCLE_SEC: f64 = 900.0;
 /// Architects run workshops at double speed.
 pub const ARCHITECT_SPEED: f64 = 2.0;
 
@@ -385,7 +388,7 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
 /// Length of one production cycle, in seconds, for building types that craft on a
 /// timer — `BuildingRuntime::production_progress` accumulates elapsed seconds toward
 /// this in `phase_23_production` (see `advance_workshop`/`advance_woodworking` above
-/// plus the physical station refiners in `world_tick` and `smithy::advance_smithy`).
+/// plus the physical station refiners in `world_tick`).
 /// `None` for building types with no timed cycle,
 /// including fields: `field_yield` adds food continuously every tick, with no cycle
 /// to complete (`production_progress` is simply never touched for a field).
@@ -401,7 +404,7 @@ pub const fn building_cycle_sec(building_type: BuildingType) -> Option<f64> {
         BuildingType::Mill => Some(crate::processing::MILL_CYCLE_SEC),
         BuildingType::Sawmill => Some(crate::processing::SAWMILL_CYCLE_SEC),
         BuildingType::Woodworking => Some(WOODWORKING_CYCLE_SEC),
-        BuildingType::Smithy => Some(crate::smithy::SMITHY_CYCLE_SEC),
+        BuildingType::Smithy => Some(SMITHY_CYCLE_SEC),
         _ => None,
     }
 }
@@ -414,10 +417,9 @@ pub const fn building_cycle_sec(building_type: BuildingType) -> Option<f64> {
 /// workshop → refined (materials → refined, this module's `advance_workshop`),
 /// wood-cutter → plank (five station-local Logs → one local Plank), stone-prep → block
 /// (five station-local Stone → one local Block),
-/// woodworking → tool (planks + blocks → tools, `advance_woodworking`), smithy →
-/// weapon+armor (refined + materials → 1 weapon *and* 1 armor per cycle,
-/// `smithy::advance_smithy`/`SMITHY_WEAPONS_PER_CYCLE`/`SMITHY_ARMOR_PER_CYCLE`, both
-/// 1.0), field → food (`field_yield`, passive, no worker/cycle). Every other building
+/// woodworking → tool (planks + blocks → tools). Smithy's selected physical recipe
+/// is projected dynamically by the snapshot because it produces either a weapon or armor,
+/// never both. Field → food (`field_yield`, passive, no worker/cycle). Every other building
 /// type (den, storage, walls, mouse farm, shrine, barracks, accounting tent, etc.)
 /// crafts nothing and reports `None`.
 #[must_use]
@@ -427,7 +429,7 @@ pub const fn building_output_label(building_type: BuildingType) -> Option<&'stat
         BuildingType::WoodCutter => Some("plank"),
         BuildingType::StonePrep => Some("block"),
         BuildingType::Woodworking => Some("tool"),
-        BuildingType::Smithy => Some("weapon+armor"),
+        BuildingType::Smithy => Some("forged gear"),
         BuildingType::Field => Some("food"),
         BuildingType::Clothier => Some("cloth"),
         BuildingType::Tannery => Some("leather"),
@@ -893,13 +895,13 @@ mod tests {
 
         // Producing types: label matches the resource actually credited in
         // `phase_23_production` (workshop -> refined, wood-cutter -> planks,
-        // stone-prep -> blocks, woodworking -> tools, smithy -> 1 weapon + 1 armor,
+        // stone-prep -> blocks, woodworking -> tools, smithy -> selected forged gear,
         // field -> food, clothier -> cloth, tannery -> leather, smelter -> metal).
         assert_eq!(super::building_output_label(Workshop), Some("refined"));
         assert_eq!(super::building_output_label(WoodCutter), Some("plank"));
         assert_eq!(super::building_output_label(StonePrep), Some("block"));
         assert_eq!(super::building_output_label(Woodworking), Some("tool"));
-        assert_eq!(super::building_output_label(Smithy), Some("weapon+armor"));
+        assert_eq!(super::building_output_label(Smithy), Some("forged gear"));
         assert_eq!(super::building_output_label(Field), Some("food"));
         assert_eq!(super::building_output_label(Clothier), Some("cloth"));
         assert_eq!(super::building_output_label(Tannery), Some("leather"));

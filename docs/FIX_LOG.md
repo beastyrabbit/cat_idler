@@ -9,10 +9,9 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| One maintained bench still bypasses the physical station contract | Smithy still consumes colony-global aggregates and advances parallel hidden cycles. The other maintained processors, including Clothier, now use station-local one-worker selected queues. Convert Smithy without changing its open-top identity or two authored recipe IDs. | in progress |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop, Smelter, Tannery, and Clothier station-local input/output stores remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
-| Research recipe/resource breadth remains incomplete | Eleven maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: eight are research-gated and three are founding baselines. Nine recipes execute through physical queues; the aggregate Smithy bench retains two selected recipes. Old/missing rules-v0 saves are grandfathered. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
+| Research recipe/resource breadth remains incomplete | Eleven maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: eight are research-gated and three are founding baselines. All eleven execute through physical queues. Old/missing rules-v0 saves are grandfathered. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
@@ -21,6 +20,43 @@ and any changed Bevy visuals have been verified.
 | Wall art needs a stronger top-down treatment | The staged palisade, closed perimeter, single-gate cutover, collision, and visual campaign are verified, but the current wall selection does not meet the player's requested quality bar. Compare the tracked public candidates in `docs/sprite-review.html`, select a coherent top-down wall and gate set, and preserve exact autotiling, staged-work color, gate placement, and authoritative collision. Re-verify native and WASM framebuffers before replacing the current art. | queued (low priority) |
 
 ## Verified fixes
+
+## 2026-07-15 — Smithy physically forges one selected scalar gear output
+
+**Problem:** Smithy still spent colony-global Metal through two hidden parallel timers. Its visible
+selected queue, worker, local inventories, and cargo did not own the batch, and one cycle minted a
+Weapon and Armor independently of physical delivery.
+
+**Fix:** One Metalwork worker now carries exactly two Metal into the selected Smithy, works one
+900-game-second `smithy_weapon` or `smithy_armor` batch, leaves one whole selected output in local
+storage, and carries that unit to finite storage before aggregate credit. Queue order, one-shot,
+repeat, pause, and deliberate emptiness are authoritative. Captain automation is comfort-gated and
+non-sticky, but may finish exactly one committed batch; signed manual staffing bypasses that
+comfort gate. Full output storage, missing input, research lock, vacancy, death, removal, and worker
+replacement conserve whole cargo. Orphan recovery floors both gear amount and destination
+headroom, so a whole Weapon/Armor never becomes fractional cargo when less than one unit fits.
+The legacy aggregate forge timers remain bit-frozen, and this
+slice deliberately does not mint a second finite `ItemStore` identity for scalar gear. Station
+rules v6 is version-only and preserves exact v5 authored Smithy state.
+
+**Evidence:** Deterministic one-, five-, and 60-second cadence tests cover both selected outputs,
+whole-unit capacity/headroom (including removed-Smithy recovery at 0.5 headroom), skill gating,
+recovery, automation, and frozen compatibility state.
+A signed guided pure-sim campaign proves Ore→Smelter→Metal→Smithy→Weapon through every
+inbound/local/outbound boundary. An authentic HMAC server campaign preserves authored paused
+queues across SQLite restart, reconnects the bearer, resumes production, and credits exactly one
+Weapon only after delivery. Established no-input Captain twins produce at both one-minute and
+five-minute cadence without a reset. Protocol/client tests cover the additive `weapons` and
+`armor` cargo literals, their existing semantic tracked icons, and the selected station's truthful
+worker/progress/inventory/queue presentation. The mandatory selected-Smithy client-owned
+framebuffer `/tmp/physical-smithy-c2.png` is an exact 1024×768 RGB PNG (SHA-256
+`833082b06e6b95172bc1afe1e22a4d3e2e34787381538cce629f675466226429`). It was captured from
+the live client against a booted server and visually inspected: the open Smithy, assigned hauling
+cat, 50% Weapons batch, two Metal inbound/local, one whole Weapon local/outbound, repeat queue,
+block reason, and queue controls are all visible without a black frame. The temporary staging and
+capture systems were removed afterward. Final gates pass 1,233 simulation tests (one intentional
+instrumentation skip), 44 protocol tests, 93 server tests, and 136 client tests; strict Clippy is
+green for all four crates, with formatting and diff checks clean.
 
 ## 2026-07-15 — Fibre and Clothier production are finite physical routes
 
@@ -410,9 +446,9 @@ recipe entitlement, not permission to place another bench.
 each bench while retaining the exact 167 Building / 167 RecipeResource / 166 Upgrade split and the
 first durability payload. Deterministic signed personal/communal plans, exact scaffold payment,
 reservation/overlap and mutation-free denial, authenticated server HMAC, and SQLite restart tests
-cover placement without altering production behavior at that slice. All three founding queues are
-now physical; the aggregate Smithy's two selected recipes and finite-equipment authority remain
-open below.
+cover placement without altering production behavior at that slice. At that time all three
+founding queues were physical; the aggregate Smithy's two selected recipes and finite-equipment
+authority were still open.
 
 ## 2026-07-15 — Prosperity migrants physically enter and leave through the gate
 
@@ -458,8 +494,8 @@ capabilities. Water Carriers, Textiles, and Den Insulation were reclassified wit
 stable identity, cost, prerequisites, order, or the live `housingPerDen` effect, preserving the
 exact 167 Building / 167 RecipeResource / 166 Upgrade split. At that slice Textiles first received
 the Clothier and Tannery recipe entitlements, while Weaponsmithing and Armorsmithing independently
-owned the two Smithy outputs. Tannery and Clothier have since moved to entitlement-backed physical
-queues; Smithy alone remains aggregate with two selected recipes. Fresh rules-v1 production cannot
+owned the two Smithy outputs. By the end of that historical slice, Tannery and Clothier had moved
+to entitlement-backed physical queues while Smithy remained aggregate with two selected recipes. Fresh rules-v1 production cannot
 advance or spend inputs before its exact study; rules-v0 saves remain grandfathered. Smithy's
 editable queue persists selected intent but does not replace its aggregate timers until the next
 physical-station slice.

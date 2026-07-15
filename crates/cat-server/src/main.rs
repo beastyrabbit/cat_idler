@@ -3631,6 +3631,243 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signed_hmac_ore_smelter_smithy_route_survives_sqlite_restart() {
+        let started_at = now_ms();
+        let secret = "guided-smithy-secret";
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-smithy-route-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let mut world = starter_world(started_at);
+        let colony = &mut world.colonies[0];
+        colony.resources.food = 100.0;
+        colony.resources.water = 100.0;
+        colony.resources.ore = 10.0;
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .extend(["metallurgy_preparation", "weaponsmithing"].map(str::to_owned));
+        let anchor = colony.anchor;
+        for (id, building_type, offset) in [
+            (
+                "signed-guided-smelter",
+                cat_sim::types::BuildingType::Smelter,
+                6,
+            ),
+            (
+                "signed-guided-smithy",
+                cat_sim::types::BuildingType::Smithy,
+                10,
+            ),
+        ] {
+            colony.buildings.push(cat_sim::world_tick::BuildingRuntime {
+                id: id.to_owned(),
+                building_type,
+                position: cat_sim::world_tick::TilePos {
+                    x: anchor.x + offset,
+                    y: anchor.y + 6,
+                },
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: cat_sim::world_tick::default_production_queue(building_type),
+                ..cat_sim::world_tick::BuildingRuntime::default()
+            });
+        }
+        cat_sim::world_tick::reconcile_colony_stockpiles(colony);
+        let worker_ids = [
+            colony.cats[colony.cats.len() - 2].id.clone(),
+            colony.cats[colony.cats.len() - 1].id.clone(),
+        ];
+        let conn = Connection::open(&path).expect("guided Smithy database");
+        persistence::init_schema(&conn).expect("guided Smithy schema");
+        let state = build_state_from_world(world, conn, secret.to_owned(), true, started_at);
+        let signed = signed_session("guided-smithy-session".to_owned(), secret);
+        let mut connection = ConnectionContext::new(
+            "guided-smithy-socket".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        connection.identity = Some(signed.clone());
+        assert!(
+            send_action(
+                &state,
+                &mut connection,
+                &ClientAction::SetTestAcceleration {
+                    preset: cat_protocol::AccelerationPreset::Hyper,
+                },
+            )
+            .await
+            .result
+            .ok
+        );
+        let queue_action = |building_id: &str, edit| ClientAction::EditProductionQueue {
+            session_id: signed.session_id.clone(),
+            nickname: "Smith".to_owned(),
+            sig: signed.sig.clone(),
+            building_id: building_id.to_owned(),
+            edit,
+        };
+        for (building_id, removals, recipe_id, repeat) in [
+            (
+                "signed-guided-smelter",
+                1_usize,
+                cat_sim::station_recipes::SMELTER_RECIPE_ID,
+                true,
+            ),
+            (
+                "signed-guided-smithy",
+                2_usize,
+                cat_sim::station_recipes::SMITHY_WEAPON_RECIPE_ID,
+                false,
+            ),
+        ] {
+            for _ in 0..removals {
+                let result = send_action(
+                    &state,
+                    &mut connection,
+                    &queue_action(
+                        building_id,
+                        cat_protocol::ProductionQueueEdit::Remove { index: 0 },
+                    ),
+                )
+                .await;
+                assert!(result.result.ok, "signed queue removal: {result:?}");
+            }
+            for edit in [
+                cat_protocol::ProductionQueueEdit::Add {
+                    recipe_id: recipe_id.to_owned(),
+                    repeat,
+                },
+                cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
+            ] {
+                let result =
+                    send_action(&state, &mut connection, &queue_action(building_id, edit)).await;
+                assert!(result.result.ok, "signed queue authoring: {result:?}");
+            }
+        }
+        for (cat_id, building_id) in worker_ids
+            .iter()
+            .zip(["signed-guided-smelter", "signed-guided-smithy"])
+        {
+            let result = send_action(
+                &state,
+                &mut connection,
+                &ClientAction::AssignWorker {
+                    session_id: signed.session_id.clone(),
+                    nickname: "Smith".to_owned(),
+                    sig: signed.sig.clone(),
+                    cat_id: cat_id.clone(),
+                    building_id: Some(building_id.to_owned()),
+                },
+            )
+            .await;
+            assert!(result.result.ok, "signed worker assignment: {result:?}");
+        }
+        save_current_world(&state)
+            .await
+            .expect("persist paused Smithy chain");
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen Smithy route database");
+        persistence::init_schema(&conn).expect("migrate Smithy route database");
+        let restarted = build_state_from_connection(started_at, conn, secret.to_owned())
+            .expect("restart paused Smithy chain");
+        {
+            let world = restarted.world.lock().await;
+            for id in ["signed-guided-smelter", "signed-guided-smithy"] {
+                let building = world.colonies[0]
+                    .buildings
+                    .iter()
+                    .find(|building| building.id == id)
+                    .unwrap();
+                assert!(building.production_paused);
+                assert_eq!(building.production_queue.len(), 1);
+                assert_eq!(building.production_progress, 0.0);
+            }
+        }
+        let mut reconnected = ConnectionContext::new(
+            "guided-smithy-reconnected".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        let presence = send_action(
+            &restarted,
+            &mut reconnected,
+            &ClientAction::Presence {
+                session_id: signed.session_id.clone(),
+                nickname: "Smith".to_owned(),
+                sig: Some(signed.sig.clone()),
+            },
+        )
+        .await;
+        assert!(presence.result.ok, "Smithy bearer reconnect: {presence:?}");
+        assert_eq!(presence.fields.get("playerId"), Some(&signed.player_id));
+        for id in ["signed-guided-smelter", "signed-guided-smithy"] {
+            assert!(
+                send_action(
+                    &restarted,
+                    &mut reconnected,
+                    &queue_action(
+                        id,
+                        cat_protocol::ProductionQueueEdit::SetPaused { paused: false },
+                    ),
+                )
+                .await
+                .result
+                .ok
+            );
+        }
+
+        let mut stages = [false; 9];
+        for second in 1..=3_600_i64 {
+            let mut world = restarted.world.lock().await;
+            let reports = world_tick(&mut world, started_at + second * 1_000);
+            assert_eq!(reports[0].reset_reason, None);
+            let colony = &world.colonies[0];
+            let smelter = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == "signed-guided-smelter")
+                .unwrap();
+            let smithy = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == "signed-guided-smithy")
+                .unwrap();
+            let has = |building, direction, kind| {
+                cat_sim::world_tick::building_station_cargo(colony, building, direction)
+                    .iter()
+                    .any(|(found, amount)| *found == kind && *amount > 0.0)
+            };
+            let local = |building, output, kind| {
+                cat_sim::world_tick::building_station_inventory(colony, building, output)
+                    .iter()
+                    .any(|(found, amount)| *found == kind && *amount > 0.0)
+            };
+            stages[0] |= has(smelter, "in", cat_sim::stockpiles::ResourceKind::Ore);
+            stages[1] |= local(smelter, false, cat_sim::stockpiles::ResourceKind::Ore);
+            stages[2] |= local(smelter, true, cat_sim::stockpiles::ResourceKind::Metal);
+            stages[3] |= has(smelter, "out", cat_sim::stockpiles::ResourceKind::Metal);
+            stages[4] |= has(smithy, "in", cat_sim::stockpiles::ResourceKind::Metal);
+            stages[5] |= local(smithy, false, cat_sim::stockpiles::ResourceKind::Metal);
+            stages[6] |= local(smithy, true, cat_sim::stockpiles::ResourceKind::Weapons);
+            stages[7] |= has(smithy, "out", cat_sim::stockpiles::ResourceKind::Weapons);
+            stages[8] |= colony.resources.weapons >= 1.0;
+            if stages.iter().all(|seen| *seen) {
+                break;
+            }
+        }
+        let world = restarted.world.lock().await;
+        assert_eq!(stages, [true; 9], "restart missed a physical Smithy stage");
+        assert_eq!(world.colonies[0].resources.weapons, 1.0);
+        assert_eq!(world.colonies[0].resources.armor, 0.0);
+        assert!(world.colonies[0].items.is_empty());
+        drop(world);
+        drop(restarted);
+        fs::remove_file(path).expect("remove Smithy route database");
+    }
+
+    #[tokio::test]
     async fn signed_trader_buy_sell_depletes_exact_finite_stock_across_restart() {
         let path = std::env::temp_dir().join(format!(
             "cat-server-trader-restart-{}-{}.db",

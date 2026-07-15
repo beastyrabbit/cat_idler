@@ -3741,6 +3741,15 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 .production_queue
                 .first()
                 .map(|entry| entry.recipe_id.as_str());
+            let production_output = if building.building_type == BuildingType::Smithy {
+                Some(match selected_recipe_id {
+                    Some(crate::world_tick::SMITHY_WEAPON_RECIPE_ID) => "weapon",
+                    Some(crate::world_tick::SMITHY_ARMOR_RECIPE_ID) => "armor",
+                    _ => "forged gear",
+                })
+            } else {
+                production::building_output_label(building.building_type)
+            };
             let required_recipe_study = recipe_availability
                 .iter()
                 .find(|recipe| {
@@ -3771,8 +3780,7 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                 staff_count: u32::from(has_live_worker),
                 staff_cap,
                 production_progress,
-                production_output: production::building_output_label(building.building_type)
-                    .map(str::to_owned),
+                production_output: production_output.map(str::to_owned),
                 // Live sum of carried cargo whose haul target resolves to this building's
                 // tile (see `world_tick::building_inbound_haul`). Physical Mill/Sawmill
                 // inputs target their station; ordinary cargo targets stockpiles.
@@ -4810,6 +4818,8 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Bone => proto::CarryingKind::Bone,
         entities::CarryingKind::Ore => proto::CarryingKind::Ore,
         entities::CarryingKind::Metal => proto::CarryingKind::Metal,
+        entities::CarryingKind::Weapons => proto::CarryingKind::Weapons,
+        entities::CarryingKind::Armor => proto::CarryingKind::Armor,
     }
 }
 
@@ -9249,20 +9259,7 @@ mod tests {
             assert_eq!(&building.available_recipes, expected_available, "{id}");
             assert_eq!(
                 building.production_block_reason.as_deref(),
-                Some(
-                    if matches!(
-                        *id,
-                        "wood-cutter-descriptor"
-                            | "stone-prep-descriptor"
-                            | "woodworking-descriptor"
-                            | "clothier-descriptor"
-                            | "tannery-descriptor"
-                    ) {
-                        "no_worker"
-                    } else {
-                        "aggregate_timer_compatibility"
-                    }
-                ),
+                Some("no_worker"),
                 "{id}"
             );
             assert_eq!(building.required_recipe_study, None, "{id}");
@@ -9330,10 +9327,7 @@ mod tests {
             ]
         );
         assert_eq!(smithy.required_recipe_study, None);
-        assert_eq!(
-            smithy.production_block_reason.as_deref(),
-            Some("aggregate_timer_compatibility")
-        );
+        assert_eq!(smithy.production_block_reason.as_deref(), Some("no_worker"));
     }
 
     #[test]

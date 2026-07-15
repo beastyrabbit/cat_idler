@@ -54,9 +54,9 @@ every workshop remains an open-top, function-readable map station.
 - Keep the stable `tools`, `weapons`, and `armor` resource fields during migration, but finite item
   instances are the eventual condition/identity authority. New crafting must not create two
   independent inventories for one physical object.
-- One assigned cat advances one selected recipe. Woodworking, Smithy, Clothier, Tannery, and every
-  future bench must use the same ordered/repeatable/pausable queue contract as the nine completed
-  physical processors.
+- One assigned cat advances one selected recipe. All ten maintained processors, including
+  Woodworking, Smithy, Clothier, and Tannery, use the same ordered/repeatable/pausable queue
+  contract; future benches must preserve it.
 
 The C2.0 scaffold gives all eleven maintained station recipes stable data-owned descriptors,
 canonical input/output resource sets, deterministic default queues, and exact catalog-derived
@@ -66,18 +66,18 @@ two-Planks plus two-Blocks route into one whole scalar Tool after one 600-game-s
 P19.C2.4 completes Tannery's five-Hide-to-one-Leather physical route after one 600-game-second
 Textile batch, with no aggregate credit before outbound delivery. P19.C2.5 completes Clothier:
 five separately foraged and delivered Fibre travel through local input, one 600-game-second
-Textile batch produces one Cloth, and aggregate credit waits for its outbound delivery. All five make their
+Textile batch produces one Cloth, and aggregate credit waits for its outbound delivery. P19.C2.6
+completes Smithy: two Metal travel through local input, one selected 900-game-second Metalwork
+batch produces one whole Weapon or Armor, and aggregate credit waits for outbound delivery. All six make their
 ordered/repeatable/pausable selected queues authoritative. Their
 `logs_to_planks`, `stone_to_blocks`, and `planks_and_blocks_to_tools` recipes are
 founding-available in fresh rules-v1 colonies; their studies gate later recipes. Tannery requires
-the Textiles entitlement, as does Clothier. Rules-v0 saves remain grandfathered. Smithy alone still
-executes its old aggregate/parallel weapon and armor timers and reports
-`aggregate_timer_compatibility`; its queue edits remain persisted future intent until it follows
-the reusable local-input/work/local-output/delivery seam. Woodworking's old
-`wood_craft_progress` timer and Clothier's old hidden clothing timer are frozen and preserved
-only for save compatibility. Its output remains the existing scalar Tool until C3 establishes one
-finite equipment authority without double-counting. Separate additive trade-craft timers are not
-selected queue recipes.
+the Textiles entitlement, as does Clothier; Weaponsmithing and Armorsmithing independently gate the
+two Smithy selections. Rules-v0 saves remain grandfathered. Woodworking's old
+`wood_craft_progress`, Clothier's old hidden clothing timer, and Smithy's old aggregate forge
+timers are frozen and preserved only for save compatibility. Outputs remain the existing scalar
+Tool/Weapon/Armor fields until C3 establishes one finite equipment authority without
+double-counting. Separate additive trade-craft timers are not selected queue recipes.
 
 ## Implemented finite-item condition contract
 
@@ -90,9 +90,9 @@ restart, and the Goods panel makes condition and repair visible.
 
 One signed caravan sale may transfer at most 20,000 grams of items. That bounded-load seam and the
 finite-item loop are implemented foundations; they do not make the catalog complete. Bone item
-variants, gem/clay sources and variants, broader metal variants, finished functional equipment
-chains, and physical station-local logistics for Smithy's two selected recipes are still product
-work.
+variants, gem/clay sources and variants, broader metal variants, and finished functional equipment
+chains are still product work. All ten maintained processors, including Smithy's two selected
+recipes, already use physical station-local logistics.
 
 ## Resource / item taxonomy (DF breadth, cat-flavoured)
 Three tiers (reconciles P16's founding benches with P12's Sawmill chain):

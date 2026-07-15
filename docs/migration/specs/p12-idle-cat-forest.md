@@ -2,9 +2,8 @@
 
 > **Living target spec.** Specialist manual-to-officer ownership (with a bounded founding Leader
 > hunt/water/scout safety floor), 19-labor skills, seeded spatial storehouses, physical Accountant
-> rounds, physical farm labor, and complete physical Mill, Sawmill, Wood Cutter, Stone Prep,
-> Woodworking, Workshop, Smelter, and Tannery routes are verified. Broader
-> physical station routes and recipes remain partial. Current evidence and exact follow-ups live in
+> rounds, physical farm labor, and all ten maintained physical processor routes are verified.
+> Broader sourced recipe/resource breadth and local inventories remain partial. Current evidence and exact follow-ups live in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
 The DF-texture depth from `docs/GAME_VISION.md`, decomposed into concrete, TDD-able Rust
@@ -114,7 +113,7 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
   present; escalating cost math; unlock gating; determinism.
 
 **Verified physical subset:** Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop,
-Smelter, Tannery, and Clothier no longer convert aggregate colony counters in place. Each reserves visible finite stock,
+Smelter, Tannery, Clothier, and Smithy no longer convert aggregate colony counters in place. Each reserves visible finite stock,
 carries input to a station-local
 store, works there under its durable ordered/repeatable/pausable queue, places output in a
 station-local store, and carries it to compatible finite storage before aggregate credit. Their
@@ -124,9 +123,9 @@ sequentially and are consumed atomically into one whole scalar Tool. Tannery lik
 Hide into local input, performs one selected 600-second Textile batch, and carries one Leather out
 before credit. Clothier sources Fibre through explicit physical forage, carries five Fibre into
 local input, performs one selected 600-second Textile batch, and carries one Cloth out before
-credit. Apply this contract to the aggregate Smithy bench's two selected recipes rather than
-reopening these completed routes; finite Tool identity
-and condition authority remain P19.C3.
+credit. Smithy carries two Metal into one selected 900-second Weapon or Armor batch and carries
+one whole output to storage before aggregate credit. Do not reopen these completed routes; finite
+Tool/Weapon/Armor identity and condition authority remain P19.C3.
 
 ## P12.5 — Visible farm plots
 **Goal:** designate farm plots; cats plant/tend/harvest; crops grow through visible stages.

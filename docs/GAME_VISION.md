@@ -89,7 +89,8 @@ specialized per role); unfilled roles stay manual.
   plots and **see the tiles being farmed** (DF farm plots). Grow **catnip**, **grain**,
   herbs, etc. Trees, stone/deposits, and fields do not occupy the village interior.
 - **Processing chains**: grain → **Mill** → flour → food; fibre → **Clothier** → cloth/clothing;
-  hide → **Tannery** → leather; ore → **Smelter** → metal → **Smithy** → tools/weapons/armor;
+  hide → **Tannery** → leather; ore → **Smelter** → metal → **Smithy** → weapons/armor;
+  planks + blocks → **Woodworking** → tools;
   logs → **Wood Cutter** → fine planks or **Sawmill** → structural lumber. Stone is dressed into
   blocks before construction. Each step is an open-top workshop cats walk to and haul between;
   one worker advances one selected recipe rather than several invisible parallel cycles.

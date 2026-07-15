@@ -858,6 +858,8 @@ pub enum CarryingKind {
     Bone,
     Ore,
     Metal,
+    Weapons,
+    Armor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1170,19 +1172,19 @@ pub struct BuildingSnapshot {
     #[serde(default)]
     pub production_progress: f64,
     /// Short, stable, lowercase label of what this building type makes (e.g. "plank",
-    /// "refined", "weapon+armor"), or `None` if it doesn't produce a resource.
+    /// "refined", "weapon", "armor"), or `None` if it doesn't produce a resource.
     /// Additive; empty/absent for pre-production-label snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production_output: Option<String>,
     /// Resource units physically in flight toward this building right now — the live sum
     /// of carried cargo whose haul destination resolves to this building's tile (see
-    /// `cat_sim::world_tick::building_inbound_haul`). Physical Mill/Sawmill/Wood Cutter input
-    /// carriers target their station work point; ordinary cargo targets a stockpile.
+    /// `cat_sim::world_tick::building_inbound_haul`). Physical processor input carriers target
+    /// their station work point; ordinary cargo targets a stockpile.
     /// Additive; defaults to 0.0 for older snapshots.
     #[serde(default)]
     pub inbound_haul: f64,
     /// Resource units physically departing this building in carried cargo. Physical
-    /// Mill/Sawmill/Wood Cutter outputs remain uncredited until this cargo reaches storage.
+    /// processor outputs remain uncredited until this cargo reaches storage.
     #[serde(default)]
     pub outbound_haul: f64,
     /// True station-local inputs already delivered to this building. These are not a
@@ -1198,8 +1200,6 @@ pub struct BuildingSnapshot {
     pub production_queue: Vec<ProductionQueueEntrySnapshot>,
     /// Recipes the authoritative descriptor accepts for this station. Queue controls
     /// must use this list rather than duplicating station knowledge in the client.
-    /// A stable `aggregate_timer_compatibility` block reason marks benches whose old
-    /// production timer has not yet been replaced by physical queue execution.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub available_recipes: Vec<String>,
     /// Catalog study required by the queued implemented recipe. `None` for
@@ -1207,8 +1207,7 @@ pub struct BuildingSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub required_recipe_study: Option<ResearchTarget>,
     /// Pausing prevents a new physical recipe cycle while still allowing already-
-    /// finished output to be hauled away. Compatibility aggregate timers retain
-    /// their old behavior until their physical route migration lands.
+    /// finished output to be hauled away.
     #[serde(default, skip_serializing_if = "is_false")]
     pub production_paused: bool,
     /// Stable machine-readable reason that the queue cannot currently advance.
@@ -3244,7 +3243,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_recipe_compatibility_station_snapshot_round_trips_queue_truth() {
+    fn multi_recipe_physical_station_snapshot_round_trips_queue_truth() {
         let building = BuildingSnapshot {
             id: "smithy-1".to_owned(),
             building_type: BuildingType::Smithy,
@@ -3259,7 +3258,7 @@ mod tests {
                 },
             ],
             available_recipes: vec!["smithy_weapon".to_owned()],
-            production_block_reason: Some("aggregate_timer_compatibility".to_owned()),
+            production_block_reason: Some("missing_metal".to_owned()),
             ..BuildingSnapshot::default()
         };
         let encoded = serde_json::to_value(&building).expect("serialize Smithy descriptor");
@@ -3268,10 +3267,7 @@ mod tests {
             json!("smithy_armor")
         );
         assert_eq!(encoded["availableRecipes"], json!(["smithy_weapon"]));
-        assert_eq!(
-            encoded["productionBlockReason"],
-            json!("aggregate_timer_compatibility")
-        );
+        assert_eq!(encoded["productionBlockReason"], json!("missing_metal"));
         assert_eq!(
             serde_json::from_value::<BuildingSnapshot>(encoded).unwrap(),
             building
@@ -3310,6 +3306,8 @@ mod tests {
             (CarryingKind::Cloth, "cloth"),
             (CarryingKind::Ore, "ore"),
             (CarryingKind::Metal, "metal"),
+            (CarryingKind::Weapons, "weapons"),
+            (CarryingKind::Armor, "armor"),
         ] {
             let encoded = serde_json::to_value(kind).expect("serialize carrying kind");
             assert_eq!(encoded, json!(literal));

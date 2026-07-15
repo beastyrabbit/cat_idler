@@ -52,9 +52,10 @@ Verified foundations include:
   queues, and exact catalog ownership metadata: eight are research-gated and three founding-bench
   baselines are immediately available. Four preparation studies gate the physical
   Mill/Sawmill/Workshop/Smelter queues; Textiles gates physical Tannery and Clothier,
-  while the two Smithy design studies enforce that bench's two selected aggregate recipes. The
-  nine other recipes now execute through physical station-local queues; only Smithy's aggregate
-  compatibility timers deliberately remain behavior-unchanged until its physical route lands.
+  while the two Smithy design studies independently gate that bench's selected weapon and armor
+  recipes. All eleven recipes now execute through physical station-local queues. Smithy consumes
+  two Metal for one whole selected Weapon or Armor after 900 game-seconds, and aggregate credit
+  waits for outbound delivery; its old aggregate forge timers remain bit-frozen save data.
   Carpentry, Stonecraft, and Toolmaking studies gate later recipes rather than those three founding
   baselines; rules-v0 metadata
   remains grandfathered. The other 93 generated recipe IDs and
@@ -154,11 +155,12 @@ so a correct scout route cannot conceal a missing founding dispatch.
    `fibre_to_cloth` batch, and one Cloth reaches finite storage before aggregate credit. Its local
    store remains fixed at 10 and its legacy parallel clothing timer is frozen. The hidden
    `wood_craft_progress` timer is frozen and rules-v3 persistence preserves player-authored queue
-   intent without seeding; rules-v4 does the same for Tannery and version-only rules-v5 for
-   Clothier. Next convert Smithy to a station-local input/work/output route with one worker
-   advancing one selected ordered/repeatable/pausable
-   recipe. Finite Tool identity remains the following C3 slice; Woodworking does not create a
-   parallel finite item. Preserve the now-verified rule that the three P16 founding benches need no placement
+   intent without seeding; rules-v4 does the same for Tannery, version-only rules-v5 for Clothier,
+   and version-only rules-v6 for Smithy. Smithy is the sixth conversion: one Metalwork worker
+   carries two Metal into one selected ordered/repeatable/pausable 900-second weapon or armor
+   batch, then carries the one whole selected output to storage before aggregate credit. Its old
+   aggregate forge timers are frozen. Finite Tool/Weapon/Armor identity remains the following C3
+   slice; these routes do not create parallel finite items. Preserve the now-verified rule that the three P16 founding benches need no placement
    study and that future studies gate recipes instead. Migrate tools/weapons/armor toward finite
    item authority without double-counting the
    compatibility scalar fields. Preserve the verified construction contract: player and autonomous
@@ -168,12 +170,12 @@ so a correct scout route cannot conceal a missing founding dispatch.
 
    The finite founding storehouse and complete physical
    logs→Wood Cutter→planks, Stone→Stone Prep→Blocks, logs→Sawmill→lumber, grain→Mill→flour+food,
-   Materials→Workshop→Refined, Ore→Smelter→Metal, Hide→Tannery→Leather, and physical
-   Fibre→Clothier→Cloth routes are verified, including station-local
+   Materials→Workshop→Refined, Ore→Smelter→Metal, Hide→Tannery→Leather,
+   Fibre→Clothier→Cloth, and Metal→Smithy→selected Weapon/Armor routes are verified, including station-local
    ledgers, transit reservation, delivery-before-credit, death conservation, restart persistence,
    real editable queues, and live inspectors.
    Exterior farming now follows the same physical truth through plot work, bounded baskets, local
-   handoff, and storage delivery. Steward-managed exact-resource piles now feed all nine physical
+   handoff, and storage delivery. Steward-managed exact-resource piles now feed all ten physical
    processors through conserved balancing trips without consuming the player's designation budget.
    Fresh player and Leader scaffolds use the same conserved source→transit→scaffold contract and
    do not begin timed work until the pinned bill arrives.
@@ -183,7 +185,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
    Keep future offer/block metadata from copying hidden exact totals or recreating an equality
    oracle. All 19
    maintained labor skills have truthful gain sources, bounded effects, persistence,
-   and inspector visibility. Signed per-cat preferences and all nine physical processors' real
+   and inspector visibility. Signed per-cat preferences and all ten physical processors' real
    editable queues are live; extend the generic queue control as additional physical recipes land.
    Preserve the verified tool productivity, type-local escalating costs, shrine faucets, and
    research pacing in balance campaigns. The physical offering decision threshold is 20 Supplies
@@ -247,8 +249,8 @@ so a correct scout route cannot conceal a missing founding dispatch.
    resource mappings now use unique, truthful tracked Board Game/Fish glyphs under the semantic
    icon directory; Stone has a block glyph and Bone a fish-skeleton glyph. The exact 1024×768
    client-owned frame `/tmp/semantic-hud-25-final.png` shows every row without clipping. Preserve
-   the exhaustive 25-entry mapping/path tests as new resources land. Every one of the twenty
-   physical `CarryingKind` values also reuses its exact tracked HUD identity above moving cats;
+   the exhaustive 25-entry mapping/path tests as new resources land. All twenty-five physical
+   `CarryingKind` values also reuse their exact tracked HUD identities above moving cats;
    the inspected exact 1024×768 frame `/tmp/semantic-cargo-icons-1024.png` shows ten distinct
    simultaneous loads and no colored-square fallback. Preserve that exhaustive cargo mapping and
    continue whole-game visual/playtesting passes across supported bounds.

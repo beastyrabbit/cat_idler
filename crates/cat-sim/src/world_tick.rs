@@ -28,7 +28,7 @@ use crate::{
     },
     idle_engine,
     idle_rules::{self, consumption_for_tick},
-    items::{self, Item, ItemKind, ItemStore, Material},
+    items::{self, Item, ItemKind, ItemStore},
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         BASELINE_HUNT_MAX_SLOTS, BASELINE_SCOUT_MAX_SLOTS, BASELINE_WATER_MAX_SLOTS, CatBrief,
@@ -72,7 +72,6 @@ use crate::{
         WORKSHOP_MATERIALS_PER_CYCLE,
     },
     productivity::{productive_duration_ms, productive_elapsed},
-    recipes::craft_quality_from_skill,
     research_catalog::research_catalog,
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
     roads::{self, RoadCorridorOptions, RoadTile, select_road_corridor},
@@ -80,7 +79,6 @@ use crate::{
     skills::{
         HAUL_SKILL_GAIN, Labor, SKILL_GAIN_PER_JOB, SKILL_GAIN_PER_WORK_HOUR, work_rate_multiplier,
     },
-    smithy::{MetalForgeOptions, SmithyOptions, advance_metal_forge, advance_smithy},
     spoilage::apply_food_spoilage_after_consumption,
     stockpiles::{self, GatherSpot, GatherSpotPurpose, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
     storage::{StorageBuilding, StorageCapacities, count_storehouses, storehouse_cap},
@@ -282,10 +280,9 @@ pub struct ColonyRuntime {
     /// Tannery bench's trade-craft cycle timer (P16/P19 clothing chain slice),
     /// mirroring [`Self::wood_craft_progress`] for [`crate::recipes::LEATHER_TRADE_RECIPE`].
     pub tannery_craft_progress: f64,
-    /// Smithy's additive metal-forge cycle timer (P17/P19 ore→metal chain), mirroring
-    /// [`Self::wood_craft_progress`]'s "entirely separate from `production_progress`"
-    /// shape for [`crate::smithy::advance_metal_forge`]. Stays at `0.0` forever for any
-    /// colony that never builds a smelter (no metal ever exists to spend).
+    /// Frozen compatibility field from Smithy's removed aggregate metal-forge timer.
+    /// It remains serialized bit-for-bit for old saves; selected physical Smithy work
+    /// advances only [`BuildingRuntime::production_progress`].
     pub metal_forge_progress: f64,
     /// Coin balance (P19 slice 3): earned by [`crate::trader::TraderState::Trading`]
     /// `SellGoods` and spent on `BuyResource`. Its own currency, deliberately not folded
@@ -6538,12 +6535,16 @@ fn phase_20_leader_labor_assignments_and_staffing(
         release_raw_material_workshop_workers(colony);
     }
     release_unrunnable_textile_workers(colony);
+    release_unrunnable_smithy_workers(colony);
     if has_officer(colony, OfficerRole::ClothLeader) {
         // Reserve one genuinely runnable physical leather route before the
         // director's 95% employment fill consumes every remaining idle paw.
         // Emergency preemption still treats this officer-owned luxury worker
         // like the other non-survival stations.
         auto_staff_one_runnable_textile_bench(colony, gate.processed_through);
+    }
+    if has_officer(colony, OfficerRole::Captain) {
+        auto_staff_runnable_smithies(colony, gate.processed_through, 1);
     }
     // Food emergencies differ from water emergencies: fields and mills are part
     // of the long-run food loop, but their sticky workers cannot be allowed to
@@ -8313,6 +8314,9 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     if has_officer(colony, OfficerRole::ClothLeader) {
         auto_staff_runnable_textile_benches(colony, gate.processed_through);
     }
+    if has_officer(colony, OfficerRole::Captain) {
+        auto_staff_runnable_smithies(colony, gate.processed_through, usize::MAX);
+    }
 
     let research_effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let production_elapsed = gate.elapsed_sec as f64
@@ -8325,12 +8329,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         .buildings
         .iter()
         .enumerate()
-        .filter_map(|(index, building)| {
-            (building.construction_progress >= 100).then_some((index, building.id.clone()))
-        })
+        .filter_map(|(index, building)| (building.construction_progress >= 100).then_some(index))
         .collect::<Vec<_>>();
 
-    for (building_index, building_id) in building_ids {
+    for building_index in building_ids {
         let building_type = colony.buildings[building_index].building_type;
         let modifiers = research_effects.building(building_type.as_str());
         let building_elapsed = production_elapsed * modifiers.output_mult
@@ -8360,181 +8362,16 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 );
             }
             BuildingType::Smithy => {
-                let weapon_design =
-                    catalog_recipe_entitlement(colony, SMITHY_WEAPON_RECIPE_ID).available;
-                let armor_design =
-                    catalog_recipe_entitlement(colony, SMITHY_ARMOR_RECIPE_ID).available;
-                let has_design = weapon_design || armor_design;
-                let worker = assigned_worker(colony, &building_id);
-                let metalwork_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Metalwork));
-                let skilled_elapsed =
-                    skilled_station_elapsed(building_crafting_elapsed, metalwork_skill);
-                let (spendable_materials, _) = spendable_production_materials(colony);
-                let step = advance_smithy(
-                    colony.buildings[building_index].production_progress,
-                    skilled_elapsed,
-                    SmithyOptions {
-                        has_worker: worker.is_some() && has_design,
-                        worker_is_fast: worker.is_some_and(|cat| {
-                            cat.specialization == Some(CatSpecialization::Architect)
-                        }),
-                        refined_available: colony.resources.refined,
-                        materials_available: spendable_materials,
-                    },
+                // The compatibility aggregate timers remain persisted but frozen.
+                // One selected recipe now owns Metal fetch, local work, local output,
+                // and whole-unit delivery; finite ItemStore identity follows in C3.
+                advance_physical_refiner(
+                    colony,
+                    building_index,
+                    gate,
+                    building_crafting_elapsed,
+                    productive_tools >= 1.0,
                 );
-                let weapons_produced = if weapon_design {
-                    step.weapons_produced
-                } else {
-                    0.0
-                };
-                let armor_produced = if armor_design {
-                    step.armor_produced
-                } else {
-                    0.0
-                };
-                if weapons_produced > 0.0 || armor_produced > 0.0 {
-                    if productive_tools >= 1.0 {
-                        wear_functional_items(
-                            colony,
-                            ItemKind::Tool,
-                            weapons_produced.max(armor_produced) as u32,
-                            gate.processed_through,
-                        );
-                    }
-                    colony.resources.refined =
-                        (colony.resources.refined - step.refined_used).max(0.0);
-                    colony.resources.materials =
-                        (colony.resources.materials - step.materials_used).max(0.0);
-                    colony.resources.weapons += weapons_produced;
-                    colony.resources.armor += armor_produced;
-                    let quality = craft_quality_from_skill(metalwork_skill);
-                    colony.add_crafted_item(
-                        Item::new(ItemKind::Weapon, Material::Metal, quality),
-                        weapons_produced as u32,
-                    );
-                    colony.add_crafted_item(
-                        Item::new(ItemKind::Armor, Material::Metal, quality),
-                        armor_produced as u32,
-                    );
-                    // Route the forged gear to the nearest accepting stockpile to the smithy
-                    // (P12.4a) — pile-only, `resources` unchanged, shrine fallback with no piles.
-                    let site = colony.buildings[building_index].position;
-                    route_output_to_nearest_pile(
-                        colony,
-                        ResourceKind::Weapons,
-                        weapons_produced,
-                        site,
-                    );
-                    route_output_to_nearest_pile(colony, ResourceKind::Armor, armor_produced, site);
-                    append_event(
-                        colony,
-                        gate.processed_through,
-                        EventKind::Production,
-                        format!(
-                            "The smith forged {} weapon{} and {} armor at the smithy.",
-                            weapons_produced,
-                            if weapons_produced == 1.0 { "" } else { "s" },
-                            armor_produced,
-                        ),
-                    );
-                    grant_building_skill(
-                        colony,
-                        &building_id,
-                        Labor::Metalwork,
-                        (weapons_produced + armor_produced) * SKILL_GAIN_PER_JOB,
-                    );
-                }
-                colony.buildings[building_index].production_progress = step.next_progress;
-
-                // P17/P19 ore→metal chain: additive metal-forge sub-cycle, same bench/
-                // worker, its own cycle timer (`colony.metal_forge_progress`, entirely
-                // separate from `production_progress` above) — mirrors how the P19
-                // trade-craft benches run alongside a workshop's primary refine. With no
-                // metal ever smelted (`resources.metal == 0.0`, the case for every colony
-                // without a smelter or without mountains) `advance_metal_forge` always
-                // floors to zero cycles, so this is a strict no-op and the smithy's
-                // forged-gear output stays byte-identical to before this chain existed.
-                let forge_worker = assigned_worker(colony, &building_id);
-                let forge_skill = forge_worker.map_or(0.0, |cat| cat.skill(Labor::Metalwork));
-                let forge_step = advance_metal_forge(
-                    colony.metal_forge_progress,
-                    skilled_elapsed,
-                    MetalForgeOptions {
-                        has_worker: forge_worker.is_some() && has_design,
-                        worker_is_fast: forge_worker.is_some_and(|cat| {
-                            cat.specialization == Some(CatSpecialization::Architect)
-                        }),
-                        metal_available: colony.resources.metal,
-                    },
-                );
-                colony.metal_forge_progress = forge_step.next_progress;
-                let forge_weapons_produced = if weapon_design {
-                    forge_step.weapons_produced
-                } else {
-                    0.0
-                };
-                let forge_armor_produced = if armor_design {
-                    forge_step.armor_produced
-                } else {
-                    0.0
-                };
-                if forge_weapons_produced > 0.0 || forge_armor_produced > 0.0 {
-                    if productive_tools >= 1.0 {
-                        wear_functional_items(
-                            colony,
-                            ItemKind::Tool,
-                            forge_weapons_produced.max(forge_armor_produced) as u32,
-                            gate.processed_through,
-                        );
-                    }
-                    colony.resources.metal =
-                        (colony.resources.metal - forge_step.metal_used).max(0.0);
-                    colony.resources.weapons += forge_weapons_produced;
-                    colony.resources.armor += forge_armor_produced;
-                    let quality = craft_quality_from_skill(forge_skill);
-                    colony.add_crafted_item(
-                        Item::new(ItemKind::Weapon, Material::Metal, quality),
-                        forge_weapons_produced as u32,
-                    );
-                    colony.add_crafted_item(
-                        Item::new(ItemKind::Armor, Material::Metal, quality),
-                        forge_armor_produced as u32,
-                    );
-                    let site = colony.buildings[building_index].position;
-                    route_output_to_nearest_pile(
-                        colony,
-                        ResourceKind::Weapons,
-                        forge_weapons_produced,
-                        site,
-                    );
-                    route_output_to_nearest_pile(
-                        colony,
-                        ResourceKind::Armor,
-                        forge_armor_produced,
-                        site,
-                    );
-                    append_event(
-                        colony,
-                        gate.processed_through,
-                        EventKind::Production,
-                        format!(
-                            "The smith worked banked metal into {} extra weapon{} and {} extra armor.",
-                            forge_weapons_produced,
-                            if forge_weapons_produced == 1.0 {
-                                ""
-                            } else {
-                                "s"
-                            },
-                            forge_armor_produced,
-                        ),
-                    );
-                    grant_building_skill(
-                        colony,
-                        &building_id,
-                        Labor::Metalwork,
-                        (forge_weapons_produced + forge_armor_produced) * SKILL_GAIN_PER_JOB,
-                    );
-                }
             }
             BuildingType::Woodworking => {
                 advance_physical_woodworking(
@@ -8714,24 +8551,6 @@ fn dispatch_officer_resource_jobs(
             Some(cat_id),
             JobMetadata::None,
         );
-    }
-}
-
-/// Deposit a produced `amount` of `kind` into the nearest accepting stockpile to `at`
-/// (P12.4a inter-workshop routing). Pile-contents only — the caller has already credited the
-/// authoritative `resources`, so `resources` is never touched here and stays byte-identical.
-/// With no designated player piles this resolves to the shrine reservoir, matching pre-P12.4a.
-fn route_output_to_nearest_pile(
-    colony: &mut ColonyRuntime,
-    kind: ResourceKind,
-    amount: f64,
-    at: TilePos,
-) {
-    if amount <= 0.0 {
-        return;
-    }
-    if let Some(idx) = deposit_stockpile_index(colony, kind, f64::from(at.x), f64::from(at.y)) {
-        stockpiles::add_resource(&mut colony.stockpiles[idx].contents, kind, amount);
     }
 }
 
@@ -11835,7 +11654,9 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Tools => Some(CarryingKind::Tools),
         ResourceKind::Ore => Some(CarryingKind::Ore),
         ResourceKind::Metal => Some(CarryingKind::Metal),
-        ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => None,
+        ResourceKind::Weapons => Some(CarryingKind::Weapons),
+        ResourceKind::Armor => Some(CarryingKind::Armor),
+        ResourceKind::Blessings => None,
     }
 }
 
@@ -18315,7 +18136,7 @@ fn auto_staff_one_runnable_textile_bench(colony: &mut ColonyRuntime, now_ms: i64
             building.assigned_cat.is_none() && physical_textile_needs_worker(colony, building)
         })
         .filter_map(|building| {
-            let recipe = single_input_physical_recipe(building.building_type)?;
+            let recipe = active_single_input_physical_recipe(building)?;
             let output_cargo_kind = carrying_kind_for_resource(recipe.output_kind)?;
             let committed = physical_textile_route_committed(colony, building);
             let local_output =
@@ -18378,6 +18199,142 @@ fn auto_staff_runnable_textile_type_bounded(
         true,
         max_assignments,
         physical_textile_needs_worker,
+        |_, _| true,
+    );
+}
+
+/// A Captain-owned Smithy is luxury work, like the Cloth Leader's textile benches:
+/// it may finish one physically committed batch after comfort falls, but it never
+/// starts a fresh zero-progress batch or occupies a paw while the route cannot run.
+fn physical_smithy_route_committed(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
+    if building.building_type != BuildingType::Smithy {
+        return false;
+    }
+    let station_cargo = colony.cats.iter().any(|cat| {
+        cat.death_time.is_none()
+            && cat.carrying.as_ref().is_some_and(|cargo| {
+                parse_station_cargo(cargo.source_gather_spot.as_deref())
+                    .is_some_and(|(_, building_id, _)| building_id == building.id)
+            })
+    });
+    let local_output = [ResourceKind::Weapons, ResourceKind::Armor]
+        .into_iter()
+        .any(|kind| {
+            station_inventory_amount(colony, &building.id, true, kind).floor() >= 1.0
+                && nearest_output_pile(colony, kind, tile_pos_to_world(building.position))
+                    .is_some_and(|index| stockpile_headroom(colony, index, kind).floor() >= 1.0)
+        });
+    let active_progress = active_single_input_physical_recipe(building).is_some_and(|recipe| {
+        building.production_progress > f64::EPSILON
+            && station_inventory_amount(colony, &building.id, false, recipe.input_kind)
+                + f64::EPSILON
+                >= recipe.input_per_cycle
+            && stockpiles::resource_amount(&colony.resources, recipe.input_kind) + f64::EPSILON
+                >= recipe.input_per_cycle
+            && !building.production_paused
+            && production_recipe_availability(colony, building.building_type, recipe.recipe_id)
+                .is_some_and(|availability| availability.available)
+    });
+    station_cargo || local_output || active_progress
+}
+
+fn physical_smithy_runnable(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
+    let Some(recipe) = active_single_input_physical_recipe(building)
+        .filter(|_| building.building_type == BuildingType::Smithy)
+    else {
+        return false;
+    };
+    if !raw_chain_survival_reserve_met(colony)
+        || building.construction_progress < 100
+        || building.production_paused
+        || !production_recipe_availability(colony, BuildingType::Smithy, recipe.recipe_id)
+            .is_some_and(|availability| availability.available)
+    {
+        return false;
+    }
+    let local_input = station_inventory_amount(colony, &building.id, false, recipe.input_kind);
+    if stockpiles::resource_amount(&colony.resources, recipe.input_kind) + f64::EPSILON
+        < recipe.input_per_cycle
+    {
+        return false;
+    }
+    let fetchable = local_input + f64::EPSILON >= recipe.input_per_cycle
+        || nearest_source_pile(
+            colony,
+            recipe.input_kind,
+            (recipe.input_per_cycle - local_input).max(0.0),
+            tile_pos_to_world(building.position),
+        )
+        .is_some();
+    let output_has_room = nearest_output_pile(
+        colony,
+        recipe.output_kind,
+        tile_pos_to_world(building.position),
+    )
+    .is_some_and(|index| {
+        stockpile_headroom(colony, index, recipe.output_kind).floor() >= recipe.output_per_cycle
+    });
+    fetchable && output_has_room
+}
+
+fn physical_smithy_needs_worker(colony: &ColonyRuntime, building: &BuildingRuntime) -> bool {
+    physical_smithy_route_committed(colony, building) || physical_smithy_runnable(colony, building)
+}
+
+fn release_unrunnable_smithy_workers(colony: &mut ColonyRuntime) {
+    let office_filled = has_officer(colony, OfficerRole::Captain);
+    let release = colony
+        .buildings
+        .iter()
+        .enumerate()
+        .filter(|(_, building)| {
+            building.building_type == BuildingType::Smithy
+                && building.automated_by == Some(OfficerRole::Captain)
+                && {
+                    let carrier_committed = colony.cats.iter().any(|cat| {
+                        cat.death_time.is_none()
+                            && cat.carrying.as_ref().is_some_and(|cargo| {
+                                parse_station_cargo(cargo.source_gather_spot.as_deref())
+                                    .is_some_and(|(_, building_id, _)| building_id == building.id)
+                            })
+                    });
+                    !carrier_committed
+                        && (!office_filled || !physical_smithy_needs_worker(colony, building))
+                }
+        })
+        .map(|(index, building)| (index, building.assigned_cat.clone()))
+        .collect::<Vec<_>>();
+    for (index, cat_id) in release {
+        colony.buildings[index].assigned_cat = None;
+        colony.buildings[index].automated_by = None;
+        let Some(cat_id) = cat_id else {
+            continue;
+        };
+        let job_bound = colony.jobs.iter().any(|job| {
+            matches!(job.status, JobStatus::Active | JobStatus::Queued)
+                && job.assigned_cat.as_deref() == Some(cat_id.as_str())
+        });
+        if !job_bound
+            && let Some(cat) = colony
+                .cats
+                .iter_mut()
+                .find(|cat| cat.id == cat_id && cat.death_time.is_none() && cat.carrying.is_none())
+        {
+            cat.activity = CatActivity::Idle;
+            cat.current_task = None;
+            cat.destination = None;
+        }
+    }
+}
+
+fn auto_staff_runnable_smithies(colony: &mut ColonyRuntime, now_ms: i64, max: usize) {
+    auto_staff_idle_buildings_matching(
+        colony,
+        BuildingType::Smithy,
+        now_ms,
+        true,
+        max,
+        physical_smithy_needs_worker,
         |_, _| true,
     );
 }
@@ -19681,9 +19638,7 @@ fn station_store_rect(building: &BuildingRuntime) -> ZoneRect {
     }
 }
 
-/// Descriptor-owned resource domains for every maintained queue station,
-/// including the three benches (four recipes) that still execute aggregate
-/// compatibility timers.
+/// Descriptor-owned resource domains for every maintained physical queue station.
 #[must_use]
 pub fn production_station_resource_sets(
     building_type: BuildingType,
@@ -19709,6 +19664,7 @@ struct SingleInputPhysicalRecipe {
     input_per_cycle: f64,
     output_kind: ResourceKind,
     output_per_cycle: f64,
+    cycle_sec: f64,
     labor: Labor,
     input_budget: StationInputBudget,
     fetching_reason: &'static str,
@@ -19752,6 +19708,7 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
             input_per_cycle: crate::production::WOODCUTTER_LOGS_PER_CYCLE,
             output_kind: ResourceKind::Planks,
             output_per_cycle: crate::production::WOODCUTTER_PLANKS_PER_CYCLE,
+            cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
             labor: Labor::Process,
             input_budget: StationInputBudget::Aggregate,
             fetching_reason: "fetching_logs",
@@ -19765,6 +19722,7 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
             input_per_cycle: crate::production::STONEPREP_STONE_PER_CYCLE,
             output_kind: ResourceKind::Blocks,
             output_per_cycle: crate::production::STONEPREP_BLOCKS_PER_CYCLE,
+            cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
             labor: Labor::Process,
             input_budget: StationInputBudget::Aggregate,
             fetching_reason: "fetching_stone",
@@ -19778,6 +19736,7 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
             input_per_cycle: WORKSHOP_MATERIALS_PER_CYCLE,
             output_kind: ResourceKind::Refined,
             output_per_cycle: crate::production::WORKSHOP_REFINED_PER_CYCLE,
+            cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
             labor: Labor::Process,
             input_budget: StationInputBudget::SpendableSupplies,
             fetching_reason: "fetching_materials",
@@ -19791,6 +19750,7 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
             input_per_cycle: crate::production::SMELTER_ORE_PER_CYCLE,
             output_kind: ResourceKind::Metal,
             output_per_cycle: crate::production::SMELTER_METAL_PER_CYCLE,
+            cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
             labor: Labor::Metalwork,
             input_budget: StationInputBudget::Aggregate,
             fetching_reason: "fetching_ore",
@@ -19804,6 +19764,7 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
             input_per_cycle: crate::production::TANNERY_HIDE_PER_CYCLE,
             output_kind: ResourceKind::Leather,
             output_per_cycle: crate::production::TANNERY_LEATHER_PER_CYCLE,
+            cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
             labor: Labor::Textile,
             input_budget: StationInputBudget::Aggregate,
             fetching_reason: "fetching_hide",
@@ -19817,6 +19778,7 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
             input_per_cycle: crate::production::CLOTHIER_FIBRE_PER_CYCLE,
             output_kind: ResourceKind::Cloth,
             output_per_cycle: crate::production::CLOTHIER_CLOTH_PER_CYCLE,
+            cycle_sec: crate::production::WORKSHOP_CYCLE_SEC,
             labor: Labor::Textile,
             input_budget: StationInputBudget::Aggregate,
             fetching_reason: "fetching_fibre",
@@ -19826,6 +19788,44 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
         }),
         _ => None,
     }
+}
+
+fn smithy_physical_recipe(recipe_id: &str) -> Option<SingleInputPhysicalRecipe> {
+    let (output_kind, output_name) = match recipe_id {
+        SMITHY_WEAPON_RECIPE_ID => (ResourceKind::Weapons, "weapons"),
+        SMITHY_ARMOR_RECIPE_ID => (ResourceKind::Armor, "armor"),
+        _ => return None,
+    };
+    Some(SingleInputPhysicalRecipe {
+        recipe_id: if recipe_id == SMITHY_WEAPON_RECIPE_ID {
+            SMITHY_WEAPON_RECIPE_ID
+        } else {
+            SMITHY_ARMOR_RECIPE_ID
+        },
+        input_kind: ResourceKind::Metal,
+        input_per_cycle: crate::production::SMITHY_METAL_PER_CYCLE,
+        output_kind,
+        output_per_cycle: crate::production::SMITHY_OUTPUT_PER_CYCLE,
+        cycle_sec: crate::production::SMITHY_CYCLE_SEC,
+        labor: Labor::Metalwork,
+        input_budget: StationInputBudget::Aggregate,
+        fetching_reason: "fetching_metal",
+        missing_reason: "missing_metal",
+        source_name: "metal bars",
+        output_name,
+    })
+}
+
+fn active_single_input_physical_recipe(
+    building: &BuildingRuntime,
+) -> Option<SingleInputPhysicalRecipe> {
+    if building.building_type == BuildingType::Smithy {
+        return building
+            .production_queue
+            .first()
+            .and_then(|entry| smithy_physical_recipe(&entry.recipe_id));
+    }
+    single_input_physical_recipe(building.building_type)
 }
 
 fn single_input_fetch_budget(colony: &ColonyRuntime, recipe: SingleInputPhysicalRecipe) -> f64 {
@@ -19838,8 +19838,10 @@ fn single_input_fetch_budget(colony: &ColonyRuntime, recipe: SingleInputPhysical
 }
 
 fn is_physical_station(building_type: BuildingType) -> bool {
-    matches!(building_type, BuildingType::Mill | BuildingType::Sawmill)
-        || single_input_physical_recipe(building_type).is_some()
+    matches!(
+        building_type,
+        BuildingType::Mill | BuildingType::Sawmill | BuildingType::Smithy
+    ) || single_input_physical_recipe(building_type).is_some()
         || twin_input_physical_recipe(building_type).is_some()
 }
 
@@ -20911,9 +20913,6 @@ fn advance_physical_refiner(
     tools_contributed: bool,
 ) {
     let building_type = colony.buildings[building_index].building_type;
-    let Some(recipe) = single_input_physical_recipe(building_type) else {
-        return;
-    };
     ensure_station_stores(colony, building_index);
     let building = colony.buildings[building_index].clone();
     let input_id = stockpiles::station_input_id(&building.id);
@@ -20932,9 +20931,20 @@ fn advance_physical_refiner(
         return;
     }
 
-    if begin_station_output_haul(colony, &building, cat_index, recipe.output_kind, gate) {
+    if building_type == BuildingType::Smithy {
+        for kind in [ResourceKind::Weapons, ResourceKind::Armor] {
+            if begin_station_output_haul(colony, &building, cat_index, kind, gate) {
+                return;
+            }
+        }
+    } else if let Some(recipe) = single_input_physical_recipe(building_type)
+        && begin_station_output_haul(colony, &building, cat_index, recipe.output_kind, gate)
+    {
         return;
     }
+    let Some(recipe) = active_single_input_physical_recipe(&building) else {
+        return;
+    };
     if !production_recipe_availability(colony, building.building_type, recipe.recipe_id)
         .is_some_and(|recipe| recipe.available)
     {
@@ -20992,21 +21002,23 @@ fn advance_physical_refiner(
             1.0
         };
     let base_skill = colony.cats[cat_index].skill(recipe.labor);
-    let cycle_sec = crate::production::WORKSHOP_CYCLE_SEC;
+    let cycle_sec = recipe.cycle_sec;
     let mut remaining_elapsed = production_elapsed.max(0.0);
     let mut progress = building.production_progress.max(0.0).min(cycle_sec);
     let mut available_input = input_amount.min(spendable_input);
     let mut available_output = output_headroom;
     let mut queue_preview = building.production_queue.clone();
     let mut queue_cycles = 0_usize;
-    let textile_survival_stop = matches!(
+    let luxury_survival_stop = (matches!(
         building_type,
         BuildingType::Clothier | BuildingType::Tannery
     ) && building.automated_by == Some(OfficerRole::ClothLeader)
+        || building_type == BuildingType::Smithy
+            && building.automated_by == Some(OfficerRole::Captain))
         && !raw_chain_survival_reserve_met(colony);
     let finish_committed_batch_only = (RAW_MATERIAL_WORKSHOPS.contains(&building_type)
         && building.automated_by == Some(OfficerRole::Forester)
-        || textile_survival_stop)
+        || luxury_survival_stop)
         && !raw_chain_survival_reserve_met(colony);
     while queue_preview
         .first()
@@ -21014,7 +21026,7 @@ fn advance_physical_refiner(
         && available_input + f64::EPSILON >= recipe.input_per_cycle
         && available_output + f64::EPSILON >= recipe.output_per_cycle
         && (!finish_committed_batch_only
-            || queue_cycles == 0 && (!textile_survival_stop || progress > f64::EPSILON))
+            || queue_cycles == 0 && (!luxury_survival_stop || progress > f64::EPSILON))
     {
         let rate = work_rate_multiplier(base_skill + queue_cycles as f64 * SKILL_GAIN_PER_JOB)
             * architect_rate;
@@ -21048,7 +21060,7 @@ fn advance_physical_refiner(
             .is_some_and(|entry| entry.recipe_id == recipe.recipe_id)
         && available_output + f64::EPSILON >= recipe.output_per_cycle
         && (!finish_committed_batch_only
-            || queue_cycles == 0 && (!textile_survival_stop || progress > f64::EPSILON))
+            || queue_cycles == 0 && (!luxury_survival_stop || progress > f64::EPSILON))
     {
         let rate = work_rate_multiplier(base_skill + queue_cycles as f64 * SKILL_GAIN_PER_JOB)
             * architect_rate;
@@ -21524,7 +21536,19 @@ fn recover_orphaned_station_stores(colony: &mut ColonyRuntime, gate: TickGate) {
         return;
     }
 
-    let haul_amount = amount.min(stockpile_headroom(colony, destination_index, kind));
+    let destination_headroom = stockpile_headroom(colony, destination_index, kind);
+    let whole_units = matches!(
+        kind,
+        ResourceKind::Tools | ResourceKind::Weapons | ResourceKind::Armor
+    );
+    let haul_amount = if whole_units {
+        amount.floor().min(destination_headroom.floor())
+    } else {
+        amount.min(destination_headroom)
+    };
+    if haul_amount <= f64::EPSILON {
+        return;
+    }
     let Some(carrying_kind) = carrying_kind_for_resource(kind) else {
         return;
     };
@@ -21615,6 +21639,8 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
         CarryingKind::Bone => Some(ResourceKind::Bone),
         CarryingKind::Ore => Some(ResourceKind::Ore),
         CarryingKind::Metal => Some(ResourceKind::Metal),
+        CarryingKind::Weapons => Some(ResourceKind::Weapons),
+        CarryingKind::Armor => Some(ResourceKind::Armor),
         CarryingKind::Blessings => None,
     }
 }
@@ -22065,9 +22091,6 @@ pub(crate) fn building_production_block_reason_with_availability(
     if !selected_availability.available {
         return Some("research_locked".to_owned());
     }
-    if !is_physical_station(building.building_type) {
-        return Some("aggregate_timer_compatibility".to_owned());
-    }
     let Some(cat_id) = building.assigned_cat.as_deref() else {
         return Some("no_worker".to_owned());
     };
@@ -22209,7 +22232,7 @@ pub(crate) fn building_production_block_reason_with_availability(
                 f64::INFINITY,
             )
         } else {
-            let recipe = single_input_physical_recipe(building.building_type)?;
+            let recipe = active_single_input_physical_recipe(building)?;
             (
                 recipe.input_kind,
                 recipe.input_per_cycle,
@@ -22436,6 +22459,8 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         CarryingKind::Bone => ResourceKind::Bone,
         CarryingKind::Ore => ResourceKind::Ore,
         CarryingKind::Metal => ResourceKind::Metal,
+        CarryingKind::Weapons => ResourceKind::Weapons,
+        CarryingKind::Armor => ResourceKind::Armor,
         CarryingKind::Blessings => {
             colony.global_upgrade_points += carrying.amount;
             return 0.0;
@@ -22688,6 +22713,8 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
         CarryingKind::Bone => format!("{cat_id} hauled {} bone.", carrying.amount),
         CarryingKind::Ore => format!("{cat_id} hauled {} ore.", carrying.amount),
         CarryingKind::Metal => format!("{cat_id} hauled {} metal bars.", carrying.amount),
+        CarryingKind::Weapons => format!("{cat_id} hauled {} weapons.", carrying.amount),
+        CarryingKind::Armor => format!("{cat_id} hauled {} armor.", carrying.amount),
         CarryingKind::Blessings => {
             format!(
                 "{cat_id}'s ritual beamed {} blessings up to the players.",
@@ -29883,7 +29910,7 @@ mod tests {
             .push("weaponsmithing".to_owned());
         assert_eq!(
             building_production_block_reason(&colony, &colony.buildings[0]),
-            Some("aggregate_timer_compatibility".to_owned()),
+            Some("missing_metal".to_owned()),
             "locked armor must not block the selected owned weapon recipe"
         );
         colony.buildings[0].production_queue.swap(0, 1);
@@ -29894,7 +29921,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_queue_state_does_not_yet_replace_the_smithy_aggregate_timer() {
+    fn smithy_queue_now_controls_physical_work_and_hidden_timers_are_frozen() {
         let building_type = BuildingType::Smithy;
         let resources = Resources {
             materials: 30.0,
@@ -29907,15 +29934,26 @@ mod tests {
         compatibility.buildings[0].production_queue.clear();
         compatibility.buildings[0].production_paused = true;
 
+        queued.metal_forge_progress = 777.0;
+        compatibility.metal_forge_progress = 777.0;
+        place_chain_worker_at_seeded_store(&mut queued);
+        place_chain_worker_at_seeded_store(&mut compatibility);
         phase_23_production(&mut queued, production_gate(30, 30_000), 123);
         phase_23_production(&mut compatibility, production_gate(30, 30_000), 123);
 
-        compatibility.buildings[0].production_queue = queued.buildings[0].production_queue.clone();
-        compatibility.buildings[0].production_paused = false;
-        assert_eq!(
-            compatibility, queued,
-            "Smithy must keep its aggregate behavior until its physical slice"
+        assert!(
+            queued.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| { cargo.kind == CarryingKind::Metal && cargo.amount == 2.0 })
         );
+        assert!(compatibility.cats[0].carrying.is_none());
+        assert_eq!(compatibility.buildings[0].production_progress, 590.0);
+        assert_eq!(queued.metal_forge_progress, 777.0);
+        assert_eq!(compatibility.metal_forge_progress, 777.0);
+        assert_eq!(queued.resources.refined, 20.0);
+        assert_eq!(queued.resources.materials, 30.0);
+        assert!(queued.items.is_empty());
     }
 
     #[test]
@@ -29954,7 +29992,11 @@ mod tests {
         );
     }
 
-    fn smithy_entitlement_cycle(rules_version: u32, studies: &[&str]) -> ColonyRuntime {
+    fn smithy_entitlement_cycle(
+        rules_version: u32,
+        studies: &[&str],
+        recipe_id: &str,
+    ) -> ColonyRuntime {
         let mut colony = chain_colony(
             BuildingType::Smithy,
             Resources {
@@ -29967,16 +30009,25 @@ mod tests {
         );
         colony.recipe_entitlement_rules_version = rules_version;
         colony.buildings[0].production_progress = 890.0;
+        colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: recipe_id.to_owned(),
+            repeat: false,
+        }];
         colony.metal_forge_progress = 890.0;
         colony.upgrade_tree.owned_node_ids =
             studies.iter().map(|study| (*study).to_owned()).collect();
+        seed_station_input_at_worker(&mut colony, ResourceKind::Metal, 2.0);
         phase_23_production(&mut colony, production_gate(30, 30_000), 123);
         colony
     }
 
     #[test]
     fn fresh_smithy_designs_are_independent_and_each_forge_arm_consumes_once() {
-        let locked = smithy_entitlement_cycle(CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION, &[]);
+        let locked = smithy_entitlement_cycle(
+            CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
+            &[],
+            SMITHY_WEAPON_RECIPE_ID,
+        );
         assert_eq!(locked.buildings[0].production_progress, 890.0);
         assert_eq!(locked.metal_forge_progress, 890.0);
         assert_eq!(locked.resources.refined, 20.0);
@@ -29988,30 +30039,48 @@ mod tests {
         let weapons = smithy_entitlement_cycle(
             CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
             &["weaponsmithing"],
+            SMITHY_WEAPON_RECIPE_ID,
         );
-        assert_eq!(weapons.resources.refined, 18.0);
-        assert_eq!(weapons.resources.materials, 27.0);
+        assert_eq!(weapons.resources.refined, 20.0);
+        assert_eq!(weapons.resources.materials, 30.0);
         assert_eq!(weapons.resources.metal, 18.0);
-        assert_eq!(weapons.resources.weapons, 2.0);
+        assert_eq!(weapons.resources.weapons, 0.0);
         assert_eq!(weapons.resources.armor, 0.0);
+        assert_eq!(
+            building_station_inventory(&weapons, &weapons.buildings[0], true),
+            [(ResourceKind::Weapons, 1.0)]
+        );
+        assert!(weapons.items.is_empty());
 
-        let armor =
-            smithy_entitlement_cycle(CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION, &["armorsmithing"]);
-        assert_eq!(armor.resources.refined, 18.0);
-        assert_eq!(armor.resources.materials, 27.0);
+        let armor = smithy_entitlement_cycle(
+            CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
+            &["armorsmithing"],
+            SMITHY_ARMOR_RECIPE_ID,
+        );
+        assert_eq!(armor.resources.refined, 20.0);
+        assert_eq!(armor.resources.materials, 30.0);
         assert_eq!(armor.resources.metal, 18.0);
         assert_eq!(armor.resources.weapons, 0.0);
-        assert_eq!(armor.resources.armor, 2.0);
+        assert_eq!(armor.resources.armor, 0.0);
+        assert_eq!(
+            building_station_inventory(&armor, &armor.buildings[0], true),
+            [(ResourceKind::Armor, 1.0)]
+        );
 
         let both = smithy_entitlement_cycle(
             CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
             &["weaponsmithing", "armorsmithing"],
+            SMITHY_ARMOR_RECIPE_ID,
         );
-        assert_eq!(both.resources.refined, 18.0);
-        assert_eq!(both.resources.materials, 27.0);
+        assert_eq!(both.resources.refined, 20.0);
+        assert_eq!(both.resources.materials, 30.0);
         assert_eq!(both.resources.metal, 18.0);
-        assert_eq!(both.resources.weapons, 2.0);
-        assert_eq!(both.resources.armor, 2.0);
+        assert_eq!(both.resources.weapons, 0.0);
+        assert_eq!(both.resources.armor, 0.0);
+        assert_eq!(
+            building_station_inventory(&both, &both.buildings[0], true),
+            [(ResourceKind::Armor, 1.0)]
+        );
     }
 
     #[test]
@@ -30050,12 +30119,16 @@ mod tests {
             [(ResourceKind::Leather, 1.0)]
         );
 
-        let smithy = smithy_entitlement_cycle(0, &[]);
-        assert_eq!(smithy.resources.refined, 18.0);
-        assert_eq!(smithy.resources.materials, 27.0);
+        let smithy = smithy_entitlement_cycle(0, &[], SMITHY_WEAPON_RECIPE_ID);
+        assert_eq!(smithy.resources.refined, 20.0);
+        assert_eq!(smithy.resources.materials, 30.0);
         assert_eq!(smithy.resources.metal, 18.0);
-        assert_eq!(smithy.resources.weapons, 2.0);
-        assert_eq!(smithy.resources.armor, 2.0);
+        assert_eq!(smithy.resources.weapons, 0.0);
+        assert_eq!(smithy.resources.armor, 0.0);
+        assert_eq!(
+            building_station_inventory(&smithy, &smithy.buildings[0], true),
+            [(ResourceKind::Weapons, 1.0)]
+        );
     }
 
     #[test]
@@ -34469,6 +34542,386 @@ mod tests {
         assert_eq!(stable(&runs[0]), stable(&runs[2]));
     }
 
+    fn run_one_full_smithy_route(
+        cadence_sec: i64,
+        recipe_id: &'static str,
+        output_kind: ResourceKind,
+        carrying_kind: CarryingKind,
+    ) -> (ColonyRuntime, [bool; 4]) {
+        let mut colony = chain_colony(
+            BuildingType::Smithy,
+            Resources {
+                metal: crate::production::SMITHY_METAL_PER_CYCLE,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.buildings[0].production_progress = 0.0;
+        colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: recipe_id.to_owned(),
+            repeat: false,
+        }];
+        colony.metal_forge_progress = 431.25;
+        place_chain_worker_at_seeded_store(&mut colony);
+        let mut stages = [false; 4];
+        for step in 1..=3_600 / cadence_sec {
+            let gate = production_gate(cadence_sec, step * cadence_sec * 1_000);
+            phase_23_production(&mut colony, gate, 123);
+            stages[0] |= colony.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Metal);
+            stages[1] |= station_inventory_amount(
+                &colony,
+                &colony.buildings[0].id,
+                false,
+                ResourceKind::Metal,
+            ) > f64::EPSILON;
+            stages[2] |=
+                station_inventory_amount(&colony, &colony.buildings[0].id, true, output_kind)
+                    >= 1.0;
+            stages[3] |= colony.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == carrying_kind && cargo.amount == 1.0);
+            let mut movement = phase_32_movement_setup_and_village_expansion_queue(
+                &mut colony,
+                gate,
+                normal_policy(),
+                123,
+            );
+            phase_33_movement_deposits_and_no_destination_wander(&mut colony, gate, &mut movement);
+            phase_34_movement_travel_job_acceptance_reveal_path_wear(&mut colony, gate, &movement);
+            if colony.buildings[0].production_queue.is_empty()
+                && stockpiles::resource_amount(&colony.resources, output_kind) >= 1.0
+                && colony.cats[0].carrying.is_none()
+            {
+                break;
+            }
+        }
+        (colony, stages)
+    }
+
+    #[test]
+    fn full_selected_smithy_routes_converge_at_one_five_and_sixty_second_cadence() {
+        for (recipe_id, output_kind, carrying_kind) in [
+            (
+                SMITHY_WEAPON_RECIPE_ID,
+                ResourceKind::Weapons,
+                CarryingKind::Weapons,
+            ),
+            (
+                SMITHY_ARMOR_RECIPE_ID,
+                ResourceKind::Armor,
+                CarryingKind::Armor,
+            ),
+        ] {
+            let runs = [1, 5, 60].map(|cadence| {
+                run_one_full_smithy_route(cadence, recipe_id, output_kind, carrying_kind)
+            });
+            for (colony, stages) in &runs {
+                assert_eq!(*stages, [true; 4]);
+                assert_eq!(colony.resources.metal, 0.0);
+                assert_eq!(
+                    stockpiles::resource_amount(&colony.resources, output_kind),
+                    1.0
+                );
+                assert!(
+                    colony.items.is_empty(),
+                    "finite equipment identity remains C3"
+                );
+                assert!(colony.buildings[0].production_queue.is_empty());
+                assert_eq!(colony.buildings[0].production_progress, 0.0);
+                assert_eq!(colony.metal_forge_progress.to_bits(), 431.25_f64.to_bits());
+                assert!(building_station_inventory(colony, &colony.buildings[0], false).is_empty());
+                assert!(building_station_inventory(colony, &colony.buildings[0], true).is_empty());
+            }
+            let stable = |(colony, _): &(ColonyRuntime, [bool; 4])| {
+                (
+                    colony.resources.clone(),
+                    colony.stockpiles.clone(),
+                    colony.buildings[0].production_queue.clone(),
+                    colony.buildings[0].production_progress.to_bits(),
+                    colony.cats[0].skill(Labor::Metalwork).to_bits(),
+                    colony.cats[0].skill(Labor::Haul).to_bits(),
+                    colony.metal_forge_progress.to_bits(),
+                )
+            };
+            assert_eq!(stable(&runs[0]), stable(&runs[1]));
+            assert_eq!(stable(&runs[0]), stable(&runs[2]));
+        }
+    }
+
+    #[test]
+    fn smithy_whole_output_headroom_pause_and_blocked_skill_are_exact() {
+        let mut blocked = chain_colony(
+            BuildingType::Smithy,
+            Resources {
+                metal: 2.0,
+                weapons: BASE_CAPACITY.weapons - 0.5,
+                ..Resources::default()
+            },
+            true,
+        );
+        blocked.buildings[0].production_progress = 890.0;
+        blocked.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: SMITHY_WEAPON_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        seed_station_input_at_worker(&mut blocked, ResourceKind::Metal, 2.0);
+        let output_id = stockpiles::station_output_id(&blocked.buildings[0].id);
+        blocked
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == output_id)
+            .unwrap()
+            .contents
+            .weapons = stockpiles::STOCKPILE_TILE_CAPACITY;
+        let skill_before = blocked.cats[0].skill(Labor::Metalwork);
+        phase_23_production(&mut blocked, production_gate(60, 60_000), 123);
+        assert_eq!(blocked.resources.metal, 2.0);
+        assert_eq!(blocked.buildings[0].production_progress, 890.0);
+        assert_eq!(blocked.cats[0].skill(Labor::Metalwork), skill_before);
+        assert_eq!(
+            building_production_block_reason(&blocked, &blocked.buildings[0]).as_deref(),
+            Some("output_in_transit")
+        );
+
+        let mut resumed = chain_colony(
+            BuildingType::Smithy,
+            Resources {
+                metal: 2.0,
+                weapons: BASE_CAPACITY.weapons - 1.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        resumed.buildings[0].production_progress = 890.0;
+        resumed.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: SMITHY_WEAPON_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        seed_station_input_at_worker(&mut resumed, ResourceKind::Metal, 2.0);
+        advance_physical_refiner(&mut resumed, 0, production_gate(10, 70_000), 10.0, false);
+        assert_eq!(resumed.resources.metal, 0.0);
+        assert_eq!(
+            building_station_inventory(&resumed, &resumed.buildings[0], true),
+            [(ResourceKind::Weapons, 1.0)]
+        );
+        assert!(resumed.cats[0].skill(Labor::Metalwork) > skill_before);
+
+        let mut paused = chain_colony(
+            BuildingType::Smithy,
+            Resources {
+                metal: 2.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        paused.buildings[0].production_paused = true;
+        paused.buildings[0].production_progress = 417.5;
+        place_chain_worker_at_seeded_store(&mut paused);
+        ensure_station_stores(&mut paused, 0);
+        let before = paused.clone();
+        phase_23_production(&mut paused, production_gate(60, 60_000), 123);
+        assert_eq!(paused.resources, before.resources);
+        assert_eq!(paused.stockpiles, before.stockpiles);
+        assert_eq!(paused.buildings[0].production_progress, 417.5);
+        assert!(paused.cats[0].carrying.is_none());
+    }
+
+    #[test]
+    fn smithy_carrier_death_removal_and_replacement_conserve_whole_gear_once() {
+        let mut inbound = chain_colony(
+            BuildingType::Smithy,
+            Resources {
+                metal: 2.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        inbound.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: SMITHY_WEAPON_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        place_chain_worker_at_seeded_store(&mut inbound);
+        phase_23_production(&mut inbound, production_gate(1, 1_000), 123);
+        let metal = inbound.cats[0].carrying.clone().expect("Metal inbound");
+        assert_eq!((metal.kind, metal.amount), (CarryingKind::Metal, 2.0));
+        let death_site = position_to_world(inbound.anchor, inbound.cats[0].position);
+        assert!(salvage_station_cargo(&mut inbound, &metal, death_site));
+        inbound.cats[0].carrying = None;
+        reconcile_colony_stockpiles(&mut inbound);
+        assert_eq!(inbound.resources.metal, 2.0);
+        assert_eq!(inbound.resources.weapons, 0.0);
+
+        let mut outbound = chain_colony(BuildingType::Smithy, Resources::default(), true);
+        outbound.buildings[0].production_queue.clear();
+        ensure_station_stores(&mut outbound, 0);
+        let building = outbound.buildings[0].clone();
+        outbound
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == stockpiles::station_output_id(&building.id))
+            .unwrap()
+            .contents
+            .weapons = 1.0;
+        outbound.cats[0].position = position_from_world(station_work_point(&building));
+        phase_23_production(&mut outbound, production_gate(1, 1_000), 123);
+        let weapon = outbound.cats[0].carrying.clone().expect("Weapon outbound");
+        assert_eq!((weapon.kind, weapon.amount), (CarryingKind::Weapons, 1.0));
+        assert!(salvage_station_cargo(
+            &mut outbound,
+            &weapon,
+            station_work_point(&building)
+        ));
+        outbound.cats[0].carrying = None;
+        assert_eq!(outbound.resources.weapons, 0.0);
+        assert_eq!(
+            building_station_inventory(&outbound, &building, true),
+            [(ResourceKind::Weapons, 1.0)]
+        );
+
+        outbound.cats.push(adult_idle_cat("captain", "colony-1"));
+        outbound
+            .cats
+            .push(adult_idle_cat("replacement", "colony-1"));
+        outbound
+            .officers
+            .insert(OfficerRole::Captain, "captain".to_owned());
+        mark_cat_dead(&mut outbound, "crafter", 2_000);
+        auto_staff_runnable_smithies(&mut outbound, 3_000, usize::MAX);
+        let replacement_id = outbound.buildings[0]
+            .assigned_cat
+            .clone()
+            .expect("Captain automation recruits a living replacement");
+        assert_ne!(replacement_id, "crafter");
+        let replacement = outbound
+            .cats
+            .iter()
+            .position(|cat| cat.id == replacement_id)
+            .unwrap();
+        outbound.cats[replacement].position = position_from_world(station_work_point(&building));
+        phase_23_production(&mut outbound, production_gate(1, 4_000), 123);
+        assert_eq!(
+            outbound.cats[replacement]
+                .carrying
+                .as_ref()
+                .map(|cargo| (cargo.kind, cargo.amount)),
+            Some((CarryingKind::Weapons, 1.0))
+        );
+        deliver_all_station_cargo_to_current_targets(&mut outbound);
+        assert_eq!(outbound.resources.weapons, 1.0);
+
+        let mut removed = chain_colony(
+            BuildingType::Smithy,
+            Resources {
+                metal: 2.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        move_general_stock_to_station_input(&mut removed, ResourceKind::Metal, 2.0);
+        ensure_station_stores(&mut removed, 0);
+        let removed_building = removed.buildings[0].clone();
+        removed
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == stockpiles::station_output_id(&removed_building.id))
+            .unwrap()
+            .contents
+            .armor = 1.0;
+        let input_id = stockpiles::station_input_id(&removed_building.id);
+        let output_id = stockpiles::station_output_id(&removed_building.id);
+        removed.buildings.clear();
+        recover_orphaned_station_stores(&mut removed, production_gate(1, 5_000));
+        assert!(removed.stockpiles.iter().any(|pile| pile.id == input_id));
+        assert!(removed.stockpiles.iter().any(|pile| pile.id == output_id));
+        assert_eq!(removed.resources.metal, 2.0);
+        assert_eq!(removed.resources.armor, 0.0);
+        assert!(removed.cats[0].destination.is_some() || removed.cats[0].carrying.is_some());
+    }
+
+    #[test]
+    fn removed_smithy_keeps_whole_weapon_local_until_one_whole_unit_fits() {
+        let mut colony = chain_colony(
+            BuildingType::Smithy,
+            Resources {
+                weapons: BASE_CAPACITY.weapons - 0.5,
+                ..Resources::default()
+            },
+            true,
+        );
+        ensure_station_stores(&mut colony, 0);
+        let building = colony.buildings[0].clone();
+        let output_id = stockpiles::station_output_id(&building.id);
+        colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == output_id)
+            .expect("Smithy output store")
+            .contents
+            .weapons = 1.0;
+        let source = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == output_id)
+            .map(|pile| {
+                let (x, y) = pile.center();
+                WorldPos { x, y }
+            })
+            .expect("Smithy output point");
+        colony.buildings.clear();
+        colony.cats[0].position = position_from_world(source);
+        colony.cats[0].activity = CatActivity::Idle;
+
+        recover_orphaned_station_stores(&mut colony, production_gate(1, 1_000));
+
+        assert!(
+            colony.cats[0].carrying.is_none(),
+            "half a unit of headroom must never create fractional Weapon cargo"
+        );
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == output_id)
+                .expect("orphan output remains recoverable")
+                .contents
+                .weapons,
+            1.0
+        );
+        assert_eq!(colony.resources.weapons, BASE_CAPACITY.weapons - 0.5);
+
+        let general = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("general storehouse");
+        general.contents.weapons -= 1.0;
+        colony.resources.weapons -= 1.0;
+        recover_orphaned_station_stores(&mut colony, production_gate(1, 2_000));
+
+        let weapon = colony.cats[0]
+            .carrying
+            .clone()
+            .expect("one whole Weapon is recoverable once it fits");
+        assert_eq!((weapon.kind, weapon.amount), (CarryingKind::Weapons, 1.0));
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == output_id)
+                .expect("orphan is retained until its cargo is delivered")
+                .contents
+                .weapons,
+            0.0
+        );
+        let target = haul_deposit_target(&colony, &weapon, source);
+        assert_eq!(credit_carrying(&mut colony, &weapon, target), 0.0);
+        assert_eq!(colony.resources.weapons, BASE_CAPACITY.weapons - 0.5);
+    }
+
     #[test]
     fn physical_tannery_pause_empty_and_nonrepeat_queue_are_exact() {
         for empty in [false, true] {
@@ -34778,6 +35231,110 @@ mod tests {
         assert!(can_take_new_job_with_busy(&auto_release.cats[0], &[]));
         let mut manual_kept = make(0.0, false, 5.0);
         release_unrunnable_textile_workers(&mut manual_kept);
+        assert_eq!(
+            manual_kept.buildings[0].assigned_cat.as_deref(),
+            Some("crafter")
+        );
+    }
+
+    #[test]
+    fn low_comfort_captain_starts_nothing_finishes_one_batch_and_manual_smith_runs() {
+        let make = |progress: f64, automated: bool, metal: f64| {
+            let mut colony = chain_colony(
+                BuildingType::Smithy,
+                Resources {
+                    metal,
+                    ..Resources::default()
+                },
+                true,
+            );
+            colony.buildings[0].production_progress = progress;
+            colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+                recipe_id: SMITHY_WEAPON_RECIPE_ID.to_owned(),
+                repeat: true,
+            }];
+            colony.buildings[0].automated_by = automated.then_some(OfficerRole::Captain);
+            move_general_stock_to_station_input(&mut colony, ResourceKind::Metal, metal);
+            colony.cats[0].position = position_from_world(station_work_point(&colony.buildings[0]));
+            colony
+        };
+
+        let mut unstarted = make(0.0, true, 2.0);
+        let before = unstarted.clone();
+        advance_physical_refiner(
+            &mut unstarted,
+            0,
+            production_gate(1_800, 1_800_000),
+            1_800.0,
+            false,
+        );
+        assert_eq!(unstarted.resources, before.resources);
+        assert_eq!(unstarted.stockpiles, before.stockpiles);
+        assert_eq!(unstarted.buildings[0].production_progress, 0.0);
+
+        let mut one_tick = make(450.0, true, 4.0);
+        let mut partitioned = one_tick.clone();
+        advance_physical_refiner(
+            &mut one_tick,
+            0,
+            production_gate(1_800, 1_800_000),
+            1_800.0,
+            false,
+        );
+        for (elapsed, now) in [(900.0, 900_000), (900.0, 1_800_000)] {
+            advance_physical_refiner(
+                &mut partitioned,
+                0,
+                production_gate(900, now),
+                elapsed,
+                false,
+            );
+        }
+        for colony in [&one_tick, &partitioned] {
+            assert_eq!(colony.resources.metal, 2.0);
+            assert_eq!(colony.buildings[0].production_progress, 0.0);
+            assert_eq!(
+                building_station_inventory(colony, &colony.buildings[0], false),
+                [(ResourceKind::Metal, 2.0)]
+            );
+            let local_weapons = station_inventory_amount(
+                colony,
+                &colony.buildings[0].id,
+                true,
+                ResourceKind::Weapons,
+            );
+            let carried_weapons = colony
+                .cats
+                .iter()
+                .filter_map(|cat| cat.carrying.as_ref())
+                .filter(|cargo| cargo.kind == CarryingKind::Weapons)
+                .map(|cargo| cargo.amount)
+                .sum::<f64>();
+            assert_eq!(local_weapons + carried_weapons, 1.0);
+        }
+        assert_eq!(one_tick.resources, partitioned.resources);
+        assert_eq!(
+            one_tick.cats[0].skill(Labor::Metalwork).to_bits(),
+            partitioned.cats[0].skill(Labor::Metalwork).to_bits()
+        );
+
+        let mut manual = make(0.0, false, 2.0);
+        advance_physical_refiner(&mut manual, 0, production_gate(900, 900_000), 900.0, false);
+        assert_eq!(manual.resources.metal, 0.0);
+        assert_eq!(
+            building_station_inventory(&manual, &manual.buildings[0], true),
+            [(ResourceKind::Weapons, 1.0)]
+        );
+
+        let mut auto_release = make(0.0, true, 2.0);
+        auto_release
+            .officers
+            .insert(OfficerRole::Captain, "crafter".to_owned());
+        release_unrunnable_smithy_workers(&mut auto_release);
+        assert!(auto_release.buildings[0].assigned_cat.is_none());
+        assert!(auto_release.buildings[0].automated_by.is_none());
+        let mut manual_kept = make(0.0, false, 2.0);
+        release_unrunnable_smithy_workers(&mut manual_kept);
         assert_eq!(
             manual_kept.buildings[0].assigned_cat.as_deref(),
             Some("crafter")

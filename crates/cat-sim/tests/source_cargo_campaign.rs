@@ -5,7 +5,10 @@ use cat_sim::{
     actions::{ActionCtx, apply_action},
     entities::CarryingKind,
     officers::OfficerRole,
-    station_recipes::{HIDE_TO_LEATHER_RECIPE_ID, STONE_TO_BLOCKS_RECIPE_ID},
+    station_recipes::{
+        HIDE_TO_LEATHER_RECIPE_ID, SMELTER_RECIPE_ID, SMITHY_WEAPON_RECIPE_ID,
+        STONE_TO_BLOCKS_RECIPE_ID,
+    },
     stockpiles::{station_input_id, station_output_id},
     storage::BASE_CAPACITY,
     types::{BuildingType, JobKind, JobStatus},
@@ -488,6 +491,307 @@ fn signed_player_guides_real_fibre_forage_through_clothier_to_cloth() {
             delivered_cloth: true,
         }
     );
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SmithyRouteObservations {
+    ore_inbound: bool,
+    local_ore: bool,
+    local_metal: bool,
+    metal_outbound: bool,
+    metal_inbound: bool,
+    local_smithy_metal: bool,
+    local_weapon: bool,
+    weapon_outbound: bool,
+    delivered_weapon: bool,
+}
+
+fn run_signed_ore_to_weapon(seed: u32) -> (WorldState, SmithyRouteObservations) {
+    let mut world = new_world(seed);
+    world
+        .colonies
+        .push(found_colony(seed, "colony-1", START, seed));
+    let colony = &mut world.colonies[0];
+    colony.resources.food = 100.0;
+    colony.resources.water = 100.0;
+    colony.resources.ore = 10.0;
+    colony
+        .upgrade_tree
+        .owned_node_ids
+        .extend(["metallurgy_preparation", "weaponsmithing"].map(str::to_owned));
+    let anchor = colony.anchor;
+    for (id, building_type, offset) in [
+        ("guided-smelter", BuildingType::Smelter, 6),
+        ("guided-smithy", BuildingType::Smithy, 10),
+    ] {
+        colony.buildings.push(BuildingRuntime {
+            id: id.to_owned(),
+            building_type,
+            position: TilePos {
+                x: anchor.x + offset,
+                y: anchor.y + 6,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: default_production_queue(building_type),
+            ..BuildingRuntime::default()
+        });
+    }
+    reconcile_colony_stockpiles(colony);
+    assert!(
+        apply_action(
+            &mut world,
+            &proto::ClientAction::SetTestAcceleration {
+                preset: proto::AccelerationPreset::Hyper,
+            },
+            &ctx(START),
+        )
+        .ok
+    );
+    for (building_id, recipe_id, default_entries) in [
+        ("guided-smelter", SMELTER_RECIPE_ID, 1_usize),
+        ("guided-smithy", SMITHY_WEAPON_RECIPE_ID, 2_usize),
+    ] {
+        for _ in 0..default_entries {
+            assert!(
+                apply_action(
+                    &mut world,
+                    &proto::ClientAction::EditProductionQueue {
+                        session_id: "source-cargo-session".to_owned(),
+                        nickname: "Smith".to_owned(),
+                        sig: "pure-sim".to_owned(),
+                        building_id: building_id.to_owned(),
+                        edit: proto::ProductionQueueEdit::Remove { index: 0 },
+                    },
+                    &ctx(START + 1),
+                )
+                .ok
+            );
+        }
+        let added = apply_action(
+            &mut world,
+            &proto::ClientAction::EditProductionQueue {
+                session_id: "source-cargo-session".to_owned(),
+                nickname: "Smith".to_owned(),
+                sig: "pure-sim".to_owned(),
+                building_id: building_id.to_owned(),
+                edit: proto::ProductionQueueEdit::Add {
+                    recipe_id: recipe_id.to_owned(),
+                    repeat: building_id == "guided-smelter",
+                },
+            },
+            &ctx(START + 2),
+        );
+        assert!(added.ok, "signed queue add for {building_id}: {added:?}");
+    }
+    for (cat_index, building_id) in [(13, "guided-smelter"), (14, "guided-smithy")] {
+        let cat_id = world.colonies[0].cats[cat_index].id.clone();
+        assert!(
+            apply_action(
+                &mut world,
+                &proto::ClientAction::AssignWorker {
+                    session_id: "source-cargo-session".to_owned(),
+                    nickname: "Smith".to_owned(),
+                    sig: "pure-sim".to_owned(),
+                    cat_id,
+                    building_id: Some(building_id.to_owned()),
+                },
+                &ctx(START + 3),
+            )
+            .ok
+        );
+    }
+
+    let mut seen = SmithyRouteObservations::default();
+    let mut now = START + 3;
+    for _ in 0..3_600 {
+        now += 1_000;
+        let reports = world_tick(&mut world, now);
+        assert_eq!(reports[0].reset_reason, None);
+        let colony = &world.colonies[0];
+        let station_cargo = |kind, prefix: &str| {
+            colony.cats.iter().any(|cat| {
+                cat.carrying.as_ref().is_some_and(|cargo| {
+                    cargo.kind == kind
+                        && cargo
+                            .source_gather_spot
+                            .as_deref()
+                            .is_some_and(|marker| marker.starts_with(prefix))
+                })
+            })
+        };
+        seen.ore_inbound |= station_cargo(CarryingKind::Ore, "station-in|guided-smelter|");
+        seen.metal_outbound |= station_cargo(CarryingKind::Metal, "station-out|guided-smelter|");
+        seen.metal_inbound |= station_cargo(CarryingKind::Metal, "station-in|guided-smithy|");
+        seen.weapon_outbound |= station_cargo(CarryingKind::Weapons, "station-out|guided-smithy|");
+        let amount = |id: &str, output: bool, field: fn(&cat_sim::entities::Resources) -> f64| {
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| {
+                    pile.id
+                        == if output {
+                            station_output_id(id)
+                        } else {
+                            station_input_id(id)
+                        }
+                })
+                .is_some_and(|pile| field(&pile.contents) > 0.0)
+        };
+        seen.local_ore |= amount("guided-smelter", false, |resources| resources.ore);
+        seen.local_metal |= amount("guided-smelter", true, |resources| resources.metal);
+        seen.local_smithy_metal |= amount("guided-smithy", false, |resources| resources.metal);
+        seen.local_weapon |= amount("guided-smithy", true, |resources| resources.weapons);
+        seen.delivered_weapon |= colony.resources.weapons >= 1.0;
+        if seen
+            == (SmithyRouteObservations {
+                ore_inbound: true,
+                local_ore: true,
+                local_metal: true,
+                metal_outbound: true,
+                metal_inbound: true,
+                local_smithy_metal: true,
+                local_weapon: true,
+                weapon_outbound: true,
+                delivered_weapon: true,
+            })
+        {
+            break;
+        }
+    }
+    (world, seen)
+}
+
+#[test]
+fn signed_player_guides_ore_through_smelter_and_smithy_to_one_weapon() {
+    let (left, left_seen) = run_signed_ore_to_weapon(0x5A17_4EAF);
+    let (right, right_seen) = run_signed_ore_to_weapon(0x5A17_4EAF);
+    assert_eq!(left, right);
+    assert_eq!(left_seen, right_seen);
+    assert_eq!(
+        left_seen,
+        SmithyRouteObservations {
+            ore_inbound: true,
+            local_ore: true,
+            local_metal: true,
+            metal_outbound: true,
+            metal_inbound: true,
+            local_smithy_metal: true,
+            local_weapon: true,
+            weapon_outbound: true,
+            delivered_weapon: true,
+        }
+    );
+    assert_eq!(left.colonies[0].resources.weapons, 1.0);
+    assert_eq!(left.colonies[0].resources.armor, 0.0);
+    assert!(left.colonies[0].items.is_empty());
+}
+
+fn run_passive_established_smithy(seed: u32, cadence_minutes: i64) -> WorldState {
+    let mut world = new_world(seed);
+    world
+        .colonies
+        .push(found_colony(seed, "colony-1", START, seed));
+    let colony = &mut world.colonies[0];
+    colony.test_resource_decay_multiplier = 0.0;
+    colony.resources.food = 500.0;
+    colony.resources.water = 200.0;
+    colony.resources.ore = 50.0;
+    // Keep one complete Smithy batch immediately runnable so the Captain reserves
+    // a paw before the director's established-colony employment fill; the Smelter
+    // then replenishes this strictly physical starting buffer.
+    colony.resources.metal = 2.0;
+    colony
+        .upgrade_tree
+        .owned_node_ids
+        .extend(["metallurgy_preparation", "weaponsmithing", "barracks"].map(str::to_owned));
+    let anchor = colony.anchor;
+    for (id, building_type, offset) in [
+        ("passive-smelter", BuildingType::Smelter, 6),
+        ("passive-smithy", BuildingType::Smithy, 10),
+    ] {
+        colony.buildings.push(BuildingRuntime {
+            id: id.to_owned(),
+            building_type,
+            position: TilePos {
+                x: anchor.x + offset,
+                y: anchor.y + 6,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            assigned_cat: (building_type == BuildingType::Smelter)
+                .then(|| colony.cats[13].id.clone()),
+            production_queue: vec![cat_sim::world_tick::ProductionQueueEntry {
+                recipe_id: if building_type == BuildingType::Smelter {
+                    SMELTER_RECIPE_ID
+                } else {
+                    SMITHY_WEAPON_RECIPE_ID
+                }
+                .to_owned(),
+                repeat: true,
+            }],
+            ..BuildingRuntime::default()
+        });
+    }
+    colony.buildings.push(BuildingRuntime {
+        id: "passive-barracks".to_owned(),
+        building_type: BuildingType::Barracks,
+        position: TilePos {
+            x: anchor.x + 14,
+            y: anchor.y + 6,
+        },
+        is_complete: true,
+        construction_progress: 100,
+        ..BuildingRuntime::default()
+    });
+    let captain = colony.cats[0].id.clone();
+    colony.officers.insert(OfficerRole::Captain, captain);
+    reconcile_colony_stockpiles(colony);
+    assert!(colony.resources.food >= 5.0 * 15.0);
+    assert!(colony.resources.water >= 6.0 * 15.0);
+
+    let mut now = START;
+    for _ in 0..(4 * 60 / cadence_minutes) {
+        now += cadence_minutes * 60_000;
+        let reports = world_tick(&mut world, now);
+        assert_eq!(reports[0].reset_reason, None);
+    }
+    world
+}
+
+#[test]
+fn passive_captain_runs_smelter_and_smithy_at_one_and_five_minute_cadence() {
+    for cadence in [1, 5] {
+        let left = run_passive_established_smithy(0xCA97_A111, cadence);
+        let right = run_passive_established_smithy(0xCA97_A111, cadence);
+        assert_eq!(left, right, "cadence {cadence} deterministic twin");
+        let colony = &left.colonies[0];
+        assert!(colony.resources.metal > 0.0 || colony.resources.weapons > 0.0);
+        let smithy = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == "passive-smithy")
+            .unwrap();
+        let local_metal = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == station_input_id("passive-smithy"))
+            .map_or(0.0, |pile| pile.contents.metal);
+        assert!(
+            colony.resources.weapons > 0.0,
+            "cadence {cadence} forged nothing: aggregate metal={}, local metal={local_metal}, assigned={:?}, automated={:?}, progress={}, paused={}, queue={:?}",
+            colony.resources.metal,
+            smithy.assigned_cat,
+            smithy.automated_by,
+            smithy.production_progress,
+            smithy.production_paused,
+            smithy.production_queue,
+        );
+        assert!(colony.items.is_empty());
+        assert_eq!(colony.metal_forge_progress, 0.0);
+        assert!(colony.resources.food >= 5.0 * 15.0);
+        assert!(colony.resources.water >= 6.0 * 15.0);
+    }
 }
 
 fn run_passive_established_textiles(

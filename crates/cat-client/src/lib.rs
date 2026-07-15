@@ -10918,7 +10918,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
     resource_icon_tint(carrying_hud_res(kind))
 }
 
-const CARRYING_KINDS: [CarryingKind; 23] = [
+const CARRYING_KINDS: [CarryingKind; 25] = [
     CarryingKind::Food,
     CarryingKind::Fish,
     CarryingKind::Blessings,
@@ -10942,6 +10942,8 @@ const CARRYING_KINDS: [CarryingKind; 23] = [
     CarryingKind::Bone,
     CarryingKind::Ore,
     CarryingKind::Metal,
+    CarryingKind::Weapons,
+    CarryingKind::Armor,
 ];
 
 /// Exact resource identity for the glyph shown above a hauling cat. Keeping this
@@ -10972,6 +10974,8 @@ fn carrying_hud_res(kind: CarryingKind) -> HudRes {
         CarryingKind::Bone => HudRes::Bone,
         CarryingKind::Ore => HudRes::Ore,
         CarryingKind::Metal => HudRes::Metal,
+        CarryingKind::Weapons => HudRes::Weapons,
+        CarryingKind::Armor => HudRes::Armor,
     }
 }
 
@@ -12692,7 +12696,7 @@ mod tests {
     #[test]
     fn every_cargo_kind_uses_a_unique_tracked_semantic_png() {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        assert_eq!(CARRYING_KINDS.len(), 23, "wire cargo cardinality changed");
+        assert_eq!(CARRYING_KINDS.len(), 25, "wire cargo cardinality changed");
         let paths = CARRYING_KINDS
             .into_iter()
             .map(carrying_icon_path)
@@ -14729,6 +14733,39 @@ mod tests {
         assert_eq!(
             carrying_icon_path(CarryingKind::Cloth),
             resource_icon_path(HudRes::Cloth)
+        );
+        let mut smithy = clothier.clone();
+        smithy.building_type = BuildingType::Smithy;
+        smithy.production_output = Some("Weapons".to_owned());
+        smithy.production_progress = 0.5;
+        smithy.input_inventory = vec![ResourceStackSnapshot {
+            kind: ResourceKind::Metal,
+            amount: 2.0,
+        }];
+        smithy.output_inventory = vec![ResourceStackSnapshot {
+            kind: ResourceKind::Weapons,
+            amount: 1.0,
+        }];
+        smithy.inbound_cargo = smithy.input_inventory.clone();
+        smithy.outbound_cargo = smithy.output_inventory.clone();
+        smithy.production_queue = vec![cat_protocol::ProductionQueueEntrySnapshot {
+            recipe_id: "smithy_weapon".to_owned(),
+            repeat: true,
+        }];
+        smithy.available_recipes = vec!["smithy_weapon".to_owned(), "smithy_armor".to_owned()];
+        let text = building_inspector_text(&smithy, colony);
+        assert!(text.contains("making Weapons"));
+        assert!(text.contains("local input: metal 2.0"));
+        assert!(text.contains("local output: weapons 1.0"));
+        assert!(text.contains("outbound cargo: weapons 1.0"));
+        assert!(text.contains("queue: smithy_weapon*"));
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Weapons),
+            resource_icon_path(HudRes::Weapons)
+        );
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Armor),
+            resource_icon_path(HudRes::Armor)
         );
         // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);
