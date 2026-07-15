@@ -61,8 +61,8 @@ pub const TITHE_FOOD_AMOUNT: u32 = 20;
 pub const TITHE_REFINED_AMOUNT: u32 = 5;
 /// Build-material reserve retained after an offering. This is fixed rather than a
 /// storage-capacity ratio: quarry supply follows construction demand and naturally
-/// settles near 30 materials regardless of how large storage becomes.
-pub const OFFERING_MATERIALS_RESERVE: f64 = 20.0;
+/// settles near 20 materials regardless of how large storage becomes.
+pub const OFFERING_MATERIALS_RESERVE: f64 = 10.0;
 /// Materials consumed per `carry_offering` job.
 pub const OFFERING_MATERIALS_AMOUNT: u32 = 10;
 pub const HUNT_MAX_SLOTS_RATIO: f64 = 0.7;
@@ -741,8 +741,18 @@ fn deficit_below_comfort(fill_ratio: f64) -> f64 {
     }
 }
 
+fn stone_fill_ratio(snapshot: &LeaderSnapshot) -> f64 {
+    if snapshot.stone_capacity > 0.0 {
+        ratio(snapshot.stone, snapshot.stone_capacity)
+    } else {
+        // Archived TS/director fixtures predate raw Stone. Preserve their legacy
+        // Materials-based decisions while every live world snapshot supplies the new cap.
+        ratio(snapshot.materials, snapshot.materials_capacity)
+    }
+}
+
 /// Deficit signal in [0,1] for the resources a scout can find in the wild —
-/// materials (new quarry/forage tiles) and food (new hunt tiles). Zero when both
+/// raw Stone (new quarry tiles) and food (new hunt tiles). Zero when both
 /// stores are comfortable or when there is no frontier left to map, so a stocked or
 /// fully-explored colony gets no scouting boost; rises toward 1 as a wild-findable
 /// store runs short, driving the leader to dispatch more scouts.
@@ -751,9 +761,9 @@ pub fn scout_wild_deficit(snapshot: &LeaderSnapshot) -> f64 {
     if !snapshot.has_frontier {
         return 0.0;
     }
-    let materials_r = ratio(snapshot.materials, snapshot.materials_capacity);
+    let stone_r = stone_fill_ratio(snapshot);
     let food_r = ratio(snapshot.resources.food, snapshot.food_capacity);
-    deficit_below_comfort(materials_r).max(deficit_below_comfort(food_r))
+    deficit_below_comfort(stone_r).max(deficit_below_comfort(food_r))
 }
 
 /// Whether the colony is comfortable enough to spend a cat on research: food AND
@@ -774,7 +784,7 @@ fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
     let budget = (workforce_of(snapshot) * EMPLOYMENT_TARGET_RATIO).floor();
     let food_r = ratio(snapshot.resources.food, snapshot.food_capacity);
     let water_r = ratio(snapshot.water, snapshot.water_capacity);
-    let materials_r = ratio(snapshot.materials, snapshot.materials_capacity);
+    let stone_r = stone_fill_ratio(snapshot);
 
     let food_score = survival_score(
         food_r,
@@ -786,7 +796,7 @@ fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
         snapshot.water,
         snapshot.water_drain_per_tick.unwrap_or(0.0),
     );
-    let materials_score = deficit_curve(materials_r);
+    let stone_score = deficit_curve(stone_r);
     let comfortable = is_research_comfortable(snapshot);
     let warrior_gap = i64::from(target_warriors(snapshot))
         - i64::from(snapshot.warrior_count.unwrap_or(0))
@@ -826,11 +836,11 @@ fn labor_goals(snapshot: &LeaderSnapshot) -> Vec<LaborGoal> {
         },
         LaborGoal {
             kind: LaborGoalKind::Quarry,
-            score: materials_score,
+            score: stone_score,
             max_slots: QUARRY_MAX_SLOTS,
             in_flight: snapshot.active_quarries,
             hard_cap: QUARRY_MAX_SLOTS,
-            vetoed: !snapshot.has_quarry_site || materials_r >= 1.0,
+            vetoed: !snapshot.has_quarry_site || stone_r >= 1.0,
             mode: LaborGoalMode::Scaled,
         },
         LaborGoal {
@@ -1762,7 +1772,7 @@ mod tests {
 
     /// Base for the deficit-driven scout scenarios: a frontier colony with a limited
     /// idle pool, full food/water (so hunt/water never compete) and a lone competing
-    /// comfort goal (unstaffed workshops). Only the materials level is left to vary.
+    /// comfort goal (unstaffed workshops). Only the raw-Stone level is left to vary.
     fn scout_scenario(idle: u32) -> LeaderSnapshot {
         let mut snapshot = healthy_snapshot(idle, 0);
         snapshot.has_frontier = true;
@@ -1776,6 +1786,8 @@ mod tests {
         snapshot.training_in_flight = Some(0);
         snapshot.water = snapshot.water_capacity;
         snapshot.resources.food = snapshot.food_capacity;
+        snapshot.stone = snapshot.stone_capacity.max(100.0);
+        snapshot.stone_capacity = 100.0;
         snapshot
     }
 
@@ -1798,7 +1810,7 @@ mod tests {
     #[test]
     fn scout_demand_is_zero_when_stocked_or_fully_mapped() {
         let mut stocked = scout_scenario(6);
-        stocked.materials = stocked.materials_capacity;
+        stocked.stone = stocked.stone_capacity;
         assert_eq!(
             scout_wild_deficit(&stocked),
             0.0,
@@ -1806,7 +1818,7 @@ mod tests {
         );
 
         let mut mapped = scout_scenario(6);
-        mapped.materials = 0.0;
+        mapped.stone = 0.0;
         mapped.has_frontier = false;
         assert_eq!(
             scout_wild_deficit(&mapped),
@@ -1818,14 +1830,14 @@ mod tests {
     #[test]
     fn scout_demand_rises_as_a_wild_resource_runs_short() {
         let mut colony = scout_scenario(6);
-        colony.materials = 0.0;
+        colony.stone = 0.0;
         let empty = scout_wild_deficit(&colony);
         assert!(
             empty > 0.9,
-            "an empty materials store should drive strong scout demand, got {empty}"
+            "an empty Stone store should drive strong scout demand, got {empty}"
         );
 
-        colony.materials = colony.materials_capacity * SCOUT_COMFORT_RATIO * 0.5;
+        colony.stone = colony.stone_capacity * SCOUT_COMFORT_RATIO * 0.5;
         let partial = scout_wild_deficit(&colony);
         assert!(
             partial > 0.0 && partial < empty,
@@ -1836,16 +1848,16 @@ mod tests {
     #[test]
     fn deficit_driven_short_colony_dispatches_more_scouts_than_a_stocked_one() {
         // Both colonies share the same frontier, idle pool and competing workshop; only
-        // the materials store differs. The short colony's boosted scout score wins the
+        // the raw-Stone store differs. The short colony's boosted scout score wins the
         // scarce labour, so it fields strictly more scouts at a strictly higher priority.
         let stocked = {
             let mut s = scout_scenario(4);
-            s.materials = s.materials_capacity;
+            s.stone = s.stone_capacity;
             s
         };
         let short = {
             let mut s = scout_scenario(4);
-            s.materials = 0.0;
+            s.stone = 0.0;
             s
         };
 
@@ -1866,7 +1878,7 @@ mod tests {
     #[test]
     fn deficit_driven_scouting_is_deterministic() {
         let mut short = scout_scenario(4);
-        short.materials = 0.0;
+        short.stone = 0.0;
         assert_plan_eq(
             &direct_colony(&short),
             &direct_colony(&short),
@@ -1894,6 +1906,8 @@ mod tests {
             food_drain_per_tick: Some(0.5),
             materials: 40.0,
             materials_capacity: 100.0,
+            stone: 0.0,
+            stone_capacity: 100.0,
             water: 150.0,
             water_capacity: 200.0,
             water_drain_per_tick: Some(0.3),
@@ -2054,27 +2068,27 @@ mod tests {
 
     #[test]
     fn offering_fires_on_a_genuine_materials_surplus() {
-        // A 20-material build reserve plus the 10-material offering cost is the
+        // A 10-material operating reserve plus the 10-material offering cost is the
         // inclusive dispatch threshold, independent of storage capacity.
         let mut snapshot = founding_fifteen_cat_snapshot();
-        snapshot.materials = 30.0;
+        snapshot.materials = 20.0;
         assert!(
             has_offering(&snapshot),
-            "30 materials must pay the offering while retaining the 20-material reserve"
+            "20 materials must pay the offering while retaining the 10-material reserve"
         );
     }
 
     #[test]
     fn no_offering_below_the_materials_surplus_threshold() {
         let mut snapshot = founding_fifteen_cat_snapshot();
-        snapshot.materials = 29.9;
+        snapshot.materials = 19.9;
         assert!(
             !has_offering(&snapshot),
             "materials below reserve plus cost must not fire an offering"
         );
 
         snapshot.materials_capacity = 10_000.0;
-        snapshot.materials = 30.0;
+        snapshot.materials = 20.0;
         assert!(
             has_offering(&snapshot),
             "the fixed reserve must remain reachable when storage capacity grows"

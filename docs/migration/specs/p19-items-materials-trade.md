@@ -46,8 +46,9 @@ every workshop remains an open-top, function-readable map station.
 
 - **Logs** are raw timber. **Planks** are fine boards for tools, furniture, and early building;
   **Lumber** is structural timber. Construction accepts both and prefers Lumber when available.
-- Add **Stone** as a defaulted raw resource when its physical quarry route lands. **Blocks** remain
-  dressed stone. Existing `materials` must not be silently reinterpreted as Stone.
+- **Stone** is a defaulted raw resource with a physical quarry route. **Blocks** remain dressed
+  stone. Existing `materials` are not reinterpreted as Stone. **Bone** is likewise a distinct
+  defaulted hunt byproduct carried after Hide; its item-variant recipes remain open breadth.
 - Keep the stable `materials` and `refined` wire/save IDs. Player-facing copy may call them
   **Supplies** and **Crafted Supplies** so their generic bulk Workshop chain is unambiguous.
 - Keep the stable `tools`, `weapons`, and `armor` resource fields during migration, but finite item
@@ -67,8 +68,8 @@ durability research effect scales restored condition. These values and actions s
 restart, and the Goods panel makes condition and repair visible.
 
 One signed caravan sale may transfer at most 20,000 grams of items. That bounded-load seam and the
-finite-item loop are implemented foundations; they do not make the catalog complete. Bone, gem,
-clay, broader metal variants, finished functional equipment chains, and physical station-local
+finite-item loop are implemented foundations; they do not make the catalog complete. Bone item
+variants, gem/clay sources and variants, broader metal variants, finished functional equipment chains, and physical station-local
 logistics for the remaining workshops are still product work.
 
 ## Resource / item taxonomy (DF breadth, cat-flavoured)

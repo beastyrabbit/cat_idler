@@ -126,7 +126,7 @@ define_wire_enum! {
         // gate cannot be earned by cats until a hut already exists to staff.
         ResearchHut => "research_hut",
         // P17/P19 ore -> metal chain: refines mountain ore into metal bars, mirroring
-        // StonePrep's materials -> blocks refine. See production::advance_workshop's
+        // StonePrep's raw Stone -> blocks refine. See production::advance_workshop's
         // Smelter arm in world_tick.rs and the "smelting" upgrade node.
         Smelter => "smelter",
         Mill => "mill",

@@ -528,6 +528,7 @@ define_resource_kinds! {
     Grain => true,
     Flour => true,
     Materials => true,
+    Stone => true,
     Refined => true,
     Weapons => true,
     Armor => true,
@@ -538,6 +539,7 @@ define_resource_kinds! {
     Tools => true,
     Fibre => true,
     Hide => true,
+    Bone => true,
     Cloth => true,
     Leather => true,
     Ore => true,
@@ -570,6 +572,8 @@ pub struct ResourceAmounts {
     #[serde(default)]
     pub flour: f64,
     pub materials: f64,
+    #[serde(default)]
+    pub stone: f64,
     pub refined: f64,
     pub weapons: f64,
     pub armor: f64,
@@ -589,6 +593,8 @@ pub struct ResourceAmounts {
     pub fibre: f64,
     #[serde(default)]
     pub hide: f64,
+    #[serde(default)]
+    pub bone: f64,
     #[serde(default)]
     pub cloth: f64,
     #[serde(default)]
@@ -624,6 +630,8 @@ pub struct ResourceCapacities {
     #[serde(default)]
     pub flour: f64,
     pub materials: f64,
+    #[serde(default)]
+    pub stone: f64,
     pub refined: f64,
     #[serde(default)]
     pub weapons: f64,
@@ -644,6 +652,8 @@ pub struct ResourceCapacities {
     pub fibre: f64,
     #[serde(default)]
     pub hide: f64,
+    #[serde(default)]
+    pub bone: f64,
     #[serde(default)]
     pub cloth: f64,
     #[serde(default)]
@@ -821,6 +831,7 @@ pub enum CarryingKind {
     Fish,
     Blessings,
     Materials,
+    Stone,
     Refined,
     Logs,
     Lumber,
@@ -832,6 +843,8 @@ pub enum CarryingKind {
     Grain,
     Flour,
     Herbs,
+    Hide,
+    Bone,
     Ore,
     Metal,
 }
@@ -1783,6 +1796,27 @@ pub struct ActionResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_resource_payload_defaults_raw_stone_and_bone_without_aliasing_materials() {
+        let restored: ResourceAmounts = serde_json::from_value(json!({
+            "food": 1.0, "water": 2.0, "herbs": 3.0, "materials": 19.0,
+            "refined": 0.0, "weapons": 0.0, "armor": 0.0, "blessings": 0.0
+        }))
+        .expect("legacy resource payload");
+        assert_eq!(restored.materials, 19.0);
+        assert_eq!(restored.stone, 0.0);
+        assert_eq!(restored.bone, 0.0);
+        assert!(ResourceKind::Stone.is_physical_stockpile_good());
+        assert!(ResourceKind::Bone.is_physical_stockpile_good());
+
+        let capacities: ResourceCapacities = serde_json::from_value(json!({
+            "food": 200.0, "water": 200.0, "herbs": 100.0,
+            "materials": 100.0, "refined": 100.0
+        }))
+        .expect("legacy capacity payload");
+        assert_eq!(capacities.bone, 0.0);
+    }
     use serde_json::json;
 
     #[test]
@@ -1796,6 +1830,7 @@ mod tests {
             ResourceKind::Grain,
             ResourceKind::Flour,
             ResourceKind::Materials,
+            ResourceKind::Stone,
             ResourceKind::Refined,
             ResourceKind::Weapons,
             ResourceKind::Armor,
@@ -1806,6 +1841,7 @@ mod tests {
             ResourceKind::Tools,
             ResourceKind::Fibre,
             ResourceKind::Hide,
+            ResourceKind::Bone,
             ResourceKind::Cloth,
             ResourceKind::Leather,
             ResourceKind::Ore,
@@ -1815,7 +1851,7 @@ mod tests {
         assert_eq!(ResourceKind::ALL, expected_all);
 
         let physical = ResourceKind::physical_stockpile_goods().collect::<Vec<_>>();
-        assert_eq!(physical.len(), 22);
+        assert_eq!(physical.len(), 24);
         for &kind in ResourceKind::ALL {
             assert_eq!(
                 physical.contains(&kind),
@@ -2403,6 +2439,7 @@ mod tests {
                     grain: 0.0,
                     flour: 0.0,
                     materials: 12.0,
+                    stone: 0.0,
                     refined: 3.0,
                     weapons: 2.0,
                     armor: 1.0,
@@ -2413,6 +2450,7 @@ mod tests {
                     tools: 0.0,
                     fibre: 0.0,
                     hide: 0.0,
+                    bone: 0.0,
                     cloth: 0.0,
                     leather: 0.0,
                     ore: 0.0,
@@ -2429,6 +2467,7 @@ mod tests {
                         grain: 100.0,
                         flour: 100.0,
                         materials: 100.0,
+                        stone: 100.0,
                         refined: 100.0,
                         weapons: 0.0,
                         armor: 0.0,
@@ -2439,6 +2478,7 @@ mod tests {
                         tools: 0.0,
                         fibre: 100.0,
                         hide: 100.0,
+                        bone: 100.0,
                         cloth: 100.0,
                         leather: 100.0,
                         ore: 100.0,
@@ -3205,6 +3245,7 @@ mod tests {
     fn physical_refiner_carrying_kinds_round_trip_with_additive_wire_literals() {
         for (kind, literal) in [
             (CarryingKind::Refined, "refined"),
+            (CarryingKind::Bone, "bone"),
             (CarryingKind::Ore, "ore"),
             (CarryingKind::Metal, "metal"),
         ] {

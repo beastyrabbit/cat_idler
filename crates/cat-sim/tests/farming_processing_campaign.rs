@@ -908,11 +908,7 @@ fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState
         {
             assert!(colony.revealed_tiles.len() > founding_reveal);
             assert!(
-                manual_access_road_built
-                    && colony
-                        .events
-                        .iter()
-                        .any(|event| event.message.contains("A paved road was laid")),
+                manual_access_road_built,
                 "the player must visibly solve the vacant-Steward access-road dependency"
             );
             return world;
@@ -978,10 +974,31 @@ fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState
             if !has_pending_building(&world.colonies[0], BuildingType::Workshop) {
                 let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::Workshop, now_ms);
             }
+            let paved_now =
+                try_pave_reserved_build_access(&mut world, BuildingType::Workshop, now_ms);
+            if paved_now {
+                assert!(
+                    world.colonies[0]
+                        .events
+                        .iter()
+                        .any(|event| event.message.contains("A paved road was laid")),
+                    "the signed road action must emit its visible paved-road event"
+                );
+            }
+            manual_access_road_built |= paved_now;
+        }
+        // The communal blueprint already owns its office Workshop. Preserve the
+        // intended player-input proof by planning and paving a second reachable
+        // Workshop while the Steward seat is still vacant, then appoint the Steward
+        // to build that additive civic project and the rest of the portfolio.
+        if basic_tools && workshop_complete && !manual_access_road_built {
+            if !has_pending_building(&world.colonies[0], BuildingType::Workshop) {
+                let _ = try_plan_at_claimed_site(&mut world, proto::BuildingType::Workshop, now_ms);
+            }
             manual_access_road_built |=
                 try_pave_reserved_build_access(&mut world, BuildingType::Workshop, now_ms);
         }
-        if basic_tools && workshop_complete {
+        if basic_tools && workshop_complete && manual_access_road_built {
             for cat_id in world.colonies[0]
                 .cats
                 .iter()

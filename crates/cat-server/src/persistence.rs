@@ -3982,6 +3982,7 @@ mod tests {
         // Resources serde shape end-to-end (not just the in-memory struct).
         world.colonies[0].resources.fibre = 6.0;
         world.colonies[0].resources.hide = 4.5;
+        world.colonies[0].resources.bone = 3.5;
         world.colonies[0].resources.cloth = 2.5;
         world.colonies[0].resources.leather = 1.5;
         world.colonies[0].resources.grain = 9.0;
@@ -4308,6 +4309,7 @@ mod tests {
         assert_eq!(loaded.colonies[0].resources.fibre, 6.0);
         assert_eq!(loaded.colonies[0].resources.fish, 8.75);
         assert_eq!(loaded.colonies[0].resources.hide, 4.5);
+        assert_eq!(loaded.colonies[0].resources.bone, 3.5);
         assert_eq!(loaded.colonies[0].resources.cloth, 2.5);
         assert_eq!(loaded.colonies[0].resources.leather, 1.5);
         assert_eq!(loaded.colonies[0].cats, world.colonies[0].cats);
@@ -4334,6 +4336,46 @@ mod tests {
             "an active fisher follows the same post-restart tick"
         );
         assert_eq!(loaded, world, "restart does not fork fishing trajectory");
+    }
+
+    #[test]
+    fn legacy_sqlite_resource_json_defaults_raw_stores_without_reinterpreting_materials() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(77);
+        world
+            .colonies
+            .push(found_colony(77, "legacy-stone", 1_000_000, 7));
+        save_world(&conn, &world).expect("seed colony row");
+
+        let mut legacy = serde_json::to_value(Resources {
+            food: 9.0,
+            water: 8.0,
+            materials: 13.0,
+            refined: 4.0,
+            ..Resources::default()
+        })
+        .expect("serialize current resource shape");
+        legacy
+            .as_object_mut()
+            .expect("resource object")
+            .remove("stone");
+        legacy
+            .as_object_mut()
+            .expect("resource object")
+            .remove("bone");
+        conn.execute(
+            "UPDATE colonies SET resources = ?1 WHERE id = ?2",
+            rusqlite::params![legacy.to_string(), "legacy-stone"],
+        )
+        .expect("write pre-Stone resource blob");
+
+        let restored = load_world(&conn)
+            .expect("load legacy resource blob")
+            .expect("world exists");
+        assert_eq!(restored.colonies[0].resources.materials, 13.0);
+        assert_eq!(restored.colonies[0].resources.stone, 0.0);
+        assert_eq!(restored.colonies[0].resources.bone, 0.0);
     }
 
     #[test]
@@ -4497,6 +4539,44 @@ mod tests {
                 source_build_job_id: Some(source),
                 ..
             } if source == "job-build-blocked"
+        ));
+    }
+
+    #[test]
+    fn unpaid_scaffold_site_reservation_round_trips_through_sqlite() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_schema(&conn).expect("init schema");
+        let mut world = new_world(42);
+        world
+            .colonies
+            .push(found_colony(world.world_seed, "colony-1", 1_000, 42));
+        let site = TilePos { x: 19, y: 23 };
+        world.colonies[0].jobs = vec![JobRuntime {
+            id: "manual-road-wait".to_owned(),
+            kind: JobKind::BuildHouse,
+            status: JobStatus::Queued,
+            assigned_cat: Some(world.colonies[0].cats[0].id.clone()),
+            metadata: JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Field,
+                building_id: None,
+                site: Some(site),
+            },
+            ..JobRuntime::default()
+        }];
+
+        save_world(&conn, &world).expect("save reserved scaffold");
+        let loaded = load_world(&conn)
+            .expect("load reserved scaffold")
+            .expect("world exists");
+        assert_eq!(loaded.colonies[0].jobs, world.colonies[0].jobs);
+        assert!(matches!(
+            loaded.colonies[0].jobs[0].metadata,
+            JobMetadata::Construction {
+                building_id: None,
+                site: Some(restored),
+                ..
+            } if restored == site
         ));
     }
 
@@ -4955,6 +5035,7 @@ mod tests {
             grain: 13.2,
             flour: 13.3,
             materials: 14.0,
+            stone: 14.5,
             refined: 15.0,
             weapons: 16.0,
             armor: 17.0,
@@ -4965,6 +5046,7 @@ mod tests {
             tools: 20.0,
             fibre: 21.0,
             hide: 22.0,
+            bone: 22.5,
             cloth: 23.0,
             leather: 24.0,
             ore: 25.5,
@@ -5069,9 +5151,17 @@ mod tests {
                 x2: 9,
                 y2: 9,
             },
-            accepts: [ResourceKind::Materials].into_iter().collect(),
+            accepts: [
+                ResourceKind::Materials,
+                ResourceKind::Stone,
+                ResourceKind::Bone,
+            ]
+            .into_iter()
+            .collect(),
             contents: Resources {
                 materials: 6.0,
+                stone: 2.5,
+                bone: 1.5,
                 ..Resources::default()
             },
         });
@@ -5210,7 +5300,7 @@ mod tests {
                 y: 4.0,
             });
             cat_a.carrying = Some(Carrying {
-                kind: CarryingKind::Materials,
+                kind: CarryingKind::Bone,
                 amount: 6.5,
                 job_ended_at: 5_500_500,
                 source_gather_spot: Some("gather-audit".to_owned()),

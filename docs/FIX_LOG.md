@@ -9,20 +9,75 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Canonical raw-resource taxonomy is not yet physical | P19 now distinguishes raw Logs and Stone, fine Planks, structural Lumber, dressed Blocks, and the stable generic Supplies/Crafted Supplies pair. Runtime still has no raw `stone` field: quarry work and the founding Stone Prep path use generic `materials`, while Ore and other quarry results can be credited without carried cargo. Add a defaulted Stone save/wire field and migrate only genuinely raw stone; do not reinterpret existing `materials` saves or rename their stable ID. Make every source result finite carried cargo. | queued |
 | Six maintained benches still bypass the physical station contract | Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Give each station-local input/output/transit state, an ordered repeatable pausable recipe queue, and one-worker/one-selected-recipe advancement. The three P16 founding benches are now placement-available without `basic_tools`; future studies must gate recipes rather than later station copies. Preserve every existing `BuildingType` and its open-top visual identity. | queued |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads bind the station-local Mill, Sawmill, Workshop, and Smelter queues. Four legacy studies now also own the maintained aggregate recipes: Textiles→Clothier fibre→cloth and Tannery hide→leather, Weaponsmithing→Smithy weapons, and Armorsmithing→Smithy armor. Fresh rules-v1 villages require each exact study before time, progress, or input consumption; old/missing rules-v0 saves are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Forester replanting is absent | `GAME_VISION.md` assigns felling, replanting, and lumber to the Forester. Completed logging permanently writes `overlay_feature = "stump"`, and the logging scan excludes stump tiles; no maintained phase turns one back into a tree. Add a finite, persisted Forester replant route with growth timing and terrain/occupancy safeguards, then prove depletion, regrowth, restart, vacancy/manual ownership, and long-run sustainability. | queued |
-| Eleven HUD resources lack semantic icons | P18 and `docs/assets/items_ui.md` promise Board Game/Fish glyphs copied into the tracked icon directory. `resource_icon_path` instead maps 11 of the 23 maintained resources to terrain, farm, prop, or furniture art (including water edge, wood floor, bed, scroll, stool, and basin). Copy/select one truthful semantic HUD icon per resource, retain distinct names/tints/values, and verify all 23 in the client's own framebuffer at supported bounds. | queued |
+| Thirteen HUD resources lack semantic icons | P18 and `docs/assets/items_ui.md` promise Board Game/Fish glyphs copied into the tracked icon directory. Of 25 maintained resource rows, 11 retain the prior terrain/farm/prop/furniture substitutions and the new Stone/Bone rows use a stone pile and generic goods glyph rather than resource-specific art. Copy/select one truthful semantic HUD icon per resource, retain distinct labels/paths/tints/values, and verify all 25 in the client's own framebuffer at supported bounds. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
-| Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
+| Fine-biome resources and transport are incomplete | Bone now has a finite physical hunt source, storage/trade/persistence/HUD identity, and conserved final haul, but its crafting variants remain incomplete; Gem, clay, and sand still lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
 | Authored road building is instant | `actions::build_road` validates a shrine-connected mapped path, paints every new tile immediately, and subtracts one aggregate Material per tile without a cat, cargo, or construction phase. Preserve the verified placement, surface, connectivity, and speed rules while adding a physical build route if roadwork is promoted to the full DF-style logistics contract. This is a P2 physical-consistency enhancement, not a blocker under the current P16 wording. | queued (P2) |
 
 ## Verified fixes
+
+## 2026-07-15 — Raw Stone and source byproducts are finite physical cargo
+
+**Problem:** Quarry rock was still credited through the stable generic `materials` field, Stone
+Prep dressed that same Supplies pool, and quarry/hunt byproducts could appear as aggregate stock
+without a carried load. Adding Stone naively would also have stranded the renewable Supplies route
+used by the Workshop and shrine offerings. Partial logging had a related conservation hole: the
+tree was marked felled only on the final trip, so an interrupted early haul could target it again.
+
+**Fix:** Stone is now its own defaulted save, wire, storage, trade, stockpile, cargo, HUD, and
+Accountant-projection field. Missing legacy Stone defaults to zero while existing `materials`
+remains bit-exact Supplies. Quarry workers carry three raw-Stone loads and one distinct positive
+rubble/Supplies load; only a persisted Mountains site adds a fifth Ore load. Hunts now carry three
+Food loads followed by separate Hide and Bone loads. Bone has its own defaulted save, wire,
+storage, stockpile, cargo, trader, HUD, and private Accountant identity. Stone Prep consumes only
+Stone. Every result credits aggregate stock only
+after finite delivery, and the loaded-site Ore manifest avoids terrain generation in the active-job
+hot path. The first positive logging extraction now writes the stump immediately, while an active
+job reservation prevents premature replant/retarget until the job ends.
+
+**Evidence:** Legacy JSON and SQLite migration, full persistence, trade depletion, stockpile
+capacity, death/cancel/full-storage conservation, private Accountant reports, ordinary-versus-
+mountain manifests, logging interruption/retry, and deterministic unattended and signed guided
+campaigns cover the boundary. The guided fresh village begins at exactly zero Stone, physically
+quarries it, and grows Blocks without debiting Supplies. The inspected client-owned framebuffer
+`/tmp/raw-stone-bone-final.png` is exactly 1024×768, renders the top-down village normally, and
+shows truthful counted Stone `~12/100` and Bone `~3/100` rows with distinct icons and no clipping.
+The final gates pass 1,169 simulation, 43 protocol, 82 server, and 134 client tests plus strict
+Clippy for all four crates. Bone item variants and downstream recipes remain open breadth, but the
+raw hunt source and scalar are no longer future work.
+
+## 2026-07-15 — Guided founding economy reaches farms, offerings, and bounded route planning
+
+**Problem:** Broad player-guided and unattended runs exposed three integration failures hidden by
+focused fixtures. The material-offering decision protected too much Supplies to ever reach its own
+pickup threshold, the Farmer could treat a promised but unpaid Field as satisfying the essential
+food floor, and the guided farm→Mill smoke sometimes appointed a Steward before demonstrating the
+vacant-office manual road dependency. Repeated exact construction-road A* probes also dominated
+long fishing campaigns even when village topology had not changed.
+
+**Fix:** The offering decision bar is 20 Supplies: ten for the carried offering and ten retained for
+operations. Essential Field demand now counts only completed physical Fields and reopens Supplies
+for a fundable plank bill; comfort can stop only discretionary Fields after the minimum floor.
+Non-sticky raw benches restaff while buffers are deficient without reserving dormant offerings.
+The signed campaign now plans and manually paves a second Workshop while the Steward seat is vacant,
+asserts the visible paved-road event immediately, appoints the Steward afterward, and continues to
+physical Field harvest and Mill delivery. Construction access-road candidates are cached by a
+deterministic topology signature, bounding unchanged exact route probes without caching mutable
+claims or future sites.
+
+**Evidence:** Five unattended 200-game-hour founding-economy seeds each produce tithes, one physical
+offering, and blessings while the established population matrix retains its essential Field floor.
+The signed pre-earned-research replay twin purchases its dependencies, lays the manual road, harvests
+a staffed Field, and delivers both Flour and Food through the Mill bit-for-bit. Guided and unattended
+fishing campaigns cover all maintained seeds with at most eight exact construction-road queries;
+the authoritative full simulation gate and final touched-crate gates are recorded on P19.C1.
 
 ## 2026-07-15 — Visiting traders are physical and finite
 
@@ -123,8 +178,8 @@ recipe entitlement, not permission to place another bench.
 each bench while retaining the exact 167 Building / 167 RecipeResource / 166 Upgrade split and the
 first durability payload. Deterministic signed personal/communal plans, exact scaffold payment,
 reservation/overlap and mutation-free denial, authenticated server HMAC, and SQLite restart tests
-cover placement without altering current aggregate production. The remaining raw Stone, physical
-source cargo, six station-local queues, and finite-equipment authority work stays open below.
+cover placement without altering current aggregate production. The remaining six station-local
+queues and finite-equipment authority work stays open below.
 
 ## 2026-07-15 — Prosperity migrants physically enter and leave through the gate
 

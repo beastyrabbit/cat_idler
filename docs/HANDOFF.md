@@ -119,9 +119,18 @@ so a correct scout route cannot conceal a missing founding dispatch.
 1. **Finish the canonical physical economy.** P19 now owns the resource taxonomy and production
    table; P12 owns manual/officer logistics and P16 owns the fixed founding benches. Preserve the
    stable `materials`/`refined` wire and save IDs as Supplies/Crafted Supplies, every existing
-   `BuildingType`, and the verified open-top station direction. Add a defaulted raw Stone resource
-   without reinterpreting old Materials saves; make quarry/hunt byproducts real carried cargo; then
-   convert Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy to station-local
+   `BuildingType`, and the verified open-top station direction. The P19.C1 source boundary is now
+   verified: defaulted raw Stone never aliases legacy Supplies, Stone Prep consumes Stone, quarry
+   Stone plus renewable rubble/Supplies and mountain Ore are finite carried loads, while hunts carry
+   three Food loads followed by distinct Hide and Bone loads. Bone is defaulted independently across
+   save, wire, storage, trade, HUD, and private Accountant projections. Persistence, interruption/full-
+   storage conservation, passive play, signed guidance, and the exact 1024×768 client-owned
+   `/tmp/raw-stone-bone-final.png` framebuffer cover that slice. It visibly projects truthful
+   counted Stone `~12/100` and Bone `~3/100` without clipping.
+   Bone item variants and downstream recipes remain future breadth, not the raw source itself.
+   Final gates pass 1,169 simulation, 43 protocol, 82 server, and 134 client tests plus strict
+   Clippy for all four touched crates.
+   Next convert Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy to station-local
    input/work/output routes with one worker advancing one selected ordered/repeatable/pausable
    recipe. Preserve the now-verified rule that the three P16 founding benches need no placement
    study and that future studies gate recipes instead. Migrate tools/weapons/armor toward finite
@@ -150,7 +159,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    and inspector visibility. Signed per-cat preferences and all four physical processors' real
    editable queues are live; extend the generic queue control as additional physical recipes land.
    Preserve the verified tool productivity, type-local escalating costs, shrine faucets, and
-   research pacing in balance campaigns.
+   research pacing in balance campaigns. The physical offering decision threshold is 20 Supplies
+   (ten carried, ten retained), and essential Field demand counts completed physical Fields rather
+   than an unpaid queued promise. The signed farm→Mill campaign explicitly paves a second Workshop
+   reservation before appointing the Steward. Its construction-road planning uses a deterministic
+   topology-signature cache; do not cache mutable claims/future sites or remove the exact route bar.
 
    The NPC visiting-trader correction is implemented and focused-verified: each deterministic
    visit owns a reachable exterior, ordinary A* route through the retained gate to shrine contact,
@@ -202,9 +215,10 @@ so a correct scout route cannot conceal a missing founding dispatch.
    the whole validated path and removes aggregate Materials without a worker or cargo. Treat a
    physical road-building route as a P2 consistency enhancement unless the maintained vision is
    tightened to make road hauling a core acceptance condition.
-4. **Finish semantic HUD art, then prove the whole game.** Eleven of the 23 resource mappings still
-   reuse terrain, farm, prop, or furniture sprites despite P18's icon-driven HUD contract. Replace
-   them with truthful tracked Board Game/Fish glyphs and own-framebuffer-check all 23 at supported
+4. **Finish semantic HUD art, then prove the whole game.** Thirteen of the 25 resource mappings still
+   lack resource-specific glyphs: 11 reuse the prior terrain/farm/prop/furniture sprites, while
+   Stone uses a stone pile and Bone a generic goods glyph. Replace them with truthful tracked
+   Board Game/Fish glyphs and own-framebuffer-check all 25 at supported
    bounds. Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,
    WASM, persistence/restart, multiple villages, and all target resolutions. The Forgejo quality

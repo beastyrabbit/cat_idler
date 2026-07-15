@@ -133,6 +133,7 @@ pub enum ResourceKind {
     Grain,
     Flour,
     Materials,
+    Stone,
     Refined,
     Weapons,
     Armor,
@@ -143,6 +144,7 @@ pub enum ResourceKind {
     Tools,
     Fibre,
     Hide,
+    Bone,
     Cloth,
     Leather,
     Ore,
@@ -161,6 +163,7 @@ impl ResourceKind {
         Self::Grain,
         Self::Flour,
         Self::Materials,
+        Self::Stone,
         Self::Refined,
         Self::Weapons,
         Self::Armor,
@@ -171,6 +174,7 @@ impl ResourceKind {
         Self::Tools,
         Self::Fibre,
         Self::Hide,
+        Self::Bone,
         Self::Cloth,
         Self::Leather,
         Self::Ore,
@@ -191,6 +195,7 @@ pub fn resource_amount(resources: &Resources, kind: ResourceKind) -> f64 {
         ResourceKind::Grain => resources.grain,
         ResourceKind::Flour => resources.flour,
         ResourceKind::Materials => resources.materials,
+        ResourceKind::Stone => resources.stone,
         ResourceKind::Refined => resources.refined,
         ResourceKind::Weapons => resources.weapons,
         ResourceKind::Armor => resources.armor,
@@ -201,6 +206,7 @@ pub fn resource_amount(resources: &Resources, kind: ResourceKind) -> f64 {
         ResourceKind::Tools => resources.tools,
         ResourceKind::Fibre => resources.fibre,
         ResourceKind::Hide => resources.hide,
+        ResourceKind::Bone => resources.bone,
         ResourceKind::Cloth => resources.cloth,
         ResourceKind::Leather => resources.leather,
         ResourceKind::Ore => resources.ore,
@@ -220,6 +226,7 @@ pub fn set_resource(resources: &mut Resources, kind: ResourceKind, value: f64) {
         ResourceKind::Grain => resources.grain = value,
         ResourceKind::Flour => resources.flour = value,
         ResourceKind::Materials => resources.materials = value,
+        ResourceKind::Stone => resources.stone = value,
         ResourceKind::Refined => resources.refined = value,
         ResourceKind::Weapons => resources.weapons = value,
         ResourceKind::Armor => resources.armor = value,
@@ -230,6 +237,7 @@ pub fn set_resource(resources: &mut Resources, kind: ResourceKind, value: f64) {
         ResourceKind::Tools => resources.tools = value,
         ResourceKind::Fibre => resources.fibre = value,
         ResourceKind::Hide => resources.hide = value,
+        ResourceKind::Bone => resources.bone = value,
         ResourceKind::Cloth => resources.cloth = value,
         ResourceKind::Leather => resources.leather = value,
         ResourceKind::Ore => resources.ore = value,
@@ -410,6 +418,7 @@ pub const fn storage_capacity_for(caps: StorageCapacities, kind: ResourceKind) -
         ResourceKind::Grain => caps.grain,
         ResourceKind::Flour => caps.flour,
         ResourceKind::Materials => caps.materials,
+        ResourceKind::Stone => caps.stone,
         ResourceKind::Refined => caps.refined,
         ResourceKind::Weapons => caps.weapons,
         ResourceKind::Armor => caps.armor,
@@ -420,6 +429,7 @@ pub const fn storage_capacity_for(caps: StorageCapacities, kind: ResourceKind) -
         ResourceKind::Tools => caps.tools,
         ResourceKind::Fibre => caps.fibre,
         ResourceKind::Hide => caps.hide,
+        ResourceKind::Bone => caps.bone,
         ResourceKind::Cloth => caps.cloth,
         ResourceKind::Leather => caps.leather,
         ResourceKind::Ore => caps.ore,
@@ -758,6 +768,19 @@ pub fn reconcile_with_protected(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_stone_and_bone_are_distinct_finite_stockpile_goods() {
+        let mut resources = Resources::default();
+        add_resource(&mut resources, ResourceKind::Stone, 7.0);
+        add_resource(&mut resources, ResourceKind::Bone, 5.0);
+        add_resource(&mut resources, ResourceKind::Materials, 3.0);
+        assert_eq!(resource_amount(&resources, ResourceKind::Stone), 7.0);
+        assert_eq!(resource_amount(&resources, ResourceKind::Bone), 5.0);
+        assert_eq!(resource_amount(&resources, ResourceKind::Materials), 3.0);
+        assert!(ResourceKind::ALL.contains(&ResourceKind::Stone));
+        assert!(ResourceKind::ALL.contains(&ResourceKind::Bone));
+    }
 
     fn res(food: f64, water: f64, materials: f64) -> Resources {
         Resources {

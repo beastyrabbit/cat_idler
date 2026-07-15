@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     biomes::MaxResources,
-    climate::Mining,
     depletion::{CHOPPED_FOREST_FOOD_CAP, is_forest_type, regrowth_amount},
     elections::{
         BallotVote, ELECTION_WINDOW_MS, ElectionCandidate, KICK_WINDOW_MS, TERM_MS,
@@ -90,13 +89,12 @@ use crate::{
     stockpiles::{self, GatherSpot, GatherSpotPurpose, MAX_GATHER_SPOTS, ResourceKind, Stockpile},
     storage::{StorageBuilding, StorageCapacities, count_storehouses, storehouse_cap},
     survival::{SurvivalResources, apply_survival_tick},
-    terrain_gen::tile_climate_biome,
     threat::{
         ThreatSnapshot, accrue_threat, colony_wealth, plan_raid, resolve_raid, should_spawn_raid,
         threat_band,
     },
     trader,
-    trips::{HUNT_TRIP_COUNT, remaining_yield, split_yield, trip_due_at},
+    trips::{HUNT_TRIP_COUNT, remaining_yield, split_yield, trip_due_at_with_count},
     types::{
         BuildingType, CatSpecialization, JobKind, JobStatus, LifeStage, TaskType, TileType,
         UpgradeKey,
@@ -811,6 +809,9 @@ struct DecorationAnchors {
     climate_biomes: BTreeMap<TilePos, crate::climate::Biome>,
 }
 
+type ConstructionRoadRouteKey = (u64, i32, i32, String);
+type ConstructionRoadRouteCache = BTreeMap<ConstructionRoadRouteKey, Option<Vec<TilePos>>>;
+
 #[derive(Debug, Clone, Default)]
 pub struct DecorationCache {
     chunks: BTreeMap<(u32, i32, i32), DecorationAnchors>,
@@ -826,6 +827,10 @@ pub struct DecorationCache {
     /// Derived reachability for Steward source/destination pairs. Resource quantities do
     /// not affect the key, so an unreachable route is not recomputed every decision tick.
     steward_route_reachability: RefCell<BTreeMap<u64, bool>>,
+    /// Derived access routes for queued construction reservations. A funded project can
+    /// wait many ticks for a manual road; unchanged village geometry must not rerun the
+    /// same footprint-to-shrine path search in both phases 14 and 32 every second.
+    construction_road_routes: RefCell<ConstructionRoadRouteCache>,
     #[cfg(test)]
     farm_route_debug: FarmRouteDebug,
     #[cfg(test)]
@@ -834,6 +839,10 @@ pub struct DecorationCache {
     farm_route_component_cache_hits: std::cell::Cell<u64>,
     #[cfg(test)]
     farm_route_queries: std::cell::Cell<u64>,
+    #[cfg(test)]
+    water_route_queries: std::cell::Cell<u64>,
+    #[cfg(test)]
+    construction_route_queries: std::cell::Cell<u64>,
     #[cfg(test)]
     accounting_route_component_traversals: std::cell::Cell<u64>,
     #[cfg(test)]
@@ -2563,6 +2572,7 @@ fn starting_resources(scale_kind: VillageScale) -> Resources {
         grain: 0.0,
         flour: 0.0,
         materials: 60.0 * scale,
+        stone: 0.0,
         refined: 0.0,
         weapons: 0.0,
         armor: 0.0,
@@ -2580,6 +2590,7 @@ fn starting_resources(scale_kind: VillageScale) -> Resources {
         // passively and hide is a hunt byproduct.
         fibre: 0.0,
         hide: 0.0,
+        bone: 0.0,
         cloth: 0.0,
         leather: 0.0,
         // Ore/metal chain (P17/P19) — also empty at founding; ore only ever comes from
@@ -3122,7 +3133,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         }
         phase_27_due_job_prelude(colony, gate);
         phase_28_due_completion_supplies_and_planner_jobs(colony, gate);
-        phase_28a_suspend_fishing_away_from_shore(colony, gate);
+        phase_28a_suspend_fishing_away_from_shore(colony, gate, world_seed);
         phase_28b_advance_staged_wall_work(colony, gate);
         phase_29_due_completion_gathering_explore_expansion(colony, gate, world_seed);
         phase_30_due_completion_build_ritual_training_return_mark_done(colony, gate);
@@ -3736,6 +3747,7 @@ fn phase_7_consumption_spoilage_resource_pre_patch_minute_cadence(
     colony.resources.grain = clamp_resource(colony.resources.grain, caps.grain);
     colony.resources.flour = clamp_resource(colony.resources.flour, caps.flour);
     colony.resources.materials = clamp_resource(colony.resources.materials, caps.materials);
+    colony.resources.stone = clamp_resource(colony.resources.stone, caps.stone);
     colony.resources.refined = clamp_resource(colony.resources.refined, caps.refined);
     colony.resources.weapons = clamp_resource(colony.resources.weapons, caps.weapons);
     colony.resources.armor = clamp_resource(colony.resources.armor, caps.armor);
@@ -4120,32 +4132,60 @@ fn reserve_kind_from_visible_piles(
     (remaining <= f64::EPSILON).then_some(reservations)
 }
 
+fn visible_unreserved_construction_total(colony: &ColonyRuntime, kind: ResourceKind) -> f64 {
+    colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+        .map(|pile| {
+            (stockpiles::resource_amount(&pile.contents, kind)
+                - construction_reserved_from_pile(colony, &pile.id, kind))
+            .max(0.0)
+        })
+        .sum()
+}
+
+fn construction_cargo_is_available(
+    colony: &ColonyRuntime,
+    timber_cost: f64,
+    block_cost: f64,
+) -> bool {
+    let timber = allocate_construction_timber(
+        timber_cost,
+        visible_unreserved_construction_total(colony, ResourceKind::Lumber),
+        visible_unreserved_construction_total(colony, ResourceKind::Planks),
+    );
+    timber.covered
+        && visible_unreserved_construction_total(colony, ResourceKind::Blocks) + f64::EPSILON
+            >= block_cost
+}
+
+/// Run an unpaid scaffold's potentially expensive placement search only when the
+/// exact reservation-aware bill is physically visible. Existing paid scaffolds
+/// resume through their building-id branch and deliberately never call this helper.
+fn with_funded_unpaid_scaffold<T>(
+    colony: &ColonyRuntime,
+    timber_cost: f64,
+    block_cost: f64,
+    search: impl FnOnce() -> T,
+) -> Option<T> {
+    construction_cargo_is_available(colony, timber_cost, block_cost).then(search)
+}
+
 fn plan_construction_cargo(
     colony: &ColonyRuntime,
     site: TilePos,
     timber_cost: f64,
     block_cost: f64,
 ) -> Option<ConstructionCargoState> {
-    let visible_total = |kind| {
-        colony
-            .stockpiles
-            .iter()
-            .filter(|pile| !pile.is_station_local())
-            .map(|pile| {
-                (stockpiles::resource_amount(&pile.contents, kind)
-                    - construction_reserved_from_pile(colony, &pile.id, kind))
-                .max(0.0)
-            })
-            .sum::<f64>()
-    };
-    let timber = allocate_construction_timber(
-        timber_cost,
-        visible_total(ResourceKind::Lumber),
-        visible_total(ResourceKind::Planks),
-    );
-    if !timber.covered || visible_total(ResourceKind::Blocks) + f64::EPSILON < block_cost {
+    if !construction_cargo_is_available(colony, timber_cost, block_cost) {
         return None;
     }
+    let timber = allocate_construction_timber(
+        timber_cost,
+        visible_unreserved_construction_total(colony, ResourceKind::Lumber),
+        visible_unreserved_construction_total(colony, ResourceKind::Planks),
+    );
     let mut reservations =
         reserve_kind_from_visible_piles(colony, ResourceKind::Lumber, timber.lumber_used, site)
             .unwrap_or_default();
@@ -4504,29 +4544,50 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 _ => (BuildingType::Den, None),
             };
             let (timber_cost, block_cost) = scaffold_cost(colony, scaffold_type);
-
             // P19 slice 1b build cost: breaking ground draws refined build materials
             // (planks + blocks) from the stores. If the wood-cutter/stone-prep benches
             // have not banked enough yet, the job stays Queued and retries on a later
             // tick — construction is gated on refined-material supply, not free. The cost
             // keys only off pile-invariant resource totals, so this stays deterministic.
-            let roll = roll_seeded(f64::from(movement_seed));
-            movement_seed = roll.next_seed;
-
-            let site_local = match reserved_site {
-                Some(site)
-                    if claimed_building_site_is_ready(colony, site, world_seed, scaffold_type) =>
-                {
-                    Some(site)
-                }
-                // Another queued project may have broken ground across this
-                // reservation's only access route. Re-plan inside the existing
-                // claim instead of pinning the paid-ready project to a dead site.
-                Some(_) => {
-                    next_claimed_building_site(colony, roll.value, world_seed, scaffold_type)
-                }
-                None => next_claimed_building_site(colony, roll.value, world_seed, scaffold_type),
+            let Some((next_seed, site_local)) =
+                with_funded_unpaid_scaffold(colony, timber_cost, block_cost, || {
+                    let roll = roll_seeded(f64::from(movement_seed));
+                    let site_local = match reserved_site {
+                        Some(site)
+                            if claimed_building_site_is_ready(
+                                colony,
+                                site,
+                                world_seed,
+                                scaffold_type,
+                            ) =>
+                        {
+                            Some(site)
+                        }
+                        // Another queued project may have broken ground across this
+                        // reservation's only access route. Re-plan inside the existing
+                        // claim instead of pinning the paid-ready project to a dead site.
+                        Some(_) => next_claimed_building_site(
+                            colony,
+                            roll.value,
+                            world_seed,
+                            scaffold_type,
+                        ),
+                        None => next_claimed_building_site(
+                            colony,
+                            roll.value,
+                            world_seed,
+                            scaffold_type,
+                        ),
+                    };
+                    (roll.next_seed, site_local)
+                })
+            else {
+                // Site/accessibility search can span the whole claimed map. An unpaid
+                // scaffold with an impossible current bill stays queued without entering
+                // it; paid/recovery scaffolds took the existing-building branch above.
+                continue;
             };
+            movement_seed = next_seed;
             let Some(site_local) = site_local else {
                 // No valid claimed/access-connected site exists yet. Keep the
                 // job queued and reserve one deterministic future footprint for
@@ -4542,8 +4603,15 @@ fn phase_14_promote_queued_jobs_and_break_ground(
                 }
                 continue;
             };
+            if let JobMetadata::Construction { site, .. } = &mut colony.jobs[job_index].metadata {
+                // Placement is deterministic authority independent of whether the
+                // access road can be automated yet. Persist the reservation now so a
+                // manual-road wait does not repeat the full footprint search in phases
+                // 14 and 32 on every tick. Readiness is revalidated before break-ground.
+                *site = Some(site_local);
+            }
             let Some(access_route) =
-                candidate_building_road_route(colony, site_local, scaffold_type, world_seed)
+                cached_candidate_building_road_route(colony, site_local, scaffold_type, world_seed)
             else {
                 continue;
             };
@@ -4806,7 +4874,16 @@ fn phase_15_assign_promoted_job_destinations(
     let quarry_site = quarry_sites_near_village(colony).into_iter().next();
     let logging_site = first_logging_site_if_needed(colony, &active_indices, world_seed);
     let fishing_site = fishable_sites(colony).into_iter().next();
-    let water_site = water_sites_near_village(colony).into_iter().next();
+    let water_site = active_indices
+        .iter()
+        .any(|&index| colony.jobs[index].kind == JobKind::FetchWater)
+        .then(|| {
+            water_sites_near_village(colony).into_iter().find(|source| {
+                water_work_site(colony, world_pos_to_tile(*source))
+                    .is_some_and(|bank| is_reachable_fishing_shore(colony, bank, world_seed))
+            })
+        })
+        .flatten();
     // Snapshot the active player zones (phase 10 already dropped expired ones) so hunt
     // targeting can be steered toward gather rects and away from avoid rects.
     let active_zones = colony
@@ -5688,12 +5765,18 @@ fn phase_17_legacy_emergency_hunt(colony: &mut ColonyRuntime, gate: TickGate, po
     );
 }
 
-/// Water reserve that triggers a physical fetch preemption. This deliberately uses
-/// the established six-units-per-cat research-comfort bar, one unit above migration's
-/// five-units-per-cat prosperity bar: the extra buffer pays consumption while the
-/// reassigned cat walks to the spring and physically returns with its bucket.
+/// Extra per-cat runway above research comfort before water preemption relaxes. The
+/// migration prosperity bar is 5/cat and research comfort is 6/cat; a second unit of
+/// headroom covers dispatch plus the three physical source/deposit legs. A five-seed,
+/// 300-game-hour coarse campaign measured the old 6/cat trigger at 4.65/cat while a
+/// healthy fetch was still in flight, so the one-unit margin did not cover route latency.
+const WATER_FETCH_TRANSIT_RESERVE_PER_CAT: f64 = 1.0;
+
+/// Water reserve that triggers a physical fetch preemption. Research and migration
+/// thresholds stay unchanged; only the labor-dispatch runway includes transit.
 fn water_fetch_preemption_reserve(population: usize) -> f64 {
-    (population as f64 * RESEARCH_COMFORT_WATER_PER_CAT).max(RESEARCH_COMFORT_FLOOR)
+    (population as f64 * (RESEARCH_COMFORT_WATER_PER_CAT + WATER_FETCH_TRANSIT_RESERVE_PER_CAT))
+        .max(RESEARCH_COMFORT_FLOOR)
 }
 
 fn committed_water_fetcher_count(colony: &ColonyRuntime) -> usize {
@@ -6132,6 +6215,8 @@ fn phase_18_leader_snapshot_assembly(colony: &mut ColonyRuntime, gate: TickGate)
         food_drain_per_tick: Some(food_drain.food_use),
         materials: colony.resources.materials,
         materials_capacity: caps.materials,
+        stone: colony.resources.stone,
+        stone_capacity: caps.stone,
         water: colony.resources.water,
         water_capacity: caps.water,
         water_drain_per_tick: Some(food_drain.water_use),
@@ -6953,13 +7038,6 @@ fn manage_field(
         return;
     }
 
-    // A comfortably stocked larder does not need the whole population ceiling. Standing
-    // fields persist, while a later trough reopens catch-up construction.
-    let food_r = ratio_or_zero(snapshot.resources.food, snapshot.food_capacity);
-    if food_r >= FIELD_STOCK_TARGET_RATIO {
-        return;
-    }
-
     // Total cap: an essential base (FIELD_MIN_COUNT) as the survival floor plus
     // a population-scaled ceiling on top. Scaling that ceiling off today's headcount lets
     // capacity ramp with the colony rather than front-loading builders on the fragile
@@ -6968,6 +7046,13 @@ fn manage_field(
     let discretionary_cap = (population as f64 / FIELD_CATS_PER_FIELD).ceil() as usize;
     let max_fields = FIELD_MIN_COUNT.max(discretionary_cap);
     if fields >= max_fields {
+        return;
+    }
+    // A comfortably stocked larder may stop only discretionary growth above the
+    // essential base. Cat turnover can cancel the founding project after the pantry
+    // fills; the Farmer must still replace that missing survival floor.
+    let food_r = ratio_or_zero(snapshot.resources.food, snapshot.food_capacity);
+    if fields >= FIELD_MIN_COUNT && food_r >= FIELD_STOCK_TARGET_RATIO {
         return;
     }
 
@@ -8067,13 +8152,10 @@ fn mean_farm_fertility(colony: &ColonyRuntime, world_seed: u32, rect: ZoneRect) 
     }
 }
 
-/// Run raw-material conversion in scarcity order against one shared, recomputed
-/// material budget. The 20-material construction/prosperity floor is protected once
-/// the 4/4 refined build buffer is funded. While either side is deficient, these two
-/// raw benches may convert that reserve, but each side is capped at the amount needed
-/// to reach four so a funded side cannot starve the scarce one. Once both sides reach
-/// four, normal surplus production above the protected floor resumes. Recomputing after
-/// every bench also prevents the same five materials from producing both outputs.
+/// Run raw-material conversion in scarcity order. Wood cutters retain their protected
+/// Supplies budget, while stone-prep benches consume only raw Stone physically returned
+/// by quarry workers. The two inputs are intentionally distinct: legacy `materials`
+/// remains Supplies and is never reinterpreted as Stone.
 fn advance_raw_material_benches(
     colony: &mut ColonyRuntime,
     gate: TickGate,
@@ -8101,9 +8183,14 @@ fn advance_raw_material_benches(
                 || colony.resources.blocks < TOOL_BUILD_MATERIAL_RESERVE;
             let banked_tool_reserve =
                 raw_chain_material_reserve(colony, offering_materials_reserve);
-            let raw_materials_available =
-                (colony.resources.materials - offering_materials_reserve - banked_tool_reserve)
-                    .max(0.0);
+            let raw_materials_available = match bench_type {
+                BuildingType::WoodCutter => {
+                    (colony.resources.materials - offering_materials_reserve - banked_tool_reserve)
+                        .max(0.0)
+                }
+                BuildingType::StonePrep => colony.resources.stone.max(0.0),
+                _ => unreachable!("filtered raw conversion bench"),
+            };
             let materials_available = if build_buffer_deficient {
                 let refined_on_hand = match bench_type {
                     BuildingType::WoodCutter => colony.resources.planks,
@@ -8142,14 +8229,16 @@ fn advance_raw_material_benches(
                         gate.processed_through,
                     );
                 }
-                colony.resources.materials =
-                    (colony.resources.materials - step.materials_used).max(0.0);
                 let (noun, source) = match bench_type {
                     BuildingType::WoodCutter => {
+                        colony.resources.materials =
+                            (colony.resources.materials - step.materials_used).max(0.0);
                         colony.resources.planks += step.refined_produced;
                         ("plank", "wood-cutter split")
                     }
                     BuildingType::StonePrep => {
+                        colony.resources.stone =
+                            (colony.resources.stone - step.materials_used).max(0.0);
                         colony.resources.blocks += step.refined_produced;
                         ("block", "stone-prep shop dressed")
                     }
@@ -8160,7 +8249,7 @@ fn advance_raw_material_benches(
                     gate.processed_through,
                     EventKind::Production,
                     format!(
-                        "The {source} {} materials into {} {noun}{}.",
+                        "The {source} {} raw inputs into {} {noun}{}.",
                         step.materials_used,
                         step.refined_produced,
                         if step.refined_produced == 1.0 {
@@ -8225,17 +8314,24 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     // tier that only draws a cat once both build materials are already stocked — leaving
     // it earlier would let it drain the planks/blocks the colony needs to grow. The order
     // keys only off pile-invariant resource totals, so it stays deterministic.
-    // A dispatched offering has physically claimed its 10 goods plus the fixed
-    // construction reserve. Raw-material benches must not consume
-    // that escrow before the ritualist reaches the shrine.
+    // A dispatched offering has physically claimed its goods, while a banked Tool
+    // makes the same dormant shrine threshold reachable. Raw-material benches must
+    // not consume either reserve before the ritual can dispatch and arrive.
     let offering_in_flight = active_or_queued_jobs(colony)
         .iter()
         .any(|job| matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering));
-    let offering_materials_reserve = if offering_in_flight {
-        OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
-    } else {
-        0.0
-    };
+    let essential_field_missing = colony
+        .buildings
+        .iter()
+        .filter(|building| building.building_type == BuildingType::Field && building.is_complete)
+        .count()
+        < FIELD_MIN_COUNT;
+    let offering_materials_reserve =
+        if offering_in_flight || (colony.resources.tools >= 1.0 && !essential_field_missing) {
+            OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
+        } else {
+            0.0
+        };
     let tool_build_material_reserve = construction_material_reserve(colony);
     if has_officer(colony, OfficerRole::Forester) {
         // The officer's own sawmill is the first-class station. Staff it before
@@ -8843,22 +8939,28 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
 }
 
 fn spendable_production_materials(colony: &ColonyRuntime) -> (f64, f64) {
+    // The dormant 10-Supplies operating reserve plus next 10-Supplies offering belongs
+    // to real Loremaster automation, not to an unfilled office. Preserve already
+    // dispatched physical offering work even if the holder dies mid-route; a manual or
+    // vacant workshop otherwise remains entitled to its visible delivered input.
     let offering_in_flight = active_or_queued_jobs(colony)
         .iter()
         .any(|job| matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering));
-    let offering_materials_reserve = if offering_in_flight {
+    let loremaster_alive = colony
+        .officers
+        .get(&OfficerRole::Loremaster)
+        .is_some_and(|holder| {
+            colony
+                .cats
+                .iter()
+                .any(|cat| cat.id == *holder && cat.death_time.is_none())
+        });
+    let dormant_offering_reserve = if offering_in_flight || loremaster_alive {
         OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
     } else {
         0.0
     };
-    let reachable_offering_reserve = if colony.resources.tools >= 1.0 && !offering_in_flight {
-        OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
-    } else {
-        0.0
-    };
-    let spendable =
-        (colony.resources.materials - offering_materials_reserve - reachable_offering_reserve)
-            .max(0.0);
+    let spendable = (colony.resources.materials - dormant_offering_reserve).max(0.0);
     (spendable, spendable)
 }
 
@@ -9260,15 +9362,28 @@ fn accounting_topology_signature(colony: &ColonyRuntime, world_seed: u32) -> u64
         mix(&pile.rect.x2.to_le_bytes());
         mix(&pile.rect.y2.to_le_bytes());
     }
-    let mut edges = staged_wall_fence_edges(colony)
-        .into_iter()
-        .collect::<Vec<_>>();
-    edges.sort_by_key(|edge| (edge.ax, edge.ay, edge.bx, edge.by));
-    for edge in edges {
-        mix(&edge.ax.to_le_bytes());
-        mix(&edge.ay.to_le_bytes());
-        mix(&edge.bx.to_le_bytes());
-        mix(&edge.by.to_le_bytes());
+    for job in colony.jobs.iter().filter(|job| {
+        matches!(job.status, JobStatus::Active | JobStatus::Queued)
+            && job.kind == JobKind::ExpandVillage
+    }) {
+        if let JobMetadata::Expansion {
+            target,
+            wall_work_ms,
+            ..
+        } = job.metadata
+        {
+            mix(job.id.as_bytes());
+            mix(&target.x.to_le_bytes());
+            mix(&target.y.to_le_bytes());
+            // Fence-edge topology changes only when another full wall segment crosses
+            // its deterministic work threshold, not on every intermediate millisecond.
+            let segments = completed_outer_wall_segment_count(
+                job,
+                prospective_outer_wall_segments(colony, target).len(),
+            );
+            mix(&(segments as u64).to_le_bytes());
+            mix(&[u8::from(wall_work_ms > 0)]);
+        }
     }
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     mix(&[u8::from(
@@ -10073,13 +10188,17 @@ fn phase_28_due_completion_supplies_and_planner_jobs(colony: &mut ColonyRuntime,
     }
 }
 
-/// Fishing is durable work performed at the shoreline, not a wall-clock delay.
+/// Source gathering is durable work performed at its site, not a wall-clock delay.
 /// The ordinary gathering timer starts when a job is promoted, so every interval
 /// during which the fisher is traveling, returning cargo, dead, or no longer at
 /// its valid designated bank is added back to both completion and trip deadlines.
 /// This makes queued/travel time contribute exactly zero work while retaining the
 /// existing deterministic absolute-deadline representation for persistence.
-fn phase_28a_suspend_fishing_away_from_shore(colony: &mut ColonyRuntime, gate: TickGate) {
+fn phase_28a_suspend_fishing_away_from_shore(
+    colony: &mut ColonyRuntime,
+    gate: TickGate,
+    _world_seed: u32,
+) {
     let elapsed_ms = gate.elapsed_sec.saturating_mul(1_000);
     if elapsed_ms <= 0 {
         return;
@@ -10090,8 +10209,10 @@ fn phase_28a_suspend_fishing_away_from_shore(colony: &mut ColonyRuntime, gate: T
         .map(world_pos_to_tile)
         .collect::<HashSet<_>>();
     let mut cancel = Vec::new();
+    let anchor = colony.anchor;
+    let (jobs, cats) = (&mut colony.jobs, &colony.cats);
 
-    for (index, job) in colony.jobs.iter_mut().enumerate() {
+    for (index, job) in jobs.iter_mut().enumerate() {
         if job.kind != JobKind::Fish || job.status != JobStatus::Active {
             continue;
         }
@@ -10105,19 +10226,18 @@ fn phase_28a_suspend_fishing_away_from_shore(colony: &mut ColonyRuntime, gate: T
         else {
             continue;
         };
-        if !fishing_sites.contains(site) {
+        if job.kind == JobKind::Fish && !fishing_sites.contains(site) {
             cancel.push(index);
             continue;
         }
         let productive = *accepted
             && job.assigned_cat.as_deref().is_some_and(|cat_id| {
-                colony.cats.iter().any(|cat| {
+                cats.iter().any(|cat| {
                     cat.id == cat_id
                         && cat.death_time.is_none()
                         && cat.activity == CatActivity::Working
                         && cat.carrying.is_none()
-                        && world_pos_to_tile(position_to_world(colony.anchor, cat.position))
-                            == *site
+                        && world_pos_to_tile(position_to_world(anchor, cat.position)) == *site
                 })
             });
         if productive {
@@ -10130,8 +10250,12 @@ fn phase_28a_suspend_fishing_away_from_shore(colony: &mut ColonyRuntime, gate: T
             && *trips_done < (HUNT_TRIP_COUNT - 1) as u32
             && let (Some(started_at), Some(ends_at)) = (job.started_at, old_ends_at)
         {
-            *next_trip_at =
-                Some(trip_due_at(started_at as f64, ends_at as f64, *trips_done as i32 + 1) as i64);
+            *next_trip_at = Some(trip_due_at_with_count(
+                started_at as f64,
+                ends_at as f64,
+                *trips_done as i32 + 1,
+                HUNT_TRIP_COUNT,
+            ) as i64);
         }
         job.ends_at = old_ends_at.map(|ends_at| ends_at.saturating_add(elapsed_ms));
         *next_trip_at = next_trip_at.map(|due_at| due_at.saturating_add(elapsed_ms));
@@ -10166,6 +10290,10 @@ fn phase_29_due_completion_gathering_explore_expansion(
     let due_jobs = due_active_jobs(colony, gate);
 
     for job in due_jobs {
+        if is_physical_source_job(job.kind) && !source_job_ready_for_final_load(colony, &job) {
+            continue;
+        }
+        let source_job = is_physical_source_job(job.kind);
         match job.kind {
             JobKind::HuntExpedition => complete_hunt(colony, &job, gate),
             JobKind::Quarry => complete_fixed_yield_job(
@@ -10173,7 +10301,7 @@ fn phase_29_due_completion_gathering_explore_expansion(
                 &job,
                 gate,
                 QUARRY_TOTAL_YIELD,
-                CarryingKind::Materials,
+                CarryingKind::Stone,
                 world_seed,
             ),
             JobKind::GatherLogs => complete_fixed_yield_job(
@@ -10212,6 +10340,9 @@ fn phase_29_due_completion_gathering_explore_expansion(
                 }
             }
             _ => {}
+        }
+        if source_job {
+            mark_source_final_load_extracted(colony, &job);
         }
     }
 }
@@ -10256,7 +10387,12 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
     colony: &mut ColonyRuntime,
     gate: TickGate,
 ) {
-    let due_jobs = due_active_jobs(colony, gate);
+    let due_jobs = due_active_jobs(colony, gate)
+        .into_iter()
+        .filter(|job| {
+            !is_physical_source_job(job.kind) || source_final_load_was_extracted(colony, job)
+        })
+        .collect::<Vec<_>>();
     let mut interrupted_jobs = HashSet::new();
     let tools_contributed = usable_tool_stock(colony) >= 1.0;
     let mut completed_tool_uses = 0_u32;
@@ -10414,7 +10550,9 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
         else {
             continue;
         };
-        if trips_done >= (HUNT_TRIP_COUNT - 1) as u32 {
+        let quarry_has_ore = quarry_has_ore(colony, &job);
+        let trip_count = source_cargo_trip_count(&job, quarry_has_ore);
+        if trips_done >= (trip_count - 1) as u32 {
             continue;
         }
         let Some(started_at) = job.started_at else {
@@ -10424,9 +10562,14 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
             continue;
         };
         let due_at = next_trip_at.unwrap_or_else(|| {
-            trip_due_at(started_at as f64, ends_at as f64, trips_done as i32 + 1) as i64
+            trip_due_at_with_count(
+                started_at as f64,
+                ends_at as f64,
+                trips_done as i32 + 1,
+                trip_count,
+            ) as i64
         });
-        if gate.processed_through < due_at || ends_at <= gate.processed_through {
+        if gate.processed_through < due_at {
             continue;
         }
         let Some(cat_id) = job.assigned_cat.as_deref() else {
@@ -10439,26 +10582,33 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
         else {
             continue;
         };
+        let cat_site = world_pos_to_tile(position_to_world(
+            colony.anchor,
+            colony.cats[cat_index].position,
+        ));
+        let required_work_site = match job.kind {
+            JobKind::Fish => Some(site),
+            JobKind::FetchWater => water_work_site(colony, site),
+            _ => None,
+        };
         if colony.cats[cat_index].activity != CatActivity::Working
             || colony.cats[cat_index].carrying.is_some()
-            || job.kind == JobKind::Fish
-                && world_pos_to_tile(position_to_world(
-                    colony.anchor,
-                    colony.cats[cat_index].position,
-                )) != site
+            || matches!(job.kind, JobKind::Fish | JobKind::FetchWater)
+                && required_work_site.is_none_or(|required| cat_site != required)
         {
             continue;
         }
 
         let total =
             total_yield.unwrap_or_else(|| total_yield_for_job(colony, &job, cat_index, world_seed));
-        let requested_share = split_yield(total, HUNT_TRIP_COUNT, trips_done as i32);
+        let (carrying_kind, requested_share) =
+            source_cargo_for_trip(&job, total, trips_done, quarry_has_ore);
         let share = if job.kind == JobKind::Fish {
             harvest_fish(colony, site, requested_share)
         } else {
             requested_share
         };
-        if job.kind == JobKind::HuntExpedition {
+        if job.kind == JobKind::HuntExpedition && carrying_kind == CarryingKind::Food {
             drain_hunt_site(colony, site, share, gate.processed_through);
         }
 
@@ -10471,10 +10621,11 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
                 site: Some(site),
                 total_yield: Some(total),
                 trips_done: trips_done + 1,
-                next_trip_at: Some(trip_due_at(
+                next_trip_at: Some(trip_due_at_with_count(
                     started_at as f64,
                     ends_at as f64,
                     trips_done as i32 + 2,
+                    trip_count,
                 ) as i64),
                 accepted: true,
             };
@@ -10483,8 +10634,14 @@ fn phase_31_mid_job_hauling(colony: &mut ColonyRuntime, gate: TickGate, world_se
         if share <= 0.0 {
             continue;
         }
+        // Logging depletes the finite tree at the first positive extraction, not
+        // only when the final third is loaded. Otherwise a death or cancellation
+        // after an early haul leaves a visually standing source that a fresh job
+        // can select again, minting a second full yield from the same tree.
+        if job.kind == JobKind::GatherLogs {
+            mark_logged_site(colony, Some(site), gate.processed_through);
+        }
         colony.cats[cat_index].gain_skill(Labor::Haul, HAUL_SKILL_GAIN);
-        let carrying_kind = carrying_kind_for_job(job.kind);
         let haul_from = position_to_world(colony.anchor, colony.cats[cat_index].position);
         let haul_to = haul_destination(colony, carrying_kind, haul_from);
         colony.cats[cat_index].carrying = Some(Carrying {
@@ -10520,10 +10677,11 @@ fn phase_32_movement_setup_and_village_expansion_queue(
                 }
             )
     });
+    let unpaid_scaffold_lane_open = colony.buildings.iter().all(|building| building.is_complete);
     // A linked expansion already owns the blocked construction's builder and
     // frontier. Avoid re-running the comparatively expensive site/readiness
     // search until that expansion completes or is cancelled.
-    let blocked_construction_index = (!linked_expansion_in_flight)
+    let blocked_construction_index = (!linked_expansion_in_flight && unpaid_scaffold_lane_open)
         .then(|| {
             colony
                 .jobs
@@ -10544,22 +10702,20 @@ fn phase_32_movement_setup_and_village_expansion_queue(
                     };
                     let building_type = scaffold_building_type(building_type);
                     let (timber_cost, block_cost) = scaffold_cost(colony, building_type);
-                    if !allocate_construction_timber(
-                        timber_cost,
-                        colony.resources.lumber,
-                        colony.resources.planks,
-                    )
-                    .covered
-                        || colony.resources.blocks < block_cost
-                    {
-                        return None;
-                    }
-                    let needs_land = site.map_or_else(
-                        || !can_plan_building(colony, world_seed, building_type),
-                        |site| {
-                            !claimed_building_site_is_ready(colony, site, world_seed, building_type)
-                        },
-                    );
+                    let needs_land =
+                        with_funded_unpaid_scaffold(colony, timber_cost, block_cost, || {
+                            site.map_or_else(
+                                || !can_plan_building(colony, world_seed, building_type),
+                                |site| {
+                                    !claimed_building_site_is_ready(
+                                        colony,
+                                        site,
+                                        world_seed,
+                                        building_type,
+                                    )
+                                },
+                            )
+                        })?;
                     needs_land.then_some((
                         index,
                         building_type == BuildingType::Field,
@@ -10600,7 +10756,6 @@ fn phase_32_movement_setup_and_village_expansion_queue(
         *site = Some(future_site);
     }
     let construction_needs_land = blocked_construction_index.is_some();
-
     let ordinary_expansion_pressure = should_expand(
         active_resident_cats(colony).count() as i32,
         claimed_area.len() as i32,
@@ -10750,7 +10905,6 @@ fn phase_32_movement_setup_and_village_expansion_queue(
             }
         }
     }
-
     let area_gate = (!claimed_area.is_empty())
         .then(|| retained_area_gate(colony))
         .flatten();
@@ -10878,7 +11032,7 @@ fn phase_33_movement_deposits_and_no_destination_wander(
                 continue;
             }
 
-            let return_site = active_site_for_carrier(colony, &cat_id, gate.processed_through);
+            let return_site = active_site_for_carrier(colony, &cat_id);
             if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
                 cat.carrying = None;
                 if let Some(site) = return_site {
@@ -11976,9 +12130,11 @@ fn carrying_kind_for_resource(kind: ResourceKind) -> Option<CarryingKind> {
         ResourceKind::Fish => Some(CarryingKind::Fish),
         ResourceKind::Water => Some(CarryingKind::Water),
         ResourceKind::Materials => Some(CarryingKind::Materials),
+        ResourceKind::Stone => Some(CarryingKind::Stone),
         ResourceKind::Refined => Some(CarryingKind::Refined),
         ResourceKind::Logs => Some(CarryingKind::Logs),
         ResourceKind::Herbs => Some(CarryingKind::Herbs),
+        ResourceKind::Bone => Some(CarryingKind::Bone),
         ResourceKind::Catnip => Some(CarryingKind::Catnip),
         ResourceKind::Grain => Some(CarryingKind::Grain),
         ResourceKind::Flour => Some(CarryingKind::Flour),
@@ -12151,7 +12307,7 @@ const AUTO_GATHER_SPOT_MIN_WORKERS: usize = 2;
 fn resource_kind_for_gather_job(kind: JobKind) -> Option<ResourceKind> {
     match kind {
         JobKind::HuntExpedition => Some(ResourceKind::Food),
-        JobKind::Quarry => Some(ResourceKind::Materials),
+        JobKind::Quarry => Some(ResourceKind::Stone),
         JobKind::GatherLogs => Some(ResourceKind::Logs),
         JobKind::FetchWater => Some(ResourceKind::Water),
         _ => None,
@@ -15142,6 +15298,7 @@ fn clamp_resources_to_caps(resources: &mut Resources, caps: StorageCapacities) {
     resources.grain = clamp_resource(resources.grain, caps.grain);
     resources.flour = clamp_resource(resources.flour, caps.flour);
     resources.materials = clamp_resource(resources.materials, caps.materials);
+    resources.stone = clamp_resource(resources.stone, caps.stone);
     resources.refined = clamp_resource(resources.refined, caps.refined);
     resources.weapons = clamp_resource(resources.weapons, caps.weapons);
     resources.armor = clamp_resource(resources.armor, caps.armor);
@@ -16591,7 +16748,14 @@ fn unaccepted_active_job_site(colony: &ColonyRuntime, cat_id: &str) -> Option<(u
             | JobMetadata::Site {
                 site,
                 accepted: false,
-            } => Some((index, site)),
+            } => Some((
+                index,
+                if job.kind == JobKind::FetchWater {
+                    water_work_site(colony, site)?
+                } else {
+                    site
+                },
+            )),
             JobMetadata::Expansion {
                 target,
                 accepted: false,
@@ -17059,6 +17223,102 @@ fn building_claim_region(site: TilePos, building_type: BuildingType) -> Option<V
     Some(region)
 }
 
+/// Stable signature of the physical facts that can change a reserved footprint's
+/// shrine-access route. Quantities and moving cats are deliberately absent: only a
+/// claim, structure, designation, traversal unlock, road threshold, or terrain mutation
+/// can make a previously blocked construction route viable.
+fn construction_geometry_signature(colony: &ColonyRuntime, world_seed: u32) -> u64 {
+    let mut hash = farm_designation_geometry_signature(colony, world_seed);
+    let mut mix = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+    for building in &colony.buildings {
+        mix(building.id.as_bytes());
+        mix(building.building_type.as_str().as_bytes());
+        mix(&building.position.x.to_le_bytes());
+        mix(&building.position.y.to_le_bytes());
+        mix(&[building.construction_progress]);
+    }
+    for pile in colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local())
+    {
+        mix(pile.id.as_bytes());
+        mix(&pile.rect.x1.to_le_bytes());
+        mix(&pile.rect.y1.to_le_bytes());
+        mix(&pile.rect.x2.to_le_bytes());
+        mix(&pile.rect.y2.to_le_bytes());
+    }
+    let mut edges = staged_wall_fence_edges(colony)
+        .into_iter()
+        .collect::<Vec<_>>();
+    edges.sort_by_key(|edge| (edge.ax, edge.ay, edge.bx, edge.by));
+    for edge in edges {
+        mix(&edge.ax.to_le_bytes());
+        mix(&edge.ay.to_le_bytes());
+        mix(&edge.bx.to_le_bytes());
+        mix(&edge.by.to_le_bytes());
+    }
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    mix(&[u8::from(
+        effects.unlocked_capabilities.contains("mountain_travel"),
+    )]);
+    for tile in &colony.claimed_tiles {
+        mix(&tile.x.to_le_bytes());
+        mix(&tile.y.to_le_bytes());
+        if let Some(runtime) = colony.world_tiles.get(tile) {
+            mix(runtime.tile_type.as_str().as_bytes());
+            mix(&[
+                u8::from(runtime_decoration_cleared(runtime)),
+                u8::from(tile_has_paved_road(colony, *tile)),
+                u8::from(tile_forms_dirt_road(runtime)),
+            ]);
+        }
+    }
+    hash
+}
+
+fn cached_candidate_building_road_route(
+    colony: &ColonyRuntime,
+    site: TilePos,
+    building_type: BuildingType,
+    world_seed: u32,
+) -> Option<Vec<TilePos>> {
+    let signature = construction_geometry_signature(colony, world_seed);
+    let key = (signature, site.x, site.y, building_type.as_str().to_owned());
+    if let Some(cached) = colony
+        .decoration_cache
+        .construction_road_routes
+        .borrow()
+        .get(&key)
+        .cloned()
+    {
+        return cached;
+    }
+    #[cfg(test)]
+    colony.decoration_cache.construction_route_queries.set(
+        colony
+            .decoration_cache
+            .construction_route_queries
+            .get()
+            .saturating_add(1),
+    );
+    let route = candidate_building_road_route(colony, site, building_type, world_seed);
+    let mut cache = colony
+        .decoration_cache
+        .construction_road_routes
+        .borrow_mut();
+    cache.retain(|(cached_signature, ..), _| *cached_signature == signature);
+    cache.insert(key, route.clone());
+    route
+}
+
 fn claimed_building_site_is_ready(
     colony: &ColonyRuntime,
     site: TilePos,
@@ -17079,7 +17339,7 @@ fn claimed_building_site_is_ready(
                 !inside_village_interior(colony, *tile)
                     && tile_is_farmable(world_seed, *tile, colony.world_tiles.get(tile))
             }))
-        && candidate_building_road_route(colony, site, building_type, world_seed).is_some()
+        && cached_candidate_building_road_route(colony, site, building_type, world_seed).is_some()
 }
 
 /// Choose a deterministic future footprint for a site-less construction. The candidate's
@@ -17341,6 +17601,11 @@ fn harvest_fish(colony: &mut ColonyRuntime, site: TilePos, requested: f64) -> f6
 /// hard traversal rules used by phase 34.
 #[must_use]
 pub fn is_reachable_fishing_shore(colony: &ColonyRuntime, site: TilePos, world_seed: u32) -> bool {
+    #[cfg(test)]
+    colony
+        .decoration_cache
+        .water_route_queries
+        .set(colony.decoration_cache.water_route_queries.get() + 1);
     if !is_valid_fishing_shore(colony, site) {
         return false;
     }
@@ -17542,12 +17807,27 @@ fn logging_sites_near_village(colony: &ColonyRuntime, world_seed: u32) -> Vec<Wo
 }
 
 fn logging_scan_inputs(colony: &ColonyRuntime) -> (BTreeSet<TilePos>, BTreeSet<(i32, i32)>) {
+    let reserved_sites = colony
+        .jobs
+        .iter()
+        .filter(|job| {
+            job.kind == JobKind::GatherLogs
+                && matches!(job.status, JobStatus::Active | JobStatus::Queued)
+        })
+        .filter_map(|job| match job.metadata {
+            JobMetadata::Hauling { site, .. } => site,
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
     let candidates = colony
         .world_tiles
         .values()
         .filter(|tile| {
             tile_is_explored(colony, tile)
                 && !inside_village_interior(colony, tile.pos)
+                // Keep an in-flight tree reserved even if a regrowth pass clears
+                // its stump marker before the logger's remaining trips finish.
+                && !reserved_sites.contains(&tile.pos)
                 // A stump is explicitly felled. A paved road also means the tree was
                 // cleared: roads and terrain decorations currently share one overlay
                 // slot, so later road work may replace the visible stump marker.
@@ -17607,6 +17887,35 @@ fn water_sites_near_village(colony: &ColonyRuntime) -> Vec<WorldPos> {
         .collect::<Vec<_>>();
     sites.sort_by_key(|site| cheb_from_anchor(colony.anchor, *site));
     sites.into_iter().map(tile_pos_to_world).collect()
+}
+
+/// Resolve the dry bank tile where a water carrier physically works while preserving
+/// the adjacent water tile as the persisted source authority. Water itself remains
+/// impassable: every leg uses the first revealed, terrain-passable bank in stable
+/// N/E/S/W order, so restart and coarse/fine tick schedules cannot pick different shores.
+/// Full route validation happens once during dispatch; this hot-path lookup stays O(4).
+fn water_work_site(colony: &ColonyRuntime, water_source: TilePos) -> Option<TilePos> {
+    if !colony.revealed_tiles.contains(&water_source)
+        || !tile_has_water(colony.world_tiles.get(&water_source))
+    {
+        return None;
+    }
+    let mountain_travel = resolve_effects(colony.upgrade_tree.owned_node_ids.iter())
+        .unlocked_capabilities
+        .contains("mountain_travel");
+    [(0, -1), (1, 0), (0, 1), (-1, 0)]
+        .into_iter()
+        .map(|(dx, dy)| TilePos {
+            x: water_source.x + dx,
+            y: water_source.y + dy,
+        })
+        .find(|bank| {
+            is_valid_fishing_shore(colony, *bank)
+                && colony
+                    .world_tiles
+                    .get(bank)
+                    .is_some_and(|tile| tile.tile_type != TileType::Mountains || mountain_travel)
+        })
 }
 
 fn fishing_sites(colony: &ColonyRuntime) -> Vec<WorldPos> {
@@ -17765,11 +18074,18 @@ fn runnable_raw_material_bench(colony: &ColonyRuntime) -> Option<BuildingId> {
     let offering_in_flight = active_or_queued_jobs(colony)
         .iter()
         .any(|job| matches!(job.kind, JobKind::CarryOffering | JobKind::PerformOffering));
-    let offering_materials_reserve = if offering_in_flight {
-        OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
-    } else {
-        0.0
-    };
+    let essential_field_missing = colony
+        .buildings
+        .iter()
+        .filter(|building| building.building_type == BuildingType::Field && building.is_complete)
+        .count()
+        < FIELD_MIN_COUNT;
+    let offering_materials_reserve =
+        if offering_in_flight || (colony.resources.tools >= 1.0 && !essential_field_missing) {
+            OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
+        } else {
+            0.0
+        };
     let raw_spendable_materials = (colony.resources.materials
         - offering_materials_reserve
         - raw_chain_material_reserve(colony, offering_materials_reserve))
@@ -17786,7 +18102,7 @@ fn runnable_raw_material_bench(colony: &ColonyRuntime) -> Option<BuildingId> {
                     && colony.resources.planks < target_planks
             }
             BuildingType::StonePrep => {
-                raw_spendable_materials >= crate::production::WORKSHOP_MATERIALS_PER_CYCLE
+                colony.resources.stone >= crate::production::WORKSHOP_MATERIALS_PER_CYCLE
                     && colony.resources.blocks < target_blocks
             }
             _ => false,
@@ -17804,11 +18120,10 @@ fn runnable_raw_material_bench(colony: &ColonyRuntime) -> Option<BuildingId> {
 
 /// Additional material floor used only by the Forester's planks/blocks chain.
 ///
-/// Normal production preserves the full 30-material reachable-offering threshold.
-/// There is one bounded bootstrap exception: after the first tool leaves a balanced
-/// 5/5 half-batch, the two refineries may spend the 10-material offering portion to
-/// rebuild 6/6 and craft a second tool. They never cross the 20-material base reserve,
-/// and from tool two onward the full offering threshold is protected again.
+/// Normal production preserves the full 20-material reachable-offering threshold.
+/// Before the first Tool exists, the founding chain may bootstrap its 4/4 build buffer;
+/// once the Tool exists, callers pass the full dormant reserve as escrow and this helper
+/// never subtracts it a second time.
 fn raw_chain_material_reserve(colony: &ColonyRuntime, offering_materials_reserve: f64) -> f64 {
     if offering_materials_reserve > 0.0 {
         // The caller already subtracts the dispatched offering's full escrow.
@@ -17819,21 +18134,7 @@ fn raw_chain_material_reserve(colony: &ColonyRuntime, offering_materials_reserve
     if build_buffer_deficient {
         return 0.0;
     }
-    let followup_tool_half_batch = colony.resources.tools >= 1.0
-        && colony.resources.tools < 2.0
-        && colony.resources.planks >= TOOL_BUILD_MATERIAL_RESERVE + 1.0
-        && colony.resources.blocks >= TOOL_BUILD_MATERIAL_RESERVE + 1.0
-        && (colony.resources.planks
-            < construction_material_reserve(colony)
-                + crate::production::WOODWORKING_PLANKS_PER_CYCLE
-            || colony.resources.blocks
-                < construction_material_reserve(colony)
-                    + crate::production::WOODWORKING_BLOCKS_PER_CYCLE);
-    if followup_tool_half_batch {
-        OFFERING_MATERIALS_RESERVE
-    } else {
-        OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
-    }
+    OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
 }
 
 /// Release one excess leader-requested quarry paw for a runnable Forester bench.
@@ -18111,14 +18412,145 @@ fn due_active_jobs(colony: &ColonyRuntime, gate: TickGate) -> Vec<JobRuntime> {
         .collect()
 }
 
-/// Raw hide credited per unit of hunt food reward (P16/P19 clothing chain slice) — a
-/// direct byproduct, not hauled: hunts already haul their food reward via
-/// `Carrying` (which only ever carries one resource kind at a time), so rather than
-/// extend the hauling/trips model for a second resource, hide is simply credited to
-/// `colony.resources.hide` the moment a hunt completes. Keeps the tannery fed without
-/// touching the trip-based hauling system (out of scope here). Small on purpose —
-/// hide is a byproduct of hunting, not hunting's point.
+/// Raw hide produced per unit of hunt food reward. It is a separate final physical
+/// haul, never an aggregate completion credit.
 const HUNT_HIDE_YIELD_RATIO: f64 = 0.2;
+/// Usable bone returned per unit of hunt food. Bone is deliberately rarer than Hide
+/// and travels as its own final finite load so no Food, Hide, or Supplies is aliased.
+const HUNT_BONE_YIELD_RATIO: f64 = 0.1;
+/// Quarry rubble and usable general findings returned as stable legacy Supplies.
+/// This is deliberately a distinct fourth physical load after the three raw-Stone
+/// loads: `materials` keeps its Supplies identity and remains renewable without
+/// aliasing any Stone unit back into an old save field.
+const QUARRY_SUPPLIES_YIELD_RATIO: f64 = 1.0 / 3.0;
+
+/// Source jobs keep the historical three primary hauls. Hunts add Hide then Bone.
+/// Every quarry adds one positive rubble/Supplies haul; a full-mining mountain adds
+/// Ore as a fifth haul. Ordinary quarries therefore never pay the time or movement
+/// cost of an empty Ore trip. One-kind [`Carrying`] remains the finite authority for
+/// every positive output.
+fn source_cargo_trip_count(job: &JobRuntime, quarry_has_ore: bool) -> i32 {
+    match job.kind {
+        JobKind::HuntExpedition => HUNT_TRIP_COUNT + 2,
+        JobKind::Quarry if quarry_has_ore => HUNT_TRIP_COUNT + 2,
+        JobKind::Quarry => HUNT_TRIP_COUNT + 1,
+        _ => HUNT_TRIP_COUNT,
+    }
+}
+
+fn is_physical_source_job(kind: JobKind) -> bool {
+    matches!(
+        kind,
+        JobKind::HuntExpedition
+            | JobKind::Quarry
+            | JobKind::GatherLogs
+            | JobKind::Fish
+            | JobKind::FetchWater
+    )
+}
+
+/// A wall-clock deadline only makes the next source load due. It cannot skip the
+/// preceding physical trips or overwrite cargo still in a worker's paws. The final
+/// load is eligible only after every earlier load has been extracted and the living,
+/// empty-pawed worker has returned to the persisted source tile.
+fn source_job_ready_for_final_load(colony: &ColonyRuntime, job: &JobRuntime) -> bool {
+    let (Some(site), _, trips_done) = hauling_metadata(job) else {
+        return false;
+    };
+    let trip_count = source_cargo_trip_count(job, quarry_has_ore(colony, job));
+    if trips_done != (trip_count - 1) as u32 {
+        return false;
+    }
+    let Some(work_site) = (if job.kind == JobKind::FetchWater {
+        water_work_site(colony, site)
+    } else {
+        Some(site)
+    }) else {
+        return false;
+    };
+    job.assigned_cat.as_deref().is_some_and(|cat_id| {
+        colony.cats.iter().any(|cat| {
+            cat.id == cat_id
+                && cat.death_time.is_none()
+                && cat.activity == CatActivity::Working
+                && cat.carrying.is_none()
+                && world_pos_to_tile(position_to_world(colony.anchor, cat.position)) == work_site
+        })
+    })
+}
+
+/// `trips_done == trip_count` is the durable final-extraction marker. It is written
+/// after phase 29 creates the final [`Carrying`] load, allowing phase 30 to retire the
+/// job in the same tick without mistaking that newly occupied paw for an older load.
+fn mark_source_final_load_extracted(colony: &mut ColonyRuntime, job: &JobRuntime) {
+    let trip_count = source_cargo_trip_count(job, quarry_has_ore(colony, job)) as u32;
+    let Some(stored) = colony
+        .jobs
+        .iter_mut()
+        .find(|candidate| candidate.id == job.id)
+    else {
+        return;
+    };
+    if let JobMetadata::Hauling { trips_done, .. } = &mut stored.metadata {
+        *trips_done = trip_count;
+    }
+}
+
+fn source_final_load_was_extracted(colony: &ColonyRuntime, job: &JobRuntime) -> bool {
+    let Some(stored) = colony.jobs.iter().find(|candidate| candidate.id == job.id) else {
+        return false;
+    };
+    let (_, _, trips_done) = hauling_metadata(stored);
+    trips_done >= source_cargo_trip_count(stored, quarry_has_ore(colony, stored)).max(0) as u32
+}
+
+/// Ore eligibility is read from the already-persisted quarry site. Runtime world tiles
+/// preserve the generated Mountains surface exactly, so active jobs never regenerate a
+/// terrain chunk merely to learn a manifest property on every tick.
+fn quarry_has_ore(colony: &ColonyRuntime, job: &JobRuntime) -> bool {
+    quarry_has_ore_with(job, |site| {
+        colony
+            .world_tiles
+            .get(&site)
+            .is_some_and(|tile| tile.tile_type == TileType::Mountains)
+    })
+}
+
+fn quarry_has_ore_with(job: &JobRuntime, is_mountain: impl FnOnce(TilePos) -> bool) -> bool {
+    job.kind == JobKind::Quarry && hauling_metadata(job).0.is_some_and(is_mountain)
+}
+
+fn source_cargo_for_trip(
+    job: &JobRuntime,
+    total: f64,
+    trip_index: u32,
+    quarry_has_ore: bool,
+) -> (CarryingKind, f64) {
+    if trip_index < HUNT_TRIP_COUNT as u32 {
+        return (
+            carrying_kind_for_job(job.kind),
+            split_yield(total, HUNT_TRIP_COUNT, trip_index as i32),
+        );
+    }
+    match job.kind {
+        JobKind::HuntExpedition if trip_index == HUNT_TRIP_COUNT as u32 => {
+            (CarryingKind::Hide, total * HUNT_HIDE_YIELD_RATIO)
+        }
+        JobKind::HuntExpedition => (CarryingKind::Bone, total * HUNT_BONE_YIELD_RATIO),
+        JobKind::Quarry if trip_index == HUNT_TRIP_COUNT as u32 => {
+            (CarryingKind::Materials, total * QUARRY_SUPPLIES_YIELD_RATIO)
+        }
+        JobKind::Quarry => (
+            CarryingKind::Ore,
+            if quarry_has_ore {
+                total * QUARRY_ORE_YIELD_RATIO
+            } else {
+                0.0
+            },
+        ),
+        _ => (carrying_kind_for_job(job.kind), 0.0),
+    }
+}
 
 fn complete_hunt(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
     let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
@@ -18126,12 +18558,11 @@ fn complete_hunt(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
     };
     let (site, total_yield, trips_done) = hauling_metadata(job);
     let total = total_yield.unwrap_or_else(|| hunt_yield_for(&colony.cats[cat_index], colony));
-    let reward = remaining_yield(total, HUNT_TRIP_COUNT, trips_done as i32);
-    if let Some(site) = site {
+    let (kind, reward) = source_cargo_for_trip(job, total, trips_done, false);
+    if kind == CarryingKind::Food
+        && let Some(site) = site
+    {
         drain_hunt_site(colony, site, reward, gate.processed_through);
-    }
-    if reward > 0.0 {
-        colony.resources.hide += reward * HUNT_HIDE_YIELD_RATIO;
     }
 
     let cat = &mut colony.cats[cat_index];
@@ -18144,7 +18575,7 @@ fn complete_hunt(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) {
     );
     cat.stats.hunting = (cat.stats.hunting + 0.4).min(100.0);
     cat.carrying = (reward > 0.0).then_some(Carrying {
-        kind: CarryingKind::Food,
+        kind,
         amount: reward,
         job_ended_at: gate.processed_through,
         source_gather_spot: None,
@@ -18169,10 +18600,9 @@ fn complete_fixed_yield_job(
         debug_assert_eq!(total, base_yield_for_job(job.kind));
         total_yield_for_job(colony, job, cat_index, world_seed)
     });
-    let reward = remaining_yield(scaled_total, HUNT_TRIP_COUNT, trips_done as i32);
-    if job.kind == JobKind::Quarry {
-        credit_quarry_ore(colony, site, reward, world_seed);
-    }
+    let _ = kind;
+    let (cargo_kind, reward) =
+        source_cargo_for_trip(job, scaled_total, trips_done, quarry_has_ore(colony, job));
     if job.kind == JobKind::GatherLogs && reward > 0.0 {
         mark_logged_site(colony, site, gate.processed_through);
     }
@@ -18181,7 +18611,7 @@ fn complete_fixed_yield_job(
         cat.gain_skill(labor, SKILL_GAIN_PER_JOB);
     }
     cat.carrying = (reward > 0.0).then_some(Carrying {
-        kind,
+        kind: cargo_kind,
         amount: reward,
         job_ended_at: gate.processed_through,
         source_gather_spot: None,
@@ -18239,42 +18669,21 @@ fn complete_fibre_forage(colony: &mut ColonyRuntime, job: &JobRuntime, _gate: Ti
     }
 }
 
-/// Fraction of a completed quarry's materials reward that also comes back as raw ore,
+/// Fraction of a quarry's raw Stone reward that also comes back as a final physical Ore
+/// haul,
 /// when (and only when) the quarry site sits on a genuine Mountain biome
-/// ([`Mining::Full`] — never the stony-shore/rocky [`Mining::Trickle`] tiles). Mirrors
-/// [`HUNT_HIDE_YIELD_RATIO`]'s "byproduct credited directly to `resources`, not hauled
-/// separately" shape (P17/P19 ore→metal chain).
+/// ([`crate::climate::Mining::Full`] — never the stony-shore/rocky
+/// [`crate::climate::Mining::Trickle`] tiles). Mirrors
+/// [`HUNT_HIDE_YIELD_RATIO`]'s one-kind-at-a-time cargo shape (P17/P19 ore→metal chain).
 ///
-/// Checked once per completed quarry job, not per tick/per tile:
-/// [`tile_climate_biome`] regenerates a whole terrain chunk per call, so calling it from
-/// a hot per-tick or per-tile path would be a real perf hazard — a single lookup at job
-/// completion (a quarry job takes minutes) is cheap. Reaching a mountain quarry site at
-/// all already requires the `mountaineering` upgrade node (mountain tiles are otherwise
-/// impassable to pathfinding), so ore implicitly gates on that unlock too. A colony that
-/// never reaches the mountains never has a quarry site with `Mining::Full`, so
-/// `resources.ore` simply never moves off zero — additive/inert.
+/// Eligibility is read from the loaded/persisted site's coarse Mountains surface. Generated
+/// [`crate::climate::Mining::Full`] exists only on that Mountain biome, while
+/// stony-shore/rocky Trickle sites
+/// retain non-Mountains runtime surfaces. This avoids regenerating the site's terrain chunk on
+/// every active-job tick. Reaching a mountain quarry at all already requires the
+/// `mountaineering` upgrade node, so ore implicitly gates on that unlock too. A colony that never
+/// reaches the mountains never has an eligible site and `resources.ore` stays additive/inert.
 const QUARRY_ORE_YIELD_RATIO: f64 = 0.3;
-
-fn credit_quarry_ore(
-    colony: &mut ColonyRuntime,
-    site: Option<TilePos>,
-    reward: f64,
-    world_seed: u32,
-) {
-    if reward <= 0.0 {
-        return;
-    }
-    let Some(site) = site else {
-        return;
-    };
-    if tile_climate_biome(world_seed, site.x, site.y)
-        .properties()
-        .mining
-        == Mining::Full
-    {
-        colony.resources.ore += reward * QUARRY_ORE_YIELD_RATIO;
-    }
-}
 
 fn mark_logged_site(colony: &mut ColonyRuntime, site: Option<TilePos>, now_ms: i64) {
     let Some(site) = site else {
@@ -18764,7 +19173,7 @@ fn base_yield_for_job(kind: JobKind) -> f64 {
 /// (mirrors `tile_is_farmable`): the legacy coarse ground type
 /// (`Mountains`/`CaveEntrance` — the same signal `quarry_sites_near_village` uses
 /// to *discover* a site, so a discovered site always mines fully and the founding
-/// material economy never regresses) OR the fine per-tile climate biome's mining
+/// raw-Stone economy never regresses) OR the fine per-tile climate biome's mining
 /// rule (`Full` mountains, `Trickle` stony/gravel, `None` elsewhere). Taking the
 /// max means a legacy mountain is always full even when the fine biome under it is
 /// non-mining (e.g. a `Mountains` tile carved near the founding grass plateau),
@@ -18787,7 +19196,7 @@ fn quarry_yield_multiplier(colony: &ColonyRuntime, world_seed: u32, site: TilePo
 fn carrying_kind_for_job(kind: JobKind) -> CarryingKind {
     match kind {
         JobKind::FetchWater => CarryingKind::Water,
-        JobKind::Quarry => CarryingKind::Materials,
+        JobKind::Quarry => CarryingKind::Stone,
         JobKind::GatherLogs => CarryingKind::Logs,
         JobKind::Fish => CarryingKind::Fish,
         _ => CarryingKind::Food,
@@ -20534,6 +20943,7 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
         CarryingKind::Food => Some(ResourceKind::Food),
         CarryingKind::Fish => Some(ResourceKind::Fish),
         CarryingKind::Materials => Some(ResourceKind::Materials),
+        CarryingKind::Stone => Some(ResourceKind::Stone),
         CarryingKind::Refined => Some(ResourceKind::Refined),
         CarryingKind::Logs => Some(ResourceKind::Logs),
         CarryingKind::Lumber => Some(ResourceKind::Lumber),
@@ -20545,6 +20955,8 @@ fn carrying_resource_kind(kind: CarryingKind) -> Option<ResourceKind> {
         CarryingKind::Grain => Some(ResourceKind::Grain),
         CarryingKind::Flour => Some(ResourceKind::Flour),
         CarryingKind::Herbs => Some(ResourceKind::Herbs),
+        CarryingKind::Hide => Some(ResourceKind::Hide),
+        CarryingKind::Bone => Some(ResourceKind::Bone),
         CarryingKind::Ore => Some(ResourceKind::Ore),
         CarryingKind::Metal => Some(ResourceKind::Metal),
         CarryingKind::Blessings => None,
@@ -21289,6 +21701,7 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         CarryingKind::Food => ResourceKind::Food,
         CarryingKind::Fish => ResourceKind::Fish,
         CarryingKind::Materials => ResourceKind::Materials,
+        CarryingKind::Stone => ResourceKind::Stone,
         CarryingKind::Refined => ResourceKind::Refined,
         CarryingKind::Logs => ResourceKind::Logs,
         CarryingKind::Lumber => ResourceKind::Lumber,
@@ -21300,6 +21713,8 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
         CarryingKind::Grain => ResourceKind::Grain,
         CarryingKind::Flour => ResourceKind::Flour,
         CarryingKind::Herbs => ResourceKind::Herbs,
+        CarryingKind::Hide => ResourceKind::Hide,
+        CarryingKind::Bone => ResourceKind::Bone,
         CarryingKind::Ore => ResourceKind::Ore,
         CarryingKind::Metal => ResourceKind::Metal,
         CarryingKind::Blessings => {
@@ -21529,6 +21944,7 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
                 carrying.amount
             )
         }
+        CarryingKind::Stone => format!("{cat_id} hauled {} raw stone.", carrying.amount),
         CarryingKind::Refined => format!("{cat_id} hauled {} refined goods.", carrying.amount),
         CarryingKind::Logs => {
             format!("{cat_id} hauled {} logs to storage.", carrying.amount)
@@ -21546,6 +21962,8 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
         CarryingKind::Grain => format!("{cat_id} hauled {} grain.", carrying.amount),
         CarryingKind::Flour => format!("{cat_id} hauled {} flour.", carrying.amount),
         CarryingKind::Herbs => format!("{cat_id} hauled {} herbs.", carrying.amount),
+        CarryingKind::Hide => format!("{cat_id} hauled {} hide.", carrying.amount),
+        CarryingKind::Bone => format!("{cat_id} hauled {} bone.", carrying.amount),
         CarryingKind::Ore => format!("{cat_id} hauled {} ore.", carrying.amount),
         CarryingKind::Metal => format!("{cat_id} hauled {} metal bars.", carrying.amount),
         CarryingKind::Blessings => {
@@ -21557,11 +21975,10 @@ fn deposit_message(cat_id: &str, carrying: &Carrying) -> String {
     }
 }
 
-fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str, now_ms: i64) -> Option<TilePos> {
+fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str) -> Option<TilePos> {
     colony.jobs.iter().find_map(|job| {
         if job.status != JobStatus::Active
             || job.assigned_cat.as_deref() != Some(cat_id)
-            || job.ends_at.is_some_and(|ends_at| ends_at <= now_ms)
             || !matches!(
                 job.kind,
                 JobKind::HuntExpedition
@@ -21578,7 +21995,13 @@ fn active_site_for_carrier(colony: &ColonyRuntime, cat_id: &str, now_ms: i64) ->
                 site: Some(site),
                 accepted: true,
                 ..
-            } => Some(site),
+            } => {
+                if job.kind == JobKind::FetchWater {
+                    water_work_site(colony, site)
+                } else {
+                    Some(site)
+                }
+            }
             _ => None,
         }
     })
@@ -22187,6 +22610,8 @@ mod tests {
             grain: 1_000.0,
             flour: 1_000.0,
             materials: 1_000.0,
+            stone: 1_000.0,
+            bone: 1_000.0,
             refined: 1_000.0,
             weapons: 1_000.0,
             armor: 1_000.0,
@@ -22482,6 +22907,7 @@ mod tests {
         colony.resources.food = 200.0;
         colony.resources.water = 200.0;
         colony.resources.materials = 100.0;
+        colony.resources.stone = 100.0;
         colony.resources.planks = 0.0;
         colony.resources.blocks = 0.0;
         colony.resources.tools = 0.0;
@@ -22544,6 +22970,7 @@ mod tests {
         first_deposit_second: i64,
         first_tool_second: i64,
         materials_bits: u64,
+        stone_bits: u64,
         planks_bits: u64,
         blocks_bits: u64,
         tools_bits: u64,
@@ -22561,13 +22988,23 @@ mod tests {
         colony.jobs.clear();
         colony.resources.food = 200.0;
         colony.resources.water = 200.0;
-        colony.resources.materials = 0.0;
-        colony.resources.planks = 0.0;
-        colony.resources.blocks = 0.0;
+        // Supplies fund the independent Wood Cutter side; the signed quarry must
+        // physically source the Stone Prep side from an exactly empty raw-Stone store.
+        colony.resources.materials = 40.0;
+        colony.resources.stone = 0.0;
+        // Bank every non-Stone half of one tool recipe. The campaign isolates the
+        // missing final Block so its signed quarry is the sole enabling input.
+        colony.resources.planks =
+            TOOL_BUILD_MATERIAL_RESERVE + crate::production::WOODWORKING_PLANKS_PER_CYCLE;
+        colony.resources.blocks = TOOL_BUILD_MATERIAL_RESERVE
+            + crate::production::WOODWORKING_BLOCKS_PER_CYCLE
+            - crate::production::WORKSHOP_REFINED_PER_CYCLE;
         colony.resources.tools = 0.0;
+        colony.test_time_scale = 60.0;
         // Keep the sibling sawmill's logging faucet satisfied so the one reserved
-        // refinery paw proves the stone→plank/block→tool chain itself.
+        // refinery paw proves the quarry→Stone→Blocks→tool chain itself.
         colony.resources.logs = storage_caps(colony).logs;
+        reconcile_colony_stockpiles(colony);
         let center = shrine_center_tile(colony.anchor);
         // The mature-claim helper intentionally clears its expansion square to safe
         // meadow. Seed one scout-discovered, unoccupied edge tile as mountains; all
@@ -22610,10 +23047,10 @@ mod tests {
         );
 
         let mut saw_real_quarry_job = false;
-        let mut saw_returning_materials = false;
+        let mut saw_returning_stone = false;
         let mut first_deposit_second = None;
         let mut first_tool_second = None;
-        for second in 1..=15_000_i64 {
+        for second in 1..=1_200_i64 {
             let reports = world_tick(&mut world, 10_000 + second * 1_000);
             assert_eq!(reports[0].reset_reason, None, "second {second}");
             let colony = &world.colonies[0];
@@ -22621,14 +23058,14 @@ mod tests {
                 job.kind == JobKind::Quarry
                     && matches!(job.status, JobStatus::Queued | JobStatus::Active)
             });
-            saw_returning_materials |= colony.cats.iter().any(|cat| {
+            saw_returning_stone |= colony.cats.iter().any(|cat| {
                 cat.death_time.is_none()
                     && cat.activity == CatActivity::Returning
                     && cat.carrying.as_ref().is_some_and(|cargo| {
-                        cargo.kind == CarryingKind::Materials && cargo.amount > 0.0
+                        cargo.kind == CarryingKind::Stone && cargo.amount > 0.0
                     })
             });
-            if colony.resources.materials > 0.0 && first_deposit_second.is_none() {
+            if colony.resources.stone > 0.0 && first_deposit_second.is_none() {
                 first_deposit_second = Some(second);
             }
             if colony.resources.tools > 0.0 {
@@ -22637,11 +23074,12 @@ mod tests {
             }
         }
 
-        let deposit = first_deposit_second.expect("quarriers never returned material to storage");
+        let deposit = first_deposit_second.expect("quarriers never returned Stone to storage");
         let tool = first_tool_second.unwrap_or_else(|| {
             let colony = &world.colonies[0];
             panic!(
-                "returned quarry material never became a tool: materials={:.1} planks={:.1} blocks={:.1} jobs={:?} benches={:?}",
+                "returned quarry Stone never became a tool: stone={:.1} supplies={:.1} planks={:.1} blocks={:.1} jobs={:?} benches={:?}",
+                colony.resources.stone,
                 colony.resources.materials,
                 colony.resources.planks,
                 colony.resources.blocks,
@@ -22669,10 +23107,10 @@ mod tests {
             "campaign never entered the real Quarry job path"
         );
         assert!(
-            saw_returning_materials,
-            "campaign never observed physical material cargo returning"
+            saw_returning_stone,
+            "campaign never observed physical Stone cargo returning"
         );
-        assert!(deposit < tool && tool <= 15_000);
+        assert!(deposit < tool && tool <= 1_200);
         let colony = &world.colonies[0];
         assert!(colony.resources.tools >= 1.0);
         QuarryToolOutcome {
@@ -22680,6 +23118,7 @@ mod tests {
             first_deposit_second: deposit,
             first_tool_second: tool,
             materials_bits: colony.resources.materials.to_bits(),
+            stone_bits: colony.resources.stone.to_bits(),
             planks_bits: colony.resources.planks.to_bits(),
             blocks_bits: colony.resources.blocks.to_bits(),
             tools_bits: colony.resources.tools.to_bits(),
@@ -22700,7 +23139,7 @@ mod tests {
     }
 
     #[test]
-    fn real_quarry_return_funds_a_non_starter_tool_at_live_cadence_deterministically() {
+    fn signed_quarry_return_funds_a_non_starter_tool_at_one_second_cadence_deterministically() {
         let left = run_real_quarry_to_tool_campaign(4242);
         let right = run_real_quarry_to_tool_campaign(4242);
         assert_eq!(left, right, "identical live-cadence campaigns diverged");
@@ -22778,6 +23217,8 @@ mod tests {
                     grain: 0.0,
                     flour: 0.0,
                     materials: 0.0,
+                    stone: 0.0,
+                    bone: 0.0,
                     refined: 0.0,
                     weapons: 0.0,
                     armor: 0.0,
@@ -22861,6 +23302,8 @@ mod tests {
                     grain: 0.0,
                     flour: 0.0,
                     materials: 24.0,
+                    stone: 0.0,
+                    bone: 0.0,
                     refined: 0.0,
                     weapons: 0.0,
                     armor: 0.0,
@@ -23209,7 +23652,7 @@ mod tests {
                 site: Some(pos(20, 6)),
                 total_yield: Some(10.0),
                 trips_done: 1,
-                next_trip_at: Some(6_000),
+                next_trip_at: Some(3_600),
                 accepted: true,
             }
         );
@@ -23348,10 +23791,10 @@ mod tests {
         let seed = 42;
         let mountain = pos(200, 573);
         assert_eq!(
-            tile_climate_biome(seed, mountain.x, mountain.y)
+            crate::terrain_gen::tile_climate_biome(seed, mountain.x, mountain.y)
                 .properties()
                 .mining,
-            Mining::Full
+            crate::climate::Mining::Full
         );
         let cat = adult_idle_cat("worker", "colony-1");
         let control = ColonyRuntime {
@@ -23587,9 +24030,10 @@ mod tests {
 
     #[test]
     fn completing_a_hunt_grants_hunt_skill_deterministically() {
-        // trips_done at the last trip so only completion runs (grants Hunt, not Haul).
-        let mut a = hauling_hunt_world(HUNT_TRIP_COUNT as u32 - 1, 1_000);
-        let mut b = hauling_hunt_world(HUNT_TRIP_COUNT as u32 - 1, 1_000);
+        // Hunts add Hide then Bone after their three Food loads. Put the job at
+        // that final physical Bone load so completion grants Hunt, not Haul.
+        let mut a = hauling_hunt_world(HUNT_TRIP_COUNT as u32 + 1, 1_000);
+        let mut b = hauling_hunt_world(HUNT_TRIP_COUNT as u32 + 1, 1_000);
         let _ = world_tick(&mut a, 3_000);
         let _ = world_tick(&mut b, 3_000);
 
@@ -24680,6 +25124,8 @@ mod tests {
                     grain: 0.0,
                     flour: 0.0,
                     materials: 99.0,
+                    stone: 0.0,
+                    bone: 0.0,
                     refined: 4.0,
                     weapons: 5.0,
                     armor: 6.0,
@@ -26255,7 +26701,7 @@ mod tests {
 
     // ---- P12.6 Steward auto-placed gather spots ----
 
-    /// A qualifying `Quarry` (materials) job pair: two active jobs both resolved to `site`,
+    /// A qualifying `Quarry` (raw Stone) job pair: two active jobs both resolved to `site`,
     /// mirroring how phase 15 gives every concurrent quarry job the same nearest-site target.
     fn quarry_pair_at(site: TilePos) -> Vec<JobRuntime> {
         (0..AUTO_GATHER_SPOT_MIN_WORKERS)
@@ -27097,7 +27543,7 @@ mod tests {
 
         assert_eq!(colony.gather_spots.len(), 1, "one spot auto-designated");
         let spot = &colony.gather_spots[0];
-        assert_eq!(spot.kind, ResourceKind::Materials);
+        assert_eq!(spot.kind, ResourceKind::Stone);
         assert!(spot.stockpile_id.starts_with("gather-auto-"));
         let pile = colony
             .stockpiles
@@ -27112,7 +27558,7 @@ mod tests {
             "placed adjacent to the site, biased toward the village"
         );
         assert_eq!(pile.accepts.len(), 1);
-        assert!(pile.accepts.contains(&ResourceKind::Materials));
+        assert!(pile.accepts.contains(&ResourceKind::Stone));
     }
 
     #[test]
@@ -27764,6 +28210,25 @@ mod tests {
             .expect("seeded storehouse")
             .center();
         colony.cats[0].position = position_from_world(WorldPos { x, y });
+    }
+
+    fn add_completed_field_floor(colony: &mut ColonyRuntime) {
+        for index in 0..FIELD_MIN_COUNT {
+            colony.buildings.push(BuildingRuntime {
+                id: format!("physical-field-floor-{index}"),
+                building_type: BuildingType::Field,
+                level: 1,
+                position: pos(40 + index as i32 * 4, 40),
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 0.0,
+                assigned_cat: None,
+                automated_by: None,
+                production_queue: default_production_queue(BuildingType::Field),
+                production_paused: false,
+                construction_cargo: None,
+            });
+        }
     }
 
     fn deliver_station_cargo_to_current_target(colony: &mut ColonyRuntime) {
@@ -30059,6 +30524,7 @@ mod tests {
         let site = TilePos { x: 20, y: 20 };
         let mut cat = adult_idle_cat("forester", "colony-1");
         cat.activity = CatActivity::Working;
+        cat.position = position_from_world(tile_pos_to_world(site));
         let job = JobRuntime {
             id: "logging-1".to_owned(),
             kind: JobKind::GatherLogs,
@@ -30071,7 +30537,7 @@ mod tests {
             metadata: JobMetadata::Hauling {
                 site: Some(site),
                 total_yield: Some(LOGGING_TOTAL_YIELD),
-                trips_done: 0,
+                trips_done: HUNT_TRIP_COUNT as u32 - 1,
                 next_trip_at: None,
                 accepted: true,
             },
@@ -30094,7 +30560,10 @@ mod tests {
         );
         let carrying = colony.cats[0].carrying.clone().expect("logs are hauled");
         assert_eq!(carrying.kind, CarryingKind::Logs);
-        assert_eq!(carrying.amount, LOGGING_TOTAL_YIELD);
+        assert_eq!(
+            carrying.amount,
+            LOGGING_TOTAL_YIELD / f64::from(HUNT_TRIP_COUNT)
+        );
         assert_eq!(
             colony.world_tiles[&site].overlay_feature.as_deref(),
             Some("stump")
@@ -30102,9 +30571,103 @@ mod tests {
 
         let destination = tile_pos_to_world(colony.anchor);
         credit_carrying(&mut colony, &carrying, destination);
-        assert_eq!(colony.resources.logs, LOGGING_TOTAL_YIELD);
+        assert_eq!(
+            colony.resources.logs,
+            LOGGING_TOTAL_YIELD / f64::from(HUNT_TRIP_COUNT)
+        );
         assert_eq!(colony.resources.materials, 0.0);
         assert_eq!(colony.resources.planks, 0.0);
+    }
+
+    #[test]
+    fn first_logging_trip_depletes_the_tree_and_death_or_cancel_cannot_retarget_it() {
+        let seed = 0_u32;
+        let generated = crate::terrain_gen::generate_terrain_chunk(
+            0,
+            0,
+            i64::from(seed),
+            crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
+        );
+        let site = generated
+            .iter()
+            .find(|tile| {
+                matches!(
+                    crate::terrain_gen::derive_biome_decoration(
+                        tile.x,
+                        tile.y,
+                        i64::from(seed),
+                        tile.climate_biome,
+                    ),
+                    Some(crate::terrain_gen::DecorationRole::Tree { .. })
+                )
+            })
+            .map(|tile| pos(tile.x, tile.y))
+            .expect("deterministic chunk contains a tree");
+        let anchor = pos(site.x + VILLAGE_START_RADIUS + 2, site.y);
+        let mut cat = adult_idle_cat("logger", "colony-1");
+        cat.activity = CatActivity::Working;
+        cat.position = position_from_world(tile_pos_to_world(site));
+        let job = JobRuntime {
+            id: "logging-partial".to_owned(),
+            kind: JobKind::GatherLogs,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Leader,
+            assigned_cat: Some(cat.id.clone()),
+            duration_ms: 9_000,
+            created_at: 0,
+            started_at: Some(0),
+            ends_at: Some(9_000),
+            metadata: JobMetadata::Hauling {
+                site: Some(site),
+                total_yield: Some(LOGGING_TOTAL_YIELD),
+                trips_done: 0,
+                next_trip_at: Some(3_000),
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        };
+        let mut base = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            anchor,
+            cats: vec![cat],
+            jobs: vec![job],
+            world_tiles: BTreeMap::from([(site, tile(site.x, site.y, 63, None))]),
+            revealed_tiles: BTreeSet::from([site]),
+            ..ColonyRuntime::default()
+        };
+
+        phase_31_mid_job_hauling(&mut base, production_gate(3, 3_000), seed);
+        let first_load = base.cats[0].carrying.as_ref().expect("first log load");
+        assert_eq!(first_load.amount, LOGGING_TOTAL_YIELD / 3.0);
+        assert_eq!(
+            base.world_tiles[&site].overlay_feature.as_deref(),
+            Some("stump"),
+            "the finite source is depleted at first extraction"
+        );
+
+        // Even if a future Forester-regrowth pass removes the visible stump too
+        // early, the active job reservation keeps the source unavailable.
+        base.world_tiles.get_mut(&site).unwrap().overlay_feature = None;
+        assert!(logging_sites_near_village(&base, seed).is_empty());
+        base.world_tiles.get_mut(&site).unwrap().overlay_feature = Some("stump".to_owned());
+
+        let mut cancelled = base.clone();
+        assert_eq!(
+            cancel_jobs(&mut cancelled, 4_000, JobKind::GatherLogs, false),
+            1
+        );
+        assert!(logging_sites_near_village(&cancelled, seed).is_empty());
+
+        let mut dead = base;
+        dead.cats[0].death_time = Some(4_000);
+        cancel_cat_jobs(&mut dead, "logger", 4_000);
+        assert_eq!(dead.jobs[0].status, JobStatus::Cancelled);
+        assert!(logging_sites_near_village(&dead, seed).is_empty());
+        assert_eq!(
+            dead.cats[0].carrying.as_ref().unwrap().amount,
+            LOGGING_TOTAL_YIELD / 3.0,
+            "cancellation creates no replacement full yield"
+        );
     }
 
     #[test]
@@ -30353,18 +30916,20 @@ mod tests {
     }
 
     #[test]
-    fn stone_prep_dresses_materials_into_blocks_when_staffed() {
+    fn stone_prep_dresses_stone_without_debiting_legacy_supplies() {
         let mut colony = chain_colony(
             BuildingType::StonePrep,
             Resources {
-                materials: 50.0,
+                materials: 37.0,
+                stone: 50.0,
                 ..Resources::default()
             },
             true,
         );
         phase_23_production(&mut colony, production_gate(30, 30_000), 123);
         assert_eq!(colony.resources.blocks, 1.0);
-        assert_eq!(colony.resources.materials, 45.0);
+        assert_eq!(colony.resources.stone, 45.0);
+        assert_eq!(colony.resources.materials, 37.0);
     }
 
     // --- P17/P19 ore -> metal chain ---
@@ -30372,7 +30937,7 @@ mod tests {
     #[test]
     fn smelter_refines_ore_into_metal_when_staffed() {
         // Staffed: 590 + 30 >= 600 completes one cycle -> 5 ore become 1 metal bar,
-        // mirroring stone_prep_dresses_materials_into_blocks_when_staffed exactly.
+        // mirroring stone_prep_dresses_stone_without_debiting_legacy_supplies exactly.
         let mut colony = chain_colony(
             BuildingType::Smelter,
             Resources {
@@ -31091,7 +31656,7 @@ mod tests {
     #[test]
     fn a_colony_with_no_smelter_building_never_produces_metal_even_with_banked_ore() {
         // Additive/inert guardrail: `resources.ore` can only ever move (via
-        // `credit_quarry_ore`) into `resources.metal` through an actual Smelter
+        // physical quarry cargo into `resources.metal` through an actual Smelter
         // building. A colony that banked ore but never built one must see it sit
         // completely untouched through production.
         let mut colony = chain_colony(
@@ -31114,12 +31679,12 @@ mod tests {
         );
     }
 
-    /// Find one tile whose [`Mining`] rule does/doesn't match `wants_full`, for a given
+    /// Find one tile whose [`crate::climate::Mining`] rule does/doesn't match `wants_full`, for a given
     /// `world_seed`. Scans whole terrain chunks via `generate_terrain_chunk` (144 tiles
     /// per call) rather than `tile_climate_biome` tile-by-tile — `tile_climate_biome`
     /// regenerates its owning chunk on *every single call*, so a naive per-tile scan
     /// over any real search area is a perf trap (this is exactly the hazard flagged for
-    /// `credit_quarry_ore`: never do this from a hot per-tick/per-tile path). A test-only
+    /// Ore source scheduling: never do this from a hot per-tick/per-tile path). A test-only
     /// helper scanning a bounded chunk grid once is fine.
     fn find_mining_site(world_seed: u32, wants_full: bool) -> TilePos {
         for chunk_x in -12..=12 {
@@ -31131,7 +31696,8 @@ mod tests {
                     crate::terrain_gen::WORLD_TERRAIN_OPTIONS,
                 );
                 if let Some(tile) = tiles.iter().find(|tile| {
-                    (tile.climate_biome.properties().mining == Mining::Full) == wants_full
+                    (tile.climate_biome.properties().mining == crate::climate::Mining::Full)
+                        == wants_full
                 }) {
                     return TilePos {
                         x: tile.x,
@@ -31144,7 +31710,89 @@ mod tests {
     }
 
     #[test]
-    fn quarry_completion_credits_ore_only_on_a_genuine_mountain_biome_site() {
+    fn quarry_ore_manifest_reads_the_persisted_site_without_terrain_regeneration() {
+        let site = TilePos {
+            x: 987_654,
+            y: -456_789,
+        };
+        let job = JobRuntime {
+            kind: JobKind::Quarry,
+            status: JobStatus::Active,
+            metadata: JobMetadata::Hauling {
+                site: Some(site),
+                total_yield: Some(QUARRY_TOTAL_YIELD),
+                trips_done: 0,
+                next_trip_at: None,
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        };
+        let mut colony = ColonyRuntime::default();
+        colony
+            .world_tiles
+            .insert(site, typed_tile(site.x, site.y, TileType::Mountains));
+        assert!(quarry_has_ore(&colony, &job));
+        assert_eq!(source_cargo_trip_count(&job, true), HUNT_TRIP_COUNT + 2);
+
+        colony.world_tiles.get_mut(&site).unwrap().tile_type = TileType::CaveEntrance;
+        assert!(!quarry_has_ore(&colony, &job));
+        assert_eq!(source_cargo_trip_count(&job, false), HUNT_TRIP_COUNT + 1);
+    }
+
+    #[test]
+    fn quarry_timer_hot_path_probes_only_active_persisted_sites() {
+        use std::cell::Cell;
+
+        let active_site = TilePos { x: 4, y: 5 };
+        let queued_site = TilePos { x: 6, y: 7 };
+        let hauling = |site| JobMetadata::Hauling {
+            site: Some(site),
+            total_yield: None,
+            trips_done: 0,
+            next_trip_at: None,
+            accepted: true,
+        };
+        let colony = ColonyRuntime {
+            jobs: vec![
+                JobRuntime {
+                    kind: JobKind::Quarry,
+                    status: JobStatus::Active,
+                    metadata: hauling(active_site),
+                    ..JobRuntime::default()
+                },
+                JobRuntime {
+                    kind: JobKind::Quarry,
+                    status: JobStatus::Queued,
+                    metadata: hauling(queued_site),
+                    ..JobRuntime::default()
+                },
+                JobRuntime {
+                    kind: JobKind::HuntExpedition,
+                    status: JobStatus::Active,
+                    metadata: hauling(TilePos { x: 8, y: 9 }),
+                    ..JobRuntime::default()
+                },
+            ],
+            // A large streamed map must be irrelevant to the active source clock.
+            world_tiles: (0..10_000)
+                .map(|x| {
+                    let site = TilePos { x, y: -100 };
+                    (site, typed_tile(site.x, site.y, TileType::Mountains))
+                })
+                .collect(),
+            ..ColonyRuntime::default()
+        };
+        let probes = Cell::new(0_u32);
+        let eligible = quarry_has_ore_with(&colony.jobs[0], |site| {
+            probes.set(probes.get() + 1);
+            site == active_site
+        });
+        assert_eq!(probes.get(), 1, "only the one active quarry site is read");
+        assert!(eligible);
+    }
+
+    #[test]
+    fn quarry_rubble_is_physical_and_only_mountains_add_an_ore_trip() {
         // Pick a world seed/tile pair where the site is a true Mountains biome
         // (Mining::Full) versus one that reliably is not, and drive `phase_29` through
         // a completed quarry job at each site to prove the ore byproduct only ever
@@ -31154,6 +31802,11 @@ mod tests {
         let non_mountain_site = find_mining_site(world_seed, false);
 
         for (site, expect_ore) in [(mountain_site, true), (non_mountain_site, false)] {
+            let final_trip_index = if expect_ore {
+                HUNT_TRIP_COUNT as u32 + 1
+            } else {
+                HUNT_TRIP_COUNT as u32
+            };
             let mut colony = ColonyRuntime {
                 id: "colony-1".to_owned(),
                 resources: Resources::default(),
@@ -31168,7 +31821,7 @@ mod tests {
                     metadata: JobMetadata::Hauling {
                         site: Some(site),
                         total_yield: Some(QUARRY_TOTAL_YIELD),
-                        trips_done: (HUNT_TRIP_COUNT - 1) as u32,
+                        trips_done: final_trip_index,
                         next_trip_at: None,
                         accepted: true,
                     },
@@ -31178,7 +31831,29 @@ mod tests {
                 test_rng_seed: Some(1),
                 ..ColonyRuntime::default()
             };
+            colony.world_tiles.insert(
+                site,
+                typed_tile(
+                    site.x,
+                    site.y,
+                    if expect_ore {
+                        TileType::Mountains
+                    } else {
+                        TileType::CaveEntrance
+                    },
+                ),
+            );
             colony.cats[0].activity = CatActivity::Working;
+            colony.cats[0].position = position_from_world(tile_pos_to_world(site));
+            assert_eq!(
+                source_cargo_trip_count(&colony.jobs[0], quarry_has_ore(&colony, &colony.jobs[0])),
+                if expect_ore {
+                    HUNT_TRIP_COUNT + 2
+                } else {
+                    HUNT_TRIP_COUNT + 1
+                },
+                "only a positive persisted-site byproduct may add work"
+            );
 
             phase_29_due_completion_gathering_explore_expansion(
                 &mut colony,
@@ -31186,18 +31861,297 @@ mod tests {
                 world_seed,
             );
 
+            assert_eq!(
+                colony.resources.ore, 0.0,
+                "ore cannot credit before delivery"
+            );
             if expect_ore {
-                assert!(
-                    colony.resources.ore > 0.0,
-                    "mountain quarry site {site:?} should credit ore"
-                );
+                let carrying = colony.cats[0]
+                    .carrying
+                    .as_ref()
+                    .expect("mountain ore is physical cargo");
+                assert_eq!(carrying.kind, CarryingKind::Ore);
+                assert!(carrying.amount > 0.0);
             } else {
+                let carrying = colony.cats[0]
+                    .carrying
+                    .as_ref()
+                    .expect("ordinary quarry completes with physical rubble Supplies");
+                assert_eq!(carrying.kind, CarryingKind::Materials);
                 assert_eq!(
-                    colony.resources.ore, 0.0,
-                    "non-mountain quarry site {site:?} should never credit ore"
+                    carrying.amount,
+                    QUARRY_TOTAL_YIELD * QUARRY_SUPPLIES_YIELD_RATIO
                 );
             }
         }
+    }
+
+    #[test]
+    fn quarry_and_hunt_source_outputs_are_physical_before_aggregate_credit() {
+        let site = TilePos { x: 20, y: 6 };
+        let mut quarry_colony = ColonyRuntime {
+            id: "source-cargo".to_owned(),
+            cats: vec![adult_idle_cat("quarrier", "source-cargo")],
+            jobs: vec![JobRuntime {
+                id: "quarry".to_owned(),
+                kind: JobKind::Quarry,
+                status: JobStatus::Active,
+                assigned_cat: Some("quarrier".to_owned()),
+                metadata: JobMetadata::Hauling {
+                    site: Some(site),
+                    total_yield: Some(9.0),
+                    trips_done: 2,
+                    next_trip_at: None,
+                    accepted: true,
+                },
+                ..JobRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+        quarry_colony.cats[0].activity = CatActivity::Working;
+        let quarry_job = quarry_colony.jobs[0].clone();
+        complete_fixed_yield_job(
+            &mut quarry_colony,
+            &quarry_job,
+            production_gate(0, 1_000),
+            QUARRY_TOTAL_YIELD,
+            CarryingKind::Stone,
+            777,
+        );
+        assert_eq!(quarry_colony.resources.stone, 0.0);
+        let stone = quarry_colony.cats[0]
+            .carrying
+            .clone()
+            .expect("raw Stone exists in the quarrier's paws");
+        assert_eq!(stone.kind, CarryingKind::Stone);
+        assert_eq!(stone.amount, 3.0);
+
+        quarry_colony.stockpiles.push(designated_pile(
+            "stone-store",
+            tile_rect(20, 6),
+            &[ResourceKind::Stone],
+        ));
+        assert_eq!(
+            credit_carrying(&mut quarry_colony, &stone, tile_pos_to_world(site)),
+            0.0
+        );
+        assert_eq!(quarry_colony.resources.stone, 3.0);
+        assert_eq!(quarry_colony.resources.materials, 0.0);
+
+        quarry_colony.cats[0].carrying = None;
+        quarry_colony.jobs[0].metadata = JobMetadata::Hauling {
+            site: Some(site),
+            total_yield: Some(9.0),
+            trips_done: HUNT_TRIP_COUNT as u32,
+            next_trip_at: None,
+            accepted: true,
+        };
+        let rubble_job = quarry_colony.jobs[0].clone();
+        complete_fixed_yield_job(
+            &mut quarry_colony,
+            &rubble_job,
+            production_gate(0, 2_000),
+            QUARRY_TOTAL_YIELD,
+            CarryingKind::Stone,
+            777,
+        );
+        assert_eq!(quarry_colony.resources.materials, 0.0);
+        let supplies = quarry_colony.cats[0]
+            .carrying
+            .clone()
+            .expect("quarry rubble exists in the quarrier's paws");
+        assert_eq!(supplies.kind, CarryingKind::Materials);
+        assert_eq!(supplies.amount, 3.0);
+        quarry_colony.stockpiles.push(designated_pile(
+            "supplies-store",
+            tile_rect(21, 6),
+            &[ResourceKind::Materials],
+        ));
+        assert_eq!(
+            credit_carrying(&mut quarry_colony, &supplies, WorldPos { x: 21.0, y: 6.0 }),
+            0.0
+        );
+        assert_eq!(quarry_colony.resources.materials, 3.0);
+
+        let mut hunt_colony = ColonyRuntime {
+            id: "hunt-cargo".to_owned(),
+            cats: vec![adult_idle_cat("hunter", "hunt-cargo")],
+            jobs: vec![JobRuntime {
+                id: "hunt".to_owned(),
+                kind: JobKind::HuntExpedition,
+                status: JobStatus::Active,
+                assigned_cat: Some("hunter".to_owned()),
+                metadata: JobMetadata::Hauling {
+                    site: Some(site),
+                    total_yield: Some(10.0),
+                    trips_done: HUNT_TRIP_COUNT as u32,
+                    next_trip_at: None,
+                    accepted: true,
+                },
+                ..JobRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+        hunt_colony.cats[0].activity = CatActivity::Working;
+        let hunt_job = hunt_colony.jobs[0].clone();
+        complete_hunt(&mut hunt_colony, &hunt_job, production_gate(0, 1_000));
+        assert_eq!(hunt_colony.resources.hide, 0.0);
+        let hide = hunt_colony.cats[0]
+            .carrying
+            .as_ref()
+            .expect("Hide exists as a separate final haul");
+        assert_eq!(hide.kind, CarryingKind::Hide);
+        assert_eq!(hide.amount, 2.0);
+
+        hunt_colony.cats[0].carrying = None;
+        hunt_colony.jobs[0].metadata = JobMetadata::Hauling {
+            site: Some(site),
+            total_yield: Some(10.0),
+            trips_done: HUNT_TRIP_COUNT as u32 + 1,
+            next_trip_at: None,
+            accepted: true,
+        };
+        let bone_job = hunt_colony.jobs[0].clone();
+        complete_hunt(&mut hunt_colony, &bone_job, production_gate(0, 2_000));
+        assert_eq!(hunt_colony.resources.bone, 0.0);
+        let bone = hunt_colony.cats[0]
+            .carrying
+            .as_ref()
+            .expect("Bone exists as a separate final haul");
+        assert_eq!(bone.kind, CarryingKind::Bone);
+        assert_eq!(bone.amount, 1.0);
+    }
+
+    #[test]
+    fn source_cargo_survives_death_and_full_destination_without_aliasing_supplies() {
+        let mut colony = ColonyRuntime {
+            id: "conservation".to_owned(),
+            cats: vec![adult_idle_cat("carrier", "conservation")],
+            resources: Resources {
+                materials: 13.0,
+                ..Resources::default()
+            },
+            stockpiles: vec![designated_pile(
+                "full-stone",
+                tile_rect(20, 6),
+                &[ResourceKind::Stone],
+            )],
+            jobs: vec![JobRuntime {
+                id: "cancelled-source".to_owned(),
+                kind: JobKind::Quarry,
+                status: JobStatus::Active,
+                assigned_cat: Some("carrier".to_owned()),
+                ..JobRuntime::default()
+            }],
+            ..ColonyRuntime::default()
+        };
+        colony.stockpiles[0].contents.stone = 100.0;
+        colony.cats[0].position = position_from_world(WorldPos { x: 30.0, y: 30.0 });
+        colony.cats[0].carrying = Some(Carrying {
+            kind: CarryingKind::Stone,
+            amount: 4.0,
+            job_ended_at: 1_000,
+            source_gather_spot: None,
+        });
+        let cargo = colony.cats[0].carrying.clone().unwrap();
+        assert_eq!(
+            credit_carrying(&mut colony, &cargo, WorldPos { x: 20.0, y: 6.0 }),
+            4.0
+        );
+        assert_eq!(colony.resources.stone, 0.0);
+        assert_eq!(colony.resources.materials, 13.0);
+
+        mark_cat_dead(&mut colony, "carrier", 2_000);
+        let corpse_cargo = colony.cats[0]
+            .carrying
+            .as_ref()
+            .expect("finite source cargo remains on the corpse");
+        assert_eq!(corpse_cargo.kind, CarryingKind::Stone);
+        assert_eq!(corpse_cargo.amount, 4.0);
+        assert_eq!(colony.jobs[0].status, JobStatus::Cancelled);
+        assert_eq!(colony.resources.stone, 0.0);
+        assert_eq!(colony.resources.materials, 13.0);
+    }
+
+    #[test]
+    fn overdue_source_deadline_defers_completion_until_every_physical_load_exists() {
+        fn run() -> (ColonyRuntime, Vec<Carrying>) {
+            let site = TilePos { x: 20, y: 6 };
+            let mut colony = ColonyRuntime {
+                id: "coarse-source".to_owned(),
+                cats: vec![adult_idle_cat("quarrier", "coarse-source")],
+                jobs: vec![JobRuntime {
+                    id: "overdue-quarry".to_owned(),
+                    kind: JobKind::Quarry,
+                    status: JobStatus::Active,
+                    assigned_cat: Some("quarrier".to_owned()),
+                    started_at: Some(0),
+                    ends_at: Some(1_000),
+                    metadata: JobMetadata::Hauling {
+                        site: Some(site),
+                        total_yield: Some(QUARRY_TOTAL_YIELD),
+                        trips_done: 0,
+                        next_trip_at: Some(250),
+                        accepted: true,
+                    },
+                    ..JobRuntime::default()
+                }],
+                ..ColonyRuntime::default()
+            };
+            colony.cats[0].activity = CatActivity::Working;
+            colony.cats[0].position = position_from_world(tile_pos_to_world(site));
+            colony
+                .world_tiles
+                .insert(site, typed_tile(site.x, site.y, TileType::CaveEntrance));
+
+            let mut loads = Vec::new();
+            for step in 0..4_i64 {
+                let gate = production_gate(5, 5_000 + step * 5_000);
+                phase_29_due_completion_gathering_explore_expansion(&mut colony, gate, 42);
+                phase_30_due_completion_build_ritual_training_return_mark_done(&mut colony, gate);
+                phase_31_mid_job_hauling(&mut colony, gate, 42);
+                loads.push(
+                    colony.cats[0]
+                        .carrying
+                        .take()
+                        .expect("each overdue visit extracts exactly one physical load"),
+                );
+                if step < 3 {
+                    assert_eq!(colony.jobs[0].status, JobStatus::Active);
+                    colony.cats[0].activity = CatActivity::Working;
+                    colony.cats[0].destination = None;
+                    colony.cats[0].position = position_from_world(tile_pos_to_world(site));
+                }
+            }
+            (colony, loads)
+        }
+
+        let (left, loads) = run();
+        let (right, right_loads) = run();
+        assert_eq!(left, right);
+        assert_eq!(loads, right_loads);
+        assert_eq!(
+            loads.iter().map(|load| load.kind).collect::<Vec<_>>(),
+            vec![
+                CarryingKind::Stone,
+                CarryingKind::Stone,
+                CarryingKind::Stone,
+                CarryingKind::Materials,
+            ]
+        );
+        assert_eq!(
+            loads.iter().take(3).map(|load| load.amount).sum::<f64>(),
+            QUARRY_TOTAL_YIELD
+        );
+        assert_eq!(
+            loads[3].amount,
+            QUARRY_TOTAL_YIELD * QUARRY_SUPPLIES_YIELD_RATIO
+        );
+        assert_eq!(left.jobs[0].status, JobStatus::Completed);
+        assert_eq!(
+            hauling_metadata(&left.jobs[0]).2,
+            HUNT_TRIP_COUNT as u32 + 1
+        );
     }
 
     #[test]
@@ -31501,20 +32455,21 @@ mod tests {
             },
             true,
         );
+        add_completed_field_floor(&mut colony);
         // Enough elapsed progress for several cycles proves the bench is bounded by
-        // the full 20-reserve + 10-offering threshold, not merely by time. Protecting
-        // only the post-offering reserve pinned each quarry deposit back below the
-        // decision bar and made the offering faucet unreachable.
+        // the full 10-reserve + 10-offering threshold, not merely by time. Starting
+        // from 35 Supplies permits exactly three five-Supplies cycles before the
+        // reachable 20-Supplies decision bar is protected.
         phase_23_production(&mut colony, production_gate(1_230, 1_230_000), 123);
         assert_eq!(
             colony.resources.materials,
             OFFERING_MATERIALS_RESERVE + f64::from(OFFERING_MATERIALS_AMOUNT)
         );
-        assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE + 1.0);
+        assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE + 3.0);
     }
 
     #[test]
-    fn a_banked_tool_never_freezes_a_deficient_build_material_buffer() {
+    fn a_banked_tool_protects_the_offering_bank_until_renewable_supplies_arrive() {
         let mut colony = chain_colony(
             BuildingType::WoodCutter,
             Resources {
@@ -31526,23 +32481,74 @@ mod tests {
             },
             true,
         );
+        add_completed_field_floor(&mut colony);
 
         phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
-        assert_eq!(colony.resources.materials, 18.0);
-        assert_eq!(colony.resources.planks, 3.0);
+        assert_eq!(colony.resources.materials, 23.0);
+        assert_eq!(colony.resources.planks, 2.0);
         assert_eq!(colony.resources.blocks, 1.0);
         assert_eq!(colony.resources.tools, 1.0);
     }
 
     #[test]
-    fn raw_benches_share_one_sequential_material_budget() {
+    fn unpaid_essential_field_reopens_supplies_for_its_physical_plank_bill() {
+        let mut colony = chain_colony(
+            BuildingType::WoodCutter,
+            Resources {
+                materials: 20.0,
+                tools: 1.0,
+                blocks: TOOL_BUILD_MATERIAL_RESERVE,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.buildings.push(BuildingRuntime {
+            id: "first-physical-field".to_owned(),
+            building_type: BuildingType::Field,
+            level: 1,
+            position: pos(40, 40),
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 0.0,
+            assigned_cat: None,
+            automated_by: None,
+            production_queue: default_production_queue(BuildingType::Field),
+            production_paused: false,
+            construction_cargo: None,
+        });
+        colony.jobs.push(JobRuntime {
+            id: "unpaid-essential-field".to_owned(),
+            kind: JobKind::BuildHouse,
+            status: JobStatus::Queued,
+            metadata: JobMetadata::Construction {
+                phase: ConstructionPhase::ConstructHouse,
+                building_type: BuildingType::Field,
+                building_id: None,
+                site: None,
+            },
+            ..JobRuntime::default()
+        });
+
+        phase_23_production(&mut colony, production_gate(1_830, 1_830_000), 123);
+
+        assert_eq!(colony.resources.materials, 0.0);
+        assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE);
+        assert!(
+            colony.resources.planks >= FIELD_MATERIAL_BUFFER,
+            "the unpaid field must become physically fundable before a dormant offering"
+        );
+    }
+
+    #[test]
+    fn raw_benches_keep_supplies_and_stone_as_distinct_input_budgets() {
         let mut colony = chain_colony(
             BuildingType::WoodCutter,
             Resources {
                 materials: 5.0,
+                stone: 5.0,
                 planks: 0.0,
-                blocks: 10.0,
+                blocks: 0.0,
                 ..Resources::default()
             },
             true,
@@ -31562,26 +32568,28 @@ mod tests {
             production_paused: false,
             construction_cargo: None,
         });
-        let before_materials = colony.resources.materials;
+        let before_materials = colony.resources.materials + colony.resources.stone;
         let before_outputs = colony.resources.planks + colony.resources.blocks;
 
         phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
-        let materials_used = before_materials - colony.resources.materials;
+        let materials_used = before_materials - colony.resources.materials - colony.resources.stone;
         let outputs_produced = colony.resources.planks + colony.resources.blocks - before_outputs;
         assert_eq!(
-            materials_used, 5.0,
-            "only the actual shared budget was spent"
+            materials_used, 10.0,
+            "each bench spends only its own distinct physical input"
         );
         assert_eq!(
-            outputs_produced, 1.0,
-            "five materials mint one output, not two"
+            outputs_produced, 2.0,
+            "five Supplies and five Stone fund exactly one output each"
         );
         assert_eq!(
             colony.resources.planks, 1.0,
             "the scarcer bench wins priority"
         );
-        assert_eq!(colony.resources.blocks, 10.0);
+        assert_eq!(colony.resources.blocks, 1.0);
+        assert_eq!(colony.resources.materials, 0.0);
+        assert_eq!(colony.resources.stone, 0.0);
     }
 
     #[test]
@@ -31590,6 +32598,7 @@ mod tests {
             BuildingType::WoodCutter,
             Resources {
                 materials: 60.0,
+                stone: 60.0,
                 ..Resources::default()
             },
             true,
@@ -31611,18 +32620,18 @@ mod tests {
         });
 
         // Both benches have enough time for five cycles. Deficient-side repair must
-        // nevertheless stop each one at four outputs: the first bench cannot spend
-        // the second bench's half of the shared pool, and the 20-material floor is
-        // protected as soon as both construction sides are funded.
+        // nevertheless stop each one at four outputs, with each bench debiting its
+        // own raw input rather than one shared legacy Supplies pool.
         phase_23_production(&mut colony, production_gate(2_430, 2_430_000), 123);
 
         assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE);
         assert_eq!(colony.resources.blocks, TOOL_BUILD_MATERIAL_RESERVE);
-        assert_eq!(colony.resources.materials, OFFERING_MATERIALS_RESERVE);
+        assert_eq!(colony.resources.materials, 40.0);
+        assert_eq!(colony.resources.stone, 40.0);
     }
 
     #[test]
-    fn generic_workshop_and_smithy_preserve_the_reachable_offering_threshold() {
+    fn generic_workshop_and_smithy_preserve_the_pre_tool_offering_threshold() {
         let mut colony = chain_colony(
             BuildingType::Workshop,
             Resources {
@@ -31630,7 +32639,7 @@ mod tests {
                     + f64::from(OFFERING_MATERIALS_AMOUNT)
                     + WORKSHOP_MATERIALS_PER_CYCLE,
                 refined: 10.0,
-                tools: 1.0,
+                tools: 0.0,
                 ..Resources::default()
             },
             true,
@@ -31734,6 +32743,7 @@ mod tests {
             BuildingType::StonePrep,
             Resources {
                 materials: 50.0,
+                stone: 50.0,
                 planks: TOOL_BUILD_MATERIAL_RESERVE,
                 blocks: 25.0, // already above the 20-block reserve before this tick's own output
                 ..Resources::default()
@@ -31743,10 +32753,11 @@ mod tests {
         colony.stone_craft_progress = 890.0;
         phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
-        // The functional recipe (unchanged) produces 1 block from 5 materials this tick
+        // The functional recipe produces 1 block from 5 raw Stone this tick
         // (25 + 1 = 26), then the trade craft spends 1 of the surplus: 26 - 1 = 25.
         assert_eq!(colony.resources.blocks, 25.0);
-        assert_eq!(colony.resources.materials, 45.0);
+        assert_eq!(colony.resources.stone, 45.0);
+        assert_eq!(colony.resources.materials, 50.0);
 
         let stone_items: Vec<(&Item, &u32)> = colony
             .items
@@ -33495,6 +34506,142 @@ mod tests {
     }
 
     #[test]
+    fn unpaid_scaffold_search_runs_only_for_the_exact_visible_bill() {
+        use std::cell::Cell;
+
+        let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
+        let (timber_cost, block_cost) = scaffold_cost(&colony, BuildingType::Den);
+        colony.resources.lumber = 0.0;
+        colony.resources.planks = timber_cost - 0.5;
+        colony.resources.blocks = block_cost;
+        reconcile_colony_stockpiles(&mut colony);
+        let searches = Cell::new(0_u32);
+
+        let deficient = with_funded_unpaid_scaffold(&colony, timber_cost, block_cost, || {
+            searches.set(searches.get() + 1)
+        });
+        assert!(deficient.is_none());
+        assert_eq!(
+            searches.get(),
+            0,
+            "deficient Planks must do zero search work"
+        );
+
+        colony.resources.planks = timber_cost;
+        reconcile_colony_stockpiles(&mut colony);
+        let exact = with_funded_unpaid_scaffold(&colony, timber_cost, block_cost, || {
+            searches.set(searches.get() + 1);
+            "searched"
+        });
+        assert_eq!(exact, Some("searched"));
+        assert_eq!(searches.get(), 1, "the exact bill enters search once");
+    }
+
+    #[test]
+    fn manual_road_wait_persists_non_overlapping_sites_and_replans_races() {
+        let seed = 42;
+        let mut colony = found_colony(seed, "manual-road", 10_000, seed);
+        provision_mature_claim(&mut colony, 16);
+        colony.resources.lumber = 0.0;
+        colony.resources.planks = 20.0;
+        colony.resources.blocks = 20.0;
+        reconcile_colony_stockpiles(&mut colony);
+        let resources_before = colony.resources.clone();
+        let buildings_before = colony.buildings.len();
+        let builders = [colony.cats[0].id.clone(), colony.cats[1].id.clone()];
+        for (offset, builder) in builders.iter().enumerate() {
+            queue_job(
+                &mut colony,
+                10_000 + offset as i64,
+                JobKind::BuildHouse,
+                Some(builder.clone()),
+                JobMetadata::Construction {
+                    phase: ConstructionPhase::ConstructHouse,
+                    building_type: BuildingType::Field,
+                    building_id: None,
+                    site: None,
+                },
+            );
+        }
+
+        phase_14_promote_queued_jobs_and_break_ground(
+            &mut colony,
+            production_gate(1, 11_000),
+            seed,
+        );
+        let reserved = colony
+            .jobs
+            .iter()
+            .filter(|job| job.kind == JobKind::BuildHouse)
+            .map(|job| match job.metadata {
+                JobMetadata::Construction {
+                    building_id: None,
+                    site: Some(site),
+                    ..
+                } => site,
+                ref metadata => panic!("manual-road wait lost its site: {metadata:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(reserved.len(), 2);
+        let first_footprint = footprint_tiles(
+            reserved[0],
+            footprint_for(BuildingType::Field).0,
+            footprint_for(BuildingType::Field).1,
+        )
+        .into_iter()
+        .collect::<HashSet<_>>();
+        assert!(
+            footprint_tiles(
+                reserved[1],
+                footprint_for(BuildingType::Field).0,
+                footprint_for(BuildingType::Field).1,
+            )
+            .into_iter()
+            .all(|tile| !first_footprint.contains(&tile)),
+            "queued reservations cannot overlap"
+        );
+        assert_eq!(colony.buildings.len(), buildings_before);
+        assert_eq!(colony.resources, resources_before, "waiting spends nothing");
+
+        // A raced scaffold can invalidate one persisted reservation. Phase 14 must
+        // revalidate and deterministically move that job instead of overlapping it.
+        let mut raced = colony.clone();
+        raced.buildings.push(BuildingRuntime {
+            id: "raced-scaffold".to_owned(),
+            building_type: BuildingType::Field,
+            position: reserved[0],
+            is_complete: true,
+            construction_progress: 100,
+            ..BuildingRuntime::default()
+        });
+        phase_14_promote_queued_jobs_and_break_ground(&mut raced, production_gate(1, 12_000), seed);
+        let replanned = raced
+            .jobs
+            .iter()
+            .find(|job| job.assigned_cat.as_deref() == Some(builders[0].as_str()))
+            .and_then(|job| match job.metadata {
+                JobMetadata::Construction { site, .. } => site,
+                _ => None,
+            })
+            .expect("invalid reservation is replanned");
+        assert_ne!(replanned, reserved[0]);
+        assert!(
+            footprint_tiles(
+                replanned,
+                footprint_for(BuildingType::Field).0,
+                footprint_for(BuildingType::Field).1,
+            )
+            .into_iter()
+            .all(|tile| !first_footprint.contains(&tile)),
+            "replanned reservation avoids the raced scaffold"
+        );
+        assert_eq!(
+            raced.resources, resources_before,
+            "replanning spends nothing"
+        );
+    }
+
+    #[test]
     fn distinct_scaffolds_serialize_the_shared_cost_then_recover() {
         let seed = 4_242;
         let mut colony = found_colony(seed, "colony-1", 10_000, seed);
@@ -33502,6 +34649,7 @@ mod tests {
         colony.resources.planks = SCAFFOLD_PLANK_COST;
         colony.resources.blocks = SCAFFOLD_BLOCK_COST;
         colony.resources.materials = 40.0;
+        colony.resources.stone = 10.0;
         reconcile_colony_stockpiles(&mut colony);
 
         let den_site = claim_and_connect_future_building_site(&mut colony, seed, BuildingType::Den);
@@ -33565,7 +34713,7 @@ mod tests {
         );
 
         // Give each founding raw bench a distinct idle worker. With enough elapsed
-        // progress they rebuild 4/4 from the remaining 20 raw materials. The waiting
+        // progress they rebuild 4/4 from independent Supplies and raw Stone. The waiting
         // project can then break ground once, leaving the exact 2/2 remainder.
         let raw_workers = [colony.cats[2].id.clone(), colony.cats[3].id.clone()];
         for (building_type, worker) in [
@@ -33583,7 +34731,8 @@ mod tests {
         phase_23_production(&mut colony, production_gate(2_430, 2_500_000), seed);
         assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE);
         assert_eq!(colony.resources.blocks, TOOL_BUILD_MATERIAL_RESERVE);
-        assert_eq!(colony.resources.materials, 20.0);
+        assert_eq!(colony.resources.materials, 30.0);
+        assert_eq!(colony.resources.stone, 0.0);
         phase_14_promote_queued_jobs_and_break_ground(
             &mut colony,
             production_gate(60, 2_560_000),
@@ -35779,6 +36928,12 @@ mod tests {
         assert_eq!(colony.resources.planks.to_bits(), planks.to_bits());
         assert_eq!(colony.resources.blocks.to_bits(), blocks.to_bits());
 
+        // A paid scaffold is durable authority for the bill. Empty current stores
+        // must not route its restart through the unpaid placement gate.
+        colony.resources.lumber = 0.0;
+        colony.resources.planks = 0.0;
+        colony.resources.blocks = 0.0;
+        reconcile_colony_stockpiles(&mut colony);
         let resume_gate = production_gate(1, 3_000);
         phase_14_promote_queued_jobs_and_break_ground(&mut colony, resume_gate, seed);
 
@@ -35811,8 +36966,8 @@ mod tests {
             "non-finite legacy speed also normalizes to neutral"
         );
         assert_eq!(colony.buildings.len(), building_count);
-        assert_eq!(colony.resources.planks.to_bits(), planks.to_bits());
-        assert_eq!(colony.resources.blocks.to_bits(), blocks.to_bits());
+        assert_eq!(colony.resources.planks, 0.0);
+        assert_eq!(colony.resources.blocks, 0.0);
 
         // Resuming cannot overwrite 73% with a fresh timer's 0%, and progress
         // continues from the stored baseline rather than restarting.
@@ -36592,9 +37747,11 @@ mod tests {
                     .as_ref()
                     .is_some_and(|cargo| cargo.kind == CarryingKind::Water && cargo.amount > 0.0);
                 if let Some(site) = observed_site {
+                    let work_site = water_work_site(colony, site)
+                        .expect("the persisted water source keeps a canonical dry bank");
                     saw_worker_at_site |=
                         world_pos_to_tile(position_to_world(colony.anchor, worker.position))
-                            == site
+                            == work_site
                             && (worker.activity == CatActivity::Working || has_water_cargo);
                 }
                 saw_returning_water |= worker.activity == CatActivity::Returning
@@ -36622,7 +37779,7 @@ mod tests {
             );
             assert!(
                 saw_worker_at_site,
-                "seed {seed}: the assigned player cat never reached its water source"
+                "seed {seed}: the assigned player cat never reached its dry water-work bank"
             );
             assert!(
                 saw_returning_water,
@@ -38262,6 +39419,8 @@ mod tests {
             grain: 100.0,
             flour: 100.0,
             materials: 100.0,
+            stone: 100.0,
+            bone: 100.0,
             refined: 20.0,
             weapons: 0.0,
             armor: 0.0,
@@ -43517,6 +44676,8 @@ mod tests {
             grain: 0.0,
             flour: 0.0,
             materials: 60.0,
+            stone: 0.0,
+            bone: 0.0,
             refined: 0.0,
             weapons: 0.0,
             armor: 0.0,
@@ -43545,6 +44706,8 @@ mod tests {
             grain: 0.0,
             flour: 0.0,
             materials: 120.0,
+            stone: 0.0,
+            bone: 0.0,
             refined: 0.0,
             weapons: 0.0,
             armor: 0.0,
@@ -43968,6 +45131,7 @@ mod tests {
         colony.resources.food = 200.0;
         colony.resources.water = 200.0;
         colony.resources.materials = 25.0;
+        colony.resources.stone = 25.0;
         colony.resources.planks = 2.0;
         colony.resources.blocks = 1.0;
         establish_office(&mut colony, OfficerRole::Forester);
@@ -44004,6 +45168,8 @@ mod tests {
         world.colonies.push(colony);
 
         let mut saw_competing_job = false;
+        let mut saw_staffed_while_deficient = false;
+        let mut repaired_both_buffers = false;
         for step in 1..=30 {
             let now = 10_000 + i64::from(step) * 60_000;
             let report = world_tick(&mut world, now);
@@ -44017,10 +45183,14 @@ mod tests {
                         && building.assigned_cat.is_some()
                 })
                 .count();
-            assert!(
-                staffed_raw > 0,
-                "step {step}: released raw demand disappeared from the leader plan"
-            );
+            if colony.resources.planks >= TOOL_BUILD_MATERIAL_RESERVE
+                && colony.resources.blocks >= TOOL_BUILD_MATERIAL_RESERVE
+            {
+                repaired_both_buffers = true;
+            }
+            if !repaired_both_buffers {
+                saw_staffed_while_deficient |= staffed_raw > 0;
+            }
             saw_competing_job |= active_or_queued_jobs(colony).iter().any(|job| {
                 matches!(
                     job.kind,
@@ -44031,11 +45201,17 @@ mod tests {
 
         let colony = &world.colonies[0];
         assert!(saw_competing_job, "fixture never exercised competing labor");
+        assert!(
+            saw_staffed_while_deficient,
+            "deficient raw buffers never restaffed a bench"
+        );
+        assert!(repaired_both_buffers, "the two raw buffers never repaired");
         assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE);
         assert_eq!(colony.resources.blocks, TOOL_BUILD_MATERIAL_RESERVE);
-        assert_eq!(
-            colony.resources.materials, 0.0,
-            "deficient repair uses the raw floor instead of freezing above it"
+        assert_eq!(colony.resources.materials, 15.0);
+        assert!(
+            colony.resources.stone >= 10.0,
+            "the bench repairs Blocks without erasing independently quarried raw Stone"
         );
     }
 
@@ -44295,6 +45471,16 @@ mod tests {
     #[test]
     fn desired_water_fetcher_count_has_exact_deficit_boundaries() {
         let reserve = water_fetch_preemption_reserve(STARTER_CAT_COUNT);
+        assert_eq!(
+            reserve,
+            STARTER_CAT_COUNT as f64
+                * (RESEARCH_COMFORT_WATER_PER_CAT + WATER_FETCH_TRANSIT_RESERVE_PER_CAT)
+        );
+        assert_eq!(
+            reserve - STARTER_CAT_COUNT as f64 * crate::migration::DEFAULT_WATER_PER_CAT,
+            STARTER_CAT_COUNT as f64 * 2.0,
+            "dispatch owns two per-cat units of physical-route runway above prosperity"
+        );
         assert_eq!(desired_water_fetcher_count(STARTER_CAT_COUNT, reserve), 0);
         assert_eq!(
             desired_water_fetcher_count(STARTER_CAT_COUNT, reserve - 0.001),
@@ -44661,6 +45847,28 @@ mod tests {
         );
 
         phase_15_assign_promoted_job_destinations(&mut colony, production_gate(1, 100_003), 4_242);
+        let fetch_site = hauling_metadata(&colony.jobs[fetch_index])
+            .0
+            .expect("promoted fetch owns a source");
+        let fetch_work_site =
+            water_work_site(&colony, fetch_site).expect("promoted fetch owns a reachable dry bank");
+        if let JobMetadata::Hauling {
+            total_yield,
+            trips_done,
+            ..
+        } = &mut colony.jobs[fetch_index].metadata
+        {
+            *total_yield = Some(WATER_TOTAL_YIELD);
+            *trips_done = HUNT_TRIP_COUNT as u32 - 1;
+        }
+        let fetcher = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == hunter)
+            .expect("fetcher exists");
+        fetcher.position = position_from_world(tile_pos_to_world(fetch_work_site));
+        fetcher.destination = None;
+        fetcher.activity = CatActivity::Working;
         let water_before_fetch = colony.resources.water.to_bits();
         let fetch_end = 100_003_i64.saturating_add(fetch_duration);
         phase_29_due_completion_gathering_explore_expansion(
@@ -44708,6 +45916,164 @@ mod tests {
             &mut movement,
         );
         assert!(colony.resources.water.to_bits() > water_before_fetch);
+    }
+
+    #[test]
+    fn overdue_water_fetch_completes_all_physical_loads_from_one_dry_bank() {
+        let seed = 4_242;
+        let mut colony = found_colony(seed, "colony-1", 0, seed);
+        colony.jobs.clear();
+        let source = water_sites_near_village(&colony)
+            .into_iter()
+            .map(world_pos_to_tile)
+            .find(|source| {
+                water_work_site(&colony, *source)
+                    .is_some_and(|bank| is_reachable_fishing_shore(&colony, bank, seed))
+            })
+            .expect("founding water has one reachable source");
+        let bank = water_work_site(&colony, source).expect("water has a stable dry bank");
+        let dispatch_route_queries = colony.decoration_cache.water_route_queries.get();
+        assert_ne!(source, bank);
+        assert!(tile_has_water(colony.world_tiles.get(&source)));
+        assert!(!tile_has_water(colony.world_tiles.get(&bank)));
+        assert_eq!((source.x - bank.x).abs() + (source.y - bank.y).abs(), 1);
+
+        let cat_id = colony.cats[0].id.clone();
+        let cat = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == cat_id)
+            .expect("water carrier exists");
+        cat.position = position_from_world(tile_pos_to_world(bank));
+        cat.destination = None;
+        cat.activity = CatActivity::Working;
+        cat.current_task = Some(TaskType::FetchWater);
+        colony.jobs.push(JobRuntime {
+            id: "overdue-water-source".to_owned(),
+            kind: JobKind::FetchWater,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Leader,
+            assigned_cat: Some(cat_id.clone()),
+            duration_ms: 90_000,
+            created_at: 0,
+            started_at: Some(0),
+            ends_at: Some(90_000),
+            metadata: JobMetadata::Hauling {
+                site: Some(source),
+                total_yield: Some(WATER_TOTAL_YIELD),
+                trips_done: 0,
+                next_trip_at: Some(30_000),
+                accepted: true,
+            },
+            ..JobRuntime::default()
+        });
+
+        let water_before = colony.resources.water;
+        let mut extracted = 0.0;
+        let mut now = 300_000;
+        for expected_trip in 1..HUNT_TRIP_COUNT {
+            let gate = production_gate(300, now);
+            phase_29_due_completion_gathering_explore_expansion(&mut colony, gate, seed);
+            assert!(
+                colony
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == cat_id)
+                    .expect("carrier exists")
+                    .carrying
+                    .is_none(),
+                "deadline cannot skip intermediate load {expected_trip}"
+            );
+            phase_31_mid_job_hauling(&mut colony, gate, seed);
+            let cargo = colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == cat_id)
+                .and_then(|cat| cat.carrying.clone())
+                .expect("overdue intermediate load is physical");
+            assert_eq!(cargo.kind, CarryingKind::Water);
+            extracted += cargo.amount;
+            assert_eq!(hauling_metadata(&colony.jobs[0]).2, expected_trip as u32);
+
+            let storehouse = general_storehouse_center(&colony);
+            let carrier = colony
+                .cats
+                .iter_mut()
+                .find(|cat| cat.id == cat_id)
+                .expect("carrier exists");
+            carrier.position = position_from_world(storehouse);
+            carrier.destination = Some(position_from_world(storehouse));
+            carrier.activity = CatActivity::Returning;
+            let mut movement = haul_movement_ctx();
+            movement.world_seed = seed;
+            phase_33_movement_deposits_and_no_destination_wander(&mut colony, gate, &mut movement);
+            let carrier = colony
+                .cats
+                .iter_mut()
+                .find(|cat| cat.id == cat_id)
+                .expect("carrier exists");
+            assert!(carrier.carrying.is_none());
+            assert_eq!(
+                carrier.destination,
+                Some(position_from_world(tile_pos_to_world(bank))),
+                "every return leg targets the canonical dry bank"
+            );
+            assert_eq!(carrier.activity, CatActivity::Traveling);
+            carrier.position = position_from_world(tile_pos_to_world(bank));
+            carrier.destination = None;
+            carrier.activity = CatActivity::Working;
+            now += 300_000;
+        }
+
+        let final_gate = production_gate(300, now);
+        phase_29_due_completion_gathering_explore_expansion(&mut colony, final_gate, seed);
+        let final_cargo = colony
+            .cats
+            .iter()
+            .find(|cat| cat.id == cat_id)
+            .and_then(|cat| cat.carrying.clone())
+            .expect("the final water load is physical");
+        assert_eq!(final_cargo.kind, CarryingKind::Water);
+        extracted += final_cargo.amount;
+        assert_eq!(hauling_metadata(&colony.jobs[0]).2, HUNT_TRIP_COUNT as u32);
+        phase_30_due_completion_build_ritual_training_return_mark_done(&mut colony, final_gate);
+        assert_eq!(colony.jobs[0].status, JobStatus::Completed);
+        assert_eq!(extracted.to_bits(), WATER_TOTAL_YIELD.to_bits());
+
+        let storehouse = general_storehouse_center(&colony);
+        let carrier = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == cat_id)
+            .expect("carrier exists");
+        carrier.position = position_from_world(storehouse);
+        carrier.destination = Some(position_from_world(storehouse));
+        carrier.activity = CatActivity::Returning;
+        let mut movement = haul_movement_ctx();
+        movement.world_seed = seed;
+        phase_33_movement_deposits_and_no_destination_wander(
+            &mut colony,
+            production_gate(1, now + 1),
+            &mut movement,
+        );
+        assert!(colony.resources.water > water_before);
+        assert_eq!(
+            colony.decoration_cache.water_route_queries.get(),
+            dispatch_route_queries,
+            "mid-job, final-load, and return-site checks must remain O(4) lookups without A*"
+        );
+
+        colony.resources.water = water_fetch_preemption_reserve(STARTER_CAT_COUNT);
+        phase_17b_water_reserve_preemption(&mut colony, production_gate(1, now + 2));
+        assert_eq!(
+            colony
+                .jobs
+                .iter()
+                .filter(|job| job.kind == JobKind::FetchWater)
+                .count(),
+            1,
+            "a completed three-load fetch does not trigger an extra recall"
+        );
     }
 
     #[test]
@@ -47099,6 +48465,11 @@ mod tests {
             "established-population-mill",
             BuildingType::Mill,
         );
+        // This fixture begins after the quarry bootstrap. Keep the raw Stone
+        // authority explicit so its founding Stone Prep can maintain Blocks
+        // without falling back to legacy Supplies.
+        established.resources.stone = 100.0;
+        reconcile_colony_stockpiles(&mut established);
         world.colonies.push(established);
         world
     }
@@ -47944,7 +49315,7 @@ mod tests {
         });
 
         let gate = production_gate(1, start + 1_000);
-        phase_28a_suspend_fishing_away_from_shore(colony, gate);
+        phase_28a_suspend_fishing_away_from_shore(colony, gate, 42);
         phase_29_due_completion_gathering_explore_expansion(colony, gate, 42);
         assert_eq!(colony.fish_habitats[&habitat].stock, 5.0);
         assert!(colony.cats[0].carrying.is_none());
@@ -48031,7 +49402,11 @@ mod tests {
             ..JobRuntime::default()
         });
 
-        phase_28a_suspend_fishing_away_from_shore(colony, production_gate(120, start + 120_000));
+        phase_28a_suspend_fishing_away_from_shore(
+            colony,
+            production_gate(120, start + 120_000),
+            42,
+        );
         assert_eq!(colony.jobs[0].ends_at, Some(start + 180_000));
         assert!(due_active_jobs(colony, production_gate(120, start + 120_000)).is_empty());
 
@@ -48041,8 +49416,12 @@ mod tests {
         accept_job(colony, 0, start + 120_000);
         let accepted_end = colony.jobs[0].ends_at;
         let mut twin = colony.clone();
-        phase_28a_suspend_fishing_away_from_shore(colony, production_gate(60, start + 180_000));
-        phase_28a_suspend_fishing_away_from_shore(&mut twin, production_gate(60, start + 180_000));
+        phase_28a_suspend_fishing_away_from_shore(colony, production_gate(60, start + 180_000), 42);
+        phase_28a_suspend_fishing_away_from_shore(
+            &mut twin,
+            production_gate(60, start + 180_000),
+            42,
+        );
         assert_eq!(*colony, twin, "same coarse tick must be deterministic");
         assert_eq!(colony.jobs[0].ends_at, accepted_end);
         assert_eq!(
@@ -48058,7 +49437,7 @@ mod tests {
             job_ended_at: start + 180_000,
             source_gather_spot: None,
         });
-        phase_28a_suspend_fishing_away_from_shore(colony, production_gate(30, start + 210_000));
+        phase_28a_suspend_fishing_away_from_shore(colony, production_gate(30, start + 210_000), 42);
         assert_eq!(colony.jobs[0].ends_at, Some(start + 270_000));
         assert!(due_active_jobs(colony, production_gate(30, start + 240_000)).is_empty());
     }
@@ -48519,6 +49898,16 @@ mod tests {
             if done && habitat_depleted {
                 break;
             }
+        }
+        if farmer_automated {
+            assert!(
+                world.colonies[0]
+                    .decoration_cache
+                    .construction_route_queries
+                    .get()
+                    <= 8,
+                "an unchanged queued Field must reuse its derived construction route"
+            );
         }
         let colony = &world.colonies[0];
         let worker_id = colony

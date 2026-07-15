@@ -1353,11 +1353,13 @@ mod tests {
                 .expect("founding storehouse");
             pile.contents.food = 91_234.5;
             pile.contents.water = 82_234.5;
+            pile.contents.stone = 77_234.5;
             pile.contents.weapons = 17_234.5;
             pile.contents.armor = 18_234.5;
             let pile_id = pile.id.clone();
             colony.resources.food = 91_234.5;
             colony.resources.water = 82_234.5;
+            colony.resources.stone = 77_234.5;
             colony.resources.weapons = 17_234.5;
             colony.resources.armor = 18_234.5;
             colony.resources.materials = 66_234.5;
@@ -1380,6 +1382,7 @@ mod tests {
             let reported = Resources {
                 food: 13.0,
                 water: 12.0,
+                stone: 5.0,
                 weapons: 3.0,
                 armor: 4.0,
                 ..Resources::default()
@@ -1431,6 +1434,7 @@ mod tests {
             assert!(player.capabilities.is_owner);
             assert_eq!(player.resources.food, 13.0);
             assert_eq!(player.resources.water, 12.0);
+            assert_eq!(player.resources.stone, 5.0);
             assert_eq!(player.resources.materials, 0.0);
             assert_eq!(player.resources.blessings, 7.0);
             assert_eq!(player.threat.weapons, 3.0);
@@ -1450,7 +1454,9 @@ mod tests {
             assert!(owner["stockLedger"].get("accurate").is_none());
             assert!(owner["stockpiles"][0]["report"].get("accurate").is_none());
             let wire = serde_json::to_string(&json).expect("owner websocket JSON");
-            for sentinel in ["91234.5", "82234.5", "66234.5", "17234.5", "18234.5"] {
+            for sentinel in [
+                "91234.5", "82234.5", "77234.5", "66234.5", "17234.5", "18234.5",
+            ] {
                 assert!(
                     !wire.contains(sentinel),
                     "authoritative sentinel {sentinel} crossed the player wire"
@@ -1473,6 +1479,7 @@ mod tests {
         private.global_upgrade_points = 7.0;
         let cat_id = private.cats[0].id.clone();
         private.resources.food = 91_234.5;
+        private.resources.stone = 68_234.5;
         private.resources.weapons = 17_234.5;
         let storehouse = private
             .stockpiles
@@ -1480,6 +1487,7 @@ mod tests {
             .find(|pile| pile.is_general_storehouse())
             .expect("private storehouse");
         storehouse.contents.food = 91_234.5;
+        storehouse.contents.stone = 68_234.5;
         storehouse.contents.weapons = 17_234.5;
         world.colonies.push(private);
 
@@ -1493,6 +1501,7 @@ mod tests {
             assert_eq!(player.id, private_id, "{phase} selected village");
             assert!(player.capabilities.is_owner, "{phase} owner capability");
             assert_eq!(player.resources.food, 50.0, "{phase} aggregate report");
+            assert_eq!(player.resources.stone, 0.0, "{phase} raw Stone report");
             assert_eq!(player.resources.blessings, 7.0, "{phase} exact blessings");
             assert_eq!(player.threat.weapons, 0.0, "{phase} defense duplicate");
             assert_eq!(
@@ -1521,7 +1530,7 @@ mod tests {
                 }
             }
             let wire = serde_json::to_string(&json).expect("socket text");
-            for sentinel in ["91234.5", "17234.5", "73456.25"] {
+            for sentinel in ["91234.5", "68234.5", "17234.5", "73456.25"] {
                 assert!(
                     !wire.contains(sentinel),
                     "{phase} leaked authoritative sentinel {sentinel}"

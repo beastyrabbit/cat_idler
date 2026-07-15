@@ -97,7 +97,7 @@ pub const WOODCUTTER_MATERIALS_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
 /// Planks one wood-cutter cycle produces.
 pub const WOODCUTTER_PLANKS_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
 /// Raw materials one stone-prep cycle consumes.
-pub const STONEPREP_MATERIALS_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
+pub const STONEPREP_STONE_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
 /// Blocks one stone-prep cycle produces.
 pub const STONEPREP_BLOCKS_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
 
@@ -115,7 +115,7 @@ pub const TANNERY_LEATHER_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
 /// Raw ore one smelter refine cycle consumes (P17/P19 ore→metal chain, aliased to the
 /// same refinement-workshop rate as the wood-cutter/stone-prep/clothier/tannery
 /// benches above). Ore only ever comes from mountain quarrying
-/// (`world_tick::credit_quarry_ore`), so a colony that never reaches the mountains
+/// (a final physical quarry haul), so a colony that never reaches the mountains
 /// simply never accumulates ore and this bench sits permanently idle — additive/inert.
 pub const SMELTER_ORE_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
 /// Metal bars one smelter refine cycle produces.
@@ -412,7 +412,7 @@ pub const fn building_cycle_sec(building_type: BuildingType) -> Option<f64> {
 /// Verified against the actual `phase_23_production` recipes in `world_tick.rs`:
 /// workshop → refined (materials → refined, this module's `advance_workshop`),
 /// wood-cutter → plank (materials → planks, same `advance_workshop` cadence credited
-/// to `planks`), stone-prep → block (materials → blocks, credited to `blocks`),
+/// to `planks`), stone-prep → block (raw Stone → blocks, credited to `blocks`),
 /// woodworking → tool (planks + blocks → tools, `advance_woodworking`), smithy →
 /// weapon+armor (refined + materials → 1 weapon *and* 1 armor per cycle,
 /// `smithy::advance_smithy`/`SMITHY_WEAPONS_PER_CYCLE`/`SMITHY_ARMOR_PER_CYCLE`, both
@@ -794,7 +794,7 @@ mod tests {
         // The wood-cutter / stone-prep aliases inherit the refinement-workshop rate.
         assert_f64_bits(super::WOODCUTTER_MATERIALS_PER_CYCLE, 5.0, "woodcutter in");
         assert_f64_bits(super::WOODCUTTER_PLANKS_PER_CYCLE, 1.0, "woodcutter out");
-        assert_f64_bits(super::STONEPREP_MATERIALS_PER_CYCLE, 5.0, "stoneprep in");
+        assert_f64_bits(super::STONEPREP_STONE_PER_CYCLE, 5.0, "stoneprep in");
         assert_f64_bits(super::STONEPREP_BLOCKS_PER_CYCLE, 1.0, "stoneprep out");
     }
 

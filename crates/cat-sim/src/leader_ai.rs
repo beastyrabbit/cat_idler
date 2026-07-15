@@ -45,9 +45,15 @@ pub struct LeaderSnapshot {
     /// Net food drained this tick; omitted means no projected scarcity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub food_drain_per_tick: Option<f64>,
-    /// Materials in store and the cap they are clamped to.
+    /// Stable generic Supplies in store and the cap they are clamped to.
     pub materials: f64,
     pub materials_capacity: f64,
+    /// Raw Stone in store and the cap it is clamped to. Additive for pre-P19 snapshots;
+    /// absence is an empty raw-stone store, never an alias of legacy `materials`.
+    #[serde(default)]
+    pub stone: f64,
+    #[serde(default)]
+    pub stone_capacity: f64,
     /// Water in store and the cap it is clamped to.
     pub water: f64,
     pub water_capacity: f64,
@@ -179,6 +185,8 @@ mod tests {
             food_drain_per_tick: Some(3.25),
             materials: 42.5,
             materials_capacity: 100.0,
+            stone: 17.0,
+            stone_capacity: 100.0,
             water: 88.75,
             water_capacity: 200.0,
             water_drain_per_tick: Some(2.5),
@@ -227,6 +235,8 @@ mod tests {
                 "foodDrainPerTick": 3.25,
                 "materials": 42.5,
                 "materialsCapacity": 100.0,
+                "stone": 17.0,
+                "stoneCapacity": 100.0,
                 "water": 88.75,
                 "waterCapacity": 200.0,
                 "waterDrainPerTick": 2.5,
@@ -275,6 +285,8 @@ mod tests {
             "offeringInFlight",
             "threatBand",
             "starving",
+            "stone",
+            "stoneCapacity",
         ] {
             object.remove(key);
         }
@@ -293,6 +305,8 @@ mod tests {
         assert_eq!(snapshot.offering_in_flight, None);
         assert_eq!(snapshot.threat_band, None);
         assert_eq!(snapshot.starving, None);
+        assert_eq!(snapshot.stone, 0.0);
+        assert_eq!(snapshot.stone_capacity, 0.0);
     }
 
     #[test]

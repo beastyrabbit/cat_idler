@@ -1751,13 +1751,14 @@ fn designate_gather_spot(
         proto::ResourceKind::Food
             | proto::ResourceKind::Water
             | proto::ResourceKind::Materials
+            | proto::ResourceKind::Stone
             | proto::ResourceKind::Logs
             | proto::ResourceKind::Catnip
             | proto::ResourceKind::Grain
             | proto::ResourceKind::Herbs
     ) {
         return fail(
-            "Gather spots only collect food, water, materials, logs, catnip, grain, or herbs.",
+            "Gather spots only collect food, water, materials, stone, logs, catnip, grain, or herbs.",
         );
     }
     let rect = zones::normalize_rect(
@@ -2735,6 +2736,7 @@ fn trade_would_overflow(
         stockpiles::ResourceKind::Grain => Some(capacities.grain),
         stockpiles::ResourceKind::Flour => Some(capacities.flour),
         stockpiles::ResourceKind::Materials => Some(capacities.materials),
+        stockpiles::ResourceKind::Stone => Some(capacities.stone),
         stockpiles::ResourceKind::Refined => Some(capacities.refined),
         stockpiles::ResourceKind::Weapons => Some(capacities.weapons),
         stockpiles::ResourceKind::Armor => Some(capacities.armor),
@@ -2745,6 +2747,7 @@ fn trade_would_overflow(
         stockpiles::ResourceKind::Tools => Some(capacities.tools),
         stockpiles::ResourceKind::Fibre => Some(capacities.fibre),
         stockpiles::ResourceKind::Hide => Some(capacities.hide),
+        stockpiles::ResourceKind::Bone => Some(capacities.bone),
         stockpiles::ResourceKind::Cloth => Some(capacities.cloth),
         stockpiles::ResourceKind::Leather => Some(capacities.leather),
         stockpiles::ResourceKind::Ore => Some(capacities.ore),
@@ -2894,6 +2897,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 grain: caps.grain,
                 flour: caps.flour,
                 materials: caps.materials,
+                stone: caps.stone,
                 refined: caps.refined,
                 weapons: caps.weapons,
                 armor: caps.armor,
@@ -2904,6 +2908,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
                 tools: caps.tools,
                 fibre: caps.fibre,
                 hide: caps.hide,
+                bone: caps.bone,
                 cloth: caps.cloth,
                 leather: caps.leather,
                 ore: caps.ore,
@@ -4222,6 +4227,7 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
         grain: resources.grain,
         flour: resources.flour,
         materials: resources.materials,
+        stone: resources.stone,
         refined: resources.refined,
         weapons: resources.weapons,
         armor: resources.armor,
@@ -4232,6 +4238,7 @@ fn resources_snapshot(resources: &entities::Resources) -> proto::ResourceAmounts
         tools: resources.tools,
         fibre: resources.fibre,
         hide: resources.hide,
+        bone: resources.bone,
         cloth: resources.cloth,
         leather: resources.leather,
         ore: resources.ore,
@@ -4499,6 +4506,7 @@ fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::Resource
         proto::ResourceKind::Grain => ResourceKind::Grain,
         proto::ResourceKind::Flour => ResourceKind::Flour,
         proto::ResourceKind::Materials => ResourceKind::Materials,
+        proto::ResourceKind::Stone => ResourceKind::Stone,
         proto::ResourceKind::Refined => ResourceKind::Refined,
         proto::ResourceKind::Weapons => ResourceKind::Weapons,
         proto::ResourceKind::Armor => ResourceKind::Armor,
@@ -4509,6 +4517,7 @@ fn proto_to_sim_resource_kind(kind: proto::ResourceKind) -> stockpiles::Resource
         proto::ResourceKind::Tools => ResourceKind::Tools,
         proto::ResourceKind::Fibre => ResourceKind::Fibre,
         proto::ResourceKind::Hide => ResourceKind::Hide,
+        proto::ResourceKind::Bone => ResourceKind::Bone,
         proto::ResourceKind::Cloth => ResourceKind::Cloth,
         proto::ResourceKind::Leather => ResourceKind::Leather,
         proto::ResourceKind::Ore => ResourceKind::Ore,
@@ -4528,6 +4537,7 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
         ResourceKind::Grain => proto::ResourceKind::Grain,
         ResourceKind::Flour => proto::ResourceKind::Flour,
         ResourceKind::Materials => proto::ResourceKind::Materials,
+        ResourceKind::Stone => proto::ResourceKind::Stone,
         ResourceKind::Refined => proto::ResourceKind::Refined,
         ResourceKind::Weapons => proto::ResourceKind::Weapons,
         ResourceKind::Armor => proto::ResourceKind::Armor,
@@ -4538,6 +4548,7 @@ fn sim_to_proto_resource_kind(kind: stockpiles::ResourceKind) -> proto::Resource
         ResourceKind::Tools => proto::ResourceKind::Tools,
         ResourceKind::Fibre => proto::ResourceKind::Fibre,
         ResourceKind::Hide => proto::ResourceKind::Hide,
+        ResourceKind::Bone => proto::ResourceKind::Bone,
         ResourceKind::Cloth => proto::ResourceKind::Cloth,
         ResourceKind::Leather => proto::ResourceKind::Leather,
         ResourceKind::Ore => proto::ResourceKind::Ore,
@@ -4747,6 +4758,7 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Fish => proto::CarryingKind::Fish,
         entities::CarryingKind::Blessings => proto::CarryingKind::Blessings,
         entities::CarryingKind::Materials => proto::CarryingKind::Materials,
+        entities::CarryingKind::Stone => proto::CarryingKind::Stone,
         entities::CarryingKind::Refined => proto::CarryingKind::Refined,
         entities::CarryingKind::Logs => proto::CarryingKind::Logs,
         entities::CarryingKind::Lumber => proto::CarryingKind::Lumber,
@@ -4758,6 +4770,8 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Grain => proto::CarryingKind::Grain,
         entities::CarryingKind::Flour => proto::CarryingKind::Flour,
         entities::CarryingKind::Herbs => proto::CarryingKind::Herbs,
+        entities::CarryingKind::Hide => proto::CarryingKind::Hide,
+        entities::CarryingKind::Bone => proto::CarryingKind::Bone,
         entities::CarryingKind::Ore => proto::CarryingKind::Ore,
         entities::CarryingKind::Metal => proto::CarryingKind::Metal,
     }
@@ -4795,6 +4809,32 @@ mod tests {
             world_seed: 20_240_703,
             colonies: vec![found_colony(20_240_703, "c1", 1_000_000, 1234)],
         }
+    }
+
+    #[test]
+    fn raw_bone_snapshot_and_kind_mappings_do_not_alias_supplies() {
+        let resources = entities::Resources {
+            materials: 13.0,
+            stone: 7.0,
+            bone: 5.0,
+            ..entities::Resources::default()
+        };
+        let snapshot = resources_snapshot(&resources);
+        assert_eq!(snapshot.materials, 13.0);
+        assert_eq!(snapshot.stone, 7.0);
+        assert_eq!(snapshot.bone, 5.0);
+        assert_eq!(
+            proto_to_sim_resource_kind(proto::ResourceKind::Bone),
+            stockpiles::ResourceKind::Bone
+        );
+        assert_eq!(
+            sim_to_proto_resource_kind(stockpiles::ResourceKind::Bone),
+            proto::ResourceKind::Bone
+        );
+        assert_eq!(
+            sim_to_proto_carrying_kind(entities::CarryingKind::Bone),
+            proto::CarryingKind::Bone
+        );
     }
 
     fn completed_building(id: &str, building_type: BuildingType) -> BuildingRuntime {
@@ -7159,7 +7199,7 @@ mod tests {
     fn designate_stockpile_accepts_all_physical_kinds_and_rejects_only_blessings() {
         const NONPHYSICAL_MESSAGE: &str = "Stockpiles accept only physical goods; Blessings are divine favor and are never hauled or stored in piles.";
 
-        assert_eq!(proto::ResourceKind::ALL.len(), 23);
+        assert_eq!(proto::ResourceKind::ALL.len(), 25);
         for &kind in proto::ResourceKind::ALL {
             let mut world = world_with_one_colony();
             let before = world.colonies[0].stockpiles.len();
@@ -8435,6 +8475,31 @@ mod tests {
             total_food_before
         );
         assert_eq!(world.colonies[0].coin + trader.coin, total_coin_before);
+    }
+
+    #[test]
+    fn trader_purchase_keeps_raw_stone_distinct_from_legacy_supplies() {
+        let mut world = world_with_one_colony();
+        world.colonies[0].coin = 100.0;
+        world.colonies[0].resources.materials = 13.0;
+        reconcile_colony_stockpiles(&mut world.colonies[0]);
+        let mut visit = trading_trader();
+        visit.stock = BTreeMap::from([(stockpiles::ResourceKind::Stone, 6.0)]);
+        world.colonies[0].trader = Some(visit);
+
+        let result = apply_action(
+            &mut world,
+            &buy_resource_action(proto::ResourceKind::Stone, 4.0),
+            &ctx(),
+        );
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(world.colonies[0].resources.stone, 4.0);
+        assert_eq!(world.colonies[0].resources.materials, 13.0);
+        assert_eq!(
+            world.colonies[0].trader.as_ref().unwrap().stock[&stockpiles::ResourceKind::Stone],
+            2.0
+        );
     }
 
     #[test]

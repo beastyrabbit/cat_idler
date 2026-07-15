@@ -165,6 +165,7 @@ pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
         | ResourceKind::Catnip
         | ResourceKind::Grain
         | ResourceKind::Logs
+        | ResourceKind::Stone
         | ResourceKind::Materials => Some(1),
         ResourceKind::Flour
         | ResourceKind::Lumber
@@ -176,6 +177,7 @@ pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
         | ResourceKind::Armor
         | ResourceKind::Fibre
         | ResourceKind::Hide
+        | ResourceKind::Bone
         | ResourceKind::Cloth
         | ResourceKind::Leather
         | ResourceKind::Ore
@@ -216,8 +218,10 @@ mod tests {
     fn resource_unit_price_excludes_weapons_armor_and_blessings() {
         assert_eq!(resource_unit_price(ResourceKind::Weapons), None);
         assert_eq!(resource_unit_price(ResourceKind::Armor), None);
+        assert_eq!(resource_unit_price(ResourceKind::Bone), None);
         assert_eq!(resource_unit_price(ResourceKind::Blessings), None);
         assert_eq!(resource_unit_price(ResourceKind::Food), Some(1));
+        assert_eq!(resource_unit_price(ResourceKind::Stone), Some(1));
         assert_eq!(resource_unit_price(ResourceKind::Refined), Some(3));
     }
 

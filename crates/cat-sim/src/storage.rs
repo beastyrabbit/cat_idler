@@ -114,6 +114,8 @@ pub struct StorageCapacities {
     #[serde(default)]
     pub flour: f64,
     pub materials: f64,
+    #[serde(default)]
+    pub stone: f64,
     pub refined: f64,
     pub weapons: f64,
     pub armor: f64,
@@ -132,6 +134,8 @@ pub struct StorageCapacities {
     /// bonus — mirrors `planks`/`blocks`/`tools` above exactly.
     pub fibre: f64,
     pub hide: f64,
+    #[serde(default)]
+    pub bone: f64,
     pub cloth: f64,
     pub leather: f64,
     /// Ore/metal chain. Flat base capacity like the clothing intermediates.
@@ -154,6 +158,7 @@ impl StorageCapacities {
             grain: self.grain * multiplier,
             flour: self.flour * multiplier,
             materials: self.materials * multiplier,
+            stone: self.stone * multiplier,
             refined: self.refined * multiplier,
             weapons: self.weapons * multiplier,
             armor: self.armor * multiplier,
@@ -164,6 +169,7 @@ impl StorageCapacities {
             tools: self.tools * multiplier,
             fibre: self.fibre * multiplier,
             hide: self.hide * multiplier,
+            bone: self.bone * multiplier,
             cloth: self.cloth * multiplier,
             leather: self.leather * multiplier,
             ore: self.ore * multiplier,
@@ -213,6 +219,7 @@ pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     grain: 100.0,
     flour: 100.0,
     materials: 100.0,
+    stone: 100.0,
     refined: 100.0,
     weapons: 50.0,
     armor: 50.0,
@@ -223,6 +230,7 @@ pub const BASE_CAPACITY: StorageCapacities = StorageCapacities {
     tools: 100.0,
     fibre: 100.0,
     hide: 100.0,
+    bone: 100.0,
     cloth: 100.0,
     leather: 100.0,
     ore: 100.0,
@@ -341,6 +349,7 @@ impl StorageCapacities {
             grain: self.grain.min(other.grain),
             flour: self.flour.min(other.flour),
             materials: self.materials.min(other.materials),
+            stone: self.stone.min(other.stone),
             refined: self.refined.min(other.refined),
             weapons: self.weapons.min(other.weapons),
             armor: self.armor.min(other.armor),
@@ -351,6 +360,7 @@ impl StorageCapacities {
             tools: self.tools.min(other.tools),
             fibre: self.fibre.min(other.fibre),
             hide: self.hide.min(other.hide),
+            bone: self.bone.min(other.bone),
             cloth: self.cloth.min(other.cloth),
             leather: self.leather.min(other.leather),
             ore: self.ore.min(other.ore),
@@ -379,6 +389,7 @@ fn physical_storage_capacities(
         grain: capacity(ResourceKind::Grain),
         flour: capacity(ResourceKind::Flour),
         materials: capacity(ResourceKind::Materials),
+        stone: capacity(ResourceKind::Stone),
         refined: capacity(ResourceKind::Refined),
         weapons: capacity(ResourceKind::Weapons),
         armor: capacity(ResourceKind::Armor),
@@ -389,6 +400,7 @@ fn physical_storage_capacities(
         tools: capacity(ResourceKind::Tools),
         fibre: capacity(ResourceKind::Fibre),
         hide: capacity(ResourceKind::Hide),
+        bone: capacity(ResourceKind::Bone),
         cloth: capacity(ResourceKind::Cloth),
         leather: capacity(ResourceKind::Leather),
         ore: capacity(ResourceKind::Ore),
@@ -555,6 +567,7 @@ mod tests {
         assert_f64_bits(actual.tools, expected.tools, &format!("{label} tools"));
         assert_f64_bits(actual.fibre, expected.fibre, &format!("{label} fibre"));
         assert_f64_bits(actual.hide, expected.hide, &format!("{label} hide"));
+        assert_f64_bits(actual.bone, expected.bone, &format!("{label} bone"));
         assert_f64_bits(actual.cloth, expected.cloth, &format!("{label} cloth"));
         assert_f64_bits(
             actual.leather,
@@ -732,6 +745,7 @@ mod tests {
                 grain: 100.0,
                 flour: 100.0,
                 materials: 100.0,
+                stone: 100.0,
                 refined: 100.0,
                 weapons: 50.0,
                 armor: 50.0,
@@ -742,6 +756,7 @@ mod tests {
                 tools: 100.0,
                 fibre: 100.0,
                 hide: 100.0,
+                bone: 100.0,
                 cloth: 100.0,
                 leather: 100.0,
                 ore: 100.0,
@@ -781,6 +796,7 @@ mod tests {
         assert_eq!(decoded.flour, 0.0);
         assert_eq!(decoded.logs, 0.0);
         assert_eq!(decoded.lumber, 0.0);
+        assert_eq!(decoded.bone, 0.0);
         assert_eq!(decoded.ore, 0.0);
         assert_eq!(decoded.metal, 0.0);
     }
@@ -809,6 +825,7 @@ mod tests {
                 grain: 100.0,
                 flour: 100.0,
                 materials: 400.0,
+                stone: 100.0,
                 refined: 250.0,
                 weapons: 200.0,
                 armor: 200.0,
@@ -819,6 +836,7 @@ mod tests {
                 tools: 100.0,
                 fibre: 100.0,
                 hide: 100.0,
+                bone: 100.0,
                 cloth: 100.0,
                 leather: 100.0,
                 ore: 100.0,
@@ -858,6 +876,7 @@ mod tests {
                 grain: 100.0,
                 flour: 100.0,
                 materials: 225.0,
+                stone: 100.0,
                 refined: 162.5,
                 weapons: 175.0,
                 armor: 175.0,
@@ -868,6 +887,7 @@ mod tests {
                 tools: 100.0,
                 fibre: 100.0,
                 hide: 100.0,
+                bone: 100.0,
                 cloth: 100.0,
                 leather: 100.0,
                 ore: 100.0,
@@ -903,6 +923,7 @@ mod tests {
                 grain: 100.0,
                 flour: 100.0,
                 materials: 200.0,
+                stone: 100.0,
                 refined: 150.0,
                 weapons: 100.0,
                 armor: 100.0,
@@ -913,6 +934,7 @@ mod tests {
                 tools: 100.0,
                 fibre: 100.0,
                 hide: 100.0,
+                bone: 100.0,
                 cloth: 100.0,
                 leather: 100.0,
                 ore: 100.0,

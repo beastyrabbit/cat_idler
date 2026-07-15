@@ -56,6 +56,9 @@ pub enum CarryingKind {
     Blessings,
     #[serde(rename = "materials")]
     Materials,
+    /// Undressed rock carried home from a quarry.
+    #[serde(rename = "stone")]
+    Stone,
     /// Finished generic workshop goods moving from the station to storage.
     #[serde(rename = "refined")]
     Refined,
@@ -80,6 +83,12 @@ pub enum CarryingKind {
     Flour,
     #[serde(rename = "herbs")]
     Herbs,
+    /// Raw hide carried home alongside a hunt's food.
+    #[serde(rename = "hide")]
+    Hide,
+    /// Raw bone carried home alongside a hunt's food and hide.
+    #[serde(rename = "bone")]
+    Bone,
     /// Mountain ore moving into a Smelter's local input ledger.
     #[serde(rename = "ore")]
     Ore,
@@ -107,6 +116,10 @@ pub struct Resources {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub flour: f64,
     pub materials: f64,
+    /// Raw quarried stone. This additive field deliberately does not alias the
+    /// stable generic `materials` (Supplies) field on legacy saves.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stone: f64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub refined: f64,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -124,7 +137,7 @@ pub struct Resources {
     /// remain a fallback construction stock for existing saves.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub lumber: f64,
-    /// Dressed stone from the stone-prep workshop (P12.4b: materials → blocks).
+    /// Dressed stone from the stone-prep workshop (P19.C1: raw Stone → blocks).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub blocks: f64,
     /// Finished tools from the woodworking shop (P12.4b: planks + blocks → tools).
@@ -139,6 +152,10 @@ pub struct Resources {
     /// clothing chain slice). Feeds the tannery's hide → leather refine.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub hide: f64,
+    /// Raw bone recovered from hunts. This is a distinct physical stock and never
+    /// aliases legacy `materials` (Supplies) or raw `stone`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bone: f64,
     /// Woven cloth from the clothier (P16/P19 clothing chain slice: fibre → cloth).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub cloth: f64,
@@ -147,7 +164,7 @@ pub struct Resources {
     pub leather: f64,
     /// Raw ore, a mountain-only byproduct of quarrying (P17/P19 ore→metal chain).
     /// Feeds the smelter's ore → metal refine, mirroring how `materials` feeds
-    /// planks/blocks. See `world_tick::credit_quarry_ore`.
+    /// planks/blocks. Mountain quarry workers return it as a separate physical haul.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub ore: f64,
     /// Refined metal bars from the smelter (P17/P19 ore→metal chain: ore → metal).
@@ -358,6 +375,7 @@ mod tests {
                 grain: 28.0,
                 flour: 29.0,
                 materials: 13.0,
+                stone: 23.5,
                 refined: 14.0,
                 weapons: 15.0,
                 armor: 16.0,
@@ -368,6 +386,7 @@ mod tests {
                 tools: 20.0,
                 fibre: 21.0,
                 hide: 22.0,
+                bone: 22.5,
                 cloth: 23.0,
                 leather: 24.0,
                 ore: 25.0,
@@ -468,6 +487,9 @@ mod tests {
         assert_eq!(decoded.flour, 0.0);
         assert_eq!(decoded.logs, 0.0);
         assert_eq!(decoded.lumber, 0.0);
+        assert_eq!(decoded.stone, 0.0);
+        assert_eq!(decoded.bone, 0.0);
+        assert_eq!(decoded.materials, 13.0);
 
         let populated = Resources {
             catnip: 1.0,
@@ -475,6 +497,7 @@ mod tests {
             flour: 3.0,
             logs: 4.0,
             lumber: 5.0,
+            stone: 6.0,
             ..Resources::default()
         };
         let json = serde_json::to_value(&populated).expect("new resources encode");
@@ -483,6 +506,7 @@ mod tests {
         assert_eq!(json["flour"], serde_json::json!(3.0));
         assert_eq!(json["logs"], serde_json::json!(4.0));
         assert_eq!(json["lumber"], serde_json::json!(5.0));
+        assert_eq!(json["stone"], serde_json::json!(6.0));
         assert_eq!(
             serde_json::from_value::<Resources>(json).expect("new resources decode"),
             populated
@@ -604,6 +628,7 @@ mod tests {
         assert!(wire.get("tools").is_none());
         assert!(wire.get("fibre").is_none());
         assert!(wire.get("hide").is_none());
+        assert!(wire.get("bone").is_none());
         assert!(wire.get("cloth").is_none());
         assert!(wire.get("leather").is_none());
 
@@ -614,6 +639,7 @@ mod tests {
             tools: 2.0,
             fibre: 6.0,
             hide: 4.5,
+            bone: 2.5,
             cloth: 1.5,
             leather: 0.5,
             ..Resources::default()
@@ -624,6 +650,7 @@ mod tests {
         assert_eq!(wire["tools"], serde_json::json!(2.0));
         assert_eq!(wire["fibre"], serde_json::json!(6.0));
         assert_eq!(wire["hide"], serde_json::json!(4.5));
+        assert_eq!(wire["bone"], serde_json::json!(2.5));
         assert_eq!(wire["cloth"], serde_json::json!(1.5));
         assert_eq!(wire["leather"], serde_json::json!(0.5));
         let back: Resources = serde_json::from_value(wire).expect("round-trip");

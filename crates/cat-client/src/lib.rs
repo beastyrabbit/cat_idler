@@ -1249,7 +1249,7 @@ const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = 3.0 * UI_BTN_H + 4.0 * UI_GAP + 2.0 * UI_
 const NARROW_BOTTOM_BAR_FOOTPRINT: f32 = 4.0 * UI_BTN_H + 5.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
 const NARROW_LAYOUT_MAX_WIDTH: f32 = 1100.0;
 const BOTTOM_OVERLAY_CLEARANCE: f32 = WIDE_BOTTOM_BAR_FOOTPRINT + UI_GAP;
-/// Twelve two-column resource rows remain readable at this compact height and
+/// Thirteen two-column resource rows remain readable at this compact height and
 /// leave room for Dispatches above the narrow wrapped toolbar.
 const HUD_RESOURCE_PILL_HEIGHT: f32 = 19.0;
 #[cfg(test)]
@@ -3176,6 +3176,7 @@ enum HudRes {
     Grain,
     Flour,
     Materials,
+    Stone,
     Refined,
     Planks,
     Blocks,
@@ -3185,6 +3186,7 @@ enum HudRes {
     Herbs,
     Fibre,
     Hide,
+    Bone,
     Cloth,
     Leather,
     Ore,
@@ -3195,7 +3197,7 @@ enum HudRes {
 }
 
 /// The HUD resources, in display order (refinement tier grouped after refined).
-const HUD_RESOURCES: [HudRes; 23] = [
+const HUD_RESOURCES: [HudRes; 25] = [
     HudRes::Food,
     HudRes::Fish,
     HudRes::Water,
@@ -3203,6 +3205,7 @@ const HUD_RESOURCES: [HudRes; 23] = [
     HudRes::Grain,
     HudRes::Flour,
     HudRes::Materials,
+    HudRes::Stone,
     HudRes::Refined,
     HudRes::Planks,
     HudRes::Blocks,
@@ -3212,6 +3215,7 @@ const HUD_RESOURCES: [HudRes; 23] = [
     HudRes::Herbs,
     HudRes::Fibre,
     HudRes::Hide,
+    HudRes::Bone,
     HudRes::Cloth,
     HudRes::Leather,
     HudRes::Ore,
@@ -3271,6 +3275,7 @@ fn resource_icon_path(kind: HudRes) -> &'static str {
         HudRes::Grain => "public/images/game/farm/crop_mature.png",
         HudRes::Flour => "public/images/game/props/sack.png",
         HudRes::Materials => "public/images/game/icons/materials.png",
+        HudRes::Stone => "public/images/game/props/stone_pile.png",
         HudRes::Refined => "public/images/game/icons/refined.png",
         HudRes::Planks => "public/images/game/interior/floor_wood.png",
         HudRes::Blocks => "public/images/game/icons/blocks.png",
@@ -3280,6 +3285,7 @@ fn resource_icon_path(kind: HudRes) -> &'static str {
         HudRes::Herbs => "public/images/game/icons/herbs.png",
         HudRes::Fibre => "public/images/game/props/haystack.png",
         HudRes::Hide => "public/images/game/interior/bed-orange.png",
+        HudRes::Bone => "public/images/game/icons/goods.png",
         HudRes::Cloth => "public/images/game/interior/scroll.png",
         HudRes::Leather => "public/images/game/interior/stool-square.png",
         HudRes::Ore => "public/images/game/props/ore_pile.png",
@@ -3323,6 +3329,7 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
         ResourceKind::Grain => HudRes::Grain,
         ResourceKind::Flour => HudRes::Flour,
         ResourceKind::Materials => HudRes::Materials,
+        ResourceKind::Stone => HudRes::Stone,
         ResourceKind::Refined => HudRes::Refined,
         ResourceKind::Weapons => HudRes::Weapons,
         ResourceKind::Armor => HudRes::Armor,
@@ -3333,6 +3340,7 @@ fn hud_res_of(kind: ResourceKind) -> HudRes {
         ResourceKind::Tools => HudRes::Tools,
         ResourceKind::Fibre => HudRes::Fibre,
         ResourceKind::Hide => HudRes::Hide,
+        ResourceKind::Bone => HudRes::Bone,
         ResourceKind::Cloth => HudRes::Cloth,
         ResourceKind::Leather => HudRes::Leather,
         ResourceKind::Ore => HudRes::Ore,
@@ -3350,6 +3358,7 @@ fn hud_resource_label(kind: HudRes) -> &'static str {
         HudRes::Grain => "Grain",
         HudRes::Flour => "Flour",
         HudRes::Materials => "Materials",
+        HudRes::Stone => "Stone",
         HudRes::Refined => "Refined",
         HudRes::Planks => "Planks",
         HudRes::Blocks => "Blocks",
@@ -3359,6 +3368,7 @@ fn hud_resource_label(kind: HudRes) -> &'static str {
         HudRes::Herbs => "Herbs",
         HudRes::Fibre => "Fibre",
         HudRes::Hide => "Hide",
+        HudRes::Bone => "Bone",
         HudRes::Cloth => "Cloth",
         HudRes::Leather => "Leather",
         HudRes::Ore => "Ore",
@@ -3379,6 +3389,7 @@ fn resource_icon_tint(kind: HudRes) -> Color {
         HudRes::Grain => Color::srgb(0.88, 0.68, 0.26),
         HudRes::Flour => Color::srgb(0.92, 0.88, 0.72),
         HudRes::Materials => Color::srgb(0.62, 0.46, 0.29),
+        HudRes::Stone => Color::srgb(0.62, 0.64, 0.66),
         HudRes::Refined => Color::srgb(0.86, 0.71, 0.40),
         HudRes::Planks => Color::srgb(0.82, 0.66, 0.42),
         HudRes::Blocks => Color::srgb(0.62, 0.64, 0.66),
@@ -3388,6 +3399,7 @@ fn resource_icon_tint(kind: HudRes) -> Color {
         HudRes::Herbs => Color::srgb(0.51, 0.79, 0.42),
         HudRes::Fibre => Color::srgb(0.72, 0.78, 0.52),
         HudRes::Hide => Color::srgb(0.72, 0.50, 0.34),
+        HudRes::Bone => Color::srgb(0.90, 0.86, 0.74),
         HudRes::Cloth => Color::srgb(0.74, 0.48, 0.69),
         HudRes::Leather => Color::srgb(0.55, 0.34, 0.22),
         HudRes::Ore => Color::srgb(0.48, 0.57, 0.66),
@@ -3409,6 +3421,7 @@ fn hud_resource_value(kind: HudRes, r: &ResourceAmounts, cap: &ResourceCapacitie
         HudRes::Grain => format!("{:.0} / {:.0}", r.grain, cap.grain),
         HudRes::Flour => format!("{:.0} / {:.0}", r.flour, cap.flour),
         HudRes::Materials => format!("{:.0} / {:.0}", r.materials, cap.materials),
+        HudRes::Stone => format!("{:.0} / {:.0}", r.stone, cap.stone),
         HudRes::Refined => format!("{:.0} / {:.0}", r.refined, cap.refined),
         HudRes::Planks => format!("{:.0} / {:.0}", r.planks, cap.planks),
         HudRes::Blocks => format!("{:.0} / {:.0}", r.blocks, cap.blocks),
@@ -3418,6 +3431,7 @@ fn hud_resource_value(kind: HudRes, r: &ResourceAmounts, cap: &ResourceCapacitie
         HudRes::Herbs => format!("{:.0} / {:.0}", r.herbs, cap.herbs),
         HudRes::Fibre => format!("{:.0} / {:.0}", r.fibre, cap.fibre),
         HudRes::Hide => format!("{:.0} / {:.0}", r.hide, cap.hide),
+        HudRes::Bone => format!("{:.0} / {:.0}", r.bone, cap.bone),
         HudRes::Cloth => format!("{:.0} / {:.0}", r.cloth, cap.cloth),
         HudRes::Leather => format!("{:.0} / {:.0}", r.leather, cap.leather),
         HudRes::Ore => format!("{:.0} / {:.0}", r.ore, cap.ore),
@@ -7998,10 +8012,11 @@ fn handle_farm_crop_button(
     }
 }
 
-const GATHER_KINDS: [ResourceKind; 4] = [
+const GATHER_KINDS: [ResourceKind; 5] = [
     ResourceKind::Food,
     ResourceKind::Water,
     ResourceKind::Materials,
+    ResourceKind::Stone,
     ResourceKind::Logs,
 ];
 
@@ -8460,7 +8475,7 @@ fn is_discovered_trade_target(
             .any(|village| village.id == target_id)
 }
 
-const VILLAGE_TRADE_KINDS: [ResourceKind; 20] = [
+const VILLAGE_TRADE_KINDS: [ResourceKind; 22] = [
     ResourceKind::Food,
     ResourceKind::Fish,
     ResourceKind::Water,
@@ -8469,6 +8484,7 @@ const VILLAGE_TRADE_KINDS: [ResourceKind; 20] = [
     ResourceKind::Grain,
     ResourceKind::Flour,
     ResourceKind::Materials,
+    ResourceKind::Stone,
     ResourceKind::Refined,
     ResourceKind::Weapons,
     ResourceKind::Armor,
@@ -8476,6 +8492,7 @@ const VILLAGE_TRADE_KINDS: [ResourceKind; 20] = [
     ResourceKind::Lumber,
     ResourceKind::Fibre,
     ResourceKind::Hide,
+    ResourceKind::Bone,
     ResourceKind::Cloth,
     ResourceKind::Leather,
     ResourceKind::Ore,
@@ -8498,6 +8515,7 @@ fn trade_resource_short_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Grain => "grain",
         ResourceKind::Flour => "flour",
         ResourceKind::Materials => "mats",
+        ResourceKind::Stone => "stone",
         ResourceKind::Refined => "refined",
         ResourceKind::Weapons => "weapons",
         ResourceKind::Armor => "armor",
@@ -8508,6 +8526,7 @@ fn trade_resource_short_label(kind: ResourceKind) -> &'static str {
         ResourceKind::Tools => "tools",
         ResourceKind::Fibre => "fibre",
         ResourceKind::Hide => "hide",
+        ResourceKind::Bone => "bone",
         ResourceKind::Cloth => "cloth",
         ResourceKind::Leather => "leather",
         ResourceKind::Ore => "ore",
@@ -10166,7 +10185,7 @@ fn officer_holder_name(colony: &ColonySnapshot, role: OfficerRole) -> Option<&st
         .map(|c| c.name.as_str())
 }
 
-const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 23] = [
+const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 25] = [
     ResourceKind::Food,
     ResourceKind::Fish,
     ResourceKind::Water,
@@ -10175,6 +10194,7 @@ const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 23] = [
     ResourceKind::Grain,
     ResourceKind::Flour,
     ResourceKind::Materials,
+    ResourceKind::Stone,
     ResourceKind::Refined,
     ResourceKind::Planks,
     ResourceKind::Blocks,
@@ -10183,6 +10203,7 @@ const MAINTAINED_RESOURCE_KINDS: [ResourceKind; 23] = [
     ResourceKind::Lumber,
     ResourceKind::Fibre,
     ResourceKind::Hide,
+    ResourceKind::Bone,
     ResourceKind::Cloth,
     ResourceKind::Leather,
     ResourceKind::Ore,
@@ -10202,6 +10223,7 @@ fn resource_amount(kind: ResourceKind, resources: &ResourceAmounts) -> f64 {
         ResourceKind::Grain => resources.grain,
         ResourceKind::Flour => resources.flour,
         ResourceKind::Materials => resources.materials,
+        ResourceKind::Stone => resources.stone,
         ResourceKind::Refined => resources.refined,
         ResourceKind::Weapons => resources.weapons,
         ResourceKind::Armor => resources.armor,
@@ -10212,6 +10234,7 @@ fn resource_amount(kind: ResourceKind, resources: &ResourceAmounts) -> f64 {
         ResourceKind::Tools => resources.tools,
         ResourceKind::Fibre => resources.fibre,
         ResourceKind::Hide => resources.hide,
+        ResourceKind::Bone => resources.bone,
         ResourceKind::Cloth => resources.cloth,
         ResourceKind::Leather => resources.leather,
         ResourceKind::Ore => resources.ore,
@@ -10264,12 +10287,13 @@ fn pile_prop(kind: ResourceKind) -> PropTexture {
         ResourceKind::Herbs => PropTexture::Haystack,
         ResourceKind::Catnip | ResourceKind::Grain | ResourceKind::Flour => PropTexture::Sack,
         ResourceKind::Materials => PropTexture::StonePile,
+        ResourceKind::Stone => PropTexture::StonePile,
         ResourceKind::Refined => PropTexture::GoldPile,
         ResourceKind::Logs | ResourceKind::Lumber | ResourceKind::Planks => PropTexture::Crate,
         ResourceKind::Blocks => PropTexture::StonePile,
         ResourceKind::Tools => PropTexture::GoldPile,
         ResourceKind::Fibre | ResourceKind::Cloth => PropTexture::Haystack,
-        ResourceKind::Hide | ResourceKind::Leather => PropTexture::Sack,
+        ResourceKind::Hide | ResourceKind::Bone | ResourceKind::Leather => PropTexture::Sack,
         ResourceKind::Ore => PropTexture::StonePile,
         ResourceKind::Metal => PropTexture::GoldPile,
         ResourceKind::Weapons | ResourceKind::Armor | ResourceKind::Blessings => PropTexture::Crate,
@@ -10293,6 +10317,7 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::Grain => "grain",
         ResourceKind::Flour => "flour",
         ResourceKind::Materials => "materials",
+        ResourceKind::Stone => "stone",
         ResourceKind::Refined => "refined",
         ResourceKind::Weapons => "weapons",
         ResourceKind::Armor => "armor",
@@ -10303,6 +10328,7 @@ fn resource_kind_name(kind: ResourceKind) -> &'static str {
         ResourceKind::Tools => "tools",
         ResourceKind::Fibre => "fibre",
         ResourceKind::Hide => "hide",
+        ResourceKind::Bone => "bone",
         ResourceKind::Cloth => "cloth",
         ResourceKind::Leather => "leather",
         ResourceKind::Ore => "ore",
@@ -10813,6 +10839,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
         CarryingKind::Fish => Color::srgb(0.28, 0.68, 0.82),
         CarryingKind::Water => Color::srgb(0.35, 0.65, 0.95),
         CarryingKind::Materials => Color::srgb(0.70, 0.55, 0.35),
+        CarryingKind::Stone => Color::srgb(0.62, 0.64, 0.66),
         CarryingKind::Refined => Color::srgb(0.78, 0.73, 0.62),
         CarryingKind::Blessings => Color::srgb(0.95, 0.85, 0.40),
         CarryingKind::Logs => Color::srgb(0.45, 0.29, 0.17),
@@ -10823,6 +10850,8 @@ fn carrying_color(kind: CarryingKind) -> Color {
         CarryingKind::Grain => Color::srgb(0.96, 0.78, 0.34),
         CarryingKind::Flour => Color::srgb(0.94, 0.91, 0.77),
         CarryingKind::Herbs => Color::srgb(0.55, 0.88, 0.48),
+        CarryingKind::Hide => Color::srgb(0.72, 0.50, 0.34),
+        CarryingKind::Bone => Color::srgb(0.90, 0.86, 0.74),
         CarryingKind::Ore => Color::srgb(0.42, 0.36, 0.32),
         CarryingKind::Metal => Color::srgb(0.68, 0.72, 0.78),
     }
@@ -10831,6 +10860,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
 fn carrying_icon_path(kind: CarryingKind) -> Option<&'static str> {
     match kind {
         CarryingKind::Materials => Some("public/images/game/icons/materials.png"),
+        CarryingKind::Stone => Some("public/images/game/props/stone_pile.png"),
         CarryingKind::Blessings => Some("public/images/game/icons/blessings.png"),
         _ => None,
     }
@@ -11474,8 +11504,8 @@ mod tests {
         assert_eq!(dispatches_display(1024.0, false), Display::None);
         assert_eq!(dispatches_display(1280.0, false), Display::Flex);
         assert_eq!(dispatches_display(1280.0, true), Display::None);
-        assert_eq!(hud_resource_grid_rows(), 12);
-        assert_eq!(hud_resource_grid_height(), 261.0);
+        assert_eq!(hud_resource_grid_rows(), 13);
+        assert_eq!(hud_resource_grid_height(), 283.0);
         let grid_width = HUD_RESOURCE_COLUMNS as f32 * HUD_RESOURCE_CELL_WIDTH
             + (HUD_RESOURCE_COLUMNS - 1) as f32 * UI_GAP
             + 2.0 * UI_PAD
@@ -11758,7 +11788,7 @@ mod tests {
 
         assert_eq!(draft.offered_kind, ResourceKind::Fish);
         assert_eq!(draft.offered_amount, 10.0);
-        assert_eq!(draft.requested_kind, ResourceKind::Refined);
+        assert_eq!(draft.requested_kind, ResourceKind::Stone);
         assert_eq!(draft.requested_amount, 10.0);
         assert_ne!(draft.offered_kind, draft.requested_kind);
     }
@@ -12076,6 +12106,7 @@ mod tests {
         assert_eq!(hud_res_of(ResourceKind::Grain), HudRes::Grain);
         assert_eq!(hud_res_of(ResourceKind::Flour), HudRes::Flour);
         assert_eq!(hud_res_of(ResourceKind::Materials), HudRes::Materials);
+        assert_eq!(hud_res_of(ResourceKind::Stone), HudRes::Stone);
         assert_eq!(hud_res_of(ResourceKind::Refined), HudRes::Refined);
         assert_eq!(hud_res_of(ResourceKind::Weapons), HudRes::Weapons);
         assert_eq!(hud_res_of(ResourceKind::Armor), HudRes::Armor);
@@ -12086,6 +12117,7 @@ mod tests {
         assert_eq!(hud_res_of(ResourceKind::Tools), HudRes::Tools);
         assert_eq!(hud_res_of(ResourceKind::Fibre), HudRes::Fibre);
         assert_eq!(hud_res_of(ResourceKind::Hide), HudRes::Hide);
+        assert_eq!(hud_res_of(ResourceKind::Bone), HudRes::Bone);
         assert_eq!(hud_res_of(ResourceKind::Cloth), HudRes::Cloth);
         assert_eq!(hud_res_of(ResourceKind::Leather), HudRes::Leather);
         assert_eq!(hud_res_of(ResourceKind::Ore), HudRes::Ore);
@@ -12572,6 +12604,7 @@ mod tests {
             grain: 0.0,
             flour: 0.0,
             materials,
+            stone: 0.0,
             refined,
             weapons: 0.0,
             armor: 0.0,
@@ -12582,6 +12615,7 @@ mod tests {
             tools: 0.0,
             fibre: 0.0,
             hide: 0.0,
+            bone: 0.0,
             cloth: 0.0,
             leather: 0.0,
             ore: 0.0,
@@ -12627,9 +12661,10 @@ mod tests {
     #[test]
     fn each_new_single_resource_pile_has_a_visible_total_and_dominant_prop() {
         type ResourceSetter = fn(&mut ResourceAmounts);
-        let cases: [(ResourceKind, ResourceSetter); 6] = [
+        let cases: [(ResourceKind, ResourceSetter); 7] = [
             (ResourceKind::Fibre, |a: &mut ResourceAmounts| a.fibre = 3.0),
             (ResourceKind::Hide, |a: &mut ResourceAmounts| a.hide = 3.0),
+            (ResourceKind::Bone, |a: &mut ResourceAmounts| a.bone = 3.0),
             (ResourceKind::Cloth, |a: &mut ResourceAmounts| a.cloth = 3.0),
             (ResourceKind::Leather, |a: &mut ResourceAmounts| {
                 a.leather = 3.0
@@ -12672,7 +12707,7 @@ mod tests {
     #[test]
     fn accept_choice_cycles_general_through_kinds() {
         let storable = storable_kinds();
-        assert_eq!(storable.len(), 22);
+        assert_eq!(storable.len(), 24);
         for &kind in ResourceKind::ALL {
             assert_eq!(
                 storable.contains(&kind),
@@ -13510,9 +13545,11 @@ mod tests {
         assert_eq!(hud_resource_label(HudRes::Fibre), "Fibre");
         assert_eq!(hud_resource_label(HudRes::Cloth), "Cloth");
         assert_eq!(hud_resource_label(HudRes::Hide), "Hide");
+        assert_eq!(hud_resource_label(HudRes::Bone), "Bone");
         assert_eq!(hud_resource_label(HudRes::Leather), "Leather");
         assert_eq!(hud_resource_label(HudRes::Ore), "Ore");
         assert_eq!(hud_resource_label(HudRes::Metal), "Metal");
+        assert_eq!(hud_resource_label(HudRes::Stone), "Stone");
     }
 
     #[test]
@@ -13526,6 +13563,7 @@ mod tests {
             grain: 14.0,
             flour: 6.0,
             materials: 24.0,
+            stone: 9.0,
             refined: 0.0,
             weapons: 3.0,
             armor: 2.0,
@@ -13536,6 +13574,7 @@ mod tests {
             tools: 1.0,
             fibre: 11.0,
             hide: 12.0,
+            bone: 13.0,
             cloth: 5.0,
             leather: 6.0,
             ore: 7.0,
@@ -13551,6 +13590,7 @@ mod tests {
             grain: 100.0,
             flour: 100.0,
             materials: 100.0,
+            stone: 100.0,
             refined: 100.0,
             weapons: 0.0,
             armor: 0.0,
@@ -13561,6 +13601,7 @@ mod tests {
             tools: 100.0,
             fibre: 100.0,
             hide: 100.0,
+            bone: 100.0,
             cloth: 100.0,
             leather: 100.0,
             ore: 100.0,
@@ -13578,6 +13619,7 @@ mod tests {
         assert_eq!(hud_resource_value(HudRes::Tools, &r, &cap), "1 / 100");
         assert_eq!(hud_resource_value(HudRes::Fibre, &r, &cap), "11 / 100");
         assert_eq!(hud_resource_value(HudRes::Hide, &r, &cap), "12 / 100");
+        assert_eq!(hud_resource_value(HudRes::Bone, &r, &cap), "13 / 100");
         assert_eq!(hud_resource_value(HudRes::Cloth, &r, &cap), "5 / 100");
         assert_eq!(hud_resource_value(HudRes::Leather, &r, &cap), "6 / 100");
         assert_eq!(hud_resource_value(HudRes::Ore, &r, &cap), "7 / 100");
@@ -13608,6 +13650,7 @@ mod tests {
                 grain: 0.0,
                 flour: 0.0,
                 materials: 0.0,
+                stone: 0.0,
                 refined: 0.0,
                 weapons: 0.0,
                 armor: 0.0,
@@ -13618,6 +13661,7 @@ mod tests {
                 tools: 0.0,
                 fibre: 0.0,
                 hide: 0.0,
+                bone: 0.0,
                 cloth: 0.0,
                 leather: 0.0,
                 ore: 0.0,
@@ -13879,6 +13923,7 @@ mod tests {
             grain: 0.0,
             flour: 0.0,
             materials: 24.0,
+            stone: 7.0,
             refined: 0.0,
             weapons: 0.0,
             armor: 0.0,
@@ -13889,6 +13934,7 @@ mod tests {
             tools: 0.0,
             fibre: 1.0,
             hide: 2.0,
+            bone: 2.5,
             cloth: 3.0,
             leather: 4.0,
             ore: 5.0,
@@ -14117,6 +14163,7 @@ mod tests {
         let mature_stacks = [
             ResourceKind::Fibre,
             ResourceKind::Hide,
+            ResourceKind::Bone,
             ResourceKind::Cloth,
             ResourceKind::Leather,
             ResourceKind::Ore,
