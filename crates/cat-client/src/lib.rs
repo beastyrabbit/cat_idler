@@ -15706,7 +15706,7 @@ mod tests {
         mill.id = "mill-1".to_owned();
         mill.building_type = BuildingType::Mill;
         mill.production_queue.clear();
-        mill.available_recipes = vec!["grain_to_flour_and_food".to_owned()];
+        mill.available_recipes = vec!["grain_to_flour".to_owned(), "flour_to_food".to_owned()];
         assert!(matches!(
             station_queue_action(
                 &signed_session("mill-queue-session"),
@@ -15721,7 +15721,7 @@ mod tests {
                 ..
             }) if session_id == "mill-queue-session"
                 && building_id == "mill-1"
-                && recipe_id == "grain_to_flour_and_food"
+                && recipe_id == "grain_to_flour"
         ));
         assert_ne!(
             carrying_color(CarryingKind::Flour),

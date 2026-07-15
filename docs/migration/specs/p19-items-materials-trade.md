@@ -34,7 +34,7 @@ every workshop remains an open-top, function-readable map station.
 | Woodworking | Planks + Blocks → wooden Tools; Planks → wood goods | available from founding; future Toolmaking/Carpentry studies gate recipes | Craft / Forester | One selected queue recipe per worker; no parallel hidden craft timer |
 | Construction | Lumber or Planks + Blocks → scaffold/building | building-specific study | Build / Leader direction or manual order | Finite stock is carried to the scaffold before on-site progress |
 | Farms and forage | plots/sites → Grain, Herbs, Catnip, Fibre | crop/source-specific studies | Farm/Forage / Farmer | Harvest basket → gather spot → finite pile |
-| Mill | Grain → Flour; Flour → Food | building `milling`; current combined study `grain_milling_preparation` | Mill / Farmer | Split the current combined cycle into two explicit queue recipes through the physical Mill route |
+| Mill | Grain → Flour; Flour → Food | building `milling`; `grain_milling_preparation` and `grain_milling_staples` | Mill / Farmer | Two explicit selected queue recipes through the physical Mill route |
 | Hunt | prey → Food plus Hide/Bone | hunting/source studies | Hunt / Farmer, with the Leader safety floor | Every byproduct returns as physical cargo |
 | Clothier | Fibre → Cloth; Cloth → clothing | building `textiles`; Textile Work recipes | Textile / Cloth Leader | Same station-local carry/work/delivery contract |
 | Tannery | Hide → Leather; Leather → clothing/light armor | building `textiles`; Leatherworking recipes | Textile / Cloth Leader | Same station-local carry/work/delivery contract |
@@ -59,7 +59,7 @@ every workshop remains an open-top, function-readable map station.
   Woodworking, Smithy, Clothier, and Tannery, use the same ordered/repeatable/pausable queue
   contract; future benches must preserve it.
 
-The C2.0 scaffold gives all eleven maintained station recipes stable data-owned descriptors,
+The C2.0 scaffold and sourced-breadth follow-up give all thirteen maintained station recipes stable data-owned descriptors,
 canonical input/output resource sets, deterministic default queues, and exact catalog-derived
 availability. C2.1 completes Wood Cutter's five-Logs-to-one-Plank physical route. C2.2 completes
 Stone Prep's five-Stone-to-one-Block physical route. C2.3 completes Woodworking's sequential
@@ -69,12 +69,12 @@ Textile batch, with no aggregate credit before outbound delivery. P19.C2.5 compl
 five separately foraged and delivered Fibre travel through local input, one 600-game-second
 Textile batch produces one Cloth, and aggregate credit waits for its outbound delivery. P19.C2.6
 completes Smithy: two Metal travel through local input, one selected 900-game-second Metalwork
-batch produces one whole Weapon or Armor, and aggregate credit waits for outbound delivery. All six make their
+batch produces one whole Tool, Weapon, or Armor, and aggregate credit waits for outbound delivery. All six make their
 ordered/repeatable/pausable selected queues authoritative. Their
 `logs_to_planks`, `stone_to_blocks`, and `planks_and_blocks_to_tools` recipes are
 founding-available in fresh rules-v1 colonies; their studies gate later recipes. Tannery requires
-the Textiles entitlement, as does Clothier; Weaponsmithing and Armorsmithing independently gate the
-two Smithy selections. Rules-v0 saves remain grandfathered. Woodworking's old
+the Textiles entitlement, as does Clothier; Toolmaking, Weaponsmithing, and Armorsmithing independently gate the
+three Smithy selections. Rules-v0 saves remain grandfathered. Woodworking's old
 `wood_craft_progress`, Clothier's old hidden clothing timer, and Smithy's old aggregate forge
 timers are frozen and preserved only for save compatibility. P19.C3 now creates one stable finite
 Tool/Weapon/Armor ID in local output, carries that same ID to storage before derived scalar credit,
@@ -94,7 +94,7 @@ One signed caravan sale may transfer at most 20,000 grams of items. That bounded
 finite-item loop are implemented foundations; they do not make the catalog complete. Bone item
 variants, Gem/clay/sand sources and variants, and broader generated material/recipe breadth are
 still product work. Functional Tool/Weapon/Armor chains are complete and must retain their single
-finite authority. All ten maintained processors, including Smithy's two selected recipes, already
+finite authority. All ten maintained processors, including Smithy's three selected recipes, already
 use physical station-local logistics.
 
 ## Resource / item taxonomy (DF breadth, cat-flavoured)

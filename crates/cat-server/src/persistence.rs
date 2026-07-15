@@ -493,13 +493,58 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
          WHERE physicalStationRulesVersion < 5",
         [],
     )?;
-    // Smithy becomes physical in station-rules v6. Its two selected recipes were
+    // Smithy becomes physical in station-rules v6. Its selected recipes were
     // already player-editable under v5, so this boundary is version-only: preserve
     // queue order/repeat, pause, progress, and intentional emptiness exactly.
     conn.execute(
         "UPDATE buildings
          SET physicalStationRulesVersion = 6
          WHERE physicalStationRulesVersion < 6",
+        [],
+    )?;
+    // Mill station-rules v7 splits the old implicit grind-and-bake operation into
+    // two explicit physical queue entries. Rewrite only the legacy ID, preserving
+    // authored order, repeat flags, pause, progress, and intentional emptiness.
+    let legacy_mill_queues = if column_exists(conn, "buildings", "type")? {
+        let mut stmt = conn.prepare(
+            "SELECT id, productionQueue FROM buildings
+             WHERE type = 'mill' AND physicalStationRulesVersion < 7",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    for (id, encoded) in legacy_mill_queues {
+        let Ok(queue) = serde_json::from_str::<Vec<ProductionQueueEntry>>(&encoded) else {
+            continue;
+        };
+        let mut migrated = Vec::with_capacity(queue.len() + 1);
+        for entry in queue {
+            if entry.recipe_id == cat_sim::station_recipes::LEGACY_COMBINED_MILL_RECIPE_ID {
+                migrated.push(ProductionQueueEntry {
+                    recipe_id: cat_sim::station_recipes::GRAIN_TO_FLOUR_RECIPE_ID.to_owned(),
+                    repeat: entry.repeat,
+                });
+                migrated.push(ProductionQueueEntry {
+                    recipe_id: cat_sim::station_recipes::FLOUR_TO_FOOD_RECIPE_ID.to_owned(),
+                    repeat: entry.repeat,
+                });
+            } else {
+                migrated.push(entry);
+            }
+        }
+        conn.execute(
+            "UPDATE buildings SET productionQueue = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&migrated).map_err(to_sql_json)?, id],
+        )?;
+    }
+    conn.execute(
+        "UPDATE buildings
+         SET physicalStationRulesVersion = 7
+         WHERE physicalStationRulesVersion < 7",
         [],
     )?;
     Ok(())
@@ -3161,6 +3206,74 @@ mod tests {
     }
 
     #[test]
+    fn v6_combined_mill_queue_splits_once_and_preserves_authored_state() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        init_schema(&conn).expect("schema");
+        let legacy_queue = vec![
+            ProductionQueueEntry {
+                recipe_id: cat_sim::station_recipes::LEGACY_COMBINED_MILL_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
+            ProductionQueueEntry {
+                recipe_id: "player_marker".to_owned(),
+                repeat: true,
+            },
+        ];
+        conn.execute(
+            "INSERT INTO buildings (
+                id, colonyId, type, level, position, constructionProgress,
+                productionProgress, isComplete, productionQueue, productionPaused,
+                productionQueueInitialized, physicalRefinerQueueInitialized,
+                physicalStationRulesVersion
+             ) VALUES ('v6-mill', 'colony-1', 'mill', 1, '{}',
+                 100, 317.25, 1, ?1, 1, 1, 1, 6)",
+            [serde_json::to_string(&legacy_queue).unwrap()],
+        )
+        .expect("v6 Mill row");
+
+        migrate_add_missing_columns(&conn).expect("Mill v7 split");
+        let (encoded, version, progress, paused): (String, i64, f64, i64) = conn
+            .query_row(
+                "SELECT productionQueue, physicalStationRulesVersion,
+                        productionProgress, productionPaused
+                 FROM buildings WHERE id = 'v6-mill'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<ProductionQueueEntry>>(&encoded).unwrap(),
+            vec![
+                ProductionQueueEntry {
+                    recipe_id: cat_sim::station_recipes::GRAIN_TO_FLOUR_RECIPE_ID.to_owned(),
+                    repeat: false,
+                },
+                ProductionQueueEntry {
+                    recipe_id: cat_sim::station_recipes::FLOUR_TO_FOOD_RECIPE_ID.to_owned(),
+                    repeat: false,
+                },
+                ProductionQueueEntry {
+                    recipe_id: "player_marker".to_owned(),
+                    repeat: true,
+                },
+            ]
+        );
+        assert_eq!(version, 7);
+        assert_eq!(progress.to_bits(), 317.25_f64.to_bits());
+        assert_eq!(paused, 1);
+
+        migrate_add_missing_columns(&conn).expect("idempotent Mill v7 restart");
+        let restarted: String = conn
+            .query_row(
+                "SELECT productionQueue FROM buildings WHERE id = 'v6-mill'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(restarted, encoded);
+    }
+
+    #[test]
     fn legacy_stone_prep_queue_initializes_once_and_player_empty_survives_v3() {
         let conn = Connection::open_in_memory().expect("memory db");
         init_schema(&conn).expect("schema");
@@ -3189,7 +3302,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
             default_production_queue(BuildingType::StonePrep)
         );
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
 
         conn.execute(
             "UPDATE buildings SET productionQueue = '[]'
@@ -3207,7 +3320,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cleared, "[]", "Stone Prep empty queue remains player-owned");
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -3237,7 +3350,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(queue, "[]", "v2 player-empty queue is authoritative");
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         assert_eq!(progress.to_bits(), 417.5_f64.to_bits());
         assert_eq!(paused, 1);
 
@@ -3264,7 +3377,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&persisted).unwrap(),
             explicit_queue
         );
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -3306,7 +3419,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&stored).unwrap(),
             queue
         );
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         assert_eq!(progress.to_bits(), 417.5_f64.to_bits());
         assert_eq!(paused, 1);
 
@@ -3325,7 +3438,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, "[]");
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -3378,7 +3491,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&stored).unwrap(),
             queue
         );
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         assert_eq!(progress.to_bits(), 317.25_f64.to_bits());
         assert_eq!(paused, 1);
         let (empty, empty_version, empty_progress, empty_paused): (String, i64, f64, i64) = conn
@@ -3390,7 +3503,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(empty, "[]");
-        assert_eq!(empty_version, 6);
+        assert_eq!(empty_version, 7);
         assert_eq!(empty_progress.to_bits(), 211.5_f64.to_bits());
         assert_eq!(empty_paused, 1);
 
@@ -3465,7 +3578,7 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(stored, expected_queue);
-            assert_eq!(version, 6);
+            assert_eq!(version, 7);
             assert_eq!(progress.to_bits(), expected_progress.to_bits());
             assert_eq!(paused, 1);
         }
@@ -3571,7 +3684,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
             default_production_queue(BuildingType::WoodCutter)
         );
-        assert_eq!(initialized, 6);
+        assert_eq!(initialized, 7);
 
         conn.execute(
             "UPDATE buildings SET productionQueue = '[]' WHERE id = 'legacy-wood-cutter'",

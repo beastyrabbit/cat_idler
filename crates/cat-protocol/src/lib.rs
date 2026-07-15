@@ -3420,13 +3420,13 @@ mod tests {
         let building = BuildingSnapshot {
             id: "mill-1".to_owned(),
             building_type: BuildingType::Mill,
-            available_recipes: vec!["grain_to_flour_and_food".to_owned()],
+            available_recipes: vec!["grain_to_flour".to_owned(), "flour_to_food".to_owned()],
             ..BuildingSnapshot::default()
         };
         let encoded = serde_json::to_value(&building).expect("serialize Mill");
         assert_eq!(
             encoded["availableRecipes"],
-            json!(["grain_to_flour_and_food"])
+            json!(["grain_to_flour", "flour_to_food"])
         );
         let decoded: BuildingSnapshot = serde_json::from_value(encoded).expect("round trip");
         assert_eq!(decoded.available_recipes, building.available_recipes);

@@ -9,8 +9,7 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop, Smelter, Tannery, and Clothier station-local input/output stores remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
-| Research recipe/resource breadth remains incomplete | Eleven maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: eight are research-gated and three are founding baselines. All eleven execute through physical queues. Old/missing rules-v0 saves are grandfathered. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
+| Research recipe/resource breadth remains incomplete | Thirteen maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: ten are research-gated and three are founding baselines. All thirteen execute through physical queues. The explicit Grain→Flour, Flour→Food, and Metal→exact Tool routes are live. The other 91 generated recipe IDs and all 64 generated resource IDs have no authoritative consumer, are visibly marked `FUTURE`, and cannot spend points. Continue only from the evidence boundary in `RECIPE_RESOURCE_MATRIX.md`. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
@@ -49,6 +48,35 @@ world/UI overlap. The temporary capture hook and both processes were removed aft
 gates pass 1,262 simulation tests (one intentional instrumentation skip), 46 protocol tests, 97
 server tests, and 144 client tests; strict Clippy is green for all four crates, with formatting and
 diff checks clean.
+
+## 2026-07-15 — Unsupported catalog breadth no longer sells no-ops
+
+**Problem:** The 500-study ledger offered 93 generated recipe IDs and 64 generated resource IDs
+that had no physical gameplay consumer. The Mill also exposed one combined operation that could
+grind and bake implicitly, while the documented Smithy Metal→Tool route had no selected recipe.
+
+**Fix:** The catalog now treats any recipe payload without a runtime station descriptor, and every
+generic resource-registry payload without a physical source entitlement, as visible future
+content. Those studies cannot spend research points or be selected by the Leader. The Mill owns
+separate `grain_to_flour` and `flour_to_food` recipes with independent studies and physical
+input/work/output/delivery. The Smithy owns `smithy_tool`; two Metal become one stable metal Tool
+after selected Metalwork and outbound delivery. Persisted combined Mill queues migrate once at
+station-rules v7 without losing authored order, repeat, pause, progress, or empty state.
+
+**Evidence:** `RECIPE_RESOURCE_MATRIX.md` records the design-backed source/station/output boundary.
+Regression tests pin 13 live descriptors and exactly 91 unsupported recipe plus 64 unsupported
+resource payloads. Separate-operation tests prevent implicit Mill work; a signed deterministic
+farm→Grain→Flour→Food campaign proves player guidance, a signed Ore→Smelter→Metal→Smithy→exact
+metal Tool campaign proves item identity and delivery, and passive Captain twins forge metal Tools
+at one- and five-minute cadence. SQLite v6→v7 and signed HMAC restart campaigns preserve the new
+queue entitlements. The research ledger displays unsupported promises as disabled `FUTURE` cards.
+The client-owned framebuffer `/tmp/research-future-1024.png` is a 1090×2105 RGB PNG (SHA-256
+`1201f2cea5327c4da640fe5d0fe3ad289d61cf342e71e82941137a7f14c2e642`) captured from the live
+client against a booted server and visually inspected: the Baking family is filtered into view,
+every card is marked FUTURE, the selected inspector says “Planned content — not yet researchable,”
+and the frame is rendered rather than black. The temporary staging/capture systems were removed.
+Final gates pass 1,267 simulation (one intentional skip), 46 protocol, 98 server, and 145 client
+tests plus strict four-crate Clippy, formatting, and diff checks.
 
 ## 2026-07-15 — Functional equipment has one finite physical authority
 

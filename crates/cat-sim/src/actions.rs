@@ -9900,7 +9900,10 @@ mod tests {
                 .find(|building| building.id == "mill-player")
                 .unwrap()
                 .available_recipes,
-            vec![crate::world_tick::MILL_RECIPE_ID.to_owned()]
+            vec![
+                crate::world_tick::GRAIN_TO_FLOUR_RECIPE_ID.to_owned(),
+                crate::world_tick::FLOUR_TO_FOOD_RECIPE_ID.to_owned(),
+            ]
         );
         assert_eq!(
             buildings
@@ -10019,7 +10022,6 @@ mod tests {
             "basic_tools",
             "foraging_lore",
             "sawmill",
-            "carpentry_sources",
             "carpentry_preparation",
         ] {
             assert!(
@@ -10140,6 +10142,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 crate::world_tick::SMITHY_WEAPON_RECIPE_ID,
+                crate::world_tick::SMITHY_TOOL_RECIPE_ID,
                 crate::world_tick::SMITHY_ARMOR_RECIPE_ID,
             ]
         );
@@ -10165,7 +10168,7 @@ mod tests {
                 .required_recipe_study
                 .as_ref()
                 .map(|study| study.id.as_str()),
-            Some("armorsmithing")
+            Some("toolmaking_staples")
         );
         assert_eq!(
             locked.available_recipes,
@@ -10184,6 +10187,7 @@ mod tests {
             smithy.available_recipes,
             [
                 crate::world_tick::SMITHY_WEAPON_RECIPE_ID,
+                crate::world_tick::SMITHY_TOOL_RECIPE_ID,
                 crate::world_tick::SMITHY_ARMOR_RECIPE_ID,
             ]
         );

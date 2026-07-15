@@ -936,8 +936,8 @@ fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState
             "foraging_lore",
             "sawmill",
             "masonry",
-            "grain_milling_sources",
             "grain_milling_preparation",
+            "grain_milling_staples",
         ] {
             let was_owned = upgrade_tree::is_owned(&world.colonies[0].upgrade_tree, node_id);
             let points_before = world.colonies[0].upgrade_tree.research_points;

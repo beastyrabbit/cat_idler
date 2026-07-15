@@ -43,6 +43,7 @@ const LOCKED_INK: Color = Color::srgb(0.39, 0.36, 0.31);
 enum CatalogNodeState {
     Owned,
     Available,
+    Future,
     Locked,
 }
 
@@ -53,6 +54,7 @@ enum PurchaseState {
     ResearchReady,
     ResearchUnaffordable,
     LegacyReady,
+    Future,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -164,6 +166,8 @@ impl ResearchUiModel {
         let owned: HashSet<_> = snapshot.owned_node_ids.iter().map(String::as_str).collect();
         if owned.contains(node.id.as_str()) {
             CatalogNodeState::Owned
+        } else if node.is_future_content() {
+            CatalogNodeState::Future
         } else if node
             .prerequisites
             .iter()
@@ -180,6 +184,8 @@ impl ResearchUiModel {
         for (index, node) in research_catalog().nodes().iter().enumerate() {
             self.states[index] = if owned.contains(node.id.as_str()) {
                 CatalogNodeState::Owned
+            } else if node.is_future_content() {
+                CatalogNodeState::Future
             } else if node
                 .prerequisites
                 .iter()
@@ -218,8 +224,12 @@ impl ResearchUiModel {
         if snapshot.owned_node_ids.iter().any(|owned| owned == id) {
             return PurchaseState::Owned;
         }
+        if node.is_future_content() {
+            return PurchaseState::Future;
+        }
         match self.state_of(id, snapshot) {
             CatalogNodeState::Owned => PurchaseState::Owned,
+            CatalogNodeState::Future => PurchaseState::Future,
             CatalogNodeState::Locked => PurchaseState::Locked,
             CatalogNodeState::Available => {
                 if can_afford(snapshot.research_points, node.cost) {
@@ -1123,6 +1133,7 @@ pub(super) fn update_research_snapshot(
             background.0 = match model.states[card.0] {
                 CatalogNodeState::Owned => Color::srgb(0.65, 0.72, 0.52),
                 CatalogNodeState::Available => Color::srgb(0.82, 0.72, 0.49),
+                CatalogNodeState::Future => LEDGER_PAPER_DARK,
                 CatalogNodeState::Locked => LEDGER_PAPER,
             };
         }
@@ -1131,6 +1142,7 @@ pub(super) fn update_research_snapshot(
             let (label, ink) = match model.states[marker.0] {
                 CatalogNodeState::Owned => ("OWNED", OWNED_INK),
                 CatalogNodeState::Available => ("AVAILABLE", READY_INK),
+                CatalogNodeState::Future => ("FUTURE", LEDGER_MUTED),
                 CatalogNodeState::Locked => ("LOCKED", LOCKED_INK),
             };
             text.0 = format!("{label} · E{} · {:.0}b", node.era, node.cost);
@@ -1197,13 +1209,15 @@ fn payload_line(payload: &ResearchPayload) -> String {
 
 fn recipe_display_name(recipe_id: &str) -> String {
     match recipe_id {
-        "grain_to_flour_and_food" => "Grain milling".to_owned(),
+        "grain_to_flour" => "Grain grinding".to_owned(),
+        "flour_to_food" => "Food baking".to_owned(),
         "logs_to_lumber" => "Lumber cutting".to_owned(),
         "materials_to_refined" => "Refined materials".to_owned(),
         "ore_to_metal" => "Metal smelting".to_owned(),
         "fibre_to_cloth" => "Cloth weaving".to_owned(),
         "hide_to_leather" => "Leather tanning".to_owned(),
         "smithy_weapon" => "Weapon forging".to_owned(),
+        "smithy_tool" => "Tool forging".to_owned(),
         "smithy_armor" => "Armor forging".to_owned(),
         _ => title_case_identifier(recipe_id),
     }
@@ -1292,6 +1306,7 @@ pub(super) fn update_research_inspector(
                 format!("Need {:.0} research points", node.cost)
             }
             PurchaseState::LegacyReady => format!("Commission for {:.0} blessings", node.cost),
+            PurchaseState::Future => "Planned content — not yet researchable".to_owned(),
         },
     );
     if let Ok(mut disabled) = purchase_button.single_mut() {
@@ -1675,6 +1690,24 @@ mod tests {
         assert!(matches!(
             research_purchase_action(&model, &research, "basic_tools", &session()),
             Some(ClientAction::UnlockNode { node_id, .. }) if node_id == "basic_tools"
+        ));
+    }
+
+    #[test]
+    fn unsupported_generated_promises_are_future_and_never_dispatch() {
+        let model = ResearchUiModel::from_catalog();
+        let research = snapshot(&["research_hut", "basic_tools"], 999.0);
+        assert_eq!(
+            model.purchase_state("hunting_sources", &research),
+            PurchaseState::Future
+        );
+        assert!(!model.dispatchable_research_node("hunting_sources", &research));
+        assert!(
+            research_purchase_action(&model, &research, "hunting_sources", &session()).is_none()
+        );
+        assert!(research_purchase_disabled(
+            true,
+            Some(PurchaseState::Future)
         ));
     }
 

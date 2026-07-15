@@ -4,11 +4,11 @@ use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, apply_action},
     entities::CarryingKind,
-    items::{ItemKind, ItemLocation},
+    items::{ItemKind, ItemLocation, Material},
     officers::OfficerRole,
     station_recipes::{
-        HIDE_TO_LEATHER_RECIPE_ID, SMELTER_RECIPE_ID, SMITHY_WEAPON_RECIPE_ID,
-        STONE_TO_BLOCKS_RECIPE_ID,
+        HIDE_TO_LEATHER_RECIPE_ID, SMELTER_RECIPE_ID, SMITHY_TOOL_RECIPE_ID,
+        SMITHY_WEAPON_RECIPE_ID, STONE_TO_BLOCKS_RECIPE_ID,
     },
     stockpiles::{station_input_id, station_output_id},
     storage::BASE_CAPACITY,
@@ -502,12 +502,12 @@ struct SmithyRouteObservations {
     metal_outbound: bool,
     metal_inbound: bool,
     local_smithy_metal: bool,
-    local_weapon: bool,
-    weapon_outbound: bool,
-    delivered_weapon: bool,
+    local_tool: bool,
+    tool_outbound: bool,
+    delivered_metal_tool: bool,
 }
 
-fn run_signed_ore_to_weapon(seed: u32) -> (WorldState, SmithyRouteObservations) {
+fn run_signed_ore_to_tool(seed: u32) -> (WorldState, SmithyRouteObservations) {
     let mut world = new_world(seed);
     world
         .colonies
@@ -519,7 +519,7 @@ fn run_signed_ore_to_weapon(seed: u32) -> (WorldState, SmithyRouteObservations) 
     colony
         .upgrade_tree
         .owned_node_ids
-        .extend(["metallurgy_preparation", "weaponsmithing"].map(str::to_owned));
+        .extend(["metallurgy_preparation", "toolmaking_staples"].map(str::to_owned));
     let anchor = colony.anchor;
     for (id, building_type, offset) in [
         ("guided-smelter", BuildingType::Smelter, 6),
@@ -551,7 +551,7 @@ fn run_signed_ore_to_weapon(seed: u32) -> (WorldState, SmithyRouteObservations) 
     );
     for (building_id, recipe_id, default_entries) in [
         ("guided-smelter", SMELTER_RECIPE_ID, 1_usize),
-        ("guided-smithy", SMITHY_WEAPON_RECIPE_ID, 2_usize),
+        ("guided-smithy", SMITHY_TOOL_RECIPE_ID, 3_usize),
     ] {
         for _ in 0..default_entries {
             assert!(
@@ -624,7 +624,7 @@ fn run_signed_ore_to_weapon(seed: u32) -> (WorldState, SmithyRouteObservations) 
         seen.ore_inbound |= station_cargo(CarryingKind::Ore, "station-in|guided-smelter|");
         seen.metal_outbound |= station_cargo(CarryingKind::Metal, "station-out|guided-smelter|");
         seen.metal_inbound |= station_cargo(CarryingKind::Metal, "station-in|guided-smithy|");
-        seen.weapon_outbound |= station_cargo(CarryingKind::Weapons, "station-out|guided-smithy|");
+        seen.tool_outbound |= station_cargo(CarryingKind::Tools, "station-out|guided-smithy|");
         let amount = |id: &str, output: bool, field: fn(&cat_sim::entities::Resources) -> f64| {
             colony
                 .stockpiles
@@ -642,8 +642,12 @@ fn run_signed_ore_to_weapon(seed: u32) -> (WorldState, SmithyRouteObservations) 
         seen.local_ore |= amount("guided-smelter", false, |resources| resources.ore);
         seen.local_metal |= amount("guided-smelter", true, |resources| resources.metal);
         seen.local_smithy_metal |= amount("guided-smithy", false, |resources| resources.metal);
-        seen.local_weapon |= amount("guided-smithy", true, |resources| resources.weapons);
-        seen.delivered_weapon |= colony.resources.weapons >= 1.0;
+        seen.local_tool |= amount("guided-smithy", true, |resources| resources.tools);
+        seen.delivered_metal_tool |= colony.items.instances().any(|instance| {
+            instance.item.kind == ItemKind::Tool
+                && instance.item.material == Material::Metal
+                && instance.credited
+        });
         if seen
             == (SmithyRouteObservations {
                 ore_inbound: true,
@@ -652,9 +656,9 @@ fn run_signed_ore_to_weapon(seed: u32) -> (WorldState, SmithyRouteObservations) 
                 metal_outbound: true,
                 metal_inbound: true,
                 local_smithy_metal: true,
-                local_weapon: true,
-                weapon_outbound: true,
-                delivered_weapon: true,
+                local_tool: true,
+                tool_outbound: true,
+                delivered_metal_tool: true,
             })
         {
             break;
@@ -664,9 +668,9 @@ fn run_signed_ore_to_weapon(seed: u32) -> (WorldState, SmithyRouteObservations) 
 }
 
 #[test]
-fn signed_player_guides_ore_through_smelter_and_smithy_to_one_weapon() {
-    let (left, left_seen) = run_signed_ore_to_weapon(0x5A17_4EAF);
-    let (right, right_seen) = run_signed_ore_to_weapon(0x5A17_4EAF);
+fn signed_player_guides_ore_through_smelter_and_smithy_to_one_metal_tool() {
+    let (left, left_seen) = run_signed_ore_to_tool(0x5A17_4EAF);
+    let (right, right_seen) = run_signed_ore_to_tool(0x5A17_4EAF);
     assert_eq!(left, right);
     assert_eq!(left_seen, right_seen);
     assert_eq!(
@@ -678,23 +682,33 @@ fn signed_player_guides_ore_through_smelter_and_smithy_to_one_weapon() {
             metal_outbound: true,
             metal_inbound: true,
             local_smithy_metal: true,
-            local_weapon: true,
-            weapon_outbound: true,
-            delivered_weapon: true,
+            local_tool: true,
+            tool_outbound: true,
+            delivered_metal_tool: true,
         }
     );
-    assert_eq!(left.colonies[0].resources.weapons, 1.0);
+    assert!(left.colonies[0].resources.tools >= 1.0);
     assert_eq!(left.colonies[0].resources.armor, 0.0);
-    let weapon = left.colonies[0]
+    let tool = left.colonies[0]
         .items
         .instances()
-        .find(|instance| instance.item.kind == ItemKind::Weapon)
-        .expect("the delivered weapon retains its exact identity");
-    assert!(weapon.credited);
-    assert!(matches!(weapon.location, ItemLocation::Stockpile { .. }));
+        .find(|instance| {
+            instance.item.kind == ItemKind::Tool && instance.item.material == Material::Metal
+        })
+        .expect("the delivered metal tool retains its exact identity");
+    assert!(tool.credited);
+    assert!(matches!(
+        tool.location,
+        ItemLocation::Stockpile { .. } | ItemLocation::Equipped { .. }
+    ));
 }
 
-fn run_passive_established_smithy(seed: u32, cadence_minutes: i64) -> WorldState {
+fn run_passive_established_smithy(
+    seed: u32,
+    cadence_minutes: i64,
+    smithy_recipe_id: &str,
+    smithy_study_id: &str,
+) -> WorldState {
     let mut world = new_world(seed);
     world
         .colonies
@@ -711,7 +725,7 @@ fn run_passive_established_smithy(seed: u32, cadence_minutes: i64) -> WorldState
     colony
         .upgrade_tree
         .owned_node_ids
-        .extend(["metallurgy_preparation", "weaponsmithing", "barracks"].map(str::to_owned));
+        .extend(["metallurgy_preparation", smithy_study_id, "barracks"].map(str::to_owned));
     let anchor = colony.anchor;
     for (id, building_type, offset) in [
         ("passive-smelter", BuildingType::Smelter, 6),
@@ -732,7 +746,7 @@ fn run_passive_established_smithy(seed: u32, cadence_minutes: i64) -> WorldState
                 recipe_id: if building_type == BuildingType::Smelter {
                     SMELTER_RECIPE_ID
                 } else {
-                    SMITHY_WEAPON_RECIPE_ID
+                    smithy_recipe_id
                 }
                 .to_owned(),
                 repeat: true,
@@ -769,8 +783,18 @@ fn run_passive_established_smithy(seed: u32, cadence_minutes: i64) -> WorldState
 #[test]
 fn passive_captain_runs_smelter_and_smithy_at_one_and_five_minute_cadence() {
     for cadence in [1, 5] {
-        let left = run_passive_established_smithy(0xCA97_A111, cadence);
-        let right = run_passive_established_smithy(0xCA97_A111, cadence);
+        let left = run_passive_established_smithy(
+            0xCA97_A111,
+            cadence,
+            SMITHY_WEAPON_RECIPE_ID,
+            "weaponsmithing",
+        );
+        let right = run_passive_established_smithy(
+            0xCA97_A111,
+            cadence,
+            SMITHY_WEAPON_RECIPE_ID,
+            "weaponsmithing",
+        );
         assert_eq!(left, right, "cadence {cadence} deterministic twin");
         let colony = &left.colonies[0];
         assert!(colony.resources.metal > 0.0 || colony.resources.weapons > 0.0);
@@ -811,6 +835,33 @@ fn passive_captain_runs_smelter_and_smithy_at_one_and_five_minute_cadence() {
         assert_eq!(colony.metal_forge_progress, 0.0);
         assert!(colony.resources.food >= 5.0 * 15.0);
         assert!(colony.resources.water >= 6.0 * 15.0);
+    }
+}
+
+#[test]
+fn passive_captain_forges_exact_metal_tools_at_one_and_five_minute_cadence() {
+    for cadence in [1, 5] {
+        let left = run_passive_established_smithy(
+            0x7001_CA75,
+            cadence,
+            SMITHY_TOOL_RECIPE_ID,
+            "toolmaking_staples",
+        );
+        let right = run_passive_established_smithy(
+            0x7001_CA75,
+            cadence,
+            SMITHY_TOOL_RECIPE_ID,
+            "toolmaking_staples",
+        );
+        assert_eq!(left, right, "cadence {cadence} deterministic twin");
+        assert!(
+            left.colonies[0].items.instances().any(|instance| {
+                instance.item.kind == ItemKind::Tool
+                    && instance.item.material == Material::Metal
+                    && instance.credited
+            }),
+            "cadence {cadence} never delivered a forged metal tool"
+        );
     }
 }
 

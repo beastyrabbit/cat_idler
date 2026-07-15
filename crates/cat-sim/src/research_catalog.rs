@@ -180,6 +180,24 @@ pub struct ResearchNode {
     pub payloads: Vec<ResearchPayload>,
 }
 
+impl ResearchNode {
+    /// Catalog promises without a physical runtime object are deliberately future
+    /// content. They remain visible in the 500-study graph but cannot consume points.
+    #[must_use]
+    pub fn is_future_content(&self) -> bool {
+        self.payloads.iter().any(|payload| match payload {
+            ResearchPayload::UnlockRecipe { recipe_id } => {
+                !crate::station_recipes::is_runtime_recipe_id(recipe_id)
+            }
+            // No generated resource registry id is an authoritative ResourceKind.
+            // Existing physical sources are unlocked by their maintained job/building
+            // contracts instead of these generic family-stage placeholders.
+            ResearchPayload::UnlockResource { .. } => true,
+            _ => false,
+        })
+    }
+}
+
 /// Fixed FNV-1a hashing keeps the O(1) index deterministic and avoids
 /// `RandomState`'s process-random seed. Catalog order always comes from `nodes`.
 #[derive(Default)]
@@ -484,11 +502,6 @@ fn expand_recipe_family(
     let mut nodes: Vec<ResearchNode> = Vec::with_capacity(family.count);
     for (index, stage) in stages.iter().take(family.count).enumerate() {
         let id = format!("{}_{}", family.id, stage.id);
-        let prerequisites = if index == 0 {
-            family.root_prerequisites.clone()
-        } else {
-            vec![nodes[index - 1].id.clone()]
-        };
         let generated_payload_id = format!("{}_{}", family.id, stage.id);
         let payload_id = family
             .payload_overrides
@@ -502,6 +515,21 @@ fn expand_recipe_family(
             RecipePayloadKind::Resource => ResearchPayload::UnlockResource {
                 resource_id: payload_id,
             },
+        };
+        // An implemented physical recipe must never sit behind a generic resource
+        // registry promise that has no source entitlement. Give that recipe the
+        // family's real maintained prerequisites directly; future nodes remain
+        // visible on their own branch and cannot consume points.
+        let bypass_future_predecessor =
+            matches!(
+                &payload,
+                ResearchPayload::UnlockRecipe { recipe_id }
+                    if crate::station_recipes::is_runtime_recipe_id(recipe_id)
+            ) && nodes.last().is_some_and(ResearchNode::is_future_content);
+        let prerequisites = if index == 0 || bypass_future_predecessor {
+            family.root_prerequisites.clone()
+        } else {
+            vec![nodes[index - 1].id.clone()]
         };
         nodes.push(ResearchNode {
             id,
@@ -1289,11 +1317,13 @@ mod tests {
     #[test]
     fn catalog_nodes_unlock_every_maintained_station_recipe_by_stable_id() {
         for (node_id, recipe_id) in [
-            ("grain_milling_preparation", "grain_to_flour_and_food"),
+            ("grain_milling_preparation", "grain_to_flour"),
+            ("grain_milling_staples", "flour_to_food"),
             ("carpentry_preparation", "logs_to_lumber"),
             ("carpentry_staples", "logs_to_planks"),
             ("stonecraft_preparation", "stone_to_blocks"),
             ("toolmaking_preparation", "planks_and_blocks_to_tools"),
+            ("toolmaking_staples", "smithy_tool"),
             ("metallurgy_preparation", "ore_to_metal"),
             ("trade_goods_preparation", "materials_to_refined"),
             ("textiles", "fibre_to_cloth"),
@@ -1318,6 +1348,62 @@ mod tests {
                 Some(node_id)
             );
         }
+    }
+
+    #[test]
+    fn unsupported_generated_recipe_and_resource_promises_are_future_content() {
+        let catalog = research_catalog();
+        assert!(
+            catalog
+                .get("baking_preparation")
+                .unwrap()
+                .is_future_content()
+        );
+        assert!(catalog.get("hunting_sources").unwrap().is_future_content());
+        assert!(
+            !catalog
+                .get("grain_milling_preparation")
+                .unwrap()
+                .is_future_content()
+        );
+        assert!(
+            !catalog
+                .get("grain_milling_staples")
+                .unwrap()
+                .is_future_content()
+        );
+        assert!(
+            !catalog
+                .get("toolmaking_staples")
+                .unwrap()
+                .is_future_content()
+        );
+    }
+
+    #[test]
+    fn unsupported_generated_breadth_count_is_explicit_and_regression_guarded() {
+        let catalog = research_catalog();
+        let unsupported_recipes = catalog
+            .nodes()
+            .iter()
+            .flat_map(|node| &node.payloads)
+            .filter(|payload| {
+                matches!(
+                    payload,
+                    ResearchPayload::UnlockRecipe { recipe_id }
+                        if !crate::station_recipes::is_runtime_recipe_id(recipe_id)
+                )
+            })
+            .count();
+        let unsupported_resources = catalog
+            .nodes()
+            .iter()
+            .flat_map(|node| &node.payloads)
+            .filter(|payload| matches!(payload, ResearchPayload::UnlockResource { .. }))
+            .count();
+
+        assert_eq!(unsupported_recipes, 91);
+        assert_eq!(unsupported_resources, 64);
     }
 
     #[test]

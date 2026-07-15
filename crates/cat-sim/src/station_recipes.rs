@@ -7,7 +7,13 @@
 use crate::{stockpiles::ResourceKind, types::BuildingType};
 
 pub const SAWMILL_RECIPE_ID: &str = "logs_to_lumber";
-pub const MILL_RECIPE_ID: &str = "grain_to_flour_and_food";
+pub const GRAIN_TO_FLOUR_RECIPE_ID: &str = "grain_to_flour";
+pub const FLOUR_TO_FOOD_RECIPE_ID: &str = "flour_to_food";
+/// Pre-split Mill queue ID written by rules through P19. Kept only so persisted
+/// villages can be migrated to the two physically distinct operations.
+pub const LEGACY_COMBINED_MILL_RECIPE_ID: &str = "grain_to_flour_and_food";
+/// Compatibility name used by older call sites for the Mill's first selected recipe.
+pub const MILL_RECIPE_ID: &str = GRAIN_TO_FLOUR_RECIPE_ID;
 pub const WORKSHOP_RECIPE_ID: &str = "materials_to_refined";
 pub const SMELTER_RECIPE_ID: &str = "ore_to_metal";
 pub const LOGS_TO_PLANKS_RECIPE_ID: &str = "logs_to_planks";
@@ -17,6 +23,7 @@ pub const FIBRE_TO_CLOTH_RECIPE_ID: &str = "fibre_to_cloth";
 pub const HIDE_TO_LEATHER_RECIPE_ID: &str = "hide_to_leather";
 pub const SMITHY_WEAPON_RECIPE_ID: &str = "smithy_weapon";
 pub const SMITHY_ARMOR_RECIPE_ID: &str = "smithy_armor";
+pub const SMITHY_TOOL_RECIPE_ID: &str = "smithy_tool";
 
 /// One stable queue recipe and the finite resource kinds it consumes and
 /// produces through station-local stores.
@@ -58,15 +65,28 @@ const CLOTHIER_OUTPUTS: &[ResourceKind] = &[ResourceKind::Cloth];
 const TANNERY_INPUTS: &[ResourceKind] = &[ResourceKind::Hide];
 const TANNERY_OUTPUTS: &[ResourceKind] = &[ResourceKind::Leather];
 const SMITHY_INPUTS: &[ResourceKind] = &[ResourceKind::Metal];
-const SMITHY_OUTPUTS: &[ResourceKind] = &[ResourceKind::Weapons, ResourceKind::Armor];
+const SMITHY_OUTPUTS: &[ResourceKind] = &[
+    ResourceKind::Weapons,
+    ResourceKind::Armor,
+    ResourceKind::Tools,
+];
 
-const MILL_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
-    id: MILL_RECIPE_ID,
-    building_type: BuildingType::Mill,
-    input_resources: MILL_INPUTS,
-    output_resources: MILL_OUTPUTS,
-    founding_available: false,
-}];
+const MILL_RECIPES: &[StationRecipeDescriptor] = &[
+    StationRecipeDescriptor {
+        id: GRAIN_TO_FLOUR_RECIPE_ID,
+        building_type: BuildingType::Mill,
+        input_resources: &[ResourceKind::Grain],
+        output_resources: &[ResourceKind::Flour],
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
+        id: FLOUR_TO_FOOD_RECIPE_ID,
+        building_type: BuildingType::Mill,
+        input_resources: &[ResourceKind::Flour],
+        output_resources: &[ResourceKind::Food],
+        founding_available: false,
+    },
+];
 const SAWMILL_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: SAWMILL_RECIPE_ID,
     building_type: BuildingType::Sawmill,
@@ -132,6 +152,13 @@ const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
         founding_available: false,
     },
     StationRecipeDescriptor {
+        id: SMITHY_TOOL_RECIPE_ID,
+        building_type: BuildingType::Smithy,
+        input_resources: SMITHY_INPUTS,
+        output_resources: &[ResourceKind::Tools],
+        founding_available: false,
+    },
+    StationRecipeDescriptor {
         id: SMITHY_ARMOR_RECIPE_ID,
         building_type: BuildingType::Smithy,
         input_resources: SMITHY_INPUTS,
@@ -139,6 +166,15 @@ const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
         founding_available: false,
     },
 ];
+
+/// Whether a catalog recipe payload names a physical runtime recipe.
+#[must_use]
+pub fn is_runtime_recipe_id(recipe_id: &str) -> bool {
+    BuildingType::ALL.iter().copied().any(|building_type| {
+        station_recipe_set(building_type)
+            .is_some_and(|station| station.recipes.iter().any(|recipe| recipe.id == recipe_id))
+    })
+}
 
 /// The single data source for recipe IDs and station-local resource domains.
 #[must_use]
@@ -203,9 +239,17 @@ mod tests {
             ),
             (
                 BuildingType::Smithy,
-                &[SMITHY_WEAPON_RECIPE_ID, SMITHY_ARMOR_RECIPE_ID][..],
+                &[
+                    SMITHY_WEAPON_RECIPE_ID,
+                    SMITHY_TOOL_RECIPE_ID,
+                    SMITHY_ARMOR_RECIPE_ID,
+                ][..],
                 &[ResourceKind::Metal][..],
-                &[ResourceKind::Weapons, ResourceKind::Armor][..],
+                &[
+                    ResourceKind::Weapons,
+                    ResourceKind::Armor,
+                    ResourceKind::Tools,
+                ][..],
             ),
         ];
 
@@ -254,8 +298,41 @@ mod tests {
                 assert!(ids.insert(recipe.id), "duplicate recipe id {}", recipe.id);
             }
         }
-        assert_eq!(ids.len(), 11);
+        assert_eq!(ids.len(), 13);
         assert!(station_recipe_set(BuildingType::Den).is_none());
+    }
+
+    #[test]
+    fn sourced_breadth_uses_explicit_mill_steps_and_metal_tools() {
+        let mill = station_recipe_set(BuildingType::Mill).unwrap();
+        assert_eq!(
+            mill.recipes
+                .iter()
+                .map(|recipe| recipe.id)
+                .collect::<Vec<_>>(),
+            [GRAIN_TO_FLOUR_RECIPE_ID, FLOUR_TO_FOOD_RECIPE_ID]
+        );
+        assert_eq!(mill.recipes[0].input_resources, &[ResourceKind::Grain]);
+        assert_eq!(mill.recipes[0].output_resources, &[ResourceKind::Flour]);
+        assert_eq!(mill.recipes[1].input_resources, &[ResourceKind::Flour]);
+        assert_eq!(mill.recipes[1].output_resources, &[ResourceKind::Food]);
+
+        let smithy = station_recipe_set(BuildingType::Smithy).unwrap();
+        assert_eq!(
+            smithy
+                .recipes
+                .iter()
+                .map(|recipe| recipe.id)
+                .collect::<Vec<_>>(),
+            [
+                SMITHY_WEAPON_RECIPE_ID,
+                SMITHY_TOOL_RECIPE_ID,
+                SMITHY_ARMOR_RECIPE_ID,
+            ]
+        );
+        assert_eq!(smithy.recipes[1].output_resources, &[ResourceKind::Tools]);
+        assert!(mill.recipes.iter().all(|recipe| !recipe.founding_available));
+        assert!(!smithy.recipes[1].founding_available);
     }
 
     #[test]

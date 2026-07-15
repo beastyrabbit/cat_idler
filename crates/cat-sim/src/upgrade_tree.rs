@@ -720,7 +720,9 @@ pub fn prerequisites_met(state: &UpgradeTreeState, id: &str) -> bool {
 
 #[must_use]
 pub fn can_unlock(state: &UpgradeTreeState, id: &str) -> bool {
-    research_catalog().contains(id) && !is_owned(state, id) && prerequisites_met(state, id)
+    research_catalog().get(id).is_some_and(|node| {
+        !node.is_future_content() && !is_owned(state, id) && prerequisites_met(state, id)
+    })
 }
 
 /// Every currently available study in stable catalog order.
@@ -1676,27 +1678,29 @@ mod tests {
     }
 
     #[test]
-    fn all_five_hundred_catalog_studies_are_buyable_in_dependency_order() {
+    fn every_non_future_catalog_study_with_supported_dependencies_is_buyable() {
         let mut state = state_with(&[], 1_000_000.0);
-        while state.owned_node_ids.len() < crate::research_catalog::RESEARCH_NODE_COUNT {
-            let next = crate::research_catalog::research_catalog()
-                .nodes()
-                .iter()
-                .find(|node| can_unlock(&state, &node.id))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "catalog stalled after {} owned studies",
-                        state.owned_node_ids.len()
-                    )
-                });
+        while let Some(next) = crate::research_catalog::research_catalog()
+            .nodes()
+            .iter()
+            .find(|node| can_unlock(&state, &node.id))
+        {
             let result = cat_purchase(&state, &next.id);
             assert!(result.ok, "{} must be purchasable", next.id);
             state = result.state;
         }
-        assert_eq!(
-            state.owned_node_ids.len(),
-            crate::research_catalog::RESEARCH_NODE_COUNT
-        );
+        let catalog = crate::research_catalog::research_catalog();
+        for node in catalog.nodes() {
+            if !is_owned(&state, &node.id) {
+                assert!(
+                    node.is_future_content()
+                        || node.prerequisites.iter().any(|id| !is_owned(&state, id)),
+                    "supported node {} stalled with satisfied dependencies",
+                    node.id
+                );
+            }
+        }
+        assert!(state.owned_node_ids.len() < crate::research_catalog::RESEARCH_NODE_COUNT);
     }
 
     #[test]
@@ -1752,10 +1756,12 @@ mod tests {
     #[test]
     fn physical_recipe_studies_resolve_only_their_authoritative_recipe_ids() {
         for (study, recipe) in [
-            ("grain_milling_preparation", "grain_to_flour_and_food"),
+            ("grain_milling_preparation", "grain_to_flour"),
+            ("grain_milling_staples", "flour_to_food"),
             ("carpentry_preparation", "logs_to_lumber"),
             ("metallurgy_preparation", "ore_to_metal"),
             ("trade_goods_preparation", "materials_to_refined"),
+            ("toolmaking_staples", "smithy_tool"),
         ] {
             let effects = resolve_effects([study]);
             assert_eq!(
@@ -1763,6 +1769,41 @@ mod tests {
                 std::collections::BTreeSet::from([recipe.to_owned()])
             );
         }
+    }
+
+    #[test]
+    fn future_recipe_and_resource_studies_cannot_spend_research_points() {
+        let state = state_with(&["research_hut", "basic_tools", "foraging_lore"], 100.0);
+        assert!(!can_unlock(&state, "hunting_sources"));
+        let result = cat_purchase(&state, "hunting_sources");
+        assert!(!result.ok);
+        assert_eq!(
+            result.state.research_points.to_bits(),
+            state.research_points.to_bits()
+        );
+
+        let supported = state_with(
+            &[
+                "research_hut",
+                "basic_tools",
+                "foraging_lore",
+                "sawmill",
+                "masonry",
+                "irrigation",
+            ],
+            100.0,
+        );
+        let node = crate::research_catalog::research_catalog()
+            .get("grain_milling_preparation")
+            .unwrap();
+        assert!(!node.is_future_content(), "{node:?}");
+        assert!(
+            prerequisites_met(&supported, "grain_milling_preparation"),
+            "prereqs={:?} owned={:?}",
+            node.prerequisites,
+            supported.owned_node_ids
+        );
+        assert!(can_unlock(&supported, "grain_milling_preparation"));
     }
 
     #[test]

@@ -113,9 +113,11 @@ use crate::{
 };
 
 pub use crate::station_recipes::{
-    FIBRE_TO_CLOTH_RECIPE_ID as CLOTHIER_RECIPE_ID, HIDE_TO_LEATHER_RECIPE_ID as TANNERY_RECIPE_ID,
+    FIBRE_TO_CLOTH_RECIPE_ID as CLOTHIER_RECIPE_ID, FLOUR_TO_FOOD_RECIPE_ID,
+    GRAIN_TO_FLOUR_RECIPE_ID, HIDE_TO_LEATHER_RECIPE_ID as TANNERY_RECIPE_ID,
     LOGS_TO_PLANKS_RECIPE_ID as WOOD_CUTTER_RECIPE_ID, MILL_RECIPE_ID, SAWMILL_RECIPE_ID,
-    SMELTER_RECIPE_ID, SMITHY_ARMOR_RECIPE_ID, SMITHY_WEAPON_RECIPE_ID, WORKSHOP_RECIPE_ID,
+    SMELTER_RECIPE_ID, SMITHY_ARMOR_RECIPE_ID, SMITHY_TOOL_RECIPE_ID, SMITHY_WEAPON_RECIPE_ID,
+    WORKSHOP_RECIPE_ID,
 };
 
 pub type ColonyId = String;
@@ -649,6 +651,34 @@ pub fn default_production_queue(building_type: BuildingType) -> Vec<ProductionQu
             })
             .collect()
     })
+}
+
+/// Replace the old implicit two-stage Mill operation in persisted queues with
+/// two explicit physical operations. Entry order and repeat intent are stable,
+/// and rerunning the migration is a no-op.
+pub fn migrate_split_mill_queues(colony: &mut ColonyRuntime) {
+    for building in colony
+        .buildings
+        .iter_mut()
+        .filter(|building| building.building_type == BuildingType::Mill)
+    {
+        let mut migrated = Vec::with_capacity(building.production_queue.len() + 1);
+        for entry in building.production_queue.drain(..) {
+            if entry.recipe_id == crate::station_recipes::LEGACY_COMBINED_MILL_RECIPE_ID {
+                migrated.push(ProductionQueueEntry {
+                    recipe_id: crate::station_recipes::GRAIN_TO_FLOUR_RECIPE_ID.to_owned(),
+                    repeat: entry.repeat,
+                });
+                migrated.push(ProductionQueueEntry {
+                    recipe_id: crate::station_recipes::FLOUR_TO_FOOD_RECIPE_ID.to_owned(),
+                    repeat: entry.repeat,
+                });
+            } else {
+                migrated.push(entry);
+            }
+        }
+        building.production_queue = migrated;
+    }
 }
 
 /// Tile footprint `(width, height)` a building of `building_type` occupies.
@@ -3925,6 +3955,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
     for index in indices {
         let colony = &mut state.colonies[index];
         migrate_retired_inert_capacity_studies(colony);
+        migrate_split_mill_queues(colony);
         migrate_finite_equipment_authority(colony);
         let Some(gate) = phase_1_colony_selection_and_elapsed_time_gate(colony, now_ms) else {
             reports.push(TickReport {
@@ -19562,13 +19593,17 @@ fn physical_smithy_route_committed(colony: &ColonyRuntime, building: &BuildingRu
                     .is_some_and(|(_, building_id, _)| building_id == building.id)
             })
     });
-    let local_output = [ResourceKind::Weapons, ResourceKind::Armor]
-        .into_iter()
-        .any(|kind| {
-            station_inventory_amount(colony, &building.id, true, kind).floor() >= 1.0
-                && nearest_output_pile(colony, kind, tile_pos_to_world(building.position))
-                    .is_some_and(|index| stockpile_headroom(colony, index, kind).floor() >= 1.0)
-        });
+    let local_output = [
+        ResourceKind::Weapons,
+        ResourceKind::Armor,
+        ResourceKind::Tools,
+    ]
+    .into_iter()
+    .any(|kind| {
+        station_inventory_amount(colony, &building.id, true, kind).floor() >= 1.0
+            && nearest_output_pile(colony, kind, tile_pos_to_world(building.position))
+                .is_some_and(|index| stockpile_headroom(colony, index, kind).floor() >= 1.0)
+    });
     let active_progress = active_single_input_physical_recipe(building).is_some_and(|recipe| {
         building.production_progress > f64::EPSILON
             && station_inventory_amount(colony, &building.id, false, recipe.input_kind)
@@ -21152,15 +21187,16 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
 
 fn smithy_physical_recipe(recipe_id: &str) -> Option<SingleInputPhysicalRecipe> {
     let (output_kind, output_name) = match recipe_id {
+        SMITHY_TOOL_RECIPE_ID => (ResourceKind::Tools, "tools"),
         SMITHY_WEAPON_RECIPE_ID => (ResourceKind::Weapons, "weapons"),
         SMITHY_ARMOR_RECIPE_ID => (ResourceKind::Armor, "armor"),
         _ => return None,
     };
     Some(SingleInputPhysicalRecipe {
-        recipe_id: if recipe_id == SMITHY_WEAPON_RECIPE_ID {
-            SMITHY_WEAPON_RECIPE_ID
-        } else {
-            SMITHY_ARMOR_RECIPE_ID
+        recipe_id: match recipe_id {
+            SMITHY_TOOL_RECIPE_ID => SMITHY_TOOL_RECIPE_ID,
+            SMITHY_WEAPON_RECIPE_ID => SMITHY_WEAPON_RECIPE_ID,
+            _ => SMITHY_ARMOR_RECIPE_ID,
         },
         input_kind: ResourceKind::Metal,
         input_per_cycle: crate::production::SMITHY_METAL_PER_CYCLE,
@@ -21895,7 +21931,15 @@ fn add_functional_station_output(
     resource: ResourceKind,
     count: u32,
 ) {
-    let Some(item) = functional_item_for_resource(resource) else {
+    let item = if resource == ResourceKind::Tools
+        && colony.buildings.iter().any(|building| {
+            building.id == building_id && building.building_type == BuildingType::Smithy
+        }) {
+        Some(Item::new(ItemKind::Tool, Material::Metal, 1))
+    } else {
+        functional_item_for_resource(resource)
+    };
+    let Some(item) = item else {
         return;
     };
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
@@ -22027,18 +22071,18 @@ fn advance_physical_mill(
             return;
         }
     }
-    if !production_recipe_availability(colony, building.building_type, MILL_RECIPE_ID)
-        .is_some_and(|recipe| recipe.available)
-    {
+    let Some(selected_recipe_id) = building
+        .production_queue
+        .first()
+        .map(|entry| entry.recipe_id.as_str())
+    else {
         colony.cats[cat_index].activity = CatActivity::Idle;
         colony.cats[cat_index].destination = None;
         return;
-    }
+    };
     if building.production_paused
-        || building
-            .production_queue
-            .first()
-            .is_none_or(|entry| entry.recipe_id != MILL_RECIPE_ID)
+        || !production_recipe_availability(colony, building.building_type, selected_recipe_id)
+            .is_some_and(|recipe| recipe.available)
     {
         colony.cats[cat_index].activity = CatActivity::Idle;
         colony.cats[cat_index].destination = None;
@@ -22047,28 +22091,29 @@ fn advance_physical_mill(
 
     let input_flour = station_inventory_amount(colony, &building.id, false, ResourceKind::Flour);
     let input_grain = station_inventory_amount(colony, &building.id, false, ResourceKind::Grain);
-    if input_flour + f64::EPSILON < crate::processing::MILL_FLOUR_PER_FOOD_CYCLE
-        && input_grain + f64::EPSILON < crate::processing::MILL_GRAIN_PER_CYCLE
-    {
-        let flour_needed = (crate::processing::MILL_FLOUR_PER_FOOD_CYCLE - input_flour).max(0.0);
-        let grain_needed = (crate::processing::MILL_GRAIN_PER_CYCLE - input_grain).max(0.0);
-        if begin_station_input_haul(
-            colony,
-            &building,
-            cat_index,
-            ResourceKind::Flour,
-            flour_needed,
-            gate,
-        ) || begin_station_input_haul(
-            colony,
-            &building,
-            cat_index,
+    let (selected_input, selected_local, selected_per_cycle) = match selected_recipe_id {
+        crate::station_recipes::GRAIN_TO_FLOUR_RECIPE_ID => (
             ResourceKind::Grain,
-            grain_needed,
+            input_grain,
+            crate::processing::MILL_GRAIN_PER_CYCLE,
+        ),
+        crate::station_recipes::FLOUR_TO_FOOD_RECIPE_ID => (
+            ResourceKind::Flour,
+            input_flour,
+            crate::processing::MILL_FLOUR_PER_FOOD_CYCLE,
+        ),
+        _ => return,
+    };
+    if selected_local + f64::EPSILON < selected_per_cycle {
+        let amount_needed = (selected_per_cycle - selected_local).max(0.0);
+        let _ = begin_station_input_haul(
+            colony,
+            &building,
+            cat_index,
+            selected_input,
+            amount_needed,
             gate,
-        ) {
-            return;
-        }
+        );
         return;
     }
 
@@ -22097,10 +22142,33 @@ fn advance_physical_mill(
             has_worker: true,
             worker_is_architect: colony.cats[cat_index].specialization
                 == Some(CatSpecialization::Architect),
-            grain_available: input_grain,
-            flour_available: input_flour,
-            flour_headroom,
-            food_headroom,
+            grain_available: if selected_recipe_id
+                == crate::station_recipes::GRAIN_TO_FLOUR_RECIPE_ID
+            {
+                input_grain
+            } else {
+                0.0
+            },
+            flour_available: if selected_recipe_id
+                == crate::station_recipes::FLOUR_TO_FOOD_RECIPE_ID
+            {
+                input_flour
+            } else {
+                0.0
+            },
+            flour_headroom: if selected_recipe_id
+                == crate::station_recipes::GRAIN_TO_FLOUR_RECIPE_ID
+            {
+                flour_headroom
+            } else {
+                0.0
+            },
+            food_headroom: if selected_recipe_id == crate::station_recipes::FLOUR_TO_FOOD_RECIPE_ID
+            {
+                food_headroom
+            } else {
+                0.0
+            },
         },
     );
     colony.buildings[building_index].production_progress = step.next_progress;
@@ -22330,7 +22398,11 @@ fn advance_physical_refiner(
     }
 
     if building_type == BuildingType::Smithy {
-        for kind in [ResourceKind::Weapons, ResourceKind::Armor] {
+        for kind in [
+            ResourceKind::Weapons,
+            ResourceKind::Armor,
+            ResourceKind::Tools,
+        ] {
             if begin_station_output_haul(colony, &building, cat_index, kind, gate) {
                 return;
             }
@@ -23609,32 +23681,37 @@ pub(crate) fn building_production_block_reason_with_availability(
             .iter()
             .find_map(|(kind, amount)| (*kind == ResourceKind::Grain).then_some(*amount))
             .unwrap_or(0.0);
-        if flour + f64::EPSILON < crate::processing::MILL_FLOUR_PER_FOOD_CYCLE
-            && grain + f64::EPSILON < crate::processing::MILL_GRAIN_PER_CYCLE
-        {
-            let flour_needed = (crate::processing::MILL_FLOUR_PER_FOOD_CYCLE - flour).max(0.0);
-            let grain_needed = (crate::processing::MILL_GRAIN_PER_CYCLE - grain).max(0.0);
+        let (kind, local, per_cycle, fetching, missing) = match recipe.recipe_id.as_str() {
+            crate::station_recipes::GRAIN_TO_FLOUR_RECIPE_ID => (
+                ResourceKind::Grain,
+                grain,
+                crate::processing::MILL_GRAIN_PER_CYCLE,
+                "fetching_grain",
+                "missing_grain",
+            ),
+            crate::station_recipes::FLOUR_TO_FOOD_RECIPE_ID => (
+                ResourceKind::Flour,
+                flour,
+                crate::processing::MILL_FLOUR_PER_FOOD_CYCLE,
+                "fetching_flour",
+                "missing_flour",
+            ),
+            _ => return Some("unsupported_recipe".to_owned()),
+        };
+        if local + f64::EPSILON < per_cycle {
+            let needed = (per_cycle - local).max(0.0);
             return Some(
                 if nearest_source_pile(
                     colony,
-                    ResourceKind::Flour,
-                    flour_needed,
+                    kind,
+                    needed,
                     station_work_point(building),
                 )
                 .is_some()
                 {
-                    "fetching_flour"
-                } else if nearest_source_pile(
-                    colony,
-                    ResourceKind::Grain,
-                    grain_needed,
-                    station_work_point(building),
-                )
-                .is_some()
-                {
-                    "fetching_grain"
+                    fetching
                 } else {
-                    "missing_grain_or_flour"
+                    missing
                 }
                 .to_owned(),
             );
@@ -31610,6 +31687,11 @@ mod tests {
                 "grain_milling_preparation",
             ),
             (
+                BuildingType::Mill,
+                crate::station_recipes::FLOUR_TO_FOOD_RECIPE_ID,
+                "grain_milling_staples",
+            ),
+            (
                 BuildingType::Sawmill,
                 SAWMILL_RECIPE_ID,
                 "carpentry_preparation",
@@ -31635,6 +31717,11 @@ mod tests {
                 BuildingType::Smithy,
                 SMITHY_ARMOR_RECIPE_ID,
                 "armorsmithing",
+            ),
+            (
+                BuildingType::Smithy,
+                SMITHY_TOOL_RECIPE_ID,
+                "toolmaking_staples",
             ),
         ] {
             let mut colony = ColonyRuntime {
@@ -31697,6 +31784,7 @@ mod tests {
             (TANNERY_RECIPE_ID, "textiles"),
             (SMITHY_WEAPON_RECIPE_ID, "weaponsmithing"),
             (SMITHY_ARMOR_RECIPE_ID, "armorsmithing"),
+            (SMITHY_TOOL_RECIPE_ID, "toolmaking_staples"),
         ] {
             let mut colony = ColonyRuntime {
                 recipe_entitlement_rules_version: CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
@@ -31730,7 +31818,11 @@ mod tests {
             (BuildingType::Tannery, vec![TANNERY_RECIPE_ID]),
             (
                 BuildingType::Smithy,
-                vec![SMITHY_WEAPON_RECIPE_ID, SMITHY_ARMOR_RECIPE_ID],
+                vec![
+                    SMITHY_WEAPON_RECIPE_ID,
+                    SMITHY_TOOL_RECIPE_ID,
+                    SMITHY_ARMOR_RECIPE_ID,
+                ],
             ),
         ] {
             assert_eq!(available_production_recipes(building_type), expected);
@@ -31745,6 +31837,55 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn persisted_combined_mill_queue_migrates_once_without_losing_repeat_or_order() {
+        let mut colony = ColonyRuntime::default();
+        colony.buildings.push(BuildingRuntime {
+            building_type: BuildingType::Mill,
+            production_queue: vec![
+                ProductionQueueEntry {
+                    recipe_id: "before".to_owned(),
+                    repeat: false,
+                },
+                ProductionQueueEntry {
+                    recipe_id: crate::station_recipes::LEGACY_COMBINED_MILL_RECIPE_ID.to_owned(),
+                    repeat: true,
+                },
+                ProductionQueueEntry {
+                    recipe_id: "after".to_owned(),
+                    repeat: false,
+                },
+            ],
+            ..BuildingRuntime::default()
+        });
+
+        migrate_split_mill_queues(&mut colony);
+        let migrated = colony.buildings[0].production_queue.clone();
+        assert_eq!(
+            migrated,
+            vec![
+                ProductionQueueEntry {
+                    recipe_id: "before".to_owned(),
+                    repeat: false,
+                },
+                ProductionQueueEntry {
+                    recipe_id: GRAIN_TO_FLOUR_RECIPE_ID.to_owned(),
+                    repeat: true,
+                },
+                ProductionQueueEntry {
+                    recipe_id: FLOUR_TO_FOOD_RECIPE_ID.to_owned(),
+                    repeat: true,
+                },
+                ProductionQueueEntry {
+                    recipe_id: "after".to_owned(),
+                    repeat: false,
+                },
+            ]
+        );
+        migrate_split_mill_queues(&mut colony);
+        assert_eq!(colony.buildings[0].production_queue, migrated);
     }
 
     #[test]
@@ -32076,6 +32217,83 @@ mod tests {
             building_station_inventory(&both, &both.buildings[0], true),
             [(ResourceKind::Armor, 1.0)]
         );
+
+        let tools = smithy_entitlement_cycle(
+            CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
+            &["toolmaking_staples"],
+            SMITHY_TOOL_RECIPE_ID,
+        );
+        assert_eq!(tools.resources.metal, 18.0);
+        assert_eq!(tools.resources.tools, 0.0, "credit waits for final haul");
+        assert_eq!(
+            building_station_inventory(&tools, &tools.buildings[0], true),
+            [(ResourceKind::Tools, 1.0)]
+        );
+        assert_eq!(tools.items.count_kind(ItemKind::Tool), 1);
+        assert_eq!(tools.items.credited_count(ItemKind::Tool), 0);
+    }
+
+    #[test]
+    fn mill_selected_recipes_do_not_run_the_other_step_implicitly() {
+        let mut grind = chain_colony(
+            BuildingType::Mill,
+            Resources {
+                grain: crate::processing::MILL_GRAIN_PER_CYCLE,
+                ..Resources::default()
+            },
+            true,
+        );
+        grind.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        grind
+            .upgrade_tree
+            .owned_node_ids
+            .push("grain_milling_preparation".to_owned());
+        grind.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: crate::station_recipes::GRAIN_TO_FLOUR_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        seed_station_input_at_worker(
+            &mut grind,
+            ResourceKind::Grain,
+            crate::processing::MILL_GRAIN_PER_CYCLE,
+        );
+        advance_physical_mill(&mut grind, 0, production_gate(1_800, 1_800_000), 1_800.0);
+        assert_eq!(
+            building_station_inventory(&grind, &grind.buildings[0], true),
+            [(
+                ResourceKind::Flour,
+                crate::processing::MILL_FLOUR_FROM_GRAIN
+            )]
+        );
+        assert_eq!(grind.resources.food, 0.0);
+
+        let mut bake = chain_colony(
+            BuildingType::Mill,
+            Resources {
+                flour: crate::processing::MILL_FLOUR_PER_FOOD_CYCLE,
+                ..Resources::default()
+            },
+            true,
+        );
+        bake.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        bake.upgrade_tree
+            .owned_node_ids
+            .push("grain_milling_staples".to_owned());
+        bake.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: crate::station_recipes::FLOUR_TO_FOOD_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        seed_station_input_at_worker(
+            &mut bake,
+            ResourceKind::Flour,
+            crate::processing::MILL_FLOUR_PER_FOOD_CYCLE,
+        );
+        advance_physical_mill(&mut bake, 0, production_gate(1_800, 1_800_000), 1_800.0);
+        assert_eq!(
+            building_station_inventory(&bake, &bake.buildings[0], true),
+            [(ResourceKind::Food, crate::processing::MILL_FOOD_PER_CYCLE)]
+        );
+        assert_eq!(bake.resources.grain, 0.0);
     }
 
     #[test]
@@ -33673,7 +33891,7 @@ mod tests {
     }
 
     #[test]
-    fn mill_accelerated_step_keeps_flour_first_and_only_spends_delivered_inputs() {
+    fn mill_accelerated_step_runs_only_the_selected_grinding_recipe() {
         let mut colony = chain_colony(
             BuildingType::Mill,
             Resources {
@@ -33705,16 +33923,16 @@ mod tests {
         phase_23_production(&mut colony, production_gate(1_200, 1_200_000), 123);
 
         assert_eq!(colony.resources.grain, 0.0);
-        assert_eq!(colony.resources.flour, 0.0);
+        assert_eq!(colony.resources.flour, 2.0);
         assert_eq!(colony.resources.food, 0.0);
         assert_eq!(
             building_station_inventory(&colony, &colony.buildings[0], true),
-            vec![(ResourceKind::Food, 4.0), (ResourceKind::Flour, 2.0)],
-            "flour-first baking frees room for the following grind"
+            vec![(ResourceKind::Flour, 2.0)],
+            "the selected grinding operation cannot implicitly bake flour"
         );
         assert_eq!(
             colony.cats[0].skill(Labor::Mill),
-            2.0 * SKILL_GAIN_PER_JOB,
+            SKILL_GAIN_PER_JOB,
             "one XP grant per completed canonical cycle"
         );
     }
@@ -40095,6 +40313,35 @@ mod tests {
         assert!(
             instance.max_durability > baseline_max,
             "the existing durability research payload must be observable on real items"
+        );
+    }
+
+    #[test]
+    fn smithy_durability_research_owns_forged_metal_tools() {
+        let forge = |owned_study: Option<&str>| {
+            let mut colony = ColonyRuntime::default();
+            colony.buildings.push(BuildingRuntime {
+                id: "durability-smithy".to_owned(),
+                building_type: BuildingType::Smithy,
+                is_complete: true,
+                construction_progress: 100,
+                ..BuildingRuntime::default()
+            });
+            if let Some(study) = owned_study {
+                colony.upgrade_tree.owned_node_ids.push(study.to_owned());
+            }
+            add_functional_station_output(&mut colony, "durability-smithy", ResourceKind::Tools, 1);
+            let instance = colony.items.instances().next().unwrap();
+            assert_eq!(instance.item, Item::new(ItemKind::Tool, Material::Metal, 1));
+            instance.max_durability
+        };
+
+        let baseline = forge(None);
+        assert!(forge(Some("smithy_foundations")) > baseline);
+        assert_eq!(
+            forge(Some("woodworking_foundations")),
+            baseline,
+            "Woodworking research must not alter a Smithy-forged metal Tool"
         );
     }
 

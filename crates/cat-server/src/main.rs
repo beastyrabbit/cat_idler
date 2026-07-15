@@ -3135,6 +3135,7 @@ mod tests {
                 cat_sim::types::BuildingType::Woodworking,
                 64,
             ),
+            ("guidance-smithy", cat_sim::types::BuildingType::Smithy, 68),
         ] {
             world.colonies[0]
                 .buildings
@@ -3152,7 +3153,10 @@ mod tests {
         let cat_id = world.colonies[0].cats[0].id.clone();
         let station_recipes = [
             ("guidance-sawmill", cat_sim::world_tick::SAWMILL_RECIPE_ID),
-            ("guidance-mill", cat_sim::world_tick::MILL_RECIPE_ID),
+            (
+                "guidance-mill",
+                cat_sim::world_tick::FLOUR_TO_FOOD_RECIPE_ID,
+            ),
             ("guidance-workshop", cat_sim::world_tick::WORKSHOP_RECIPE_ID),
             ("guidance-smelter", cat_sim::world_tick::SMELTER_RECIPE_ID),
             (
@@ -3166,6 +3170,10 @@ mod tests {
             (
                 "guidance-woodworking",
                 cat_sim::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
+            ),
+            (
+                "guidance-smithy",
+                cat_sim::world_tick::SMITHY_TOOL_RECIPE_ID,
             ),
         ];
         let conn = Connection::open(&path).expect("open guidance database");
@@ -3187,16 +3195,16 @@ mod tests {
             "irrigation",
             "mountaineering",
             "smelting",
+            "smithy",
             "school",
             "advanced_storage",
-            "carpentry_sources",
             "carpentry_preparation",
-            "grain_milling_sources",
             "grain_milling_preparation",
-            "metallurgy_sources",
+            "grain_milling_staples",
             "metallurgy_preparation",
-            "trade_goods_sources",
             "trade_goods_preparation",
+            "toolmaking_preparation",
+            "toolmaking_staples",
         ] {
             let result = send_action(
                 &state,
@@ -3323,8 +3331,10 @@ mod tests {
         for study in [
             "carpentry_preparation",
             "grain_milling_preparation",
+            "grain_milling_staples",
             "metallurgy_preparation",
             "trade_goods_preparation",
+            "toolmaking_staples",
         ] {
             assert!(
                 colony
@@ -4086,7 +4096,7 @@ mod tests {
             ),
             (
                 "signed-guided-smithy",
-                2_usize,
+                3_usize,
                 cat_sim::station_recipes::SMITHY_WEAPON_RECIPE_ID,
                 false,
             ),

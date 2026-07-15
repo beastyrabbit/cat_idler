@@ -359,6 +359,7 @@ pub fn item_max_durability(item: Item, durability_mult: f64) -> u32 {
 #[must_use]
 pub const fn item_workshop_id(item: Item) -> &'static str {
     match item.kind {
+        ItemKind::Tool if matches!(item.material, Material::Metal) => "smithy",
         ItemKind::Tool => "woodworking",
         ItemKind::Weapon | ItemKind::Armor => "smithy",
         _ => match item.material {

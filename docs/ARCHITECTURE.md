@@ -158,13 +158,14 @@ maintained product behavior rather than migration:
 - **Durable native identity.** The native client keeps its HMAC bearer and selected village in a
   mode-0600 file replaced through a synced same-directory temporary file and atomic rename; WASM
   uses the corresponding local-storage record.
-- **Research and scouting depth.** Players can spend research points on all 487 truthful studies,
-  and the
-  living Leader may complete at most one affordable full-catalog node per rolling real-life day.
+- **Research and scouting depth.** The truthful 487-node catalog lets players spend research
+  points on every supported study;
+  unsupported generated promises remain visible as disabled FUTURE entries. The living Leader may
+  complete at most one affordable supported node per rolling real-life day.
   Research labor/building automation and rituals remain Loremaster-owned.
   Typed modeled effects (including the durability consumer) and future-content unlock registries
-  persist, but 93 generated recipe IDs, all 64 generated resource IDs, and 25 worker-slot effects
-  still lack their intended authoritative gameplay consumers. All listed capacity studies now own
+  persist, but 91 generated recipe IDs, all 64 generated resource IDs, and 25 worker-slot effects
+  still lack their intended authoritative gameplay consumers. All listed capacity studies own
   physical domains; thirteen former containerless studies are omitted and migrated with refunds.
   Resource/general scouts now
   preserve the shrine-return knowledge contract while following deterministic knowledge-blind
