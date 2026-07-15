@@ -275,6 +275,11 @@ pub struct TraderBuyOffer {
     /// Physical unit weight used by the caravan's bounded per-action load.
     #[serde(default)]
     pub unit_weight_grams: u32,
+    /// Why this held stack cannot currently be sold. `available` is the authoritative
+    /// actionable count; a blocked row remains visible so the UI never silently hides
+    /// goods merely because the purse, wagon, or physical storage seam is unavailable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 /// One resource kind the trader will sell to the colony, and at what coin-per-unit price.
@@ -289,6 +294,10 @@ pub struct TraderSellOffer {
     pub available: f64,
     #[serde(default)]
     pub sold_out: bool,
+    /// Authoritative non-price reason a one-unit purchase cannot currently complete,
+    /// such as every accepting player-visible pile being full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2074,12 +2083,14 @@ mod tests {
                 available: 3,
                 unit_price: 2.4,
                 unit_weight_grams: 420,
+                blocked_reason: None,
             }],
             sell_offers: vec![TraderSellOffer {
                 resource: ResourceKind::Food,
                 unit_price: 1.5,
                 available: 4.0,
                 sold_out: false,
+                blocked_reason: None,
             }],
         };
 

@@ -157,7 +157,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    finite resource manifest, finite purse and wagon capacity, exact purchased item-unit cargo,
    physical return route, and restart-persistent phase/deadline/stock. Signed guided actions prove
    exact depletion and sold-out denial, and a seed-41 live-cadence 60-hour passive twin observed one
-   arrival, shrine trading window, and departure with identical replay and no deaths or resets.
+   arrival, shrine trading window, and departure with identical replay and no deaths or resets. Exact
+   physical transition times are invariant across one-second, minute, hourly, and coarse tick
+   partitions; a route that was unavailable at the scheduled boundary never grants backdated travel.
+   The trade panel opens only on shrine contact, pages every finite craft offer six at a time within
+   1024×768, and derives storage-full guidance only from the Accountant's reported books.
    Before closing this slice, run the broad touched-crate gates and accept the client-owned
    framebuffer with the merchant at the shrine and finite/sold-out inventory visible.
 2. **Deepen the shared world.** The durable 30-cat/six-Den/19×19 communal hub is mechanically
@@ -165,10 +169,9 @@ so a correct scout route cannot conceal a missing founding dispatch.
    terrain with an authoritative shared spatial model where appropriate, then turn summary contact
    and atomic scalar barter into physical meeting, item trade, and routes. Deterministic
    knowledge-blind scout search is verified; preserve its physical-observation and shrine-return
-   contracts as shared-world depth grows. Visiting traders are also only a partial physical slice:
-   they currently move straight to the south gate and resource buying uses an unbounded catalog.
-   Route each visit around real obstacles to the maintained shrine/market destination, persist a
-   finite inventory, and make restocking, purchases, departure, and restart conserve that stock.
+   contracts as shared-world depth grows. The physical finite NPC trader is a local proof of the
+   route, inventory, and restart rules, but player villages still need real inter-village caravans,
+   meeting cats, finite item exchange, and shared-world routes instead of atomic scalar barter.
 3. **Close remaining world-system gaps.** Baseline Leader hunt/water/scout survival, optimized
    browser and signed-native shrine-return fog, staged closed-perimeter growth, integrated
    Accounting Tent, and persisted outside-wall agriculture are verified. Fine-biome factors now

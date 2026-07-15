@@ -676,17 +676,38 @@ struct CensusUi {
 /// Number of text lines the census panel renders (see `census_report_lines`).
 const CENSUS_LINES: usize = 18;
 
-/// Trade menu (open while a trader is visiting). `closed` lets the player
-/// dismiss it during a visit; it resets when the trader leaves so the next visit
-/// auto-opens.
+/// Trade menu (open only during physical shrine trading). `closed` lets the player
+/// dismiss the current visit, while `sell_page` makes every finite item stack reachable
+/// without growing the modal beyond a 1024×768 viewport.
 #[derive(Resource, Default)]
 struct TradeUi {
     closed: bool,
+    sell_page: usize,
 }
 
 /// Max sell rows (crafted stacks) and buy rows (resource kinds) the menu shows.
 const TRADE_SELL_ROWS: usize = 6;
 const TRADE_BUY_ROWS: usize = 16;
+const TRADE_PANEL_TOP: f32 = 70.0;
+const TRADE_PANEL_MAX_HEIGHT: f32 = 620.0;
+const MIN_SUPPORTED_WINDOW_HEIGHT: f32 = 768.0;
+
+fn trade_sell_page_count(offer_count: usize) -> usize {
+    offer_count.max(1).div_ceil(TRADE_SELL_ROWS)
+}
+
+fn trade_sell_offer_index(page: usize, row: usize, offer_count: usize) -> Option<usize> {
+    let index = page.checked_mul(TRADE_SELL_ROWS)?.checked_add(row)?;
+    (row < TRADE_SELL_ROWS && index < offer_count).then_some(index)
+}
+
+fn trade_panel_fits_supported_height(height: f32) -> bool {
+    TRADE_PANEL_TOP + TRADE_PANEL_MAX_HEIGHT <= height
+}
+
+fn trade_menu_should_open(state: Option<TraderVisitState>, closed: bool) -> bool {
+    state == Some(TraderVisitState::Trading) && !closed
+}
 
 /// The appointable officer roles, in display order.
 const ALL_OFFICER_ROLES: [OfficerRole; 7] = [
@@ -2213,6 +2234,10 @@ struct SellButton {
     row: usize,
     all: bool,
 }
+#[derive(Component)]
+struct SellPageText;
+#[derive(Component, Clone, Copy)]
+struct SellPageButton(i8);
 /// A buy row (container node, hidden when there's no offer at this index).
 #[derive(Component, Clone, Copy)]
 struct BuyRow(usize);
@@ -2573,7 +2598,7 @@ fn treasury_total(items: &[ItemStackSnapshot]) -> u32 {
 
 /// A sell-offer line: `Fine Wood Mug x3 - 8g ea` (the trader buys from you).
 fn sell_offer_label(offer: &TraderBuyOffer) -> String {
-    format!(
+    let label = format!(
         "{band} {material} {kind} x{avail} · {price:.0}g ea · {weight} ea",
         band = quality_band(offer.quality),
         material = capitalize_word(&offer.material),
@@ -2581,7 +2606,13 @@ fn sell_offer_label(offer: &TraderBuyOffer) -> String {
         avail = offer.available,
         price = offer.unit_price,
         weight = item_weight_label(offer.unit_weight_grams),
-    )
+    );
+    offer
+        .blocked_reason
+        .as_ref()
+        .map_or(label.clone(), |reason| {
+            format!("{label} · BLOCKED: {reason}")
+        })
 }
 
 /// A buy-offer line: `Food - 3g ea` (the trader sells to you); flags when you
@@ -2590,6 +2621,12 @@ fn buy_offer_label(offer: &TraderSellOffer, coin: f64) -> String {
     let name = capitalize_word(resource_kind_name(offer.resource));
     if offer.sold_out || offer.available <= f64::EPSILON {
         return format!("{name} · SOLD OUT");
+    }
+    if let Some(reason) = &offer.blocked_reason {
+        return format!(
+            "{name} x{available:.0} · BLOCKED: {reason}",
+            available = offer.available
+        );
     }
     if can_afford(coin, offer.unit_price) {
         format!(
@@ -3923,8 +3960,11 @@ fn setup(
             });
         });
 
-    // Trade menu (centre), shown throughout a trader visit; action buttons are
-    // enabled only while the wagon is physically parked at the shrine.
+    // Trade menu (centre), shown only while the wagon is physically parked at the
+    // shrine. Arrival/departure remain non-modal world/minimap movement.
+    debug_assert!(trade_panel_fits_supported_height(
+        MIN_SUPPORTED_WINDOW_HEIGHT
+    ));
     let row_node = || Node {
         width: Val::Percent(100.0),
         align_items: AlignItems::Center,
@@ -3941,7 +3981,8 @@ fn setup(
         .spawn((
             Node {
                 left: Val::Px(390.0),
-                top: Val::Px(70.0),
+                top: Val::Px(TRADE_PANEL_TOP),
+                max_height: Val::Px(TRADE_PANEL_MAX_HEIGHT),
                 ..ui_panel_node(Val::Px(500.0))
             },
             GlobalZIndex(90),
@@ -3964,6 +4005,7 @@ fn setup(
                             row.spawn((
                                 ui_button_small(),
                                 SellButton { row: i, all },
+                                KitDisabled { disabled: true },
                                 children![ui_text(
                                     if all { "All" } else { "Sell 1" },
                                     FS_SMALL,
@@ -3973,6 +4015,27 @@ fn setup(
                         }
                     });
                 }
+                body.spawn(Node {
+                    width: Val::Percent(100.0),
+                    justify_content: JustifyContent::SpaceBetween,
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|nav| {
+                    nav.spawn((
+                        ui_button_small(),
+                        SellPageButton(-1),
+                        KitDisabled { disabled: true },
+                        children![ui_text("Previous", FS_SMALL, UI_INK)],
+                    ));
+                    nav.spawn((ui_text("Crafts 1 / 1", FS_SMALL, UI_MUTED), SellPageText));
+                    nav.spawn((
+                        ui_button_small(),
+                        SellPageButton(1),
+                        KitDisabled { disabled: true },
+                        children![ui_text("Next", FS_SMALL, UI_INK)],
+                    ));
+                });
                 body.spawn(header("- Buy resources -"));
                 for i in 0..TRADE_BUY_ROWS {
                     body.spawn((row_node(), BuyRow(i))).with_children(|row| {
@@ -9255,19 +9318,41 @@ fn update_trade_menu(
     >,
     mut sell_rows: Query<(&SellRow, &mut Node), (Without<TradeMenuPanel>, Without<BuyRow>)>,
     mut sell_texts: Query<(&SellRowText, &mut Text), (Without<TradeCoinText>, Without<BuyRowText>)>,
+    mut sell_buttons: Query<
+        (&SellButton, &mut KitDisabled),
+        (Without<SellPageButton>, Without<BuyButton>),
+    >,
+    mut sell_page_text: Query<
+        &mut Text,
+        (
+            With<SellPageText>,
+            Without<TradeCoinText>,
+            Without<SellRowText>,
+            Without<BuyRowText>,
+        ),
+    >,
+    mut sell_page_buttons: Query<
+        (&SellPageButton, &mut KitDisabled),
+        (Without<SellButton>, Without<BuyButton>),
+    >,
     mut buy_rows: Query<(&BuyRow, &mut Node), (Without<TradeMenuPanel>, Without<SellRow>)>,
     mut buy_texts: Query<(&BuyRowText, &mut Text), (Without<TradeCoinText>, Without<SellRowText>)>,
-    mut buy_buttons: Query<(&BuyButton, &mut KitDisabled)>,
+    mut buy_buttons: Query<
+        (&BuyButton, &mut KitDisabled),
+        (Without<SellButton>, Without<SellPageButton>),
+    >,
 ) {
     let now_ms = latest.0.as_ref().map_or(0, |world| world.now);
     let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
     let trader = colony.and_then(|c| c.trader.as_ref());
     let trading = trader.is_some_and(|trader| trader.state == TraderVisitState::Trading);
-    // Once the trader is physically gone, clear dismissal so the next visit auto-opens.
-    if trader.is_none() && trade_ui.closed {
+    // Approaching/departing wagons stay visible in-world and on the minimap without
+    // blocking play. The modal opens only after physical shrine contact.
+    if trader.is_none() {
         trade_ui.closed = false;
+        trade_ui.sell_page = 0;
     }
-    let open = trader.is_some() && !trade_ui.closed;
+    let open = trade_menu_should_open(trader.map(|unit| unit.state), trade_ui.closed);
     if let Ok(mut node) = panel.single_mut() {
         node.display = if open { Display::Flex } else { Display::None };
     }
@@ -9280,18 +9365,37 @@ fn update_trade_menu(
     if let Ok(mut text) = coin.single_mut() {
         text.0 = trader_status_line(trader, colony.coin, now_ms);
     }
+    let page_count = trade_sell_page_count(trader.buy_offers.len());
+    trade_ui.sell_page = trade_ui.sell_page.min(page_count - 1);
+    if let Ok(mut text) = sell_page_text.single_mut() {
+        text.0 = format!("Crafts {} / {page_count}", trade_ui.sell_page + 1);
+    }
+    for (button, mut disabled) in &mut sell_page_buttons {
+        disabled.disabled = if button.0 < 0 {
+            trade_ui.sell_page == 0
+        } else {
+            trade_ui.sell_page + 1 >= page_count
+        };
+    }
     for (row, mut node) in &mut sell_rows {
-        node.display = if row.0 < trader.buy_offers.len() {
+        node.display = if trade_sell_offer_index(trade_ui.sell_page, row.0, trader.buy_offers.len())
+            .is_some()
+        {
             Display::Flex
         } else {
             Display::None
         };
     }
     for (label, mut text) in &mut sell_texts {
-        text.0 = trader
-            .buy_offers
-            .get(label.0)
+        text.0 = trade_sell_offer_index(trade_ui.sell_page, label.0, trader.buy_offers.len())
+            .and_then(|index| trader.buy_offers.get(index))
             .map_or_else(String::new, sell_offer_label);
+    }
+    for (button, mut disabled) in &mut sell_buttons {
+        disabled.disabled =
+            trade_sell_offer_index(trade_ui.sell_page, button.row, trader.buy_offers.len())
+                .and_then(|index| trader.buy_offers.get(index))
+                .is_none_or(|offer| offer.available == 0 || offer.blocked_reason.is_some());
     }
     for (row, mut node) in &mut buy_rows {
         node.display = if row.0 < trader.sell_offers.len() {
@@ -9311,6 +9415,7 @@ fn update_trade_menu(
             || trader.sell_offers.get(button.0).is_none_or(|offer| {
                 offer.sold_out
                     || offer.available < 1.0
+                    || offer.blocked_reason.is_some()
                     || !can_afford(colony.coin, offer.unit_price)
             });
     }
@@ -9327,7 +9432,10 @@ fn handle_trade_buttons(
     mut trade_ui: ResMut<TradeUi>,
     sell_buttons: Query<(&Interaction, &SellButton), Changed<Interaction>>,
     buy_buttons: Query<(&Interaction, &BuyButton), Changed<Interaction>>,
-    close: Query<&Interaction, (Changed<Interaction>, With<TradeCloseButton>)>,
+    mut auxiliary_buttons: ParamSet<(
+        Query<(&Interaction, &SellPageButton), Changed<Interaction>>,
+        Query<&Interaction, (Changed<Interaction>, With<TradeCloseButton>)>,
+    )>,
 ) {
     let Some(colony) = latest.0.as_ref().and_then(|w| w.colonies.first()) else {
         return;
@@ -9336,11 +9444,26 @@ fn handle_trade_buttons(
         return;
     };
     let trading = trader.state == TraderVisitState::Trading;
+    for (interaction, button) in auxiliary_buttons.p0().iter() {
+        if !trading || *interaction != Interaction::Pressed {
+            continue;
+        }
+        let page_count = trade_sell_page_count(trader.buy_offers.len());
+        trade_ui.sell_page = if button.0 < 0 {
+            trade_ui.sell_page.saturating_sub(1)
+        } else {
+            (trade_ui.sell_page + 1).min(page_count - 1)
+        };
+    }
     for (interaction, button) in &sell_buttons {
         if !trading || *interaction != Interaction::Pressed {
             continue;
         }
-        if let Some(offer) = trader.buy_offers.get(button.row) {
+        if let Some(offer) =
+            trade_sell_offer_index(trade_ui.sell_page, button.row, trader.buy_offers.len())
+                .and_then(|index| trader.buy_offers.get(index))
+            && offer.blocked_reason.is_none()
+        {
             let count = if button.all { offer.available } else { 1 };
             if count > 0 {
                 outgoing.0.push(ClientAction::SellGoods {
@@ -9362,6 +9485,7 @@ fn handle_trade_buttons(
         if let Some(offer) = trader.sell_offers.get(button.0)
             && !offer.sold_out
             && offer.available >= 1.0
+            && offer.blocked_reason.is_none()
             && can_afford(colony.coin, offer.unit_price)
         {
             outgoing.0.push(ClientAction::BuyResource {
@@ -9373,7 +9497,11 @@ fn handle_trade_buttons(
             });
         }
     }
-    if close.iter().any(|i| *i == Interaction::Pressed) {
+    if auxiliary_buttons
+        .p1()
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
         trade_ui.closed = true;
     }
 }
@@ -13207,6 +13335,7 @@ mod tests {
             available: 3,
             unit_price: 8.0,
             unit_weight_grams: 420,
+            blocked_reason: None,
         };
         let label = sell_offer_label(&sell);
         assert!(label.contains("Fine Wood Mug"));
@@ -13219,6 +13348,7 @@ mod tests {
             unit_price: 5.0,
             available: 4.0,
             sold_out: false,
+            blocked_reason: None,
         };
         // Affordable and unaffordable buy labels.
         assert_eq!(buy_offer_label(&buy, 20.0), "Food x4 · 5g ea");
@@ -13233,6 +13363,65 @@ mod tests {
         assert!(can_afford(5.0, 5.0));
         assert!(can_afford(10.0, 5.0));
         assert!(!can_afford(4.0, 5.0));
+    }
+
+    #[test]
+    fn fixed_height_trade_pagination_reaches_every_offer_at_1024_by_768() {
+        assert!(trade_panel_fits_supported_height(
+            MIN_SUPPORTED_WINDOW_HEIGHT
+        ));
+        assert_eq!(trade_sell_page_count(0), 1);
+        assert_eq!(trade_sell_page_count(6), 1);
+        assert_eq!(trade_sell_page_count(8), 2);
+        assert_eq!(trade_sell_offer_index(0, 5, 8), Some(5));
+        assert_eq!(trade_sell_offer_index(1, 0, 8), Some(6));
+        assert_eq!(trade_sell_offer_index(1, 1, 8), Some(7));
+        assert_eq!(trade_sell_offer_index(1, 2, 8), None);
+    }
+
+    #[test]
+    fn trade_modal_opens_only_at_physical_shrine_contact() {
+        assert!(!trade_menu_should_open(
+            Some(TraderVisitState::Arriving),
+            false
+        ));
+        assert!(trade_menu_should_open(
+            Some(TraderVisitState::Trading),
+            false
+        ));
+        assert!(!trade_menu_should_open(
+            Some(TraderVisitState::Trading),
+            true
+        ));
+        assert!(!trade_menu_should_open(
+            Some(TraderVisitState::Departing),
+            false
+        ));
+    }
+
+    #[test]
+    fn blocked_trade_labels_explain_why_controls_are_disabled() {
+        let sell = TraderBuyOffer {
+            kind: "tool".to_owned(),
+            material: "wood".to_owned(),
+            quality: 1,
+            available: 0,
+            unit_price: 3.0,
+            unit_weight_grams: 2_000,
+            blocked_reason: Some("That identified equipment is not at the trade handoff.".into()),
+        };
+        assert!(
+            sell_offer_label(&sell)
+                .contains("BLOCKED: That identified equipment is not at the trade handoff.")
+        );
+        let buy = TraderSellOffer {
+            resource: ResourceKind::Food,
+            unit_price: 1.5,
+            available: 4.0,
+            sold_out: false,
+            blocked_reason: Some("The latest Accountant books report this storage full.".into()),
+        };
+        assert!(buy_offer_label(&buy, 100.0).contains("BLOCKED: The latest Accountant books"));
     }
 
     #[test]
@@ -13261,6 +13450,7 @@ mod tests {
                 unit_price: 1.5,
                 available: 0.0,
                 sold_out: true,
+                blocked_reason: None,
             }],
         };
         let arriving = trader_status_line(&trader, 12.0, 1_000);

@@ -359,12 +359,32 @@ pub fn walk_path_timed<F>(
     destination: WorldPos,
     elapsed_sec: f64,
     waypoints: &[WorldPos],
-    mut speed_at_tile: F,
+    speed_at_tile: F,
 ) -> PathWalk
 where
     F: FnMut(i32, i32) -> f64,
 {
+    walk_path_timed_with_elapsed(from, destination, elapsed_sec, waypoints, speed_at_tile).0
+}
+
+/// Timed-path variant that also returns the exact movement seconds consumed.
+///
+/// Callers with state transitions inside one simulation tick use the consumed value to
+/// timestamp physical contact and spend only the remaining interval on the next state.
+/// Ordinary walkers can continue using [`walk_path_timed`].
+#[must_use]
+pub fn walk_path_timed_with_elapsed<F>(
+    from: WorldPos,
+    destination: WorldPos,
+    elapsed_sec: f64,
+    waypoints: &[WorldPos],
+    mut speed_at_tile: F,
+) -> (PathWalk, f64)
+where
+    F: FnMut(i32, i32) -> f64,
+{
     let mut remaining_sec = elapsed_sec.max(0.0);
+    let available_sec = remaining_sec;
     let mut x = from.x;
     let mut y = from.y;
     let mut tiles = Vec::new();
@@ -407,11 +427,14 @@ where
         }
     }
 
-    PathWalk {
-        position: WorldPos { x, y },
-        arrived,
-        tiles,
-    }
+    (
+        PathWalk {
+            position: WorldPos { x, y },
+            arrived,
+            tiles,
+        },
+        available_sec - remaining_sec,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

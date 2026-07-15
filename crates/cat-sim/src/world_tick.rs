@@ -56,7 +56,7 @@ use crate::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
         effective_move_speed_for_surface, pick_wander_target, rail_speed_multiplier,
         road_surface_multiplier, scout_wander_target, soft_obstacle_speed_multiplier, walk_path,
-        walk_path_timed,
+        walk_path_timed, walk_path_timed_with_elapsed,
     },
     officers::{OfficerRole, prerequisite_for},
     pathfinding::{
@@ -13190,6 +13190,23 @@ fn walk_trader_route(
     current: WorldPos,
     destination: WorldPos,
 ) -> Option<(WorldPos, bool)> {
+    walk_trader_route_for_elapsed(
+        colony,
+        movement,
+        current,
+        destination,
+        movement.movement_elapsed,
+    )
+    .map(|(position, arrived, _)| (position, arrived))
+}
+
+fn walk_trader_route_for_elapsed(
+    colony: &ColonyRuntime,
+    movement: &MovementPassContext,
+    current: WorldPos,
+    destination: WorldPos,
+    elapsed_game_sec: f64,
+) -> Option<(WorldPos, bool, f64)> {
     let area = pathfinding_area(&movement.claimed_area);
     let area_gate = movement.area_gate.map(pathfinding_gate);
     let soft_obstacles = soft_obstacle_tiles(colony);
@@ -13239,10 +13256,10 @@ fn walk_trader_route(
         Vec::new()
     };
     let rail_researched = is_owned(&colony.upgrade_tree, "rail");
-    let walk = walk_path_timed(
+    let (walk, consumed_game_sec) = walk_path_timed_with_elapsed(
         current,
         destination,
-        movement.movement_elapsed,
+        elapsed_game_sec,
         &waypoints,
         |x, y| {
             let path_pos = PathTilePos { x, y };
@@ -13275,7 +13292,58 @@ fn walk_trader_route(
                 * rail_speed_multiplier(rail_researched, remaining_distance)
         },
     );
-    Some((walk.position, walk.arrived))
+    Some((walk.position, walk.arrived, consumed_game_sec))
+}
+
+fn trader_duration_ms(game_hours: f64, scale: f64) -> i64 {
+    (game_hours * 3_600_000.0 / scale.max(f64::EPSILON))
+        .ceil()
+        .clamp(1.0, i64::MAX as f64) as i64
+}
+
+fn trader_movement_duration_ms(consumed_game_sec: f64, scale: f64) -> i64 {
+    (consumed_game_sec.max(0.0) * 1_000.0 / scale.max(f64::EPSILON))
+        .ceil()
+        .clamp(0.0, i64::MAX as f64) as i64
+}
+
+fn trader_route_exterior_is_valid(
+    colony: &ColonyRuntime,
+    movement: &MovementPassContext,
+    exterior: TilePos,
+) -> bool {
+    !is_inside_movement_village(exterior, movement)
+        && migrant_exterior_is_passable(colony, exterior)
+        && walk_trader_route_for_elapsed(
+            colony,
+            movement,
+            tile_pos_to_world(trader_shrine_contact_tile(colony)),
+            tile_pos_to_world(exterior),
+            0.0,
+        )
+        .is_some()
+}
+
+fn ensure_trader_departure_exterior(
+    colony: &mut ColonyRuntime,
+    movement: &MovementPassContext,
+) -> bool {
+    let existing = colony
+        .trader
+        .as_ref()
+        .and_then(|unit| unit.route_exterior)
+        .map(|[x, y]| TilePos { x, y });
+    let exterior = existing
+        .filter(|tile| trader_route_exterior_is_valid(colony, movement, *tile))
+        .or_else(|| trader_exterior_tile(colony, movement));
+    let Some(exterior) = exterior else {
+        return false;
+    };
+    let destination = position_from_world(tile_pos_to_world(exterior));
+    let unit = colony.trader.as_mut().expect("departure owns a trader");
+    unit.route_exterior = Some([exterior.x, exterior.y]);
+    unit.destination = Some(destination);
+    true
 }
 
 /// Phase 36b: spawn a visiting trader on its deterministic game-time schedule, and
@@ -13292,129 +13360,175 @@ fn phase_36b_trader_lifecycle(
     movement: &MovementPassContext,
 ) {
     let scale = normalize_time_scale(colony);
+    let tick_started_at = gate
+        .processed_through
+        .saturating_sub(gate.elapsed_sec.saturating_mul(1_000));
+    let mut cursor_ms = tick_started_at;
+    let visit_interval_ms = trader_duration_ms(trader::TRADER_VISIT_INTERVAL_GAME_HOURS, scale);
+    let linger_ms = trader_duration_ms(trader::TRADER_LINGER_GAME_HOURS, scale);
 
-    if colony.trader.is_none() {
-        let reference_at = colony
-            .last_trader_departed_at
-            .unwrap_or(colony.run_started_at);
-        let elapsed_game_sec =
-            (gate.processed_through - reference_at).max(0) as f64 / 1000.0 * scale;
-        if elapsed_game_sec >= trader::TRADER_VISIT_INTERVAL_GAME_HOURS * 3600.0 {
+    // A coarse catch-up tick can cross spawn, arrival, linger and departure. Consume
+    // each transition at its physical timestamp so partitioning the same elapsed time
+    // cannot extend the visit or lie in the event log.
+    for _ in 0..4_096 {
+        if colony.trader.is_none() {
+            let reference_at = colony
+                .last_trader_departed_at
+                .unwrap_or(colony.run_started_at);
+            let scheduled_at = reference_at.saturating_add(visit_interval_ms);
+            if scheduled_at > gate.processed_through {
+                return;
+            }
             let Some(exterior) = trader_exterior_tile(colony, movement) else {
                 return;
             };
+            // If an earlier tick already crossed the schedule while topology offered no
+            // route, the wagon becomes visible only at this tick's availability boundary.
+            // Never backdate an event or grant movement through time in which no route
+            // existed. A coarse first tick that genuinely crosses the due point still
+            // consumes only the interval after that exact scheduled timestamp.
+            let spawn_at = scheduled_at.max(tick_started_at);
             let visit_number = colony.trader_visit_count.saturating_add(1);
+            let spawn_gate = TickGate {
+                processed_through: spawn_at,
+                ..gate
+            };
             colony.trader = Some(spawn_trader(
                 colony,
-                gate,
+                spawn_gate,
                 movement.world_seed,
                 visit_number,
                 exterior,
             ));
             colony.trader_visit_count = visit_number;
+            cursor_ms = cursor_ms.max(spawn_at);
             append_event(
                 colony,
-                gate.processed_through,
+                spawn_at,
                 EventKind::TraderArrived,
                 "A trader's wagon has been spotted approaching the village.",
             );
         }
-        return;
-    }
 
-    let state = colony.trader.as_ref().expect("checked Some above").state;
-
-    match state {
-        trader::TraderState::Arriving => {
-            let current = {
-                let unit = colony.trader.as_ref().expect("checked Some above");
-                WorldPos {
-                    x: unit.position.x,
-                    y: unit.position.y,
+        let state = colony.trader.as_ref().expect("spawned trader above").state;
+        match state {
+            trader::TraderState::Arriving => {
+                let current = {
+                    let unit = colony.trader.as_ref().expect("trader is arriving");
+                    WorldPos {
+                        x: unit.position.x,
+                        y: unit.position.y,
+                    }
+                };
+                let destination = colony
+                    .trader
+                    .as_ref()
+                    .and_then(|unit| unit.visit_destination)
+                    .map(|[x, y]| tile_pos_to_world(TilePos { x, y }));
+                let Some(destination) = destination else {
+                    return;
+                };
+                let remaining_game_sec =
+                    gate.processed_through.saturating_sub(cursor_ms).max(0) as f64 / 1_000.0
+                        * scale;
+                let Some((position, arrived, consumed_game_sec)) = walk_trader_route_for_elapsed(
+                    colony,
+                    movement,
+                    current,
+                    destination,
+                    remaining_game_sec,
+                ) else {
+                    return;
+                };
+                let contact_at =
+                    cursor_ms.saturating_add(trader_movement_duration_ms(consumed_game_sec, scale));
+                {
+                    let unit = colony.trader.as_mut().expect("trader is arriving");
+                    unit.position = position_from_world(position);
+                    unit.destination = Some(position_from_world(destination));
+                    if arrived {
+                        unit.state = trader::TraderState::Trading;
+                        unit.arrived_at = Some(contact_at);
+                        unit.depart_at = Some(contact_at.saturating_add(linger_ms));
+                    }
                 }
-            };
-            let destination = colony
-                .trader
-                .as_ref()
-                .and_then(|unit| unit.visit_destination)
-                .map(|[x, y]| tile_pos_to_world(TilePos { x, y }));
-            let Some(destination) = destination else {
-                return;
-            };
-            let Some((position, arrived)) =
-                walk_trader_route(colony, movement, current, destination)
-            else {
-                return;
-            };
-            {
-                let unit = colony.trader.as_mut().expect("checked Some above");
-                unit.position = position_from_world(position);
-                unit.destination = Some(position_from_world(destination));
-                if arrived {
-                    unit.state = trader::TraderState::Trading;
-                    unit.arrived_at = Some(gate.processed_through);
-                    let linger_ms = (trader::TRADER_LINGER_GAME_HOURS * 3_600_000.0
-                        / scale.max(f64::EPSILON))
-                    .ceil()
-                    .clamp(1.0, i64::MAX as f64) as i64;
-                    unit.depart_at = Some(gate.processed_through.saturating_add(linger_ms));
+                if !arrived {
+                    return;
                 }
-            }
-            if arrived {
+                cursor_ms = contact_at;
                 append_event(
                     colony,
-                    gate.processed_through,
+                    contact_at,
                     EventKind::TraderTrading,
                     "The trader reached the shrine and opened the finite wagon manifest.",
                 );
             }
-        }
-        trader::TraderState::Trading => {
-            let depart_at = colony
-                .trader
-                .as_ref()
-                .expect("checked Some above")
-                .depart_at
-                .unwrap_or(gate.processed_through);
-            if gate.processed_through >= depart_at {
-                let unit = colony.trader.as_mut().expect("checked Some above");
-                unit.state = trader::TraderState::Departing;
-                unit.destination = unit
-                    .route_exterior
-                    .map(|[x, y]| position_from_world(tile_pos_to_world(TilePos { x, y })));
-            }
-        }
-        trader::TraderState::Departing => {
-            let current = {
-                let unit = colony.trader.as_ref().expect("checked Some above");
-                WorldPos {
-                    x: unit.position.x,
-                    y: unit.position.y,
+            trader::TraderState::Trading => {
+                let depart_at = colony
+                    .trader
+                    .as_ref()
+                    .expect("trader is trading")
+                    .depart_at
+                    .unwrap_or(cursor_ms);
+                if depart_at > gate.processed_through {
+                    return;
                 }
-            };
-            let exterior = colony
-                .trader
-                .as_ref()
-                .and_then(|unit| unit.route_exterior)
-                .map(|[x, y]| tile_pos_to_world(TilePos { x, y }));
-            let Some(exterior) = exterior else {
-                return;
-            };
-            let Some((position, departed)) = walk_trader_route(colony, movement, current, exterior)
-            else {
-                return;
-            };
-            {
-                let unit = colony.trader.as_mut().expect("checked Some above");
-                unit.position = position_from_world(position);
-                unit.destination = Some(position_from_world(exterior));
+                {
+                    let unit = colony.trader.as_mut().expect("trader is trading");
+                    unit.state = trader::TraderState::Departing;
+                }
+                if !ensure_trader_departure_exterior(colony, movement) {
+                    return;
+                }
+                cursor_ms = cursor_ms.max(depart_at);
             }
-            if departed {
+            trader::TraderState::Departing => {
+                if !ensure_trader_departure_exterior(colony, movement) {
+                    return;
+                }
+                let current = {
+                    let unit = colony.trader.as_ref().expect("trader is departing");
+                    WorldPos {
+                        x: unit.position.x,
+                        y: unit.position.y,
+                    }
+                };
+                let exterior = colony
+                    .trader
+                    .as_ref()
+                    .and_then(|unit| unit.route_exterior)
+                    .map(|[x, y]| tile_pos_to_world(TilePos { x, y }));
+                let Some(exterior) = exterior else {
+                    return;
+                };
+                let remaining_game_sec =
+                    gate.processed_through.saturating_sub(cursor_ms).max(0) as f64 / 1_000.0
+                        * scale;
+                let Some((position, departed, consumed_game_sec)) = walk_trader_route_for_elapsed(
+                    colony,
+                    movement,
+                    current,
+                    exterior,
+                    remaining_game_sec,
+                ) else {
+                    return;
+                };
+                let departed_at =
+                    cursor_ms.saturating_add(trader_movement_duration_ms(consumed_game_sec, scale));
+                {
+                    let unit = colony.trader.as_mut().expect("trader is departing");
+                    unit.position = position_from_world(position);
+                    unit.destination = Some(position_from_world(exterior));
+                }
+                if !departed {
+                    return;
+                }
                 colony.trader = None;
-                colony.last_trader_departed_at = Some(gate.processed_through);
+                colony.last_trader_departed_at = Some(departed_at);
+                cursor_ms = departed_at;
                 append_event(
                     colony,
-                    gate.processed_through,
+                    departed_at,
                     EventKind::TraderDeparted,
                     "The trader's wagon has departed for distant lands.",
                 );
@@ -32436,6 +32550,45 @@ mod tests {
     }
 
     #[test]
+    fn route_unavailable_at_schedule_spawns_only_from_the_later_availability_boundary() {
+        let mut colony = trader_test_colony(1);
+        let due = game_hours_to_ms(trader::TRADER_VISIT_INTERVAL_GAME_HOURS);
+        let original_tiles = colony.world_tiles.clone();
+        let claimed = colony.claimed_tiles.iter().copied().collect::<HashSet<_>>();
+        for tile in colony
+            .world_tiles
+            .values_mut()
+            .filter(|tile| !claimed.contains(&tile.pos))
+        {
+            tile.resources.water = 999;
+        }
+        let blocked_gate = production_gate(60, due + 60_000);
+        let blocked = test_trader_movement(&colony, blocked_gate);
+        phase_36b_trader_lifecycle(&mut colony, blocked_gate, &blocked);
+        assert!(colony.trader.is_none());
+        assert!(colony.events.iter().all(|event| {
+            !matches!(
+                event.kind,
+                EventKind::TraderArrived | EventKind::TraderTrading
+            )
+        }));
+
+        let available_at = due + 120_000;
+        colony.world_tiles = original_tiles;
+        let available_gate = production_gate(60, available_at);
+        let movement = test_trader_movement(&colony, available_gate);
+        phase_36b_trader_lifecycle(&mut colony, available_gate, &movement);
+        let spotted_at = colony
+            .events
+            .iter()
+            .find(|event| event.kind == EventKind::TraderArrived)
+            .map(|event| event.at_ms)
+            .expect("spotted only once a route exists");
+        assert_eq!(spotted_at, available_at - 60_000);
+        assert!(spotted_at > due);
+    }
+
+    #[test]
     fn trader_lifecycle_advances_arriving_trading_departing_gone_on_the_documented_timeline() {
         let mut colony = trader_test_colony(1);
 
@@ -32447,16 +32600,17 @@ mod tests {
             trader::TraderState::Arriving
         );
 
-        // 2) A big movement budget (6 real/game-hours at 0.5 tiles/sec = 10_800 tiles,
-        // far more than the local route) carries it through the sole gate to the shrine
-        // contact in one tick -> Trading.
-        let travel_sec = 6 * 3_600;
+        // 2) A one-minute movement budget carries it through the sole gate to the shrine
+        // contact in one tick. Contact is timestamped at the physical instant inside that
+        // minute, not falsely at the tick endpoint.
+        let travel_sec = 60;
         let arrive_ms = spawn_ms + travel_sec * 1_000;
         advance_test_trader(&mut colony, production_gate(travel_sec, arrive_ms));
-        {
+        let (actual_arrive_ms, deadline) = {
             let unit = colony.trader.as_ref().unwrap();
             assert_eq!(unit.state, trader::TraderState::Trading);
-            assert_eq!(unit.arrived_at, Some(arrive_ms));
+            let actual_arrive_ms = unit.arrived_at.expect("physical contact timestamp");
+            assert!(actual_arrive_ms > spawn_ms && actual_arrive_ms < arrive_ms);
             let contact = trader_contact_world_pos(&colony);
             let position = WorldPos {
                 x: unit.position.x,
@@ -32467,7 +32621,8 @@ mod tests {
                 unit.visit_destination,
                 Some([contact.x as i32, contact.y as i32])
             );
-        }
+            (actual_arrive_ms, unit.depart_at.expect("bounded stay"))
+        };
         assert!(
             colony
                 .events
@@ -32476,8 +32631,11 @@ mod tests {
         );
 
         // 3) Still inside the linger window -> stays Trading.
-        let mid_linger_ms = arrive_ms + game_hours_to_ms(trader::TRADER_LINGER_GAME_HOURS - 1.0);
-        advance_test_trader(&mut colony, production_gate(3_600, mid_linger_ms));
+        let mid_linger_ms = deadline - game_hours_to_ms(1.0);
+        advance_test_trader(
+            &mut colony,
+            production_gate((mid_linger_ms - arrive_ms) / 1_000, mid_linger_ms),
+        );
         assert_eq!(
             colony.trader.as_ref().unwrap().state,
             trader::TraderState::Trading,
@@ -32485,18 +32643,28 @@ mod tests {
         );
 
         // 4) Past the linger window -> Departing.
-        let past_linger_ms = arrive_ms + game_hours_to_ms(trader::TRADER_LINGER_GAME_HOURS + 1.0);
-        advance_test_trader(&mut colony, production_gate(3_600, past_linger_ms));
+        advance_test_trader(
+            &mut colony,
+            production_gate((deadline - mid_linger_ms) / 1_000, deadline),
+        );
         assert_eq!(
             colony.trader.as_ref().unwrap().state,
             trader::TraderState::Departing
         );
 
         // 5) Another big movement budget carries it back off-map -> despawns.
-        let depart_ms = past_linger_ms + travel_sec * 1_000;
+        let depart_ms = deadline + travel_sec * 1_000;
         advance_test_trader(&mut colony, production_gate(travel_sec, depart_ms));
         assert!(colony.trader.is_none(), "the trader should have despawned");
-        assert_eq!(colony.last_trader_departed_at, Some(depart_ms));
+        assert!(
+            colony
+                .last_trader_departed_at
+                .is_some_and(|at| at > deadline && at < depart_ms)
+        );
+        assert_eq!(
+            deadline - actual_arrive_ms,
+            game_hours_to_ms(trader::TRADER_LINGER_GAME_HOURS)
+        );
         assert!(
             colony
                 .events
@@ -32700,6 +32868,107 @@ mod tests {
         assert!(
             left.last_trader_departed_at.is_some(),
             "the horizon should have completed a full trader visit"
+        );
+    }
+
+    #[test]
+    fn trader_visit_timestamps_and_final_state_are_identical_across_tick_partitions() {
+        fn run(cadence_sec: i64) -> ColonyRuntime {
+            let mut colony = trader_test_colony(4_242);
+            let horizon_sec = 55 * 3_600;
+            let due_sec = 48 * 3_600;
+            // The lifecycle is inert before `due_sec`; collapse that prefix into one
+            // call so the live-cadence assertion exercises every transition without
+            // spending test time on 172,799 identical precondition checks.
+            let mut now_sec = if cadence_sec < due_sec {
+                due_sec - cadence_sec
+            } else {
+                0
+            };
+            if now_sec > 0 {
+                advance_test_trader(&mut colony, production_gate(now_sec, now_sec * 1_000));
+            }
+            while now_sec < horizon_sec {
+                let elapsed = cadence_sec.min(horizon_sec - now_sec);
+                now_sec += elapsed;
+                advance_test_trader(
+                    &mut colony,
+                    production_gate(elapsed, now_sec.saturating_mul(1_000)),
+                );
+            }
+            colony
+        }
+
+        let live = run(1);
+        for cadence in [60, 3_600, 55 * 3_600] {
+            let candidate = run(cadence);
+            assert_eq!(candidate.trader, live.trader, "cadence={cadence}");
+            assert_eq!(
+                candidate.last_trader_departed_at, live.last_trader_departed_at,
+                "cadence={cadence}"
+            );
+            assert_eq!(
+                candidate.trader_visit_count, live.trader_visit_count,
+                "cadence={cadence}"
+            );
+            let trader_events = |colony: &ColonyRuntime| {
+                colony
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        matches!(
+                            event.kind,
+                            EventKind::TraderArrived
+                                | EventKind::TraderTrading
+                                | EventKind::TraderDeparted
+                        )
+                    })
+                    .map(|event| (event.at_ms, event.kind.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                trader_events(&candidate),
+                trader_events(&live),
+                "event timestamps must describe physical transitions at cadence={cadence}"
+            );
+        }
+    }
+
+    #[test]
+    fn departure_rehomes_a_route_tile_that_expansion_claimed_during_the_visit() {
+        let mut colony = trader_test_colony(41);
+        let spawn_ms = game_hours_to_ms(trader::TRADER_VISIT_INTERVAL_GAME_HOURS);
+        advance_test_trader(&mut colony, production_gate(0, spawn_ms));
+        advance_test_trader(&mut colony, production_gate(3_600, spawn_ms + 3_600_000));
+        let deadline = colony.trader.as_ref().unwrap().depart_at.unwrap();
+        let old_exterior = colony.trader.as_ref().unwrap().route_exterior.unwrap();
+        colony.claimed_tiles.push(TilePos {
+            x: old_exterior[0],
+            y: old_exterior[1],
+        });
+        colony.claimed_tiles.sort_by_key(|tile| (tile.y, tile.x));
+        colony.claimed_tiles.dedup();
+
+        let movement = test_trader_movement(&colony, production_gate(0, deadline));
+        phase_36b_trader_lifecycle(&mut colony, production_gate(0, deadline), &movement);
+        let trader = colony.trader.as_ref().expect("departing trader remains");
+        let replacement = trader.route_exterior.expect("replacement exterior");
+        assert_ne!(replacement, old_exterior);
+        assert!(!is_inside_movement_village(
+            TilePos {
+                x: replacement[0],
+                y: replacement[1]
+            },
+            &movement
+        ));
+
+        let exit_at = deadline + 3_600_000;
+        advance_test_trader(&mut colony, production_gate(3_600, exit_at));
+        assert!(colony.trader.is_none());
+        assert!(
+            colony
+                .last_trader_departed_at
+                .is_some_and(|at| at < exit_at)
         );
     }
 

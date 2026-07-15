@@ -109,6 +109,19 @@ limit). Restocking happens only when a new deterministic visit begins. When the 
 the wagon follows the same physical rules back to its persisted exterior and despawns only on
 arrival.
 
+Simulation transitions use the exact physical time consumed inside each tick, so spawn, shrine
+contact, deadline, exterior arrival, and a following visit are identical under one-second, minute,
+hourly, or coarse partitions. If the route is unavailable at a scheduled boundary, a later reopen
+starts travel at that later time and never grants backdated movement. Expansion revalidates the
+persisted exterior and deterministically chooses another reachable outside tile if the old one has
+become claimed.
+
+The trade panel opens only during physical shrine contact. It stays within the 1024×768 support
+bound and pages every colony craft offer six rows at a time, so a large finite inventory never hides
+actionable item identities. Disabled buy guidance may use only the Accountant's reported pile books;
+exact unreported stock or headroom remains server-private, and an exact signed action can still fail
+with a generic storage denial when the books are stale.
+
 ## Scope / sequencing (big — builds on P12.4b)
 This is the large economy layer. Realistically staged:
 1. **Item/material model** (cat-sim): `Material`, `ItemKind`, `Item`, value fn; extend Resources

@@ -1982,11 +1982,6 @@ fn sell_goods(
         return fail("The trader's wagon has no room for that load.");
     }
     let functional_kind = functional_resource_for_item(item);
-    if let Some(kind) = functional_kind
-        && visible_resource_amount(colony, kind) + f64::EPSILON < f64::from(count)
-    {
-        return fail("The identified equipment is not in player-visible storage.");
-    }
 
     let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let payout = trader::trader_buy_price(item, count) * effects.trade_value_mult;
@@ -2001,8 +1996,11 @@ fn sell_goods(
         return fail("The exact goods are no longer available.");
     }
     if let Some(kind) = functional_kind {
-        let removed_physical = deduct_visible_resource(colony, kind, f64::from(count));
-        debug_assert!(removed_physical, "checked physical availability above");
+        // Finite pristine identities are authoritative for caravan sales. The scalar
+        // equipment fields remain old-save compatibility mirrors until P19.C3 removes
+        // them completely; decrement that mirror when it exists, but never reject or
+        // duplicate a real identified unit because the legacy count drifted.
+        let _ = deduct_visible_resource(colony, kind, f64::from(count));
     }
     colony
         .trader
@@ -2684,6 +2682,40 @@ fn trade_deposit_plan(
     (remaining <= f64::EPSILON).then_some(plan)
 }
 
+/// Report-derived purchase preflight for UI hints. `None` means the books have no report
+/// for any accepting pile; callers must not sample authoritative contents to fill that gap.
+/// The signed action still validates exact physical headroom atomically at execution time.
+fn reported_trade_storage_has_room(
+    colony: &ColonyRuntime,
+    kind: stockpiles::ResourceKind,
+    amount: f64,
+) -> Option<bool> {
+    let capacities = storage::authoritative_storage_capacities_for_owned(
+        &storage_buildings(colony),
+        &colony.stockpiles,
+        colony.upgrade_tree.owned_node_ids.iter(),
+    );
+    let mut saw_report = false;
+    let mut reported_headroom = 0.0;
+    for pile in colony
+        .stockpiles
+        .iter()
+        .filter(|pile| !pile.is_station_local() && pile.accepts.contains(&kind))
+    {
+        let Some(report) = colony.stock_ledger.pile_reports.get(&pile.id) else {
+            continue;
+        };
+        saw_report = true;
+        let mut reported_pile = pile.clone();
+        reported_pile.contents = report.reported.clone();
+        reported_headroom += stockpiles::headroom_for(&reported_pile, kind, &capacities);
+        if reported_headroom + f64::EPSILON >= amount {
+            return Some(true);
+        }
+    }
+    saw_report.then_some(false)
+}
+
 fn trade_would_overflow(
     colony: &ColonyRuntime,
     kind: stockpiles::ResourceKind,
@@ -3039,6 +3071,7 @@ fn colony_snapshot(colony: &ColonyRuntime, now_ms: i64) -> proto::ColonySnapshot
 fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
     let trader_unit = colony.trader.as_ref()?;
     let is_trading = trader_unit.state == trader::TraderState::Trading;
+    let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let stock = stockpiles::ResourceKind::ALL
         .iter()
         .copied()
@@ -3058,30 +3091,40 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
             .items
             .keys()
             .filter_map(|item| {
-                let available = colony
-                    .items
-                    .pristine_count(*item)
-                    .min(trader::max_item_units_per_load(*item))
-                    .min(
-                        (trader_unit.coin / trader::trader_buy_price(*item, 1))
-                            .floor()
-                            .clamp(0.0, f64::from(u32::MAX)) as u32,
-                    )
-                    .min(
-                        ((trader::TRADER_CARGO_CAPACITY_GRAMS
-                            - trader::cargo_weight_grams(&trader_unit.stock, &trader_unit.items))
-                        .max(0.0)
-                            / f64::from(item_weight_grams(*item)))
-                        .floor()
-                        .clamp(0.0, f64::from(u32::MAX)) as u32,
-                    );
-                (available > 0).then(|| proto::TraderBuyOffer {
+                let held = colony.items.pristine_count(*item);
+                if held == 0 {
+                    return None;
+                }
+                let unit_price = trader::trader_buy_price(*item, 1) * effects.trade_value_mult;
+                let load_limit = trader::max_item_units_per_load(*item);
+                let purse_limit = (trader_unit.coin / unit_price)
+                    .floor()
+                    .clamp(0.0, f64::from(u32::MAX)) as u32;
+                let wagon_limit = ((trader::TRADER_CARGO_CAPACITY_GRAMS
+                    - trader::cargo_weight_grams(&trader_unit.stock, &trader_unit.items))
+                .max(0.0)
+                    / f64::from(item_weight_grams(*item)))
+                .floor()
+                .clamp(0.0, f64::from(u32::MAX)) as u32;
+                let available = held.min(load_limit).min(purse_limit).min(wagon_limit);
+                let blocked_reason = (available == 0).then(|| {
+                    if load_limit == 0 {
+                        "One unit exceeds the caravan's 20 kg transfer limit."
+                    } else if wagon_limit == 0 {
+                        "The trader's wagon is full."
+                    } else {
+                        "The trader's purse cannot afford one unit."
+                    }
+                    .to_owned()
+                });
+                Some(proto::TraderBuyOffer {
                     kind: item.kind.as_str().to_owned(),
                     material: item.material.as_str().to_owned(),
                     quality: item.quality,
                     available,
-                    unit_price: trader::trader_buy_price(*item, 1),
+                    unit_price,
                     unit_weight_grams: item_weight_grams(*item),
+                    blocked_reason,
                 })
             })
             .collect()
@@ -3099,6 +3142,9 @@ fn trader_snapshot(colony: &ColonyRuntime) -> Option<proto::TraderSnapshot> {
                     unit_price,
                     available,
                     sold_out: available <= f64::EPSILON,
+                    blocked_reason: (available >= 1.0
+                        && reported_trade_storage_has_room(colony, kind, 1.0) == Some(false))
+                    .then(|| "The latest Accountant books report this storage full.".to_owned()),
                 }
             })
         })
@@ -7978,6 +8024,35 @@ mod tests {
     }
 
     #[test]
+    fn guided_sale_can_select_and_sell_an_offer_beyond_the_clients_first_six_rows() {
+        let mut world = world_with_one_colony();
+        for quality in 0..=4 {
+            world.colonies[0].add_item(Item::new(ItemKind::Mug, Material::Wood, quality), 1);
+        }
+        for quality in 0..=2 {
+            world.colonies[0].add_item(Item::new(ItemKind::Bowl, Material::Stone, quality), 1);
+        }
+        world.colonies[0].trader = Some(trading_trader());
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let offer = snapshot.colonies[0]
+            .trader
+            .as_ref()
+            .unwrap()
+            .buy_offers
+            .get(7)
+            .expect("eighth offer must remain player-addressable")
+            .clone();
+        let result = apply_action(
+            &mut world,
+            &sell_goods_action(&offer.kind, &offer.material, offer.quality, offer.available),
+            &ctx(),
+        );
+        assert!(result.ok, "{result:?}");
+        assert!(world.colonies[0].coin > 0.0);
+    }
+
+    #[test]
     fn arriving_snapshot_exposes_manifest_but_no_colony_sale_offers() {
         let mut world = world_with_one_colony();
         let colony = &mut world.colonies[0];
@@ -8309,6 +8384,29 @@ mod tests {
     }
 
     #[test]
+    fn finite_equipment_identity_is_authoritative_when_the_legacy_scalar_is_zero() {
+        let mut world = world_with_one_colony();
+        let tool = Item::new(ItemKind::Tool, Material::Wood, 1);
+        world.colonies[0].add_item(tool, 1);
+        world.colonies[0].trader = Some(trading_trader());
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let offer = snapshot.colonies[0]
+            .trader
+            .as_ref()
+            .unwrap()
+            .buy_offers
+            .iter()
+            .find(|offer| offer.kind == "tool")
+            .expect("held finite equipment remains sellable");
+        assert_eq!(offer.available, 1);
+        assert_eq!(offer.blocked_reason, None);
+        assert!(apply_action(&mut world, &sell_goods_action("tool", "wood", 1, 1), &ctx()).ok);
+        assert!(world.colonies[0].items.get(&tool).is_none());
+        assert_eq!(world.colonies[0].resources.tools, 0.0);
+    }
+
+    #[test]
     fn buy_resource_spends_coin_and_credits_the_resource_at_the_trader_sell_price() {
         let mut world = world_with_one_colony();
         world.colonies[0].coin = 100.0;
@@ -8374,6 +8472,65 @@ mod tests {
         assert!(!second.ok);
         assert_eq!(world.colonies[0].resources, resources_before);
         assert_eq!(world.colonies[0].coin, coin_before);
+    }
+
+    #[test]
+    fn trade_offer_uses_stale_accountant_reports_without_leaking_exact_full_storage() {
+        let mut world = world_with_one_colony();
+        world.colonies[0].coin = 100.0;
+        for pile in world.colonies[0]
+            .stockpiles
+            .iter_mut()
+            .filter(|pile| !pile.is_station_local())
+        {
+            stockpiles::add_resource(
+                &mut pile.contents,
+                stockpiles::ResourceKind::Food,
+                1_000_000.0,
+            );
+        }
+        world.colonies[0].trader = Some(trading_trader());
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let offer = snapshot.colonies[0]
+            .trader
+            .as_ref()
+            .unwrap()
+            .sell_offers
+            .iter()
+            .find(|offer| offer.resource == proto::ResourceKind::Food)
+            .unwrap();
+        assert!(!offer.sold_out);
+        assert_eq!(offer.blocked_reason, None, "exact fullness stays private");
+        assert!(
+            !apply_action(
+                &mut world,
+                &buy_resource_action(proto::ResourceKind::Food, 1.0),
+                &ctx(),
+            )
+            .ok
+        );
+
+        world.colonies[0].stock_ledger = crate::ledger::StockLedger::counted_with_piles(
+            &world.colonies[0].resources,
+            &world.colonies[0].stockpiles,
+            ctx().now_ms,
+        );
+        let counted = build_snapshot(&world, ctx().now_ms, 1);
+        let counted_offer = counted.colonies[0]
+            .trader
+            .as_ref()
+            .unwrap()
+            .sell_offers
+            .iter()
+            .find(|offer| offer.resource == proto::ResourceKind::Food)
+            .unwrap();
+        assert!(
+            counted_offer
+                .blocked_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("Accountant books"))
+        );
     }
 
     #[test]
