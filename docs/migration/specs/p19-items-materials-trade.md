@@ -1,8 +1,9 @@
 # P19 — DF-scale item economy (cat-themed): materials, material-variant crafting, traders
 
 > **Living target spec.** The item/material model, a small recipe subset, and physical finite
-> visiting traders with buy/sell actions exist. Stable item-unit identity, weight, finite
-> durability, work wear, material-backed repair, exact caravan cargo transfer, finite trader
+> visiting traders with buy/sell actions exist. Stable item-unit identity, exact functional
+> equipment location/loadout, weight, finite durability, work/combat wear, material-backed repair,
+> exact caravan cargo transfer, finite trader
 > stock/purse/capacity, persistence, and Goods/trade-panel truth are implemented. Full
 > source/crafting breadth, local physical inventories, and built
 > transport remain open. Finite fresh-Fish habitats and the
@@ -51,9 +52,9 @@ every workshop remains an open-top, function-readable map station.
   defaulted hunt byproduct carried after Hide; its item-variant recipes remain open breadth.
 - Keep the stable `materials` and `refined` wire/save IDs. Player-facing copy may call them
   **Supplies** and **Crafted Supplies** so their generic bulk Workshop chain is unambiguous.
-- Keep the stable `tools`, `weapons`, and `armor` resource fields during migration, but finite item
-  instances are the eventual condition/identity authority. New crafting must not create two
-  independent inventories for one physical object.
+- Keep the stable `tools`, `weapons`, and `armor` resource fields for old-save and wire
+  compatibility. Finite item instances are now the condition/identity/location authority and the
+  scalar fields are derived credited projections, not independent inventories.
 - One assigned cat advances one selected recipe. All ten maintained processors, including
   Woodworking, Smithy, Clothier, and Tannery, use the same ordered/repeatable/pausable queue
   contract; future benches must preserve it.
@@ -75,9 +76,10 @@ founding-available in fresh rules-v1 colonies; their studies gate later recipes.
 the Textiles entitlement, as does Clothier; Weaponsmithing and Armorsmithing independently gate the
 two Smithy selections. Rules-v0 saves remain grandfathered. Woodworking's old
 `wood_craft_progress`, Clothier's old hidden clothing timer, and Smithy's old aggregate forge
-timers are frozen and preserved only for save compatibility. Outputs remain the existing scalar
-Tool/Weapon/Armor fields until C3 establishes one finite equipment authority without
-double-counting. Separate additive trade-craft timers are not selected queue recipes.
+timers are frozen and preserved only for save compatibility. P19.C3 now creates one stable finite
+Tool/Weapon/Armor ID in local output, carries that same ID to storage before derived scalar credit,
+and preserves it through equipment, work/combat wear, repair, exact sale, death recovery, and
+restart without double-counting. Separate additive trade-craft timers are not selected queue recipes.
 
 ## Implemented finite-item condition contract
 
@@ -90,9 +92,10 @@ restart, and the Goods panel makes condition and repair visible.
 
 One signed caravan sale may transfer at most 20,000 grams of items. That bounded-load seam and the
 finite-item loop are implemented foundations; they do not make the catalog complete. Bone item
-variants, gem/clay sources and variants, broader metal variants, and finished functional equipment
-chains are still product work. All ten maintained processors, including Smithy's two selected
-recipes, already use physical station-local logistics.
+variants, Gem/clay/sand sources and variants, and broader generated material/recipe breadth are
+still product work. Functional Tool/Weapon/Armor chains are complete and must retain their single
+finite authority. All ten maintained processors, including Smithy's two selected recipes, already
+use physical station-local logistics.
 
 ## Resource / item taxonomy (DF breadth, cat-flavoured)
 Three tiers (reconciles P16's founding benches with P12's Sawmill chain):

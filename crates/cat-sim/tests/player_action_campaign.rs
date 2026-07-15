@@ -114,6 +114,8 @@ fn action_name(action: &proto::ClientAction) -> &'static str {
         proto::ClientAction::SetCatLaborPreference { .. } => "set_cat_labor_preference",
         proto::ClientAction::EditProductionQueue { .. } => "edit_production_queue",
         proto::ClientAction::RepairItem { .. } => "repair_item",
+        proto::ClientAction::EquipItem { .. } => "equip_item",
+        proto::ClientAction::UnequipItem { .. } => "unequip_item",
     }
 }
 

@@ -28,7 +28,7 @@ use crate::{
     },
     idle_engine,
     idle_rules::{self, consumption_for_tick},
-    items::{self, Item, ItemKind, ItemStore},
+    items::{self, Item, ItemKind, ItemLocation, ItemStore, Material, StationCompartment},
     leader_ai::{LeaderDecision, LeaderHousing, LeaderResources, LeaderSnapshot},
     leader_director::{
         BASELINE_HUNT_MAX_SLOTS, BASELINE_SCOUT_MAX_SLOTS, BASELINE_WATER_MAX_SLOTS, CatBrief,
@@ -105,8 +105,8 @@ use crate::{
     },
     village_layout::{DEFAULT_MAX_RING, GridPos, VILLAGE_ANCHOR, ring_cells, village_ring_radius},
     warriors::{
-        CombatModifiers, DefenseStock, MusterCombatant, WARRIOR_XP_PER_RAID, can_fight,
-        muster_defense,
+        CombatModifiers, MusterCombatant, WARRIOR_XP_PER_RAID, can_fight,
+        muster_defense_with_loadout,
     },
     world_gen::{TileResources, generate_world_chunk, get_colony_position, tile_to_chunk},
     zones::{Zone, ZoneKind, ZonePos, ZoneRect, filter_targets_by_zones, pick_target_with_zones},
@@ -203,6 +203,10 @@ pub struct ColonyRuntime {
     /// station recipe. Fresh colonies use version 1 and must own the catalog study
     /// whose typed payload unlocks the recipe. Persisted queues are never rewritten.
     pub recipe_entitlement_rules_version: u32,
+    /// Version 0 predates finite functional-equipment identity and may still carry
+    /// whole Tools/Weapons/Armor only in scalar fields. Version 1 makes item units
+    /// authoritative and keeps those fields as an ownership projection.
+    pub finite_equipment_rules_version: u32,
     pub automation_tier: f64,
     pub global_upgrade_points: f64,
     pub ritual_requested_at: Option<i64>,
@@ -550,6 +554,9 @@ pub struct ProductionQueueEntry {
 /// Fresh-colony ruleset: researched recipes require their catalog study while
 /// descriptor-marked founding baseline recipes remain immediately usable.
 pub const CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION: u32 = 1;
+/// Fresh-colony functional equipment uses stable item identities as the sole
+/// condition/location authority. Scalar fields remain a derived ownership view.
+pub const CURRENT_FINITE_EQUIPMENT_RULES_VERSION: u32 = 1;
 
 /// Stable recipe ids implemented by each authoritative station. Entitlement is
 /// colony-specific and must be checked through [`production_recipe_availability`].
@@ -2170,6 +2177,7 @@ impl Default for ColonyRuntime {
             upgrade_levels: UpgradeLevels::default(),
             upgrade_tree: create_upgrade_tree_state(),
             recipe_entitlement_rules_version: 0,
+            finite_equipment_rules_version: 0,
             automation_tier: 0.0,
             global_upgrade_points: 0.0,
             ritual_requested_at: None,
@@ -2284,28 +2292,832 @@ impl ColonyRuntime {
     }
 }
 
-/// Aggregate resources remain the physical-location ledger. Identified items are the
-/// condition authority; any excess aggregate count belongs to a legacy save and keeps
-/// its old usable behavior until ordinary consumption removes it.
-fn usable_functional_stock(colony: &ColonyRuntime, kind: ItemKind, aggregate: f64) -> f64 {
-    let identified = f64::from(colony.items.count_kind(kind));
-    let usable_identified = f64::from(colony.items.usable_count(kind));
-    (aggregate.max(0.0) - identified).max(0.0) + usable_identified
+fn functional_item_for_resource(kind: ResourceKind) -> Option<Item> {
+    match kind {
+        ResourceKind::Tools => Some(Item::new(ItemKind::Tool, Material::Wood, 1)),
+        ResourceKind::Weapons => Some(Item::new(ItemKind::Weapon, Material::Metal, 1)),
+        ResourceKind::Armor => Some(Item::new(ItemKind::Armor, Material::Metal, 1)),
+        _ => None,
+    }
 }
 
-pub(crate) fn usable_tool_stock(colony: &ColonyRuntime) -> f64 {
-    usable_functional_stock(colony, ItemKind::Tool, colony.resources.tools)
+fn functional_resource_for_kind(kind: ItemKind) -> Option<ResourceKind> {
+    match kind {
+        ItemKind::Tool => Some(ResourceKind::Tools),
+        ItemKind::Weapon => Some(ResourceKind::Weapons),
+        ItemKind::Armor => Some(ResourceKind::Armor),
+        _ => None,
+    }
 }
 
-fn wear_functional_items(colony: &mut ColonyRuntime, kind: ItemKind, count: u32, now_ms: i64) {
-    let broken = colony.items.wear(kind, count);
-    for id in broken {
+fn functional_resource_amount(resources: &Resources, kind: ItemKind) -> f64 {
+    functional_resource_for_kind(kind)
+        .map(|resource| stockpiles::resource_amount(resources, resource))
+        .unwrap_or(0.0)
+}
+
+/// Deterministically and idempotently establish finite identity for every whole
+/// legacy functional-equipment unit, including an old save captured in local
+/// station output or outbound paws. Missing old `ItemInstance` fields default to
+/// credited legacy-treasury units; rerunning this function never creates another id.
+pub fn migrate_finite_equipment_authority(colony: &mut ColonyRuntime) {
+    if colony.finite_equipment_rules_version < CURRENT_FINITE_EQUIPMENT_RULES_VERSION {
+        let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+
+        // Old mid-route saves can hold completed-but-uncredited gear outside the
+        // aggregate scalar. Preserve that exact station identity before migrating
+        // banked scalar units.
+        let station_outputs = colony
+            .stockpiles
+            .iter()
+            .filter_map(|pile| {
+                let building_id = pile.id.strip_prefix(stockpiles::STATION_OUTPUT_PREFIX)?;
+                Some((
+                    building_id.to_owned(),
+                    [
+                        (ResourceKind::Tools, pile.contents.tools),
+                        (ResourceKind::Weapons, pile.contents.weapons),
+                        (ResourceKind::Armor, pile.contents.armor),
+                    ],
+                ))
+            })
+            .collect::<Vec<_>>();
+        for (building_id, amounts) in station_outputs {
+            for (resource_kind, amount) in amounts {
+                let Some(item) = functional_item_for_resource(resource_kind) else {
+                    continue;
+                };
+                let location = ItemLocation::Station {
+                    building_id: building_id.clone(),
+                    compartment: StationCompartment::LocalOutput,
+                };
+                let existing = colony.items.ids_at(item.kind, &location).count() as u32;
+                let wanted = amount.max(0.0).floor() as u32;
+                if wanted > existing {
+                    let durability_mult = effects
+                        .building(items::item_workshop_id(item))
+                        .durability_mult;
+                    colony
+                        .items
+                        .add_at(item, wanted - existing, durability_mult, location, false);
+                }
+            }
+        }
+
+        let carried = colony
+            .cats
+            .iter()
+            .filter_map(|cat| {
+                let carrying = cat.carrying.as_ref()?;
+                let resource = carrying_resource_kind(carrying.kind)?;
+                let item = functional_item_for_resource(resource)?;
+                let credited = parse_station_cargo(carrying.source_gather_spot.as_deref())
+                    .is_none_or(|(direction, _, _)| direction != "out");
+                Some((cat.id.clone(), item, carrying.amount, credited))
+            })
+            .collect::<Vec<_>>();
+        for (cat_id, item, amount, credited) in carried {
+            let location = ItemLocation::Carrier { cat_id };
+            let existing = colony.items.ids_at(item.kind, &location).count() as u32;
+            let wanted = amount.max(0.0).floor() as u32;
+            if wanted > existing {
+                let durability_mult = effects
+                    .building(items::item_workshop_id(item))
+                    .durability_mult;
+                colony
+                    .items
+                    .add_at(item, wanted - existing, durability_mult, location, credited);
+            }
+        }
+
+        for kind in [ItemKind::Tool, ItemKind::Weapon, ItemKind::Armor] {
+            let wanted = functional_resource_amount(&colony.resources, kind)
+                .max(0.0)
+                .floor() as u32;
+            let existing = colony.items.credited_count(kind);
+            if wanted > existing {
+                let item = functional_item_for_resource(
+                    functional_resource_for_kind(kind).expect("functional kind has resource"),
+                )
+                .expect("functional resource has item");
+                let durability_mult = effects
+                    .building(items::item_workshop_id(item))
+                    .durability_mult;
+                colony.items.add_at(
+                    item,
+                    wanted - existing,
+                    durability_mult,
+                    ItemLocation::LegacyTreasury,
+                    true,
+                );
+            }
+        }
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+    }
+    reconcile_finite_equipment_projections(colony);
+}
+
+/// Rebuild only the three compatibility/storage projections from stable item
+/// identities. Credited carrier/equipped units remain owned in the scalar total but
+/// occupy no pile; fresh station output remains physical and uncredited until delivery.
+fn reconcile_finite_equipment_projections(colony: &mut ColonyRuntime) {
+    for pile in &mut colony.stockpiles {
+        pile.contents.tools = 0.0;
+        pile.contents.weapons = 0.0;
+        pile.contents.armor = 0.0;
+    }
+
+    let fallback_id = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == stockpiles::GENERAL_STOREHOUSE_ID)
+        .or_else(|| {
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| !pile.is_station_local())
+        })
+        .map(|pile| pile.id.clone());
+    let placements = colony
+        .items
+        .instances()
+        .filter_map(|instance| {
+            let resource = functional_resource_for_kind(instance.item.kind)?;
+            let pile_id = match &instance.location {
+                ItemLocation::LegacyTreasury => fallback_id.clone(),
+                ItemLocation::Stockpile { stockpile_id } => Some(stockpile_id.clone()),
+                ItemLocation::Station {
+                    building_id,
+                    compartment: StationCompartment::LocalInput,
+                } => Some(stockpiles::station_input_id(building_id)),
+                ItemLocation::Station {
+                    building_id,
+                    compartment: StationCompartment::LocalOutput,
+                } => Some(stockpiles::station_output_id(building_id)),
+                ItemLocation::Station { .. }
+                | ItemLocation::Carrier { .. }
+                | ItemLocation::Equipped { .. }
+                | ItemLocation::Trader { .. } => None,
+            }?;
+            Some((pile_id, resource))
+        })
+        .collect::<Vec<_>>();
+    for (pile_id, resource) in placements {
+        if let Some(pile) = colony.stockpiles.iter_mut().find(|pile| pile.id == pile_id) {
+            stockpiles::add_resource(&mut pile.contents, resource, 1.0);
+        }
+    }
+    colony.resources.tools = f64::from(colony.items.credited_count(ItemKind::Tool));
+    colony.resources.weapons = f64::from(colony.items.credited_count(ItemKind::Weapon));
+    colony.resources.armor = f64::from(colony.items.credited_count(ItemKind::Armor));
+}
+
+pub(crate) fn cat_usable_tool_stock(colony: &ColonyRuntime, cat_id: &str) -> f64 {
+    if colony
+        .items
+        .equipped_id(cat_id, ItemKind::Tool)
+        .and_then(|id| colony.items.instance(id))
+        .is_some_and(|instance| instance.credited && !instance.is_broken())
+    {
+        f64::from(crate::productivity::TOOL_PRODUCTIVITY_CAP)
+    } else {
+        0.0
+    }
+}
+
+fn wear_equipped_item(colony: &mut ColonyRuntime, cat_id: &str, kind: ItemKind, now_ms: i64) {
+    let Some(id) = colony.items.equipped_id(cat_id, kind).map(str::to_owned) else {
+        return;
+    };
+    if colony.items.wear_id(&id) {
         append_event(
             colony,
             now_ms,
             EventKind::Production,
             format!("{id} wore out and needs workshop repair."),
         );
+    }
+}
+
+const EQUIPMENT_SPILL_PREFIX: &str = "equipment-spill:";
+
+fn accepting_equipment_pile(colony: &ColonyRuntime, resource: ResourceKind) -> Option<String> {
+    let caps = storage_caps(colony);
+    colony
+        .stockpiles
+        .iter()
+        .filter(|pile| {
+            !pile.is_station_local()
+                && pile.accepts.contains(&resource)
+                && stockpiles::headroom_for(pile, resource, &caps).floor() >= 1.0
+        })
+        .min_by(|left, right| {
+            left.id
+                .starts_with(EQUIPMENT_SPILL_PREFIX)
+                .cmp(&right.id.starts_with(EQUIPMENT_SPILL_PREFIX))
+                .then_with(|| left.id.cmp(&right.id))
+        })
+        .map(|pile| pile.id.clone())
+}
+
+/// Create a one-identity physical drop when every maintained store is full. The exact
+/// item id makes the fallback stable across restart and prevents two released units from
+/// aliasing one capacity slot, even when several cats die on the same tile.
+fn ensure_equipment_spill_pile(
+    colony: &mut ColonyRuntime,
+    item_id: &str,
+    resource: ResourceKind,
+    at: WorldPos,
+) -> String {
+    let base = format!("{EQUIPMENT_SPILL_PREFIX}{item_id}");
+    let mut id = base.clone();
+    let mut suffix = 0_u32;
+    while colony.stockpiles.iter().any(|pile| pile.id == id) {
+        let usable = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == id)
+            .is_some_and(|pile| {
+                !pile.is_station_local()
+                    && pile.accepts.contains(&resource)
+                    && stockpiles::headroom_for(pile, resource, &storage_caps(colony)).floor()
+                        >= 1.0
+            });
+        if usable {
+            return id;
+        }
+        suffix = suffix.saturating_add(1);
+        id = format!("{base}:{suffix}");
+    }
+    let tile = world_pos_to_tile(at);
+    colony.stockpiles.push(Stockpile {
+        id: id.clone(),
+        rect: ZoneRect {
+            x1: tile.x,
+            y1: tile.y,
+            x2: tile.x,
+            y2: tile.y,
+        },
+        accepts: std::iter::once(resource).collect(),
+        contents: Resources::default(),
+    });
+    id
+}
+
+fn recover_item_to_capacity_or_spill(colony: &mut ColonyRuntime, item_id: &str, at: WorldPos) {
+    let Some(instance) = colony.items.instance(item_id).cloned() else {
+        return;
+    };
+    let Some(resource) = functional_resource_for_kind(instance.item.kind) else {
+        return;
+    };
+    reconcile_finite_equipment_projections(colony);
+    let pile_id = accepting_equipment_pile(colony, resource)
+        .unwrap_or_else(|| ensure_equipment_spill_pile(colony, item_id, resource, at));
+    let moved = colony.items.relocate(
+        item_id,
+        ItemLocation::Stockpile {
+            stockpile_id: pile_id,
+        },
+    );
+    debug_assert!(moved);
+    if let Some(instance) = colony.items.instance_mut(item_id) {
+        instance.auto_issued = false;
+        instance.active_job_id = None;
+    }
+    reconcile_finite_equipment_projections(colony);
+}
+
+fn release_equipped_items(colony: &mut ColonyRuntime, cat_id: &str, at: WorldPos) {
+    let equipped = colony
+        .items
+        .instances()
+        .filter_map(|instance| {
+            (instance.location
+                == (ItemLocation::Equipped {
+                    cat_id: cat_id.to_owned(),
+                }))
+            .then_some(instance.id.clone())
+        })
+        .collect::<Vec<_>>();
+    for id in equipped {
+        recover_item_to_capacity_or_spill(colony, &id, at);
+    }
+}
+
+const EQUIPMENT_RETRIEVAL_PREFIX: &str = "equipment:";
+const EQUIPMENT_RETURN_PREFIX: &str = "equipment-return:";
+
+fn equipment_retrieval_marker(item_id: &str, source_stockpile_id: &str) -> String {
+    format!("{EQUIPMENT_RETRIEVAL_PREFIX}{item_id}|{source_stockpile_id}")
+}
+
+fn parse_equipment_retrieval(marker: Option<&str>) -> Option<(&str, &str)> {
+    marker?
+        .strip_prefix(EQUIPMENT_RETRIEVAL_PREFIX)?
+        .split_once('|')
+}
+
+fn equipment_return_marker(item_id: &str, stockpile_id: &str) -> String {
+    format!("{EQUIPMENT_RETURN_PREFIX}{item_id}|{stockpile_id}")
+}
+
+fn parse_equipment_return(marker: Option<&str>) -> Option<(&str, &str)> {
+    marker?
+        .strip_prefix(EQUIPMENT_RETURN_PREFIX)?
+        .split_once('|')
+}
+
+fn complete_equipment_retrieval(colony: &mut ColonyRuntime, cat_id: &str, item_id: &str) {
+    let resumes_job = active_or_queued_jobs(colony)
+        .into_iter()
+        .any(|job| job.assigned_cat.as_deref() == Some(cat_id));
+    let item = colony.items.instance(item_id).cloned();
+    if let Some(instance) = item {
+        let expected = ItemLocation::Carrier {
+            cat_id: cat_id.to_owned(),
+        };
+        if instance.location == expected
+            && colony
+                .items
+                .equipped_id(cat_id, instance.item.kind)
+                .is_none()
+        {
+            let moved = colony.items.relocate(
+                item_id,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.to_owned(),
+                },
+            );
+            debug_assert!(moved);
+            let marked = colony.items.set_auto_issued(item_id, true);
+            debug_assert!(marked);
+        } else if instance.location == expected {
+            let moved = colony.items.relocate(item_id, ItemLocation::LegacyTreasury);
+            debug_assert!(moved);
+        }
+    }
+    if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+        cat.carrying = None;
+        if resumes_job {
+            // Keep the persisted work-site destination chosen when the exact item
+            // left storage. Phase 34 can now accept/resume that job normally.
+            cat.activity = CatActivity::Traveling;
+        } else {
+            cat.destination = None;
+            cat.activity = CatActivity::Idle;
+        }
+    }
+}
+
+fn complete_equipment_return(
+    colony: &mut ColonyRuntime,
+    cat_id: &str,
+    item_id: &str,
+    stockpile_id: &str,
+) -> bool {
+    let Some(instance) = colony.items.instance(item_id).cloned() else {
+        return true;
+    };
+    let Some(resource) = functional_resource_for_kind(instance.item.kind) else {
+        return false;
+    };
+    let caps = storage_caps(colony);
+    let accepts = colony.stockpiles.iter().any(|pile| {
+        pile.id == stockpile_id
+            && !pile.is_station_local()
+            && pile.accepts.contains(&resource)
+            && stockpiles::headroom_for(pile, resource, &caps).floor() >= 1.0
+    });
+    if !accepts
+        || instance.location
+            != (ItemLocation::Carrier {
+                cat_id: cat_id.to_owned(),
+            })
+    {
+        return false;
+    }
+    let moved = colony.items.relocate(
+        item_id,
+        ItemLocation::Stockpile {
+            stockpile_id: stockpile_id.to_owned(),
+        },
+    );
+    debug_assert!(moved);
+    let marked = colony.items.set_auto_issued(item_id, false);
+    debug_assert!(marked);
+    if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+        cat.carrying = None;
+        cat.destination = None;
+        cat.activity = CatActivity::Idle;
+    }
+    reconcile_finite_equipment_projections(colony);
+    true
+}
+
+fn functional_carrying_kind(kind: ItemKind) -> Option<CarryingKind> {
+    match kind {
+        ItemKind::Tool => Some(CarryingKind::Tools),
+        ItemKind::Weapon => Some(CarryingKind::Weapons),
+        ItemKind::Armor => Some(CarryingKind::Armor),
+        _ => None,
+    }
+}
+
+fn item_storage_point(colony: &ColonyRuntime, location: &ItemLocation) -> Option<WorldPos> {
+    let pile_id = match location {
+        ItemLocation::LegacyTreasury => stockpiles::GENERAL_STOREHOUSE_ID,
+        ItemLocation::Stockpile { stockpile_id } => stockpile_id,
+        _ => return None,
+    };
+    colony.stockpiles.iter().find_map(|pile| {
+        (pile.id == pile_id).then(|| {
+            let (x, y) = pile.center();
+            WorldPos { x, y }
+        })
+    })
+}
+
+fn equipment_source_pile_id(location: &ItemLocation) -> Option<&str> {
+    match location {
+        ItemLocation::LegacyTreasury => Some(stockpiles::GENERAL_STOREHOUSE_ID),
+        ItemLocation::Stockpile { stockpile_id } => Some(stockpile_id),
+        _ => None,
+    }
+}
+
+fn automatic_equipment_destination(
+    colony: &ColonyRuntime,
+    cat_id: &str,
+    kind: ItemKind,
+) -> WorldPos {
+    if kind == ItemKind::Tool {
+        // The worker may already have walked to the equipment pile, so its live
+        // `destination` can be the temporary pickup leg. Prefer the job's persisted
+        // site when one exists; that is the authoritative place to resume after the
+        // exact tool has been collected.
+        if let Some(site) = active_or_queued_jobs(colony).iter().find_map(|job| {
+            (job.assigned_cat.as_deref() == Some(cat_id))
+                .then_some(&job.metadata)
+                .and_then(|metadata| match metadata {
+                    JobMetadata::Hauling { site, .. }
+                    | JobMetadata::Construction { site, .. }
+                    | JobMetadata::GatherHaul { site, .. }
+                    | JobMetadata::StockpileHaul { site, .. } => *site,
+                    _ => None,
+                })
+        }) {
+            return tile_pos_to_world(site);
+        }
+        if active_or_queued_jobs(colony)
+            .into_iter()
+            .any(|job| job.assigned_cat.as_deref() == Some(cat_id) && job_uses_tool(job.kind))
+            && let Some(destination) = colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == cat_id)
+                .and_then(|cat| cat.destination)
+        {
+            return position_to_world(colony.anchor, destination);
+        }
+        if let Some(building) = colony
+            .buildings
+            .iter()
+            .find(|building| building.assigned_cat.as_deref() == Some(cat_id))
+        {
+            return station_work_point(building);
+        }
+    }
+    tile_pos_to_world(raid_gate_position(colony))
+}
+
+fn job_uses_tool(kind: JobKind) -> bool {
+    matches!(
+        kind,
+        JobKind::BuildHouse
+            | JobKind::Quarry
+            | JobKind::GatherLogs
+            | JobKind::Fish
+            | JobKind::HaulGatherSpot
+    )
+}
+
+fn reconcile_item_job_reservations(colony: &mut ColonyRuntime) {
+    let live_jobs = active_or_queued_jobs(colony)
+        .into_iter()
+        .map(|job| job.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let stale = colony
+        .items
+        .instances()
+        .filter_map(|instance| {
+            instance
+                .active_job_id
+                .as_deref()
+                .filter(|job_id| !live_jobs.contains(job_id))
+                .map(str::to_owned)
+        })
+        .collect::<BTreeSet<_>>();
+    for job_id in stale {
+        let _ = colony.items.release_job(&job_id, false);
+    }
+}
+
+/// Physical automatic issue: relevant workers and Captain-managed defenders first
+/// walk to the exact pile, then carry the exact stable id for one persisted phase.
+/// Phase 33 equips it without changing the credited ownership projection.
+fn retrieve_automatic_functional_equipment(colony: &mut ColonyRuntime, now_ms: i64) {
+    reconcile_item_job_reservations(colony);
+    let assigned = active_or_queued_jobs(colony)
+        .into_iter()
+        .filter_map(|job| job.assigned_cat.clone())
+        .collect::<BTreeSet<_>>();
+    let interrupted_returns = colony
+        .cats
+        .iter()
+        .filter_map(|cat| {
+            let carrying = cat.carrying.as_ref()?;
+            let (item_id, _) = parse_equipment_return(carrying.source_gather_spot.as_deref())?;
+            assigned
+                .contains(&cat.id)
+                .then_some((cat.id.clone(), item_id.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    for (cat_id, item_id) in interrupted_returns {
+        let kind = colony
+            .items
+            .instance(&item_id)
+            .map(|instance| instance.item.kind);
+        if kind.is_some_and(|kind| colony.items.equipped_id(&cat_id, kind).is_none()) {
+            let moved = colony.items.relocate(
+                &item_id,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone(),
+                },
+            );
+            debug_assert!(moved);
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                cat.carrying = None;
+                // Phase 15 already selected the newly assigned job's destination.
+                cat.activity = CatActivity::Traveling;
+            }
+        }
+    }
+    let mut ordered_needs = Vec::new();
+    let mut needs = BTreeSet::new();
+    for job in active_or_queued_jobs(colony) {
+        if job_uses_tool(job.kind)
+            && let Some(cat_id) = job.assigned_cat.as_ref()
+            && needs.insert((cat_id.clone(), ItemKind::Tool))
+        {
+            ordered_needs.push((cat_id.clone(), ItemKind::Tool));
+        }
+    }
+    for building in colony
+        .buildings
+        .iter()
+        .filter(|building| building.construction_progress >= 100)
+    {
+        if is_physical_station(building.building_type)
+            && let Some(cat_id) = building.assigned_cat.as_ref()
+            && !active_or_queued_jobs(colony)
+                .into_iter()
+                .any(|job| job.assigned_cat.as_deref() == Some(cat_id.as_str()))
+            && needs.insert((cat_id.clone(), ItemKind::Tool))
+        {
+            ordered_needs.push((cat_id.clone(), ItemKind::Tool));
+        }
+    }
+    let busy_id_storage = active_or_queued_jobs(colony)
+        .iter()
+        .filter_map(|job| job.assigned_cat.clone())
+        .collect::<Vec<_>>();
+    let busy_ids = busy_id_storage
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let assigned_building_ids = colony
+        .buildings
+        .iter()
+        .filter_map(|building| building.assigned_cat.clone())
+        .collect::<BTreeSet<_>>();
+    if has_officer(colony, OfficerRole::Captain) {
+        let combatants = raid_combatants(colony);
+        let priority = muster_defense_with_loadout(
+            &combatants,
+            &BTreeMap::new(),
+            CombatModifiers {
+                combat_power_mult: 1.0,
+                defense_mult: 1.0,
+            },
+        );
+        for kind in [ItemKind::Weapon, ItemKind::Armor] {
+            for mustered in &priority.per_cat {
+                let Some(cat) = colony.cats.iter().find(|cat| {
+                    cat.id == mustered.id
+                        && cat.death_time.is_none()
+                        && can_work(get_life_stage(cat.age_hours))
+                        && can_fight(cat.specialization)
+                }) else {
+                    continue;
+                };
+                let already_assigned = colony.items.equipped_id(&mustered.id, kind).is_some()
+                    || colony.items.instances().any(|instance| {
+                        instance.item.kind == kind
+                            && instance.location
+                                == (ItemLocation::Carrier {
+                                    cat_id: mustered.id.clone(),
+                                })
+                    });
+                if already_assigned {
+                    // Busy defenders keep gear already issued to them, but the
+                    // Captain never redirects their current survival or work leg.
+                    needs.insert((mustered.id.clone(), kind));
+                    continue;
+                }
+                if !can_take_new_job_with_busy(cat, &busy_ids)
+                    || assigned_building_ids.contains(cat.id.as_str())
+                {
+                    // An unmet higher-priority defender owns the next scarce
+                    // identity. Wait until that cat is genuinely idle rather than
+                    // letting a lower-priority id steal it or preempting useful work.
+                    break;
+                }
+                if needs.insert((mustered.id.clone(), kind)) {
+                    ordered_needs.push((mustered.id.clone(), kind));
+                }
+            }
+        }
+    }
+
+    let unmet_kinds = needs
+        .iter()
+        .filter_map(|(cat_id, kind)| {
+            let already_assigned = colony.items.equipped_id(cat_id, *kind).is_some()
+                || colony.items.instances().any(|instance| {
+                    instance.item.kind == *kind
+                        && instance.location
+                            == (ItemLocation::Carrier {
+                                cat_id: cat_id.clone(),
+                            })
+                });
+            (!already_assigned && colony.items.first_stored_usable_id(*kind).is_none())
+                .then_some(*kind)
+        })
+        .collect::<BTreeSet<_>>();
+
+    let returns = colony
+        .items
+        .instances()
+        .filter_map(|instance| {
+            if !instance.auto_issued || instance.active_job_id.is_some() {
+                return None;
+            }
+            let ItemLocation::Equipped { cat_id } = &instance.location else {
+                return None;
+            };
+            let can_return_without_preemption = colony
+                .cats
+                .iter()
+                .find(|cat| cat.id == *cat_id)
+                .is_some_and(|cat| {
+                    can_take_new_job_with_busy(cat, &busy_ids)
+                        && !assigned_building_ids.contains(cat.id.as_str())
+                });
+            if !can_return_without_preemption {
+                return None;
+            }
+            (instance.is_broken()
+                || unmet_kinds.contains(&instance.item.kind)
+                    && !assigned.contains(cat_id)
+                    && !needs.contains(&(cat_id.clone(), instance.item.kind)))
+            .then_some((instance.id.clone(), cat_id.clone(), instance.item.kind))
+        })
+        .collect::<Vec<_>>();
+    for (item_id, cat_id, kind) in returns {
+        let Some(resource) = functional_resource_for_kind(kind) else {
+            continue;
+        };
+        let caps = storage_caps(colony);
+        let Some(pile) = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| {
+                !pile.is_station_local()
+                    && pile.accepts.contains(&resource)
+                    && stockpiles::headroom_for(pile, resource, &caps).floor() >= 1.0
+            })
+            .min_by(|left, right| left.id.cmp(&right.id))
+        else {
+            continue;
+        };
+        let pile_id = pile.id.clone();
+        let (x, y) = pile.center();
+        let Some(cat) = colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == cat_id && cat.death_time.is_none() && cat.carrying.is_none())
+        else {
+            continue;
+        };
+        let moved = colony.items.relocate(
+            &item_id,
+            ItemLocation::Carrier {
+                cat_id: cat_id.clone(),
+            },
+        );
+        debug_assert!(moved);
+        cat.carrying = Some(Carrying {
+            kind: functional_carrying_kind(kind).expect("functional equipment has cargo kind"),
+            amount: 1.0,
+            job_ended_at: now_ms,
+            source_gather_spot: Some(equipment_return_marker(&item_id, &pile_id)),
+        });
+        cat.destination = Some(position_from_world(WorldPos { x, y }));
+        cat.activity = CatActivity::Returning;
+    }
+
+    let mut deferred_kinds = BTreeSet::new();
+    for (cat_id, kind) in ordered_needs {
+        if deferred_kinds.contains(&kind) {
+            continue;
+        }
+        if colony.items.equipped_id(&cat_id, kind).is_some()
+            || colony.items.instances().any(|instance| {
+                instance.item.kind == kind
+                    && instance.location
+                        == (ItemLocation::Carrier {
+                            cat_id: cat_id.clone(),
+                        })
+            })
+        {
+            continue;
+        }
+        let cat_index = colony.cats.iter().position(|cat| {
+            cat.id == cat_id
+                && if matches!(kind, ItemKind::Weapon | ItemKind::Armor) {
+                    can_take_new_job_with_busy(cat, &busy_ids)
+                        && !assigned_building_ids.contains(cat.id.as_str())
+                } else {
+                    cat.death_time.is_none() && cat.carrying.is_none()
+                }
+        });
+        let Some(cat_index) = cat_index else {
+            // Ordered needs follow muster priority. A busy higher-priority defender
+            // defers this kind instead of letting a lower-priority idle cat jump the
+            // scarcity queue; the Captain will try again once that defender is free.
+            if matches!(kind, ItemKind::Weapon | ItemKind::Armor) {
+                deferred_kinds.insert(kind);
+            }
+            continue;
+        };
+        let Some(item_id) = colony.items.first_stored_usable_id(kind).map(str::to_owned) else {
+            continue;
+        };
+        let Some(instance) = colony.items.instance(&item_id).cloned() else {
+            continue;
+        };
+        if !instance.credited {
+            continue;
+        }
+        let Some(source) = item_storage_point(colony, &instance.location) else {
+            continue;
+        };
+        let Some(source_pile_id) = equipment_source_pile_id(&instance.location).map(str::to_owned)
+        else {
+            continue;
+        };
+        if !at_world_point(colony, cat_index, source) {
+            send_cat_to(colony, cat_index, source);
+            if matches!(kind, ItemKind::Weapon | ItemKind::Armor) {
+                deferred_kinds.insert(kind);
+            }
+            continue;
+        }
+        let Some(carrying_kind) = functional_carrying_kind(kind) else {
+            continue;
+        };
+        let destination =
+            if matches!(kind, ItemKind::Weapon | ItemKind::Armor) && colony.active_raid.is_none() {
+                source
+            } else {
+                automatic_equipment_destination(colony, &cat_id, kind)
+            };
+        let moved = colony.items.relocate(
+            &item_id,
+            ItemLocation::Carrier {
+                cat_id: cat_id.clone(),
+            },
+        );
+        debug_assert!(moved);
+        colony.cats[cat_index].carrying = Some(Carrying {
+            kind: carrying_kind,
+            amount: 1.0,
+            job_ended_at: now_ms,
+            source_gather_spot: Some(equipment_retrieval_marker(&item_id, &source_pile_id)),
+        });
+        colony.cats[cat_index].destination = Some(position_from_world(destination));
+        colony.cats[cat_index].activity = CatActivity::Returning;
     }
 }
 
@@ -2416,6 +3228,7 @@ fn found_colony_with_kind(
         anchor,
         buildings: starter_buildings(anchor, world_seed, scale),
         recipe_entitlement_rules_version: CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
+        finite_equipment_rules_version: CURRENT_FINITE_EQUIPMENT_RULES_VERSION,
         world_tiles: starter_world_tiles(anchor, world_seed),
         claimed_tiles: founding_claimed_tiles(anchor, founding_radius(scale)),
         run_number: 1,
@@ -3078,6 +3891,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
     let mut reports = Vec::with_capacity(indices.len());
     for index in indices {
         let colony = &mut state.colonies[index];
+        migrate_finite_equipment_authority(colony);
         let Some(gate) = phase_1_colony_selection_and_elapsed_time_gate(colony, now_ms) else {
             reports.push(TickReport {
                 colony_id: colony.id.clone(),
@@ -3115,6 +3929,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         let snapshot = phase_18_leader_snapshot_assembly(colony, gate);
         let plan = phase_19_leader_cancellations(colony, gate, &snapshot);
         phase_20_leader_labor_assignments_and_staffing(colony, gate, policy, &plan, world_seed);
+        retrieve_automatic_functional_equipment(colony, gate.processed_through);
         phase_21_leader_capital_decisions_and_tithe(colony, gate, policy, &plan);
         release_research_staff_unless_comfortable(colony, &snapshot);
         manage_research_hut(colony, gate, policy, &snapshot);
@@ -3397,11 +4212,16 @@ fn phase_6_life_simulation(colony: &mut ColonyRuntime, gate: TickGate) {
     for death in old_age_deaths {
         if let Some(carrying) = death.carrying {
             let deposit_at = position_to_world(colony.anchor, death.position);
-            let spilled = salvage_carried_cargo(colony, &carrying, deposit_at);
+            let spilled = salvage_carried_cargo(colony, &death.id, &carrying, deposit_at);
             if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == death.id) {
                 cat.carrying = spilled;
             }
         }
+        release_equipped_items(
+            colony,
+            &death.id,
+            position_to_world(colony.anchor, death.position),
+        );
         cancel_cat_jobs(colony, &death.id, gate.processed_through);
         append_event(
             colony,
@@ -8324,7 +9144,6 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         * research_effects.production_rate_mult;
     ensure_farmer_plots(colony, world_seed, gate.processed_through);
     advance_designated_farms(colony, gate, world_seed, production_elapsed);
-    let productive_tools = usable_tool_stock(colony);
     let building_ids = colony
         .buildings
         .iter()
@@ -8337,6 +9156,10 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         let modifiers = research_effects.building(building_type.as_str());
         let building_elapsed = production_elapsed * modifiers.output_mult
             / modifiers.cycle_time_mult.max(f64::EPSILON);
+        let productive_tools = colony.buildings[building_index]
+            .assigned_cat
+            .as_deref()
+            .map_or(0.0, |cat_id| cat_usable_tool_stock(colony, cat_id));
         let building_crafting_elapsed = productive_elapsed(building_elapsed, productive_tools);
         match building_type {
             BuildingType::Field => {
@@ -9132,7 +9955,7 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
         // cleanup below clears `carrying`.
         let spilled = if let Some(carrying) = colony.cats[index].carrying.clone() {
             let deposit_at = position_to_world(colony.anchor, colony.cats[index].position);
-            salvage_carried_cargo(colony, &carrying, deposit_at)
+            salvage_carried_cargo(colony, &cat_id, &carrying, deposit_at)
         } else {
             None
         };
@@ -9153,6 +9976,8 @@ fn phase_25_survival_deaths_and_carried_yield_salvage(
         };
 
         // Mirror phase 6's old-age death cleanup exactly.
+        let death_at = position_to_world(colony.anchor, colony.cats[index].position);
+        release_equipped_items(colony, &cat_id, death_at);
         let cat = &mut colony.cats[index];
         cat.death_time = Some(gate.processed_through);
         cat.activity = CatActivity::default();
@@ -9467,7 +10292,7 @@ fn begin_departing_migrant(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64
                 .clone()
                 .map(|carrying| (carrying, position_to_world(colony.anchor, cat.position)))
         })
-        .and_then(|(carrying, at)| salvage_carried_cargo(colony, &carrying, at));
+        .and_then(|(carrying, at)| salvage_carried_cargo(colony, cat_id, &carrying, at));
     cancel_cat_jobs(colony, cat_id, now_ms);
     for job in &mut colony.jobs {
         if job.assigned_cat.as_deref() == Some(cat_id) {
@@ -9497,17 +10322,23 @@ fn begin_departing_migrant(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64
 }
 
 fn finish_departing_migrant(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
-    let Some(name) = colony
+    let Some((name, departure_at)) = colony
         .cats
         .iter()
         .find(|cat| cat.id == cat_id && cat.death_time.is_none())
-        .map(|cat| cat.name.clone())
+        .map(|cat| {
+            (
+                cat.name.clone(),
+                position_to_world(colony.anchor, cat.position),
+            )
+        })
     else {
         return;
     };
     if !finish_migrant_departure(&mut colony.migration_state, cat_id) {
         return;
     }
+    release_equipped_items(colony, cat_id, departure_at);
     colony.cats.retain(|cat| cat.id != cat_id);
     colony.migration_departures = colony.migration_departures.saturating_add(1);
     append_event(
@@ -9860,8 +10691,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
         })
         .collect::<Vec<_>>();
     let mut interrupted_jobs = HashSet::new();
-    let tools_contributed = usable_tool_stock(colony) >= 1.0;
-    let mut completed_tool_uses = 0_u32;
+    let mut completed_tool_jobs = Vec::new();
 
     for job in &due_jobs {
         if job.kind == JobKind::BuildHouse
@@ -9961,17 +10791,8 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
             stored.status = JobStatus::Completed;
             stored.completed_at = Some(gate.processed_through);
         }
-        if tools_contributed
-            && matches!(
-                job.kind,
-                JobKind::BuildHouse
-                    | JobKind::Quarry
-                    | JobKind::GatherLogs
-                    | JobKind::Fish
-                    | JobKind::HaulGatherSpot
-            )
-        {
-            completed_tool_uses = completed_tool_uses.saturating_add(1);
+        if colony.items.item_id_for_job(&job.id).is_some() {
+            completed_tool_jobs.push(job.id.clone());
         }
         append_event(
             colony,
@@ -9980,8 +10801,20 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
             format!("Completed {}.", job.kind.as_str().replace('_', " ")),
         );
     }
-    for _ in 0..completed_tool_uses {
-        wear_functional_items(colony, ItemKind::Tool, 1, gate.processed_through);
+    for job_id in completed_tool_jobs {
+        if let Some(item_id) = colony.items.release_job(&job_id, true)
+            && colony
+                .items
+                .instance(&item_id)
+                .is_some_and(|instance| instance.is_broken())
+        {
+            append_event(
+                colony,
+                gate.processed_through,
+                EventKind::Production,
+                format!("{item_id} wore out and needs workshop repair."),
+            );
+        }
     }
 }
 
@@ -10429,6 +11262,40 @@ fn phase_33_movement_deposits_and_no_destination_wander(
         .collect::<Vec<_>>();
     for (cat_id, position, carrying) in cat_ids {
         if let Some(carrying) = carrying {
+            if let Some((item_id, stockpile_id)) =
+                parse_equipment_return(carrying.source_gather_spot.as_deref())
+            {
+                let world_pos = position_to_world(colony.anchor, position);
+                let destination = colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == stockpile_id)
+                    .map(|pile| {
+                        let (x, y) = pile.center();
+                        WorldPos { x, y }
+                    });
+                if destination.is_some_and(|target| !is_at_shrine(world_pos, target)) {
+                    continue;
+                }
+                let _ = complete_equipment_return(colony, &cat_id, item_id, stockpile_id);
+                continue;
+            }
+            if let Some((item_id, _)) =
+                parse_equipment_retrieval(carrying.source_gather_spot.as_deref())
+            {
+                let world_pos = position_to_world(colony.anchor, position);
+                let destination = colony
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == cat_id)
+                    .and_then(|cat| cat.destination)
+                    .map(|target| position_to_world(colony.anchor, target));
+                if destination.is_some_and(|target| !is_at_shrine(world_pos, target)) {
+                    continue;
+                }
+                complete_equipment_retrieval(colony, &cat_id, item_id);
+                continue;
+            }
             // Scaffold inputs already live in their persisted construction transit
             // store. Only phase 15b may move them into the exact scaffold input
             // ledger; the generic village deposit pass would otherwise credit the
@@ -13445,15 +14312,42 @@ fn reset_run(colony: &mut ColonyRuntime, now_ms: i64, reason: RunResetReason) {
     // Crafted equipment is banked physical wealth like the rest of the item ledger.
     // Re-seed its aggregate pile counts so a reset cannot leave durable identities
     // contributing from nowhere (or stranded outside player-visible storage).
-    colony.resources.tools += f64::from(colony.items.count_kind(ItemKind::Tool));
-    colony.resources.weapons += f64::from(colony.items.count_kind(ItemKind::Weapon));
-    colony.resources.armor += f64::from(colony.items.count_kind(ItemKind::Armor));
+    let functional_ids = colony
+        .items
+        .instances()
+        .filter(|instance| {
+            matches!(
+                instance.item.kind,
+                ItemKind::Tool | ItemKind::Weapon | ItemKind::Armor
+            )
+        })
+        .map(|instance| instance.id.clone())
+        .collect::<Vec<_>>();
+    for id in &functional_ids {
+        if let Some(instance) = colony.items.instance_mut(id) {
+            instance.credited = true;
+            instance.auto_issued = false;
+            instance.active_job_id = None;
+        }
+    }
+    colony.resources.tools = f64::from(colony.items.credited_count(ItemKind::Tool));
+    colony.resources.weapons = f64::from(colony.items.credited_count(ItemKind::Weapon));
+    colony.resources.armor = f64::from(colony.items.credited_count(ItemKind::Armor));
     // Drop player piles; the end-of-tick reconcile reseeds the shrine reservoir.
     colony.stockpiles.clear();
     colony.stock_ledger = StockLedger::default();
     // P16: every gather spot's underlying pile just got dropped above, so drop their
     // bookkeeping records too (no stale entries pointing at piles that no longer exist).
     colony.gather_spots.clear();
+    // Seed the new run's real finite store first, then place every banked exact identity
+    // through the same whole-unit capacity gate as death/departure recovery. Overflow
+    // remains a deterministic physical spill instead of teleporting into an overfull
+    // compatibility treasury.
+    reconcile_colony_stockpiles(colony);
+    let reset_at = village_anchor_world(colony.anchor);
+    for id in functional_ids {
+        recover_item_to_capacity_or_spill(colony, &id, reset_at);
+    }
     colony.status = ColonyStatus::Starting;
     colony.run_number = if rolls_run_epoch {
         1
@@ -14088,12 +14982,25 @@ fn resolve_active_raid(
 ) {
     let combatants = raid_combatants(colony);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
-    let muster = muster_defense(
+    let loadout = combatants
+        .iter()
+        .map(|combatant| {
+            let usable = |kind| {
+                colony
+                    .items
+                    .equipped_id(&combatant.id, kind)
+                    .and_then(|id| colony.items.instance(id))
+                    .is_some_and(|instance| instance.credited && !instance.is_broken())
+            };
+            (
+                combatant.id.clone(),
+                (usable(ItemKind::Weapon), usable(ItemKind::Armor)),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let muster = muster_defense_with_loadout(
         &combatants,
-        DefenseStock {
-            weapons: usable_functional_stock(colony, ItemKind::Weapon, colony.resources.weapons),
-            armor: usable_functional_stock(colony, ItemKind::Armor, colony.resources.armor),
-        },
+        &loadout,
         CombatModifiers {
             combat_power_mult: effects.combat_power_mult,
             defense_mult: effects.defense_mult,
@@ -14116,32 +15023,24 @@ fn resolve_active_raid(
         }
     }
 
-    let identified_weapons_used = muster
-        .weapons_used
-        .min(colony.items.usable_count(ItemKind::Weapon));
-    let identified_armor_used = muster
-        .armor_used
-        .min(colony.items.usable_count(ItemKind::Armor));
-    wear_functional_items(
-        colony,
-        ItemKind::Weapon,
-        identified_weapons_used,
-        gate.processed_through,
-    );
-    wear_functional_items(
-        colony,
-        ItemKind::Armor,
-        identified_armor_used,
-        gate.processed_through,
-    );
-    // Identified durable gear remains physical after battle. Only legacy aggregate
-    // gear with no unit ledger retains the old one-use consumption behavior.
-    colony.resources.weapons = (colony.resources.weapons
-        - f64::from(muster.weapons_used.saturating_sub(identified_weapons_used)))
-    .max(0.0);
-    colony.resources.armor = (colony.resources.armor
-        - f64::from(muster.armor_used.saturating_sub(identified_armor_used)))
-    .max(0.0);
+    for mustered in &muster.per_cat {
+        if mustered.weapon {
+            wear_equipped_item(
+                colony,
+                &mustered.id,
+                ItemKind::Weapon,
+                gate.processed_through,
+            );
+        }
+        if mustered.armor {
+            wear_equipped_item(
+                colony,
+                &mustered.id,
+                ItemKind::Armor,
+                gate.processed_through,
+            );
+        }
+    }
 
     if outcome.defenders_win {
         for mustered in &muster.per_cat {
@@ -14288,6 +15187,10 @@ fn recover_offering_cargo_from_cat(colony: &mut ColonyRuntime, cat_id: &str, now
 
 fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
     recover_offering_cargo_from_cat(colony, cat_id, now_ms);
+    let death_at = colony.cats.iter().find(|cat| cat.id == cat_id).map_or_else(
+        || village_anchor_world(colony.anchor),
+        |cat| position_to_world(colony.anchor, cat.position),
+    );
     let spilled = colony
         .cats
         .iter()
@@ -14297,7 +15200,8 @@ fn mark_cat_dead(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
                 .clone()
                 .map(|carrying| (carrying, position_to_world(colony.anchor, cat.position)))
         })
-        .and_then(|(carrying, at)| salvage_carried_cargo(colony, &carrying, at));
+        .and_then(|(carrying, at)| salvage_carried_cargo(colony, cat_id, &carrying, at));
+    release_equipped_items(colony, cat_id, death_at);
     cancel_cat_jobs(colony, cat_id, now_ms);
     for building in &mut colony.buildings {
         if building.assigned_cat.as_deref() == Some(cat_id) {
@@ -14740,7 +15644,7 @@ fn idle_engine_upgrade_levels(upgrades: &UpgradeLevels) -> idle_engine::UpgradeL
     }
 }
 
-fn storage_caps(colony: &ColonyRuntime) -> StorageCapacities {
+pub(crate) fn storage_caps(colony: &ColonyRuntime) -> StorageCapacities {
     let buildings: Vec<StorageBuilding> = colony
         .buildings
         .iter()
@@ -15162,6 +16066,28 @@ fn queue_job_requested_by(
     assigned_cat: Option<CatId>,
     metadata: JobMetadata,
 ) {
+    let job_id = format!("job-{}-{}", now_ms, colony.jobs.len() + 1);
+    let contributing_tool_id = matches!(
+        kind,
+        JobKind::BuildHouse
+            | JobKind::Quarry
+            | JobKind::GatherLogs
+            | JobKind::Fish
+            | JobKind::HaulGatherSpot
+    )
+    .then(|| {
+        assigned_cat.as_deref().and_then(|cat_id| {
+            colony
+                .items
+                .equipped_id(cat_id, ItemKind::Tool)
+                .and_then(|id| colony.items.instance(id))
+                .filter(|instance| {
+                    instance.credited && !instance.is_broken() && instance.active_job_id.is_none()
+                })
+                .map(|instance| instance.id.clone())
+        })
+    })
+    .flatten();
     let (specialization, skill) = assigned_cat
         .as_ref()
         .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == *cat_id))
@@ -15187,7 +16113,14 @@ fn queue_job_requested_by(
             | JobKind::Fish
             | JobKind::HaulGatherSpot
     ) {
-        productive_duration_ms(base_duration_ms, usable_tool_stock(colony))
+        productive_duration_ms(
+            base_duration_ms,
+            if contributing_tool_id.is_some() {
+                f64::from(crate::productivity::TOOL_PRODUCTIVITY_CAP)
+            } else {
+                0.0
+            },
+        )
     } else {
         base_duration_ms
     };
@@ -15215,7 +16148,7 @@ fn queue_job_requested_by(
     }
 
     colony.jobs.push(JobRuntime {
-        id: format!("job-{}-{}", now_ms, colony.jobs.len() + 1),
+        id: job_id.clone(),
         kind,
         status: JobStatus::Queued,
         requested_by,
@@ -15230,6 +16163,10 @@ fn queue_job_requested_by(
         completed_at: None,
         metadata,
     });
+    if let Some(tool_id) = contributing_tool_id {
+        let reserved = colony.items.reserve_for_job(&tool_id, &job_id);
+        debug_assert!(reserved, "preflighted exact job tool remains reservable");
+    }
     append_event(
         colony,
         now_ms,
@@ -20445,6 +21382,7 @@ fn begin_station_output_haul(
     kind: ResourceKind,
     gate: TickGate,
 ) -> bool {
+    migrate_finite_equipment_authority(colony);
     let output_id = stockpiles::station_output_id(&building.id);
     let output_amount = station_inventory_amount(colony, &building.id, true, kind);
     if output_amount <= f64::EPSILON {
@@ -20485,6 +21423,28 @@ fn begin_station_output_haul(
     {
         stockpiles::add_resource(&mut output.contents, kind, -haul_amount);
     }
+    if let Some(item) = functional_item_for_resource(kind) {
+        let from = ItemLocation::Station {
+            building_id: building.id.clone(),
+            compartment: StationCompartment::LocalOutput,
+        };
+        let ids = colony
+            .items
+            .ids_at(item.kind, &from)
+            .take(haul_amount as usize)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        debug_assert_eq!(ids.len(), haul_amount as usize);
+        for id in ids {
+            let moved = colony.items.relocate(
+                &id,
+                ItemLocation::Carrier {
+                    cat_id: colony.cats[cat_index].id.clone(),
+                },
+            );
+            debug_assert!(moved);
+        }
+    }
     colony.cats[cat_index].carrying = Some(Carrying {
         kind: carrying_kind,
         amount: haul_amount,
@@ -20504,6 +21464,31 @@ fn begin_station_output_haul(
         },
     );
     true
+}
+
+fn add_functional_station_output(
+    colony: &mut ColonyRuntime,
+    building_id: &str,
+    resource: ResourceKind,
+    count: u32,
+) {
+    let Some(item) = functional_item_for_resource(resource) else {
+        return;
+    };
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let durability_mult = effects
+        .building(items::item_workshop_id(item))
+        .durability_mult;
+    colony.items.add_at(
+        item,
+        count,
+        durability_mult,
+        ItemLocation::Station {
+            building_id: building_id.to_owned(),
+            compartment: StationCompartment::LocalOutput,
+        },
+        false,
+    );
 }
 
 /// Reserve one exact recipe load in a station transit store and put it in the
@@ -21094,13 +22079,18 @@ fn advance_physical_refiner(
             output_cycles * recipe.output_per_cycle,
         );
     }
-    if tools_contributed {
-        wear_functional_items(
+    if functional_item_for_resource(recipe.output_kind).is_some() {
+        add_functional_station_output(
             colony,
-            ItemKind::Tool,
-            output_cycles as u32,
-            gate.processed_through,
+            &building.id,
+            recipe.output_kind,
+            queue_cycles as u32,
         );
+    }
+    if tools_contributed {
+        for _ in 0..queue_cycles {
+            wear_equipped_item(colony, cat_id, ItemKind::Tool, gate.processed_through);
+        }
     }
     append_event(
         colony,
@@ -21323,13 +22313,16 @@ fn advance_physical_woodworking(
             cycles * recipe.output_per_cycle,
         );
     }
+    add_functional_station_output(
+        colony,
+        &building.id,
+        recipe.output_kind,
+        queue_cycles as u32,
+    );
     if tools_contributed {
-        wear_functional_items(
-            colony,
-            ItemKind::Tool,
-            queue_cycles as u32,
-            gate.processed_through,
-        );
+        for _ in 0..queue_cycles {
+            wear_equipped_item(colony, cat_id, ItemKind::Tool, gate.processed_through);
+        }
     }
     append_event(
         colony,
@@ -21560,6 +22553,27 @@ fn recover_orphaned_station_stores(colony: &mut ColonyRuntime, gate: TickGate) {
     {
         stockpiles::add_resource(&mut source.contents, kind, -haul_amount);
     }
+    if output && let Some(item) = functional_item_for_resource(kind) {
+        let station = ItemLocation::Station {
+            building_id: building_id.clone(),
+            compartment: StationCompartment::LocalOutput,
+        };
+        let ids = colony
+            .items
+            .ids_at(item.kind, &station)
+            .take(haul_amount as usize)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        for id in ids {
+            let moved = colony.items.relocate(
+                &id,
+                ItemLocation::Carrier {
+                    cat_id: colony.cats[cat_index].id.clone(),
+                },
+            );
+            debug_assert!(moved);
+        }
+    }
     colony.cats[cat_index].carrying = Some(Carrying {
         kind: carrying_kind,
         amount: haul_amount,
@@ -21587,6 +22601,7 @@ fn recover_orphaned_station_stores(colony: &mut ColonyRuntime, gate: TickGate) {
 /// Restore the physical-store invariant for a colony (seeds/migrates the finite general
 /// storehouse). Runs at the end of every tick and after stockpile actions.
 pub fn reconcile_colony_stockpiles(colony: &mut ColonyRuntime) {
+    migrate_finite_equipment_authority(colony);
     let storehouse_rect = general_storehouse_rect(colony);
     let storehouse_caps = storage_caps(colony);
     let protected = colony
@@ -21610,6 +22625,7 @@ pub fn reconcile_colony_stockpiles(colony: &mut ColonyRuntime) {
         storehouse_caps,
         &protected,
     );
+    reconcile_finite_equipment_projections(colony);
 }
 
 /// Map a carried resource to its stockpile [`ResourceKind`], if it can be stockpiled.
@@ -22315,6 +23331,11 @@ fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
 /// accept. Returns the amount still physically carried; callers with a living
 /// carrier must retain and reroute it instead of clearing the stack.
 fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: WorldPos) -> f64 {
+    let carrier_cat_id = colony
+        .cats
+        .iter()
+        .find(|cat| cat.carrying.as_ref() == Some(carrying))
+        .map(|cat| cat.id.clone());
     if steward_haul_job_id(carrying.source_gather_spot.as_deref()).is_some() {
         return credit_steward_haul_carrying(colony, carrying);
     }
@@ -22422,12 +23443,38 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
             }
         });
         stockpiles::add_resource(&mut colony.resources, kind, delivered);
+        let destination_id = destination.map(|index| colony.stockpiles[index].id.clone());
         if let Some(destination) = destination {
             stockpiles::add_resource(
                 &mut colony.stockpiles[destination].contents,
                 kind,
                 delivered,
             );
+        }
+        if let (Some(item), Some(cat_id), Some(stockpile_id)) = (
+            functional_item_for_resource(kind),
+            carrier_cat_id.as_deref(),
+            destination_id,
+        ) {
+            let carrier = ItemLocation::Carrier {
+                cat_id: cat_id.to_owned(),
+            };
+            let ids = colony
+                .items
+                .ids_at(item.kind, &carrier)
+                .take(delivered.floor() as usize)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            debug_assert_eq!(ids.len(), delivered.floor() as usize);
+            for id in ids {
+                let credited = colony.items.credit_at(
+                    &id,
+                    ItemLocation::Stockpile {
+                        stockpile_id: stockpile_id.clone(),
+                    },
+                );
+                debug_assert!(credited);
+            }
         }
         // A destination can fill while this cat is en route. Keep any remainder
         // in its paws for ordinary rerouting; returning it to station output here
@@ -22581,13 +23628,28 @@ fn credit_steward_haul_carrying(colony: &mut ColonyRuntime, carrying: &Carrying)
 /// returned to the caller to remain on the corpse as a persisted world spill.
 fn salvage_carried_cargo(
     colony: &mut ColonyRuntime,
+    carrier_cat_id: &str,
     carrying: &Carrying,
     at: WorldPos,
 ) -> Option<Carrying> {
+    let equipment_id = parse_equipment_retrieval(carrying.source_gather_spot.as_deref())
+        .map(|(item_id, _)| item_id)
+        .or_else(|| {
+            parse_equipment_return(carrying.source_gather_spot.as_deref())
+                .map(|(item_id, _)| item_id)
+        });
+    if let Some(item_id) = equipment_id {
+        // The original slot may have filled while this identity was in transit, and a
+        // return leg is still exact equipment rather than generic scalar cargo. Use the
+        // same bounded recovery as equipped death/departure so the id cannot remain on a
+        // dead carrier, duplicate into a pile scalar, or overfill its former source.
+        recover_item_to_capacity_or_spill(colony, item_id, at);
+        return None;
+    }
     if spill_construction_cargo(colony, carrying, at) {
         return None;
     }
-    if salvage_station_cargo(colony, carrying, at) {
+    if salvage_station_cargo_for_carrier(colony, carrying, at, Some(carrier_cat_id)) {
         return None;
     }
     let remaining = credit_carrying(colony, carrying, at);
@@ -22603,7 +23665,22 @@ fn salvage_carried_cargo(
 /// already removed from its source into a persisted transit store; output cargo was
 /// removed from the station's uncredited output store. Returning either one avoids the
 /// generic salvage path crediting it a second time or teleporting it to its destination.
+#[cfg(test)]
 fn salvage_station_cargo(colony: &mut ColonyRuntime, carrying: &Carrying, _at: WorldPos) -> bool {
+    let carrier_cat_id = colony
+        .cats
+        .iter()
+        .find(|cat| cat.carrying.as_ref() == Some(carrying))
+        .map(|cat| cat.id.clone());
+    salvage_station_cargo_for_carrier(colony, carrying, _at, carrier_cat_id.as_deref())
+}
+
+fn salvage_station_cargo_for_carrier(
+    colony: &mut ColonyRuntime,
+    carrying: &Carrying,
+    _at: WorldPos,
+    carrier_cat_id: Option<&str>,
+) -> bool {
     if let Some(job_id) = steward_haul_job_id(carrying.source_gather_spot.as_deref()) {
         cancel_stockpile_balance_job_by_id(colony, job_id, carrying.job_ended_at);
         return true;
@@ -22632,6 +23709,27 @@ fn salvage_station_cargo(colony: &mut ColonyRuntime, carrying: &Carrying, _at: W
             .find(|pile| pile.id == output_id)
         {
             stockpiles::add_resource(&mut output.contents, kind, carrying.amount);
+        }
+        if let (Some(item), Some(cat_id)) = (functional_item_for_resource(kind), carrier_cat_id) {
+            let carrier = ItemLocation::Carrier {
+                cat_id: cat_id.to_owned(),
+            };
+            let ids = colony
+                .items
+                .ids_at(item.kind, &carrier)
+                .take(carrying.amount.floor() as usize)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            for id in ids {
+                let moved = colony.items.relocate(
+                    &id,
+                    ItemLocation::Station {
+                        building_id: building_id.to_owned(),
+                        compartment: StationCompartment::LocalOutput,
+                    },
+                );
+                debug_assert!(moved);
+            }
         }
         return true;
     }
@@ -23549,8 +24647,8 @@ mod tests {
             "a completed funded Woodworking bench is runnable"
         );
 
-        colony.resources.tools = storage_caps(&colony).tools;
-        reconcile_colony_stockpiles(&mut colony);
+        let tool_capacity = storage_caps(&colony).tools as u32;
+        seed_stored_functional_items(&mut colony, ResourceKind::Tools, tool_capacity);
         assert!(
             runnable_raw_material_bench_of_type(&colony, BuildingType::Woodworking).is_none(),
             "full scalar Tool capacity makes a fresh Woodworking batch useless"
@@ -23568,8 +24666,8 @@ mod tests {
             (population * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
         colony.resources.water =
             (population * RESEARCH_COMFORT_WATER_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
-        colony.resources.tools = storage_caps(&colony).tools;
-        reconcile_colony_stockpiles(&mut colony);
+        let tool_capacity = storage_caps(&colony).tools as u32;
+        seed_stored_functional_items(&mut colony, ResourceKind::Tools, tool_capacity);
         let woodworking_index = colony
             .buildings
             .iter()
@@ -26202,12 +27300,27 @@ mod tests {
         // Prepared: the same three cats trained into warriors, with weapons + armor
         // stocked for the muster to draw.
         let mut prepared = base_colony();
-        prepared.resources.weapons = 5.0;
-        prepared.resources.armor = 5.0;
         prepared.cats = vec![defender("p1"), defender("p2"), defender("p3")];
         for cat in &mut prepared.cats {
             cat.specialization = Some(CatSpecialization::Warrior);
         }
+        let weapon_ids = seed_stored_functional_items(&mut prepared, ResourceKind::Weapons, 5);
+        let armor_ids = seed_stored_functional_items(&mut prepared, ResourceKind::Armor, 5);
+        for index in 0..prepared.cats.len() {
+            let cat_id = prepared.cats[index].id.clone();
+            assert!(prepared.items.relocate(
+                &weapon_ids[index],
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone()
+                }
+            ));
+            assert!(
+                prepared
+                    .items
+                    .relocate(&armor_ids[index], ItemLocation::Equipped { cat_id })
+            );
+        }
+        reconcile_finite_equipment_projections(&mut prepared);
         grant_raid_captain_fixture(&mut prepared);
         prepared.raiders = warband(&prepared);
         prepared.active_raid = Some("raid-1".to_owned());
@@ -26233,7 +27346,7 @@ mod tests {
         );
 
         // Prepared warriors hold the line: raid ends, nothing is looted, and the drawn
-        // weapons/armor are consumed from the armory.
+        // exact weapons/armor are worn by their holders rather than consumed from a pool.
         let prepared = &prepared_world.colonies[0];
         assert!(prepared.active_raid.is_none(), "raid never resolved");
         assert!(
@@ -26241,12 +27354,15 @@ mod tests {
             "prepared colony held the gate and should not be looted (only tick consumption): food {}",
             prepared.resources.food
         );
-        assert!(
-            prepared.resources.weapons < 5.0 && prepared.resources.armor < 5.0,
-            "prepared muster should draw weapons + armor (weapons {}, armor {})",
-            prepared.resources.weapons,
-            prepared.resources.armor,
-        );
+        assert_eq!(prepared.resources.weapons, 5.0);
+        assert_eq!(prepared.resources.armor, 5.0);
+        for id in weapon_ids.iter().take(3).chain(armor_ids.iter().take(3)) {
+            let item = prepared.items.instance(id).unwrap();
+            assert!(
+                item.durability < item.max_durability,
+                "mustered identity {id} should take exact combat wear"
+            );
+        }
         assert!(
             alive_cats(&prepared.cats).count() == 3,
             "prepared colony should take no casualties"
@@ -26440,10 +27556,12 @@ mod tests {
             }]
         );
         let colony = &world.colonies[0];
-        assert_eq!(
-            colony.resources,
-            starting_resources_with_blessings(VillageScale::Personal, 7.0)
-        );
+        let mut expected_resources = starting_resources_with_blessings(VillageScale::Personal, 7.0);
+        expected_resources.weapons = 5.0;
+        expected_resources.armor = 6.0;
+        assert_eq!(colony.resources, expected_resources);
+        assert_eq!(colony.items.credited_count(ItemKind::Weapon), 5);
+        assert_eq!(colony.items.credited_count(ItemKind::Armor), 6);
         assert!(colony.jobs.is_empty());
         assert!(colony.raiders.is_empty());
         assert_eq!(colony.active_raid, None);
@@ -29508,6 +30626,42 @@ mod tests {
         colony.cats[0].position = position_from_world(station_work_point(&building));
     }
 
+    fn seed_functional_station_output(
+        colony: &mut ColonyRuntime,
+        building_id: &str,
+        kind: ResourceKind,
+        count: u32,
+    ) -> Vec<String> {
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let before = colony
+            .items
+            .instances()
+            .map(|instance| instance.id.clone())
+            .collect::<BTreeSet<_>>();
+        add_functional_station_output(colony, building_id, kind, count);
+        reconcile_finite_equipment_projections(colony);
+        colony
+            .items
+            .instances()
+            .filter(|instance| !before.contains(&instance.id))
+            .map(|instance| instance.id.clone())
+            .collect()
+    }
+
+    fn seed_stored_functional_items(
+        colony: &mut ColonyRuntime,
+        kind: ResourceKind,
+        count: u32,
+    ) -> Vec<String> {
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let item = functional_item_for_resource(kind).expect("functional equipment resource");
+        let ids = colony
+            .items
+            .add_at(item, count, 1.0, ItemLocation::LegacyTreasury, true);
+        reconcile_finite_equipment_projections(colony);
+        ids
+    }
+
     #[test]
     fn v1_research_locked_physical_recipes_consume_nothing_and_gain_no_progress() {
         for (building_type, input_kind, resources) in [
@@ -30050,7 +31204,8 @@ mod tests {
             building_station_inventory(&weapons, &weapons.buildings[0], true),
             [(ResourceKind::Weapons, 1.0)]
         );
-        assert!(weapons.items.is_empty());
+        assert_eq!(weapons.items.count_kind(ItemKind::Weapon), 1);
+        assert_eq!(weapons.items.credited_count(ItemKind::Weapon), 0);
 
         let armor = smithy_entitlement_cycle(
             CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
@@ -30066,6 +31221,8 @@ mod tests {
             building_station_inventory(&armor, &armor.buildings[0], true),
             [(ResourceKind::Armor, 1.0)]
         );
+        assert_eq!(armor.items.count_kind(ItemKind::Armor), 1);
+        assert_eq!(armor.items.credited_count(ItemKind::Armor), 0);
 
         let both = smithy_entitlement_cycle(
             CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
@@ -33960,7 +35117,6 @@ mod tests {
             BuildingType::Workshop,
             Resources {
                 materials: 40.0,
-                tools: 1.0,
                 ..Resources::default()
             },
             true,
@@ -33968,6 +35124,12 @@ mod tests {
         colony.add_crafted_item(Item::new(ItemKind::Tool, Material::Wood, 0), 1);
         reconcile_colony_stockpiles(&mut colony);
         let tool = colony.items.instances().next().unwrap().clone();
+        colony.items.relocate(
+            &tool.id,
+            ItemLocation::Equipped {
+                cat_id: colony.cats[0].id.clone(),
+            },
+        );
         move_general_stock_to_station_input(&mut colony, ResourceKind::Materials, 10.0);
         colony.buildings[0].production_progress = 0.0;
         colony.buildings[0].production_queue = vec![ProductionQueueEntry {
@@ -34626,9 +35788,18 @@ mod tests {
                     stockpiles::resource_amount(&colony.resources, output_kind),
                     1.0
                 );
-                assert!(
-                    colony.items.is_empty(),
-                    "finite equipment identity remains C3"
+                assert_eq!(
+                    colony
+                        .items
+                        .instances()
+                        .filter(|instance| {
+                            functional_resource_for_kind(instance.item.kind) == Some(output_kind)
+                                && instance.credited
+                                && matches!(instance.location, ItemLocation::Stockpile { .. })
+                        })
+                        .count(),
+                    1,
+                    "the delivered gear retains one credited stockpile identity"
                 );
                 assert!(colony.buildings[0].production_queue.is_empty());
                 assert_eq!(colony.buildings[0].production_progress, 0.0);
@@ -34658,10 +35829,14 @@ mod tests {
             BuildingType::Smithy,
             Resources {
                 metal: 2.0,
-                weapons: BASE_CAPACITY.weapons - 0.5,
                 ..Resources::default()
             },
             true,
+        );
+        seed_stored_functional_items(
+            &mut blocked,
+            ResourceKind::Weapons,
+            BASE_CAPACITY.weapons as u32,
         );
         blocked.buildings[0].production_progress = 890.0;
         blocked.buildings[0].production_queue = vec![ProductionQueueEntry {
@@ -34669,14 +35844,13 @@ mod tests {
             repeat: false,
         }];
         seed_station_input_at_worker(&mut blocked, ResourceKind::Metal, 2.0);
-        let output_id = stockpiles::station_output_id(&blocked.buildings[0].id);
-        blocked
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == output_id)
-            .unwrap()
-            .contents
-            .weapons = stockpiles::STOCKPILE_TILE_CAPACITY;
+        let blocked_id = blocked.buildings[0].id.clone();
+        seed_functional_station_output(
+            &mut blocked,
+            &blocked_id,
+            ResourceKind::Weapons,
+            stockpiles::STOCKPILE_TILE_CAPACITY as u32,
+        );
         let skill_before = blocked.cats[0].skill(Labor::Metalwork);
         phase_23_production(&mut blocked, production_gate(60, 60_000), 123);
         assert_eq!(blocked.resources.metal, 2.0);
@@ -34691,10 +35865,14 @@ mod tests {
             BuildingType::Smithy,
             Resources {
                 metal: 2.0,
-                weapons: BASE_CAPACITY.weapons - 1.0,
                 ..Resources::default()
             },
             true,
+        );
+        seed_stored_functional_items(
+            &mut resumed,
+            ResourceKind::Weapons,
+            BASE_CAPACITY.weapons as u32 - 1,
         );
         resumed.buildings[0].production_progress = 890.0;
         resumed.buildings[0].production_queue = vec![ProductionQueueEntry {
@@ -34759,13 +35937,7 @@ mod tests {
         outbound.buildings[0].production_queue.clear();
         ensure_station_stores(&mut outbound, 0);
         let building = outbound.buildings[0].clone();
-        outbound
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == stockpiles::station_output_id(&building.id))
-            .unwrap()
-            .contents
-            .weapons = 1.0;
+        seed_functional_station_output(&mut outbound, &building.id, ResourceKind::Weapons, 1);
         outbound.cats[0].position = position_from_world(station_work_point(&building));
         phase_23_production(&mut outbound, production_gate(1, 1_000), 123);
         let weapon = outbound.cats[0].carrying.clone().expect("Weapon outbound");
@@ -34824,13 +35996,7 @@ mod tests {
         move_general_stock_to_station_input(&mut removed, ResourceKind::Metal, 2.0);
         ensure_station_stores(&mut removed, 0);
         let removed_building = removed.buildings[0].clone();
-        removed
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == stockpiles::station_output_id(&removed_building.id))
-            .unwrap()
-            .contents
-            .armor = 1.0;
+        seed_functional_station_output(&mut removed, &removed_building.id, ResourceKind::Armor, 1);
         let input_id = stockpiles::station_input_id(&removed_building.id);
         let output_id = stockpiles::station_output_id(&removed_building.id);
         removed.buildings.clear();
@@ -34844,24 +36010,16 @@ mod tests {
 
     #[test]
     fn removed_smithy_keeps_whole_weapon_local_until_one_whole_unit_fits() {
-        let mut colony = chain_colony(
-            BuildingType::Smithy,
-            Resources {
-                weapons: BASE_CAPACITY.weapons - 0.5,
-                ..Resources::default()
-            },
-            true,
+        let mut colony = chain_colony(BuildingType::Smithy, Resources::default(), true);
+        let stored = seed_stored_functional_items(
+            &mut colony,
+            ResourceKind::Weapons,
+            BASE_CAPACITY.weapons as u32,
         );
         ensure_station_stores(&mut colony, 0);
         let building = colony.buildings[0].clone();
         let output_id = stockpiles::station_output_id(&building.id);
-        colony
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == output_id)
-            .expect("Smithy output store")
-            .contents
-            .weapons = 1.0;
+        seed_functional_station_output(&mut colony, &building.id, ResourceKind::Weapons, 1);
         let source = colony
             .stockpiles
             .iter()
@@ -34879,7 +36037,7 @@ mod tests {
 
         assert!(
             colony.cats[0].carrying.is_none(),
-            "half a unit of headroom must never create fractional Weapon cargo"
+            "full finite capacity must not create outbound Weapon cargo"
         );
         assert_eq!(
             colony
@@ -34891,15 +36049,16 @@ mod tests {
                 .weapons,
             1.0
         );
-        assert_eq!(colony.resources.weapons, BASE_CAPACITY.weapons - 0.5);
+        assert_eq!(colony.resources.weapons, BASE_CAPACITY.weapons);
 
-        let general = colony
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.is_general_storehouse())
-            .expect("general storehouse");
-        general.contents.weapons -= 1.0;
-        colony.resources.weapons -= 1.0;
+        assert!(colony.items.relocate(
+            &stored[0],
+            ItemLocation::Trader {
+                trader_id: "departed-test-wagon".to_owned(),
+            }
+        ));
+        colony.items.instance_mut(&stored[0]).unwrap().credited = false;
+        reconcile_finite_equipment_projections(&mut colony);
         recover_orphaned_station_stores(&mut colony, production_gate(1, 2_000));
 
         let weapon = colony.cats[0]
@@ -34919,7 +36078,7 @@ mod tests {
         );
         let target = haul_deposit_target(&colony, &weapon, source);
         assert_eq!(credit_carrying(&mut colony, &weapon, target), 0.0);
-        assert_eq!(colony.resources.weapons, BASE_CAPACITY.weapons - 0.5);
+        assert_eq!(colony.resources.weapons, BASE_CAPACITY.weapons);
     }
 
     #[test]
@@ -35770,10 +36929,11 @@ mod tests {
             assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE);
             assert_eq!(colony.resources.blocks, TOOL_BUILD_MATERIAL_RESERVE);
             assert_eq!(colony.resources.tools, 1.0);
-            assert!(
-                colony.items.is_empty(),
-                "finite Tool identity remains C3 work"
-            );
+            assert_eq!(colony.items.credited_count(ItemKind::Tool), 1);
+            assert!(colony.items.instances().any(|instance| {
+                instance.item.kind == ItemKind::Tool
+                    && matches!(instance.location, ItemLocation::Stockpile { .. })
+            }));
             assert!(colony.buildings[0].production_queue.is_empty());
             assert_eq!(colony.buildings[0].production_progress, 0.0);
             assert!(building_station_inventory(colony, &colony.buildings[0], false).is_empty());
@@ -35796,23 +36956,15 @@ mod tests {
 
     #[test]
     fn woodworking_output_hauls_only_whole_tools_after_whole_headroom_exists() {
-        let mut colony = chain_colony(
-            BuildingType::Woodworking,
-            Resources {
-                tools: BASE_CAPACITY.tools - 0.5,
-                ..Resources::default()
-            },
-            true,
+        let mut colony = chain_colony(BuildingType::Woodworking, Resources::default(), true);
+        let stored = seed_stored_functional_items(
+            &mut colony,
+            ResourceKind::Tools,
+            BASE_CAPACITY.tools as u32,
         );
         ensure_station_stores(&mut colony, 0);
-        let output_id = stockpiles::station_output_id(&colony.buildings[0].id);
-        colony
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == output_id)
-            .unwrap()
-            .contents
-            .tools = 1.0;
+        let woodworking_id = colony.buildings[0].id.clone();
+        seed_functional_station_output(&mut colony, &woodworking_id, ResourceKind::Tools, 1);
         colony.cats[0].position = position_from_world(station_work_point(&colony.buildings[0]));
 
         phase_23_production(&mut colony, production_gate(1, 1_000), 123);
@@ -35822,13 +36974,14 @@ mod tests {
             Some("output_storage_full")
         );
 
-        let general = colony
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.is_general_storehouse())
-            .unwrap();
-        general.contents.tools -= 0.5;
-        colony.resources.tools -= 0.5;
+        assert!(colony.items.relocate(
+            &stored[0],
+            ItemLocation::Trader {
+                trader_id: "departed-test-wagon".to_owned(),
+            }
+        ));
+        colony.items.instance_mut(&stored[0]).unwrap().credited = false;
+        reconcile_finite_equipment_projections(&mut colony);
         phase_23_production(&mut colony, production_gate(1, 2_000), 123);
         let cargo = colony.cats[0].carrying.as_ref().unwrap();
         assert_eq!(cargo.kind, CarryingKind::Tools);
@@ -35936,6 +37089,19 @@ mod tests {
             building_station_inventory(&colony, &colony.buildings[0], true),
             vec![(ResourceKind::Tools, 1.0)]
         );
+        let finite_tool = colony
+            .items
+            .instances()
+            .find(|instance| instance.item.kind == ItemKind::Tool)
+            .expect("completed batch owns one finite Tool id");
+        assert!(!finite_tool.credited, "station output is not early credit");
+        assert_eq!(
+            finite_tool.location,
+            ItemLocation::Station {
+                building_id: colony.buildings[0].id.clone(),
+                compartment: StationCompartment::LocalOutput,
+            }
+        );
 
         release_raw_material_workshop_workers(&mut colony);
         assert!(
@@ -35973,14 +37139,8 @@ mod tests {
         colony.buildings[0].production_queue.clear();
         colony.buildings[0].automated_by = Some(OfficerRole::Forester);
         ensure_station_stores(&mut colony, 0);
-        let output_id = stockpiles::station_output_id(&colony.buildings[0].id);
-        colony
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == output_id)
-            .unwrap()
-            .contents
-            .tools = 1.0;
+        let woodworking_id = colony.buildings[0].id.clone();
+        seed_functional_station_output(&mut colony, &woodworking_id, ResourceKind::Tools, 1);
         let dead_id = colony.cats[0].id.clone();
         mark_cat_dead(&mut colony, &dead_id, 1_000);
 
@@ -36044,13 +37204,7 @@ mod tests {
         let mut outbound = chain_colony(BuildingType::Woodworking, Resources::default(), true);
         ensure_station_stores(&mut outbound, 0);
         let building = outbound.buildings[0].clone();
-        outbound
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == stockpiles::station_output_id(&building.id))
-            .unwrap()
-            .contents
-            .tools = 1.0;
+        seed_functional_station_output(&mut outbound, &building.id, ResourceKind::Tools, 1);
         outbound.cats[0].position = position_from_world(station_work_point(&building));
         phase_23_production(&mut outbound, production_gate(1, 1_000), 123);
         let tool = outbound.cats[0]
@@ -36082,13 +37236,7 @@ mod tests {
         move_general_stock_to_station_input(&mut removed, ResourceKind::Blocks, 2.0);
         ensure_station_stores(&mut removed, 0);
         let removed_building = removed.buildings[0].clone();
-        removed
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == stockpiles::station_output_id(&removed_building.id))
-            .unwrap()
-            .contents
-            .tools = 1.0;
+        seed_functional_station_output(&mut removed, &removed_building.id, ResourceKind::Tools, 1);
         let input_id = stockpiles::station_input_id(&removed_building.id);
         let output_id = stockpiles::station_output_id(&removed_building.id);
         removed.buildings.clear();
@@ -36833,7 +37981,6 @@ mod tests {
             BuildingType::Workshop,
             Resources {
                 materials: 200.0,
-                tools: 1.0,
                 ..Resources::default()
             },
             true,
@@ -36841,7 +37988,17 @@ mod tests {
         colony.add_crafted_item(tool, 1);
         let tool_id = colony.items.instances().next().unwrap().id.clone();
         let max_durability = colony.items.instance(&tool_id).unwrap().max_durability;
-        assert!(usable_tool_stock(&colony) >= 1.0);
+        let worker_id = colony.cats[0].id.clone();
+        colony.items.relocate(
+            &tool_id,
+            ItemLocation::Equipped {
+                cat_id: worker_id.clone(),
+            },
+        );
+        assert_eq!(
+            cat_usable_tool_stock(&colony, &worker_id),
+            f64::from(crate::productivity::TOOL_PRODUCTIVITY_CAP)
+        );
 
         for use_index in 0..max_durability {
             move_general_stock_to_station_input(&mut colony, ResourceKind::Materials, 5.0);
@@ -36866,12 +38023,1221 @@ mod tests {
         assert!(colony.items.instance(&tool_id).unwrap().is_broken());
         assert_eq!(colony.items.get(&tool), Some(&1), "broken remains physical");
         assert_eq!(colony.resources.tools, 1.0, "physical pile count remains");
-        assert_eq!(usable_tool_stock(&colony), 0.0, "broken stops contributing");
         assert_eq!(
-            productive_elapsed(30.0, usable_tool_stock(&colony)),
+            cat_usable_tool_stock(&colony, &worker_id),
+            0.0,
+            "broken stops contributing"
+        );
+        assert_eq!(
+            productive_elapsed(30.0, cat_usable_tool_stock(&colony, &worker_id)),
             30.0,
             "a broken tool grants no productivity acceleration"
         );
+    }
+
+    #[test]
+    fn finite_equipment_migration_is_idempotent_and_projects_whole_legacy_scalars() {
+        let mut colony = chain_colony(
+            BuildingType::Workshop,
+            Resources {
+                tools: 2.9,
+                weapons: 1.0,
+                armor: 1.0,
+                ..Resources::default()
+            },
+            false,
+        );
+        colony.finite_equipment_rules_version = 0;
+        migrate_finite_equipment_authority(&mut colony);
+        let ids = colony
+            .items
+            .instances()
+            .map(|instance| instance.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(colony.items.credited_count(ItemKind::Tool), 2);
+        assert_eq!(colony.items.credited_count(ItemKind::Weapon), 1);
+        assert_eq!(colony.items.credited_count(ItemKind::Armor), 1);
+        assert_eq!(colony.resources.tools, 2.0);
+        assert_eq!(colony.finite_equipment_rules_version, 1);
+
+        migrate_finite_equipment_authority(&mut colony);
+        assert_eq!(
+            colony
+                .items
+                .instances()
+                .map(|instance| instance.id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+    }
+
+    #[test]
+    fn station_output_haul_delivers_the_same_functional_identity_and_credits_it_once() {
+        let mut colony = chain_colony(BuildingType::Woodworking, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        ensure_station_stores(&mut colony, 0);
+        let building = colony.buildings[0].clone();
+        add_functional_station_output(&mut colony, &building.id, ResourceKind::Tools, 1);
+        reconcile_finite_equipment_projections(&mut colony);
+        let tool_id = colony
+            .items
+            .instances()
+            .find(|instance| instance.item.kind == ItemKind::Tool)
+            .expect("workshop output owns one exact identity")
+            .id
+            .clone();
+        assert!(!colony.items.instance(&tool_id).unwrap().credited);
+        assert_eq!(colony.resources.tools, 0.0);
+
+        colony.cats[0].position = position_from_world(station_work_point(&building));
+        assert!(begin_station_output_haul(
+            &mut colony,
+            &building,
+            0,
+            ResourceKind::Tools,
+            production_gate(1, 1_000),
+        ));
+        let cat_id = colony.cats[0].id.clone();
+        assert_eq!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Carrier { cat_id }
+        );
+        assert_eq!(colony.resources.tools, 0.0, "transit is not early credit");
+
+        deliver_station_cargo_to_current_target(&mut colony);
+        reconcile_finite_equipment_projections(&mut colony);
+        let delivered = colony.items.instance(&tool_id).unwrap();
+        assert!(delivered.credited);
+        assert!(matches!(delivered.location, ItemLocation::Stockpile { .. }));
+        assert_eq!(colony.resources.tools, 1.0);
+        assert_eq!(colony.items.count_kind(ItemKind::Tool), 1);
+    }
+
+    #[test]
+    fn one_exact_tool_completes_the_full_physical_lifecycle_without_duplication() {
+        let mut colony = chain_colony(
+            BuildingType::Woodworking,
+            Resources {
+                planks: 10.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        ensure_station_stores(&mut colony, 0);
+        let building = colony.buildings[0].clone();
+        let cat_id = colony.cats[0].id.clone();
+
+        // Craft one finite unit into the station-local output compartment.
+        add_functional_station_output(&mut colony, &building.id, ResourceKind::Tools, 1);
+        reconcile_finite_equipment_projections(&mut colony);
+        let tool_id = colony
+            .items
+            .instances()
+            .find(|instance| instance.item.kind == ItemKind::Tool)
+            .expect("one crafted Tool identity")
+            .id
+            .clone();
+        assert_eq!(colony.items.count_kind(ItemKind::Tool), 1);
+        assert_eq!(
+            colony.resources.tools, 0.0,
+            "local output is not owned early"
+        );
+        assert!(matches!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Station {
+                compartment: StationCompartment::LocalOutput,
+                ..
+            }
+        ));
+
+        // The same id leaves the bench in one cat's paws, then becomes credited in
+        // one real village pile. No compatibility scalar is minted in transit.
+        colony.cats[0].position = position_from_world(station_work_point(&building));
+        assert!(begin_station_output_haul(
+            &mut colony,
+            &building,
+            0,
+            ResourceKind::Tools,
+            production_gate(1, 1_000),
+        ));
+        assert_eq!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Carrier {
+                cat_id: cat_id.clone()
+            }
+        );
+        assert_eq!(colony.resources.tools, 0.0);
+        deliver_station_cargo_to_current_target(&mut colony);
+        reconcile_finite_equipment_projections(&mut colony);
+        let stored_pile = match &colony.items.instance(&tool_id).unwrap().location {
+            ItemLocation::Stockpile { stockpile_id } => stockpile_id.clone(),
+            location => panic!("crafted identity was not stored: {location:?}"),
+        };
+        assert_eq!(colony.items.count_kind(ItemKind::Tool), 1);
+        assert_eq!(colony.items.credited_count(ItemKind::Tool), 1);
+        assert_eq!(colony.resources.tools, 1.0);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == stored_pile)
+                .unwrap()
+                .contents
+                .tools,
+            1.0
+        );
+
+        // A persistence boundary cannot allocate a replacement id or duplicate its
+        // pile projection.
+        let items_json = serde_json::to_string(&colony.items).unwrap();
+        let piles_json = serde_json::to_string(&colony.stockpiles).unwrap();
+        colony.items = serde_json::from_str(&items_json).unwrap();
+        colony.stockpiles = serde_json::from_str(&piles_json).unwrap();
+        reconcile_colony_stockpiles(&mut colony);
+        assert_eq!(colony.items.count_kind(ItemKind::Tool), 1);
+        assert_eq!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Stockpile {
+                stockpile_id: stored_pile.clone()
+            }
+        );
+
+        // The station worker physically retrieves that exact id and equips it. The
+        // owned scalar stays one while the pile loses its sole unit.
+        let (x, y) = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == stored_pile)
+            .unwrap()
+            .center();
+        colony.cats[0].position = position_from_world(WorldPos { x, y });
+        colony.cats[0].activity = CatActivity::Idle;
+        colony.cats[0].carrying = None;
+        colony.cats[0].destination = None;
+        retrieve_automatic_functional_equipment(&mut colony, 2_000);
+        assert_eq!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Carrier {
+                cat_id: cat_id.clone()
+            }
+        );
+        complete_equipment_retrieval(&mut colony, &cat_id, &tool_id);
+        reconcile_finite_equipment_projections(&mut colony);
+        assert_eq!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Equipped {
+                cat_id: cat_id.clone()
+            }
+        );
+        assert_eq!(colony.resources.tools, 1.0);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .map(|pile| pile.contents.tools)
+                .sum::<f64>(),
+            0.0
+        );
+
+        // Exact use wears this id to broken; no other Tool identity exists to absorb
+        // condition loss.
+        let maximum = colony.items.instance(&tool_id).unwrap().max_durability;
+        for use_index in 0..maximum {
+            wear_equipped_item(
+                &mut colony,
+                &cat_id,
+                ItemKind::Tool,
+                3_000 + i64::from(use_index),
+            );
+        }
+        assert!(colony.items.instance(&tool_id).unwrap().is_broken());
+        assert_eq!(colony.items.count_kind(ItemKind::Tool), 1);
+
+        let mut world = WorldState {
+            world_seed: 123,
+            colonies: vec![colony],
+        };
+        let action_ctx = |now_ms| ActionCtx {
+            session_id: "exact-lifecycle-session".to_owned(),
+            player_id: "exact-lifecycle-player".to_owned(),
+            colony_id: "colony-1".to_owned(),
+            now_ms,
+        };
+        let unequip = proto::ClientAction::UnequipItem {
+            session_id: "exact-lifecycle-session".to_owned(),
+            nickname: "Lifecycle Tester".to_owned(),
+            sig: "signed".to_owned(),
+            cat_id: cat_id.clone(),
+            item_id: tool_id.clone(),
+        };
+        assert!(apply_action(&mut world, &unequip, &action_ctx(4_000)).ok);
+        let ItemLocation::Stockpile { stockpile_id } =
+            &world.colonies[0].items.instance(&tool_id).unwrap().location
+        else {
+            panic!("capacity-aware unequip did not return the exact id to storage");
+        };
+        assert!(
+            world.colonies[0]
+                .stockpiles
+                .iter()
+                .any(|pile| pile.id == *stockpile_id)
+        );
+        assert_equipment_piles_within_capacity(&world.colonies[0]);
+
+        let repair = proto::ClientAction::RepairItem {
+            session_id: "exact-lifecycle-session".to_owned(),
+            nickname: "Lifecycle Tester".to_owned(),
+            sig: "signed".to_owned(),
+            item_id: tool_id.clone(),
+        };
+        let repaired = apply_action(&mut world, &repair, &action_ctx(5_000));
+        assert!(repaired.ok, "repair failed: {repaired:?}");
+        assert!(
+            world.colonies[0]
+                .items
+                .instance(&tool_id)
+                .unwrap()
+                .is_pristine()
+        );
+
+        // The pristine exact identity finally crosses to the trader. Colony scalar
+        // and piles both fall to zero while the trader owns that same stable id.
+        world.colonies[0].trader = Some(TraderRuntime {
+            id: "lifecycle-trader".to_owned(),
+            position: Position::default(),
+            destination: None,
+            state: trader::TraderState::Trading,
+            arrived_at: Some(5_000),
+            depart_at: Some(10_000),
+            route_exterior: None,
+            visit_destination: None,
+            route_blocked: false,
+            visit_number: 1,
+            stock: BTreeMap::new(),
+            items: ItemStore::default(),
+            coin: 10_000.0,
+        });
+        let sale = proto::ClientAction::SellGoods {
+            session_id: "exact-lifecycle-session".to_owned(),
+            nickname: "Lifecycle Tester".to_owned(),
+            sig: "signed".to_owned(),
+            kind: "tool".to_owned(),
+            material: "wood".to_owned(),
+            quality: 1,
+            count: 1,
+        };
+        let sold = apply_action(&mut world, &sale, &action_ctx(6_000));
+        assert!(sold.ok, "sale failed: {sold:?}");
+        let colony = &world.colonies[0];
+        assert!(colony.items.instance(&tool_id).is_none());
+        assert_eq!(colony.resources.tools, 0.0);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .map(|pile| pile.contents.tools)
+                .sum::<f64>(),
+            0.0
+        );
+        let sold_instance = colony
+            .trader
+            .as_ref()
+            .unwrap()
+            .items
+            .instance(&tool_id)
+            .expect("the same exact id reached the trader");
+        assert_eq!(
+            sold_instance.location,
+            ItemLocation::Trader {
+                trader_id: "lifecycle-trader".to_owned()
+            }
+        );
+        assert_eq!(
+            colony.items.count_kind(ItemKind::Tool)
+                + colony
+                    .trader
+                    .as_ref()
+                    .unwrap()
+                    .items
+                    .count_kind(ItemKind::Tool),
+            1,
+            "the lifecycle never duplicated or destroyed the one finite identity"
+        );
+    }
+
+    #[test]
+    fn physical_tool_retrieval_preserves_scalar_and_moves_one_exact_id() {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let pile_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap()
+            .id
+            .clone();
+        let worker_id = colony.cats[0].id.clone();
+        let tool_id = colony
+            .items
+            .add_at(
+                Item::new(ItemKind::Tool, Material::Wood, 1),
+                1,
+                1.0,
+                ItemLocation::Stockpile {
+                    stockpile_id: pile_id.clone(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        reconcile_finite_equipment_projections(&mut colony);
+        let (x, y) = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id)
+            .unwrap()
+            .center();
+        colony.cats[0].position = position_from_world(WorldPos { x, y });
+
+        retrieve_automatic_functional_equipment(&mut colony, 1_000);
+        assert_eq!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Carrier {
+                cat_id: worker_id.clone()
+            }
+        );
+        assert_eq!(colony.resources.tools, 1.0, "ownership never flickers");
+        reconcile_finite_equipment_projections(&mut colony);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == pile_id)
+                .unwrap()
+                .contents
+                .tools,
+            0.0,
+            "the carried identity is no longer also in storage"
+        );
+
+        complete_equipment_retrieval(&mut colony, &worker_id, &tool_id);
+        assert_eq!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Equipped {
+                cat_id: worker_id.clone()
+            }
+        );
+        assert_eq!(colony.resources.tools, 1.0);
+    }
+
+    #[test]
+    fn scarce_captain_weapon_follows_muster_priority_not_reversed_cat_id() {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        colony.items = ItemStore::default();
+        let mut elite = colony.cats[0].clone();
+        colony.cats[0].id = "a-weaker".to_owned();
+        colony.cats[0].name = "Weaker".to_owned();
+        colony.cats[0].specialization = Some(CatSpecialization::Warrior);
+        colony.cats[0].stats.attack = 20.0;
+        colony.cats[0].stats.defense = 20.0;
+        elite.id = "z-elite".to_owned();
+        elite.name = "Elite".to_owned();
+        elite.specialization = Some(CatSpecialization::Warrior);
+        elite.stats.attack = 90.0;
+        elite.stats.defense = 90.0;
+        colony.cats.push(elite);
+        colony
+            .officers
+            .insert(OfficerRole::Captain, "a-weaker".to_owned());
+        let weapon_id = seed_stored_functional_items(&mut colony, ResourceKind::Weapons, 1)
+            .pop()
+            .unwrap();
+        let source = item_storage_point(
+            &colony,
+            &colony.items.instance(&weapon_id).unwrap().location,
+        )
+        .unwrap();
+        let at_pile = position_from_world(source);
+        for cat in &mut colony.cats {
+            cat.position = at_pile;
+            cat.carrying = None;
+        }
+
+        retrieve_automatic_functional_equipment(&mut colony, 1_000);
+
+        assert_eq!(
+            colony.items.instance(&weapon_id).unwrap().location,
+            ItemLocation::Carrier {
+                cat_id: "z-elite".to_owned()
+            }
+        );
+        assert!(colony.cats[0].carrying.is_none());
+    }
+
+    #[test]
+    fn captain_never_preempts_hunt_water_or_job_destinations_to_replace_gear() {
+        for (label, task) in [
+            ("hunt", TaskType::Hunt),
+            ("water", TaskType::FetchWater),
+            ("job", TaskType::Build),
+        ] {
+            let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), false);
+            colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+            colony.items = ItemStore::default();
+
+            let mut busy = colony.cats[0].clone();
+            busy.id = format!("z-busy-{label}");
+            busy.name = format!("Busy {label}");
+            busy.specialization = Some(CatSpecialization::Warrior);
+            busy.stats.attack = 100.0;
+            busy.stats.defense = 100.0;
+            busy.activity = CatActivity::Traveling;
+            busy.current_task = Some(task);
+            busy.destination = Some(Position {
+                map: MapType::Colony,
+                x: 41.0,
+                y: 17.0,
+            });
+            let expected_destination = busy.destination;
+
+            let mut idle = colony.cats[0].clone();
+            idle.id = format!("a-idle-{label}");
+            idle.name = format!("Idle {label}");
+            idle.specialization = Some(CatSpecialization::Warrior);
+            idle.stats.attack = 10.0;
+            idle.stats.defense = 10.0;
+            colony.cats = vec![busy, idle];
+            colony
+                .officers
+                .insert(OfficerRole::Captain, format!("z-busy-{label}"));
+
+            let broken = colony
+                .items
+                .add_at(
+                    Item::new(ItemKind::Weapon, Material::Wood, 0),
+                    1,
+                    1.0,
+                    ItemLocation::Equipped {
+                        cat_id: format!("z-busy-{label}"),
+                    },
+                    true,
+                )
+                .pop()
+                .unwrap();
+            {
+                let item = colony.items.instance_mut(&broken).unwrap();
+                item.durability = 0;
+                item.auto_issued = true;
+            }
+            let spare = seed_stored_functional_items(&mut colony, ResourceKind::Weapons, 1)
+                .pop()
+                .unwrap();
+
+            retrieve_automatic_functional_equipment(&mut colony, 1_000);
+
+            let busy = &colony.cats[0];
+            assert_eq!(busy.activity, CatActivity::Traveling, "{label}");
+            assert_eq!(busy.current_task, Some(task), "{label}");
+            assert_eq!(busy.destination, expected_destination, "{label}");
+            assert!(busy.carrying.is_none(), "{label}");
+            assert_eq!(
+                colony.items.instance(&broken).unwrap().location,
+                ItemLocation::Equipped {
+                    cat_id: format!("z-busy-{label}")
+                },
+                "{label}"
+            );
+            assert_ne!(
+                colony.items.instance(&spare).unwrap().location,
+                ItemLocation::Carrier {
+                    cat_id: format!("z-busy-{label}")
+                },
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn consecutive_raids_replace_broken_auto_weapon_but_leave_manual_gear_alone() {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        colony.items = ItemStore::default();
+        let cat_id = colony.cats[0].id.clone();
+        colony.cats[0].specialization = Some(CatSpecialization::Warrior);
+        colony.cats[0].stats.attack = 200.0;
+        colony.cats[0].stats.defense = 200.0;
+        colony.officers.insert(OfficerRole::Captain, cat_id.clone());
+        let stored = seed_stored_functional_items(&mut colony, ResourceKind::Weapons, 1)
+            .pop()
+            .unwrap();
+        let pile_id = match &colony.items.instance(&stored).unwrap().location {
+            ItemLocation::Stockpile { stockpile_id } => stockpile_id.clone(),
+            ItemLocation::LegacyTreasury => stockpiles::GENERAL_STOREHOUSE_ID.to_owned(),
+            location => panic!("seeded spare is not stored: {location:?}"),
+        };
+        let old = colony
+            .items
+            .add_at(
+                Item::new(ItemKind::Weapon, Material::Metal, 1),
+                1,
+                1.0,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        let manual_armor = colony
+            .items
+            .add_at(
+                Item::new(ItemKind::Armor, Material::Metal, 1),
+                1,
+                1.0,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        {
+            let instance = colony.items.instance_mut(&old).unwrap();
+            instance.durability = 1;
+            instance.auto_issued = true;
+        }
+        colony.items.instance_mut(&manual_armor).unwrap().durability = 0;
+        reconcile_finite_equipment_projections(&mut colony);
+
+        let fight = |colony: &mut ColonyRuntime, raid_id: &str, now_ms: i64| {
+            colony.raiders.push(RaiderRuntime {
+                id: format!("{raid_id}-raider"),
+                raid_id: raid_id.to_owned(),
+                position: Position::default(),
+                destination: None,
+                attack: 1.0,
+                defense: 1.0,
+                health: 1.0,
+            });
+            colony.active_raid = Some(raid_id.to_owned());
+            resolve_active_raid(colony, production_gate(1, now_ms), raid_id, &mut || 0.99);
+        };
+        fight(&mut colony, "raid-one", 1_000);
+        assert!(colony.items.instance(&old).unwrap().is_broken());
+        colony.buildings[0].assigned_cat = None;
+
+        retrieve_automatic_functional_equipment(&mut colony, 2_000);
+        assert!(matches!(
+            colony.items.instance(&old).unwrap().location,
+            ItemLocation::Carrier { .. }
+        ));
+        assert!(complete_equipment_return(
+            &mut colony,
+            &cat_id,
+            &old,
+            &pile_id
+        ));
+        let pile = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id)
+            .unwrap();
+        colony.cats[0].position = position_from_world(WorldPos {
+            x: pile.center().0,
+            y: pile.center().1,
+        });
+        retrieve_automatic_functional_equipment(&mut colony, 3_000);
+        assert!(matches!(
+            colony.items.instance(&stored).unwrap().location,
+            ItemLocation::Carrier { .. }
+        ));
+        complete_equipment_retrieval(&mut colony, &cat_id, &stored);
+        let spare_before = colony.items.instance(&stored).unwrap().durability;
+
+        fight(&mut colony, "raid-two", 4_000);
+
+        assert_eq!(
+            colony.items.instance(&stored).unwrap().durability,
+            spare_before - 1
+        );
+        assert_eq!(
+            colony.items.instance(&old).unwrap().durability,
+            0,
+            "the stored broken identity is not worn again"
+        );
+        assert_eq!(
+            colony.items.instance(&manual_armor).unwrap().location,
+            ItemLocation::Equipped {
+                cat_id: cat_id.clone()
+            },
+            "automation never reclaims a manual loadout"
+        );
+    }
+
+    #[test]
+    fn retrieval_carrier_death_returns_exact_id_to_its_source_without_recredit() {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let pile_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap()
+            .id
+            .clone();
+        let cat_id = colony.cats[0].id.clone();
+        let tool_id = colony
+            .items
+            .add_at(
+                Item::new(ItemKind::Tool, Material::Wood, 1),
+                1,
+                1.0,
+                ItemLocation::Stockpile {
+                    stockpile_id: pile_id.clone(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        reconcile_finite_equipment_projections(&mut colony);
+        let (x, y) = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == pile_id)
+            .unwrap()
+            .center();
+        colony.cats[0].position = position_from_world(WorldPos { x, y });
+        retrieve_automatic_functional_equipment(&mut colony, 1_000);
+        assert!(matches!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Carrier { .. }
+        ));
+
+        mark_cat_dead(&mut colony, &cat_id, 2_000);
+        reconcile_colony_stockpiles(&mut colony);
+        assert_eq!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Stockpile {
+                stockpile_id: pile_id.clone()
+            }
+        );
+        assert_eq!(colony.resources.tools, 1.0);
+        assert_eq!(
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == pile_id)
+                .unwrap()
+                .contents
+                .tools,
+            1.0
+        );
+    }
+
+    #[test]
+    fn retrieval_carrier_death_spills_when_its_source_filled_in_transit() {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        colony.stockpiles = vec![Stockpile {
+            id: "retrieval-source".to_owned(),
+            rect: ZoneRect {
+                x1: 2,
+                y1: 2,
+                x2: 2,
+                y2: 2,
+            },
+            accepts: std::iter::once(ResourceKind::Tools).collect(),
+            contents: Resources::default(),
+        }];
+        let cat_id = colony.cats[0].id.clone();
+        let tool = Item::new(ItemKind::Tool, Material::Wood, 1);
+        let tool_id = colony
+            .items
+            .add_at(
+                tool,
+                1,
+                1.0,
+                ItemLocation::Stockpile {
+                    stockpile_id: "retrieval-source".to_owned(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        reconcile_finite_equipment_projections(&mut colony);
+        let source = colony.stockpiles[0].center();
+        colony.cats[0].position = position_from_world(WorldPos {
+            x: source.0,
+            y: source.1,
+        });
+        retrieve_automatic_functional_equipment(&mut colony, 1_000);
+        assert!(matches!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Carrier { .. }
+        ));
+
+        colony.items.add_at(
+            tool,
+            stockpiles::STOCKPILE_TILE_CAPACITY as u32,
+            1.0,
+            ItemLocation::Stockpile {
+                stockpile_id: "retrieval-source".to_owned(),
+            },
+            true,
+        );
+        reconcile_finite_equipment_projections(&mut colony);
+        mark_cat_dead(&mut colony, &cat_id, 2_000);
+        reconcile_colony_stockpiles(&mut colony);
+
+        assert!(matches!(
+            &colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Stockpile { stockpile_id }
+                if stockpile_id.starts_with(EQUIPMENT_SPILL_PREFIX)
+        ));
+        assert_eq!(
+            colony.items.count_kind(ItemKind::Tool),
+            stockpiles::STOCKPILE_TILE_CAPACITY as u32 + 1
+        );
+        assert_equipment_piles_within_capacity(&colony);
+    }
+
+    #[test]
+    fn return_carrier_death_rehomes_the_exact_id_instead_of_stranding_it_on_the_corpse() {
+        let (mut colony, cat_id, equipped_id, total) = full_tool_store_with_equipped_cat();
+        let pile_id = colony.stockpiles[0].id.clone();
+        assert!(colony.items.set_auto_issued(&equipped_id, true));
+        assert!(colony.items.relocate(
+            &equipped_id,
+            ItemLocation::Carrier {
+                cat_id: cat_id.clone()
+            }
+        ));
+        colony.cats[0].carrying = Some(Carrying {
+            kind: CarryingKind::Tools,
+            amount: 1.0,
+            job_ended_at: 1_000,
+            source_gather_spot: Some(equipment_return_marker(&equipped_id, &pile_id)),
+        });
+
+        mark_cat_dead(&mut colony, &cat_id, 2_000);
+        reconcile_colony_stockpiles(&mut colony);
+
+        assert!(matches!(
+            &colony.items.instance(&equipped_id).unwrap().location,
+            ItemLocation::Stockpile { stockpile_id }
+                if stockpile_id.starts_with(EQUIPMENT_SPILL_PREFIX)
+        ));
+        assert_eq!(colony.items.count_kind(ItemKind::Tool) as usize, total);
+        assert!(colony.items.instances().all(|instance| {
+            !matches!(
+                &instance.location,
+                ItemLocation::Carrier { cat_id: carrier } if carrier == &cat_id
+            )
+        }));
+        assert_equipment_piles_within_capacity(&colony);
+    }
+
+    fn full_tool_store_with_equipped_cat() -> (ColonyRuntime, String, String, usize) {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let cat_id = colony.cats[0].id.clone();
+        colony.cats[0].position = Position {
+            map: MapType::Colony,
+            x: 4.0,
+            y: 5.0,
+        };
+        let pile_id = "full-tool-store".to_owned();
+        colony.stockpiles = vec![Stockpile {
+            id: pile_id.clone(),
+            rect: ZoneRect {
+                x1: 2,
+                y1: 2,
+                x2: 2,
+                y2: 2,
+            },
+            accepts: std::iter::once(ResourceKind::Tools).collect(),
+            contents: Resources::default(),
+        }];
+        let capacity = stockpiles::STOCKPILE_TILE_CAPACITY as u32;
+        colony.items.add_at(
+            Item::new(ItemKind::Tool, Material::Wood, 1),
+            capacity,
+            1.0,
+            ItemLocation::Stockpile {
+                stockpile_id: pile_id,
+            },
+            true,
+        );
+        let equipped_id = colony
+            .items
+            .add_at(
+                Item::new(ItemKind::Tool, Material::Wood, 1),
+                1,
+                1.0,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        reconcile_finite_equipment_projections(&mut colony);
+        let total = colony.items.count_kind(ItemKind::Tool) as usize;
+        (colony, cat_id, equipped_id, total)
+    }
+
+    fn assert_equipment_piles_within_capacity(colony: &ColonyRuntime) {
+        let caps = storage_caps(colony);
+        for pile in &colony.stockpiles {
+            for kind in [
+                ResourceKind::Tools,
+                ResourceKind::Weapons,
+                ResourceKind::Armor,
+            ] {
+                if let Some(capacity) = stockpiles::capacity_for(pile, kind, &caps) {
+                    assert!(
+                        stockpiles::resource_amount(&pile.contents, kind)
+                            <= capacity + f64::EPSILON,
+                        "{} over capacity for {kind:?}: {:?}",
+                        pile.id,
+                        pile.contents
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn full_storage_death_spills_equipped_identity_and_survives_restart_shape() {
+        let (mut colony, cat_id, equipped_id, total) = full_tool_store_with_equipped_cat();
+
+        mark_cat_dead(&mut colony, &cat_id, 2_000);
+        reconcile_colony_stockpiles(&mut colony);
+
+        let location = colony
+            .items
+            .instance(&equipped_id)
+            .unwrap()
+            .location
+            .clone();
+        let ItemLocation::Stockpile { stockpile_id } = location else {
+            panic!("released identity was not physically stored: {location:?}");
+        };
+        assert!(stockpile_id.starts_with(EQUIPMENT_SPILL_PREFIX));
+        assert_eq!(colony.items.count_kind(ItemKind::Tool) as usize, total);
+        assert_equipment_piles_within_capacity(&colony);
+
+        let items_json = serde_json::to_string(&colony.items).unwrap();
+        let piles_json = serde_json::to_string(&colony.stockpiles).unwrap();
+        colony.items = serde_json::from_str(&items_json).unwrap();
+        colony.stockpiles = serde_json::from_str(&piles_json).unwrap();
+        reconcile_colony_stockpiles(&mut colony);
+        assert_eq!(
+            colony.items.instance(&equipped_id).unwrap().location,
+            ItemLocation::Stockpile { stockpile_id }
+        );
+        assert_eq!(colony.items.count_kind(ItemKind::Tool) as usize, total);
+        assert_equipment_piles_within_capacity(&colony);
+    }
+
+    #[test]
+    fn full_storage_migrant_departure_spills_gear_before_removing_cat() {
+        let (mut colony, cat_id, equipped_id, total) = full_tool_store_with_equipped_cat();
+        colony
+            .migration_state
+            .probationary_migrants
+            .push(crate::migration::ProbationaryMigrant {
+                id: cat_id.clone(),
+                phase: MigrantSpatialPhase::Departing,
+                ..crate::migration::ProbationaryMigrant::default()
+            });
+
+        finish_departing_migrant(&mut colony, &cat_id, 2_000);
+        reconcile_colony_stockpiles(&mut colony);
+
+        assert!(colony.cats.iter().all(|cat| cat.id != cat_id));
+        assert!(matches!(
+            &colony.items.instance(&equipped_id).unwrap().location,
+            ItemLocation::Stockpile { stockpile_id }
+                if stockpile_id.starts_with(EQUIPMENT_SPILL_PREFIX)
+        ));
+        assert_eq!(colony.items.count_kind(ItemKind::Tool) as usize, total);
+        assert_equipment_piles_within_capacity(&colony);
+    }
+
+    #[test]
+    fn reset_rehomes_over_capacity_equipment_into_persisted_physical_spills() {
+        let mut colony = found_colony(42, "reset-equipment", 0, 42);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        colony.items = ItemStore::default();
+        reconcile_colony_stockpiles(&mut colony);
+        let capacity = stockpiles::storage_capacity_for(storage_caps(&colony), ResourceKind::Tools)
+            .floor() as u32;
+        let total = capacity + 2;
+        colony.items.add_at(
+            Item::new(ItemKind::Tool, Material::Wood, 1),
+            total,
+            1.0,
+            ItemLocation::LegacyTreasury,
+            true,
+        );
+        reconcile_finite_equipment_projections(&mut colony);
+
+        reset_run(&mut colony, 5_000, RunResetReason::UnattendedCollapse);
+
+        assert_eq!(colony.items.count_kind(ItemKind::Tool), total);
+        assert!(colony.stockpiles.iter().any(|pile| {
+            pile.id.starts_with(EQUIPMENT_SPILL_PREFIX) && pile.contents.tools >= 1.0
+        }));
+        assert!(colony.items.instances().all(|instance| {
+            !matches!(
+                instance.item.kind,
+                ItemKind::Tool | ItemKind::Weapon | ItemKind::Armor
+            ) || matches!(
+                &instance.location,
+                ItemLocation::Stockpile { stockpile_id }
+                    if colony.stockpiles.iter().any(|pile| pile.id == *stockpile_id)
+            )
+        }));
+        assert_equipment_piles_within_capacity(&colony);
+    }
+
+    #[test]
+    fn station_tool_retrieval_never_preempts_an_assigned_survival_job() {
+        let mut colony = chain_colony(BuildingType::Mill, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let cat_id = colony.cats[0].id.clone();
+        let tool_id = seed_stored_functional_items(&mut colony, ResourceKind::Tools, 1)
+            .pop()
+            .unwrap();
+        let water_site = TilePos { x: 31, y: 17 };
+        queue_job_requested_by(
+            &mut colony,
+            500,
+            JobKind::FetchWater,
+            JobRequester::Leader,
+            Some(cat_id.clone()),
+            JobMetadata::Site {
+                site: water_site,
+                accepted: false,
+            },
+        );
+        let destination = position_from_world(tile_pos_to_world(water_site));
+        colony.cats[0].destination = Some(destination);
+        colony.cats[0].activity = CatActivity::Traveling;
+
+        retrieve_automatic_functional_equipment(&mut colony, 1_000);
+
+        assert_eq!(colony.cats[0].destination, Some(destination));
+        assert!(colony.cats[0].carrying.is_none());
+        assert!(matches!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+        ));
+    }
+
+    #[test]
+    fn exact_equipped_tool_wears_while_stored_and_uncredited_units_do_not() {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let cat_id = colony.cats[0].id.clone();
+        let tool = Item::new(ItemKind::Tool, Material::Wood, 1);
+        let equipped = colony
+            .items
+            .add_at(
+                tool,
+                1,
+                1.0,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        let stored = colony
+            .items
+            .add_at(tool, 1, 1.0, ItemLocation::LegacyTreasury, true)
+            .pop()
+            .unwrap();
+        let uncredited = colony
+            .items
+            .add_at(
+                tool,
+                1,
+                1.0,
+                ItemLocation::Station {
+                    building_id: "bench".to_owned(),
+                    compartment: StationCompartment::LocalOutput,
+                },
+                false,
+            )
+            .pop()
+            .unwrap();
+        let before = [equipped.clone(), stored.clone(), uncredited.clone()]
+            .map(|id| colony.items.instance(&id).unwrap().durability);
+        wear_equipped_item(&mut colony, &cat_id, ItemKind::Tool, 1_000);
+        assert_eq!(
+            colony.items.instance(&equipped).unwrap().durability,
+            before[0] - 1
+        );
+        assert_eq!(
+            colony.items.instance(&stored).unwrap().durability,
+            before[1]
+        );
+        assert_eq!(
+            colony.items.instance(&uncredited).unwrap().durability,
+            before[2]
+        );
+    }
+
+    #[test]
+    fn queued_job_persists_and_wears_only_its_exact_contributing_tool_across_swaps() {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let cat_id = colony.cats[0].id.clone();
+        let tool = Item::new(ItemKind::Tool, Material::Wood, 1);
+        let first = colony
+            .items
+            .add_at(
+                tool,
+                1,
+                1.0,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        let second = colony
+            .items
+            .add_at(tool, 1, 1.0, ItemLocation::LegacyTreasury, true)
+            .pop()
+            .unwrap();
+        let first_before = colony.items.instance(&first).unwrap().durability;
+        let second_before = colony.items.instance(&second).unwrap().durability;
+        queue_job_requested_by(
+            &mut colony,
+            1_000,
+            JobKind::Quarry,
+            JobRequester::Player,
+            Some(cat_id.clone()),
+            JobMetadata::None,
+        );
+        let job_id = colony.jobs.last().unwrap().id.clone();
+        assert_eq!(colony.items.item_id_for_job(&job_id), Some(first.as_str()));
+
+        assert!(colony.items.relocate(&first, ItemLocation::LegacyTreasury));
+        assert!(colony.items.relocate(
+            &second,
+            ItemLocation::Equipped {
+                cat_id: cat_id.clone()
+            }
+        ));
+        let json = serde_json::to_string(&colony.items).unwrap();
+        let mut restarted: ItemStore = serde_json::from_str(&json).unwrap();
+        assert_eq!(restarted.item_id_for_job(&job_id), Some(first.as_str()));
+        assert_eq!(restarted.release_job(&job_id, true), Some(first.clone()));
+        assert_eq!(
+            restarted.instance(&first).unwrap().durability,
+            first_before - 1
+        );
+        assert_eq!(
+            restarted.instance(&second).unwrap().durability,
+            second_before
+        );
+
+        let mut late = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        late.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let late_cat = late.cats[0].id.clone();
+        queue_job_requested_by(
+            &mut late,
+            2_000,
+            JobKind::Quarry,
+            JobRequester::Player,
+            Some(late_cat.clone()),
+            JobMetadata::None,
+        );
+        let late_job = late.jobs.last().unwrap().id.clone();
+        let late_tool = late
+            .items
+            .add_at(
+                tool,
+                1,
+                1.0,
+                ItemLocation::Equipped { cat_id: late_cat },
+                true,
+            )
+            .pop()
+            .unwrap();
+        let late_before = late.items.instance(&late_tool).unwrap().durability;
+        assert_eq!(late.items.release_job(&late_job, true), None);
+        assert_eq!(
+            late.items.instance(&late_tool).unwrap().durability,
+            late_before
+        );
+    }
+
+    #[test]
+    fn auto_issued_tool_returns_physically_but_manual_provenance_stays_equipped() {
+        let mut colony = chain_colony(BuildingType::Workshop, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let cat_id = colony.cats[0].id.clone();
+        let tool_id = seed_stored_functional_items(&mut colony, ResourceKind::Tools, 1)
+            .pop()
+            .unwrap();
+        let source = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap()
+            .center();
+        colony.cats[0].position = position_from_world(WorldPos {
+            x: source.0,
+            y: source.1,
+        });
+        retrieve_automatic_functional_equipment(&mut colony, 1_000);
+        complete_equipment_retrieval(&mut colony, &cat_id, &tool_id);
+        assert!(colony.items.instance(&tool_id).unwrap().auto_issued);
+
+        colony
+            .cats
+            .push(adult_idle_cat("replacement-worker", "colony-1"));
+        colony.buildings[0].assigned_cat = Some("replacement-worker".to_owned());
+        retrieve_automatic_functional_equipment(&mut colony, 2_000);
+        let carrying = colony.cats[0]
+            .carrying
+            .clone()
+            .expect("physical return leg");
+        let (returned_id, pile_id) =
+            parse_equipment_return(carrying.source_gather_spot.as_deref()).unwrap();
+        assert_eq!(returned_id, tool_id);
+        assert!(complete_equipment_return(
+            &mut colony,
+            &cat_id,
+            returned_id,
+            pile_id
+        ));
+        assert!(!colony.items.instance(&tool_id).unwrap().auto_issued);
+        assert!(matches!(
+            colony.items.instance(&tool_id).unwrap().location,
+            ItemLocation::Stockpile { .. }
+        ));
+
+        let destination = ItemLocation::Equipped {
+            cat_id: cat_id.clone(),
+        };
+        assert!(colony.items.relocate(&tool_id, destination.clone()));
+        assert!(colony.items.set_auto_issued(&tool_id, false));
+        retrieve_automatic_functional_equipment(&mut colony, 3_000);
+        assert_eq!(
+            colony.items.instance(&tool_id).unwrap().location,
+            destination
+        );
+        assert!(colony.cats[0].carrying.is_none());
     }
 
     #[test]
@@ -36915,18 +39281,8 @@ mod tests {
                 production_progress: 590.0,
                 ..BuildingRuntime::default()
             });
-            // Finite equipment creation is the following C3 slice. Keep this
-            // condition/repair campaign focused by starting with one legitimate
-            // identified Tool mirrored by its compatibility scalar pile unit.
-            colony.resources.tools = 1.0;
-            colony
-                .stockpiles
-                .iter_mut()
-                .find(|pile| pile.is_general_storehouse())
-                .unwrap()
-                .contents
-                .tools = 1.0;
             colony.add_crafted_item(Item::new(ItemKind::Tool, Material::Wood, 0), 1);
+            reconcile_colony_stockpiles(&mut colony);
             let cat_id = colony.cats[0].id.clone();
             let mut world = WorldState {
                 world_seed: 123,
@@ -36970,6 +39326,14 @@ mod tests {
                 .instance(&tool_id)
                 .unwrap()
                 .max_durability;
+            let equip = proto::ClientAction::EquipItem {
+                session_id: "guided-items-session".to_owned(),
+                nickname: "Playtester".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: cat_id.clone(),
+                item_id: tool_id.clone(),
+            };
+            assert!(apply_action(&mut world, &equip, &action_ctx(1_500)).ok);
 
             assert!(apply_action(&mut world, &assign("guided-workshop"), &action_ctx(31_000),).ok);
             for use_index in 0..max_durability {
@@ -37033,6 +39397,14 @@ mod tests {
             );
 
             assert!(apply_action(&mut world, &assign("chain-1"), &action_ctx(200_000)).ok);
+            let unequip = proto::ClientAction::UnequipItem {
+                session_id: "guided-items-session".to_owned(),
+                nickname: "Playtester".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: cat_id.clone(),
+                item_id: tool_id.clone(),
+            };
+            assert!(apply_action(&mut world, &unequip, &action_ctx(200_500)).ok);
             let repair = proto::ClientAction::RepairItem {
                 session_id: "guided-items-session".to_owned(),
                 nickname: "Playtester".to_owned(),
@@ -38762,13 +41134,49 @@ mod tests {
             colony.add_crafted_item(item, 1);
         }
         colony.items.wear(ItemKind::Tool, 1);
-        let expected_items = colony.items.clone();
+        let expected_items = colony
+            .items
+            .instances()
+            .map(|instance| {
+                (
+                    instance.id.clone(),
+                    instance.item,
+                    instance.durability,
+                    instance.max_durability,
+                    instance.credited,
+                )
+            })
+            .collect::<Vec<_>>();
 
         reset_run(&mut colony, 5_000, RunResetReason::AllCatsDead);
+        let actual_items = colony
+            .items
+            .instances()
+            .map(|instance| {
+                (
+                    instance.id.clone(),
+                    instance.item,
+                    instance.durability,
+                    instance.max_durability,
+                    instance.credited,
+                )
+            })
+            .collect::<Vec<_>>();
         assert_eq!(
-            colony.items, expected_items,
-            "banked finite identities survive"
+            actual_items, expected_items,
+            "banked finite identities and condition survive physical rehoming"
         );
+        assert!(colony.items.instances().all(|instance| {
+            !matches!(
+                instance.item.kind,
+                ItemKind::Tool | ItemKind::Weapon | ItemKind::Armor
+            ) || matches!(
+                &instance.location,
+                ItemLocation::Stockpile { stockpile_id }
+                    if colony.stockpiles.iter().any(|pile| pile.id == *stockpile_id)
+            )
+        }));
+        assert_equipment_piles_within_capacity(&colony);
         assert_eq!(colony.resources.tools, 1.0);
         assert_eq!(colony.resources.weapons, 1.0);
         assert_eq!(colony.resources.armor, 1.0);
@@ -42870,6 +45278,44 @@ mod tests {
         assert_eq!(colony.cats[0].death_time, Some(3_600_000));
         assert_eq!(colony.cats[0].carrying, None);
         assert_eq!(colony.resources.materials, 17.0);
+    }
+
+    #[test]
+    fn old_age_death_restores_the_exact_uncredited_station_output_identity() {
+        let mut colony = chain_colony(BuildingType::Smithy, Resources::default(), true);
+        colony.finite_equipment_rules_version = CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        colony.cats[0].age_hours = 100_000.0;
+        colony.buildings[0].production_queue.clear();
+        ensure_station_stores(&mut colony, 0);
+        let building = colony.buildings[0].clone();
+        let item_id =
+            seed_functional_station_output(&mut colony, &building.id, ResourceKind::Weapons, 1)
+                .pop()
+                .unwrap();
+        colony.cats[0].position = position_from_world(station_work_point(&building));
+        phase_23_production(&mut colony, production_gate(1, 1_000), 123);
+        assert!(matches!(
+            colony.items.instance(&item_id).unwrap().location,
+            ItemLocation::Carrier { .. }
+        ));
+
+        phase_6_life_simulation(&mut colony, production_gate(3_600, 3_601_000));
+        reconcile_colony_stockpiles(&mut colony);
+
+        assert_eq!(colony.cats[0].death_time, Some(3_601_000));
+        assert_eq!(
+            colony.items.instance(&item_id).unwrap().location,
+            ItemLocation::Station {
+                building_id: building.id.clone(),
+                compartment: StationCompartment::LocalOutput
+            }
+        );
+        assert_eq!(colony.items.count_kind(ItemKind::Weapon), 1);
+        assert_eq!(colony.items.credited_count(ItemKind::Weapon), 0);
+        assert_eq!(
+            building_station_inventory(&colony, &building, true),
+            [(ResourceKind::Weapons, 1.0)]
+        );
     }
 
     #[test]

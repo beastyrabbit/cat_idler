@@ -4,6 +4,7 @@ use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, apply_action},
     entities::CarryingKind,
+    items::{ItemKind, ItemLocation},
     officers::OfficerRole,
     station_recipes::{
         HIDE_TO_LEATHER_RECIPE_ID, SMELTER_RECIPE_ID, SMITHY_WEAPON_RECIPE_ID,
@@ -684,7 +685,13 @@ fn signed_player_guides_ore_through_smelter_and_smithy_to_one_weapon() {
     );
     assert_eq!(left.colonies[0].resources.weapons, 1.0);
     assert_eq!(left.colonies[0].resources.armor, 0.0);
-    assert!(left.colonies[0].items.is_empty());
+    let weapon = left.colonies[0]
+        .items
+        .instances()
+        .find(|instance| instance.item.kind == ItemKind::Weapon)
+        .expect("the delivered weapon retains its exact identity");
+    assert!(weapon.credited);
+    assert!(matches!(weapon.location, ItemLocation::Stockpile { .. }));
 }
 
 fn run_passive_established_smithy(seed: u32, cadence_minutes: i64) -> WorldState {
@@ -787,7 +794,20 @@ fn passive_captain_runs_smelter_and_smithy_at_one_and_five_minute_cadence() {
             smithy.production_paused,
             smithy.production_queue,
         );
-        assert!(colony.items.is_empty());
+        assert_eq!(
+            colony.items.credited_count(ItemKind::Weapon),
+            colony.resources.weapons as u32,
+            "finite identities are the scalar authority"
+        );
+        assert!(colony.items.instances().any(|instance| {
+            instance.item.kind == ItemKind::Weapon
+                && matches!(
+                    instance.location,
+                    ItemLocation::Stockpile { .. }
+                        | ItemLocation::Carrier { .. }
+                        | ItemLocation::Equipped { .. }
+                )
+        }));
         assert_eq!(colony.metal_forge_progress, 0.0);
         assert!(colony.resources.food >= 5.0 * 15.0);
         assert!(colony.resources.water >= 6.0 * 15.0);

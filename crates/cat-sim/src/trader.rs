@@ -152,9 +152,9 @@ pub fn trader_buy_price(item: Item, count: u32) -> f64 {
 /// Base coin-per-unit price of a raw/intermediate resource, loosely mirroring
 /// [`crate::threat::colony_wealth`]'s relative resource weighting (refined outvalues raw
 /// food/water/herbs/materials) for a consistent sense of "value" across the sim. `None`
-/// for kinds the trader does not stock: weapons/armor are functional combat gear (the
-/// smithy forges them for raid defense, never for sale), and blessings are the gods' own
-/// currency, not a caravan trade good.
+/// for finite functional equipment: those units must retain their stable identity and
+/// move through the item-trade path rather than being reconstructed from an aggregate.
+/// Blessings are the gods' own currency, not a caravan trade good.
 #[must_use]
 pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
     match kind {
@@ -171,9 +171,9 @@ pub const fn resource_unit_price(kind: ResourceKind) -> Option<u32> {
         | ResourceKind::Lumber
         | ResourceKind::Planks
         | ResourceKind::Blocks
-        | ResourceKind::Tools
         | ResourceKind::Refined => Some(3),
-        ResourceKind::Weapons
+        ResourceKind::Tools
+        | ResourceKind::Weapons
         | ResourceKind::Armor
         | ResourceKind::Fibre
         | ResourceKind::Hide
@@ -215,7 +215,8 @@ mod tests {
     }
 
     #[test]
-    fn resource_unit_price_excludes_weapons_armor_and_blessings() {
+    fn resource_unit_price_excludes_identity_bearing_equipment_and_blessings() {
+        assert_eq!(resource_unit_price(ResourceKind::Tools), None);
         assert_eq!(resource_unit_price(ResourceKind::Weapons), None);
         assert_eq!(resource_unit_price(ResourceKind::Armor), None);
         assert_eq!(resource_unit_price(ResourceKind::Bone), None);
@@ -231,6 +232,7 @@ mod tests {
         assert_eq!(trader_sell_price(ResourceKind::Food, 10.0), Some(15.0));
         // 10 refined * 3 (unit) * 150% = 45.0
         assert_eq!(trader_sell_price(ResourceKind::Refined, 10.0), Some(45.0));
+        assert_eq!(trader_sell_price(ResourceKind::Tools, 10.0), None);
         assert_eq!(trader_sell_price(ResourceKind::Weapons, 10.0), None);
     }
 

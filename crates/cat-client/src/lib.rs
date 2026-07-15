@@ -16,6 +16,7 @@
 //!   round-trip [`cat_protocol::ClientAction`] over the socket.
 
 use bevy::asset::{AssetMetaCheck, RenderAssetUsages};
+use bevy::ecs::system::SystemParam;
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -30,12 +31,12 @@ use bevy::window::{CursorIcon, CustomCursor, PrimaryWindow};
 use cat_protocol::{
     ActionResult, BuildingSnapshot, BuildingType, CarryingKind, CatActivity, CatHousingStatus,
     CatNeeds, CatSnapshot, ClientAction, ColonySnapshot, CropKind, EventSnapshot, FarmSnapshot,
-    FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemStackSnapshot, JobKind, Labor,
-    OfficerRole, ProductionQueueEdit, QueueMoveDirection, RaiderStatus, ResourceAmounts,
-    ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp, ScoutMission, ScoutResource,
-    Specialization, StockLedgerSnapshot, StockpileSnapshot, TilePoint, TraderBuyOffer,
-    TraderSellOffer, TraderSnapshot, TraderVisitState, VillageKind, VillageScale, WorldSnapshot,
-    ZoneKind,
+    FarmStage, FootprintSize, GateSide, GatherSpotPurpose, ItemInstanceSnapshot, ItemLocation,
+    ItemStackSnapshot, JobKind, Labor, OfficerRole, ProductionQueueEdit, QueueMoveDirection,
+    RaiderStatus, ResourceAmounts, ResourceCapacities, ResourceKind, ResourceStackSnapshot, RoleXp,
+    ScoutMission, ScoutResource, Specialization, StationCompartment, StockLedgerSnapshot,
+    StockpileSnapshot, TilePoint, TraderBuyOffer, TraderSellOffer, TraderSnapshot,
+    TraderVisitState, VillageKind, VillageScale, WorldSnapshot, ZoneKind,
 };
 use cat_sim::climate::{Biome, ResourceHint};
 use cat_sim::terrain_gen::{
@@ -1916,6 +1917,75 @@ struct InspectorPanel;
 /// Marker for the cat-inspector text.
 #[derive(Component)]
 struct InspectorText;
+/// Exact Tool/Weapon/Armor identities and condition for the inspected cat.
+#[derive(Component)]
+struct EquipmentLoadoutText;
+/// The currently selected equipment slot in the compact inspector controls.
+#[derive(Component)]
+struct CycleEquipmentSlot;
+/// Cycle the exact stored item candidate for the selected empty slot.
+#[derive(Component)]
+struct CycleEquipmentCandidate;
+/// Equip the displayed candidate or unequip the displayed slot identity.
+#[derive(Component)]
+struct EquipmentActionButton;
+#[derive(Component)]
+struct EquipmentSlotText;
+#[derive(Component)]
+struct EquipmentCandidateText;
+#[derive(Component)]
+struct EquipmentActionText;
+#[derive(Component)]
+struct EquipmentReasonText;
+
+#[derive(Component)]
+struct InspectorOfficerResponsive;
+#[derive(Component)]
+struct InspectorOfficerFull;
+#[derive(Component)]
+struct InspectorOfficerNarrow;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EquipmentSlot {
+    Tool,
+    Weapon,
+    Armor,
+}
+
+impl EquipmentSlot {
+    const ALL: [Self; 3] = [Self::Tool, Self::Weapon, Self::Armor];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Tool => "Tool",
+            Self::Weapon => "Weapon",
+            Self::Armor => "Armor",
+        }
+    }
+
+    const fn kind(self) -> &'static str {
+        match self {
+            Self::Tool => "tool",
+            Self::Weapon => "weapon",
+            Self::Armor => "armor",
+        }
+    }
+}
+
+#[derive(Resource)]
+struct EquipmentUi {
+    slot: EquipmentSlot,
+    candidate: usize,
+}
+
+impl Default for EquipmentUi {
+    fn default() -> Self {
+        Self {
+            slot: EquipmentSlot::Tool,
+            candidate: 0,
+        }
+    }
+}
 /// A need shown as a bar in the cat inspector.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum NeedKind {
@@ -2570,21 +2640,123 @@ fn first_damaged_item_id(stack: &ItemStackSnapshot) -> Option<&str> {
     stack
         .instances
         .iter()
-        .find(|item| item.durability < item.max_durability)
+        .find(|item| {
+            item.durability < item.max_durability
+                && item.credited
+                && matches!(
+                    item.location,
+                    ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+                )
+        })
         .map(|item| item.id.as_str())
 }
 
 fn sorted_items(colony: Option<&ColonySnapshot>) -> Vec<ItemStackSnapshot> {
-    let mut items = colony.map(|c| c.items.clone()).unwrap_or_default();
+    let Some(colony) = colony else {
+        return Vec::new();
+    };
+    let mut source = colony.items.clone();
+    if let Some(trader) = colony.trader.as_ref() {
+        source.extend(trader.cargo_items.clone());
+    }
+
+    // Merge matching colony/trader stacks while deduplicating exact identities.
+    // A location is a property of the instance, not another inventory copy.
+    let mut seen_ids = HashSet::new();
+    let mut merged = BTreeMap::<(String, String, u8, u32, u32), ItemStackSnapshot>::new();
+    for stack in source {
+        let key = (
+            stack.kind.clone(),
+            stack.material.clone(),
+            stack.quality,
+            stack.value,
+            stack.unit_weight_grams,
+        );
+        let entry = merged.entry(key).or_insert_with(|| ItemStackSnapshot {
+            kind: stack.kind.clone(),
+            material: stack.material.clone(),
+            quality: stack.quality,
+            count: 0,
+            value: stack.value,
+            unit_weight_grams: stack.unit_weight_grams,
+            instances: Vec::new(),
+        });
+        entry.count = entry
+            .count
+            .saturating_add(stack.count.saturating_sub(stack.instances.len() as u32));
+        for instance in stack.instances {
+            if seen_ids.insert(instance.id.clone()) {
+                entry.count = entry.count.saturating_add(1);
+                entry.instances.push(instance);
+            }
+        }
+    }
+    let mut items = merged.into_values().collect::<Vec<_>>();
+    items.retain(|stack| stack.count > 0);
     items.sort_by_key(|stack| std::cmp::Reverse(stack.count * stack.value));
     items
 }
 
+fn station_compartment_name(compartment: StationCompartment) -> &'static str {
+    match compartment {
+        StationCompartment::Inbound => "inbound",
+        StationCompartment::LocalInput => "local input",
+        StationCompartment::LocalOutput => "local output",
+        StationCompartment::Outbound => "outbound",
+    }
+}
+
+fn item_location_label(location: &ItemLocation, colony: &ColonySnapshot) -> String {
+    let cat_label = |cat_id: &str| {
+        colony.cats.iter().find(|cat| cat.id == cat_id).map_or_else(
+            || cat_id.to_owned(),
+            |cat| format!("{} [{cat_id}]", cat.name),
+        )
+    };
+    match location {
+        ItemLocation::LegacyTreasury => "stored: legacy treasury".to_owned(),
+        ItemLocation::Stockpile { stockpile_id } => format!("stored: {stockpile_id}"),
+        ItemLocation::Station {
+            building_id,
+            compartment,
+        } => format!(
+            "station {building_id}: {}",
+            station_compartment_name(*compartment)
+        ),
+        ItemLocation::Carrier { cat_id } => format!("carried by {}", cat_label(cat_id)),
+        ItemLocation::Equipped { cat_id } => format!("equipped by {}", cat_label(cat_id)),
+        ItemLocation::Trader { trader_id } => format!("trader wagon {trader_id}"),
+    }
+}
+
+fn item_location_summary(stack: &ItemStackSnapshot, colony: &ColonySnapshot) -> String {
+    if stack.instances.is_empty() {
+        return format!("legacy stock x{}", stack.count);
+    }
+    let mut groups = BTreeMap::<String, u32>::new();
+    for instance in &stack.instances {
+        let mut label = item_location_label(&instance.location, colony);
+        if !instance.credited {
+            label.push_str(" (awaiting first delivery)");
+        }
+        *groups.entry(label).or_default() += 1;
+    }
+    let unlocated = stack.count.saturating_sub(stack.instances.len() as u32);
+    if unlocated > 0 {
+        groups.insert("unlocated legacy stock".to_owned(), unlocated);
+    }
+    groups
+        .into_iter()
+        .map(|(location, count)| format!("{location} x{count}"))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 /// One compact goods line: value, physical weight, and the condition range of
 /// its finite units. Broken items stay visible instead of disappearing.
-fn item_label(stack: &ItemStackSnapshot) -> String {
+fn item_label(stack: &ItemStackSnapshot, colony: &ColonySnapshot) -> String {
     format!(
-        "{band} {material} {kind} x{count} · {value}g ea ({subtotal}g) · {weight} ea · {condition}",
+        "{band} {material} {kind} x{count} · {value}g ea ({subtotal}g) · {weight} ea · {condition}\n{locations}",
         band = quality_band(stack.quality),
         material = capitalize_word(&stack.material),
         kind = capitalize_word(&stack.kind),
@@ -2593,12 +2765,258 @@ fn item_label(stack: &ItemStackSnapshot) -> String {
         subtotal = stack.count * stack.value,
         weight = item_weight_label(stack.unit_weight_grams),
         condition = item_condition_label(stack),
+        locations = item_location_summary(stack, colony),
     )
 }
 
-/// Colony treasury: total tradeable worth = sum of `count * value` over stacks.
-fn treasury_total(items: &[ItemStackSnapshot]) -> u32 {
+/// Reported physical worth across all conditions and locations. This is deliberately
+/// not described as saleable: broken, equipped, carried, and work-in-progress units
+/// still have physical value.
+fn physical_goods_total(items: &[ItemStackSnapshot]) -> u32 {
     items.iter().map(|s| s.count * s.value).sum()
+}
+
+/// Exact value a visiting trader could inspect in ordinary village storage right now.
+/// `None` means the snapshot supplied only aggregate counts, so location/condition was
+/// redacted or came from a legacy server and sale readiness cannot be claimed.
+fn trade_ready_stored_pristine_value(items: &[ItemStackSnapshot]) -> Option<u32> {
+    if items
+        .iter()
+        .any(|stack| stack.count as usize != stack.instances.len())
+    {
+        return None;
+    }
+    Some(
+        items
+            .iter()
+            .map(|stack| {
+                let units = stack
+                    .instances
+                    .iter()
+                    .filter(|instance| {
+                        instance.credited
+                            && !instance.broken
+                            && instance.durability == instance.max_durability
+                            && matches!(
+                                instance.location,
+                                ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+                            )
+                    })
+                    .count() as u32;
+                units.saturating_mul(stack.value)
+            })
+            .sum(),
+    )
+}
+
+fn finite_goods_value_by_owner(items: &[ItemStackSnapshot], trader_owned: bool) -> u32 {
+    items
+        .iter()
+        .map(|stack| {
+            let legacy_colony_units = stack.count.saturating_sub(stack.instances.len() as u32);
+            let located_units = stack
+                .instances
+                .iter()
+                .filter(|instance| {
+                    matches!(instance.location, ItemLocation::Trader { .. }) == trader_owned
+                })
+                .count() as u32;
+            let units = located_units + if trader_owned { 0 } else { legacy_colony_units };
+            units.saturating_mul(stack.value)
+        })
+        .sum()
+}
+
+fn loadout_item_id(cat: &CatSnapshot, slot: EquipmentSlot) -> Option<&str> {
+    match slot {
+        EquipmentSlot::Tool => cat.equipment.tool_item_id.as_deref(),
+        EquipmentSlot::Weapon => cat.equipment.weapon_item_id.as_deref(),
+        EquipmentSlot::Armor => cat.equipment.armor_item_id.as_deref(),
+    }
+}
+
+fn item_instance_by_id<'a>(
+    colony: &'a ColonySnapshot,
+    item_id: &str,
+) -> Option<&'a ItemInstanceSnapshot> {
+    colony
+        .items
+        .iter()
+        .chain(
+            colony
+                .trader
+                .iter()
+                .flat_map(|trader| trader.cargo_items.iter()),
+        )
+        .flat_map(|stack| stack.instances.iter())
+        .find(|instance| instance.id == item_id)
+}
+
+fn item_condition(instance: &ItemInstanceSnapshot) -> String {
+    if instance.broken {
+        format!("{}/{} BROKEN", instance.durability, instance.max_durability)
+    } else {
+        format!("{}/{}", instance.durability, instance.max_durability)
+    }
+}
+
+fn equipment_loadout_text(cat: &CatSnapshot, colony: &ColonySnapshot) -> String {
+    EquipmentSlot::ALL
+        .into_iter()
+        .map(|slot| match loadout_item_id(cat, slot) {
+            Some(item_id) => item_instance_by_id(colony, item_id).map_or_else(
+                || format!("{}: {item_id} · condition unavailable", slot.name()),
+                |instance| format!("{}: {item_id} · {}", slot.name(), item_condition(instance)),
+            ),
+            None => format!("{}: none reported", slot.name()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn equipment_candidates(colony: &ColonySnapshot, slot: EquipmentSlot) -> Vec<ItemInstanceSnapshot> {
+    let mut candidates = colony
+        .items
+        .iter()
+        .chain(
+            colony
+                .trader
+                .iter()
+                .flat_map(|trader| trader.cargo_items.iter()),
+        )
+        .filter(|stack| stack.kind == slot.kind())
+        .flat_map(|stack| stack.instances.iter().cloned())
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.id.cmp(&right.id));
+    candidates.dedup_by(|left, right| left.id == right.id);
+    candidates
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EquipmentControlState {
+    slot_label: String,
+    candidate_label: String,
+    action_label: &'static str,
+    item_id: Option<String>,
+    equip: bool,
+    enabled: bool,
+    reason: String,
+    candidate_count: usize,
+}
+
+fn equipment_control_state(
+    colony: &ColonySnapshot,
+    cat: &CatSnapshot,
+    ui: &EquipmentUi,
+    session_ready: bool,
+) -> EquipmentControlState {
+    let slot = ui.slot;
+    if let Some(item_id) = loadout_item_id(cat, slot) {
+        let instance = item_instance_by_id(colony, item_id);
+        return EquipmentControlState {
+            slot_label: format!("{} ▶", slot.name()),
+            candidate_label: "Equipped".to_owned(),
+            action_label: "Unequip",
+            item_id: Some(item_id.to_owned()),
+            equip: false,
+            enabled: session_ready && instance.is_some(),
+            reason: if !session_ready {
+                "Waiting for a signed session.".to_owned()
+            } else if instance.is_none() {
+                format!("{item_id} is missing from the finite-item ledger.")
+            } else {
+                format!(
+                    "{item_id} · Return this exact identity to compatible village storage; the server verifies current room."
+                )
+            },
+            candidate_count: 1,
+        };
+    }
+
+    let candidates = equipment_candidates(colony, slot);
+    let candidate = candidates.get(ui.candidate % candidates.len().max(1));
+    let (enabled, reason) = match candidate {
+        None => (
+            false,
+            format!("No reported finite {} is available to select.", slot.name()),
+        ),
+        Some(_) if !session_ready => (false, "Waiting for a signed session.".to_owned()),
+        Some(instance) if instance.broken => (
+            false,
+            "Broken equipment must be repaired in village storage before use.".to_owned(),
+        ),
+        Some(instance) if !instance.credited => (
+            false,
+            "Awaiting first delivery into village storage.".to_owned(),
+        ),
+        Some(instance) => match &instance.location {
+            ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. } => (
+                true,
+                "Ready in village storage; equips the exact displayed identity.".to_owned(),
+            ),
+            location => (
+                false,
+                format!("Unavailable: {}.", item_location_label(location, colony)),
+            ),
+        },
+    };
+    let reason = candidate.map_or(reason.clone(), |instance| {
+        format!("{} · {} — {reason}", instance.id, item_condition(instance))
+    });
+    EquipmentControlState {
+        slot_label: format!("{} ▶", slot.name()),
+        candidate_label: candidate.map_or_else(
+            || format!("no {}", slot.name()),
+            |_| {
+                format!(
+                    "Item {}/{} ▶",
+                    ui.candidate % candidates.len().max(1) + 1,
+                    candidates.len()
+                )
+            },
+        ),
+        action_label: "Equip",
+        item_id: candidate.map(|instance| instance.id.clone()),
+        equip: true,
+        enabled,
+        reason,
+        candidate_count: candidates.len(),
+    }
+}
+
+fn equipment_action(
+    session: &Session,
+    cat: &CatSnapshot,
+    state: &EquipmentControlState,
+) -> Option<ClientAction> {
+    if !session.ready || !state.enabled {
+        return None;
+    }
+    let item_id = state.item_id.clone()?;
+    let identity = (
+        session.session_id.clone(),
+        "Desktop Cat".to_owned(),
+        session.sig.clone(),
+        cat.id.clone(),
+        item_id,
+    );
+    if state.equip {
+        Some(ClientAction::EquipItem {
+            session_id: identity.0,
+            nickname: identity.1,
+            sig: identity.2,
+            cat_id: identity.3,
+            item_id: identity.4,
+        })
+    } else {
+        Some(ClientAction::UnequipItem {
+            session_id: identity.0,
+            nickname: identity.1,
+            sig: identity.2,
+            cat_id: identity.3,
+            item_id: identity.4,
+        })
+    }
 }
 
 // ---- Trade menu (pure formatting/affordability — unit-tested) ----
@@ -3015,6 +3433,7 @@ pub fn run() {
         .insert_resource(StockpileSelection::default())
         .insert_resource(BuildingSelection::default())
         .insert_resource(LaborPreferenceUi::default())
+        .insert_resource(EquipmentUi::default())
         .insert_resource(StationQueueUi::default())
         .insert_resource(OfficersUi { visible: true })
         .insert_resource(OrdersUi::default())
@@ -3137,6 +3556,7 @@ pub fn run() {
                     handle_trade_buttons,
                     update_boost_button,
                     handle_boost_button,
+                    (update_equipment_controls, handle_equipment_controls),
                     update_labor_preference_controls,
                     handle_labor_preference_buttons,
                     toggle_census,
@@ -4143,6 +4563,42 @@ fn setup(
             panel.spawn(ui_title_bar("Cat"));
             panel.spawn(ui_panel_body()).with_children(|body| {
                 body.spawn((ui_text("", FS_BODY, UI_INK), InspectorText));
+                body.spawn(ui_text("Equipment", FS_SMALL, UI_MUTED));
+                body.spawn((
+                    ui_text(
+                        "Tool: none reported\nWeapon: none reported\nArmor: none reported",
+                        FS_SMALL,
+                        UI_INK,
+                    ),
+                    EquipmentLoadoutText,
+                ));
+                body.spawn(bottom_bar_row_node()).with_children(|row| {
+                    row.spawn((
+                        ui_button_small(),
+                        CycleEquipmentSlot,
+                        children![(ui_text("Tool ▶", FS_SMALL, UI_INK), EquipmentSlotText)],
+                    ));
+                    row.spawn((
+                        ui_button_small(),
+                        CycleEquipmentCandidate,
+                        KitDisabled { disabled: true },
+                        children![(ui_text("no Tool", FS_SMALL, UI_INK), EquipmentCandidateText)],
+                    ));
+                    row.spawn((
+                        ui_button_small(),
+                        EquipmentActionButton,
+                        KitDisabled { disabled: true },
+                        children![(ui_text("Equip", FS_SMALL, UI_INK), EquipmentActionText)],
+                    ));
+                });
+                body.spawn((
+                    ui_text(
+                        "No reported finite Tool is available to select.",
+                        FS_SMALL,
+                        UI_MUTED,
+                    ),
+                    EquipmentReasonText,
+                ));
                 // Needs, one labelled bar each (green/amber/red by level).
                 for (kind, label) in CAT_NEEDS {
                     body.spawn(Node {
@@ -4212,14 +4668,22 @@ fn setup(
                         children![ui_text("enable / clear", FS_SMALL, UI_INK)],
                     ));
                 });
-                body.spawn(ui_text("Appoint officer:", FS_SMALL, UI_MUTED));
-                body.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    flex_wrap: FlexWrap::Wrap,
-                    column_gap: Val::Px(UI_GAP_TIGHT),
-                    row_gap: Val::Px(UI_GAP_TIGHT),
-                    ..default()
-                })
+                body.spawn((
+                    ui_text("Appoint officer:", FS_SMALL, UI_MUTED),
+                    InspectorOfficerResponsive,
+                    InspectorOfficerFull,
+                ));
+                body.spawn((
+                    Node {
+                        flex_direction: FlexDirection::Row,
+                        flex_wrap: FlexWrap::Wrap,
+                        column_gap: Val::Px(UI_GAP_TIGHT),
+                        row_gap: Val::Px(UI_GAP_TIGHT),
+                        ..default()
+                    },
+                    InspectorOfficerResponsive,
+                    InspectorOfficerFull,
+                ))
                 .with_children(|row| {
                     for role in ALL_OFFICER_ROLES {
                         row.spawn((
@@ -4229,6 +4693,19 @@ fn setup(
                         ));
                     }
                 });
+                body.spawn((
+                    Node {
+                        display: Display::None,
+                        ..default()
+                    },
+                    InspectorOfficerResponsive,
+                    InspectorOfficerNarrow,
+                    children![ui_text(
+                        "Officer appointments: Officers [O]",
+                        FS_SMALL,
+                        UI_MUTED,
+                    )],
+                ));
             });
         });
 
@@ -6826,6 +7303,149 @@ fn labor_name(labor: Labor) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn update_equipment_controls(
+    latest: Res<LatestSnapshot>,
+    selection: Res<Selection>,
+    session: Res<Session>,
+    ui: Res<EquipmentUi>,
+    mut slot_text: Query<&mut Text, With<EquipmentSlotText>>,
+    mut candidate_text: Query<
+        &mut Text,
+        (
+            With<EquipmentCandidateText>,
+            Without<EquipmentSlotText>,
+            Without<EquipmentActionText>,
+            Without<EquipmentReasonText>,
+        ),
+    >,
+    mut action_text: Query<
+        &mut Text,
+        (
+            With<EquipmentActionText>,
+            Without<EquipmentSlotText>,
+            Without<EquipmentCandidateText>,
+            Without<EquipmentReasonText>,
+        ),
+    >,
+    mut reason_text: Query<
+        &mut Text,
+        (
+            With<EquipmentReasonText>,
+            Without<EquipmentSlotText>,
+            Without<EquipmentCandidateText>,
+            Without<EquipmentActionText>,
+        ),
+    >,
+    mut candidates: Query<
+        &mut KitDisabled,
+        (
+            With<CycleEquipmentCandidate>,
+            Without<EquipmentActionButton>,
+        ),
+    >,
+    mut actions: Query<
+        &mut KitDisabled,
+        (
+            With<EquipmentActionButton>,
+            Without<CycleEquipmentCandidate>,
+        ),
+    >,
+) {
+    if !latest.is_changed() && !selection.is_changed() && !session.is_changed() && !ui.is_changed()
+    {
+        return;
+    }
+    let found = latest
+        .0
+        .as_ref()
+        .and_then(|world| world.colonies.first())
+        .zip(selected_cat(&latest, &selection));
+    let state = found.map_or_else(
+        || EquipmentControlState {
+            slot_label: format!("{} ▶", ui.slot.name()),
+            candidate_label: format!("no {}", ui.slot.name()),
+            action_label: "Equip",
+            item_id: None,
+            equip: true,
+            enabled: false,
+            reason: "Select a living cat to manage equipment.".to_owned(),
+            candidate_count: 0,
+        },
+        |(colony, cat)| equipment_control_state(colony, cat, &ui, session.ready),
+    );
+    if let Ok(mut text) = slot_text.single_mut() {
+        text.0 = state.slot_label.clone();
+    }
+    if let Ok(mut text) = candidate_text.single_mut() {
+        text.0 = state.candidate_label.clone();
+    }
+    if let Ok(mut text) = action_text.single_mut() {
+        text.0 = state.action_label.to_owned();
+    }
+    if let Ok(mut text) = reason_text.single_mut() {
+        text.0 = state.reason.clone();
+    }
+    if let Ok(mut disabled) = candidates.single_mut() {
+        disabled.disabled = state.candidate_count <= 1 || !state.equip;
+    }
+    if let Ok(mut disabled) = actions.single_mut() {
+        disabled.disabled = !state.enabled;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_equipment_controls(
+    latest: Res<LatestSnapshot>,
+    selection: Res<Selection>,
+    session: Res<Session>,
+    mut ui: ResMut<EquipmentUi>,
+    mut outgoing: ResMut<OutgoingActions>,
+    slots: Query<&Interaction, (Changed<Interaction>, With<CycleEquipmentSlot>)>,
+    candidates: Query<&Interaction, (Changed<Interaction>, With<CycleEquipmentCandidate>)>,
+    actions: Query<&Interaction, (Changed<Interaction>, With<EquipmentActionButton>)>,
+) {
+    if slots
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        let current = EquipmentSlot::ALL
+            .iter()
+            .position(|slot| *slot == ui.slot)
+            .unwrap_or_default();
+        ui.slot = EquipmentSlot::ALL[(current + 1) % EquipmentSlot::ALL.len()];
+        ui.candidate = 0;
+    }
+    let found = latest
+        .0
+        .as_ref()
+        .and_then(|world| world.colonies.first())
+        .zip(selected_cat(&latest, &selection));
+    if candidates
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+        && let Some((colony, _)) = found
+    {
+        let count = equipment_candidates(colony, ui.slot).len();
+        if count > 1 {
+            ui.candidate = (ui.candidate + 1) % count;
+        }
+    }
+    if !actions
+        .iter()
+        .any(|interaction| *interaction == Interaction::Pressed)
+    {
+        return;
+    }
+    let Some((colony, cat)) = found else {
+        return;
+    };
+    let state = equipment_control_state(colony, cat, &ui, session.ready);
+    if let Some(action) = equipment_action(&session, cat, &state) {
+        outgoing.0.push(action);
+    }
+}
+
 fn update_labor_preference_controls(
     latest: Res<LatestSnapshot>,
     selection: Res<Selection>,
@@ -7671,43 +8291,97 @@ fn update_building_inspector(
 
 /// Re-resolve the selected cat by id each tick and repaint the inspector panel;
 /// hide it (and clear the selection) when the cat is gone or dead.
+type InspectorPanelQuery<'w, 's> =
+    Query<'w, 's, &'static mut Node, (With<InspectorPanel>, Without<NeedBar>)>;
+type InspectorLoadoutQuery<'w, 's> =
+    Query<'w, 's, &'static mut Text, (With<EquipmentLoadoutText>, Without<InspectorText>)>;
+type InspectorNeedBarQuery<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Node, &'static mut ImageNode, &'static NeedBar),
+    Without<InspectorPanel>,
+>;
+type InspectorOfficerQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static mut Node,
+        Option<&'static InspectorOfficerFull>,
+        Option<&'static InspectorOfficerNarrow>,
+    ),
+    (
+        With<InspectorOfficerResponsive>,
+        Without<InspectorPanel>,
+        Without<NeedBar>,
+    ),
+>;
+
+#[derive(SystemParam)]
+struct InspectorUi<'w, 's> {
+    art: Res<'w, AdventureUiArt>,
+    windows: Query<'w, 's, &'static Window, With<PrimaryWindow>>,
+    panel: InspectorPanelQuery<'w, 's>,
+    text: Query<'w, 's, &'static mut Text, With<InspectorText>>,
+    equipment: InspectorLoadoutQuery<'w, 's>,
+    bars: InspectorNeedBarQuery<'w, 's>,
+    officer_controls: InspectorOfficerQuery<'w, 's>,
+}
+
 fn update_inspector(
     latest: Res<LatestSnapshot>,
-    art: Res<AdventureUiArt>,
     mut selection: ResMut<Selection>,
-    mut panel: Query<&mut Node, (With<InspectorPanel>, Without<NeedBar>)>,
-    mut text: Query<&mut Text, With<InspectorText>>,
-    mut bars: Query<(&mut Node, &mut ImageNode, &NeedBar), Without<InspectorPanel>>,
+    mut ui: InspectorUi,
 ) {
     if !latest.is_changed() && !selection.is_changed() {
         return;
     }
-    let (Ok(mut node), Ok(mut text)) = (panel.single_mut(), text.single_mut()) else {
+    let (Ok(mut node), Ok(mut text), Ok(mut equipment)) = (
+        ui.panel.single_mut(),
+        ui.text.single_mut(),
+        ui.equipment.single_mut(),
+    ) else {
         return;
     };
-    let cat = selection.selected.as_deref().and_then(|id| {
+    let found = selection.selected.as_deref().and_then(|id| {
         latest
             .0
             .as_ref()
             .and_then(|w| w.colonies.first())
-            .and_then(|c| c.cats.iter().find(|k| k.id == id && k.death_time.is_none()))
+            .and_then(|colony| {
+                colony
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == id && cat.death_time.is_none())
+                    .map(|cat| (cat, colony))
+            })
     });
-    match cat {
-        Some(cat) => {
+    match found {
+        Some((cat, colony)) => {
             node.display = Display::Flex;
-            text.0 = inspector_text(cat);
-            for (mut bar, mut image, need) in &mut bars {
+            let window_width = ui.windows.single().map_or(1024.0, Window::width);
+            text.0 = inspector_text_for_width(cat, window_width);
+            let narrow = window_width <= NARROW_LAYOUT_MAX_WIDTH;
+            for (mut control, full, note) in &mut ui.officer_controls {
+                control.display = if (full.is_some() && !narrow) || (note.is_some() && narrow) {
+                    Display::Flex
+                } else {
+                    Display::None
+                };
+            }
+            equipment.0 = equipment_loadout_text(cat, colony);
+            for (mut bar, mut image, need) in &mut ui.bars {
                 let value = cat_need_value(&cat.needs, need.0);
                 bar.width = Val::Percent(value.clamp(0.0, 100.0) as f32);
                 image.image = match need_bar_band(value) {
-                    NeedBarBand::Comfortable => art.progress_good.clone(),
-                    NeedBarBand::Low => art.progress_mid.clone(),
-                    NeedBarBand::Critical => art.progress_low.clone(),
+                    NeedBarBand::Comfortable => ui.art.progress_good.clone(),
+                    NeedBarBand::Low => ui.art.progress_mid.clone(),
+                    NeedBarBand::Critical => ui.art.progress_low.clone(),
                 };
             }
         }
         None => {
             node.display = Display::None;
+            equipment.0.clear();
             if selection.selected.is_some() {
                 selection.selected = None;
             }
@@ -9074,7 +9748,7 @@ fn dashboard_footer_text(colony: &ColonySnapshot) -> String {
     format!(
         "Active jobs: {active_jobs}   Total jobs: {jobs}\n{treasury}{ledger}",
         jobs = colony.jobs.len(),
-        treasury = hud_treasury_line(&colony.items),
+        treasury = hud_goods_value_line(&colony.items),
         ledger = colony
             .stock_ledger
             .as_ref()
@@ -9082,9 +9756,13 @@ fn dashboard_footer_text(colony: &ColonySnapshot) -> String {
     )
 }
 
-/// Always-visible HUD line for the colony's tradeable wealth.
-fn hud_treasury_line(items: &[ItemStackSnapshot]) -> String {
-    format!("Treasury: {}g", treasury_total(items))
+/// Always-visible HUD line that distinguishes all reported physical wealth from
+/// the exact pristine subset currently stored and trade-ready.
+fn hud_goods_value_line(items: &[ItemStackSnapshot]) -> String {
+    let physical = physical_goods_total(items);
+    let trade_ready = trade_ready_stored_pristine_value(items)
+        .map_or_else(|| "not reported".to_owned(), |value| format!("{value}g"));
+    format!("Reported physical goods: {physical}g · trade-ready stored pristine: {trade_ready}")
 }
 
 /// Compact HUD summary of the Accountant's reported stock ledger. Reports become exact
@@ -9278,13 +9956,14 @@ fn update_census(
     }
 }
 
-/// Show/hide the goods panel and repaint its treasury total + item lines (most
+/// Show/hide the goods panel and repaint its physical/trade-ready totals + item lines (most
 /// valuable stack first), with a tidy empty state when there are no goods yet.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn update_goods(
     latest: Res<LatestSnapshot>,
     ui: Res<GoodsUi>,
     session: Res<Session>,
+    selection: Res<Selection>,
     icons: Res<IconArt>,
     mut panel: Query<
         &mut Node,
@@ -9311,16 +9990,34 @@ fn update_goods(
         } else {
             Display::None
         };
+        if selection.selected.is_some() {
+            node.left = Val::Auto;
+            node.right = Val::Px(320.0);
+        } else {
+            node.left = Val::Px(456.0);
+            node.right = Val::Auto;
+        }
     }
-    if !ui.visible || (!latest.is_changed() && !ui.is_changed() && !session.is_changed()) {
+    if !ui.visible
+        || (!latest.is_changed()
+            && !ui.is_changed()
+            && !session.is_changed()
+            && !selection.is_changed())
+    {
         return;
     }
     let colony = latest.0.as_ref().and_then(|w| w.colonies.first());
     let items = sorted_items(colony);
+    let colony_goods_value = finite_goods_value_by_owner(&items, false);
+    let trader_goods_value = finite_goods_value_by_owner(&items, true);
+    let trade_ready = trade_ready_stored_pristine_value(&items)
+        .map_or_else(|| "not reported".to_owned(), |value| format!("{value}g"));
 
     if let Ok(mut text) = treasury.single_mut() {
         text.0 = colony.map_or_else(
-            || format!("Treasury: {}g", treasury_total(&items)),
+            || format!(
+                "Reported physical goods: {colony_goods_value}g · trade-ready stored pristine: {trade_ready}"
+            ),
             |colony| {
                 let stale = colony
                     .stock_ledger
@@ -9332,8 +10029,7 @@ fn update_goods(
                     .as_ref()
                     .map_or(colony.resources, |ledger| ledger.reported);
                 format!(
-                    "Treasury: {}g\nReported stock{}:\n{}",
-                    treasury_total(&items),
+                    "Reported physical goods: {colony_goods_value}g · trade-ready stored pristine: {trade_ready}\nTrader wagon physical goods: {trader_goods_value}g\nReported stock{}:\n{}",
                     stale,
                     production_stores_text(&reported)
                 )
@@ -9342,7 +10038,7 @@ fn update_goods(
     }
     for (line, mut text) in &mut lines {
         text.0 = match (line.0, items.get(line.0)) {
-            (_, Some(stack)) => item_label(stack),
+            (_, Some(stack)) => colony.map_or_else(String::new, |colony| item_label(stack, colony)),
             // The empty-state line sits in the first slot when there are none.
             (0, None) if items.is_empty() => "No crafted goods yet".to_string(),
             _ => String::new(),
@@ -9672,21 +10368,33 @@ fn toggle_minimap(
 
 /// Redraw the minimap texture from the snapshot each tick: revealed terrain
 /// coloured by biome, with village buildings, cats and any raiders marked.
+fn minimap_panel_visible(requested: bool, goods_open: bool, cat_selected: bool) -> bool {
+    requested && !(goods_open && cat_selected)
+}
+
 fn update_minimap(
     latest: Res<LatestSnapshot>,
     ui: Res<MinimapUi>,
+    goods: Res<GoodsUi>,
+    selection: Res<Selection>,
     mut minimap: ResMut<Minimap>,
     mut images: ResMut<Assets<Image>>,
     mut panel: Query<&mut Node, With<MinimapPanel>>,
 ) {
+    let visible = minimap_panel_visible(ui.visible, goods.visible, selection.selected.is_some());
     if let Ok(mut node) = panel.single_mut() {
-        node.display = if ui.visible {
+        node.display = if visible {
             Display::Flex
         } else {
             Display::None
         };
     }
-    if !ui.visible || (!latest.is_changed() && !ui.is_changed()) {
+    if !visible
+        || (!latest.is_changed()
+            && !ui.is_changed()
+            && !goods.is_changed()
+            && !selection.is_changed())
+    {
         return;
     }
     let Some((seed, colony)) = latest
@@ -10619,29 +11327,7 @@ fn inspector_text(cat: &CatSnapshot) -> String {
     } else {
         ""
     };
-    let housing = match cat.migration_status {
-        cat_protocol::CatMigrationStatus::Arriving => {
-            "migration: arriving through the south gate — not yet a resident".to_owned()
-        }
-        cat_protocol::CatMigrationStatus::Departing => {
-            "migration: departing through the south gate".to_owned()
-        }
-        cat_protocol::CatMigrationStatus::Resident
-        | cat_protocol::CatMigrationStatus::Probationary => match cat.housing_status {
-            CatHousingStatus::Housed => "housing: housed".to_owned(),
-            CatHousingStatus::Unhoused => "housing: unhoused — build a den".to_owned(),
-            CatHousingStatus::Probationary => {
-                let remaining = cat.probation_remaining_game_minutes.unwrap_or(0);
-                let hours = remaining / 60;
-                let minutes = remaining % 60;
-                if remaining == 0 {
-                    "housing: awaiting home — leaves now unless a den opens".to_owned()
-                } else {
-                    format!("housing: awaiting home — {hours}h {minutes:02}m left; build a den")
-                }
-            }
-        },
-    };
+    let housing = cat_housing_line(cat);
     let preferred = if cat.preferred_labors.is_empty() {
         "none".to_owned()
     } else {
@@ -10674,6 +11360,52 @@ fn inspector_text(cat: &CatSnapshot) -> String {
         lead = cat.stats.leadership,
         housing = housing,
         preferred = preferred,
+    )
+}
+
+fn cat_housing_line(cat: &CatSnapshot) -> String {
+    match cat.migration_status {
+        cat_protocol::CatMigrationStatus::Arriving => {
+            "migration: arriving through the south gate — not yet a resident".to_owned()
+        }
+        cat_protocol::CatMigrationStatus::Departing => {
+            "migration: departing through the south gate".to_owned()
+        }
+        cat_protocol::CatMigrationStatus::Resident
+        | cat_protocol::CatMigrationStatus::Probationary => match cat.housing_status {
+            CatHousingStatus::Housed => "housing: housed".to_owned(),
+            CatHousingStatus::Unhoused => "housing: unhoused — build a den".to_owned(),
+            CatHousingStatus::Probationary => {
+                let remaining = cat.probation_remaining_game_minutes.unwrap_or(0);
+                let hours = remaining / 60;
+                let minutes = remaining % 60;
+                if remaining == 0 {
+                    "housing: awaiting home — leaves now unless a den opens".to_owned()
+                } else {
+                    format!("housing: awaiting home — {hours}h {minutes:02}m left; build a den")
+                }
+            }
+        },
+    }
+}
+
+fn inspector_text_for_width(cat: &CatSnapshot, window_width: f32) -> String {
+    if window_width > NARROW_LAYOUT_MAX_WIDTH {
+        return inspector_text(cat);
+    }
+    format!(
+        "{name} · {spec} {stage}\n\
+         {activity} at {x},{y}\n\
+         {housing}\n\
+         skills: {skills}",
+        name = cat.name,
+        spec = specialization_name(cat.specialization),
+        stage = life_stage(cat.age_hours),
+        x = cat.position.x,
+        y = cat.position.y,
+        activity = activity_name(cat.activity),
+        housing = cat_housing_line(cat),
+        skills = cat_skills_line(&cat.skills, &cat.role_xp),
     )
 }
 
@@ -12180,6 +12912,7 @@ mod tests {
             activity: CatActivity::Idle,
             destination: None,
             carrying: None,
+            equipment: cat_protocol::EquipmentLoadoutSnapshot::default(),
             specialization: spec,
             age_hours,
             needs: CatNeeds {
@@ -13443,7 +14176,7 @@ mod tests {
     }
 
     #[test]
-    fn goods_formatting_bands_labels_and_treasury() {
+    fn goods_formatting_separates_physical_from_trade_ready_value() {
         assert_eq!(quality_band(0), "Crude");
         assert_eq!(quality_band(2), "Fine");
         assert_eq!(quality_band(4), "Masterwork");
@@ -13465,22 +14198,29 @@ mod tests {
                     durability: 2,
                     max_durability: 6,
                     broken: false,
+                    credited: true,
+                    location: ItemLocation::LegacyTreasury,
                 },
                 cat_protocol::ItemInstanceSnapshot {
                     id: "item-2".to_string(),
                     durability: 0,
                     max_durability: 6,
                     broken: true,
+                    credited: true,
+                    location: ItemLocation::LegacyTreasury,
                 },
                 cat_protocol::ItemInstanceSnapshot {
                     id: "item-3".to_string(),
                     durability: 6,
                     max_durability: 6,
                     broken: false,
+                    credited: true,
+                    location: ItemLocation::LegacyTreasury,
                 },
             ],
         };
-        let label = item_label(&mug);
+        let world = village_world(&["alpha"]);
+        let label = item_label(&mug, &world.colonies[0]);
         assert!(label.contains("Fine Wood Mug"));
         assert!(label.contains("x3"));
         assert!(label.contains("12g"));
@@ -13499,13 +14239,507 @@ mod tests {
             unit_weight_grams: 3_500,
             instances: Vec::new(),
         };
-        // Treasury sums count*value across stacks: 3*12 + 2*5 = 46.
-        assert_eq!(treasury_total(&[mug.clone(), bowl]), 46);
-        assert_eq!(treasury_total(&[]), 0);
+        // Physical value includes damaged and broken identities. The aggregate-only
+        // bowl makes its exact sale readiness unknowable instead of silently saleable.
+        assert_eq!(physical_goods_total(&[mug.clone(), bowl.clone()]), 46);
+        assert_eq!(
+            trade_ready_stored_pristine_value(std::slice::from_ref(&mug)),
+            Some(12)
+        );
+        assert_eq!(
+            trade_ready_stored_pristine_value(&[mug.clone(), bowl]),
+            None
+        );
+        assert_eq!(physical_goods_total(&[]), 0);
 
-        // HUD treasury line reflects the same total.
-        assert_eq!(hud_treasury_line(&[mug]), "Treasury: 36g");
-        assert_eq!(hud_treasury_line(&[]), "Treasury: 0g");
+        assert_eq!(
+            hud_goods_value_line(&[mug]),
+            "Reported physical goods: 36g · trade-ready stored pristine: 12g"
+        );
+        assert_eq!(
+            hud_goods_value_line(&[]),
+            "Reported physical goods: 0g · trade-ready stored pristine: 0g"
+        );
+    }
+
+    fn finite_instance(
+        id: &str,
+        durability: u32,
+        max_durability: u32,
+        credited: bool,
+        location: ItemLocation,
+    ) -> ItemInstanceSnapshot {
+        ItemInstanceSnapshot {
+            id: id.to_owned(),
+            durability,
+            max_durability,
+            broken: durability == 0,
+            credited,
+            location,
+        }
+    }
+
+    fn item_stack(kind: &str, instances: Vec<ItemInstanceSnapshot>) -> ItemStackSnapshot {
+        ItemStackSnapshot {
+            kind: kind.to_owned(),
+            material: "metal".to_owned(),
+            quality: 2,
+            count: instances.len() as u32,
+            value: 12,
+            unit_weight_grams: 2_000,
+            instances,
+        }
+    }
+
+    fn trader_with_items(cargo_items: Vec<ItemStackSnapshot>) -> TraderSnapshot {
+        TraderSnapshot {
+            id: "merchant-7".to_owned(),
+            position: TilePoint { x: 8, y: 8 },
+            state: TraderVisitState::Trading,
+            destination: Some(TilePoint { x: 8, y: 8 }),
+            route_exterior: Some(TilePoint { x: 8, y: 20 }),
+            visit_number: 7,
+            arrived_at: Some(1),
+            visit_ends_at: Some(10_000),
+            coin: 50.0,
+            cargo_weight_grams: 0.0,
+            cargo_capacity_grams: 100_000.0,
+            cargo_items,
+            stock: Vec::new(),
+            buy_offers: Vec::new(),
+            sell_offers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn goods_merge_every_location_once_and_name_its_exact_owner() {
+        let mut world = village_world(&["alpha"]);
+        let colony = &mut world.colonies[0];
+        let mut moss = census_cat(30.0, None, false);
+        moss.id = "moss".to_owned();
+        moss.name = "Moss".to_owned();
+        colony.cats.push(moss);
+        let locations = vec![
+            finite_instance("legacy", 6, 6, true, ItemLocation::LegacyTreasury),
+            finite_instance(
+                "stock",
+                6,
+                6,
+                true,
+                ItemLocation::Stockpile {
+                    stockpile_id: "general-1".to_owned(),
+                },
+            ),
+            finite_instance(
+                "station-in",
+                6,
+                6,
+                false,
+                ItemLocation::Station {
+                    building_id: "smithy-1".to_owned(),
+                    compartment: StationCompartment::Inbound,
+                },
+            ),
+            finite_instance(
+                "station-local-in",
+                6,
+                6,
+                false,
+                ItemLocation::Station {
+                    building_id: "smithy-1".to_owned(),
+                    compartment: StationCompartment::LocalInput,
+                },
+            ),
+            finite_instance(
+                "station-local-out",
+                6,
+                6,
+                false,
+                ItemLocation::Station {
+                    building_id: "smithy-1".to_owned(),
+                    compartment: StationCompartment::LocalOutput,
+                },
+            ),
+            finite_instance(
+                "station-out",
+                6,
+                6,
+                false,
+                ItemLocation::Station {
+                    building_id: "smithy-1".to_owned(),
+                    compartment: StationCompartment::Outbound,
+                },
+            ),
+            finite_instance(
+                "carrier",
+                6,
+                6,
+                false,
+                ItemLocation::Carrier {
+                    cat_id: "moss".to_owned(),
+                },
+            ),
+            finite_instance(
+                "equipped",
+                5,
+                6,
+                true,
+                ItemLocation::Equipped {
+                    cat_id: "moss".to_owned(),
+                },
+            ),
+        ];
+        colony.items.push(item_stack("tool", locations));
+        colony.trader = Some(trader_with_items(vec![item_stack(
+            "tool",
+            vec![
+                // A malformed duplicate cannot be counted twice by the client.
+                finite_instance(
+                    "stock",
+                    6,
+                    6,
+                    true,
+                    ItemLocation::Trader {
+                        trader_id: "merchant-7".to_owned(),
+                    },
+                ),
+                finite_instance(
+                    "trader",
+                    6,
+                    6,
+                    true,
+                    ItemLocation::Trader {
+                        trader_id: "merchant-7".to_owned(),
+                    },
+                ),
+            ],
+        )]));
+
+        let items = sorted_items(Some(colony));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].count, 9);
+        assert_eq!(items[0].instances.len(), 9);
+        assert_eq!(
+            items[0]
+                .instances
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            9
+        );
+        assert_eq!(finite_goods_value_by_owner(&items, false), 8 * 12);
+        assert_eq!(finite_goods_value_by_owner(&items, true), 12);
+        assert_eq!(trade_ready_stored_pristine_value(&items), Some(2 * 12));
+        let summary = item_location_summary(&items[0], colony);
+        for expected in [
+            "stored: legacy treasury",
+            "stored: general-1",
+            "station smithy-1: inbound",
+            "station smithy-1: local input",
+            "station smithy-1: local output",
+            "station smithy-1: outbound",
+            "carried by Moss [moss]",
+            "equipped by Moss [moss]",
+            "trader wagon merchant-7",
+            "awaiting first delivery",
+        ] {
+            assert!(summary.contains(expected), "missing {expected}: {summary}");
+        }
+    }
+
+    #[test]
+    fn cat_loadout_and_controls_expose_exact_ids_condition_and_block_reasons() {
+        let mut world = village_world(&["alpha"]);
+        let colony = &mut world.colonies[0];
+        let mut cat = census_cat(30.0, None, false);
+        cat.id = "moss".to_owned();
+        cat.name = "Moss".to_owned();
+        cat.equipment.tool_item_id = Some("tool-equipped".to_owned());
+        cat.equipment.armor_item_id = Some("armor-missing".to_owned());
+        colony.items = vec![
+            item_stack(
+                "tool",
+                vec![finite_instance(
+                    "tool-equipped",
+                    4,
+                    6,
+                    true,
+                    ItemLocation::Equipped {
+                        cat_id: "moss".to_owned(),
+                    },
+                )],
+            ),
+            item_stack(
+                "weapon",
+                vec![
+                    finite_instance(
+                        "weapon-a-broken",
+                        0,
+                        8,
+                        true,
+                        ItemLocation::Stockpile {
+                            stockpile_id: "general-1".to_owned(),
+                        },
+                    ),
+                    finite_instance(
+                        "weapon-b-carried",
+                        8,
+                        8,
+                        true,
+                        ItemLocation::Carrier {
+                            cat_id: "moss".to_owned(),
+                        },
+                    ),
+                    finite_instance("weapon-c-stored", 7, 8, true, ItemLocation::LegacyTreasury),
+                ],
+            ),
+        ];
+        colony.cats.push(cat.clone());
+
+        let loadout = equipment_loadout_text(&cat, colony);
+        assert!(loadout.contains("Tool: tool-equipped · 4/6"));
+        assert!(loadout.contains("Weapon: none reported"));
+        assert!(loadout.contains("Armor: armor-missing · condition unavailable"));
+
+        let session = signed_session("equipment-session");
+        let tool = equipment_control_state(
+            colony,
+            &cat,
+            &EquipmentUi {
+                slot: EquipmentSlot::Tool,
+                candidate: 0,
+            },
+            true,
+        );
+        assert!(tool.enabled);
+        assert_eq!(tool.action_label, "Unequip");
+        assert!(tool.reason.contains("tool-equipped"));
+        assert!(matches!(
+            equipment_action(&session, &cat, &tool),
+            Some(ClientAction::UnequipItem { session_id, cat_id, item_id, sig, .. })
+                if session_id == "equipment-session"
+                    && cat_id == "moss"
+                    && item_id == "tool-equipped"
+                    && sig == "signed"
+        ));
+
+        let weapon_state = |candidate| {
+            equipment_control_state(
+                colony,
+                &cat,
+                &EquipmentUi {
+                    slot: EquipmentSlot::Weapon,
+                    candidate,
+                },
+                true,
+            )
+        };
+        let broken = weapon_state(0);
+        assert!(!broken.enabled);
+        assert!(broken.reason.contains("Broken equipment"));
+        let carried = weapon_state(1);
+        assert!(!carried.enabled);
+        assert!(carried.reason.contains("carried by Moss [moss]"));
+        let stored = weapon_state(2);
+        assert!(stored.enabled);
+        assert!(stored.reason.contains("weapon-c-stored"));
+        assert!(stored.candidate_label.len() <= 12);
+        assert!(matches!(
+            equipment_action(&session, &cat, &stored),
+            Some(ClientAction::EquipItem { session_id, cat_id, item_id, sig, .. })
+                if session_id == "equipment-session"
+                    && cat_id == "moss"
+                    && item_id == "weapon-c-stored"
+                    && sig == "signed"
+        ));
+
+        let unsigned = equipment_control_state(
+            colony,
+            &cat,
+            &EquipmentUi {
+                slot: EquipmentSlot::Weapon,
+                candidate: 2,
+            },
+            false,
+        );
+        assert!(!unsigned.enabled);
+        assert!(unsigned.reason.contains("signed session"));
+        let missing = equipment_control_state(
+            colony,
+            &cat,
+            &EquipmentUi {
+                slot: EquipmentSlot::Armor,
+                candidate: 0,
+            },
+            true,
+        );
+        assert!(!missing.enabled);
+        assert!(missing.reason.contains("armor-missing"));
+        assert!(equipment_action(&session, &cat, &missing).is_none());
+    }
+
+    #[test]
+    fn redacted_equipment_projection_never_claims_empty_or_available_inventory() {
+        let mut world = village_world(&["alpha"]);
+        let colony = &mut world.colonies[0];
+        let mut cat = census_cat(30.0, None, false);
+        cat.id = "moss".to_owned();
+        colony.cats.push(cat.clone());
+        colony.resources.tools = 2.0;
+        colony.resources.weapons = 1.0;
+
+        let loadout = equipment_loadout_text(&cat, colony);
+        assert!(loadout.contains("Tool: none reported"));
+        assert!(loadout.contains("Weapon: none reported"));
+        assert!(!loadout.contains("empty"));
+
+        let state = equipment_control_state(
+            colony,
+            &cat,
+            &EquipmentUi {
+                slot: EquipmentSlot::Tool,
+                candidate: 0,
+            },
+            true,
+        );
+        assert!(!state.enabled);
+        assert!(state.reason.contains("No reported finite Tool"));
+        assert!(equipment_action(&signed_session("equipment-session"), &cat, &state).is_none());
+    }
+
+    #[test]
+    fn equipment_button_dispatches_the_current_displayed_identity() {
+        let mut snapshot = village_world(&["alpha"]);
+        let mut cat = census_cat(30.0, None, false);
+        cat.id = "moss".to_owned();
+        snapshot.colonies[0].cats.push(cat);
+        snapshot.colonies[0].items.push(item_stack(
+            "weapon",
+            vec![finite_instance(
+                "weapon-exact",
+                8,
+                8,
+                true,
+                ItemLocation::LegacyTreasury,
+            )],
+        ));
+        let mut app = App::new();
+        app.insert_resource(signed_session("equipment-session"))
+            .insert_resource(LatestSnapshot(Some(snapshot)))
+            .insert_resource(Selection {
+                selected: Some("moss".to_owned()),
+            })
+            .insert_resource(EquipmentUi {
+                slot: EquipmentSlot::Weapon,
+                candidate: 0,
+            })
+            .insert_resource(OutgoingActions::default())
+            .add_systems(Update, handle_equipment_controls);
+        app.world_mut()
+            .spawn((Interaction::Pressed, EquipmentActionButton));
+        app.update();
+
+        assert!(matches!(
+            app.world().resource::<OutgoingActions>().0.as_slice(),
+            [ClientAction::EquipItem { session_id, cat_id, item_id, sig, .. }]
+                if session_id == "equipment-session"
+                    && cat_id == "moss"
+                    && item_id == "weapon-exact"
+                    && sig == "signed"
+        ));
+    }
+
+    #[test]
+    fn every_known_ineligible_equipment_location_is_disabled_with_a_reason() {
+        let cases = [
+            (
+                true,
+                ItemLocation::Station {
+                    building_id: "smithy-1".to_owned(),
+                    compartment: StationCompartment::LocalOutput,
+                },
+                "station smithy-1: local output",
+            ),
+            (
+                true,
+                ItemLocation::Equipped {
+                    cat_id: "another-cat".to_owned(),
+                },
+                "equipped by another-cat",
+            ),
+            (
+                true,
+                ItemLocation::Trader {
+                    trader_id: "merchant-7".to_owned(),
+                },
+                "trader wagon merchant-7",
+            ),
+            (
+                false,
+                ItemLocation::Stockpile {
+                    stockpile_id: "general-1".to_owned(),
+                },
+                "Awaiting first delivery",
+            ),
+        ];
+        for (credited, location, expected) in cases {
+            let mut world = village_world(&["alpha"]);
+            let colony = &mut world.colonies[0];
+            let mut cat = census_cat(30.0, None, false);
+            cat.id = "moss".to_owned();
+            colony.cats.push(cat.clone());
+            let stack = item_stack(
+                "weapon",
+                vec![finite_instance(
+                    "candidate",
+                    8,
+                    8,
+                    credited,
+                    location.clone(),
+                )],
+            );
+            if matches!(location, ItemLocation::Trader { .. }) {
+                colony.trader = Some(trader_with_items(vec![stack]));
+            } else {
+                colony.items.push(stack);
+            }
+            let state = equipment_control_state(
+                colony,
+                &cat,
+                &EquipmentUi {
+                    slot: EquipmentSlot::Weapon,
+                    candidate: 0,
+                },
+                true,
+            );
+            assert!(!state.enabled, "{location:?} unexpectedly enabled");
+            assert!(
+                state.reason.contains(expected),
+                "{location:?} missing {expected:?}: {}",
+                state.reason
+            );
+        }
+    }
+
+    #[test]
+    fn repair_affordance_ignores_damaged_items_outside_village_storage() {
+        let stack = item_stack(
+            "tool",
+            vec![
+                finite_instance(
+                    "carried-damaged",
+                    2,
+                    6,
+                    true,
+                    ItemLocation::Carrier {
+                        cat_id: "moss".to_owned(),
+                    },
+                ),
+                finite_instance("stored-damaged", 2, 6, true, ItemLocation::LegacyTreasury),
+            ],
+        );
+        assert_eq!(first_damaged_item_id(&stack), Some("stored-damaged"));
     }
 
     #[test]
@@ -13523,6 +14757,8 @@ mod tests {
                 durability: 2,
                 max_durability: 6,
                 broken: false,
+                credited: true,
+                location: ItemLocation::LegacyTreasury,
             }],
         });
         let mut app = App::new();
@@ -14820,5 +16056,27 @@ mod tests {
         assert_eq!(node.position_type, PositionType::Absolute);
         assert_eq!(node.width, Val::Px(300.0));
         assert_eq!(node.overflow, Overflow::visible());
+    }
+
+    #[test]
+    fn narrow_cat_inspector_keeps_actionable_truth_without_colliding_with_toolbar() {
+        let mut cat = census_cat(30.0, Some(Specialization::Warrior), false);
+        cat.skills.insert(Labor::Fight, 12.0);
+        let narrow = inspector_text_for_width(&cat, 1024.0);
+        let wide = inspector_text_for_width(&cat, 1280.0);
+
+        assert!(narrow.contains("C · warrior adult"));
+        assert!(narrow.contains("idle at 0,0"));
+        assert!(narrow.contains("housing: housed"));
+        assert!(narrow.contains("fight 12.0"));
+        assert!(narrow.lines().count() < wide.lines().count());
+    }
+
+    #[test]
+    fn minimap_yields_only_when_goods_and_cat_inspector_need_the_same_space() {
+        assert!(minimap_panel_visible(true, false, true));
+        assert!(minimap_panel_visible(true, true, false));
+        assert!(!minimap_panel_visible(true, true, true));
+        assert!(!minimap_panel_visible(false, false, false));
     }
 }

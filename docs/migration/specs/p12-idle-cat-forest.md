@@ -124,8 +124,10 @@ Hide into local input, performs one selected 600-second Textile batch, and carri
 before credit. Clothier sources Fibre through explicit physical forage, carries five Fibre into
 local input, performs one selected 600-second Textile batch, and carries one Cloth out before
 credit. Smithy carries two Metal into one selected 900-second Weapon or Armor batch and carries
-one whole output to storage before aggregate credit. Do not reopen these completed routes; finite
-Tool/Weapon/Armor identity and condition authority remain P19.C3.
+one whole output to storage before aggregate credit. P19.C3 subsequently made the Tool, Weapon,
+or Armor output one stable finite identity across station, carrier, storage, equipment, wear,
+repair, sale, and restart; the scalar fields are derived compatibility projections. Do not reopen
+these completed routes.
 
 ## P12.5 — Visible farm plots
 **Goal:** designate farm plots; cats plant/tend/harvest; crops grow through visible stages.

@@ -11,6 +11,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldSnapshot {
@@ -344,6 +348,58 @@ pub struct ItemInstanceSnapshot {
     pub durability: u32,
     pub max_durability: u32,
     pub broken: bool,
+    /// Whether this unit has completed its first delivery into colony storage
+    /// and therefore contributes to the legacy scalar compatibility projection.
+    /// Pre-C3 item JSON already represented credited stored goods.
+    #[serde(default = "default_true")]
+    pub credited: bool,
+    /// Exact authoritative location of this finite unit. Older snapshots only
+    /// exposed condition and therefore deserialize into the legacy treasury
+    /// until the server's one-time finite-equipment migration places the unit.
+    #[serde(default)]
+    pub location: ItemLocation,
+}
+
+/// Station-local compartments used by the physical production routes. Keeping
+/// these explicit prevents a carried or completed item from also appearing in
+/// generic village storage while it is still inside a workshop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StationCompartment {
+    Inbound,
+    LocalInput,
+    LocalOutput,
+    Outbound,
+}
+
+/// One and only one authoritative place for a finite item identity.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ItemLocation {
+    /// Compatibility location for unit identities loaded from saves which
+    /// predate physical finite-equipment placement.
+    #[default]
+    LegacyTreasury,
+    Stockpile {
+        stockpile_id: String,
+    },
+    Station {
+        building_id: String,
+        compartment: StationCompartment,
+    },
+    Carrier {
+        cat_id: String,
+    },
+    Equipped {
+        cat_id: String,
+    },
+    Trader {
+        trader_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -698,6 +754,11 @@ pub struct CatSnapshot {
     pub activity: CatActivity,
     pub destination: Option<MapPosition>,
     pub carrying: Option<Carrying>,
+    /// Exact functional equipment currently worn or used by this cat. The item
+    /// identities remain in `ColonySnapshot::items`; these fields are a compact
+    /// loadout projection for inspectors and controls.
+    #[serde(default)]
+    pub equipment: EquipmentLoadoutSnapshot,
     pub specialization: Option<Specialization>,
     pub age_hours: f64,
     pub needs: CatNeeds,
@@ -830,6 +891,21 @@ pub struct Carrying {
     pub kind: CarryingKind,
     pub amount: f64,
     pub job_ended_at: i64,
+    /// Stable identities physically held by this cat. Empty for ordinary
+    /// resource cargo and for legacy snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub item_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EquipmentLoadoutSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armor_item_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1750,6 +1826,26 @@ pub enum ClientAction {
         sig: String,
         item_id: String,
     },
+    /// Equip one exact functional item on one living cat. Item kind determines
+    /// its single Tool/Weapon/Armor slot; the sim rejects foreign, carried,
+    /// broken, already-equipped, or otherwise unavailable identities.
+    EquipItem {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        cat_id: String,
+        item_id: String,
+    },
+    /// Return one exact equipped item to physical village storage. The bearer
+    /// and item identity are both required so another cat's loadout cannot be
+    /// mutated by an ambiguous slot-only request.
+    UnequipItem {
+        session_id: String,
+        nickname: String,
+        sig: String,
+        cat_id: String,
+        item_id: String,
+    },
     /// Buy `amount` of `resource` from the visiting trader with coin (P19 slice 3). Only
     /// valid while a trader is present, `Trading`, and stocks that resource kind.
     BuyResource {
@@ -2079,6 +2175,38 @@ mod tests {
             serde_json::from_value::<ClientAction>(encoded).expect("deserialize action"),
             action
         );
+    }
+
+    #[test]
+    fn finite_equipment_actions_bind_exact_cat_and_item_identities() {
+        let actions = [
+            ClientAction::EquipItem {
+                session_id: "session_1".to_owned(),
+                nickname: "Guest Cat".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: "cat-7".to_owned(),
+                item_id: "item-0000000000000042".to_owned(),
+            },
+            ClientAction::UnequipItem {
+                session_id: "session_1".to_owned(),
+                nickname: "Guest Cat".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id: "cat-7".to_owned(),
+                item_id: "item-0000000000000042".to_owned(),
+            },
+        ];
+
+        for (action, expected_name) in actions.into_iter().zip(["equipItem", "unequipItem"]) {
+            let encoded = serde_json::to_value(&action).expect("serialize equipment action");
+            assert_eq!(encoded["action"], json!(expected_name));
+            assert_eq!(encoded["catId"], json!("cat-7"));
+            assert_eq!(encoded["itemId"], json!("item-0000000000000042"));
+            assert_eq!(
+                serde_json::from_value::<ClientAction>(encoded)
+                    .expect("deserialize equipment action"),
+                action
+            );
+        }
     }
 
     #[test]
@@ -2529,7 +2657,9 @@ mod tests {
                         kind: CarryingKind::Food,
                         amount: 4.0,
                         job_ended_at: 1_700_000_000_100,
+                        item_ids: Vec::new(),
                     }),
+                    equipment: EquipmentLoadoutSnapshot::default(),
                     specialization: Some(Specialization::Hunter),
                     age_hours: 42.5,
                     needs: CatNeeds {
@@ -3048,6 +3178,11 @@ mod tests {
                 durability: 0,
                 max_durability: 26,
                 broken: true,
+                credited: false,
+                location: ItemLocation::Station {
+                    building_id: "smithy-a".to_owned(),
+                    compartment: StationCompartment::LocalOutput,
+                },
             }],
         };
         let encoded = serde_json::to_value(&stack).expect("serialize");
@@ -3064,12 +3199,54 @@ mod tests {
                     "id": "item-1",
                     "durability": 0,
                     "maxDurability": 26,
-                    "broken": true
+                    "broken": true,
+                    "credited": false,
+                    "location": {
+                        "kind": "station",
+                        "buildingId": "smithy-a",
+                        "compartment": "local_output"
+                    }
                 }]
             })
         );
         let back: ItemStackSnapshot = serde_json::from_value(encoded).expect("deserialize");
         assert_eq!(back, stack);
+    }
+
+    #[test]
+    fn legacy_item_cat_and_carrying_payloads_default_to_no_duplicate_loadout() {
+        let item: ItemInstanceSnapshot = serde_json::from_value(json!({
+            "id": "item-1",
+            "durability": 4,
+            "maxDurability": 6,
+            "broken": false
+        }))
+        .expect("legacy item instance");
+        assert_eq!(item.location, ItemLocation::LegacyTreasury);
+        assert!(item.credited);
+
+        let mut snapshot = serde_json::to_value(sample_world_snapshot()).expect("snapshot");
+        let cat = snapshot["colonies"][0]["cats"][0]
+            .as_object_mut()
+            .expect("cat object");
+        cat.remove("equipment");
+        cat.get_mut("carrying")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("carrying object")
+            .remove("itemIds");
+        let decoded: WorldSnapshot = serde_json::from_value(snapshot).expect("legacy snapshot");
+        assert_eq!(
+            decoded.colonies[0].cats[0].equipment,
+            EquipmentLoadoutSnapshot::default()
+        );
+        assert!(
+            decoded.colonies[0].cats[0]
+                .carrying
+                .as_ref()
+                .expect("carrying")
+                .item_ids
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3523,6 +3700,7 @@ mod tests {
             activity: CatActivity::Idle,
             destination: None,
             carrying: None,
+            equipment: EquipmentLoadoutSnapshot::default(),
             specialization: None,
             age_hours: 10.0,
             needs: CatNeeds {

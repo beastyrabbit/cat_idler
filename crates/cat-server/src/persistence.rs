@@ -79,6 +79,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             globalUpgradePoints REAL,
             upgradeTree TEXT,
             recipeEntitlementRulesVersion INTEGER NOT NULL DEFAULT 0,
+            finiteEquipmentRulesVersion INTEGER NOT NULL DEFAULT 0,
             upgradeLevels TEXT,
             ritualRequestedAt INTEGER,
             criticalSince INTEGER,
@@ -319,6 +320,11 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         (
             "colonies",
             "recipeEntitlementRulesVersion",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "colonies",
+            "finiteEquipmentRulesVersion",
             "INTEGER NOT NULL DEFAULT 0",
         ),
         ("cats", "skills", "TEXT"),
@@ -593,7 +599,8 @@ pub fn load_world(conn: &Connection) -> rusqlite::Result<Option<WorldState>> {
                 testCriticalMsOverride, testRngSeed, officers, stockpiles, farms, gatherSpots,
                 stockLedger, coin, trader, lastTraderDepartedAt, traderVisitCount, items, woodCraftProgress, stoneCraftProgress,
                 clothierCraftProgress, tanneryCraftProgress, metalForgeProgress, anchorX, anchorY,
-                migrationState, migrationDepartures, knownVillageIds, villageTradeOffers, fishHabitats
+                migrationState, migrationDepartures, knownVillageIds, villageTradeOffers, fishHabitats,
+                finiteEquipmentRulesVersion
          FROM colonies
          ORDER BY rowid",
     )?;
@@ -637,12 +644,13 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             traderVisitCount, items, woodCraftProgress,
             stoneCraftProgress, clothierCraftProgress, tanneryCraftProgress, metalForgeProgress,
             anchorX, anchorY, migrationState, migrationDepartures, isGlobal, ownerPlayerId,
-            knownVillageIds, villageTradeOffers, foundingScale, fishHabitats
+            knownVillageIds, villageTradeOffers, foundingScale, fishHabitats,
+            finiteEquipmentRulesVersion
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31,
             ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47,
-            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59
+            ?48, ?49, ?50, ?51, ?52, ?53, ?54, ?55, ?56, ?57, ?58, ?59, ?60
         )",
         params![
             colony.id,
@@ -716,6 +724,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
                     .collect::<Vec<_>>(),
             )
             .map_err(to_sql_json)?,
+            i64::from(colony.finite_equipment_rules_version),
         ],
     )?;
 
@@ -783,7 +792,7 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         founding_revealed_tiles(anchor, &claimed_tiles)
     };
 
-    Ok(ColonyRuntime {
+    let mut colony = ColonyRuntime {
         id: id.clone(),
         name: row.get("name")?,
         kind: if row.get::<_, Option<bool>>("isGlobal")?.unwrap_or(false) {
@@ -821,6 +830,10 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         upgrade_tree: parse_upgrade_tree(upgrade_tree_json.as_deref())?,
         recipe_entitlement_rules_version: row
             .get::<_, Option<i64>>("recipeEntitlementRulesVersion")?
+            .and_then(|version| u32::try_from(version).ok())
+            .unwrap_or(0),
+        finite_equipment_rules_version: row
+            .get::<_, Option<i64>>("finiteEquipmentRulesVersion")?
             .and_then(|version| u32::try_from(version).ok())
             .unwrap_or(0),
         automation_tier: row.get::<_, Option<f64>>("automationTier")?.unwrap_or(0.0),
@@ -953,7 +966,31 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         // serialized. Loading cold avoids stale terrain data while preserving exact
         // gameplay state; movement warms the required chunks on demand.
         decoration_cache: Default::default(),
-    })
+    };
+    // Trader cargo lived in a separate finite ledger before locations existed.
+    // Normalize every persisted unit to the active visit deterministically: an old
+    // missing location otherwise defaults to the colony's LegacyTreasury and could
+    // appear credited in both inventories after restart.
+    if let Some(trader) = colony.trader.as_mut() {
+        let trader_id = trader.id.clone();
+        let item_ids = trader
+            .items
+            .instances()
+            .map(|instance| instance.id.clone())
+            .collect::<Vec<_>>();
+        for item_id in item_ids {
+            let instance = trader
+                .items
+                .instance_mut(&item_id)
+                .expect("collected trader item still exists");
+            instance.location = cat_sim::items::ItemLocation::Trader {
+                trader_id: trader_id.clone(),
+            };
+            instance.credited = false;
+        }
+    }
+    cat_sim::world_tick::migrate_finite_equipment_authority(&mut colony);
+    Ok(colony)
 }
 
 const SCOPED_ID_SEPARATOR: char = '\u{1f}';
@@ -2396,6 +2433,260 @@ mod tests {
     }
 
     #[test]
+    fn legacy_functional_scalars_migrate_once_without_duplicate_identities() {
+        use cat_sim::items::{Item, ItemKind, ItemLocation, Material};
+
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(7_712);
+        let mut colony = found_colony(world.world_seed, "legacy-equipment", 10_000, 1);
+        colony.finite_equipment_rules_version = 0;
+        colony.resources.tools = 4.9;
+        colony.resources.weapons = 2.9;
+        colony.resources.armor = 1.0;
+        colony.items.add_at(
+            Item::new(ItemKind::Tool, Material::Wood, 0),
+            2,
+            1.0,
+            ItemLocation::LegacyTreasury,
+            true,
+        );
+        colony.items.add_at(
+            Item::new(ItemKind::Armor, Material::Metal, 1),
+            3,
+            1.0,
+            ItemLocation::Stockpile {
+                stockpile_id: "stockpile-shrine".to_owned(),
+            },
+            true,
+        );
+        let trader_id = "trader-legacy".to_owned();
+        let mut trader_items = ItemStore::default();
+        let trader_weapon = Item::new(ItemKind::Weapon, Material::Metal, 1);
+        colony
+            .items
+            .add_at(trader_weapon, 1, 1.0, ItemLocation::LegacyTreasury, true);
+        assert!(colony.items.transfer_pristine_to_at(
+            &mut trader_items,
+            trader_weapon,
+            1,
+            ItemLocation::Trader {
+                trader_id: trader_id.clone(),
+            },
+        ));
+        colony.trader = Some(cat_sim::world_tick::TraderRuntime {
+            id: trader_id.clone(),
+            position: Position {
+                map: cat_sim::entities::MapType::World,
+                x: 7.0,
+                y: 8.0,
+            },
+            destination: None,
+            state: cat_sim::trader::TraderState::Trading,
+            arrived_at: Some(10_000),
+            depart_at: Some(20_000),
+            route_exterior: Some([7, 20]),
+            visit_destination: Some([7, 8]),
+            route_blocked: false,
+            visit_number: 1,
+            stock: BTreeMap::new(),
+            items: trader_items,
+            coin: 50.0,
+        });
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save legacy equipment");
+        let raw_trader: String = conn
+            .query_row(
+                "SELECT trader FROM colonies WHERE id = 'legacy-equipment'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy trader json");
+        let mut legacy_trader: Value = serde_json::from_str(&raw_trader).expect("trader json");
+        for instance in legacy_trader["items"]["instances"]
+            .as_array_mut()
+            .expect("trader item instances")
+        {
+            let instance = instance.as_object_mut().expect("trader item object");
+            instance.remove("location");
+            instance.remove("credited");
+        }
+        conn.execute(
+            "UPDATE colonies SET trader = ?1 WHERE id = 'legacy-equipment'",
+            [serde_json::to_string(&legacy_trader).expect("serialize legacy trader")],
+        )
+        .expect("strip pre-C3 trader locations");
+
+        let migrated = load_world(&conn).expect("load").expect("world");
+        let colony = &migrated.colonies[0];
+        assert_eq!(
+            colony.finite_equipment_rules_version,
+            cat_sim::world_tick::CURRENT_FINITE_EQUIPMENT_RULES_VERSION
+        );
+        assert_eq!(colony.items.count_kind(ItemKind::Tool), 4);
+        assert_eq!(colony.items.count_kind(ItemKind::Weapon), 2);
+        assert_eq!(colony.items.count_kind(ItemKind::Armor), 3);
+        assert_eq!(colony.items.credited_count(ItemKind::Tool), 4);
+        assert_eq!(colony.items.credited_count(ItemKind::Weapon), 2);
+        assert_eq!(colony.items.credited_count(ItemKind::Armor), 3);
+        assert_eq!(colony.resources.tools, 4.0);
+        assert_eq!(colony.resources.weapons, 2.0);
+        assert_eq!(colony.resources.armor, 3.0);
+        let ids = colony
+            .items
+            .instances()
+            .map(|instance| instance.id.clone())
+            .collect::<BTreeSet<_>>();
+        let trader = colony.trader.as_ref().expect("same trader visit");
+        let trader_ids = trader
+            .items
+            .instances()
+            .map(|instance| instance.id.clone())
+            .collect::<BTreeSet<_>>();
+        assert!(ids.is_disjoint(&trader_ids));
+        assert_eq!(
+            ids.len() + trader_ids.len(),
+            10,
+            "every finite unit has one unique owner and identity"
+        );
+        let combined_ids = ids.union(&trader_ids).cloned().collect::<BTreeSet<_>>();
+        let expected_ids = (1_u64..=10)
+            .map(|serial| format!("item-{serial:016}"))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            combined_ids, expected_ids,
+            "legacy materialization must assign stable deterministic serials"
+        );
+        assert!(trader.items.instances().any(|instance| {
+            instance.location
+                == ItemLocation::Trader {
+                    trader_id: trader_id.clone(),
+                }
+                && !instance.credited
+        }));
+
+        let first_json = serde_json::to_string(&colony.items).expect("serialize migrated items");
+        let first_trader_json =
+            serde_json::to_string(&colony.trader).expect("serialize migrated trader");
+        save_world(&conn, &migrated).expect("save migrated equipment");
+        init_schema(&conn).expect("idempotent schema init");
+        let restarted = load_world(&conn).expect("reload").expect("world");
+        let colony = &restarted.colonies[0];
+        assert_eq!(
+            colony.finite_equipment_rules_version,
+            cat_sim::world_tick::CURRENT_FINITE_EQUIPMENT_RULES_VERSION
+        );
+        assert_eq!(
+            serde_json::to_string(&colony.items).expect("serialize restarted items"),
+            first_json,
+            "the one-time migration must not mint another unit on restart"
+        );
+        assert_eq!(
+            serde_json::to_string(&colony.trader).expect("serialize restarted trader"),
+            first_trader_json,
+            "trader-owned identity must remain outside the colony ledger"
+        );
+        assert_eq!(colony.resources.tools, 4.0);
+        assert_eq!(colony.resources.weapons, 2.0);
+        assert_eq!(colony.resources.armor, 3.0);
+    }
+
+    #[test]
+    fn finite_equipment_locations_credit_and_condition_survive_sqlite_restart() {
+        use cat_sim::items::{Item, ItemKind, ItemLocation, Material, StationCompartment};
+
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(7_713);
+        let mut colony = found_colony(world.world_seed, "located-equipment", 10_000, 1);
+        colony.finite_equipment_rules_version =
+            cat_sim::world_tick::CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let cat_id = colony.cats[0].id.clone();
+        let cases = [
+            (
+                Item::new(ItemKind::Tool, Material::Wood, 0),
+                ItemLocation::Stockpile {
+                    stockpile_id: "stockpile-shrine".to_owned(),
+                },
+                true,
+            ),
+            (
+                Item::new(ItemKind::Weapon, Material::Metal, 1),
+                ItemLocation::Station {
+                    building_id: "smithy-a".to_owned(),
+                    compartment: StationCompartment::LocalOutput,
+                },
+                false,
+            ),
+            (
+                Item::new(ItemKind::Armor, Material::Metal, 1),
+                ItemLocation::Carrier {
+                    cat_id: cat_id.clone(),
+                },
+                true,
+            ),
+            (
+                Item::new(ItemKind::Weapon, Material::Metal, 2),
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone(),
+                },
+                true,
+            ),
+        ];
+        for (item, location, credited) in cases {
+            colony.items.add_at(item, 1, 1.0, location, credited);
+        }
+        colony.cats[0].carrying = Some(Carrying {
+            kind: cat_sim::entities::CarryingKind::Armor,
+            amount: 1.0,
+            job_ended_at: 10_000,
+            source_gather_spot: None,
+        });
+        let damaged_id = colony
+            .items
+            .instances()
+            .find(|instance| matches!(instance.location, ItemLocation::Carrier { .. }))
+            .expect("carrier item")
+            .id
+            .clone();
+        colony
+            .items
+            .instance_mut(&damaged_id)
+            .expect("carrier item")
+            .durability = 1;
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save located equipment");
+        let restarted = load_world(&conn).expect("load").expect("world");
+        assert_eq!(restarted.colonies[0].items, world.colonies[0].items);
+        assert_eq!(
+            restarted.colonies[0].cats[0].carrying,
+            world.colonies[0].cats[0].carrying
+        );
+        let snapshot = cat_sim::actions::build_snapshot(&restarted, 11_000, 1);
+        let cat = snapshot.colonies[0]
+            .cats
+            .iter()
+            .find(|cat| cat.id == cat_id)
+            .expect("carrier snapshot");
+        assert_eq!(
+            cat.carrying
+                .as_ref()
+                .expect("physical carrier")
+                .item_ids
+                .as_slice(),
+            std::slice::from_ref(&damaged_id)
+        );
+        assert!(cat.equipment.weapon_item_id.is_some());
+        assert_eq!(
+            restarted.colonies[0]
+                .items
+                .instance(&damaged_id)
+                .expect("same carrier item")
+                .durability,
+            1
+        );
+    }
+
+    #[test]
     fn migration_probation_cursor_and_departure_count_survive_restart_exactly() {
         let conn = open_database(":memory:").expect("database");
         let mut world = new_world(4_242);
@@ -3818,6 +4109,8 @@ mod tests {
 
     #[test]
     fn physical_woodworking_twin_inputs_output_queue_and_cargo_resume_exactly() {
+        use cat_sim::items::{Item, ItemKind, ItemLocation, Material, StationCompartment};
+
         let conn = open_database(":memory:").expect("database");
         let mut world = new_world(8_813);
         let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 8_813);
@@ -3902,6 +4195,21 @@ mod tests {
             job_ended_at: 10_000,
             source_gather_spot: Some(format!("station-in|{building_id}|{transit_id}")),
         });
+        let output_item_id = colony
+            .items
+            .add_at(
+                Item::new(ItemKind::Tool, Material::Wood, 1),
+                1,
+                1.0,
+                ItemLocation::Station {
+                    building_id: building_id.to_owned(),
+                    compartment: StationCompartment::LocalOutput,
+                },
+                false,
+            )
+            .into_iter()
+            .next()
+            .expect("fixture creates one finite Tool in local output");
         colony.wood_craft_progress = f64::from_bits(0x4056_4000_0000_0000);
         world.colonies.push(colony);
 
@@ -3946,6 +4254,22 @@ mod tests {
         assert_eq!(contents(&input_id).blocks, 1.0);
         assert_eq!(contents(&transit_id).blocks, 1.0);
         assert_eq!(contents(&output_id).tools, 1.0);
+        let output_item = colony
+            .items
+            .instance(&output_item_id)
+            .expect("finite output identity survives restart");
+        assert_eq!(output_item.item.kind, ItemKind::Tool);
+        assert_eq!(
+            output_item.location,
+            ItemLocation::Station {
+                building_id: building_id.to_owned(),
+                compartment: StationCompartment::LocalOutput,
+            }
+        );
+        assert!(
+            !output_item.credited,
+            "local output must remain outside the scalar treasury until delivery"
+        );
         assert_eq!(
             colony.cats[0]
                 .carrying
@@ -4356,6 +4680,7 @@ mod tests {
             ("colonies", "lastTitheAt"),
             ("colonies", "lastOfferingAt"),
             ("colonies", "recipeEntitlementRulesVersion"),
+            ("colonies", "finiteEquipmentRulesVersion"),
             ("cats", "skills"),
             ("cats", "boosted"),
             ("buildings", "automatedOfficerRole"),
@@ -4390,6 +4715,7 @@ mod tests {
             ("colonies", "lastTitheAt"),
             ("colonies", "lastOfferingAt"),
             ("colonies", "recipeEntitlementRulesVersion"),
+            ("colonies", "finiteEquipmentRulesVersion"),
             ("cats", "skills"),
             ("cats", "boosted"),
             ("buildings", "automatedOfficerRole"),
@@ -4452,7 +4778,7 @@ mod tests {
     fn restart_mid_visit_preserves_exact_depleted_manifest_purse_items_and_deadline() {
         use cat_sim::{
             entities::MapType,
-            items::{Item, ItemKind, ItemStore, Material},
+            items::{Item, ItemKind, ItemLocation, ItemStore, Material},
             stockpiles::ResourceKind,
             trader::TraderState,
             world_tick::TraderRuntime,
@@ -4462,7 +4788,15 @@ mod tests {
         let mut world = new_world(73);
         let mut colony = found_colony(73, "restart-trader", 1_000_000, 9);
         let mut cargo = ItemStore::default();
-        cargo.add(Item::new(ItemKind::Mug, Material::Wood, 1), 1, 1.0);
+        cargo.add_at(
+            Item::new(ItemKind::Mug, Material::Wood, 1),
+            1,
+            1.0,
+            ItemLocation::Trader {
+                trader_id: "trader-4".to_owned(),
+            },
+            false,
+        );
         colony.trader_visit_count = 4;
         colony.last_trader_departed_at = Some(900_000);
         colony.trader = Some(TraderRuntime {
@@ -5829,7 +6163,7 @@ mod tests {
     fn save_world_load_world_round_trips_every_field_in_the_persistence_audit() {
         use cat_sim::{
             entities::{CarryingKind, MapType},
-            items::{Item, ItemKind, Material},
+            items::{Item, ItemKind, ItemLocation, Material},
             ledger::StockLedger,
             officers::OfficerRole,
             stockpiles::{GatherSpot, ResourceKind, Stockpile},
@@ -5890,8 +6224,6 @@ mod tests {
         colony.coin = 88.5;
         colony.trader_visit_count = 7;
         colony.last_trader_departed_at = Some(5_123_456);
-        let mut trader_items = cat_sim::items::ItemStore::default();
-        trader_items.add(Item::new(ItemKind::Mug, Material::Stone, 2), 2, 1.0);
         colony.trader = Some(TraderRuntime {
             id: "trader-audit".to_owned(),
             position: Position {
@@ -5912,7 +6244,7 @@ mod tests {
             route_blocked: false,
             visit_number: 7,
             stock: BTreeMap::from([(ResourceKind::Food, 2.0), (ResourceKind::Logs, 4.0)]),
-            items: trader_items,
+            items: cat_sim::items::ItemStore::default(),
             coin: 123.5,
         });
         colony.wood_craft_progress = 111.0;
@@ -6032,7 +6364,35 @@ mod tests {
         colony
             .items
             .add(Item::new(ItemKind::Clothing, Material::Leather, 4), 1, 1.0);
+        for (kind, material, count) in [
+            (ItemKind::Tool, Material::Wood, 20),
+            (ItemKind::Weapon, Material::Metal, 16),
+            (ItemKind::Armor, Material::Metal, 17),
+        ] {
+            colony.items.add_at(
+                Item::new(kind, material, 1),
+                count,
+                1.0,
+                ItemLocation::Stockpile {
+                    stockpile_id: cat_sim::stockpiles::GENERAL_STOREHOUSE_ID.to_owned(),
+                },
+                true,
+            );
+        }
+        let trader_item = Item::new(ItemKind::Mug, Material::Stone, 2);
+        colony.items.add(trader_item, 2, 1.0);
+        let mut trader_items = cat_sim::items::ItemStore::default();
+        assert!(colony.items.transfer_pristine_to_at(
+            &mut trader_items,
+            trader_item,
+            2,
+            ItemLocation::Trader {
+                trader_id: "trader-audit".to_owned(),
+            },
+        ));
+        colony.trader.as_mut().expect("audit trader").items = trader_items;
         colony.items.wear(ItemKind::Mug, 2);
+        cat_sim::world_tick::migrate_finite_equipment_authority(colony);
 
         // --- jobs / buildings / events / zones / elections / votes / raiders -------
         let mover_cat_id = colony.cats[2].id.clone();

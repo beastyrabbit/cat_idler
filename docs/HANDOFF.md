@@ -159,11 +159,14 @@ so a correct scout route cannot conceal a missing founding dispatch.
    and version-only rules-v6 for Smithy. Smithy is the sixth conversion: one Metalwork worker
    carries two Metal into one selected ordered/repeatable/pausable 900-second weapon or armor
    batch, then carries the one whole selected output to storage before aggregate credit. Its old
-   aggregate forge timers are frozen. Finite Tool/Weapon/Armor identity remains the following C3
-   slice; these routes do not create parallel finite items. Preserve the now-verified rule that the three P16 founding benches need no placement
-   study and that future studies gate recipes instead. Migrate tools/weapons/armor toward finite
-   item authority without double-counting the
-   compatibility scalar fields. Preserve the verified construction contract: player and autonomous
+   aggregate forge timers are frozen. P19.C3 is now complete: Woodworking and Smithy create one
+   stable finite Tool/Weapon/Armor identity in local output, the same ID travels through carrier,
+   storage, equipment, work/combat wear, repair, and exact trader sale, and the stable scalar fields
+   are compatibility projections rather than a second inventory. Signed equip/unequip, physical
+   Captain issue, capacity-safe death/departure/reset spill recovery, rules-v1/SQLite migration,
+   and Accountant-confidential wire/UI projection are verified by passive and guided campaigns.
+   Preserve the now-verified rule that the three P16 founding benches need no placement study and
+   that future studies gate recipes instead. Preserve the verified construction contract: player and autonomous
    scaffolds reserve finite Lumber/Planks plus Blocks at exact visible sources, builders carry those
    goods through persisted transit/input ledgers, and timed work begins only after on-site delivery.
    Keep paid-scaffold recovery and exact type-local escalation intact.

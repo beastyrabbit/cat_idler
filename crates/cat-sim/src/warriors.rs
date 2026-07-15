@@ -1,6 +1,6 @@
 //! Warrior combat and raid muster rules ported from `lib/game/warriors.ts`.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::BTreeMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -247,6 +247,56 @@ pub fn muster_defense(
         armor_used,
         per_cat,
         combatants: order.len(),
+    }
+}
+
+/// Muster using the exact gear already equipped by each defender. This keeps
+/// stable item identities attached to their owner instead of treating equipment
+/// as a fungible armory counter at combat time.
+#[must_use]
+pub fn muster_defense_with_loadout(
+    combatants: &[MusterCombatant],
+    loadout: &BTreeMap<String, (bool, bool)>,
+    mods: CombatModifiers,
+) -> DefenseMuster {
+    let mut order: Vec<&MusterCombatant> = combatants
+        .iter()
+        .filter(|cat| can_fight(cat.specialization))
+        .collect();
+    order.sort_by(|a, b| compare_muster_order(a, b));
+
+    let mut weapons_used = 0;
+    let mut armor_used = 0;
+    let mut total_power = 0.0;
+    let mut per_cat = Vec::with_capacity(order.len());
+    for cat in order {
+        let (weapon, armor) = loadout.get(&cat.id).copied().unwrap_or_default();
+        weapons_used += u32::from(weapon);
+        armor_used += u32::from(armor);
+        let power = cat_combat_power(CatCombatPowerInput {
+            attack: cat.attack,
+            defense: cat.defense,
+            specialization: cat.specialization,
+            warrior_xp: cat.warrior_xp,
+            weapon,
+            armor,
+            mods,
+            stage_factor: cat.life_stage.map_or(1.0, combat_stage_factor),
+        });
+        total_power += power;
+        per_cat.push(MusteredCat {
+            id: cat.id.clone(),
+            power,
+            weapon,
+            armor,
+        });
+    }
+    DefenseMuster {
+        total_power,
+        weapons_used,
+        armor_used,
+        combatants: per_cat.len(),
+        per_cat,
     }
 }
 
@@ -542,5 +592,22 @@ mod tests {
         assert_eq!(bad.armor_used, 0);
         assert!(!bad.per_cat[0].weapon);
         assert!(!bad.per_cat[0].armor);
+    }
+
+    #[test]
+    fn exact_loadout_never_reassigns_another_cats_gear() {
+        let combatants = [warrior("a", 50.0, 50.0), warrior("b", 30.0, 30.0)];
+        let loadout = BTreeMap::from([
+            ("a".to_owned(), (false, true)),
+            ("b".to_owned(), (true, false)),
+            ("noncombatant".to_owned(), (true, true)),
+        ]);
+        let muster = muster_defense_with_loadout(&combatants, &loadout, NEUTRAL_MODS);
+        let a = muster.per_cat.iter().find(|cat| cat.id == "a").unwrap();
+        let b = muster.per_cat.iter().find(|cat| cat.id == "b").unwrap();
+        assert_eq!((a.weapon, a.armor), (false, true));
+        assert_eq!((b.weapon, b.armor), (true, false));
+        assert_eq!(muster.weapons_used, 1);
+        assert_eq!(muster.armor_used, 1);
     }
 }

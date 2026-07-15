@@ -13,7 +13,10 @@ use crate::{
     farming::{self, FarmPlot, FarmStage},
     housing::{self, HousingBuilding},
     idle_engine, idle_rules,
-    items::{Item, ItemKind, ItemStore, Material, item_weight_grams, item_workshop_id},
+    items::{
+        Item, ItemKind, ItemLocation, ItemStore, Material, StationCompartment, item_weight_grams,
+        item_workshop_id,
+    },
     leader_director::{
         OFFERING_MATERIALS_AMOUNT, OFFERING_MATERIALS_RESERVE, TITHE_FOOD_AMOUNT,
         TITHE_FOOD_RESERVE_FLOOR, TITHE_FOOD_RESERVE_PER_CAT, TITHE_REFINED_AMOUNT,
@@ -289,6 +292,16 @@ pub fn apply_action(
         proto::ClientAction::RepairItem { item_id, .. } => {
             with_colony(world, ctx, |colony| repair_item(colony, item_id, ctx))
         }
+        proto::ClientAction::EquipItem {
+            cat_id, item_id, ..
+        } => with_colony(world, ctx, |colony| {
+            equip_item(colony, cat_id, item_id, ctx)
+        }),
+        proto::ClientAction::UnequipItem {
+            cat_id, item_id, ..
+        } => with_colony(world, ctx, |colony| {
+            unequip_item(colony, cat_id, item_id, ctx)
+        }),
         proto::ClientAction::BuyResource {
             resource, amount, ..
         } => with_colony(world, ctx, |colony| {
@@ -1674,6 +1687,49 @@ fn designate_stockpile(
 
 /// Remove a designated stockpile by id. The shrine reservoir cannot be removed; an
 /// unknown id is a no-op. Removed contents fold back into the reservoir via reconcile.
+fn finite_item_rehome_plan(
+    colony: &ColonyRuntime,
+    removed_stockpile_id: &str,
+) -> Option<Vec<(String, ItemLocation)>> {
+    let caps = crate::world_tick::storage_caps(colony);
+    let mut reserved = BTreeMap::<(String, stockpiles::ResourceKind), u32>::new();
+    let mut instances = colony
+        .items
+        .instances()
+        .filter(|instance| {
+            instance.location
+                == (ItemLocation::Stockpile {
+                    stockpile_id: removed_stockpile_id.to_owned(),
+                })
+        })
+        .collect::<Vec<_>>();
+    instances.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut plan = Vec::with_capacity(instances.len());
+    for instance in instances {
+        let kind = functional_resource_for_item(instance.item)?;
+        let destination = colony
+            .stockpiles
+            .iter()
+            .filter(|pile| {
+                pile.id != removed_stockpile_id
+                    && !pile.is_station_local()
+                    && pile.accepts.contains(&kind)
+                    && stockpiles::headroom_for(pile, kind, &caps)
+                        - f64::from(reserved.get(&(pile.id.clone(), kind)).copied().unwrap_or(0))
+                        >= 1.0
+            })
+            .min_by(|left, right| left.id.cmp(&right.id))?;
+        *reserved.entry((destination.id.clone(), kind)).or_default() += 1;
+        plan.push((
+            instance.id.clone(),
+            ItemLocation::Stockpile {
+                stockpile_id: destination.id.clone(),
+            },
+        ));
+    }
+    Some(plan)
+}
+
 fn remove_stockpile(
     colony: &mut ColonyRuntime,
     stockpile_id: &str,
@@ -1702,7 +1758,9 @@ fn remove_stockpile(
     {
         return fail("Station-local storage cannot be removed directly.");
     }
-    if let Some(managed) = colony.stock_ledger.steward_managed_piles.get(stockpile_id) {
+    let remove_managed_entry = if let Some(managed) =
+        colony.stock_ledger.steward_managed_piles.get(stockpile_id)
+    {
         if managed.active {
             return fail(
                 "This limited pile is actively managed by the Steward; vacate that office first.",
@@ -1722,6 +1780,18 @@ fn remove_stockpile(
                 "This dormant Steward pile still contains goods; move them before removing it.",
             );
         }
+        true
+    } else {
+        false
+    };
+    let Some(rehome_plan) = finite_item_rehome_plan(colony, stockpile_id) else {
+        return fail("No other village stockpile has room for those exact items.");
+    };
+    for (item_id, destination) in rehome_plan {
+        let moved = colony.items.relocate(&item_id, destination);
+        debug_assert!(moved, "preflighted located item remains present");
+    }
+    if remove_managed_entry {
         colony
             .stock_ledger
             .steward_managed_piles
@@ -1937,6 +2007,13 @@ fn remove_gather_spot(
     {
         return fail("Unknown gather spot.");
     }
+    let Some(rehome_plan) = finite_item_rehome_plan(colony, stockpile_id) else {
+        return fail("No other village stockpile has room for those exact items.");
+    };
+    for (item_id, destination) in rehome_plan {
+        let moved = colony.items.relocate(&item_id, destination);
+        debug_assert!(moved, "preflighted located item remains present");
+    }
     crate::world_tick::cancel_fishing_jobs_for_spot(colony, stockpile_id, ctx.now_ms);
     crate::world_tick::cancel_stockpile_balance_jobs_for_pile(colony, stockpile_id, ctx.now_ms);
     colony
@@ -1988,8 +2065,6 @@ fn sell_goods(
     if cargo_weight + added_weight > trader::TRADER_CARGO_CAPACITY_GRAMS + f64::EPSILON {
         return fail("The trader's wagon has no room for that load.");
     }
-    let functional_kind = functional_resource_for_item(item);
-
     let effects = upgrade_tree::resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
     let payout = trader::trader_buy_price(item, count) * effects.trade_value_mult;
     if trader_unit.coin + f64::EPSILON < payout {
@@ -1999,16 +2074,19 @@ fn sell_goods(
         &mut colony.items,
         colony.trader.as_mut().expect("checked trader above"),
     );
-    if !colony_items.transfer_pristine_to(&mut trader_unit.items, item, count) {
+    let trader_id = trader_unit.id.clone();
+    if !colony_items.transfer_pristine_to_at(
+        &mut trader_unit.items,
+        item,
+        count,
+        ItemLocation::Trader { trader_id },
+    ) {
         return fail("The exact goods are no longer available.");
     }
-    if let Some(kind) = functional_kind {
-        // Finite pristine identities are authoritative for caravan sales. The scalar
-        // equipment fields remain old-save compatibility mirrors until P19.C3 removes
-        // them completely; decrement that mirror when it exists, but never reject or
-        // duplicate a real identified unit because the legacy count drifted.
-        let _ = deduct_visible_resource(colony, kind, f64::from(count));
-    }
+    // Rebuild the compatibility projection from the transferred exact identities now,
+    // before returning the signed result. This debits each sold unit's real source pile
+    // instead of sampling an unrelated pile that happens to hold the same resource kind.
+    reconcile_colony_stockpiles(colony);
     colony
         .trader
         .as_mut()
@@ -2118,6 +2196,12 @@ fn repair_item(colony: &mut ColonyRuntime, item_id: &str, ctx: &ActionCtx) -> pr
     if instance.is_pristine() {
         return fail("That item does not need repair.");
     }
+    if !matches!(
+        instance.location,
+        ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+    ) {
+        return fail("That item must be in village storage before repair.");
+    }
     let (building_type, resource_kind) = repair_recipe(instance.item);
     let staffed = colony.buildings.iter().any(|building| {
         building.building_type == building_type
@@ -2149,6 +2233,168 @@ fn repair_item(colony: &mut ColonyRuntime, item_id: &str, ctx: &ActionCtx) -> pr
         EventKind::Production,
         format!("The workshop repaired {item_id} with one {resource_kind:?}."),
     );
+    ok()
+}
+
+fn accountant_books_are_exact(colony: &ColonyRuntime) -> bool {
+    colony.stock_ledger.is_accurate(&colony.resources)
+        && colony
+            .stock_ledger
+            .visible_piles_are_accurate(&colony.stockpiles)
+}
+
+/// A signed equipment action is itself player-known information. If every book was exact
+/// before the action, update only the physically affected pile report after the move so the
+/// response does not redact the id the player just manipulated. Stale books remain untouched,
+/// and the original count timestamp is preserved because this is not an Accountant visit.
+fn record_known_equipment_pile_move(
+    colony: &mut ColonyRuntime,
+    books_were_exact: bool,
+    stockpile_id: &str,
+) {
+    if !books_were_exact {
+        return;
+    }
+    let Some(contents) = colony
+        .stockpiles
+        .iter()
+        .find(|pile| pile.id == stockpile_id && !pile.is_station_local())
+        .map(|pile| pile.contents.clone())
+    else {
+        return;
+    };
+    if let Some(report) = colony.stock_ledger.pile_reports.get_mut(stockpile_id) {
+        report.reported = contents;
+    }
+}
+
+fn equip_item(
+    colony: &mut ColonyRuntime,
+    cat_id: &str,
+    item_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    if !colony
+        .cats
+        .iter()
+        .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+    {
+        return fail("Unknown living cat.");
+    }
+    let Some(instance) = colony.items.instance(item_id).cloned() else {
+        return fail("Unknown item.");
+    };
+    if !matches!(
+        instance.item.kind,
+        ItemKind::Tool | ItemKind::Weapon | ItemKind::Armor
+    ) {
+        return fail("That item is not functional equipment.");
+    }
+    if instance.is_broken() {
+        return fail("Broken equipment must be repaired before use.");
+    }
+    if !instance.credited
+        || !matches!(
+            instance.location,
+            ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+        )
+    {
+        return fail("That item is not available in village storage.");
+    }
+    if colony
+        .items
+        .equipped_id(cat_id, instance.item.kind)
+        .is_some()
+        || colony.items.instances().any(|candidate| {
+            candidate.item.kind == instance.item.kind
+                && candidate.location
+                    == (ItemLocation::Carrier {
+                        cat_id: cat_id.to_owned(),
+                    })
+        })
+    {
+        return fail("That equipment slot is already occupied.");
+    }
+    let books_were_exact = accountant_books_are_exact(colony);
+    let source_stockpile_id = match &instance.location {
+        ItemLocation::LegacyTreasury => stockpiles::GENERAL_STOREHOUSE_ID.to_owned(),
+        ItemLocation::Stockpile { stockpile_id } => stockpile_id.clone(),
+        _ => unreachable!("validated stored equipment location"),
+    };
+    let moved = colony.items.relocate(
+        item_id,
+        ItemLocation::Equipped {
+            cat_id: cat_id.to_owned(),
+        },
+    );
+    debug_assert!(moved, "validated item still exists");
+    let marked = colony.items.set_auto_issued(item_id, false);
+    debug_assert!(marked);
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::Production,
+        format!("{cat_id} equipped {item_id}."),
+    );
+    reconcile_colony_stockpiles(colony);
+    record_known_equipment_pile_move(colony, books_were_exact, &source_stockpile_id);
+    ok()
+}
+
+fn unequip_item(
+    colony: &mut ColonyRuntime,
+    cat_id: &str,
+    item_id: &str,
+    ctx: &ActionCtx,
+) -> proto::ActionResult {
+    let Some(instance) = colony.items.instance(item_id).cloned() else {
+        return fail("Unknown item.");
+    };
+    if instance.location
+        != (ItemLocation::Equipped {
+            cat_id: cat_id.to_owned(),
+        })
+    {
+        return fail("That item is not equipped by this cat.");
+    }
+    let destination = functional_resource_for_item(instance.item).and_then(|kind| {
+        let caps = crate::world_tick::storage_caps(colony);
+        colony
+            .stockpiles
+            .iter()
+            .filter(|pile| {
+                !pile.is_station_local()
+                    && pile.accepts.contains(&kind)
+                    && stockpiles::headroom_for(pile, kind, &caps).floor() >= 1.0
+            })
+            .min_by(|left, right| left.id.cmp(&right.id))
+            .map(|pile| ItemLocation::Stockpile {
+                stockpile_id: pile.id.clone(),
+            })
+    });
+    let Some(destination) = destination else {
+        return fail("No village stockpile has room for that equipment.");
+    };
+    let books_were_exact = accountant_books_are_exact(colony);
+    let ItemLocation::Stockpile {
+        stockpile_id: destination_stockpile_id,
+    } = &destination
+    else {
+        unreachable!("equipment returns only to a visible stockpile")
+    };
+    let destination_stockpile_id = destination_stockpile_id.clone();
+    let moved = colony.items.relocate(item_id, destination);
+    debug_assert!(moved, "validated item still exists");
+    colony.last_player_activity_at = Some(ctx.now_ms);
+    append_event(
+        colony,
+        ctx.now_ms,
+        EventKind::Production,
+        format!("{cat_id} returned {item_id} to storage."),
+    );
+    reconcile_colony_stockpiles(colony);
+    record_known_equipment_pile_move(colony, books_were_exact, &destination_stockpile_id);
     ok()
 }
 
@@ -2454,6 +2700,15 @@ fn valid_trade_amount(amount: f64) -> bool {
     amount.is_finite() && amount > 0.0 && amount <= MAX_VILLAGE_TRADE_AMOUNT
 }
 
+fn is_finite_equipment_resource(kind: stockpiles::ResourceKind) -> bool {
+    matches!(
+        kind,
+        stockpiles::ResourceKind::Tools
+            | stockpiles::ResourceKind::Weapons
+            | stockpiles::ResourceKind::Armor
+    )
+}
+
 fn offer_village_trade(
     world: &mut WorldState,
     target_colony_id: &str,
@@ -2500,12 +2755,15 @@ fn offer_village_trade(
         return fail("This village already has too many open trade offers.");
     }
     let offered_kind = proto_to_sim_resource_kind(offered_kind);
+    let requested_kind = proto_to_sim_resource_kind(requested_kind);
+    if is_finite_equipment_resource(offered_kind) || is_finite_equipment_resource(requested_kind) {
+        return fail("Finite equipment must be traded as an exact item.");
+    }
     if crate::world_tick::construction_spendable_resource(source, offered_kind) + f64::EPSILON
         < offered_amount
     {
         return fail("The offering village lacks those resources.");
     }
-    let requested_kind = proto_to_sim_resource_kind(requested_kind);
     let base = stable_seed(&[
         "idle-cat-forest/village-trade/v1",
         &source.id,
@@ -3228,10 +3486,42 @@ fn items_snapshot(items: &ItemStore) -> Vec<proto::ItemStackSnapshot> {
                     durability: instance.durability,
                     max_durability: instance.max_durability,
                     broken: instance.is_broken(),
+                    credited: instance.credited,
+                    location: sim_to_proto_item_location(&instance.location),
                 })
                 .collect(),
         })
         .collect()
+}
+
+fn sim_to_proto_item_location(location: &ItemLocation) -> proto::ItemLocation {
+    match location {
+        ItemLocation::LegacyTreasury => proto::ItemLocation::LegacyTreasury,
+        ItemLocation::Stockpile { stockpile_id } => proto::ItemLocation::Stockpile {
+            stockpile_id: stockpile_id.clone(),
+        },
+        ItemLocation::Station {
+            building_id,
+            compartment,
+        } => proto::ItemLocation::Station {
+            building_id: building_id.clone(),
+            compartment: match compartment {
+                StationCompartment::Inbound => proto::StationCompartment::Inbound,
+                StationCompartment::LocalInput => proto::StationCompartment::LocalInput,
+                StationCompartment::LocalOutput => proto::StationCompartment::LocalOutput,
+                StationCompartment::Outbound => proto::StationCompartment::Outbound,
+            },
+        },
+        ItemLocation::Carrier { cat_id } => proto::ItemLocation::Carrier {
+            cat_id: cat_id.clone(),
+        },
+        ItemLocation::Equipped { cat_id } => proto::ItemLocation::Equipped {
+            cat_id: cat_id.clone(),
+        },
+        ItemLocation::Trader { trader_id } => proto::ItemLocation::Trader {
+            trader_id: trader_id.clone(),
+        },
+    }
 }
 
 fn stock_ledger_snapshot(colony: &ColonyRuntime) -> proto::StockLedgerSnapshot {
@@ -3398,7 +3688,32 @@ fn cat_snapshot(
             kind: sim_to_proto_carrying_kind(carrying.kind),
             amount: carrying.amount,
             job_ended_at: carrying.job_ended_at,
+            item_ids: colony
+                .items
+                .instances()
+                .filter_map(|instance| {
+                    (instance.location
+                        == (ItemLocation::Carrier {
+                            cat_id: cat.id.clone(),
+                        }))
+                    .then_some(instance.id.clone())
+                })
+                .collect(),
         }),
+        equipment: proto::EquipmentLoadoutSnapshot {
+            tool_item_id: colony
+                .items
+                .equipped_id(&cat.id, ItemKind::Tool)
+                .map(str::to_owned),
+            weapon_item_id: colony
+                .items
+                .equipped_id(&cat.id, ItemKind::Weapon)
+                .map(str::to_owned),
+            armor_item_id: colony
+                .items
+                .equipped_id(&cat.id, ItemKind::Armor)
+                .map(str::to_owned),
+        },
         specialization: cat.specialization.map(sim_to_proto_specialization),
         age_hours: cat.age_hours,
         needs: proto::CatNeeds {
@@ -3929,7 +4244,9 @@ fn queue_job(
     ) {
         productive_duration_ms(
             base_duration_ms,
-            crate::world_tick::usable_tool_stock(colony),
+            assigned_cat.as_deref().map_or(0.0, |cat_id| {
+                crate::world_tick::cat_usable_tool_stock(colony, cat_id)
+            }),
         )
     } else {
         base_duration_ms
@@ -5697,13 +6014,29 @@ mod tests {
         world.colonies[0].world_tiles.insert(tree, logging_tile);
 
         let mut with_tools = world.clone();
-        with_tools.colonies[0].resources.tools = 20.0;
         let accepted = apply_action(&mut world, &action, &ctx());
         assert!(accepted.ok, "{accepted:?}");
         let job = world.colonies[0].jobs.last().expect("logging job queued");
         assert_eq!(job.kind, JobKind::GatherLogs);
         assert!(job.assigned_cat.is_some());
+        let assigned_cat = job.assigned_cat.clone().unwrap();
         let baseline_duration = job.duration_ms;
+        with_tools.colonies[0].finite_equipment_rules_version =
+            crate::world_tick::CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let tool_id = with_tools.colonies[0]
+            .items
+            .add_at(
+                Item::new(ItemKind::Tool, Material::Wood, 1),
+                1,
+                1.0,
+                ItemLocation::Equipped {
+                    cat_id: assigned_cat,
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        reconcile_colony_stockpiles(&mut with_tools.colonies[0]);
         let accepted_with_tools = apply_action(&mut with_tools, &action, &ctx());
         assert!(accepted_with_tools.ok, "{accepted_with_tools:?}");
         let tool_job = with_tools.colonies[0]
@@ -5712,8 +6045,24 @@ mod tests {
             .expect("tool-assisted logging job queued");
         assert!(tool_job.duration_ms < baseline_duration);
         assert_eq!(
-            with_tools.colonies[0].resources.tools, 20.0,
+            with_tools.colonies[0].resources.tools, 1.0,
             "the productivity reserve is reusable equipment, not consumed input"
+        );
+        assert_eq!(
+            with_tools.colonies[0]
+                .items
+                .instance(&tool_id)
+                .unwrap()
+                .location,
+            ItemLocation::Equipped {
+                cat_id: with_tools.colonies[0]
+                    .jobs
+                    .last()
+                    .unwrap()
+                    .assigned_cat
+                    .clone()
+                    .unwrap()
+            }
         );
 
         let mut no_forest = world_with_one_colony();
@@ -5817,28 +6166,69 @@ mod tests {
     }
 
     #[test]
-    fn banked_tools_accelerate_player_quarry_without_being_consumed() {
+    fn assigned_cats_exact_tool_accelerates_player_quarry_without_being_consumed() {
         let mut baseline = world_with_one_colony();
         baseline.colonies[0].jobs.clear();
         let mut equipped = baseline.clone();
-        equipped.colonies[0].resources.tools = 20.0;
         let action = proto::ClientAction::RequestJob {
             session_id: "sess_1".to_owned(),
             nickname: "Tester".to_owned(),
             sig: "server-verified".to_owned(),
             kind: proto::JobKind::Quarry,
         };
-
         assert!(apply_action(&mut baseline, &action, &ctx()).ok);
+        let cat_id = baseline.colonies[0]
+            .jobs
+            .last()
+            .unwrap()
+            .assigned_cat
+            .clone()
+            .expect("quarry assigned a worker");
+        equipped.colonies[0].finite_equipment_rules_version =
+            crate::world_tick::CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let tool_id = equipped.colonies[0]
+            .items
+            .add_at(
+                Item::new(ItemKind::Tool, Material::Wood, 1),
+                1,
+                1.0,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        reconcile_colony_stockpiles(&mut equipped.colonies[0]);
         assert!(apply_action(&mut equipped, &action, &ctx()).ok);
         let baseline_ms = baseline.colonies[0].jobs.last().unwrap().duration_ms;
         let equipped_ms = equipped.colonies[0].jobs.last().unwrap().duration_ms;
         assert_eq!(
+            equipped.colonies[0]
+                .jobs
+                .last()
+                .unwrap()
+                .assigned_cat
+                .as_deref(),
+            Some(cat_id.as_str())
+        );
+        assert_eq!(
             equipped_ms,
-            productive_duration_ms(baseline_ms, 20.0),
+            productive_duration_ms(
+                baseline_ms,
+                f64::from(crate::productivity::TOOL_PRODUCTIVITY_CAP),
+            ),
             "1.20x tool throughput shortens duration to five-sixths"
         );
-        assert_eq!(equipped.colonies[0].resources.tools, 20.0);
+        assert_eq!(equipped.colonies[0].resources.tools, 1.0);
+        assert_eq!(
+            equipped.colonies[0]
+                .items
+                .instance(&tool_id)
+                .unwrap()
+                .location,
+            ItemLocation::Equipped { cat_id }
+        );
     }
 
     #[test]
@@ -8534,6 +8924,268 @@ mod tests {
     }
 
     #[test]
+    fn signed_equip_and_unequip_preserve_one_identity_scalar_and_physical_headroom() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.finite_equipment_rules_version =
+            crate::world_tick::CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let cat_id = colony.cats[0].id.clone();
+        let pile_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap()
+            .id
+            .clone();
+        let tool = Item::new(ItemKind::Tool, Material::Wood, 1);
+        let ids = colony.items.add_at(
+            tool,
+            2,
+            1.0,
+            ItemLocation::Stockpile {
+                stockpile_id: pile_id.clone(),
+            },
+            true,
+        );
+        reconcile_colony_stockpiles(colony);
+        colony.stock_ledger = crate::ledger::StockLedger::counted_with_piles(
+            &colony.resources,
+            &colony.stockpiles,
+            900,
+        );
+        let action = |item_id: &str| proto::ClientAction::EquipItem {
+            session_id: "sess_1".to_owned(),
+            nickname: "Guest".to_owned(),
+            sig: "signed".to_owned(),
+            cat_id: cat_id.clone(),
+            item_id: item_id.to_owned(),
+        };
+        assert!(apply_action(&mut world, &action(&ids[0]), &ctx()).ok);
+        assert_eq!(world.colonies[0].resources.tools, 2.0);
+        assert!(
+            world.colonies[0]
+                .stock_ledger
+                .is_accurate(&world.colonies[0].resources)
+        );
+        assert!(
+            world.colonies[0]
+                .stock_ledger
+                .visible_piles_are_accurate(&world.colonies[0].stockpiles),
+            "a known signed equip must not make the exact id disappear from its response snapshot"
+        );
+        assert_eq!(
+            world.colonies[0]
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == pile_id)
+                .unwrap()
+                .contents
+                .tools,
+            1.0
+        );
+        assert!(!apply_action(&mut world, &action(&ids[1]), &ctx()).ok);
+        assert_eq!(world.colonies[0].items.credited_count(ItemKind::Tool), 2);
+
+        let unequip = proto::ClientAction::UnequipItem {
+            session_id: "sess_1".to_owned(),
+            nickname: "Guest".to_owned(),
+            sig: "signed".to_owned(),
+            cat_id: cat_id.clone(),
+            item_id: ids[0].clone(),
+        };
+        world.colonies[0]
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == pile_id)
+            .unwrap()
+            .contents
+            .tools = 10_000.0;
+        assert!(!apply_action(&mut world, &unequip, &ctx()).ok);
+        assert_eq!(
+            world.colonies[0].items.instance(&ids[0]).unwrap().location,
+            ItemLocation::Equipped {
+                cat_id: cat_id.clone()
+            }
+        );
+        world.colonies[0]
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == pile_id)
+            .unwrap()
+            .contents
+            .tools = 1.0;
+        world.colonies[0].stock_ledger = crate::ledger::StockLedger::counted_with_piles(
+            &world.colonies[0].resources,
+            &world.colonies[0].stockpiles,
+            950,
+        );
+        assert!(apply_action(&mut world, &unequip, &ctx()).ok);
+        assert_eq!(world.colonies[0].resources.tools, 2.0);
+        assert!(
+            world.colonies[0]
+                .stock_ledger
+                .is_accurate(&world.colonies[0].resources)
+        );
+        assert!(
+            world.colonies[0]
+                .stock_ledger
+                .visible_piles_are_accurate(&world.colonies[0].stockpiles),
+            "a known signed unequip must preserve exact response visibility"
+        );
+        assert_eq!(
+            world.colonies[0].items.instance(&ids[0]).unwrap().location,
+            ItemLocation::Stockpile {
+                stockpile_id: pile_id
+            }
+        );
+    }
+
+    #[test]
+    fn signed_equip_cannot_race_an_exact_same_slot_retrieval_in_transit() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.finite_equipment_rules_version =
+            crate::world_tick::CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        let cat_id = colony.cats[0].id.clone();
+        let ids = colony.items.add_at(
+            Item::new(ItemKind::Tool, Material::Wood, 1),
+            2,
+            1.0,
+            ItemLocation::LegacyTreasury,
+            true,
+        );
+        assert!(colony.items.relocate(
+            &ids[0],
+            ItemLocation::Carrier {
+                cat_id: cat_id.clone()
+            }
+        ));
+        reconcile_colony_stockpiles(colony);
+        let before = world.clone();
+        let denied = apply_action(
+            &mut world,
+            &proto::ClientAction::EquipItem {
+                session_id: "sess_1".to_owned(),
+                nickname: "Guest".to_owned(),
+                sig: "signed".to_owned(),
+                cat_id,
+                item_id: ids[1].clone(),
+            },
+            &ctx(),
+        );
+
+        assert!(!denied.ok);
+        assert_eq!(
+            denied.message.as_deref(),
+            Some("That equipment slot is already occupied.")
+        );
+        assert_eq!(world, before, "denial must be mutation-free");
+    }
+
+    #[test]
+    fn removing_a_pile_rehomes_exact_ids_or_denies_atomically_without_dangling_locations() {
+        let setup = || {
+            let mut world = world_with_one_colony();
+            let colony = &mut world.colonies[0];
+            colony.finite_equipment_rules_version =
+                crate::world_tick::CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+            colony.stockpiles.push(stockpiles::Stockpile {
+                id: "removable-tools".to_owned(),
+                rect: zones::normalize_rect(30.0, 30.0, 30.0, 30.0),
+                accepts: BTreeSet::from([stockpiles::ResourceKind::Tools]),
+                contents: entities::Resources::default(),
+            });
+            let item_id = colony
+                .items
+                .add_at(
+                    Item::new(ItemKind::Tool, Material::Wood, 1),
+                    1,
+                    1.0,
+                    ItemLocation::Stockpile {
+                        stockpile_id: "removable-tools".to_owned(),
+                    },
+                    true,
+                )
+                .pop()
+                .unwrap();
+            reconcile_colony_stockpiles(colony);
+            (world, item_id)
+        };
+        let action = proto::ClientAction::RemoveStockpile {
+            session_id: "sess_1".to_owned(),
+            nickname: "Guest".to_owned(),
+            sig: "sig".to_owned(),
+            stockpile_id: "removable-tools".to_owned(),
+        };
+
+        let (mut world, item_id) = setup();
+        assert!(apply_action(&mut world, &action, &ctx()).ok);
+        let colony = &world.colonies[0];
+        assert!(
+            !colony
+                .stockpiles
+                .iter()
+                .any(|pile| pile.id == "removable-tools")
+        );
+        let ItemLocation::Stockpile { stockpile_id } =
+            &colony.items.instance(&item_id).unwrap().location
+        else {
+            panic!("exact item was not rehomed into physical storage");
+        };
+        assert!(
+            colony
+                .stockpiles
+                .iter()
+                .any(|pile| &pile.id == stockpile_id)
+        );
+
+        let (mut full, full_item_id) = setup();
+        let colony = &mut full.colonies[0];
+        let general_id = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap()
+            .id
+            .clone();
+        let general_index = colony
+            .stockpiles
+            .iter()
+            .position(|pile| pile.id == general_id)
+            .unwrap();
+        let headroom = stockpiles::headroom_for(
+            &colony.stockpiles[general_index],
+            stockpiles::ResourceKind::Tools,
+            &crate::world_tick::storage_caps(colony),
+        )
+        .floor() as u32;
+        colony.items.add_at(
+            Item::new(ItemKind::Tool, Material::Wood, 1),
+            headroom,
+            1.0,
+            ItemLocation::Stockpile {
+                stockpile_id: general_id,
+            },
+            true,
+        );
+        reconcile_colony_stockpiles(colony);
+        let before = full.colonies[0].clone();
+        let denied = apply_action(&mut full, &action, &ctx());
+        assert!(!denied.ok);
+        assert_eq!(full.colonies[0], before);
+        assert_eq!(
+            full.colonies[0]
+                .items
+                .instance(&full_item_id)
+                .unwrap()
+                .location,
+            ItemLocation::Stockpile {
+                stockpile_id: "removable-tools".to_owned()
+            }
+        );
+    }
+
+    #[test]
     fn selling_identified_equipment_removes_its_physical_stack_and_identity_together() {
         let mut world = world_with_one_colony();
         let colony = &mut world.colonies[0];
@@ -8552,6 +9204,74 @@ mod tests {
             visible_resource_amount(&world.colonies[0], stockpiles::ResourceKind::Tools),
             visible_tools_before
         );
+    }
+
+    #[test]
+    fn exact_sale_debits_the_sold_ids_real_source_pile_immediately_and_survives_json() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.finite_equipment_rules_version =
+            crate::world_tick::CURRENT_FINITE_EQUIPMENT_RULES_VERSION;
+        for (id, x) in [("tools-a", 30.0), ("tools-z", 32.0)] {
+            colony.stockpiles.push(stockpiles::Stockpile {
+                id: id.to_owned(),
+                rect: zones::normalize_rect(x, 30.0, x, 30.0),
+                accepts: BTreeSet::from([stockpiles::ResourceKind::Tools]),
+                contents: entities::Resources::default(),
+            });
+        }
+        let item = Item::new(ItemKind::Tool, Material::Wood, 1);
+        let sold_id = colony
+            .items
+            .add_at(
+                item,
+                1,
+                1.0,
+                ItemLocation::Stockpile {
+                    stockpile_id: "tools-z".to_owned(),
+                },
+                true,
+            )
+            .pop()
+            .unwrap();
+        colony.items.add_at(
+            item,
+            1,
+            1.0,
+            ItemLocation::Stockpile {
+                stockpile_id: "tools-a".to_owned(),
+            },
+            true,
+        );
+        reconcile_colony_stockpiles(colony);
+        colony.trader = Some(trading_trader());
+
+        let result = apply_action(&mut world, &sell_goods_action("tool", "wood", 1, 1), &ctx());
+        assert!(result.ok, "{result:?}");
+        let colony = &world.colonies[0];
+        let amount = |pile_id: &str| {
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == pile_id)
+                .unwrap()
+                .contents
+                .tools
+        };
+        assert_eq!(amount("tools-z"), 0.0, "sold id's source is debited");
+        assert_eq!(amount("tools-a"), 1.0, "unrelated pile is untouched");
+        assert!(colony.items.instance(&sold_id).is_none());
+        let trader_item = colony
+            .trader
+            .as_ref()
+            .unwrap()
+            .items
+            .instance(&sold_id)
+            .unwrap();
+        assert!(matches!(trader_item.location, ItemLocation::Trader { .. }));
+        let json = serde_json::to_string(&colony.trader.as_ref().unwrap().items).unwrap();
+        let restored: ItemStore = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, colony.trader.as_ref().unwrap().items);
     }
 
     #[test]

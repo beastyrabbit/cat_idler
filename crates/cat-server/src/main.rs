@@ -614,20 +614,7 @@ fn project_snapshot(
             can_control: identity.is_some() && (entry.kind == VillageKind::Global || is_owner),
             is_owner,
         };
-        project_reported_stock(colony);
     }
-
-    let controlled_ids = snapshot
-        .colonies
-        .iter()
-        .filter(|colony| colony.capabilities.can_control)
-        .map(|colony| colony.id.clone())
-        .collect::<BTreeSet<_>>();
-    snapshot.village_trade_offers.retain(|offer| {
-        identity.is_some()
-            && (controlled_ids.contains(&offer.from_colony_id)
-                || controlled_ids.contains(&offer.to_colony_id))
-    });
 
     let selected = snapshot
         .colonies
@@ -642,6 +629,29 @@ fn project_snapshot(
                 .map(|colony| colony.id.clone())
         })
         .or_else(|| snapshot.colonies.first().map(|colony| colony.id.clone()));
+
+    for colony in &mut snapshot.colonies {
+        let expose_exact_equipment = selected.as_deref() == Some(colony.id.as_str())
+            && colony.capabilities.can_control
+            && colony
+                .stock_ledger
+                .as_ref()
+                .is_some_and(|ledger| ledger.accurate);
+        project_reported_stock(colony, expose_exact_equipment);
+    }
+
+    let controlled_ids = snapshot
+        .colonies
+        .iter()
+        .filter(|colony| colony.capabilities.can_control)
+        .map(|colony| colony.id.clone())
+        .collect::<BTreeSet<_>>();
+    snapshot.village_trade_offers.retain(|offer| {
+        identity.is_some()
+            && (controlled_ids.contains(&offer.from_colony_id)
+                || controlled_ids.contains(&offer.to_colony_id))
+    });
+
     snapshot.selected_colony_id.clone_from(&selected);
     if let Some(selected_id) = selected.as_deref()
         && let Some(selected_entry) = directory.get(selected_id)
@@ -691,7 +701,11 @@ fn project_snapshot(
 /// receives only the Accountant's aggregate and per-pile reports. Divine blessings are not
 /// physical stockpile goods, so their spendable balance remains exact. Equality attestations
 /// are cleared as well: even a boolean "still accurate" would reveal an unseen stock change.
-fn project_reported_stock(colony: &mut cat_protocol::ColonySnapshot) {
+fn project_reported_stock(colony: &mut cat_protocol::ColonySnapshot, expose_exact_equipment: bool) {
+    if !expose_exact_equipment {
+        redact_exact_functional_equipment(colony);
+    }
+
     let blessings = colony.resources.blessings;
     let Some(ledger) = colony.stock_ledger.as_mut() else {
         // `cat-sim::build_snapshot` always emits a ledger. Keeping this legacy branch
@@ -732,6 +746,27 @@ fn project_reported_stock(colony: &mut cat_protocol::ColonySnapshot) {
         if let Some(report) = &mut pile.report {
             report.accurate = false;
         }
+    }
+}
+
+/// Functional equipment is finite, so its stack count, unit locations, loadout ids, and
+/// carried ids are all authoritative stock facts. Only the selected colony's signed controller
+/// may receive those facts, and only while the Accountant's canonical report is still exact.
+/// Reported scalar tool/weapon/armor totals remain available through `resources`.
+fn redact_exact_functional_equipment(colony: &mut cat_protocol::ColonySnapshot) {
+    colony
+        .items
+        .retain(|stack| !matches!(stack.kind.as_str(), "tool" | "weapon" | "armor"));
+    for cat in &mut colony.cats {
+        cat.equipment = cat_protocol::EquipmentLoadoutSnapshot::default();
+        if let Some(carrying) = &mut cat.carrying {
+            carrying.item_ids.clear();
+        }
+    }
+    if let Some(trader) = &mut colony.trader {
+        trader
+            .buy_offers
+            .retain(|offer| !matches!(offer.kind.as_str(), "tool" | "weapon" | "armor"));
     }
 }
 
@@ -1028,6 +1063,12 @@ fn action_authentication(action: &ClientAction) -> ActionAuthentication<'_> {
             session_id, sig, ..
         }
         | ClientAction::RepairItem {
+            session_id, sig, ..
+        }
+        | ClientAction::EquipItem {
+            session_id, sig, ..
+        }
+        | ClientAction::UnequipItem {
             session_id, sig, ..
         }
         | ClientAction::BuyResource {
@@ -1331,7 +1372,8 @@ mod tests {
     #[test]
     fn authenticated_owner_wire_never_bypasses_vacant_or_blocked_accountant_reports() {
         use cat_sim::{
-            entities::Resources,
+            entities::{Carrying, CarryingKind, Resources},
+            items::{Item, ItemKind, ItemLocation, Material},
             ledger::{AccountingPhase, AccountingRound, PileReport, StockLedger},
             stockpiles::{ResourceKind as SimResourceKind, Stockpile},
             zones::ZoneRect,
@@ -1357,6 +1399,62 @@ mod tests {
             pile.contents.weapons = 17_234.5;
             pile.contents.armor = 18_234.5;
             let pile_id = pile.id.clone();
+            let equipped_cat_id = colony.cats[0].id.clone();
+            let carrier_cat_id = colony.cats[1].id.clone();
+            let tool_id = colony
+                .items
+                .add_at(
+                    Item::new(ItemKind::Tool, Material::Metal, 4),
+                    1,
+                    1.0,
+                    ItemLocation::Stockpile {
+                        stockpile_id: pile_id.clone(),
+                    },
+                    true,
+                )
+                .remove(0);
+            let weapon_id = colony
+                .items
+                .add_at(
+                    Item::new(ItemKind::Weapon, Material::Gem, 4),
+                    1,
+                    1.0,
+                    ItemLocation::Equipped {
+                        cat_id: equipped_cat_id.clone(),
+                    },
+                    true,
+                )
+                .remove(0);
+            let armor_id = colony
+                .items
+                .add_at(
+                    Item::new(ItemKind::Armor, Material::Metal, 4),
+                    1,
+                    1.0,
+                    ItemLocation::Carrier {
+                        cat_id: carrier_cat_id.clone(),
+                    },
+                    true,
+                )
+                .remove(0);
+            let mug_id = colony
+                .items
+                .add_at(
+                    Item::new(ItemKind::Mug, Material::Clay, 2),
+                    1,
+                    1.0,
+                    ItemLocation::Stockpile {
+                        stockpile_id: pile_id.clone(),
+                    },
+                    true,
+                )
+                .remove(0);
+            colony.cats[1].carrying = Some(Carrying {
+                kind: CarryingKind::Armor,
+                amount: 1.0,
+                job_ended_at: 1_001_000,
+                source_gather_spot: None,
+            });
             colony.resources.food = 91_234.5;
             colony.resources.water = 82_234.5;
             colony.resources.stone = 77_234.5;
@@ -1413,6 +1511,40 @@ mod tests {
             let canonical = build_snapshot(&world, 1_000_000, 1);
             assert_eq!(canonical.colonies[0].resources.food, 91_234.5);
             assert_eq!(canonical.colonies[0].stockpiles[0].contents.food, 91_234.5);
+            let canonical_item_ids = canonical.colonies[0]
+                .items
+                .iter()
+                .flat_map(|stack| stack.instances.iter())
+                .map(|instance| instance.id.as_str())
+                .collect::<BTreeSet<_>>();
+            assert!(canonical_item_ids.contains(tool_id.as_str()));
+            assert!(canonical_item_ids.contains(weapon_id.as_str()));
+            assert!(canonical_item_ids.contains(armor_id.as_str()));
+            assert!(canonical_item_ids.contains(mug_id.as_str()));
+            assert_eq!(
+                canonical.colonies[0]
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == equipped_cat_id)
+                    .expect("canonical equipped cat")
+                    .equipment
+                    .weapon_item_id
+                    .as_deref(),
+                Some(weapon_id.as_str())
+            );
+            assert_eq!(
+                canonical.colonies[0]
+                    .cats
+                    .iter()
+                    .find(|cat| cat.id == carrier_cat_id)
+                    .expect("canonical carrier cat")
+                    .carrying
+                    .as_ref()
+                    .expect("canonical carrier cargo")
+                    .item_ids
+                    .as_slice(),
+                [armor_id.as_str()]
+            );
             assert_eq!(
                 canonical.colonies[0]
                     .stockpiles
@@ -1448,6 +1580,30 @@ mod tests {
                 .expect("projected uncounted pile");
             assert_eq!(uncounted.contents, cat_protocol::ResourceAmounts::default());
             assert!(uncounted.report.is_none());
+            assert!(
+                player
+                    .items
+                    .iter()
+                    .all(|stack| !matches!(stack.kind.as_str(), "tool" | "weapon" | "armor"))
+            );
+            assert!(
+                player
+                    .items
+                    .iter()
+                    .flat_map(|stack| stack.instances.iter())
+                    .any(|instance| instance.id == mug_id)
+            );
+            assert!(
+                player
+                    .cats
+                    .iter()
+                    .all(|cat| cat.equipment == cat_protocol::EquipmentLoadoutSnapshot::default())
+            );
+            assert!(player.cats.iter().all(|cat| {
+                cat.carrying
+                    .as_ref()
+                    .is_none_or(|carrying| carrying.item_ids.is_empty())
+            }));
 
             let json = serde_json::to_value(&projected).expect("owner websocket payload");
             let owner = &json["colonies"][0];
@@ -1462,9 +1618,212 @@ mod tests {
                     "authoritative sentinel {sentinel} crossed the player wire"
                 );
             }
+            for secret_id in [&tool_id, &weapon_id, &armor_id] {
+                assert!(
+                    !wire.contains(secret_id),
+                    "authoritative finite-item id {secret_id} crossed the player wire"
+                );
+            }
+            assert!(wire.contains(&mug_id));
             assert_eq!(canonical.colonies[0].resources.materials, 66_234.5);
             assert_eq!(canonical.colonies[0].stockpiles[0].contents.food, 91_234.5);
         }
+    }
+
+    #[test]
+    fn exact_equipment_requires_fresh_books_and_the_signed_selected_controller() {
+        fn seed_secret_equipment(colony: &mut cat_protocol::ColonySnapshot, id: &str) {
+            colony.items.push(cat_protocol::ItemStackSnapshot {
+                kind: "tool".to_owned(),
+                material: "metal".to_owned(),
+                quality: 4,
+                count: 1,
+                value: 100,
+                unit_weight_grams: 1_000,
+                instances: vec![cat_protocol::ItemInstanceSnapshot {
+                    id: id.to_owned(),
+                    durability: 100,
+                    max_durability: 100,
+                    broken: false,
+                    credited: true,
+                    location: cat_protocol::ItemLocation::Equipped {
+                        cat_id: colony.cats[0].id.clone(),
+                    },
+                }],
+            });
+            colony.cats[0].equipment.tool_item_id = Some(id.to_owned());
+            colony.cats[0].carrying = Some(cat_protocol::Carrying {
+                kind: cat_protocol::CarryingKind::Tools,
+                amount: 1.0,
+                job_ended_at: 1_001_000,
+                item_ids: vec![id.to_owned()],
+            });
+            colony.trader = Some(cat_protocol::TraderSnapshot {
+                id: "trader-fixture".to_owned(),
+                position: cat_protocol::TilePoint { x: 0, y: 0 },
+                state: cat_protocol::TraderVisitState::Trading,
+                destination: None,
+                route_exterior: None,
+                visit_number: 1,
+                arrived_at: Some(1_000_000),
+                visit_ends_at: Some(2_000_000),
+                coin: 1_000.0,
+                cargo_weight_grams: 0.0,
+                cargo_capacity_grams: 10_000.0,
+                cargo_items: Vec::new(),
+                stock: Vec::new(),
+                buy_offers: vec![
+                    cat_protocol::TraderBuyOffer {
+                        kind: "tool".to_owned(),
+                        material: "metal".to_owned(),
+                        quality: 4,
+                        available: 987,
+                        unit_price: 100.0,
+                        unit_weight_grams: 1_000,
+                        blocked_reason: None,
+                    },
+                    cat_protocol::TraderBuyOffer {
+                        kind: "mug".to_owned(),
+                        material: "clay".to_owned(),
+                        quality: 1,
+                        available: 3,
+                        unit_price: 4.0,
+                        unit_weight_grams: 200,
+                        blocked_reason: None,
+                    },
+                ],
+                sell_offers: Vec::new(),
+            });
+            colony
+                .stock_ledger
+                .as_mut()
+                .expect("canonical stock ledger")
+                .accurate = true;
+        }
+
+        fn assert_secret_visible(colony: &cat_protocol::ColonySnapshot, id: &str) {
+            assert!(
+                colony
+                    .items
+                    .iter()
+                    .any(|stack| { stack.instances.iter().any(|instance| instance.id == id) })
+            );
+            assert_eq!(colony.cats[0].equipment.tool_item_id.as_deref(), Some(id));
+            assert_eq!(
+                colony.cats[0]
+                    .carrying
+                    .as_ref()
+                    .expect("seeded carrying")
+                    .item_ids,
+                [id]
+            );
+            let trader = colony.trader.as_ref().expect("seeded trader");
+            assert!(
+                trader
+                    .buy_offers
+                    .iter()
+                    .any(|offer| offer.kind == "tool" && offer.available == 987)
+            );
+        }
+
+        fn assert_secret_redacted(colony: &cat_protocol::ColonySnapshot, id: &str) {
+            let wire = serde_json::to_string(colony).expect("projected colony JSON");
+            assert!(!wire.contains(id));
+            assert!(
+                colony
+                    .items
+                    .iter()
+                    .all(|stack| !matches!(stack.kind.as_str(), "tool" | "weapon" | "armor"))
+            );
+            assert_eq!(
+                colony.cats[0].equipment,
+                cat_protocol::EquipmentLoadoutSnapshot::default()
+            );
+            assert!(
+                colony.cats[0]
+                    .carrying
+                    .as_ref()
+                    .expect("seeded carrying remains as an aggregate report")
+                    .item_ids
+                    .is_empty()
+            );
+            let trader = colony
+                .trader
+                .as_ref()
+                .expect("seeded trader remains visible");
+            assert!(
+                trader
+                    .buy_offers
+                    .iter()
+                    .all(|offer| !matches!(offer.kind.as_str(), "tool" | "weapon" | "armor"))
+            );
+            assert!(trader.buy_offers.iter().any(|offer| offer.kind == "mug"));
+        }
+
+        let signed = signed_session("exact-equipment-owner".to_owned(), "test-session-secret");
+        let mut world = starter_world(1_000_000);
+        let mut private = found_colony(
+            WORLD_SEED,
+            "exact-equipment-private",
+            1_000_000,
+            STARTER_COLONY_SEED + 1,
+        );
+        private.kind = VillageKind::Personal;
+        private.owner_player_id = Some(signed.player_id.clone());
+        world.colonies.push(private);
+        let directory = village_directory(&world);
+        let mut canonical = build_snapshot(&world, 1_000_000, 1);
+        let global_id = "wire-secret-global-tool";
+        let private_id = "wire-secret-private-tool";
+        seed_secret_equipment(&mut canonical.colonies[0], global_id);
+        seed_secret_equipment(&mut canonical.colonies[1], private_id);
+
+        let public = project_snapshot(canonical.clone(), &directory, None, STARTER_COLONY_ID);
+        assert_eq!(public.colonies.len(), 1);
+        assert_secret_redacted(&public.colonies[0], global_id);
+
+        let selected_private = project_snapshot(
+            canonical.clone(),
+            &directory,
+            Some(&signed),
+            "exact-equipment-private",
+        );
+        assert_eq!(selected_private.colonies[0].id, "exact-equipment-private");
+        assert_secret_visible(&selected_private.colonies[0], private_id);
+        let unselected_global = selected_private
+            .colonies
+            .iter()
+            .find(|colony| colony.id == STARTER_COLONY_ID)
+            .expect("global colony remains visible");
+        assert!(unselected_global.capabilities.can_control);
+        assert_secret_redacted(unselected_global, global_id);
+
+        let selected_global = project_snapshot(
+            canonical.clone(),
+            &directory,
+            Some(&signed),
+            STARTER_COLONY_ID,
+        );
+        assert_secret_visible(&selected_global.colonies[0], global_id);
+        let unselected_private = selected_global
+            .colonies
+            .iter()
+            .find(|colony| colony.id == "exact-equipment-private")
+            .expect("owner's personal colony remains visible");
+        assert_secret_redacted(unselected_private, private_id);
+
+        canonical.colonies[1]
+            .stock_ledger
+            .as_mut()
+            .expect("private canonical stock ledger")
+            .accurate = false;
+        let stale_private = project_snapshot(
+            canonical,
+            &directory,
+            Some(&signed),
+            "exact-equipment-private",
+        );
+        assert_secret_redacted(&stale_private.colonies[0], private_id);
     }
 
     #[tokio::test]
@@ -3101,9 +3460,19 @@ mod tests {
         assert_eq!(stages, [true; 7], "signed route missed a physical stage");
         assert_eq!(
             colony.items.count_kind(cat_sim::items::ItemKind::Tool),
-            0,
-            "finite Tool creation remains the following C3 slice"
+            1,
+            "the delivered scalar Tool must be backed by one exact finite unit"
         );
+        let tool = colony
+            .items
+            .instances()
+            .find(|instance| instance.item.kind == cat_sim::items::ItemKind::Tool)
+            .expect("guided Woodworking route creates one exact Tool identity");
+        assert!(tool.credited, "final delivery credits the exact Tool unit");
+        assert!(matches!(
+            tool.location,
+            cat_sim::items::ItemLocation::Stockpile { .. }
+        ));
     }
 
     #[tokio::test]
@@ -3861,7 +4230,32 @@ mod tests {
         assert_eq!(stages, [true; 9], "restart missed a physical Smithy stage");
         assert_eq!(world.colonies[0].resources.weapons, 1.0);
         assert_eq!(world.colonies[0].resources.armor, 0.0);
-        assert!(world.colonies[0].items.is_empty());
+        assert_eq!(
+            world.colonies[0]
+                .items
+                .count_kind(cat_sim::items::ItemKind::Weapon),
+            1,
+            "the delivered scalar Weapon must be backed by one exact finite unit"
+        );
+        assert_eq!(
+            world.colonies[0]
+                .items
+                .count_kind(cat_sim::items::ItemKind::Armor),
+            0
+        );
+        let weapon = world.colonies[0]
+            .items
+            .instances()
+            .find(|instance| instance.item.kind == cat_sim::items::ItemKind::Weapon)
+            .expect("guided Smithy route creates one exact Weapon identity");
+        assert!(
+            weapon.credited,
+            "final delivery credits the exact Weapon unit"
+        );
+        assert!(matches!(
+            weapon.location,
+            cat_sim::items::ItemLocation::Stockpile { .. }
+        ));
         drop(world);
         drop(restarted);
         fs::remove_file(path).expect("remove Smithy route database");
@@ -4008,6 +4402,252 @@ mod tests {
         assert!(food.sold_out);
         drop(restarted);
         fs::remove_file(path).expect("remove trader database");
+    }
+
+    #[tokio::test]
+    async fn signed_exact_equipment_bearer_and_sqlite_restart_preserve_one_identity() {
+        use cat_sim::items::{Item, ItemKind, ItemLocation, Material};
+
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-finite-equipment-restart-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let secret = "finite-equipment-restart-secret";
+        let signed = signed_session("equipment-owner".to_owned(), secret);
+        let intruder = signed_session("equipment-intruder".to_owned(), secret);
+        let mut world = starter_world(1_000_000);
+        let cat_id = world.colonies[0].cats[0].id.clone();
+        let dead_cat_id = world.colonies[0].cats[1].id.clone();
+        let other_cat_id = world.colonies[0].cats[2].id.clone();
+        world.colonies[0].cats[1].death_time = Some(999_000);
+        let item = Item::new(ItemKind::Weapon, Material::Metal, 1);
+        let item_id = world.colonies[0]
+            .items
+            .add_at(item, 1, 1.0, ItemLocation::LegacyTreasury, true)
+            .pop()
+            .expect("one finite weapon");
+        let mut foreign = found_colony(WORLD_SEED, "foreign-equipment", 1_000_000, 404);
+        foreign.kind = VillageKind::Personal;
+        foreign.owner_player_id = Some(intruder.player_id.clone());
+        foreign.cats[0].id = "foreign-equipment-cat".to_owned();
+        let foreign_cat_id = foreign.cats[0].id.clone();
+        let foreign_item_id = foreign
+            .items
+            .add_at(item, 2, 1.0, ItemLocation::LegacyTreasury, true)
+            .pop()
+            .expect("foreign finite weapon");
+        world.colonies.push(foreign);
+
+        let conn = Connection::open(&path).expect("open equipment database");
+        persistence::init_schema(&conn).expect("init equipment database");
+        let state = build_state_from_world(world, conn, secret.to_owned(), false, 1_000_000);
+        let mut connection =
+            ConnectionContext::new("equipment-socket".to_owned(), STARTER_COLONY_ID.to_owned());
+        connection.identity = Some(signed.clone());
+        let equip = |cat_id: String, item_id: String, session_id: String, sig: String| {
+            ClientAction::EquipItem {
+                session_id,
+                nickname: "Equipment Guide".to_owned(),
+                sig,
+                cat_id,
+                item_id,
+            }
+        };
+
+        let forged = send_action(
+            &state,
+            &mut connection,
+            &equip(
+                cat_id.clone(),
+                item_id.clone(),
+                signed.session_id.clone(),
+                "forged".to_owned(),
+            ),
+        )
+        .await;
+        assert!(!forged.result.ok, "forged HMAC equipped an item");
+        let foreign_bearer = send_action(
+            &state,
+            &mut connection,
+            &equip(
+                cat_id.clone(),
+                item_id.clone(),
+                intruder.session_id.clone(),
+                intruder.sig.clone(),
+            ),
+        )
+        .await;
+        assert!(
+            !foreign_bearer.result.ok,
+            "a valid but different bearer controlled this socket"
+        );
+        let unknown_item = send_action(
+            &state,
+            &mut connection,
+            &equip(
+                cat_id.clone(),
+                "item-unknown".to_owned(),
+                signed.session_id.clone(),
+                signed.sig.clone(),
+            ),
+        )
+        .await;
+        assert!(!unknown_item.result.ok, "unknown item equipped");
+        let foreign_item = send_action(
+            &state,
+            &mut connection,
+            &equip(
+                cat_id.clone(),
+                foreign_item_id,
+                signed.session_id.clone(),
+                signed.sig.clone(),
+            ),
+        )
+        .await;
+        assert!(
+            !foreign_item.result.ok,
+            "an item from an unselected foreign colony crossed authority"
+        );
+        let foreign_cat = send_action(
+            &state,
+            &mut connection,
+            &equip(
+                foreign_cat_id,
+                item_id.clone(),
+                signed.session_id.clone(),
+                signed.sig.clone(),
+            ),
+        )
+        .await;
+        assert!(
+            !foreign_cat.result.ok,
+            "a cat from an unselected foreign colony crossed authority"
+        );
+        let dead_bearer = send_action(
+            &state,
+            &mut connection,
+            &equip(
+                dead_cat_id.clone(),
+                item_id.clone(),
+                signed.session_id.clone(),
+                signed.sig.clone(),
+            ),
+        )
+        .await;
+        assert!(!dead_bearer.result.ok, "dead cat equipped an item");
+
+        let equipped = send_action(
+            &state,
+            &mut connection,
+            &equip(
+                cat_id.clone(),
+                item_id.clone(),
+                signed.session_id.clone(),
+                signed.sig.clone(),
+            ),
+        )
+        .await;
+        assert!(equipped.result.ok, "signed equip failed: {equipped:?}");
+        {
+            let world = state.world.lock().await;
+            assert_eq!(
+                world.colonies[0]
+                    .items
+                    .instance(&item_id)
+                    .expect("same identity")
+                    .location,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone()
+                }
+            );
+        }
+
+        let wrong_cat = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::UnequipItem {
+                session_id: signed.session_id.clone(),
+                nickname: "Equipment Guide".to_owned(),
+                sig: signed.sig.clone(),
+                cat_id: other_cat_id,
+                item_id: item_id.clone(),
+            },
+        )
+        .await;
+        assert!(
+            !wrong_cat.result.ok,
+            "a different bearer unequipped the exact item"
+        );
+
+        save_current_world(&state)
+            .await
+            .expect("persist equipped identity");
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen equipment database");
+        persistence::init_schema(&conn).expect("migrate equipment database");
+        let restarted = build_state_from_connection(2_000_000, conn, secret.to_owned())
+            .expect("restore equipment world");
+        {
+            let world = restarted.world.lock().await;
+            let instance = world.colonies[0]
+                .items
+                .instance(&item_id)
+                .expect("same identity after restart");
+            assert_eq!(
+                instance.location,
+                ItemLocation::Equipped {
+                    cat_id: cat_id.clone()
+                }
+            );
+            assert!(instance.credited);
+            let snapshot = build_snapshot(&world, 2_000_000, 1);
+            let cat = snapshot.colonies[0]
+                .cats
+                .iter()
+                .find(|cat| cat.id == cat_id)
+                .expect("equipped cat snapshot");
+            assert_eq!(
+                cat.equipment.weapon_item_id.as_deref(),
+                Some(item_id.as_str())
+            );
+        }
+
+        let mut restarted_connection = ConnectionContext::new(
+            "equipment-socket-restarted".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        restarted_connection.identity = Some(signed.clone());
+        let unequipped = send_action(
+            &restarted,
+            &mut restarted_connection,
+            &ClientAction::UnequipItem {
+                session_id: signed.session_id,
+                nickname: "Equipment Guide".to_owned(),
+                sig: signed.sig,
+                cat_id: cat_id.clone(),
+                item_id: item_id.clone(),
+            },
+        )
+        .await;
+        assert!(
+            unequipped.result.ok,
+            "signed unequip failed: {unequipped:?}"
+        );
+        let world = restarted.world.lock().await;
+        assert_ne!(
+            world.colonies[0]
+                .items
+                .instance(&item_id)
+                .expect("identity survives unequip")
+                .location,
+            ItemLocation::Equipped { cat_id }
+        );
+        drop(world);
+        drop(restarted);
+        fs::remove_file(path).expect("remove equipment database");
     }
 
     #[tokio::test]

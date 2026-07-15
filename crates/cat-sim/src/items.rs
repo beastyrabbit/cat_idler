@@ -371,6 +371,51 @@ pub const fn item_workshop_id(item: Item) -> &'static str {
     }
 }
 
+/// Exact physical compartment occupied by a finite item at a production station.
+/// The four stages deliberately mirror the visible station inspector and persisted
+/// cargo route rather than collapsing all workshop ownership into one abstract bin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StationCompartment {
+    Inbound,
+    LocalInput,
+    LocalOutput,
+    Outbound,
+}
+
+/// One authoritative physical location for one stable item identity.
+///
+/// `LegacyTreasury` is a migration quarantine for old saves whose aggregate
+/// functional-equipment counters predate physical pile identity. New production
+/// uses the station/carrier/stockpile states, while equipment and traders keep the
+/// exact same item id as ownership changes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ItemLocation {
+    #[default]
+    LegacyTreasury,
+    Stockpile {
+        stockpile_id: String,
+    },
+    Station {
+        building_id: String,
+        compartment: StationCompartment,
+    },
+    Carrier {
+        cat_id: String,
+    },
+    Equipped {
+        cat_id: String,
+    },
+    Trader {
+        trader_id: String,
+    },
+}
+
+const fn default_credited() -> bool {
+    true
+}
+
 /// One physical item with stable colony-local identity and independently persisted
 /// condition. Broken items remain in this ledger with `durability == 0`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,6 +425,24 @@ pub struct ItemInstance {
     pub item: Item,
     pub durability: u32,
     pub max_durability: u32,
+    /// Exact current physical location. Missing old-save fields migrate into the
+    /// compatibility treasury and are assigned deterministically later.
+    #[serde(default)]
+    pub location: ItemLocation,
+    /// Whether this unit has crossed its final-delivery boundary and therefore
+    /// contributes to the stable scalar compatibility projection. Station output
+    /// and its outbound carrier are real but deliberately uncredited.
+    #[serde(default = "default_credited")]
+    pub credited: bool,
+    /// True only for simulation-issued equipment. Signed player equips clear this
+    /// provenance so automation cannot silently reclaim a manual loadout.
+    #[serde(default)]
+    pub auto_issued: bool,
+    /// Exact queued/active job whose duration sampled this item as its contributor.
+    /// Persisting the link prevents equip timing from granting free speed or wearing
+    /// a different late-equipped tool after restart.
+    #[serde(default)]
+    pub active_job_id: Option<String>,
 }
 
 impl ItemInstance {
@@ -497,6 +560,26 @@ impl ItemStore {
     /// Add newly crafted units at full condition, with the workshop's resolved
     /// durability research captured in their maximum durability.
     pub fn add(&mut self, item: Item, count: u32, durability_mult: f64) {
+        self.add_at(
+            item,
+            count,
+            durability_mult,
+            ItemLocation::LegacyTreasury,
+            true,
+        );
+    }
+
+    /// Create new stable identities at one exact physical location. Returns ids in
+    /// creation order so a station can attach the same units to later cargo.
+    pub fn add_at(
+        &mut self,
+        item: Item,
+        count: u32,
+        durability_mult: f64,
+        location: ItemLocation,
+        credited: bool,
+    ) -> Vec<String> {
+        let mut ids = Vec::with_capacity(count as usize);
         for _ in 0..count {
             self.next_serial = self.next_serial.saturating_add(1);
             let id = format!("item-{:016}", self.next_serial);
@@ -504,31 +587,43 @@ impl ItemStore {
             self.instances.insert(
                 id.clone(),
                 ItemInstance {
-                    id,
+                    id: id.clone(),
                     item,
                     durability: max_durability,
                     max_durability,
+                    location: location.clone(),
+                    credited,
+                    auto_issued: false,
+                    active_job_id: None,
                 },
             );
+            ids.push(id);
         }
         if count > 0 {
             let entry = self.stacks.entry(item).or_insert(0);
             *entry = entry.saturating_add(count);
         }
+        ids
     }
 
     /// Remove deterministic units regardless of condition (legacy aggregate API).
     pub fn remove(&mut self, item: Item, count: u32) -> bool {
-        if self.stacks.get(&item).copied().unwrap_or(0) < count {
-            return false;
-        }
         let ids = self
             .instances
             .iter()
-            .filter(|(_, instance)| instance.item == item)
+            .filter(|(_, instance)| {
+                instance.item == item
+                    && matches!(
+                        instance.location,
+                        ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+                    )
+            })
             .map(|(id, _)| id.clone())
             .take(count as usize)
             .collect::<Vec<_>>();
+        if ids.len() != count as usize {
+            return false;
+        }
         for id in ids {
             self.instances.remove(&id);
         }
@@ -542,7 +637,15 @@ impl ItemStore {
         let ids = self
             .instances
             .iter()
-            .filter(|(_, instance)| instance.item == item && instance.is_pristine())
+            .filter(|(_, instance)| {
+                instance.item == item && instance.is_pristine() && instance.active_job_id.is_none()
+            })
+            .filter(|(_, instance)| {
+                matches!(
+                    instance.location,
+                    ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+                )
+            })
             .map(|(id, _)| id.clone())
             .take(count as usize)
             .collect::<Vec<_>>();
@@ -560,13 +663,33 @@ impl ItemStore {
     /// This is the visiting-trader handoff: no unit is reconstructed from an aggregate
     /// count, so a signed sale cannot duplicate identity or reset condition.
     pub fn transfer_pristine_to(&mut self, destination: &mut Self, item: Item, count: u32) -> bool {
+        self.transfer_pristine_to_at(destination, item, count, ItemLocation::LegacyTreasury)
+    }
+
+    /// Atomically transfer exact pristine identities and assign their new physical
+    /// owner/location. Only genuinely stored units are eligible for sale.
+    pub fn transfer_pristine_to_at(
+        &mut self,
+        destination: &mut Self,
+        item: Item,
+        count: u32,
+        destination_location: ItemLocation,
+    ) -> bool {
         if count == 0 {
             return true;
         }
         let ids = self
             .instances
             .iter()
-            .filter(|(_, instance)| instance.item == item && instance.is_pristine())
+            .filter(|(_, instance)| {
+                instance.item == item
+                    && instance.is_pristine()
+                    && instance.active_job_id.is_none()
+                    && matches!(
+                        instance.location,
+                        ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+                    )
+            })
             .map(|(id, _)| id.clone())
             .take(count as usize)
             .collect::<Vec<_>>();
@@ -576,10 +699,12 @@ impl ItemStore {
             return false;
         }
         for id in ids {
-            let instance = self
+            let mut instance = self
                 .instances
                 .remove(&id)
                 .expect("selected source unit still exists");
+            instance.location = destination_location.clone();
+            instance.credited = false;
             destination.next_serial = destination.next_serial.max(serial_from_id(&id));
             destination.instances.insert(id, instance);
         }
@@ -613,6 +738,106 @@ impl ItemStore {
     }
 
     #[must_use]
+    pub fn instance_mut(&mut self, id: &str) -> Option<&mut ItemInstance> {
+        self.instances.get_mut(id)
+    }
+
+    /// Move an existing identity without reconstructing it or changing condition.
+    pub fn relocate(&mut self, id: &str, location: ItemLocation) -> bool {
+        let Some(instance) = self.instances.get_mut(id) else {
+            return false;
+        };
+        instance.location = location;
+        true
+    }
+
+    pub fn set_auto_issued(&mut self, id: &str, auto_issued: bool) -> bool {
+        let Some(instance) = self.instances.get_mut(id) else {
+            return false;
+        };
+        instance.auto_issued = auto_issued;
+        true
+    }
+
+    pub fn reserve_for_job(&mut self, id: &str, job_id: &str) -> bool {
+        let Some(instance) = self.instances.get_mut(id) else {
+            return false;
+        };
+        if instance.active_job_id.is_some() || instance.is_broken() {
+            return false;
+        }
+        instance.active_job_id = Some(job_id.to_owned());
+        true
+    }
+
+    #[must_use]
+    pub fn item_id_for_job(&self, job_id: &str) -> Option<&str> {
+        self.instances.values().find_map(|instance| {
+            (instance.active_job_id.as_deref() == Some(job_id)).then_some(instance.id.as_str())
+        })
+    }
+
+    pub fn release_job(&mut self, job_id: &str, wear: bool) -> Option<String> {
+        let id = self.item_id_for_job(job_id)?.to_owned();
+        let instance = self.instances.get_mut(&id)?;
+        if wear && instance.durability > 0 {
+            instance.durability -= 1;
+        }
+        instance.active_job_id = None;
+        Some(id)
+    }
+
+    /// Mark final delivery without minting a second inventory entry.
+    pub fn credit_at(&mut self, id: &str, location: ItemLocation) -> bool {
+        let Some(instance) = self.instances.get_mut(id) else {
+            return false;
+        };
+        instance.location = location;
+        instance.credited = true;
+        true
+    }
+
+    pub fn ids_at(&self, kind: ItemKind, location: &ItemLocation) -> impl Iterator<Item = &str> {
+        self.instances.values().filter_map(move |instance| {
+            (instance.item.kind == kind && &instance.location == location)
+                .then_some(instance.id.as_str())
+        })
+    }
+
+    #[must_use]
+    pub fn credited_count(&self, kind: ItemKind) -> u32 {
+        self.instances
+            .values()
+            .filter(|instance| instance.item.kind == kind && instance.credited)
+            .count() as u32
+    }
+
+    #[must_use]
+    pub fn equipped_id(&self, cat_id: &str, kind: ItemKind) -> Option<&str> {
+        self.instances.values().find_map(|instance| {
+            (instance.item.kind == kind
+                && instance.location
+                    == (ItemLocation::Equipped {
+                        cat_id: cat_id.to_owned(),
+                    }))
+            .then_some(instance.id.as_str())
+        })
+    }
+
+    #[must_use]
+    pub fn first_stored_usable_id(&self, kind: ItemKind) -> Option<&str> {
+        self.instances.values().find_map(|instance| {
+            (instance.item.kind == kind
+                && !instance.is_broken()
+                && matches!(
+                    instance.location,
+                    ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+                ))
+            .then_some(instance.id.as_str())
+        })
+    }
+
+    #[must_use]
     pub fn count_kind(&self, kind: ItemKind) -> u32 {
         self.instances
             .values()
@@ -632,7 +857,15 @@ impl ItemStore {
     pub fn pristine_count(&self, item: Item) -> u32 {
         self.instances
             .values()
-            .filter(|instance| instance.item == item && instance.is_pristine())
+            .filter(|instance| {
+                instance.item == item
+                    && instance.is_pristine()
+                    && instance.active_job_id.is_none()
+                    && matches!(
+                        instance.location,
+                        ItemLocation::LegacyTreasury | ItemLocation::Stockpile { .. }
+                    )
+            })
             .count() as u32
     }
 
@@ -655,6 +888,19 @@ impl ItemStore {
             }
         }
         broken
+    }
+
+    /// Wear one exact stable identity. Returns whether this use crossed into the
+    /// broken state; missing/already-broken ids are a no-op.
+    pub fn wear_id(&mut self, id: &str) -> bool {
+        let Some(instance) = self.instances.get_mut(id) else {
+            return false;
+        };
+        if instance.is_broken() {
+            return false;
+        }
+        instance.durability = instance.durability.saturating_sub(1);
+        instance.is_broken()
     }
 
     /// Restore a damaged unit, updating its maximum to current workshop research.
@@ -997,5 +1243,94 @@ mod tests {
                 .instances()
                 .all(|instance| !moved_ids.contains(&instance.id))
         );
+    }
+
+    #[test]
+    fn old_instance_json_defaults_to_credited_legacy_treasury() {
+        let old = serde_json::json!({
+            "nextSerial": 1,
+            "instances": [{
+                "id": "item-0000000000000001",
+                "item": "tool:wood:1",
+                "durability": 6,
+                "maxDurability": 6
+            }]
+        });
+        let store: ItemStore = serde_json::from_value(old).unwrap();
+        let instance = store.instances().next().unwrap();
+        assert_eq!(instance.location, ItemLocation::LegacyTreasury);
+        assert!(instance.credited);
+        assert!(!instance.auto_issued);
+        assert_eq!(instance.active_job_id, None);
+    }
+
+    #[test]
+    fn exact_location_moves_preserve_identity_and_condition() {
+        let item = Item::new(ItemKind::Weapon, Material::Metal, 1);
+        let mut store = ItemStore::default();
+        let id = store
+            .add_at(
+                item,
+                1,
+                1.0,
+                ItemLocation::Station {
+                    building_id: "smithy-1".to_owned(),
+                    compartment: StationCompartment::LocalOutput,
+                },
+                false,
+            )
+            .pop()
+            .unwrap();
+        let durability = store.instance(&id).unwrap().durability;
+        assert!(store.relocate(
+            &id,
+            ItemLocation::Carrier {
+                cat_id: "smith".to_owned()
+            }
+        ));
+        assert!(store.credit_at(
+            &id,
+            ItemLocation::Stockpile {
+                stockpile_id: "armory".to_owned()
+            }
+        ));
+        let instance = store.instance(&id).unwrap();
+        assert_eq!(instance.id, id);
+        assert_eq!(instance.durability, durability);
+        assert!(instance.credited);
+    }
+
+    #[test]
+    fn removal_and_sale_never_consume_equipped_carried_or_station_units() {
+        let item = Item::new(ItemKind::Tool, Material::Wood, 1);
+        let mut source = ItemStore::default();
+        for location in [
+            ItemLocation::Equipped {
+                cat_id: "worker".to_owned(),
+            },
+            ItemLocation::Carrier {
+                cat_id: "hauler".to_owned(),
+            },
+            ItemLocation::Station {
+                building_id: "woodworking".to_owned(),
+                compartment: StationCompartment::LocalOutput,
+            },
+        ] {
+            source.add_at(item, 1, 1.0, location, true);
+        }
+        assert!(!source.remove(item, 1));
+        assert!(!source.remove_pristine(item, 1));
+        let before = source.clone();
+        let mut trader = ItemStore::default();
+        assert!(!source.transfer_pristine_to_at(
+            &mut trader,
+            item,
+            1,
+            ItemLocation::Trader {
+                trader_id: "wagon".to_owned()
+            }
+        ));
+        assert_eq!(source, before);
+        assert!(trader.is_empty());
     }
 }

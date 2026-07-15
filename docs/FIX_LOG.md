@@ -9,7 +9,6 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop, Smelter, Tannery, and Clothier station-local input/output stores remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Eleven maintained runtime recipe IDs now have data-owned station descriptors and exact catalog ownership metadata: eight are research-gated and three are founding baselines. All eleven execute through physical queues. Old/missing rules-v0 saves are grandfathered. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
@@ -20,6 +19,46 @@ and any changed Bevy visuals have been verified.
 | Wall art needs a stronger top-down treatment | The staged palisade, closed perimeter, single-gate cutover, collision, and visual campaign are verified, but the current wall selection does not meet the player's requested quality bar. Compare the tracked public candidates in `docs/sprite-review.html`, select a coherent top-down wall and gate set, and preserve exact autotiling, staged-work color, gate placement, and authoritative collision. Re-verify native and WASM framebuffers before replacing the current art. | queued (low priority) |
 
 ## Verified fixes
+
+## 2026-07-15 — Functional equipment has one finite physical authority
+
+**Problem:** Tool, Weapon, and Armor recipes ended as scalar counters while the item store also
+held weighted, durable units. Crafting, carrying, wearing, work wear, combat wear, repair, sale,
+death, and restart therefore could not name one authoritative object without either losing it or
+counting it twice.
+
+**Fix:** Every functional unit now has one stable identity and one explicit location: station
+input/output, carrier, stockpile, equipped cat, trader wagon, or the legacy migration boundary.
+The old scalar fields remain readable save/wire compatibility projections derived from credited
+finite units; they are no longer a second inventory. Woodworking and Smithy create the exact unit
+in local output, the same ID travels outbound, and compatibility credit occurs only on first final
+delivery. Signed equip/unequip targets one living owned cat and one exact item, with one slot per
+kind. Work and raids wear only the contributing/equipped IDs. Captain issue is physical,
+priority-ordered, non-sticky, and cannot interrupt a cat's survival or station route. Broken gear
+stays visible and repairable. Death, departure, source removal, and extinction recover an ID only
+into accepting capacity or a persisted world spill. Exact trader sale debits the real source and
+moves that same ID atomically. Rules-v1 migration and SQLite persistence preserve location,
+condition, credit, auto-issue, and active-job provenance. Exact equipment detail is redacted unless
+the signed selected-colony controller has an accurate physically counted Accountant ledger.
+
+**Evidence:** The end-to-end exact-ID campaign follows one Tool through local craft output,
+outbound carrier, credited stockpile, JSON restart, retrieval/equip, exact wear to broken,
+capacity-aware unequip, material repair, and exact trader sale while asserting that identity and
+scalar/pile projections never duplicate. Passive Captain campaigns at one-minute and five-minute
+cadence and signed player-guided equip/unequip/repair/sale campaigns cover both unattended and
+directed play. Conservation tests cover carrier death, old age, migration, reset, full former
+sources, spill recovery, multi-raid wear, reversed-ID priority, and non-preemption of hunt, water,
+and station jobs. Server tests cover HMAC ownership, foreign/dead/wrong-bearer denial, restart,
+redaction, stale Accountant books, and exact-source sale rollback. The accepted client-owned
+framebuffer `/tmp/finite-equipment-1024.png` is an exact 1024×768 RGB PNG (SHA-256
+`cc18adfdab2d00b43fccaf95b44784a6142c47f043ec9eb6e26aea1f19c1ff9d`). It was captured against a
+booted server and visually inspected: stable IDs and condition are readable for equipped,
+carried, workshop-output, stored damaged/broken, and trader units; repair and exact unequip are
+visible; Goods, Cat, top bar, and bottom toolbar do not overlap. The minimap deliberately yields
+only while Goods and Cat jointly need its corner. All capture-only staging was removed. Final
+gates pass 1,259 simulation tests (one intentional instrumentation skip), 46 protocol tests, 97
+server tests, and 144 client tests; strict Clippy is green for all four crates, with formatting and
+diff checks clean.
 
 ## 2026-07-15 — Smithy physically forges one selected scalar gear output
 
@@ -124,9 +163,9 @@ prevents both early reservation and fallback staffing. The legacy `wood_craft_pr
 persisted bit-for-bit but never advances. Station-rules v3 changes only the version marker: unlike
 the older C2.0/C2.2 migrations, it never seeds or rewrites a Woodworking queue.
 
-This bounded C2 slice deliberately produces the existing scalar Tool only. Finite Tool identity,
-condition authority, and compatibility-scalar migration remain P19.C3 work; the physical batch
-does not mint a duplicate `ItemKind::Tool`.
+This bounded C2 slice originally produced the existing scalar Tool only. P19.C3 subsequently
+completed finite Tool identity, condition authority, and compatibility-scalar migration without
+minting a duplicate object; see the verified finite-equipment entry above.
 
 **Evidence:** Conservation tests cover ordered two-input fetch, atomic consumption, whole-unit
 output/headroom, no early credit, pause/empty/nonrepeat queues, low-comfort release, full-capacity
