@@ -2,9 +2,9 @@
 //!
 //! The authoritative target contract is P19's canonical production table. This
 //! module describes recipe identity and resource domains only; `world_tick`
-//! deliberately keeps the five remaining compatibility benches on their existing
-//! aggregate timers until their physical route slices land. The Wood Cutter now
-//! follows its finite physical route.
+//! deliberately keeps the four remaining compatibility benches on their existing
+//! aggregate timers until their physical route slices land. Wood Cutter and Stone
+//! Prep now follow finite physical routes.
 
 use crate::{stockpiles::ResourceKind, types::BuildingType};
 

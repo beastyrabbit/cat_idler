@@ -2766,6 +2766,11 @@ mod tests {
                 cat_sim::types::BuildingType::WoodCutter,
                 56,
             ),
+            (
+                "guidance-stone-prep",
+                cat_sim::types::BuildingType::StonePrep,
+                60,
+            ),
         ] {
             world.colonies[0]
                 .buildings
@@ -2789,6 +2794,10 @@ mod tests {
             (
                 "guidance-wood-cutter",
                 cat_sim::world_tick::WOOD_CUTTER_RECIPE_ID,
+            ),
+            (
+                "guidance-stone-prep",
+                cat_sim::station_recipes::STONE_TO_BLOCKS_RECIPE_ID,
             ),
         ];
         let conn = Connection::open(&path).expect("open guidance database");
@@ -2864,13 +2873,13 @@ mod tests {
                 nickname: "Guide".to_owned(),
                 sig: signed.sig.clone(),
                 cat_id: cat_id.clone(),
-                building_id: Some("guidance-wood-cutter".to_owned()),
+                building_id: Some("guidance-stone-prep".to_owned()),
             },
         )
         .await;
         assert!(
             result.result.ok,
-            "signed Wood Cutter assignment failed: {result:?}"
+            "signed Stone Prep assignment failed: {result:?}"
         );
         for (index, (building_id, recipe_id)) in station_recipes.iter().enumerate() {
             let action = ClientAction::EditProductionQueue {
@@ -2939,7 +2948,7 @@ mod tests {
             assert_eq!(building.production_queue[0].recipe_id, *recipe_id);
             assert_eq!(building.production_queue[0].repeat, index >= 2);
             assert_eq!(building.production_paused, index < 2);
-            if *building_id == "guidance-wood-cutter" {
+            if *building_id == "guidance-stone-prep" {
                 assert_eq!(building.assigned_cat.as_deref(), Some(cat_id.as_str()));
             }
         }

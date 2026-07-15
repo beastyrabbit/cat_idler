@@ -438,6 +438,28 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
          WHERE physicalStationRulesVersion < 1",
         [],
     )?;
+    // Stone Prep became physical in station-rules v2. Seed only rows that have
+    // never crossed that boundary: a deliberately emptied v2 queue is
+    // player-owned state and must remain empty on every later restart.
+    if column_exists(conn, "buildings", "type")? {
+        conn.execute(
+            "UPDATE buildings
+             SET productionQueue = ?1
+             WHERE type = 'stone_prep'
+               AND physicalStationRulesVersion < 2
+               AND (productionQueue IS NULL OR productionQueue = '[]')",
+            [
+                serde_json::to_string(&default_production_queue(BuildingType::StonePrep))
+                    .map_err(to_sql_json)?,
+            ],
+        )?;
+    }
+    conn.execute(
+        "UPDATE buildings
+         SET physicalStationRulesVersion = 2
+         WHERE physicalStationRulesVersion < 2",
+        [],
+    )?;
     Ok(())
 }
 
@@ -1119,7 +1141,7 @@ fn save_building(
             productionQueue, productionPaused, productionQueueInitialized,
             physicalRefinerQueueInitialized, physicalStationRulesVersion,
             constructionCargo
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, 1, ?13)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, 2, ?13)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -2774,6 +2796,56 @@ mod tests {
     }
 
     #[test]
+    fn legacy_stone_prep_queue_initializes_once_and_v2_player_empty_stays_empty() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        init_schema(&conn).expect("schema");
+        conn.execute(
+            "INSERT INTO buildings (
+                id, colonyId, type, level, position, constructionProgress,
+                productionProgress, isComplete, productionQueue, productionPaused,
+                productionQueueInitialized, physicalRefinerQueueInitialized,
+                physicalStationRulesVersion
+             ) VALUES ('legacy-stone-prep', 'colony-1', 'stone_prep', 1, '{}',
+                 100, 0, 1, '[]', 0, 1, 1, 1)",
+            [],
+        )
+        .expect("station-rules v1 Stone Prep row");
+
+        migrate_add_missing_columns(&conn).expect("one-time Stone Prep queue migration");
+        let (queue, version): (String, i64) = conn
+            .query_row(
+                "SELECT productionQueue, physicalStationRulesVersion
+                 FROM buildings WHERE id = 'legacy-stone-prep'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
+            default_production_queue(BuildingType::StonePrep)
+        );
+        assert_eq!(version, 2);
+
+        conn.execute(
+            "UPDATE buildings SET productionQueue = '[]'
+             WHERE id = 'legacy-stone-prep'",
+            [],
+        )
+        .expect("player clears Stone Prep queue under v2");
+        migrate_add_missing_columns(&conn).expect("idempotent v2 restart");
+        let (cleared, version): (String, i64) = conn
+            .query_row(
+                "SELECT productionQueue, physicalStationRulesVersion
+                 FROM buildings WHERE id = 'legacy-stone-prep'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cleared, "[]", "v2 empty queue remains player-owned");
+        assert_eq!(version, 2);
+    }
+
+    #[test]
     fn legacy_refiner_queues_initialize_once_and_player_cleared_empty_stays_empty() {
         let conn = Connection::open_in_memory().expect("memory db");
         init_schema(&conn).expect("schema");
@@ -2864,7 +2936,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
             default_production_queue(BuildingType::WoodCutter)
         );
-        assert_eq!(initialized, 1);
+        assert_eq!(initialized, 2);
 
         conn.execute(
             "UPDATE buildings SET productionQueue = '[]' WHERE id = 'legacy-wood-cutter'",
@@ -3035,6 +3107,7 @@ mod tests {
         let workshop_id = "restart-workshop";
         let smelter_id = "restart-smelter";
         let wood_cutter_id = "restart-wood-cutter";
+        let stone_prep_id = "restart-stone-prep";
         colony.buildings.extend([
             BuildingRuntime {
                 id: workshop_id.to_owned(),
@@ -3080,6 +3153,21 @@ mod tests {
                 production_paused: true,
                 ..BuildingRuntime::default()
             },
+            BuildingRuntime {
+                id: stone_prep_id.to_owned(),
+                building_type: BuildingType::StonePrep,
+                position: TilePos { x: 36, y: 18 },
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 419.5,
+                assigned_cat: Some(colony.cats[3].id.clone()),
+                production_queue: vec![ProductionQueueEntry {
+                    recipe_id: cat_sim::station_recipes::STONE_TO_BLOCKS_RECIPE_ID.to_owned(),
+                    repeat: false,
+                }],
+                production_paused: true,
+                ..BuildingRuntime::default()
+            },
         ]);
         let rect = ZoneRect {
             x1: 18,
@@ -3095,6 +3183,9 @@ mod tests {
         let wood_cutter_input = cat_sim::stockpiles::station_input_id(wood_cutter_id);
         let wood_cutter_output = cat_sim::stockpiles::station_output_id(wood_cutter_id);
         let wood_cutter_transit = cat_sim::stockpiles::station_transit_id(wood_cutter_id);
+        let stone_prep_input = cat_sim::stockpiles::station_input_id(stone_prep_id);
+        let stone_prep_output = cat_sim::stockpiles::station_output_id(stone_prep_id);
+        let stone_prep_transit = cat_sim::stockpiles::station_transit_id(stone_prep_id);
         let orphan_output = cat_sim::stockpiles::station_output_id("demolished-smelter");
         for (id, accepts, contents) in [
             (
@@ -3178,6 +3269,36 @@ mod tests {
                 },
             ),
             (
+                stone_prep_input.clone(),
+                [cat_sim::stockpiles::ResourceKind::Stone]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    stone: 5.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                stone_prep_output.clone(),
+                [cat_sim::stockpiles::ResourceKind::Blocks]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    blocks: 1.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                stone_prep_transit.clone(),
+                [cat_sim::stockpiles::ResourceKind::Stone]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    stone: 3.0,
+                    ..Resources::default()
+                },
+            ),
+            (
                 orphan_output.clone(),
                 [cat_sim::stockpiles::ResourceKind::Metal]
                     .into_iter()
@@ -3212,6 +3333,12 @@ mod tests {
             amount: 2.0,
             job_ended_at: 10_000,
             source_gather_spot: Some(format!("station-in|{wood_cutter_id}|{wood_cutter_transit}")),
+        });
+        colony.cats[3].carrying = Some(Carrying {
+            kind: CarryingKind::Blocks,
+            amount: 1.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(format!("station-out|{stone_prep_id}|{general_id}")),
         });
         world.colonies.push(colony);
 
@@ -3258,6 +3385,21 @@ mod tests {
                 wood_cutter_transit.as_str(),
                 cat_sim::stockpiles::ResourceKind::Logs,
                 2.0,
+            ),
+            (
+                stone_prep_input.as_str(),
+                cat_sim::stockpiles::ResourceKind::Stone,
+                5.0,
+            ),
+            (
+                stone_prep_output.as_str(),
+                cat_sim::stockpiles::ResourceKind::Blocks,
+                1.0,
+            ),
+            (
+                stone_prep_transit.as_str(),
+                cat_sim::stockpiles::ResourceKind::Stone,
+                3.0,
             ),
             (
                 orphan_output.as_str(),
@@ -3316,6 +3458,20 @@ mod tests {
             }]
         );
         assert!(wood_cutter.production_paused);
+        let stone_prep = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == stone_prep_id)
+            .unwrap();
+        assert_eq!(stone_prep.production_progress, 419.5);
+        assert_eq!(
+            stone_prep.production_queue,
+            vec![ProductionQueueEntry {
+                recipe_id: cat_sim::station_recipes::STONE_TO_BLOCKS_RECIPE_ID.to_owned(),
+                repeat: false,
+            }]
+        );
+        assert!(stone_prep.production_paused);
         assert_eq!(
             colony.cats[0]
                 .carrying
@@ -3342,6 +3498,15 @@ mod tests {
                 .source_gather_spot
                 .as_deref(),
             Some(format!("station-in|{wood_cutter_id}|{wood_cutter_transit}").as_str())
+        );
+        assert_eq!(
+            colony.cats[3]
+                .carrying
+                .as_ref()
+                .unwrap()
+                .source_gather_spot
+                .as_deref(),
+            Some(format!("station-out|{stone_prep_id}|{general_id}").as_str())
         );
     }
 

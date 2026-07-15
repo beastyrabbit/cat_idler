@@ -74,8 +74,8 @@ use crate::{
     },
     productivity::{productive_duration_ms, productive_elapsed},
     recipes::{
-        CLOTH_TRADE_RECIPE, CraftOptions, LEATHER_TRADE_RECIPE, STONE_TRADE_RECIPE,
-        WOOD_TRADE_RECIPE, advance_craft, craft_quality_from_skill, next_trade_kind,
+        CLOTH_TRADE_RECIPE, CraftOptions, LEATHER_TRADE_RECIPE, WOOD_TRADE_RECIPE, advance_craft,
+        craft_quality_from_skill, next_trade_kind,
     },
     research_catalog::research_catalog,
     rng::{life_seed, movement_seed, raid_seed, roll_seeded},
@@ -276,8 +276,9 @@ pub struct ColonyRuntime {
     /// tools recipe still owns unchanged). Colony-level rather than per-building
     /// because exactly one Woodworking bench exists per founded colony.
     pub wood_craft_progress: f64,
-    /// StonePrep bench's trade-craft cycle timer (P19 slice 2), mirroring
-    /// [`Self::wood_craft_progress`] for [`crate::recipes::STONE_TRADE_RECIPE`].
+    /// Frozen compatibility field from Stone Prep's removed hidden trade-craft timer.
+    /// It remains serialized bit-for-bit for old saves but physical `stone_to_blocks`
+    /// work advances only [`BuildingRuntime::production_progress`].
     pub stone_craft_progress: f64,
     /// Clothier bench's trade-craft cycle timer (P16/P19 clothing chain slice),
     /// mirroring [`Self::wood_craft_progress`] for [`crate::recipes::CLOTH_TRADE_RECIPE`].
@@ -8234,91 +8235,6 @@ fn mean_farm_fertility(colony: &ColonyRuntime, world_seed: u32, rect: ZoneRect) 
     }
 }
 
-/// Run the remaining aggregate Stone Prep compatibility timer. Wood Cutter now owns
-/// the physical Logs -> Planks station route and must never consume legacy Supplies.
-fn advance_raw_material_benches(
-    colony: &mut ColonyRuntime,
-    gate: TickGate,
-    production_elapsed: f64,
-    tools_contributed: bool,
-) {
-    let benches = colony
-        .buildings
-        .iter()
-        .enumerate()
-        .filter(|(_, building)| {
-            building.is_complete && building.building_type == BuildingType::StonePrep
-        })
-        .map(|(index, building)| (index, building.id.clone()))
-        .collect::<Vec<_>>();
-    for (building_index, building_id) in benches {
-        let build_buffer_deficient = colony.resources.planks < TOOL_BUILD_MATERIAL_RESERVE
-            || colony.resources.blocks < TOOL_BUILD_MATERIAL_RESERVE;
-        let materials_available = if build_buffer_deficient {
-            let refined_on_hand = colony.resources.blocks;
-            let outputs_needed = (TOOL_BUILD_MATERIAL_RESERVE - refined_on_hand)
-                .max(0.0)
-                .ceil();
-            colony
-                .resources
-                .stone
-                .max(0.0)
-                .min(outputs_needed * WORKSHOP_MATERIALS_PER_CYCLE)
-        } else {
-            colony.resources.stone.max(0.0)
-        };
-        let worker = assigned_worker(colony, &building_id);
-        let skilled_elapsed = skilled_station_elapsed(
-            production_elapsed,
-            worker.map_or(0.0, |cat| cat.skill(Labor::Process)),
-        );
-        let step = advance_workshop(
-            colony.buildings[building_index].production_progress,
-            skilled_elapsed,
-            WorkshopOptions {
-                has_worker: worker.is_some(),
-                worker_is_architect: worker
-                    .is_some_and(|cat| cat.specialization == Some(CatSpecialization::Architect)),
-                materials_available,
-            },
-        );
-        if step.refined_produced > 0.0 {
-            if tools_contributed {
-                wear_functional_items(
-                    colony,
-                    ItemKind::Tool,
-                    step.refined_produced as u32,
-                    gate.processed_through,
-                );
-            }
-            colony.resources.stone = (colony.resources.stone - step.materials_used).max(0.0);
-            colony.resources.blocks += step.refined_produced;
-            append_event(
-                colony,
-                gate.processed_through,
-                EventKind::Production,
-                format!(
-                    "The stone-prep shop dressed {} raw inputs into {} block{}.",
-                    step.materials_used,
-                    step.refined_produced,
-                    if step.refined_produced == 1.0 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                ),
-            );
-        }
-        colony.buildings[building_index].production_progress = step.next_progress;
-        grant_building_skill(
-            colony,
-            &building_id,
-            Labor::Process,
-            step.refined_produced * SKILL_GAIN_PER_JOB,
-        );
-    }
-}
-
 /// Phase 23: run fields, workshops, and smithies against patched resources and
 /// building progress.
 fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u32) {
@@ -8381,10 +8297,12 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
         // the three non-sticky refinement benches so a scarce final idle cat
         // cannot be consumed by an auxiliary raw conversion slot first.
         auto_staff_idle_buildings(colony, BuildingType::Sawmill, gate.processed_through, true);
-        for bench_type in
-            raw_material_staffing_priority(&colony.resources, tool_build_material_reserve)
-        {
-            auto_staff_idle_buildings(colony, bench_type, gate.processed_through, false);
+        if raw_chain_survival_reserve_met(colony) {
+            for bench_type in
+                raw_material_staffing_priority(&colony.resources, tool_build_material_reserve)
+            {
+                auto_staff_idle_buildings(colony, bench_type, gate.processed_through, false);
+            }
         }
     }
     // P16/P19 clothing chain slice: the clothier/tannery are luxury benches like the
@@ -8403,10 +8321,6 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     advance_designated_farms(colony, gate, world_seed, production_elapsed);
     let productive_tools = usable_tool_stock(colony);
     let crafting_elapsed = productive_elapsed(production_elapsed, productive_tools);
-    // Production follows the physical worker, regardless of who assigned it. A
-    // Forester owns automatic staffing above; a player may always staff the same
-    // bench manually while that office is vacant.
-    advance_raw_material_benches(colony, gate, crafting_elapsed, productive_tools >= 1.0);
     let building_ids = colony
         .buildings
         .iter()
@@ -8436,7 +8350,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 // actual inputs and outputs through the physical station inventories.
                 advance_physical_sawmill(colony, building_index, gate, building_elapsed);
             }
-            BuildingType::WoodCutter | BuildingType::Workshop => {
+            BuildingType::WoodCutter | BuildingType::StonePrep | BuildingType::Workshop => {
                 advance_physical_refiner(
                     colony,
                     building_index,
@@ -8619,52 +8533,6 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         &building_id,
                         Labor::Metalwork,
                         (forge_weapons_produced + forge_armor_produced) * SKILL_GAIN_PER_JOB,
-                    );
-                }
-            }
-            BuildingType::StonePrep => {
-                // P19 slice 2: additive stone-trade craft. Raw block production ran
-                // first in `advance_raw_material_benches`, with a shared sequential
-                // material budget across both conversion benches.
-                let craft_worker = assigned_worker(colony, &building_id);
-                let craft_has_worker = craft_worker.is_some();
-                let craft_is_architect = craft_worker
-                    .is_some_and(|cat| cat.specialization == Some(CatSpecialization::Architect));
-                let craft_skill = craft_worker.map_or(0.0, |cat| cat.skill(Labor::Craft));
-                let craft_worker_id = craft_worker.map(|cat| cat.id.clone());
-                let craft_step = advance_craft(
-                    colony.stone_craft_progress,
-                    skilled_station_elapsed(building_crafting_elapsed, craft_skill),
-                    CraftOptions {
-                        has_worker: craft_has_worker,
-                        worker_is_architect: craft_is_architect,
-                        intermediate_available: construction_spendable_resource(
-                            colony,
-                            ResourceKind::Blocks,
-                        ),
-                    },
-                    &STONE_TRADE_RECIPE,
-                );
-                colony.stone_craft_progress = craft_step.next_progress;
-                if craft_step.items_produced > 0 {
-                    if productive_tools >= 1.0 {
-                        wear_functional_items(
-                            colony,
-                            ItemKind::Tool,
-                            craft_step.items_produced,
-                            gate.processed_through,
-                        );
-                    }
-                    colony.resources.blocks =
-                        (colony.resources.blocks - craft_step.intermediate_used).max(0.0);
-                    credit_trade_craft(
-                        colony,
-                        gate,
-                        &STONE_TRADE_RECIPE,
-                        craft_skill,
-                        craft_worker_id.map(|id| (id, Labor::Craft)),
-                        craft_step.items_produced,
-                        "stone-prep shop",
                     );
                 }
             }
@@ -18227,6 +18095,20 @@ const RAW_MATERIAL_WORKSHOPS: [BuildingType; 3] = [
     BuildingType::Woodworking,
 ];
 
+fn raw_chain_survival_reserve_met(colony: &ColonyRuntime) -> bool {
+    // Refinement is a growth task, so it starts only from the same per-capita
+    // comfort runway used by autonomous research and rituals. A fixed emergency
+    // threshold is too late for a physical route: its worker may still owe an
+    // input leg, ten minutes of Process work, and an output leg before becoming
+    // preemptible. Already committed cargo/work still finishes and remains
+    // conserved; dormant local goods stay put until both reserves recover.
+    let population = active_resident_cats(colony).count() as f64;
+    let food_reserve = (population * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+    let water_reserve = (population * RESEARCH_COMFORT_WATER_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+    colony.resources.food + colony.resources.fish >= food_reserve
+        && colony.resources.water >= water_reserve
+}
+
 /// Highest-first staffing order for the founding raw-material chain. Balance
 /// planks/blocks until one tools cycle can run without crossing the 4/4 build
 /// reserve, then put woodworking first. Shared by phase 20's director assignment
@@ -18258,16 +18140,19 @@ fn raw_material_staffing_priority(
 fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
     for index in 0..colony.buildings.len() {
         let building = &colony.buildings[index];
-        let active_wood_cutter_queue = !building.production_paused
-            && building.production_queue.first().is_some_and(|entry| {
-                entry.recipe_id == WOOD_CUTTER_RECIPE_ID
-                    && production_recipe_availability(
-                        colony,
-                        BuildingType::WoodCutter,
-                        &entry.recipe_id,
-                    )
-                    .is_some_and(|recipe| recipe.available)
-            });
+        let physical_recipe = single_input_physical_recipe(building.building_type);
+        let active_physical_queue = physical_recipe.is_some_and(|physical_recipe| {
+            !building.production_paused
+                && building.production_queue.first().is_some_and(|entry| {
+                    entry.recipe_id == physical_recipe.recipe_id
+                        && production_recipe_availability(
+                            colony,
+                            building.building_type,
+                            &entry.recipe_id,
+                        )
+                        .is_some_and(|recipe| recipe.available)
+                })
+        });
         let station_cargo_committed = building.assigned_cat.as_deref().is_some_and(|cat_id| {
             colony.cats.iter().any(|cat| {
                 cat.id == cat_id
@@ -18277,22 +18162,17 @@ fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
                     })
             })
         });
-        let committed_physical_route = building.building_type == BuildingType::WoodCutter
-            && (station_cargo_committed
-                || active_wood_cutter_queue
+        let committed_physical_route = physical_recipe.is_some_and(|physical_recipe| {
+            station_cargo_committed
+                || active_physical_queue
                     && (building.production_progress > f64::EPSILON
                         || station_inventory_amount(
                             colony,
                             &building.id,
-                            false,
-                            ResourceKind::Logs,
-                        ) > f64::EPSILON
-                        || station_inventory_amount(
-                            colony,
-                            &building.id,
                             true,
-                            ResourceKind::Planks,
-                        ) > f64::EPSILON));
+                            physical_recipe.output_kind,
+                        ) > f64::EPSILON)
+        });
         if RAW_MATERIAL_WORKSHOPS.contains(&building.building_type)
             && building.automated_by == Some(OfficerRole::Forester)
             && !committed_physical_route
@@ -18339,7 +18219,7 @@ fn release_raw_material_workshop_workers(colony: &mut ColonyRuntime) {
 /// construction/tool reserves. Keeping this predicate aligned with phase 19's bounded
 /// labor reservation prevents an input-starved chain from stealing a useful quarry paw.
 fn runnable_raw_material_bench(colony: &ColonyRuntime) -> Option<BuildingId> {
-    if !has_officer(colony, OfficerRole::Forester) {
+    if !has_officer(colony, OfficerRole::Forester) || !raw_chain_survival_reserve_met(colony) {
         return None;
     }
 
@@ -18358,7 +18238,7 @@ fn runnable_raw_material_bench(colony: &ColonyRuntime) -> Option<BuildingId> {
                     && colony.resources.planks < target_planks
             }
             BuildingType::StonePrep => {
-                colony.resources.stone >= crate::production::WORKSHOP_MATERIALS_PER_CYCLE
+                colony.resources.stone >= crate::production::STONEPREP_STONE_PER_CYCLE
                     && colony.resources.blocks < target_blocks
             }
             _ => false,
@@ -18367,9 +18247,9 @@ fn runnable_raw_material_bench(colony: &ColonyRuntime) -> Option<BuildingId> {
             && let Some(building_id) = buildings_needing_workers(colony, building_type)
                 .into_iter()
                 .find(|building_id| {
-                    if building_type != BuildingType::WoodCutter {
+                    let Some(physical_recipe) = single_input_physical_recipe(building_type) else {
                         return true;
-                    }
+                    };
                     let building = colony
                         .buildings
                         .iter()
@@ -18377,10 +18257,10 @@ fn runnable_raw_material_bench(colony: &ColonyRuntime) -> Option<BuildingId> {
                         .expect("worker demand names a building");
                     !building.production_paused
                         && building.production_queue.first().is_some_and(|entry| {
-                            entry.recipe_id == WOOD_CUTTER_RECIPE_ID
+                            entry.recipe_id == physical_recipe.recipe_id
                                 && production_recipe_availability(
                                     colony,
-                                    BuildingType::WoodCutter,
+                                    building_type,
                                     &entry.recipe_id,
                                 )
                                 .is_some_and(|recipe| recipe.available)
@@ -19762,7 +19642,7 @@ fn station_store_rect(building: &BuildingRuntime) -> ZoneRect {
 }
 
 /// Descriptor-owned resource domains for every maintained queue station,
-/// including the six benches that still execute aggregate compatibility timers.
+/// including the four benches that still execute aggregate compatibility timers.
 #[must_use]
 pub fn production_station_resource_sets(
     building_type: BuildingType,
@@ -19810,6 +19690,19 @@ fn single_input_physical_recipe(building_type: BuildingType) -> Option<SingleInp
             missing_reason: "missing_logs",
             source_name: "logs",
             output_name: "planks",
+        }),
+        BuildingType::StonePrep => Some(SingleInputPhysicalRecipe {
+            recipe_id: crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID,
+            input_kind: ResourceKind::Stone,
+            input_per_cycle: crate::production::STONEPREP_STONE_PER_CYCLE,
+            output_kind: ResourceKind::Blocks,
+            output_per_cycle: crate::production::STONEPREP_BLOCKS_PER_CYCLE,
+            labor: Labor::Process,
+            input_budget: StationInputBudget::Aggregate,
+            fetching_reason: "fetching_stone",
+            missing_reason: "missing_stone",
+            source_name: "raw stone",
+            output_name: "blocks",
         }),
         BuildingType::Workshop => Some(SingleInputPhysicalRecipe {
             recipe_id: WORKSHOP_RECIPE_ID,
@@ -21002,11 +20895,15 @@ fn advance_physical_refiner(
     let mut available_output = output_headroom;
     let mut queue_preview = building.production_queue.clone();
     let mut queue_cycles = 0_usize;
+    let finish_committed_batch_only = RAW_MATERIAL_WORKSHOPS.contains(&building_type)
+        && building.automated_by == Some(OfficerRole::Forester)
+        && !raw_chain_survival_reserve_met(colony);
     while queue_preview
         .first()
         .is_some_and(|entry| entry.recipe_id == recipe.recipe_id)
         && available_input + f64::EPSILON >= recipe.input_per_cycle
         && available_output + f64::EPSILON >= recipe.output_per_cycle
+        && (!finish_committed_batch_only || queue_cycles == 0)
     {
         let rate = work_rate_multiplier(base_skill + queue_cycles as f64 * SKILL_GAIN_PER_JOB)
             * architect_rate;
@@ -21039,6 +20936,7 @@ fn advance_physical_refiner(
             .first()
             .is_some_and(|entry| entry.recipe_id == recipe.recipe_id)
         && available_output + f64::EPSILON >= recipe.output_per_cycle
+        && (!finish_committed_batch_only || queue_cycles == 0)
     {
         let rate = work_rate_multiplier(base_skill + queue_cycles as f64 * SKILL_GAIN_PER_JOB)
             * architect_rate;
@@ -23138,6 +23036,11 @@ mod tests {
         colony.resources.planks = 0.0;
         colony.resources.blocks = 0.0;
         colony.resources.tools = 0.0;
+        let population = active_resident_cats(&colony).count() as f64;
+        colony.resources.food =
+            (population * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+        colony.resources.water =
+            (population * RESEARCH_COMFORT_WATER_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
 
         assert!(
             !raw_chain_needs_reserved_labor(&colony),
@@ -23193,6 +23096,142 @@ mod tests {
         assert!(
             raw_chain_needs_reserved_labor(&colony),
             "a completed funded Woodworking bench is runnable"
+        );
+    }
+
+    #[test]
+    fn survival_emergency_defers_new_stone_prep_work_without_moving_local_goods() {
+        let mut colony = found_colony(4242, "colony-1", 10_000, 4242);
+        colony
+            .officers
+            .insert(OfficerRole::Forester, colony.cats[0].id.clone());
+        let stone_prep_index = colony
+            .buildings
+            .iter()
+            .position(|building| building.building_type == BuildingType::StonePrep)
+            .expect("founding Stone Prep");
+        ensure_station_stores(&mut colony, stone_prep_index);
+        let stone_prep = colony.buildings[stone_prep_index].clone();
+        let population = active_resident_cats(&colony).count() as f64;
+        let food_reserve = (population * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+        let water_reserve =
+            (population * RESEARCH_COMFORT_WATER_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+        colony.resources.stone = crate::production::STONEPREP_STONE_PER_CYCLE;
+        colony.resources.food = food_reserve - 1.0;
+        colony.resources.fish = 0.0;
+        colony.resources.water = water_reserve;
+        stockpiles::set_resource(
+            &mut colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == stockpiles::station_input_id(&stone_prep.id))
+                .expect("Stone Prep input")
+                .contents,
+            ResourceKind::Stone,
+            crate::production::STONEPREP_STONE_PER_CYCLE,
+        );
+        let stores_before = colony.stockpiles.clone();
+
+        assert!(!raw_chain_needs_reserved_labor(&colony));
+        staff_reserved_raw_material_bench(&mut colony, 10_000);
+        assert_eq!(colony.buildings[stone_prep_index].assigned_cat, None);
+        assert_eq!(colony.stockpiles, stores_before);
+        assert_eq!(
+            building_station_inventory(&colony, &stone_prep, false),
+            [(
+                ResourceKind::Stone,
+                crate::production::STONEPREP_STONE_PER_CYCLE
+            )],
+            "emergency deferral must not teleport or consume local input"
+        );
+
+        let mut committed = colony.clone();
+        let worker_id = committed.cats[1].id.clone();
+        committed.buildings[stone_prep_index].assigned_cat = Some(worker_id.clone());
+        committed.buildings[stone_prep_index].automated_by = Some(OfficerRole::Forester);
+        committed.buildings[stone_prep_index].production_progress = 300.0;
+        committed.cats[1].position = position_from_world(station_work_point(&stone_prep));
+        release_raw_material_workshop_workers(&mut committed);
+        assert_eq!(
+            committed.buildings[stone_prep_index]
+                .assigned_cat
+                .as_deref(),
+            Some(worker_id.as_str()),
+            "an already committed physical batch keeps its worker below the reserve"
+        );
+        phase_23_production(&mut committed, production_gate(1, 11_000), 4242);
+        assert_eq!(
+            committed.buildings[stone_prep_index].production_progress, 301.0,
+            "committed on-site work may finish rather than abandoning local Stone"
+        );
+        assert_eq!(
+            building_station_inventory(&committed, &stone_prep, false),
+            [(
+                ResourceKind::Stone,
+                crate::production::STONEPREP_STONE_PER_CYCLE
+            )],
+            "sub-cycle committed work keeps the exact local input conserved"
+        );
+
+        let mut boundary = committed.clone();
+        boundary.buildings[stone_prep_index].production_progress = 599.0;
+        boundary.resources.stone += crate::production::STONEPREP_STONE_PER_CYCLE;
+        stockpiles::add_resource(
+            &mut boundary
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == stockpiles::station_input_id(&stone_prep.id))
+                .expect("Stone Prep input")
+                .contents,
+            ResourceKind::Stone,
+            crate::production::STONEPREP_STONE_PER_CYCLE,
+        );
+        phase_23_production(&mut boundary, production_gate(60, 70_000), 4242);
+        assert_eq!(
+            boundary.buildings[stone_prep_index].production_progress, 0.0,
+            "an emergency-completed batch must not spend leftover elapsed time on another batch"
+        );
+        assert_eq!(
+            building_station_inventory(&boundary, &stone_prep, false),
+            [(
+                ResourceKind::Stone,
+                crate::production::STONEPREP_STONE_PER_CYCLE
+            )],
+            "the one committed Stone batch is consumed exactly once and the second stays local"
+        );
+        assert_eq!(
+            building_station_inventory(&boundary, &stone_prep, true),
+            [(
+                ResourceKind::Blocks,
+                crate::production::STONEPREP_BLOCKS_PER_CYCLE
+            )],
+            "the completed emergency batch remains physical outbound stock"
+        );
+        stockpiles::add_resource(
+            &mut boundary
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.id == stockpiles::station_output_id(&stone_prep.id))
+                .expect("Stone Prep output")
+                .contents,
+            ResourceKind::Blocks,
+            -crate::production::STONEPREP_BLOCKS_PER_CYCLE,
+        );
+        release_raw_material_workshop_workers(&mut boundary);
+        assert_eq!(boundary.buildings[stone_prep_index].assigned_cat, None);
+        assert_eq!(
+            building_station_inventory(&boundary, &stone_prep, false),
+            [(
+                ResourceKind::Stone,
+                crate::production::STONEPREP_STONE_PER_CYCLE
+            )],
+            "after the completed output haul, the worker releases and dormant local input stays put"
+        );
+
+        colony.resources.food = food_reserve;
+        assert!(
+            raw_chain_needs_reserved_labor(&colony),
+            "the conserved physical batch becomes runnable at the recovery boundary"
         );
     }
 
@@ -28661,6 +28700,23 @@ mod tests {
         colony.cats[0].destination = None;
     }
 
+    fn deliver_all_station_cargo_to_current_targets(colony: &mut ColonyRuntime) {
+        for cat_index in 0..colony.cats.len() {
+            let Some(carrying) = colony.cats[cat_index].carrying.clone() else {
+                continue;
+            };
+            if parse_station_cargo(carrying.source_gather_spot.as_deref()).is_none() {
+                continue;
+            }
+            let from = position_to_world(colony.anchor, colony.cats[cat_index].position);
+            let target = haul_deposit_target(colony, &carrying, from);
+            colony.cats[cat_index].position = position_from_world(target);
+            assert_eq!(credit_carrying(colony, &carrying, target), 0.0);
+            colony.cats[cat_index].carrying = None;
+            colony.cats[cat_index].destination = None;
+        }
+    }
+
     fn seed_station_input_at_worker(colony: &mut ColonyRuntime, kind: ResourceKind, amount: f64) {
         ensure_station_stores(colony, 0);
         let building = colony.buildings[0].clone();
@@ -28905,12 +28961,6 @@ mod tests {
     fn compatibility_bench_queue_block_reason_is_entitlement_aware_but_behavior_neutral() {
         for (building_type, recipe_id, study_id, founding_available) in [
             (
-                BuildingType::StonePrep,
-                crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID,
-                "stonecraft_preparation",
-                true,
-            ),
-            (
                 BuildingType::Woodworking,
                 crate::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
                 "toolmaking_preparation",
@@ -28957,20 +29007,25 @@ mod tests {
 
     #[test]
     fn physical_wood_cutter_block_reason_replaces_aggregate_compatibility() {
-        let mut colony = chain_colony(BuildingType::WoodCutter, Resources::default(), true);
-        colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
-        assert_eq!(
-            building_production_block_reason(&colony, &colony.buildings[0]).as_deref(),
-            Some("missing_logs")
-        );
+        for (building_type, expected) in [
+            (BuildingType::WoodCutter, "missing_logs"),
+            (BuildingType::StonePrep, "missing_stone"),
+        ] {
+            let mut colony = chain_colony(building_type, Resources::default(), true);
+            colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+            assert_eq!(
+                building_production_block_reason(&colony, &colony.buildings[0]).as_deref(),
+                Some(expected)
+            );
 
-        colony.recipe_entitlement_rules_version = 0;
-        colony.upgrade_tree.owned_node_ids.clear();
-        assert_eq!(
-            building_production_block_reason(&colony, &colony.buildings[0]).as_deref(),
-            Some("missing_logs"),
-            "rules-v0 still executes the physical route without research"
-        );
+            colony.recipe_entitlement_rules_version = 0;
+            colony.upgrade_tree.owned_node_ids.clear();
+            assert_eq!(
+                building_production_block_reason(&colony, &colony.buildings[0]).as_deref(),
+                Some(expected),
+                "rules-v0 still executes the physical route without research"
+            );
+        }
     }
 
     #[test]
@@ -28997,34 +29052,44 @@ mod tests {
             [(ResourceKind::Planks, 1.0)]
         );
 
-        for (building_type, resources, output_kind) in [
-            (
-                BuildingType::StonePrep,
-                Resources {
-                    stone: 5.0,
-                    ..Resources::default()
-                },
-                ResourceKind::Blocks,
-            ),
-            (
-                BuildingType::Woodworking,
-                Resources {
-                    planks: 30.0,
-                    blocks: 30.0,
-                    ..Resources::default()
-                },
-                ResourceKind::Tools,
-            ),
-        ] {
-            let mut colony = chain_colony(building_type, resources, true);
-            colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
-            let before = stockpiles::resource_amount(&colony.resources, output_kind);
-            phase_23_production(&mut colony, production_gate(600, 600_000), 123);
-            assert!(
-                stockpiles::resource_amount(&colony.resources, output_kind) > before,
-                "{building_type:?} founding baseline did not advance"
-            );
-        }
+        let mut stone_prep = chain_colony(
+            BuildingType::StonePrep,
+            Resources {
+                stone: 5.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        stone_prep.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        seed_station_input_at_worker(&mut stone_prep, ResourceKind::Stone, 5.0);
+        advance_physical_refiner(
+            &mut stone_prep,
+            0,
+            production_gate(600, 600_000),
+            600.0,
+            false,
+        );
+        assert_eq!(
+            building_station_inventory(&stone_prep, &stone_prep.buildings[0], true),
+            [(ResourceKind::Blocks, 1.0)]
+        );
+
+        let mut woodworking = chain_colony(
+            BuildingType::Woodworking,
+            Resources {
+                planks: 30.0,
+                blocks: 30.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        woodworking.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+        let tools_before = woodworking.resources.tools;
+        phase_23_production(&mut woodworking, production_gate(600, 600_000), 123);
+        assert!(
+            woodworking.resources.tools > tools_before,
+            "Woodworking founding baseline did not advance"
+        );
     }
 
     #[test]
@@ -29048,16 +29113,8 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_queue_state_does_not_yet_replace_five_aggregate_timers() {
+    fn descriptor_queue_state_does_not_yet_replace_four_aggregate_timers() {
         for (building_type, resources) in [
-            (
-                BuildingType::StonePrep,
-                Resources {
-                    materials: 50.0,
-                    blocks: 30.0,
-                    ..Resources::default()
-                },
-            ),
             (
                 BuildingType::Woodworking,
                 Resources {
@@ -29252,7 +29309,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_owned_studies_advance_all_five_physical_station_recipes() {
+    fn v1_owned_studies_advance_all_study_gated_physical_station_recipes() {
         for (building_type, input_kind, input_amount, study_id, resources) in [
             (
                 BuildingType::Mill,
@@ -31407,90 +31464,205 @@ mod tests {
     }
 
     #[test]
-    fn full_plank_storage_blocks_wood_cutter_output_without_losing_local_goods() {
-        let mut colony = chain_colony(
-            BuildingType::WoodCutter,
+    fn dying_stone_prep_carriers_restore_input_and_output_without_credit_or_duplication() {
+        let mut inbound_colony = chain_colony(
+            BuildingType::StonePrep,
             Resources {
-                planks: BASE_CAPACITY.planks,
+                stone: crate::production::STONEPREP_STONE_PER_CYCLE,
                 ..Resources::default()
             },
             true,
         );
-        ensure_station_stores(&mut colony, 0);
-        let building = colony.buildings[0].clone();
-        colony
+        place_chain_worker_at_seeded_store(&mut inbound_colony);
+        phase_23_production(&mut inbound_colony, production_gate(1, 1_000), 123);
+        let inbound = inbound_colony.cats[0]
+            .carrying
+            .clone()
+            .expect("Stone inbound");
+        assert_eq!(inbound.kind, CarryingKind::Stone);
+        let death_site = position_to_world(inbound_colony.anchor, inbound_colony.cats[0].position);
+        assert!(salvage_station_cargo(
+            &mut inbound_colony,
+            &inbound,
+            death_site,
+        ));
+        inbound_colony.cats[0].carrying = None;
+        reconcile_colony_stockpiles(&mut inbound_colony);
+        assert_eq!(
+            inbound_colony.resources.stone,
+            crate::production::STONEPREP_STONE_PER_CYCLE
+        );
+        assert_eq!(
+            inbound_colony
+                .stockpiles
+                .iter()
+                .filter(|pile| !pile.is_station_output())
+                .map(|pile| pile.contents.stone)
+                .sum::<f64>(),
+            crate::production::STONEPREP_STONE_PER_CYCLE,
+            "transit reservation remains one owned Stone load"
+        );
+
+        let mut outbound_colony = chain_colony(BuildingType::StonePrep, Resources::default(), true);
+        ensure_station_stores(&mut outbound_colony, 0);
+        let building = outbound_colony.buildings[0].clone();
+        outbound_colony
             .stockpiles
             .iter_mut()
             .find(|pile| pile.id == stockpiles::station_output_id(&building.id))
             .unwrap()
             .contents
-            .planks = crate::production::WOODCUTTER_PLANKS_PER_CYCLE;
-        colony.cats[0].position = position_from_world(station_work_point(&building));
-
-        phase_23_production(&mut colony, production_gate(600, 600_000), 123);
-
-        assert!(colony.cats[0].carrying.is_none());
-        assert_eq!(colony.resources.planks, BASE_CAPACITY.planks);
+            .blocks = crate::production::STONEPREP_BLOCKS_PER_CYCLE;
+        outbound_colony.cats[0].position = position_from_world(station_work_point(&building));
+        phase_23_production(&mut outbound_colony, production_gate(1, 1_000), 123);
+        let outbound = outbound_colony.cats[0]
+            .carrying
+            .clone()
+            .expect("Blocks outbound");
+        assert_eq!(outbound.kind, CarryingKind::Blocks);
+        assert_eq!(outbound_colony.resources.blocks, 0.0);
+        assert!(salvage_station_cargo(
+            &mut outbound_colony,
+            &outbound,
+            station_work_point(&building),
+        ));
+        assert_eq!(outbound_colony.resources.blocks, 0.0);
         assert_eq!(
-            building_station_inventory(&colony, &building, true),
+            building_station_inventory(&outbound_colony, &building, true),
             vec![(
-                ResourceKind::Planks,
-                crate::production::WOODCUTTER_PLANKS_PER_CYCLE
+                ResourceKind::Blocks,
+                crate::production::STONEPREP_BLOCKS_PER_CYCLE
             )]
-        );
-        assert_eq!(
-            building_production_block_reason(&colony, &building).as_deref(),
-            Some("output_storage_full")
         );
     }
 
     #[test]
-    fn removed_wood_cutter_keeps_every_local_ledger_recoverable() {
-        let mut colony = chain_colony(
-            BuildingType::WoodCutter,
-            Resources {
-                logs: crate::production::WOODCUTTER_LOGS_PER_CYCLE,
-                ..Resources::default()
-            },
-            true,
-        );
-        ensure_station_stores(&mut colony, 0);
-        let building_id = colony.buildings[0].id.clone();
-        let input_id = stockpiles::station_input_id(&building_id);
-        let output_id = stockpiles::station_output_id(&building_id);
-        colony
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == input_id)
-            .unwrap()
-            .contents
-            .logs = crate::production::WOODCUTTER_LOGS_PER_CYCLE;
-        colony
-            .stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == output_id)
-            .unwrap()
-            .contents
-            .planks = crate::production::WOODCUTTER_PLANKS_PER_CYCLE;
-        colony.buildings.clear();
-        colony.cats[0].activity = CatActivity::Idle;
+    fn full_storage_blocks_physical_raw_bench_output_without_losing_local_goods() {
+        for (building_type, resources, output_kind, expected_capacity) in [
+            (
+                BuildingType::WoodCutter,
+                Resources {
+                    planks: BASE_CAPACITY.planks,
+                    ..Resources::default()
+                },
+                ResourceKind::Planks,
+                BASE_CAPACITY.planks,
+            ),
+            (
+                BuildingType::StonePrep,
+                Resources {
+                    blocks: BASE_CAPACITY.blocks,
+                    ..Resources::default()
+                },
+                ResourceKind::Blocks,
+                BASE_CAPACITY.blocks,
+            ),
+        ] {
+            let mut colony = chain_colony(building_type, resources, true);
+            ensure_station_stores(&mut colony, 0);
+            let building = colony.buildings[0].clone();
+            stockpiles::set_resource(
+                &mut colony
+                    .stockpiles
+                    .iter_mut()
+                    .find(|pile| pile.id == stockpiles::station_output_id(&building.id))
+                    .unwrap()
+                    .contents,
+                output_kind,
+                1.0,
+            );
+            colony.cats[0].position = position_from_world(station_work_point(&building));
 
-        recover_orphaned_station_stores(&mut colony, production_gate(1, 1_000));
+            phase_23_production(&mut colony, production_gate(600, 600_000), 123);
 
-        assert!(colony.stockpiles.iter().any(|pile| pile.id == input_id));
-        assert!(colony.stockpiles.iter().any(|pile| pile.id == output_id));
-        assert!(
-            colony.cats[0].destination.is_some() || colony.cats[0].carrying.is_some(),
-            "an idle living cat begins the physical salvage route"
-        );
-        assert_eq!(
-            colony.resources.logs,
-            crate::production::WOODCUTTER_LOGS_PER_CYCLE
-        );
-        assert_eq!(
-            colony.resources.planks, 0.0,
-            "orphan output is still uncredited"
-        );
+            assert!(colony.cats[0].carrying.is_none(), "{building_type:?}");
+            assert_eq!(
+                stockpiles::resource_amount(&colony.resources, output_kind),
+                expected_capacity,
+                "{building_type:?}"
+            );
+            assert_eq!(
+                building_station_inventory(&colony, &building, true),
+                vec![(output_kind, 1.0)],
+                "{building_type:?}"
+            );
+            assert_eq!(
+                building_production_block_reason(&colony, &building).as_deref(),
+                Some("output_storage_full"),
+                "{building_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_physical_raw_bench_keeps_every_local_ledger_recoverable() {
+        for (building_type, resources, input_kind, output_kind) in [
+            (
+                BuildingType::WoodCutter,
+                Resources {
+                    logs: 5.0,
+                    ..Resources::default()
+                },
+                ResourceKind::Logs,
+                ResourceKind::Planks,
+            ),
+            (
+                BuildingType::StonePrep,
+                Resources {
+                    stone: 5.0,
+                    ..Resources::default()
+                },
+                ResourceKind::Stone,
+                ResourceKind::Blocks,
+            ),
+        ] {
+            let mut colony = chain_colony(building_type, resources, true);
+            ensure_station_stores(&mut colony, 0);
+            let building_id = colony.buildings[0].id.clone();
+            let input_id = stockpiles::station_input_id(&building_id);
+            let output_id = stockpiles::station_output_id(&building_id);
+            stockpiles::set_resource(
+                &mut colony
+                    .stockpiles
+                    .iter_mut()
+                    .find(|pile| pile.id == input_id)
+                    .unwrap()
+                    .contents,
+                input_kind,
+                5.0,
+            );
+            stockpiles::set_resource(
+                &mut colony
+                    .stockpiles
+                    .iter_mut()
+                    .find(|pile| pile.id == output_id)
+                    .unwrap()
+                    .contents,
+                output_kind,
+                1.0,
+            );
+            colony.buildings.clear();
+            colony.cats[0].activity = CatActivity::Idle;
+
+            recover_orphaned_station_stores(&mut colony, production_gate(1, 1_000));
+
+            assert!(colony.stockpiles.iter().any(|pile| pile.id == input_id));
+            assert!(colony.stockpiles.iter().any(|pile| pile.id == output_id));
+            assert!(
+                colony.cats[0].destination.is_some() || colony.cats[0].carrying.is_some(),
+                "{building_type:?}: an idle living cat begins physical salvage"
+            );
+            assert_eq!(
+                stockpiles::resource_amount(&colony.resources, input_kind),
+                5.0,
+                "{building_type:?}"
+            );
+            assert_eq!(
+                stockpiles::resource_amount(&colony.resources, output_kind),
+                0.0,
+                "{building_type:?}: orphan output is still uncredited"
+            );
+        }
     }
 
     #[test]
@@ -32364,6 +32536,8 @@ mod tests {
         auto_staffed
             .officers
             .insert(OfficerRole::Forester, "crafter".to_owned());
+        auto_staffed.resources.food = RESEARCH_COMFORT_FLOOR;
+        auto_staffed.resources.water = RESEARCH_COMFORT_FLOOR;
         phase_23_production(&mut auto_staffed, production_gate(1, 1_000), 123);
         assert_eq!(
             auto_staffed.buildings[0].assigned_cat.as_deref(),
@@ -32401,10 +32575,23 @@ mod tests {
             },
             true,
         );
-        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
-        assert_eq!(colony.resources.blocks, 1.0);
+        place_chain_worker_at_seeded_store(&mut colony);
+        phase_23_production(&mut colony, production_gate(1, 1_000), 123);
+        deliver_station_cargo_to_current_target(&mut colony);
+        phase_23_production(&mut colony, production_gate(30, 31_000), 123);
+        assert_eq!(
+            colony.resources.blocks, 0.0,
+            "Blocks stay local until hauled"
+        );
         assert_eq!(colony.resources.stone, 45.0);
         assert_eq!(colony.resources.materials, 37.0);
+        assert_eq!(
+            building_station_inventory(&colony, &colony.buildings[0], true),
+            vec![(ResourceKind::Blocks, 1.0)]
+        );
+        phase_23_production(&mut colony, production_gate(1, 32_000), 123);
+        deliver_station_cargo_to_current_target(&mut colony);
+        assert_eq!(colony.resources.blocks, 1.0);
     }
 
     // --- P17/P19 ore -> metal chain ---
@@ -32984,6 +33171,16 @@ mod tests {
                 ResourceKind::Planks,
             ),
             (
+                BuildingType::StonePrep,
+                ResourceKind::Stone,
+                Resources {
+                    stone: 40.0,
+                    ..Resources::default()
+                },
+                30.0,
+                ResourceKind::Blocks,
+            ),
+            (
                 BuildingType::Workshop,
                 ResourceKind::Materials,
                 Resources {
@@ -33160,6 +33357,127 @@ mod tests {
             (
                 colony.resources.logs,
                 colony.resources.planks,
+                colony.stockpiles.clone(),
+                colony.buildings[0].production_queue.clone(),
+                colony.buildings[0].production_progress,
+                colony.cats[0].skill(Labor::Process),
+                colony.cats[0].skill(Labor::Haul),
+            )
+        };
+        assert_eq!(stable_projection(&runs[0]), stable_projection(&runs[1]));
+        assert_eq!(stable_projection(&runs[0]), stable_projection(&runs[2]));
+    }
+
+    fn run_one_full_stone_prep_route(cadence_sec: i64) -> ColonyRuntime {
+        let mut colony = chain_colony(
+            BuildingType::StonePrep,
+            Resources {
+                stone: crate::production::STONEPREP_STONE_PER_CYCLE,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.buildings[0].production_progress = 0.0;
+        colony.buildings[0].production_queue = vec![ProductionQueueEntry {
+            recipe_id: crate::station_recipes::STONE_TO_BLOCKS_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        place_chain_worker_at_seeded_store(&mut colony);
+        let mut saw_input_cargo = false;
+        let mut saw_local_input = false;
+        let mut saw_local_output = false;
+        let mut saw_output_cargo = false;
+
+        for step in 1..=3_600 / cadence_sec {
+            let now = step * cadence_sec * 1_000;
+            let gate = production_gate(cadence_sec, now);
+            phase_23_production(&mut colony, gate, 123);
+            saw_input_cargo |= colony.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Stone);
+            saw_local_input |= station_inventory_amount(
+                &colony,
+                &colony.buildings[0].id,
+                false,
+                ResourceKind::Stone,
+            ) > f64::EPSILON;
+            saw_local_output |= station_inventory_amount(
+                &colony,
+                &colony.buildings[0].id,
+                true,
+                ResourceKind::Blocks,
+            ) > f64::EPSILON;
+            saw_output_cargo |= colony.cats[0]
+                .carrying
+                .as_ref()
+                .is_some_and(|cargo| cargo.kind == CarryingKind::Blocks);
+
+            let mut movement = phase_32_movement_setup_and_village_expansion_queue(
+                &mut colony,
+                gate,
+                normal_policy(),
+                123,
+            );
+            phase_33_movement_deposits_and_no_destination_wander(&mut colony, gate, &mut movement);
+            phase_34_movement_travel_job_acceptance_reveal_path_wear(&mut colony, gate, &movement);
+            if colony.buildings[0].production_queue.is_empty()
+                && colony.resources.blocks >= crate::production::STONEPREP_BLOCKS_PER_CYCLE
+                && colony.cats[0].carrying.is_none()
+            {
+                break;
+            }
+        }
+        assert!(saw_input_cargo, "{cadence_sec}s never fetched Stone");
+        assert!(
+            saw_local_input,
+            "{cadence_sec}s never delivered local Stone"
+        );
+        assert!(
+            saw_local_output,
+            "{cadence_sec}s never created local Blocks"
+        );
+        assert!(saw_output_cargo, "{cadence_sec}s never hauled Blocks out");
+        colony
+    }
+
+    #[test]
+    fn full_stone_prep_route_converges_at_one_five_and_sixty_second_cadence() {
+        let runs = [1, 5, 60].map(run_one_full_stone_prep_route);
+        for colony in &runs {
+            assert_eq!(colony.resources.stone, 0.0);
+            assert_eq!(
+                colony.resources.blocks,
+                crate::production::STONEPREP_BLOCKS_PER_CYCLE
+            );
+            assert!(colony.buildings[0].production_queue.is_empty());
+            assert_eq!(colony.buildings[0].production_progress, 0.0);
+            assert!(colony.cats[0].carrying.is_none());
+            assert!(building_station_inventory(colony, &colony.buildings[0], false).is_empty());
+            assert!(building_station_inventory(colony, &colony.buildings[0], true).is_empty());
+            assert_eq!(
+                colony
+                    .stockpiles
+                    .iter()
+                    .map(|pile| pile.contents.stone)
+                    .sum::<f64>(),
+                0.0,
+                "no Stone remains in any physical location"
+            );
+            assert_eq!(
+                colony
+                    .stockpiles
+                    .iter()
+                    .map(|pile| pile.contents.blocks)
+                    .sum::<f64>(),
+                crate::production::STONEPREP_BLOCKS_PER_CYCLE,
+                "the one output exists exactly once in finite storage"
+            );
+        }
+        let stable_projection = |colony: &ColonyRuntime| {
+            (
+                colony.resources.stone,
+                colony.resources.blocks,
                 colony.stockpiles.clone(),
                 colony.buildings[0].production_queue.clone(),
                 colony.buildings[0].production_progress,
@@ -34198,6 +34516,22 @@ mod tests {
         });
         move_general_stock_to_station_input(&mut colony, ResourceKind::Logs, 5.0);
         colony.cats[0].position = position_from_world(station_work_point(&colony.buildings[0]));
+        ensure_station_stores(&mut colony, 1);
+        let stone_prep = colony.buildings[1].clone();
+        let general = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("general storehouse");
+        stockpiles::add_resource(&mut general.contents, ResourceKind::Stone, -5.0);
+        let stone_input_id = stockpiles::station_input_id(&stone_prep.id);
+        let stone_input = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.id == stone_input_id)
+            .expect("Stone Prep input");
+        stockpiles::add_resource(&mut stone_input.contents, ResourceKind::Stone, 5.0);
+        colony.cats[1].position = position_from_world(station_work_point(&stone_prep));
         let before_materials = colony.resources.logs + colony.resources.stone;
         let before_outputs = colony.resources.planks + colony.resources.blocks;
 
@@ -34205,8 +34539,11 @@ mod tests {
 
         let materials_used = before_materials - colony.resources.logs - colony.resources.stone;
         let local_planks = station_inventory_amount(&colony, "chain-1", true, ResourceKind::Planks);
+        let local_blocks =
+            station_inventory_amount(&colony, "stone-prep", true, ResourceKind::Blocks);
         let outputs_produced =
-            colony.resources.planks + colony.resources.blocks + local_planks - before_outputs;
+            colony.resources.planks + colony.resources.blocks + local_planks + local_blocks
+                - before_outputs;
         assert_eq!(
             materials_used, 10.0,
             "each bench spends only its own distinct physical input"
@@ -34220,7 +34557,8 @@ mod tests {
             "the physical Wood Cutter never credits its local output early"
         );
         assert_eq!(local_planks, 1.0);
-        assert_eq!(colony.resources.blocks, 1.0);
+        assert_eq!(colony.resources.blocks, 0.0);
+        assert_eq!(local_blocks, 1.0);
         assert_eq!(colony.resources.materials, 5.0, "Supplies are unrelated");
         assert_eq!(colony.resources.logs, 0.0);
         assert_eq!(colony.resources.stone, 0.0);
@@ -34256,26 +34594,34 @@ mod tests {
 
         // Manual repeat queues are player orders, so both benches keep processing
         // surplus after repairing the four-unit leader reserve. Each spends its own
-        // raw input, and neither touches Supplies. The physical Wood Cutter advances
-        // through three finite logistics legs per cycle while compatibility Stone Prep
-        // can consume the whole elapsed production window.
+        // raw input, and neither touches Supplies. Both benches advance only through
+        // finite inbound/work/outbound legs; the bounded window below repeatedly moves
+        // their carriers so each route can converge.
         place_chain_worker_at_seeded_store(&mut colony);
+        let (store_x, store_y) = colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap()
+            .center();
+        colony.cats[1].position = position_from_world(WorldPos {
+            x: store_x,
+            y: store_y,
+        });
         for step in 1..=30 {
             phase_23_production(
                 &mut colony,
                 production_gate(600, i64::from(step) * 600_000),
                 123,
             );
-            if colony.cats[0].carrying.is_some() {
-                deliver_station_cargo_to_current_target(&mut colony);
-            }
+            deliver_all_station_cargo_to_current_targets(&mut colony);
         }
 
         assert_eq!(colony.resources.planks, 10.0);
-        assert_eq!(colony.resources.blocks, 12.0);
+        assert_eq!(colony.resources.blocks, 10.0);
         assert_eq!(colony.resources.materials, 60.0);
         assert_eq!(colony.resources.logs, 10.0);
-        assert_eq!(colony.resources.stone, 0.0);
+        assert_eq!(colony.resources.stone, 10.0);
     }
 
     #[test]
@@ -34386,7 +34732,7 @@ mod tests {
     }
 
     #[test]
-    fn stone_prep_bench_crafts_a_stone_trade_good_from_surplus_blocks() {
+    fn physical_stone_prep_freezes_the_legacy_hidden_trade_timer() {
         let mut colony = chain_colony(
             BuildingType::StonePrep,
             Resources {
@@ -34399,30 +34745,22 @@ mod tests {
             true,
         );
         colony.stone_craft_progress = 890.0;
+        place_chain_worker_at_seeded_store(&mut colony);
         phase_23_production(&mut colony, production_gate(30, 30_000), 123);
 
-        // The functional recipe produces 1 block from 5 raw Stone this tick
-        // (25 + 1 = 26), then the trade craft spends 1 of the surplus: 26 - 1 = 25.
+        // One worker advances only the selected physical Stone -> Blocks recipe.
+        // Persist the old timer unchanged until stone goods become an explicit
+        // second queue recipe with their own local item route.
         assert_eq!(colony.resources.blocks, 25.0);
-        assert_eq!(colony.resources.stone, 45.0);
+        assert_eq!(colony.resources.stone, 50.0, "the worker is fetching first");
         assert_eq!(colony.resources.materials, 50.0);
-
-        let stone_items: Vec<(&Item, &u32)> = colony
-            .items
-            .iter()
-            .filter(|(item, _)| item.material == Material::Stone)
-            .collect();
-        assert_eq!(
-            stone_items.len(),
-            1,
-            "exactly one stone trade-good stack crafted"
-        );
-        let (item, count) = stone_items[0];
-        assert_eq!(*count, 1);
+        assert_eq!(colony.stone_craft_progress, 890.0);
         assert!(
-            matches!(item.kind, ItemKind::Bowl | ItemKind::Trinket),
-            "kind {:?} must be one of STONE_TRADE_RECIPE's rotation",
-            item.kind
+            colony
+                .items
+                .iter()
+                .all(|(item, _)| item.material != Material::Stone),
+            "the removed parallel timer must not create a hidden stone good"
         );
     }
 
@@ -34467,10 +34805,7 @@ mod tests {
     }
 
     #[test]
-    fn trade_craft_at_or_below_the_surplus_reserve_produces_no_items() {
-        // 15 blocks sits below STONE_TRADE_RECIPE's 20-block reserve; zero materials keeps
-        // the functional block-production recipe from adding to it this tick, isolating the
-        // surplus gate. The colony must protect its (already scarce) blocks from crafting.
+    fn frozen_stone_trade_timer_never_spends_scarce_blocks() {
         let mut colony = chain_colony(
             BuildingType::StonePrep,
             Resources {
@@ -34491,6 +34826,7 @@ mod tests {
             colony.items.is_empty(),
             "no trade goods should be crafted at/below the surplus reserve"
         );
+        assert_eq!(colony.stone_craft_progress, 890.0);
     }
 
     #[test]
@@ -36416,17 +36752,49 @@ mod tests {
             .unwrap();
         colony.cats[wood_worker_index].position =
             position_from_world(station_work_point(&wood_cutter));
+        let stone_prep_index = colony
+            .buildings
+            .iter()
+            .position(|building| building.building_type == BuildingType::StonePrep)
+            .unwrap();
+        ensure_station_stores(&mut colony, stone_prep_index);
+        let stone_prep = colony.buildings[stone_prep_index].clone();
+        stockpiles::add_resource(
+            &mut colony.stockpiles[store_index].contents,
+            ResourceKind::Stone,
+            -10.0,
+        );
+        let stone_input_id = stockpiles::station_input_id(&stone_prep.id);
+        let stone_input_index = colony
+            .stockpiles
+            .iter()
+            .position(|pile| pile.id == stone_input_id)
+            .unwrap();
+        stockpiles::add_resource(
+            &mut colony.stockpiles[stone_input_index].contents,
+            ResourceKind::Stone,
+            10.0,
+        );
+        let stone_worker_index = colony
+            .cats
+            .iter()
+            .position(|cat| Some(cat.id.as_str()) == stone_prep.assigned_cat.as_deref())
+            .unwrap();
+        colony.cats[stone_worker_index].position =
+            position_from_world(station_work_point(&stone_prep));
         phase_23_production(&mut colony, production_gate(2_430, 2_500_000), seed);
         phase_23_production(&mut colony, production_gate(1, 2_501_000), seed);
-        let cargo = colony.cats[wood_worker_index]
-            .carrying
-            .clone()
-            .expect("Wood Cutter output is physically outbound");
-        let from = position_to_world(colony.anchor, colony.cats[wood_worker_index].position);
-        let target = haul_deposit_target(&colony, &cargo, from);
-        colony.cats[wood_worker_index].position = position_from_world(target);
-        assert_eq!(credit_carrying(&mut colony, &cargo, target), 0.0);
-        colony.cats[wood_worker_index].carrying = None;
+        for worker_index in [wood_worker_index, stone_worker_index] {
+            let cargo = colony.cats[worker_index]
+                .carrying
+                .clone()
+                .expect("raw-bench output is physically outbound");
+            let from = position_to_world(colony.anchor, colony.cats[worker_index].position);
+            let target = haul_deposit_target(&colony, &cargo, from);
+            colony.cats[worker_index].position = position_from_world(target);
+            assert_eq!(credit_carrying(&mut colony, &cargo, target), 0.0);
+            colony.cats[worker_index].carrying = None;
+        }
         assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE);
         assert_eq!(colony.resources.blocks, TOOL_BUILD_MATERIAL_RESERVE);
         assert_eq!(colony.resources.materials, 40.0);
@@ -46804,6 +47172,29 @@ mod tests {
 
         establish_office(&mut world.colonies[0], OfficerRole::Forester);
         let _ = world_tick(&mut world, 130_000);
+        assert!(
+            world.colonies[0]
+                .buildings
+                .iter()
+                .filter(|building| RAW_MATERIAL_WORKSHOPS.contains(&building.building_type))
+                .all(|building| building.assigned_cat.is_none()),
+            "a filled Forester office stays dormant while the founding larder is below comfort"
+        );
+
+        let population = active_resident_cats(&world.colonies[0]).count() as f64;
+        let food_boundary =
+            (population * RESEARCH_COMFORT_FOOD_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+        let water_boundary =
+            (population * RESEARCH_COMFORT_WATER_PER_CAT).max(RESEARCH_COMFORT_FLOOR);
+        world.colonies[0].resources.food = food_boundary;
+        world.colonies[0].resources.water = water_boundary;
+        assert!(raw_chain_survival_reserve_met(&world.colonies[0]));
+        // Phase 7 consumes before phase 23 staffs; fund that one-minute tick so
+        // the resources are still at the exact boundary when the Forester acts.
+        world.colonies[0].resources.food += 1.0;
+        world.colonies[0].resources.water += 1.0;
+        reconcile_colony_stockpiles(&mut world.colonies[0]);
+        let _ = world_tick(&mut world, 190_000);
 
         let staffed_benches = world.colonies[0]
             .buildings
@@ -46870,7 +47261,7 @@ mod tests {
         let mut saw_competing_job = false;
         let mut saw_staffed_while_deficient = false;
         let mut repaired_both_buffers = false;
-        for step in 1..=30 {
+        for step in 1..=60 {
             let now = 10_000 + i64::from(step) * 60_000;
             let report = world_tick(&mut world, now);
             assert_eq!(report[0].reset_reason, None, "step {step}: colony reset");
@@ -46897,6 +47288,9 @@ mod tests {
                     JobKind::HuntExpedition | JobKind::Explore | JobKind::Quarry
                 )
             });
+            if repaired_both_buffers && saw_competing_job && saw_staffed_while_deficient {
+                break;
+            }
         }
 
         let colony = &world.colonies[0];
@@ -46931,8 +47325,18 @@ mod tests {
                 .filter_map(|cat| cat.carrying.as_ref().map(|cargo| (&cat.id, cargo)))
                 .collect::<Vec<_>>()
         );
-        assert_eq!(colony.resources.planks, TOOL_BUILD_MATERIAL_RESERVE);
-        assert_eq!(colony.resources.blocks, TOOL_BUILD_MATERIAL_RESERVE);
+        assert!(
+            colony.resources.planks >= TOOL_BUILD_MATERIAL_RESERVE
+                && colony.resources.planks
+                    <= TOOL_BUILD_MATERIAL_RESERVE + crate::production::WOODCUTTER_PLANKS_PER_CYCLE,
+            "physical batches may finish at most one unit beyond the exact reserve"
+        );
+        assert!(
+            colony.resources.blocks >= TOOL_BUILD_MATERIAL_RESERVE
+                && colony.resources.blocks
+                    <= TOOL_BUILD_MATERIAL_RESERVE + crate::production::STONEPREP_BLOCKS_PER_CYCLE,
+            "physical batches may finish at most one unit beyond the exact reserve"
+        );
         assert_eq!(
             colony.resources.materials, 25.0,
             "physical Wood Cutter consumes Logs, never generic Supplies"
@@ -47042,67 +47446,95 @@ mod tests {
     }
 
     #[test]
-    fn paused_or_empty_automated_wood_cutter_releases_worker_without_losing_local_goods() {
-        let mut base = chain_colony(
-            BuildingType::WoodCutter,
-            Resources {
-                logs: crate::production::WOODCUTTER_LOGS_PER_CYCLE,
-                ..Resources::default()
-            },
-            true,
-        );
-        base.buildings[0].automated_by = Some(OfficerRole::Forester);
-        base.buildings[0].production_progress = 300.0;
-        ensure_station_stores(&mut base, 0);
-        let input_id = stockpiles::station_input_id(&base.buildings[0].id);
-        let output_id = stockpiles::station_output_id(&base.buildings[0].id);
-        base.stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == input_id)
-            .unwrap()
-            .contents
-            .logs = 5.0;
-        base.stockpiles
-            .iter_mut()
-            .find(|pile| pile.id == output_id)
-            .unwrap()
-            .contents
-            .planks = 1.0;
-
-        for (label, mut colony) in [
-            ("paused", {
-                let mut colony = base.clone();
-                colony.buildings[0].production_paused = true;
-                colony
-            }),
-            ("empty", {
-                let mut colony = base.clone();
-                colony.buildings[0].production_queue.clear();
-                colony
-            }),
+    fn paused_or_empty_automated_physical_raw_bench_releases_worker_without_losing_goods() {
+        for (building_type, resources, input_kind, output_kind) in [
+            (
+                BuildingType::WoodCutter,
+                Resources {
+                    logs: crate::production::WOODCUTTER_LOGS_PER_CYCLE,
+                    ..Resources::default()
+                },
+                ResourceKind::Logs,
+                ResourceKind::Planks,
+            ),
+            (
+                BuildingType::StonePrep,
+                Resources {
+                    stone: crate::production::STONEPREP_STONE_PER_CYCLE,
+                    ..Resources::default()
+                },
+                ResourceKind::Stone,
+                ResourceKind::Blocks,
+            ),
         ] {
-            let input_before = building_station_inventory(&colony, &colony.buildings[0], false);
-            let output_before = building_station_inventory(&colony, &colony.buildings[0], true);
-            let progress_before = colony.buildings[0].production_progress;
+            let mut base = chain_colony(building_type, resources, true);
+            base.buildings[0].automated_by = Some(OfficerRole::Forester);
+            base.buildings[0].production_progress = 300.0;
+            ensure_station_stores(&mut base, 0);
+            let input_id = stockpiles::station_input_id(&base.buildings[0].id);
+            let output_id = stockpiles::station_output_id(&base.buildings[0].id);
+            stockpiles::set_resource(
+                &mut base
+                    .stockpiles
+                    .iter_mut()
+                    .find(|pile| pile.id == input_id)
+                    .unwrap()
+                    .contents,
+                input_kind,
+                5.0,
+            );
+            stockpiles::set_resource(
+                &mut base
+                    .stockpiles
+                    .iter_mut()
+                    .find(|pile| pile.id == output_id)
+                    .unwrap()
+                    .contents,
+                output_kind,
+                1.0,
+            );
 
-            release_raw_material_workshop_workers(&mut colony);
+            for (label, mut colony) in [
+                ("paused", {
+                    let mut colony = base.clone();
+                    colony.buildings[0].production_paused = true;
+                    colony
+                }),
+                ("empty", {
+                    let mut colony = base.clone();
+                    colony.buildings[0].production_queue.clear();
+                    colony
+                }),
+            ] {
+                let input_before = building_station_inventory(&colony, &colony.buildings[0], false);
+                let output_before = building_station_inventory(&colony, &colony.buildings[0], true);
+                let progress_before = colony.buildings[0].production_progress;
 
-            assert_eq!(colony.buildings[0].assigned_cat, None, "{label}");
-            assert_eq!(colony.buildings[0].automated_by, None, "{label}");
-            assert_eq!(
-                colony.buildings[0].production_progress, progress_before,
-                "{label}"
-            );
-            assert_eq!(
-                building_station_inventory(&colony, &colony.buildings[0], false),
-                input_before,
-                "{label}"
-            );
-            assert_eq!(
-                building_station_inventory(&colony, &colony.buildings[0], true),
-                output_before,
-                "{label}"
-            );
+                release_raw_material_workshop_workers(&mut colony);
+
+                assert_eq!(
+                    colony.buildings[0].assigned_cat, None,
+                    "{building_type:?} {label}"
+                );
+                assert_eq!(
+                    colony.buildings[0].automated_by, None,
+                    "{building_type:?} {label}"
+                );
+                assert_eq!(
+                    colony.buildings[0].production_progress, progress_before,
+                    "{building_type:?} {label}"
+                );
+                assert_eq!(
+                    building_station_inventory(&colony, &colony.buildings[0], false),
+                    input_before,
+                    "{building_type:?} {label}"
+                );
+                assert_eq!(
+                    building_station_inventory(&colony, &colony.buildings[0], true),
+                    output_before,
+                    "{building_type:?} {label}"
+                );
+            }
         }
     }
 

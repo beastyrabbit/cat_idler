@@ -9246,11 +9246,13 @@ mod tests {
             assert_eq!(&building.available_recipes, expected_available, "{id}");
             assert_eq!(
                 building.production_block_reason.as_deref(),
-                Some(if *id == "wood-cutter-descriptor" {
-                    "no_worker"
-                } else {
-                    "aggregate_timer_compatibility"
-                }),
+                Some(
+                    if matches!(*id, "wood-cutter-descriptor" | "stone-prep-descriptor") {
+                        "no_worker"
+                    } else {
+                        "aggregate_timer_compatibility"
+                    }
+                ),
                 "{id}"
             );
             assert_eq!(building.required_recipe_study, None, "{id}");

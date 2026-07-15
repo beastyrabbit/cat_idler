@@ -4,8 +4,13 @@ use cat_protocol as proto;
 use cat_sim::{
     actions::{ActionCtx, apply_action},
     entities::CarryingKind,
+    station_recipes::STONE_TO_BLOCKS_RECIPE_ID,
+    stockpiles::{station_input_id, station_output_id},
     types::{BuildingType, JobKind, JobStatus},
-    world_tick::{WorldState, found_colony, new_world, world_tick},
+    world_tick::{
+        BuildingRuntime, TilePos, WorldState, default_production_queue, found_colony, new_world,
+        reconcile_colony_stockpiles, world_tick,
+    },
 };
 
 const START: i64 = 10_000;
@@ -63,7 +68,18 @@ fn unattended_founder_hunts_physically_return_hide_deterministically() {
     assert!(left.colonies[0].resources.bone > 0.0);
 }
 
-fn run_signed_quarry(seed: u32) -> (WorldState, bool, bool) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StoneRouteObservations {
+    quarry_stone_in_paws: bool,
+    ordinary_stone_deposit: bool,
+    station_in_stone_in_paws: bool,
+    local_stone: bool,
+    local_blocks: bool,
+    station_out_blocks_in_paws: bool,
+    delivered_blocks: bool,
+}
+
+fn run_signed_quarry(seed: u32) -> (WorldState, StoneRouteObservations) {
     let mut world = new_world(seed);
     world
         .colonies
@@ -101,6 +117,26 @@ fn run_signed_quarry(seed: u32) -> (WorldState, bool, bool) {
         .id
         .clone();
     let blocks_at_founding = world.colonies[0].resources.blocks;
+    for edit in [
+        proto::ProductionQueueEdit::Remove { index: 0 },
+        proto::ProductionQueueEdit::Add {
+            recipe_id: STONE_TO_BLOCKS_RECIPE_ID.to_owned(),
+            repeat: true,
+        },
+    ] {
+        let queued = apply_action(
+            &mut world,
+            &proto::ClientAction::EditProductionQueue {
+                session_id: "source-cargo-session".to_owned(),
+                nickname: "Guide".to_owned(),
+                sig: "pure-sim".to_owned(),
+                building_id: stone_prep_id.clone(),
+                edit,
+            },
+            &ctx(START + 1),
+        );
+        assert!(queued.ok, "signed Stone Prep queue edit failed: {queued:?}");
+    }
     let assigned = apply_action(
         &mut world,
         &proto::ClientAction::AssignWorker {
@@ -108,7 +144,7 @@ fn run_signed_quarry(seed: u32) -> (WorldState, bool, bool) {
             nickname: "Guide".to_owned(),
             sig: "pure-sim".to_owned(),
             cat_id: worker_id,
-            building_id: Some(stone_prep_id),
+            building_id: Some(stone_prep_id.clone()),
         },
         &ctx(START + 1),
     );
@@ -128,42 +164,98 @@ fn run_signed_quarry(seed: u32) -> (WorldState, bool, bool) {
     );
     assert!(ordered.ok, "signed quarry failed: {:?}", ordered.message);
 
-    let mut saw_stone_in_paws = false;
-    let mut dressed_quarried_stone = false;
+    let input_id = station_input_id(&stone_prep_id);
+    let output_id = station_output_id(&stone_prep_id);
+    let mut observations = StoneRouteObservations {
+        quarry_stone_in_paws: false,
+        ordinary_stone_deposit: false,
+        station_in_stone_in_paws: false,
+        local_stone: false,
+        local_blocks: false,
+        station_out_blocks_in_paws: false,
+        delivered_blocks: false,
+    };
     for second in 1..=2_400i64 {
         let reports = world_tick(&mut world, START + second * 1_000);
         assert_eq!(reports[0].reset_reason, None, "guided second {second}");
-        saw_stone_in_paws |= world.colonies[0].cats.iter().any(|cat| {
-            cat.carrying
-                .as_ref()
-                .is_some_and(|cargo| cargo.kind == CarryingKind::Stone)
+        let colony = &world.colonies[0];
+        observations.quarry_stone_in_paws |= colony.cats.iter().any(|cat| {
+            cat.carrying.as_ref().is_some_and(|cargo| {
+                cargo.kind == CarryingKind::Stone
+                    && !cargo
+                        .source_gather_spot
+                        .as_deref()
+                        .is_some_and(|marker| marker.starts_with("station-in|"))
+            })
         });
+        observations.ordinary_stone_deposit |= colony.resources.stone > 0.0;
+        observations.station_in_stone_in_paws |= colony.cats.iter().any(|cat| {
+            cat.carrying.as_ref().is_some_and(|cargo| {
+                cargo.kind == CarryingKind::Stone
+                    && cargo.source_gather_spot.as_deref().is_some_and(|marker| {
+                        marker.starts_with(&format!("station-in|{stone_prep_id}|"))
+                    })
+            })
+        });
+        observations.local_stone |= colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == input_id)
+            .is_some_and(|pile| pile.contents.stone > 0.0);
+        observations.local_blocks |= colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == output_id)
+            .is_some_and(|pile| pile.contents.blocks > 0.0);
+        observations.station_out_blocks_in_paws |= colony.cats.iter().any(|cat| {
+            cat.carrying.as_ref().is_some_and(|cargo| {
+                cargo.kind == CarryingKind::Blocks
+                    && cargo.source_gather_spot.as_deref().is_some_and(|marker| {
+                        marker.starts_with(&format!("station-out|{stone_prep_id}|"))
+                    })
+            })
+        });
+        observations.delivered_blocks |= colony.resources.blocks > blocks_at_founding;
         let quarry_done = world.colonies[0]
             .jobs
             .iter()
             .any(|job| job.kind == JobKind::Quarry && job.status == JobStatus::Completed);
-        if quarry_done && world.colonies[0].resources.blocks > blocks_at_founding {
-            dressed_quarried_stone = true;
+        if quarry_done
+            && observations
+                == (StoneRouteObservations {
+                    quarry_stone_in_paws: true,
+                    ordinary_stone_deposit: true,
+                    station_in_stone_in_paws: true,
+                    local_stone: true,
+                    local_blocks: true,
+                    station_out_blocks_in_paws: true,
+                    delivered_blocks: true,
+                })
+        {
             break;
         }
     }
-    (world, saw_stone_in_paws, dressed_quarried_stone)
+    (world, observations)
 }
 
 #[test]
 fn signed_player_quarry_physically_returns_raw_stone_deterministically() {
-    let (left, left_saw_cargo, left_dressed) = run_signed_quarry(0xCA7C_0100);
-    let (right, right_saw_cargo, right_dressed) = run_signed_quarry(0xCA7C_0100);
+    let (left, left_observations) = run_signed_quarry(0xCA7C_0100);
+    let (right, right_observations) = run_signed_quarry(0xCA7C_0100);
     assert_eq!(left, right);
-    assert_eq!(left_saw_cargo, right_saw_cargo);
-    assert_eq!(left_dressed, right_dressed);
-    assert!(
-        left_saw_cargo,
-        "the signed run never showed Stone in a cat's paws"
-    );
-    assert!(
-        left_dressed,
-        "the signed Stone Prep never dressed quarried Stone: stone={}, blocks={}, prep={:?}",
+    assert_eq!(left_observations, right_observations);
+    assert_eq!(
+        left_observations,
+        StoneRouteObservations {
+            quarry_stone_in_paws: true,
+            ordinary_stone_deposit: true,
+            station_in_stone_in_paws: true,
+            local_stone: true,
+            local_blocks: true,
+            station_out_blocks_in_paws: true,
+            delivered_blocks: true,
+        },
+        "the signed Stone Prep route did not expose every physical stage: stone={}, blocks={}, prep={:?}",
         left.colonies[0].resources.stone,
         left.colonies[0].resources.blocks,
         left.colonies[0]
@@ -172,4 +264,85 @@ fn signed_player_quarry_physically_returns_raw_stone_deterministically() {
             .find(|building| building.building_type == BuildingType::StonePrep)
             .map(|building| (&building.assigned_cat, building.production_progress))
     );
+}
+
+fn run_passive_forester_stone_prep(seed: u32) -> (WorldState, bool, bool, bool) {
+    let mut world = new_world(seed);
+    world
+        .colonies
+        .push(found_colony(seed, "colony-1", START, seed));
+    let forester = world.colonies[0].cats[0].id.clone();
+    // Provision the office prerequisite and a one-time comfortable larder, then use
+    // the real signed action. From the first simulation tick onward the Forester
+    // receives no input; the larder merely establishes that survival work is solved
+    // well enough for the leader to begin a non-survival refinement route.
+    let population = world.colonies[0].cats.len() as f64;
+    world.colonies[0].resources.food = population * 10.0;
+    world.colonies[0].resources.water = population * 10.0;
+    reconcile_colony_stockpiles(&mut world.colonies[0]);
+    world.colonies[0]
+        .upgrade_tree
+        .owned_node_ids
+        .push("sawmill".to_owned());
+    world.colonies[0].buildings.push(BuildingRuntime {
+        id: "passive-forester-sawmill".to_owned(),
+        building_type: BuildingType::Sawmill,
+        position: TilePos { x: 40, y: 40 },
+        is_complete: true,
+        construction_progress: 100,
+        production_queue: default_production_queue(BuildingType::Sawmill),
+        ..BuildingRuntime::default()
+    });
+    let appointed = apply_action(
+        &mut world,
+        &proto::ClientAction::AssignOfficer {
+            session_id: "source-cargo-session".to_owned(),
+            nickname: "Guide".to_owned(),
+            sig: "pure-sim".to_owned(),
+            role: proto::OfficerRole::Forester,
+            cat_id: forester,
+        },
+        &ctx(START),
+    );
+    assert!(appointed.ok, "Forester appointment failed: {appointed:?}");
+    let stone_prep_id = world.colonies[0]
+        .buildings
+        .iter()
+        .find(|building| building.building_type == BuildingType::StonePrep)
+        .expect("founding village has Stone Prep")
+        .id
+        .clone();
+    let input_id = station_input_id(&stone_prep_id);
+    let output_id = station_output_id(&stone_prep_id);
+    let mut saw_local_stone = false;
+    let mut saw_local_blocks = false;
+    let mut saw_banked_blocks = false;
+
+    for minute in 1..=45i64 {
+        let reports = world_tick(&mut world, START + minute * 60_000);
+        assert_eq!(reports[0].reset_reason, None, "passive minute {minute}");
+        let colony = &world.colonies[0];
+        saw_local_stone |= colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == input_id)
+            .is_some_and(|pile| pile.contents.stone > 0.0);
+        saw_local_blocks |= colony
+            .stockpiles
+            .iter()
+            .find(|pile| pile.id == output_id)
+            .is_some_and(|pile| pile.contents.blocks > 0.0);
+        saw_banked_blocks |= colony.resources.blocks > 0.0;
+    }
+    (world, saw_local_stone, saw_local_blocks, saw_banked_blocks)
+}
+
+#[test]
+fn appointed_forester_runs_physical_stone_prep_without_further_input_deterministically() {
+    let left = run_passive_forester_stone_prep(4242);
+    let right = run_passive_forester_stone_prep(4242);
+    assert_eq!(left, right, "same passive seed must replay exactly");
+    assert!(left.1, "passive Forester never admitted local Stone");
+    assert!(left.2, "passive Forester never produced local Blocks");
+    assert!(left.3, "passive Forester never banked finite-store Blocks");
 }

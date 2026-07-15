@@ -14473,6 +14473,13 @@ mod tests {
                 CarryingKind::Planks,
             ),
             (
+                BuildingType::StonePrep,
+                "stone_to_blocks",
+                ResourceKind::Stone,
+                ResourceKind::Blocks,
+                CarryingKind::Blocks,
+            ),
+            (
                 BuildingType::Workshop,
                 "materials_to_refined",
                 ResourceKind::Materials,

@@ -9,9 +9,9 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Five maintained benches still bypass the physical station contract | Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Their C2.0 descriptor scaffold is live, and Wood Cutter now demonstrates the shared station-local conversion seam. Next give each remaining station local input/output/transit state and one-worker/one-selected-recipe advancement. Preserve every existing `BuildingType`, queue identity, and open-top visual identity. | in progress |
+| Four maintained benches still bypass the physical station contract | Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Their C2.0 descriptor scaffold is live, and Wood Cutter plus Stone Prep now demonstrate the shared station-local conversion seam. Next give each remaining station local input/output/transit state and one-worker/one-selected-recipe advancement. Preserve every existing `BuildingType`, queue identity, and open-top visual identity. | in progress |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
-| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
+| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Stone Prep, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Eleven maintained recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. Four physical queue recipes plus four aggregate textile/Smithy recipes enforce their rules-v1 entitlement before work; old/missing rules-v0 saves are grandfathered. The Wood Cutter, Stone Prep, and Woodworking baseline recipes are explicitly founding-available; their catalog studies are reserved for later recipes and do not block this early chain. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
@@ -21,6 +21,36 @@ and any changed Bevy visuals have been verified.
 | Wall art needs a stronger top-down treatment | The staged palisade, closed perimeter, single-gate cutover, collision, and visual campaign are verified, but the current wall selection does not meet the player's requested quality bar. Compare the tracked public candidates in `docs/sprite-review.html`, select a coherent top-down wall and gate set, and preserve exact autotiling, staged-work color, gate placement, and authoritative collision. Re-verify native and WASM framebuffers before replacing the current art. | queued (low priority) |
 
 ## Verified fixes
+
+## 2026-07-15 — Stone Prep is a conserved physical Stone-to-Blocks station
+
+**Problem:** Stone Prep still consumed colony-global Stone through an aggregate timer while its
+visible `stone_to_blocks` queue, worker, and local inventories were decorative. A second hidden
+Blocks-to-trade-good timer could also run beside the declared recipe.
+
+**Fix:** One assigned Process worker now carries exactly five finite Stone to local input, performs
+one selected 600-game-second batch, leaves one Block in local output, and carries it to finite
+storage before aggregate credit. Queue order, repeat, one-shot, pause, and empty state are
+authoritative. The founding recipe requires no study. The legacy `stone_craft_progress` value is
+persisted bit-for-bit but never advances or spends Blocks. Station-rules v2 seeds only pre-v2 empty
+Stone Prep queues once, so a player-cleared v2 queue remains empty across restart. Non-sticky
+Forester staffing retains inbound/outbound station cargo, positive batch progress, and local output
+until conserved delivery completes. Local-input-only stock stays dormant below the per-capita
+comfort runway, then resumes when food and water recover; the same safe boundary applies to Wood
+Cutter.
+
+**Evidence:** Conservation tests cover exact 5:1 conversion, no early credit, one worker, full
+storage, death, removal/orphan salvage, pause/empty release, progress and queue restart, and stable
+full-route projections at 1s/5s/60s. Signed HMAC server tests persist assignment and queue edits.
+A signed fresh-zero-Stone deterministic campaign observes quarry Stone in paws, ordinary deposit,
+station-in cargo, local Stone, local Blocks, station-out Blocks, and final delivery; a separate
+valid-office Forester twin produces local and banked Blocks for 45 minutes with no further input.
+The accepted client-owned framebuffer `/tmp/physical-stone-prep-1024.png` is exactly 1024×768 and
+shows staffed `1/1`, the repeating queue, local/input/output and transit truth, finite-storage
+blocking, all queue controls, and nonoverlapping panels. Temporary capture fixtures were removed.
+Final acceptance is green: `cat-sim` 1201/1201 (one configured skip), `cat-protocol` 44/44,
+`cat-server` 84/84, and `cat-client` 136/136; strict all-target Clippy passes for all four
+crates, with formatting and diff checks clean.
 
 ## 2026-07-15 — Every carried resource has a semantic tracked glyph
 

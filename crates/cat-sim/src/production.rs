@@ -385,7 +385,8 @@ pub const fn building_staff_cap(building_type: BuildingType) -> u32 {
 /// Length of one production cycle, in seconds, for building types that craft on a
 /// timer — `BuildingRuntime::production_progress` accumulates elapsed seconds toward
 /// this in `phase_23_production` (see `advance_workshop`/`advance_woodworking` above
-/// and `smithy::advance_smithy`). `None` for building types with no timed cycle,
+/// plus the physical station refiners in `world_tick` and `smithy::advance_smithy`).
+/// `None` for building types with no timed cycle,
 /// including fields: `field_yield` adds food continuously every tick, with no cycle
 /// to complete (`production_progress` is simply never touched for a field).
 #[must_use]
@@ -411,8 +412,8 @@ pub const fn building_cycle_sec(building_type: BuildingType) -> Option<f64> {
 ///
 /// Verified against the actual `phase_23_production` recipes in `world_tick.rs`:
 /// workshop → refined (materials → refined, this module's `advance_workshop`),
-/// wood-cutter → plank (materials → planks, same `advance_workshop` cadence credited
-/// to `planks`), stone-prep → block (raw Stone → blocks, credited to `blocks`),
+/// wood-cutter → plank (five station-local Logs → one local Plank), stone-prep → block
+/// (five station-local Stone → one local Block),
 /// woodworking → tool (planks + blocks → tools, `advance_woodworking`), smithy →
 /// weapon+armor (refined + materials → 1 weapon *and* 1 armor per cycle,
 /// `smithy::advance_smithy`/`SMITHY_WEAPONS_PER_CYCLE`/`SMITHY_ARMOR_PER_CYCLE`, both
