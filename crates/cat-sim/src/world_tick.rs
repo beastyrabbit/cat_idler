@@ -314,9 +314,9 @@ pub struct ColonyRuntime {
     pub run_started_at: i64,
     pub created_at: i64,
     pub last_player_activity_at: Option<i64>,
-    /// Real-time timestamp of the Loremaster's most recent successful automatic
-    /// unlock. Player-directed research is never rate-limited by this field.
-    pub last_loremaster_unlock_at: Option<i64>,
+    /// Real-time timestamp of the Leader's most recent successful automatic
+    /// research choice. Player-directed research is never rate-limited by this field.
+    pub last_leader_research_choice_at: Option<i64>,
     /// Non-prunable cooldown anchors for shrine economy automation. Event logs are
     /// presentation history and may retain only the newest entries.
     pub last_tithe_at: Option<i64>,
@@ -2056,7 +2056,7 @@ impl Default for ColonyRuntime {
             run_started_at: 0,
             created_at: 0,
             last_player_activity_at: None,
-            last_loremaster_unlock_at: None,
+            last_leader_research_choice_at: None,
             last_tithe_at: None,
             last_offering_at: None,
             last_tick: 0,
@@ -8477,12 +8477,13 @@ fn staffed_accounting_tent(colony: &ColonyRuntime) -> Option<(BuildingRuntime, S
         .min_by(|(left, _), (right, _)| left.id.cmp(&right.id))
 }
 
-/// Rolling real-time interval between successful Loremaster unlocks.
-const LOREMASTER_UNLOCK_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
+/// Rolling real-time interval between successful Leader research choices.
+const LEADER_RESEARCH_CHOICE_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// Phase 24: accrue research from staffed research huts/schools. An appointed
-/// Loremaster may auto-unlock one affordable node per rolling 24-hour interval; the player
-/// can still spend research points directly at any time.
+/// Phase 24: accrue research from staffed research huts/schools, then let the living Leader
+/// choose one affordable node per rolling 24-hour interval. Loremaster-owned labor creates
+/// the points; the strategic choice belongs to the always-present Leader. The player can
+/// still spend research points directly at any time.
 fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
     let research_workforce = research_workforce(colony);
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
@@ -8506,9 +8507,15 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
         }
     }
 
-    if !has_officer(colony, OfficerRole::Loremaster)
-        || colony.last_loremaster_unlock_at.is_some_and(|last| {
-            gate.processed_through.saturating_sub(last) < LOREMASTER_UNLOCK_INTERVAL_MS
+    let has_living_leader = colony.leader_id.as_ref().is_some_and(|leader_id| {
+        colony
+            .cats
+            .iter()
+            .any(|cat| cat.id == *leader_id && cat.death_time.is_none())
+    });
+    if !has_living_leader
+        || colony.last_leader_research_choice_at.is_some_and(|last| {
+            gate.processed_through.saturating_sub(last) < LEADER_RESEARCH_CHOICE_INTERVAL_MS
         })
     {
         return;
@@ -8526,7 +8533,7 @@ fn phase_24_research(colony: &mut ColonyRuntime, gate: TickGate) {
             )
             .to_owned();
         colony.upgrade_tree = result.state;
-        colony.last_loremaster_unlock_at = Some(gate.processed_through);
+        colony.last_leader_research_choice_at = Some(gate.processed_through);
         append_event(
             colony,
             gate.processed_through,
@@ -20278,7 +20285,8 @@ mod tests {
             OfficerRole::Forester => Some(BuildingType::Sawmill),
             OfficerRole::Farmer => Some(BuildingType::Field),
             OfficerRole::ClothLeader => Some(BuildingType::Clothier),
-            OfficerRole::Captain | OfficerRole::Loremaster => None,
+            OfficerRole::Loremaster => Some(BuildingType::ResearchHut),
+            OfficerRole::Captain => None,
         }
     }
 
@@ -20326,7 +20334,7 @@ mod tests {
             colony.resources.blocks = 0.0;
             colony.resources.tools = caps.tools;
             colony.upgrade_tree.research_points = 1_000.0;
-            colony.last_loremaster_unlock_at = None;
+            colony.last_leader_research_choice_at = None;
 
             // Satisfy Captain demand for every row except the Captain row itself.
             // That row deliberately leaves the roster untrained so its autonomous
@@ -20394,6 +20402,17 @@ mod tests {
                 "{role:?}: target role must remain vacant"
             );
 
+            if let Some(node_id) = expected_research.as_deref() {
+                assert!(
+                    is_owned(&control.colonies[0].upgrade_tree, node_id),
+                    "the filled Loremaster twin's living Leader did not choose {node_id}"
+                );
+                assert!(
+                    is_owned(&vacancy.colonies[0].upgrade_tree, node_id),
+                    "a vacant research office suppressed the living Leader's daily choice of {node_id}"
+                );
+            }
+
             if let Some(building_id) = &target_building_id {
                 let assigned = |world: &WorldState| {
                     world.colonies[0]
@@ -20420,14 +20439,7 @@ mod tests {
                 assert!(training(&control), "Captain did not dispatch training");
                 assert!(!training(&vacancy), "vacant Captain dispatched training");
             } else {
-                let node_id = expected_research
-                    .as_deref()
-                    .expect("Loremaster row must select a node");
-                assert!(is_owned(&control.colonies[0].upgrade_tree, node_id));
-                assert!(
-                    !is_owned(&vacancy.colonies[0].upgrade_tree, node_id),
-                    "vacant Loremaster auto-unlocked {node_id}"
-                );
+                unreachable!("every non-Captain role has a staffing target");
             }
 
             clear_officer_matrix_work(&mut vacancy.colonies[0]);
@@ -20447,12 +20459,7 @@ mod tests {
                     cat_id: Some(target_holder),
                 }
             } else {
-                proto::ClientAction::ResearchNode {
-                    session_id: "matrix-session".to_owned(),
-                    nickname: "Matrix".to_owned(),
-                    sig: "pure-sim".to_owned(),
-                    node_id: expected_research.expect("Loremaster row must select a node"),
-                }
+                unreachable!("every non-Captain role has a manual staffing action")
             };
             let result = apply_action(
                 &mut vacancy,
@@ -33013,6 +33020,7 @@ mod tests {
         let mut colony = found_colony(7, "colony-1", 10_000, 7);
         colony.upgrade_tree = crate::upgrade_tree::create_upgrade_tree_state();
         let scholar = colony.cats[0].id.clone();
+        colony.leader_id = Some(colony.cats[1].id.clone());
         colony
             .officers
             .insert(OfficerRole::Loremaster, scholar.clone());
@@ -33030,7 +33038,7 @@ mod tests {
             "one living scholar in a completed hut is one researcher"
         );
 
-        // One game-week banks ~20 points. The Loremaster completes exactly one
+        // One game-week banks ~20 points. The Leader completes exactly one
         // autonomous study now and leaves the rest for a later 24-hour interval.
         let week = crate::upgrade_tree::WEEK_SECONDS as i64;
         let gate = TickGate {
@@ -33051,7 +33059,7 @@ mod tests {
         );
         assert_eq!(colony.upgrade_tree.owned_node_ids, ["research_hut"]);
         assert_eq!(
-            colony.last_loremaster_unlock_at,
+            colony.last_leader_research_choice_at,
             Some(gate.processed_through)
         );
         assert!((colony.upgrade_tree.research_points - 15.0).abs() < 1e-9);
@@ -33066,25 +33074,27 @@ mod tests {
     }
 
     #[test]
-    fn loremaster_unlocks_at_most_one_node_per_rolling_day_at_the_exact_boundary() {
+    fn leader_unlocks_at_most_one_node_per_rolling_day_at_the_exact_boundary() {
         let mut colony = found_colony(7, "colony-1", 10_000, 7);
-        establish_office(&mut colony, OfficerRole::Loremaster);
+        colony.leader_id = Some(colony.cats[0].id.clone());
         let starting_owned = colony.upgrade_tree.owned_node_ids.len();
         let first_at = 100_000;
 
         phase_24_research(&mut colony, production_gate(1, first_at - 1));
-        assert_eq!(colony.last_loremaster_unlock_at, None);
+        assert_eq!(colony.last_leader_research_choice_at, None);
         assert_eq!(colony.upgrade_tree.owned_node_ids.len(), starting_owned);
 
         colony.upgrade_tree.research_points = 100.0;
 
         phase_24_research(&mut colony, production_gate(1, first_at));
         assert_eq!(colony.upgrade_tree.owned_node_ids.len(), starting_owned + 1);
-        assert_eq!(colony.last_loremaster_unlock_at, Some(first_at));
+        assert_eq!(colony.last_leader_research_choice_at, Some(first_at));
+
+        colony.leader_id = Some(colony.cats[1].id.clone());
 
         phase_24_research(
             &mut colony,
-            production_gate(1, first_at + LOREMASTER_UNLOCK_INTERVAL_MS - 1),
+            production_gate(1, first_at + LEADER_RESEARCH_CHOICE_INTERVAL_MS - 1),
         );
         assert_eq!(
             colony.upgrade_tree.owned_node_ids.len(),
@@ -33094,7 +33104,7 @@ mod tests {
 
         phase_24_research(
             &mut colony,
-            production_gate(1, first_at + LOREMASTER_UNLOCK_INTERVAL_MS),
+            production_gate(1, first_at + LEADER_RESEARCH_CHOICE_INTERVAL_MS),
         );
         assert_eq!(
             colony.upgrade_tree.owned_node_ids.len(),
@@ -33111,7 +33121,7 @@ mod tests {
 
         phase_24_research(
             &mut colony,
-            production_gate(1, first_at + 5 * LOREMASTER_UNLOCK_INTERVAL_MS),
+            production_gate(1, first_at + 5 * LEADER_RESEARCH_CHOICE_INTERVAL_MS),
         );
         assert_eq!(
             colony.upgrade_tree.owned_node_ids.len(),
@@ -33121,10 +33131,10 @@ mod tests {
     }
 
     #[test]
-    fn loremaster_unlocks_a_recipe_at_the_exact_daily_boundary_deterministically() {
+    fn leader_unlocks_a_recipe_at_the_exact_daily_boundary_deterministically() {
         let prepare = || {
             let mut colony = found_colony(77, "colony-1", 10_000, 77);
-            establish_office(&mut colony, OfficerRole::Loremaster);
+            colony.leader_id = Some(colony.cats[0].id.clone());
             let target = research_catalog().get("carpentry_preparation").unwrap();
             colony.upgrade_tree.owned_node_ids = research_catalog()
                 .nodes()
@@ -33133,18 +33143,18 @@ mod tests {
                 .map(|node| node.id.clone())
                 .collect();
             colony.upgrade_tree.research_points = target.cost;
-            colony.last_loremaster_unlock_at = Some(100_000);
+            colony.last_leader_research_choice_at = Some(100_000);
             colony
         };
         let mut left = prepare();
         let mut right = prepare();
-        let before = 100_000 + LOREMASTER_UNLOCK_INTERVAL_MS - 1;
+        let before = 100_000 + LEADER_RESEARCH_CHOICE_INTERVAL_MS - 1;
         phase_24_research(&mut left, production_gate(1, before));
         phase_24_research(&mut right, production_gate(1, before));
         assert!(!is_owned(&left.upgrade_tree, "carpentry_preparation"));
         assert_eq!(left.upgrade_tree, right.upgrade_tree);
 
-        let boundary = 100_000 + LOREMASTER_UNLOCK_INTERVAL_MS;
+        let boundary = 100_000 + LEADER_RESEARCH_CHOICE_INTERVAL_MS;
         phase_24_research(&mut left, production_gate(1, boundary));
         phase_24_research(&mut right, production_gate(1, boundary));
         assert!(is_owned(&left.upgrade_tree, "carpentry_preparation"));
@@ -33153,32 +33163,187 @@ mod tests {
                 .is_some_and(|recipe| recipe.available)
         );
         assert_eq!(left.upgrade_tree, right.upgrade_tree);
-        assert_eq!(left.last_loremaster_unlock_at, Some(boundary));
+        assert_eq!(left.last_leader_research_choice_at, Some(boundary));
         assert_eq!(
-            left.last_loremaster_unlock_at,
-            right.last_loremaster_unlock_at
+            left.last_leader_research_choice_at,
+            right.last_leader_research_choice_at
         );
     }
 
     #[test]
-    fn loremaster_daily_unlock_sequence_is_deterministic() {
+    fn leader_daily_unlock_sequence_is_deterministic() {
         let run = || {
             let mut colony = found_colony(42, "colony-1", 10_000, 42);
-            establish_office(&mut colony, OfficerRole::Loremaster);
+            colony.leader_id = Some(colony.cats[0].id.clone());
             colony.upgrade_tree.research_points = 100.0;
             for day in 0..4 {
                 phase_24_research(
                     &mut colony,
-                    production_gate(1, 100_000 + day * LOREMASTER_UNLOCK_INTERVAL_MS),
+                    production_gate(1, 100_000 + day * LEADER_RESEARCH_CHOICE_INTERVAL_MS),
                 );
             }
             (
                 colony.upgrade_tree,
-                colony.last_loremaster_unlock_at,
+                colony.last_leader_research_choice_at,
                 colony.events,
             )
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn positive_points_with_no_affordable_target_do_not_stamp_the_daily_clock() {
+        let mut colony = found_colony(46, "colony-1", 10_000, 46);
+        colony.leader_id = Some(colony.cats[0].id.clone());
+        colony.upgrade_tree.owned_node_ids = research_catalog()
+            .nodes()
+            .iter()
+            .map(|node| node.id.clone())
+            .collect();
+        colony.upgrade_tree.research_points = 100.0;
+        let before = colony.upgrade_tree.clone();
+
+        phase_24_research(&mut colony, production_gate(1, 100_000));
+
+        assert_eq!(colony.upgrade_tree, before);
+        assert_eq!(colony.last_leader_research_choice_at, None);
+    }
+
+    #[test]
+    fn daily_research_requires_a_living_leader_not_a_loremaster() {
+        let mut colony = found_colony(43, "colony-1", 10_000, 43);
+        colony.upgrade_tree.research_points = 100.0;
+        establish_office(&mut colony, OfficerRole::Loremaster);
+        let starting_state = colony.upgrade_tree.clone();
+
+        phase_24_research(&mut colony, production_gate(1, 100_000));
+        assert_eq!(colony.upgrade_tree, starting_state);
+        assert_eq!(colony.last_leader_research_choice_at, None);
+
+        let dead_leader = colony.cats[0].id.clone();
+        colony.leader_id = Some(dead_leader.clone());
+        colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == dead_leader)
+            .unwrap()
+            .death_time = Some(99_000);
+        phase_24_research(&mut colony, production_gate(1, 101_000));
+        assert_eq!(colony.upgrade_tree, starting_state);
+        assert_eq!(colony.last_leader_research_choice_at, None);
+
+        colony.officers.remove(&OfficerRole::Loremaster);
+        colony.leader_id = Some(colony.cats[1].id.clone());
+        phase_24_research(&mut colony, production_gate(1, 102_000));
+        assert_eq!(
+            colony.upgrade_tree.owned_node_ids,
+            ["research_hut", "basic_tools"]
+        );
+        assert_eq!(colony.last_leader_research_choice_at, Some(102_000));
+    }
+
+    #[test]
+    fn interim_leader_succession_preserves_the_colony_daily_research_clock() {
+        let mut colony = found_colony(45, "colony-1", 10_000, 45);
+        colony.upgrade_tree.research_points = 100.0;
+        let first_leader = colony.cats[0].id.clone();
+        colony.leader_id = Some(first_leader.clone());
+        colony.last_leader_research_choice_at = Some(100_000);
+        colony
+            .cats
+            .iter_mut()
+            .find(|cat| cat.id == first_leader)
+            .unwrap()
+            .death_time = Some(101_000);
+
+        let before_boundary = 100_000 + LEADER_RESEARCH_CHOICE_INTERVAL_MS - 1;
+        let _ =
+            phase_4_leader_bootstrap_and_policy(&mut colony, production_gate(1, before_boundary));
+        let replacement = colony.leader_id.clone().expect("interim leader");
+        assert_ne!(replacement, first_leader);
+        phase_24_research(&mut colony, production_gate(1, before_boundary));
+        assert!(colony.upgrade_tree.owned_node_ids.is_empty());
+        assert_eq!(
+            colony.last_leader_research_choice_at,
+            Some(100_000),
+            "succession must not reset or consume the colony-wide clock"
+        );
+
+        let boundary = 100_000 + LEADER_RESEARCH_CHOICE_INTERVAL_MS;
+        phase_24_research(&mut colony, production_gate(1, boundary));
+        assert_eq!(colony.upgrade_tree.owned_node_ids, ["research_hut"]);
+        assert_eq!(colony.last_leader_research_choice_at, Some(boundary));
+    }
+
+    #[test]
+    fn run_reset_preserves_the_colony_daily_research_clock() {
+        let mut colony = found_colony(47, "colony-1", 10_000, 47);
+        colony.upgrade_tree.research_points = 100.0;
+        colony.last_leader_research_choice_at = Some(100_000);
+
+        reset_run(&mut colony, 101_000, RunResetReason::AllCatsDead);
+
+        assert_eq!(
+            colony.last_leader_research_choice_at,
+            Some(100_000),
+            "a reset must not mint another same-day automatic choice"
+        );
+        assert!(colony.leader_id.is_some());
+        phase_24_research(&mut colony, production_gate(1, 101_000));
+        assert!(colony.upgrade_tree.owned_node_ids.is_empty());
+        assert_eq!(colony.last_leader_research_choice_at, Some(100_000));
+    }
+
+    #[test]
+    fn personal_and_communal_leaders_choose_the_same_first_study_without_a_loremaster() {
+        let mut personal = found_colony(44, "personal", 10_000, 44);
+        let mut communal = found_global_colony(44, "communal", 10_000, 44);
+        for colony in [&mut personal, &mut communal] {
+            let _ = phase_4_leader_bootstrap_and_policy(colony, production_gate(1, 99_000));
+            assert!(colony.leader_id.as_ref().is_some_and(|leader_id| {
+                colony
+                    .cats
+                    .iter()
+                    .any(|cat| cat.id == *leader_id && cat.death_time.is_none())
+            }));
+            colony.upgrade_tree.research_points = 5.0;
+            assert!(!colony.officers.contains_key(&OfficerRole::Loremaster));
+            phase_24_research(colony, production_gate(1, 100_000));
+        }
+
+        assert_eq!(personal.upgrade_tree, communal.upgrade_tree);
+        assert_eq!(personal.upgrade_tree.owned_node_ids, ["research_hut"]);
+        assert_eq!(personal.upgrade_tree.research_points, 0.0);
+    }
+
+    #[test]
+    fn leader_daily_choice_activates_the_exact_building_unlock_payload() {
+        let mut colony = found_colony(78, "colony-1", 10_000, 78);
+        colony.leader_id = Some(colony.cats[0].id.clone());
+        let target = research_catalog().get("milling").unwrap();
+        colony.upgrade_tree.owned_node_ids = research_catalog()
+            .nodes()
+            .iter()
+            .filter(|node| node.id != target.id)
+            .map(|node| node.id.clone())
+            .collect();
+        colony.upgrade_tree.research_points = target.cost;
+        colony.last_leader_research_choice_at = Some(100_000);
+
+        assert!(matches!(
+            crate::upgrade_tree::building_placement_research(&colony.upgrade_tree, "mill"),
+            crate::upgrade_tree::BuildingPlacementResearch::Requires {
+                node_id: "milling",
+                ..
+            }
+        ));
+        let boundary = 100_000 + LEADER_RESEARCH_CHOICE_INTERVAL_MS;
+        phase_24_research(&mut colony, production_gate(1, boundary));
+        assert!(is_owned(&colony.upgrade_tree, "milling"));
+        assert_eq!(
+            crate::upgrade_tree::building_placement_research(&colony.upgrade_tree, "mill"),
+            crate::upgrade_tree::BuildingPlacementResearch::Available
+        );
     }
 
     /// Survival guardrail for the cat-research path: staffing a research hut must respect the
@@ -33360,8 +33525,8 @@ mod tests {
             "a staffed school and a staffed research hut must both contribute workforce"
         );
 
-        // One game-week of two researchers banks ~20 points, comfortably auto-unlocking the
-        // cost-5 root node (`research_hut`) and beyond.
+        // One game-week of two researchers banks 40 points. A Loremaster controls the labor,
+        // but without a living Leader no strategic study is chosen and no daily clock is spent.
         let week = crate::upgrade_tree::WEEK_SECONDS as i64;
         let gate = TickGate {
             elapsed_sec: week,
@@ -33371,15 +33536,9 @@ mod tests {
         };
         phase_24_research(&mut colony, gate);
 
-        assert!(
-            colony
-                .upgrade_tree
-                .owned_node_ids
-                .contains(&"research_hut".to_owned()),
-            "a game-week of research from a staffed school must unlock the cost-5 root node, \
-             got {:?}",
-            colony.upgrade_tree.owned_node_ids,
-        );
+        assert_eq!(colony.upgrade_tree.research_points, 40.0);
+        assert!(colony.upgrade_tree.owned_node_ids.is_empty());
+        assert_eq!(colony.last_leader_research_choice_at, None);
 
         // Unstaffing the school leaves only the hut scholar. That scholar has now
         // truthfully gained Research skill, so its bounded yield multiplier is part

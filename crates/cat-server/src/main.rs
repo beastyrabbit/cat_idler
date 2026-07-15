@@ -2341,6 +2341,11 @@ mod tests {
                 "signed research {node_id} failed: {result:?}"
             );
         }
+        assert_eq!(
+            state.world.lock().await.colonies[0].last_leader_research_choice_at,
+            None,
+            "many signed player purchases in one real day must not consume the Leader clock"
+        );
 
         let preference = ClientAction::SetCatLaborPreference {
             session_id: signed.session_id.clone(),
@@ -2436,6 +2441,10 @@ mod tests {
         assert_eq!(
             colony.recipe_entitlement_rules_version,
             cat_sim::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION
+        );
+        assert_eq!(
+            colony.last_leader_research_choice_at, None,
+            "restart must preserve the unlimited manual-purchase/Leader-clock split"
         );
         drop(restored);
         drop(restarted);

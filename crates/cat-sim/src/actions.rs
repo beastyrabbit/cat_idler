@@ -4737,8 +4737,8 @@ mod tests {
                 .any(|id| id == "milling")
         );
         assert_eq!(
-            guided.colonies[0].last_loremaster_unlock_at, None,
-            "manual purchases must not consume the Loremaster's daily choice"
+            guided.colonies[0].last_leader_research_choice_at, None,
+            "manual purchases must not consume the Leader's daily choice"
         );
         assert!(guided.colonies[0].jobs.iter().any(|job| {
             job.kind == JobKind::BuildHouse

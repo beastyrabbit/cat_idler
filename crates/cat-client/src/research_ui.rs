@@ -715,9 +715,9 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                         ))
                         .with_children(|button| {
                             button.spawn((ui_text("", FS_SMALL, UI_INK), PurchaseButtonText));
-                        });
+                    });
                     inspector.spawn(ui_text(
-                        "All studies can be completed with research points. The original studies may also be commissioned separately with shrine blessings.",
+                        "Research labor is manual while the Loremaster office is vacant. The Leader may choose one affordable study per rolling real day; players may buy any affordable studies. Original studies may also be commissioned with shrine blessings.",
                         FS_SMALL,
                         LEDGER_MUTED,
                     ));
@@ -734,6 +734,13 @@ fn current_research(latest: &LatestSnapshot) -> Option<&ResearchSnapshot> {
         .as_ref()
         .and_then(|world| world.colonies.first())
         .map(|colony| &colony.research)
+}
+
+fn leader_priority_copy(research: &ResearchSnapshot) -> String {
+    research.next_target.as_ref().map_or_else(
+        || "No leader-priority study available".to_owned(),
+        |target| format!("Leader priority: {} · {:.0} pts", target.name, target.cost),
+    )
 }
 
 fn center_on(ui: &mut UpgradeTreeUi, index: usize, window: Option<&Window>) {
@@ -1132,10 +1139,7 @@ pub(super) fn update_research_snapshot(
             );
         }
         if let Ok(mut text) = next.single_mut() {
-            text.0 = research.next_target.as_ref().map_or_else(
-                || "No automatic study queued".to_owned(),
-                |target| format!("Studying next: {} · {:.0} pts", target.name, target.cost),
-            );
+            text.0 = leader_priority_copy(research);
         }
     } else {
         if let Ok(mut text) = currency.single_mut() {
@@ -1428,6 +1432,22 @@ mod tests {
             model.state_of("basic_tools", &rooted),
             CatalogNodeState::Available
         );
+    }
+
+    #[test]
+    fn leader_priority_copy_never_claims_that_the_hint_is_already_being_studied() {
+        let mut research = snapshot(&[], 0.0);
+        assert_eq!(
+            leader_priority_copy(&research),
+            "No leader-priority study available"
+        );
+        research.next_target = Some(cat_protocol::ResearchTarget {
+            id: "research_hut".to_owned(),
+            name: "Research Hut".to_owned(),
+            cost: 5.0,
+        });
+        let copy = leader_priority_copy(&research);
+        assert_eq!(copy, "Leader priority: Research Hut · 5 pts");
     }
 
     #[test]

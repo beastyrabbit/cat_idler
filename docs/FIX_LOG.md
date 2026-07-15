@@ -12,13 +12,36 @@ and any changed Bevy visuals have been verified.
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads now bind the maintained physical recipes: Grain Milling→`grain_to_flour_and_food`, Carpentry→`logs_to_lumber`, Metallurgy→`ore_to_metal`, and Trade Goods→`materials_to_refined`. Fresh rules-v1 villages require the exact study for snapshots, signed queue additions, block reasons, and physical station advance; old/missing rules-v0 saves retain their queues and are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no physical consumer. Add only physically sourced resource/recipe breadth. | in progress |
 | Research job unlocks do not gate jobs truthfully | Nine `UnlockJob` payloads are false or unread: the three real `JobKind` claims (Fetch Water, Explore, and Train Warrior) intentionally work before their studies, while six advertised IDs have no runtime `JobKind`. Only Sawmill→Gather Logs agrees with live placement/action behavior. Remove the false claims without taking away founding survival or manual work. | queued |
-| Daily autonomous research belongs to the wrong authority | `GAME_VISION.md` and the player feedback require the living, always-present Leader to choose at most one study per rolling real-life day, but runtime currently requires an appointed Loremaster. Move only the daily node-selection authority, conservatively reuse the persisted last-unlock timestamp, and stop presenting the priority hint as an already selected “Studying next” node. Research-point labor in huts/schools and ritual automation remain Loremaster-owned. | queued |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains; rail and shipping have modifiers but no tracks, trains, vessels, or routes. | queued |
 
 ## Verified fixes
+
+## 2026-07-15 — Leader-owned daily research choice
+
+**Problem:** The design assigns the once-per-rolling-real-day strategic study choice to the living
+Leader, but runtime incorrectly required an appointed Loremaster and the ledger presented its
+priority hint as an already active study.
+
+**Fix:** A living Leader now deterministically spends existing research points on at most one
+affordable study per rolling 24 hours. The colony-wide clock survives Leader replacement, run
+reset, and SQLite restart through the legacy `lastLoremasterUnlockAt` column, so upgrades cannot
+mint a free choice. Missing/null legacy values remain ready; zero points or no affordable target
+never stamps the clock; clock rollback and multi-day offline jumps never create backlog. Signed
+player purchases remain unlimited and outside that clock. Research labor/building automation,
+comfort release, and every ritual path remain Loremaster-owned. The ledger now truthfully labels
+the deterministic hint as `Leader priority`.
+
+**Evidence:** Focused living/dead/bootstrap/succession/reset, exact-boundary/rollback/no-backlog,
+positive-points/no-target, recipe/building entitlement, seven-role vacancy, ritual, signed manual
+purchase, legacy-column restart, deterministic twin, and client-copy tests cover the authority
+split without changing entitlement resolvers. The final touched-crate gate passed 1,334/1,334
+tests (one intentionally skipped), strict Clippy, formatting, and diff checks; after removing the
+temporary capture hook, all 126 client tests passed again. A live server/client framebuffer at
+`/tmp/leader-daily-research.png` visibly proves the full ledger labels its hint `Leader priority`
+and explains the Leader/Loremaster/player authority split in the selected-study inspector.
 
 ## 2026-07-15 — Truthful catalog-derived building placement research
 

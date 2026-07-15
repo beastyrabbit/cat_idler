@@ -436,7 +436,7 @@ fn run_action_campaign() -> WorldState {
         "research_hut"
     ));
     world.colonies[0].upgrade_tree.research_points = 5.0;
-    world.colonies[0].last_loremaster_unlock_at = Some(4_000);
+    world.colonies[0].last_leader_research_choice_at = Some(4_000);
     let blessings_before_research = world.colonies[0].global_upgrade_points;
     let (session_id, nickname, sig) = signed_fields();
     apply_ok(
@@ -459,9 +459,9 @@ fn run_action_campaign() -> WorldState {
         blessings_before_research
     );
     assert_eq!(
-        world.colonies[0].last_loremaster_unlock_at,
+        world.colonies[0].last_leader_research_choice_at,
         Some(4_000),
-        "manual ResearchNode bypasses the Loremaster's autonomous daily clock"
+        "manual ResearchNode bypasses the Leader's autonomous daily clock"
     );
 
     world.colonies[0].resources.food = 200.0;

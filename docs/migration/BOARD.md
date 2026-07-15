@@ -572,7 +572,7 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   Leader have strict specialist automation ownership. Beyond the founding Leader's bounded
   hunt/water/scout safety floor, vacancies are manual-only. Appointment requires the matching
   researched unlock and completed role station; assignment, replacement, automation provenance,
-  and the rolling daily legacy-Loremaster timestamp persist.
+  and the rolling daily Leader-choice timestamp persist through the legacy SQLite column name.
 - **P12.3 spatial stockpiles** — founding seeds a finite general storehouse; designated containers
   determine real capacity, legacy shrine stores migrate into them, and persisted transit ledgers
   reserve carried cargo without blocking the map. The founding numbers are decided and verified:
@@ -610,12 +610,13 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   resource, building, military, ritual, shrine, hauling, and research actions.
 - Crop/timber HUD state, visible farm growth stages, and distinct roofless processing stations.
 - A full-page 500-study ledger with dependencies, filter/search/pan/zoom. Every study supports
-  research-point purchase and persistence; daily Loremaster automation selects across the full
+  research-point purchase and persistence; the living Leader selects at most one affordable node
+  per rolling real-life day across the full
   catalog. Research Hut is explicitly available from founding; `milling` is the sole Mill
   placement unlock, generated Mill Foundations is durability only, and one catalog-derived rule
   drives placement denial text. Four physical recipes have fresh-village entitlements; 96 recipes,
-  64 resources, nine false/unread job claims, and the design's still-missing Leader-owned daily
-  choice remain open.
+  64 resources, and nine false/unread job claims remain open. Research labor/building automation
+  and rituals remain Loremaster-owned; the daily strategic choice is Leader-owned.
 
 ### P14 — Spatial placement (spec: `docs/migration/specs/p14-spatial-placement.md`)
 - **Verified slice:** atomic player/leader validation and commit, exclusive future footprints,

@@ -561,7 +561,7 @@ fn save_colony(conn: &Connection, world_seed: u32, colony: &ColonyRuntime) -> ru
             i64::from(colony.run_number),
             colony.run_started_at,
             colony.last_player_activity_at,
-            colony.last_loremaster_unlock_at,
+            colony.last_leader_research_choice_at,
             colony.last_tithe_at,
             colony.last_offering_at,
             colony.automation_tier,
@@ -827,7 +827,9 @@ fn load_colony(conn: &Connection, row: &Row<'_>) -> rusqlite::Result<ColonyRunti
         run_started_at: row.get::<_, Option<i64>>("runStartedAt")?.unwrap_or(0),
         created_at: row.get("createdAt")?,
         last_player_activity_at: row.get("lastPlayerActivityAt")?,
-        last_loremaster_unlock_at: row.get("lastLoremasterUnlockAt")?,
+        // Keep reading the legacy column name so existing saves retain their
+        // conservative rolling-day budget after authority moves to the Leader.
+        last_leader_research_choice_at: row.get("lastLoremasterUnlockAt")?,
         last_tithe_at: row.get("lastTitheAt")?,
         last_offering_at: row.get("lastOfferingAt")?,
         last_tick: row.get("lastTick")?,
@@ -3321,7 +3323,7 @@ mod tests {
     }
 
     #[test]
-    fn recipe_entitlement_version_queue_ownership_and_timestamp_survive_restart() {
+    fn recipe_entitlement_version_queue_ownership_and_leader_timestamp_survive_restart() {
         let conn = open_database(":memory:").expect("database");
         let mut world = new_world(42);
         let mut colony = found_colony(42, "entitlement", 1_000_000, 42);
@@ -3329,7 +3331,7 @@ mod tests {
             .upgrade_tree
             .owned_node_ids
             .push("carpentry_preparation".to_owned());
-        colony.last_loremaster_unlock_at = Some(1_234_567);
+        colony.last_leader_research_choice_at = Some(1_234_567);
         colony.buildings.push(BuildingRuntime {
             id: "persisted-sawmill".to_owned(),
             building_type: BuildingType::Sawmill,
@@ -3356,7 +3358,7 @@ mod tests {
                 .owned_node_ids
                 .contains(&"carpentry_preparation".to_owned())
         );
-        assert_eq!(colony.last_loremaster_unlock_at, Some(1_234_567));
+        assert_eq!(colony.last_leader_research_choice_at, Some(1_234_567));
         assert_eq!(
             colony
                 .buildings
@@ -3368,6 +3370,61 @@ mod tests {
                 recipe_id: cat_sim::world_tick::SAWMILL_RECIPE_ID.to_owned(),
                 repeat: false,
             }]
+        );
+    }
+
+    #[test]
+    fn legacy_daily_research_column_preserves_the_leader_boundary_across_restarts() {
+        const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
+        let conn = open_database(":memory:").expect("database");
+        let chosen_at = 100_000;
+        let boundary = chosen_at + DAY_MS;
+        let mut world = new_world(79);
+        let mut colony = found_colony(79, "daily-research", chosen_at, 79);
+        colony.leader_id = Some(colony.cats[0].id.clone());
+        colony.upgrade_tree.research_points = 100.0;
+        colony.last_leader_research_choice_at = Some(chosen_at);
+        world.colonies.push(colony);
+        save_world(&conn, &world).expect("save at T");
+
+        let stored: Option<i64> = conn
+            .query_row(
+                "SELECT lastLoremasterUnlockAt FROM colonies WHERE id = 'daily-research'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read legacy compatibility column");
+        assert_eq!(stored, Some(chosen_at));
+
+        let mut before = load_world(&conn).unwrap().unwrap();
+        let _ = world_tick(&mut before, boundary - 1);
+        assert!(before.colonies[0].upgrade_tree.owned_node_ids.is_empty());
+        assert_eq!(
+            before.colonies[0].last_leader_research_choice_at,
+            Some(chosen_at)
+        );
+
+        let mut exact = load_world(&conn).unwrap().unwrap();
+        let _ = world_tick(&mut exact, boundary);
+        assert_eq!(
+            exact.colonies[0].upgrade_tree.owned_node_ids,
+            ["research_hut"]
+        );
+        assert_eq!(
+            exact.colonies[0].last_leader_research_choice_at,
+            Some(boundary)
+        );
+        save_world(&conn, &exact).expect("save exact-boundary result");
+
+        let mut immediate = load_world(&conn).unwrap().unwrap();
+        let _ = world_tick(&mut immediate, boundary + 1_000);
+        assert_eq!(
+            immediate.colonies[0].upgrade_tree.owned_node_ids,
+            ["research_hut"]
+        );
+        assert_eq!(
+            immediate.colonies[0].last_leader_research_choice_at,
+            Some(boundary)
         );
     }
 
@@ -4512,7 +4569,7 @@ mod tests {
         colony.run_started_at = 4_900_000;
         colony.created_at = 4_800_000;
         colony.last_player_activity_at = Some(5_400_000);
-        colony.last_loremaster_unlock_at = Some(5_350_000);
+        colony.last_leader_research_choice_at = Some(5_350_000);
         colony.last_tithe_at = Some(5_360_000);
         colony.last_offering_at = Some(5_370_000);
         colony.last_tick = 5_500_000;
@@ -4784,8 +4841,8 @@ mod tests {
         );
         assert_eq!(loaded_colony.coin, expected_colony.coin);
         assert_eq!(
-            loaded_colony.last_loremaster_unlock_at,
-            expected_colony.last_loremaster_unlock_at
+            loaded_colony.last_leader_research_choice_at,
+            expected_colony.last_leader_research_choice_at
         );
         assert_eq!(loaded_colony.last_tithe_at, expected_colony.last_tithe_at);
         assert_eq!(

@@ -15,13 +15,13 @@
    - **Forester** — wood: felling, replanting, lumber.
    - **Farmer** — fields, foraging, food.
    - **Captain** — warriors, defense, raids.
-   - **Loremaster/Ritualist** — research + shrine/rituals.
+   - **Loremaster/Ritualist** — research labor/building automation + shrine/rituals.
    - **Cloth Leader** — fibre, hide, cloth, leather, and clothing stations.
    The always-present founding Leader retains a narrow, deficit-scaled safety floor: at the
    15-cat founding population, at most six primitive hunters, two emergency water fetchers, and
    one scout; those ceilings scale proportionally as the population changes. Specialist
    vacancies still make farming, production,
-   hauling policy, research, rituals, and defense manual; a fresh idle village must not repeatedly
+   hauling policy, research labor, rituals, and defense manual; a fresh idle village must not repeatedly
    reset merely because its first officer buildings do not exist yet.
    Each unlocked role hands its slice of decisions to the AI; unfilled roles stay manual.
 3. **A living, visible workplace (DF readability).**
@@ -38,8 +38,9 @@
    roughly two-tile halo. Resource-targeted and general scouts tentatively lift fog while
    away; discoveries become permanent only when the scout returns to and touches the shrine.
    Baseline deficit-driven scout dispatch belongs to the founding Leader (especially the fast
-   first wood search) and is not gated behind the later Loremaster office; research and rituals
-   remain Loremaster-owned.
+   first wood search) and is not gated behind the later Loremaster office; research labor/building
+   automation and rituals remain Loremaster-owned, while the Leader retains the daily strategic
+   study choice described below.
 
 ## What already exists in the sim (reuse, don't rebuild)
 - Utility-AI **leader director** (one overseer that automates) — the seed of the role system.
@@ -79,7 +80,7 @@ unlock a **role-officer** that automates it. Roles live in **role-buildings**, w
 - **Cloth Leader** (build a *Clothier's Workshop*) — cats can first be told **manually** to
   produce **cloth / armour / clothing**; once the Cloth Leader is unlocked, it runs automatically.
 - **Steward** (hauling + stockpiles), **Forester** (wood), **Farmer** (fields/foraging),
-  **Captain** (defense/warriors), **Loremaster** (research/rituals) — same manual→auto pattern.
+  **Captain** (defense/warriors), **Loremaster** (research labor/rituals) — same manual→auto pattern.
 Unlocking a role hands its slice of decisions to the AI (the existing leader director,
 specialized per role); unfilled roles stay manual.
 
@@ -104,7 +105,7 @@ unvisited or unreachable piles remain visibly stale.
 - Research uses a full-page dependency tree with about **500 data-driven nodes**: at least
   one third building-related unlocks and one third recipes/new resources, with the rest
   covering movement, labor, storage, defense, and similar upgrades. A player may buy any
-  affordable nodes. The leader may autonomously choose at most one node per real-life day.
+  affordable nodes. The Leader may autonomously choose at most one node per rolling real-life day.
 
 ### Founding, housing, breeding, and migration
 - A new village starts with **15 adult cats and three early Dens**; each Den provides exactly

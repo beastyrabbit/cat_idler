@@ -156,8 +156,9 @@ maintained product behavior rather than migration:
 - **Durable native identity.** The native client keeps its HMAC bearer and selected village in a
   mode-0600 file replaced through a synced same-directory temporary file and atomic rename; WASM
   uses the corresponding local-storage record.
-- **Research and scouting depth.** Players can spend research points on all 500 studies, and a
-  Loremaster may complete at most one affordable full-catalog node per rolling real-life day.
+- **Research and scouting depth.** Players can spend research points on all 500 studies, and the
+  living Leader may complete at most one affordable full-catalog node per rolling real-life day.
+  Research labor/building automation and rituals remain Loremaster-owned.
   Typed modeled effects (including the durability consumer) and future-content unlock registries
   persist. Resource/general scouts now
   preserve the shrine-return knowledge contract while following deterministic knowledge-blind
