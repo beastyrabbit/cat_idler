@@ -2972,6 +2972,7 @@ mod tests {
             depart_at: Some(i64::MAX),
             route_exterior: Some([7, 20]),
             visit_destination: Some([7, 8]),
+            route_blocked: false,
             visit_number: 3,
             stock: std::collections::BTreeMap::from([(
                 cat_sim::stockpiles::ResourceKind::Food,

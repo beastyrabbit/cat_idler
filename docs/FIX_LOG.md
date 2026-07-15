@@ -20,10 +20,38 @@ and any changed Bevy visuals have been verified.
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
-| Visiting traders were neither physical nor finite | The merchant now spawns at a deterministic reachable exterior, follows ordinary obstacle-aware A* through the retained gate to physical shrine contact, waits/replans behind a blocked route, trades only after arrival, and returns to a still-valid exterior before despawning. Every visit has a deterministic finite resource manifest, finite purse, 100 kg wagon, exact stable item-unit cargo, and a persisted phase/route/deadline; buys deplete exact stock and expose sold-out truth, while sales conserve exact item IDs and respect purse/capacity. Exact transition times match one-second, minute, hourly, and coarse partitions without backdating blocked travel. The bounded 1024×768 panel pages every offer, opens only at shrine contact, and bases storage-block copy solely on reported Accountant books. Mid-visit SQLite restart, signed buy/sell/depletion, expansion rehoming, passive 60h arrival/trade/departure, protocol, client, and deterministic tests pass. Final broad touched-crate gates and own-framebuffer inspection remain before promotion to the verified log. | implementation complete; final integration gate pending |
 | Authored road building is instant | `actions::build_road` validates a shrine-connected mapped path, paints every new tile immediately, and subtracts one aggregate Material per tile without a cat, cargo, or construction phase. Preserve the verified placement, surface, connectivity, and speed rules while adding a physical build route if roadwork is promoted to the full DF-style logistics contract. This is a P2 physical-consistency enhancement, not a blocker under the current P16 wording. | queued (P2) |
 
 ## Verified fixes
+
+## 2026-07-15 — Visiting traders are physical and finite
+
+**Problem:** Visiting merchants were a timer-backed menu with effectively infinite stock. They did
+not walk into the village, own conserved cargo, wait behind a closed route, or visibly leave.
+
+**Fix:** Each visit now owns a deterministic reachable exterior, follows ordinary obstacle-aware
+A* through the retained gate to physical shrine contact, trades only while present, and returns to
+a still-valid exterior before despawning. The merchant carries a finite deterministic resource
+manifest, finite purse, 100 kg wagon, and exact stable item units. Purchases deplete exact stock and
+show sold-out truth; sales preserve item identity and stop at purse or cargo capacity. Phase, route,
+deadline, inventory, and cargo persist across restart. Expansion rehomes an exterior that becomes
+claimed. Exact transition times agree across one-second, minute, hourly, and coarse tick partitions
+without granting backdated travel after a blocked boundary. The bounded panel pages every offer and
+uses only Accountant reports when explaining storage blocks.
+
+**Evidence:** Focused route, passability, closure/reopen, shrine-contact, cadence, rehoming,
+conservation, sold-out, SQLite restart, signed buy/sell/depletion/denial, protocol, pagination, and
+privacy tests pass. A deterministic seed-41 live-cadence 60-hour passive twin observed arrival,
+the complete shrine trading window, and physical departure without deaths or reset. The accepted
+client-owned 1024×768 logical framebuffer `/tmp/trader-physical-1024.png` shows the merchant at the
+shrine, page 2/2, finite quantities, Food sold out, bounded controls, and report-derived storage
+guidance without exposing exact private headroom. The first broad gate exposed a blocked-route
+timestamp regression that focused tests had not exercised: reopening could reuse elapsed time from
+the unavailable window and collapse arrival, trading, and departure into one coarse call. A
+defaulted persisted blocked-route marker now gives the reopened route only the new tick's movement
+while timestamping contact/departure at that observation boundary. Both exact reopen guardrails,
+all 23 trader tests, the full 1,153 simulation tests, all 80 server tests, strict touched-crate
+Clippy, formatting, and diff checks pass.
 
 ## 2026-07-15 — Accountant reports are the player-wire inventory boundary
 

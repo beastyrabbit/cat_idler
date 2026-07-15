@@ -1228,6 +1228,7 @@ fn run_action_campaign() -> WorldState {
         depart_at: Some(99_999),
         route_exterior: Some([0, 12]),
         visit_destination: Some([7, 8]),
+        route_blocked: false,
         visit_number: 1,
         stock: trader::stock_for_visit(world.world_seed, "colony-1", 1),
         items: ItemStore::default(),

@@ -162,8 +162,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    partitions; a route that was unavailable at the scheduled boundary never grants backdated travel.
    The trade panel opens only on shrine contact, pages every finite craft offer six at a time within
    1024×768, and derives storage-full guidance only from the Accountant's reported books.
-   Before closing this slice, run the broad touched-crate gates and accept the client-owned
-   framebuffer with the merchant at the shrine and finite/sold-out inventory visible.
+   The accepted client-owned 1024×768 logical framebuffer `/tmp/trader-physical-1024.png` shows
+   the merchant at the shrine, page 2/2, finite quantities, Food sold out, bounded controls, and
+   report-derived storage guidance. A broad-gate-found blocked-reopen timestamp regression is also
+   fixed with persisted route-block observation state; 1,153 simulation and 80 server tests plus
+   strict touched-crate Clippy pass. The physical finite visiting-trader slice is closed.
 2. **Deepen the shared world.** The durable 30-cat/six-Den/19×19 communal hub is mechanically
    larger than exact 15-cat/three-Den personal villages. Replace per-colony duplicated mutable
    terrain with an authoritative shared spatial model where appropriate, then turn summary contact

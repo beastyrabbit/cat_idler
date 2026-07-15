@@ -7958,6 +7958,7 @@ mod tests {
             depart_at: Some(10_000_000),
             route_exterior: Some([6, 20]),
             visit_destination: Some([7, 8]),
+            route_blocked: false,
             visit_number: 1,
             stock: BTreeMap::from([(stockpiles::ResourceKind::Food, 25.0)]),
             items: ItemStore::default(),

@@ -1969,6 +1969,11 @@ pub struct TraderRuntime {
     /// assumption; the route planner selects and persists a physical contact point.
     #[serde(default)]
     pub visit_destination: Option<[i32; 2]>,
+    /// The previous lifecycle tick found no physical route. A later tick may spend its
+    /// own movement budget when the route reopens, but any transition is timestamped at
+    /// that tick's observation boundary rather than backdated into the blocked window.
+    #[serde(default)]
+    pub route_blocked: bool,
     #[serde(default)]
     pub visit_number: u64,
     /// Finite resource manifest remaining aboard this visit.
@@ -13128,6 +13133,7 @@ fn spawn_trader(
         depart_at: None,
         route_exterior: Some([exterior.x, exterior.y]),
         visit_destination: Some([contact.x, contact.y]),
+        route_blocked: false,
         visit_number,
         stock: trader::stock_for_visit(world_seed, &colony.id, visit_number),
         items: ItemStore::default(),
@@ -13413,6 +13419,10 @@ fn phase_36b_trader_lifecycle(
         let state = colony.trader.as_ref().expect("spawned trader above").state;
         match state {
             trader::TraderState::Arriving => {
+                let was_route_blocked = colony
+                    .trader
+                    .as_ref()
+                    .is_some_and(|unit| unit.route_blocked);
                 let current = {
                     let unit = colony.trader.as_ref().expect("trader is arriving");
                     WorldPos {
@@ -13428,9 +13438,11 @@ fn phase_36b_trader_lifecycle(
                 let Some(destination) = destination else {
                     return;
                 };
-                let remaining_game_sec =
-                    gate.processed_through.saturating_sub(cursor_ms).max(0) as f64 / 1_000.0
-                        * scale;
+                let remaining_game_sec = if was_route_blocked {
+                    gate.elapsed_sec.max(0) as f64 * scale
+                } else {
+                    gate.processed_through.saturating_sub(cursor_ms).max(0) as f64 / 1_000.0 * scale
+                };
                 let Some((position, arrived, consumed_game_sec)) = walk_trader_route_for_elapsed(
                     colony,
                     movement,
@@ -13438,14 +13450,23 @@ fn phase_36b_trader_lifecycle(
                     destination,
                     remaining_game_sec,
                 ) else {
+                    colony
+                        .trader
+                        .as_mut()
+                        .expect("blocked arrival owns a trader")
+                        .route_blocked = true;
                     return;
                 };
-                let contact_at =
-                    cursor_ms.saturating_add(trader_movement_duration_ms(consumed_game_sec, scale));
+                let contact_at = if was_route_blocked {
+                    gate.processed_through
+                } else {
+                    cursor_ms.saturating_add(trader_movement_duration_ms(consumed_game_sec, scale))
+                };
                 {
                     let unit = colony.trader.as_mut().expect("trader is arriving");
                     unit.position = position_from_world(position);
                     unit.destination = Some(position_from_world(destination));
+                    unit.route_blocked = false;
                     if arrived {
                         unit.state = trader::TraderState::Trading;
                         unit.arrived_at = Some(contact_at);
@@ -13483,7 +13504,16 @@ fn phase_36b_trader_lifecycle(
                 cursor_ms = cursor_ms.max(depart_at);
             }
             trader::TraderState::Departing => {
+                let was_route_blocked = colony
+                    .trader
+                    .as_ref()
+                    .is_some_and(|unit| unit.route_blocked);
                 if !ensure_trader_departure_exterior(colony, movement) {
+                    colony
+                        .trader
+                        .as_mut()
+                        .expect("blocked departure owns a trader")
+                        .route_blocked = true;
                     return;
                 }
                 let current = {
@@ -13501,9 +13531,11 @@ fn phase_36b_trader_lifecycle(
                 let Some(exterior) = exterior else {
                     return;
                 };
-                let remaining_game_sec =
-                    gate.processed_through.saturating_sub(cursor_ms).max(0) as f64 / 1_000.0
-                        * scale;
+                let remaining_game_sec = if was_route_blocked {
+                    gate.elapsed_sec.max(0) as f64 * scale
+                } else {
+                    gate.processed_through.saturating_sub(cursor_ms).max(0) as f64 / 1_000.0 * scale
+                };
                 let Some((position, departed, consumed_game_sec)) = walk_trader_route_for_elapsed(
                     colony,
                     movement,
@@ -13511,14 +13543,23 @@ fn phase_36b_trader_lifecycle(
                     exterior,
                     remaining_game_sec,
                 ) else {
+                    colony
+                        .trader
+                        .as_mut()
+                        .expect("blocked departure owns a trader")
+                        .route_blocked = true;
                     return;
                 };
-                let departed_at =
-                    cursor_ms.saturating_add(trader_movement_duration_ms(consumed_game_sec, scale));
+                let departed_at = if was_route_blocked {
+                    gate.processed_through
+                } else {
+                    cursor_ms.saturating_add(trader_movement_duration_ms(consumed_game_sec, scale))
+                };
                 {
                     let unit = colony.trader.as_mut().expect("trader is departing");
                     unit.position = position_from_world(position);
                     unit.destination = Some(position_from_world(exterior));
+                    unit.route_blocked = false;
                 }
                 if !departed {
                     return;
@@ -32550,6 +32591,19 @@ mod tests {
     }
 
     #[test]
+    fn legacy_trader_json_defaults_the_blocked_route_observation_to_false() {
+        let mut colony = trader_test_colony(1);
+        let due = game_hours_to_ms(trader::TRADER_VISIT_INTERVAL_GAME_HOURS);
+        advance_test_trader(&mut colony, production_gate(0, due));
+        let mut json = serde_json::to_value(colony.trader.as_ref().unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("routeBlocked");
+
+        let loaded: TraderRuntime = serde_json::from_value(json).unwrap();
+
+        assert!(!loaded.route_blocked);
+    }
+
+    #[test]
     fn route_unavailable_at_schedule_spawns_only_from_the_later_availability_boundary() {
         let mut colony = trader_test_colony(1);
         let due = game_hours_to_ms(trader::TRADER_VISIT_INTERVAL_GAME_HOURS);
@@ -32698,6 +32752,7 @@ mod tests {
         assert_eq!(waiting.position, start);
         assert_eq!(waiting.arrived_at, None);
         assert_eq!(waiting.depart_at, None);
+        assert!(waiting.route_blocked);
 
         let opened_at = blocked_at + 1_000;
         let opened_gate = production_gate(12 * 3_600, opened_at);
@@ -32717,6 +32772,7 @@ mod tests {
         let trading = colony.trader.as_ref().unwrap();
         assert_eq!(trading.state, trader::TraderState::Trading);
         assert_eq!(trading.arrived_at, Some(opened_at));
+        assert!(!trading.route_blocked);
         assert!(
             trading
                 .depart_at
@@ -32755,6 +32811,7 @@ mod tests {
         let waiting = colony.trader.as_ref().unwrap();
         assert_eq!(waiting.position, at_shrine);
         assert_eq!(waiting.route_exterior, Some(exterior));
+        assert!(waiting.route_blocked);
 
         let opened_gate = production_gate(12 * 3_600, deadline + 2_000);
         advance_test_trader(&mut colony, opened_gate);
@@ -33036,6 +33093,7 @@ mod tests {
             depart_at: Some(1_000),
             route_exterior: None,
             visit_destination: None,
+            route_blocked: false,
             visit_number: 1,
             stock: BTreeMap::new(),
             items: ItemStore::default(),
