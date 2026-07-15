@@ -154,16 +154,12 @@ pub struct UpgradeNode {
 /// Owned via god blessing or cat auto-research like any other node.
 pub const MOUNTAINEERING_NODE_ID: &str = "mountaineering";
 
-/// Tech node that speeds up long-distance overland hauls (P17 distant-biome
-/// logistics). Checked directly at the movement call site — like
-/// [`MOUNTAINEERING_NODE_ID`], its effect is a structural gate rather than a
-/// generic [`EffectKey`] multiplier, since it only applies beyond a distance
-/// threshold, not to every job uniformly.
+/// Tech node that grants rail blueprints. Ownership alone is intentionally
+/// neutral until physical tracks, rolling stock, boarding, and routes exist.
 pub const RAIL_NODE_ID: &str = "rail";
 
-/// Tech node that makes water tiles passable (slow) to pathfinding, mirroring
-/// [`MOUNTAINEERING_NODE_ID`]'s gate on mountain tiles. Checked directly at the
-/// `ColonyGridParams::shipping_unlocked` call site.
+/// Tech node that grants shipping blueprints. Ownership alone is intentionally
+/// neutral until physical vessels, docks, boarding, and routes exist.
 pub const SHIPPING_NODE_ID: &str = "shipping";
 
 /// Tech node that unlocks the smelter building (P17/P19 ore→metal chain). Its
@@ -509,7 +505,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
     UpgradeNode {
         id: RAIL_NODE_ID,
         name: "Rail Line",
-        description: "Rails laid through the passes mountaineering first opened. A distant biome is a day's walk no longer — the wagons run on iron tracks now.",
+        description: "Survey grades and draft rail blueprints. Physical tracks, rolling stock, and staffed routes are still required before cats travel faster.",
         era: 3,
         cost: 20.0,
         // Rails follow the graded routes mountaineering's switchbacks already cut,
@@ -525,7 +521,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
     UpgradeNode {
         id: SHIPPING_NODE_ID,
         name: "Shipping",
-        description: "Hulls raised at the sawmill's dock. Cats can finally cross open water — slow, cautious poling, but it reaches biomes no road ever will.",
+        description: "Draft hull and dock blueprints. Physical vessels and staffed routes are still required before cats can cross open water.",
         era: 3,
         cost: 24.0,
         // Timber for hulls comes from the sawmill's output chain.
@@ -1234,9 +1230,8 @@ mod tests {
         // 18 TS-parity nodes + the Rust-side `mountaineering` node (unlocks
         // mountain-tile traversal in pathfinding) + the Rust-side `textiles` node
         // (unlocks the clothier/tannery clothing chain, P16/P19 deferred slice) +
-        // the Rust-side `rail`/`shipping` P17 transport-upgrade pair (long-haul
-        // speed + water traversal, both gates checked directly at their pathfinding/
-        // movement call sites like `mountaineering`) + the Rust-side `smelting` node
+        // the Rust-side `rail`/`shipping` P17 transport-blueprint pair (ownership
+        // remains physically neutral until vehicles and routes exist) + the Rust-side `smelting` node
         // (unlocks the smelter building, P17/P19 ore→metal chain). The stable
         // Research Hut root no longer claims it grants a building that is
         // deliberately available before the root study can be purchased.

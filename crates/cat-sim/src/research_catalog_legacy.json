@@ -306,7 +306,7 @@
     {
       "id": "rail",
       "name": "Rail Line",
-      "description": "Rails laid through the passes mountaineering first opened. A distant biome is a day's walk no longer — the wagons run on iron tracks now.",
+      "description": "Survey grades and draft rail blueprints. Physical tracks, rolling stock, and staffed routes are still required before cats travel faster.",
       "category": "upgrade",
       "cost": 20.0,
       "prerequisites": ["mountaineering"],
@@ -320,7 +320,7 @@
     {
       "id": "shipping",
       "name": "Shipping",
-      "description": "Hulls raised at the sawmill's dock. Cats can finally cross open water — slow, cautious poling, but it reaches biomes no road ever will.",
+      "description": "Draft hull and dock blueprints. Physical vessels and staffed routes are still required before cats can cross open water.",
       "category": "upgrade",
       "cost": 24.0,
       "prerequisites": ["sawmill"],

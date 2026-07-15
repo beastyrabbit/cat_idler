@@ -1183,9 +1183,11 @@ fn payload_line(payload: &ResearchPayload) -> String {
             operation,
             value,
         } => format!("{effect_id} {operation:?} {value:.2}"),
-        ResearchPayload::UnlockCapability { capability_id } => {
-            format!("Capability: {capability_id}")
-        }
+        ResearchPayload::UnlockCapability { capability_id } => match capability_id.as_str() {
+            "rail_logistics" => "Blueprints: Rail transport".to_owned(),
+            "water_travel" => "Blueprints: Shipping".to_owned(),
+            _ => format!("Capability: {}", title_case_identifier(capability_id)),
+        },
     }
 }
 
@@ -1386,6 +1388,22 @@ mod tests {
         assert!(ui.captures_text_input());
         ui.visible = false;
         assert!(!ui.captures_text_input());
+    }
+
+    #[test]
+    fn transport_payload_copy_promises_blueprints_not_magical_travel() {
+        assert_eq!(
+            payload_line(&ResearchPayload::UnlockCapability {
+                capability_id: "rail_logistics".to_owned(),
+            }),
+            "Blueprints: Rail transport"
+        );
+        assert_eq!(
+            payload_line(&ResearchPayload::UnlockCapability {
+                capability_id: "water_travel".to_owned(),
+            }),
+            "Blueprints: Shipping"
+        );
     }
     use bevy::ecs::world::CommandQueue;
     use cat_protocol::ResearchSnapshot;

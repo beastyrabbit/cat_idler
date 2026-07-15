@@ -17,7 +17,7 @@ and any changed Bevy visuals have been verified.
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
-| Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains; rail and shipping have modifiers but no tracks, trains, vessels, or routes. | queued |
+| Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
 
 ## Verified fixes
 
@@ -49,6 +49,29 @@ own-framebuffers `/tmp/research-job-payload-truth-sawmill.png` and
 `/tmp/research-job-payload-truth-textiles.png` show the sole job line `Unlocks logging` and the
 human recipe names `Cloth weaving` and `Leather tanning`; the temporary capture hook and processes
 were removed.
+
+## 2026-07-15 — Transport research no longer conjures vehicles
+
+**Problem:** Owning Shipping made every water tile walkable by an ordinary cat, while owning Rail
+gave any cat three-times speed whenever its remaining destination was at least 40 tiles away.
+Neither effect required a dock, vessel, track, train, boarding step, or physical route, so research
+ownership bypassed the game's physical-logistics contract.
+
+**Fix:** The stable `water_travel` and `rail_logistics` capability IDs now mean blueprint
+entitlements only. Water remains a hard obstacle for ordinary walking pathfinding regardless of
+Shipping ownership. Rail ownership and remaining route length are neutral in physical movement
+until tracks, vehicles, and routes exist. The two study descriptions and research-ledger payload
+lines state that they grant blueprints rather than immediate travel.
+
+**Evidence:** Ownership-on/off A* reaches exactly the same result across a full-width water
+barrier; a real phase-34 cat advances exactly the same distance on a 50-tile route with or without
+Rail; both comparisons have deterministic twins. A signed player campaign purchases the complete
+prerequisite chain through Rail and Shipping, preserves the stable capability IDs, and rechecks
+both physical denials. Existing fine-biome, stone-road, live-cadence founding, communal unattended,
+and guided/unattended fishing campaigns remain green. Real rail and ship construction remains in
+the open queue above. The accepted live own-framebuffers `/tmp/transport-rail-blueprint.png` and
+`/tmp/transport-shipping-blueprint.png` visibly prove the two blueprint-only study descriptions
+and payload labels; the temporary capture hook and isolated processes were removed.
 
 ## 2026-07-15 — Leader-owned daily research choice
 

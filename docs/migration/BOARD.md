@@ -40,7 +40,7 @@ codex, plus a Claude review for high-value slices) signs off.
 | P14 | Spatial placement: footprints, tile occupancy, soft obstacles, road accessibility | done — atomic action validation, reservations, connectivity, scaffold recovery, exact occupancy/roads, persisted exterior agricultural claims, and durable outer-before-inner wall construction with atomic one-gate cutover are verified in code and accepted before/during/after native framebuffers |
 | P15 | Playtest-feedback backlog: controls/feel, fog-of-war, booster, movement smoothing | in progress — movement/booster, visible roads, exact controls, authoritative election schedule visibility, knowledge-blind shrine-return search, restart-safe notebooks, and 32-seed fast wood are verified; baseline Leader hunt/water/scout passes exact 48-hour personal/communal campaigns with optimized-browser and signed-native shrine-return confirmation; four physical processors are complete while broader stations remain |
 | P16 | Founding village blueprint, gather spots, tile recalibration | in progress — the 15-adult/three-five-bed-Den lifecycle, migration/pregnancy/aging/reset, physical emergency water, authoritative interior clearing, exterior water, exact roads, selectable/removable gather controls, persisted outside-wall agricultural territory, physical farm labor, and physical shoreline fishing are verified; broader physical production work remains in progress |
-| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, exterior plots, finite persisted fish habitats, and cached fine-biome path/movement costs are live; rail/shipping are global multipliers rather than built routes/vehicles |
+| P17 | Climate-driven biome generator (~26 biomes), mining, crop fertility, transport upgrades | in progress — climate generation, crop fertility, ore/metal extraction, exterior plots, finite persisted fish habitats, and cached fine-biome path/movement costs are live; Rail/Shipping studies grant neutral blueprints rather than magical walking effects, while built routes/vehicles remain open |
 | P18 | Visual polish: DF-Steam parchment UI, craft-station sprites | done — persistent map plaques are gone; all 25 protocol variants have tested residential/open-station compositions, including a legal integrated Accounting Tent. The Adventure skin, research ledger, staged wall cutover, and exterior agriculture are native-framebuffer verified; optimized-WASM interaction is verified at all supported bounds |
 | P19 | Item/material economy: crafting chains, traders, coin | in progress — the canonical source/station/taxonomy contract now reconciles P12 and P16 while preserving stable IDs and open-top buildings; current chains, finite fresh Fish, useful tools, trade goods, visiting traders, coin, and stable weighted item units with wear/break/repair are live; raw Stone, physical byproducts, six remaining physical station queues, finite functional-equipment authority, recipe/material breadth, broader local inventories, and complete controls remain |
 
@@ -704,8 +704,9 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   Focused generated-map/cadence tests, all 11 signed guided/manual campaign cases, and four
   live-cadence passive game-hours for seeds 7/42/20240712 as byte-identical twins verify the
   integration; fog grew 289→459/414/474 with no death or reset.
-  Transport upgrade flags still need real routes and vehicles: rail has no tracks/trains, and
-  shipping has no vessels.
+  Rail and Shipping preserve their stable capability IDs as blueprint entitlements, but ownership
+  alone is physically neutral: ordinary cats cannot walk water and long routes receive no Rail
+  speed boost. Real tracks, trains, docks, vessels, boarding, and staffed routes remain open.
 
 ### P18 — Visual polish (spec: `docs/migration/specs/p18-visual-polish.md`)
 - The maintained Adventure art is live through Bevy sliced images: parchment, dark, and ornate

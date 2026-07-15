@@ -54,8 +54,8 @@ use crate::{
     movement::{
         EXPLORE_SPEED_FACTOR, JobDestinationContext, WorldPos, destination_for_job,
         effective_move_speed_for_surface, pick_wander_target, rail_speed_multiplier,
-        road_surface_multiplier, scout_wander_target, soft_obstacle_speed_multiplier,
-        straight_line_distance_tiles, walk_path, walk_path_timed,
+        road_surface_multiplier, scout_wander_target, soft_obstacle_speed_multiplier, walk_path,
+        walk_path_timed,
     },
     officers::{OfficerRole, prerequisite_for},
     pathfinding::{
@@ -1366,11 +1366,7 @@ fn movement_surface_factors_from_cache(
             } else {
                 generated
             };
-            let factor = if tile_has_water(Some(tile)) {
-                // Only used after the shipping capability makes water
-                // traversable; it matches pathfinding's explicit WATER_COST.
-                1.0 / pathfinding::WATER_COST
-            } else if biome.properties().move_factor > 0.0 {
+            let factor = if biome.properties().move_factor > 0.0 {
                 biome.properties().move_factor
             } else {
                 crate::movement::terrain_surface_factor(biome.surface_role())
@@ -8385,10 +8381,9 @@ fn accounting_topology_signature(colony: &ColonyRuntime, world_seed: u32) -> u64
         mix(&edge.by.to_le_bytes());
     }
     let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
-    mix(&[
-        u8::from(effects.unlocked_capabilities.contains("mountain_travel")),
-        u8::from(effects.unlocked_capabilities.contains("water_travel")),
-    ]);
+    mix(&[u8::from(
+        effects.unlocked_capabilities.contains("mountain_travel"),
+    )]);
     for (tile, runtime) in &colony.world_tiles {
         if tile_has_water(Some(runtime)) || runtime.tile_type == TileType::Mountains {
             mix(&tile.x.to_le_bytes());
@@ -8458,7 +8453,7 @@ fn accounting_reachable_component(
         extra_fence_edges: (!staged_edges.is_empty()).then_some(&staged_edges),
         terrain: None,
         mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
-        shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
+        shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
         soft_obstacles: None,
         soft_obstacle_field: None,
         surface_factors: None,
@@ -10368,17 +10363,16 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
             .then_some(&movement.staged_wall_edges),
         terrain: None,
         mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
-        // P17 transport upgrade: water stays blocked (pre-P17 behaviour, byte-
-        // identical for every colony without the node) until `shipping` is owned.
-        shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
+        // Research is metadata only here. A walking cat still needs a future
+        // physical vessel/route before water can become traversable.
+        shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
         soft_obstacles: Some(&path_soft_obstacles),
         soft_obstacle_field: Some(&decoration_obstacles),
         surface_factors: Some(&surface_factors),
     });
-    // P17 transport upgrade: `rail` speeds up long-distance hauls once owned —
-    // checked per-cat below against the remaining route distance, inert (no
-    // owned-node lookup cost beyond this single flag) for every colony without it.
-    let rail_unlocked = effects.unlocked_capabilities.contains("rail_logistics");
+    // Ownership is kept explicit for the physical-truth guardrail below. It is
+    // neutral until track, rolling stock, boarding, and routes are simulated.
+    let rail_researched = is_owned(&colony.upgrade_tree, "rail");
     let cat_ids = colony
         .cats
         .iter()
@@ -10494,7 +10488,7 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
         }
         if route.is_none() && (current_task == Some(TaskType::Farm) || offering_route_required) {
             // Physical farm and offering logistics never use the generic straight-line
-            // fallback: a removed bridge, closed staged wall, or newly impassable tile
+            // fallback: a flooded route, closed staged wall, or newly impassable tile
             // suspends the trip until a real A* route exists instead of letting a carrier
             // walk through barriers.
             continue;
@@ -10540,16 +10534,10 @@ fn phase_34_movement_travel_job_acceptance_reveal_path_wear(
                             y,
                         ),
                 );
-                let rail = rail_speed_multiplier(
-                    rail_unlocked,
-                    straight_line_distance_tiles(
-                        WorldPos {
-                            x: f64::from(x),
-                            y: f64::from(y),
-                        },
-                        destination,
-                    ),
-                );
+                let remaining_distance = ((f64::from(x) - destination.x).powi(2)
+                    + (f64::from(y) - destination.y).powi(2))
+                .sqrt();
+                let rail = rail_speed_multiplier(rail_researched, remaining_distance);
                 unit_surface_speed * surface * road * soft * rail
             },
         );
@@ -15852,7 +15840,7 @@ pub fn is_reachable_fishing_shore(colony: &ColonyRuntime, site: TilePos, world_s
         extra_fence_edges: Some(&staged_edges),
         terrain: None,
         mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
-        shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
+        shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
         soft_obstacles: None,
         soft_obstacle_field: None,
         surface_factors: Some(&surface_factors),
@@ -17560,7 +17548,7 @@ fn farm_designation_exterior_component(
         extra_fence_edges: (!staged_edges.is_empty()).then_some(&staged_edges),
         terrain: None,
         mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
-        shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
+        shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
         soft_obstacles: None,
         soft_obstacle_field: None,
         // This grid is consumed only by `all_reachable`; biome costs cannot alter
@@ -17822,10 +17810,9 @@ fn farm_routes_are_reachable_projected(
     }
     mix(&gate.x.to_le_bytes());
     mix(&gate.y.to_le_bytes());
-    mix(&[
-        u8::from(effects.unlocked_capabilities.contains("mountain_travel")),
-        u8::from(effects.unlocked_capabilities.contains("water_travel")),
-    ]);
+    mix(&[u8::from(
+        effects.unlocked_capabilities.contains("mountain_travel"),
+    )]);
     for (tile, runtime) in &colony.world_tiles {
         if tile_has_water(Some(runtime)) || runtime.tile_type == TileType::Mountains {
             mix(&tile.x.to_le_bytes());
@@ -17849,7 +17836,7 @@ fn farm_routes_are_reachable_projected(
         extra_fence_edges: (!staged_edges.is_empty()).then_some(&staged_edges),
         terrain: None,
         mountains_unlocked: effects.unlocked_capabilities.contains("mountain_travel"),
-        shipping_unlocked: effects.unlocked_capabilities.contains("water_travel"),
+        shipping_researched: is_owned(&colony.upgrade_tree, "shipping"),
         soft_obstacles: None,
         soft_obstacle_field: None,
         // Exact projected farm validation asks only whether each endpoint is reachable.
@@ -17864,7 +17851,7 @@ fn farm_routes_are_reachable_projected(
     let outside_gate = pathfinding_pos(tile_pos_to_world(gate));
     let gate_tile = colony.world_tiles.get(&gate);
     if retained_gate.is_some()
-        && (tile_has_water(gate_tile) && !effects.unlocked_capabilities.contains("water_travel")
+        && (tile_has_water(gate_tile)
             || gate_tile.is_some_and(|tile| tile.tile_type == TileType::Mountains)
                 && !effects.unlocked_capabilities.contains("mountain_travel"))
     {
@@ -22110,6 +22097,156 @@ mod tests {
         );
     }
 
+    fn long_walk_position_with_transport_research(rail_researched: bool) -> Position {
+        let start = pos(100, 100);
+        let mut cat = adult_idle_cat("long-walker", "colony-1");
+        cat.position = position_from_world(tile_pos_to_world(start));
+        cat.destination = Some(position_from_world(WorldPos {
+            x: f64::from(start.x + 50),
+            y: f64::from(start.y),
+        }));
+        cat.activity = CatActivity::Traveling;
+
+        let mut world_tiles = BTreeMap::new();
+        for x in (start.x - 1)..=(start.x + 51) {
+            for y in (start.y - 1)..=(start.y + 1) {
+                world_tiles.insert(pos(x, y), tile(x, y, 0, None));
+            }
+        }
+        let mut colony = ColonyRuntime {
+            id: "colony-1".to_owned(),
+            cats: vec![cat],
+            world_tiles,
+            ..ColonyRuntime::default()
+        };
+        if rail_researched {
+            colony.upgrade_tree.owned_node_ids.push("rail".to_owned());
+        }
+        let movement = MovementPassContext {
+            movement_seed: movement_seed(77),
+            movement_elapsed: 5.0,
+            wander_chance: 0.0,
+            ring_radius: 10_000,
+            anchor: VILLAGE_ANCHOR_TILE,
+            claimed_area: Default::default(),
+            area_gate: None,
+            staged_wall_edges: HashSet::new(),
+            gate: pos(6, 10),
+            walk_tiles: colony
+                .world_tiles
+                .values()
+                .map(walk_tile_from_runtime)
+                .collect(),
+            zones: Vec::new(),
+            world_seed: 77,
+        };
+        phase_34_movement_travel_job_acceptance_reveal_path_wear(
+            &mut colony,
+            TickGate {
+                elapsed_sec: 5,
+                processed_through: 5_000,
+                minute_rolled: false,
+                previous_water: 0,
+            },
+            &movement,
+        );
+        colony.cats[0].position
+    }
+
+    #[test]
+    fn rail_research_alone_does_not_accelerate_a_fifty_tile_cat_walk() {
+        let without = long_walk_position_with_transport_research(false);
+        let with = long_walk_position_with_transport_research(true);
+        assert_eq!(with, without);
+        assert!(
+            without.x < 150.0,
+            "the fixture must still be walking rather than testing arrival clamping"
+        );
+        assert_eq!(
+            long_walk_position_with_transport_research(true),
+            with,
+            "physical travel stays deterministic"
+        );
+    }
+
+    #[test]
+    fn signed_player_transport_studies_grant_blueprints_without_magical_travel() {
+        let make_world = || {
+            let mut world = new_world(77);
+            world.colonies.push(found_colony(77, "colony-1", 1_000, 77));
+            world.colonies[0].upgrade_tree.research_points = 200.0;
+            world
+        };
+        let context = ActionCtx {
+            session_id: "transport-session".to_owned(),
+            player_id: "transport-player".to_owned(),
+            colony_id: "colony-1".to_owned(),
+            now_ms: 10_000,
+        };
+        let mut guided = make_world();
+        let mut twin = make_world();
+        for node_id in [
+            "research_hut",
+            "basic_tools",
+            "foraging_lore",
+            "sawmill",
+            "masonry",
+            "mountaineering",
+            "rail",
+            "shipping",
+        ] {
+            let action = proto::ClientAction::ResearchNode {
+                session_id: context.session_id.clone(),
+                nickname: "Route Planner".to_owned(),
+                sig: "server-verified".to_owned(),
+                node_id: node_id.to_owned(),
+            };
+            let accepted = apply_action(&mut guided, &action, &context);
+            let twin_accepted = apply_action(&mut twin, &action, &context);
+            assert!(accepted.ok, "signed study {node_id} failed: {accepted:?}");
+            assert_eq!(accepted, twin_accepted);
+            assert_eq!(guided, twin, "signed study {node_id} diverged");
+        }
+
+        let effects = resolve_effects(guided.colonies[0].upgrade_tree.owned_node_ids.iter());
+        assert!(effects.unlocked_capabilities.contains("rail_logistics"));
+        assert!(effects.unlocked_capabilities.contains("water_travel"));
+        assert_eq!(guided.colonies[0].last_leader_research_choice_at, None);
+        assert_eq!(
+            long_walk_position_with_transport_research(true),
+            long_walk_position_with_transport_research(false),
+            "signed Rail ownership cannot accelerate an ordinary walker"
+        );
+
+        let water = [WalkTile {
+            x: 5,
+            y: 0,
+            tile_type: WalkTileType::River,
+            overlay_feature: Some(WalkOverlayFeature::River),
+            resources: Some(WalkTileResources { water: 1 }),
+            path_wear: 0,
+        }];
+        let grid = build_colony_walk_grid(ColonyGridParams {
+            tiles: &water,
+            anchor: PathTilePos { x: 0, y: 0 },
+            ring_radius: 10_000,
+            gate: PathTilePos { x: 0, y: 1 },
+            area: None,
+            area_gate: None,
+            extra_fence_edges: None,
+            terrain: None,
+            mountains_unlocked: true,
+            shipping_researched: is_owned(&guided.colonies[0].upgrade_tree, "shipping"),
+            soft_obstacles: None,
+            soft_obstacle_field: None,
+            surface_factors: None,
+        });
+        assert!(
+            pathfinding::WalkGrid::is_blocked(&grid, 5, 0),
+            "signed Shipping ownership cannot put a vessel under a walking cat"
+        );
+    }
+
     fn first_generated_land_biome_site(
         seed: u32,
         predicate: impl Fn(crate::climate::Biome) -> bool,
@@ -22330,7 +22467,7 @@ mod tests {
                         extra_fence_edges: None,
                         terrain: None,
                         mountains_unlocked: true,
-                        shipping_unlocked: false,
+                        shipping_researched: false,
                         soft_obstacles: None,
                         soft_obstacle_field: None,
                         surface_factors: Some(&factors),
@@ -36865,7 +37002,7 @@ mod tests {
             extra_fence_edges: Some(&staged_edges),
             terrain: None,
             mountains_unlocked: false,
-            shipping_unlocked: false,
+            shipping_researched: false,
             soft_obstacles: None,
             soft_obstacle_field: None,
             surface_factors: None,
