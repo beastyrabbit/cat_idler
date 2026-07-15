@@ -51,6 +51,15 @@ in-transit cargo to the exact freed source slot or a persisted visible spill, re
 and recruits a replacement without duplication. A raced access road returns an unneeded unit.
 SQLite preserves ordered tiles, exact reservations, partial work, and assignment state.
 
+Post-implementation conservation review closed five edge cases: accessibility paving now spends
+only above both the safety floor and every active road commitment; stockpile reconciliation
+protects exact road reservations; accessibility routes cannot race a tile already reserved by a
+physical road; an externally paved target returns its carried unit to the source or a visible
+spill even if that source disappeared; and replacement builders recompute the pinned duration
+from their own skill and exact equipped tool. Leader-authored roads now carry Steward provenance:
+a vacancy parks the durable project, salvages in-flight cargo, and resumes after reappointment,
+while player-authored roads remain untouched.
+
 **Evidence:** The signed all-actions campaign observes action→queued labor→physical cargo→paved
 tile; the passive Steward test proves designation without instant painting or spending. Exact
 pickup/arrival/work/debit, death/reassignment, map reservation, one-second versus one-minute
@@ -61,10 +70,12 @@ rules remain unchanged. The accepted client-owned framebuffer `/tmp/physical-roa
 `2c66f3076e90302e7b26331106b29bb97c52963195044aa711841fbfce916eb0`). It was captured against an
 isolated booted server and visually inspected: the top-down village, stone/dirt road network,
 cats, open stations, reveal boundary, and road control render without black-screen clipping or
-world/UI overlap. The temporary capture hook and both processes were removed afterward. Final
-gates pass 1,262 simulation tests (one intentional instrumentation skip), 46 protocol tests, 97
-server tests, and 144 client tests; strict Clippy is green for all four crates, with formatting and
-diff checks clean.
+world/UI overlap. The temporary capture hook and both processes were removed afterward. The
+conservation correction gate passes all 1,289 simulation tests (one intentional
+instrumentation skip), including focused aggregate/pile/reservation, competing-route,
+removed-source spill, restart-shaped replacement, and Steward vacancy/resume regressions. Strict
+`cat-sim` Clippy, formatting, and diff checks are clean. The prior protocol, server, client, and
+framebuffer evidence is unchanged because this correction alters no wire or visual contract.
 
 ## 2026-07-15 — Unsupported catalog breadth no longer sells no-ops
 
