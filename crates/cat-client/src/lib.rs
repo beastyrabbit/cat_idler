@@ -14543,6 +14543,52 @@ mod tests {
                 carrying_color(CarryingKind::Materials)
             );
         }
+        let mut woodworking = workshop.clone();
+        woodworking.id = "woodworking-inspector".to_owned();
+        woodworking.building_type = BuildingType::Woodworking;
+        woodworking.production_output = Some("Tools".to_owned());
+        woodworking.input_inventory = vec![
+            ResourceStackSnapshot {
+                kind: ResourceKind::Planks,
+                amount: 2.0,
+            },
+            ResourceStackSnapshot {
+                kind: ResourceKind::Blocks,
+                amount: 2.0,
+            },
+        ];
+        woodworking.output_inventory = vec![ResourceStackSnapshot {
+            kind: ResourceKind::Tools,
+            amount: 1.0,
+        }];
+        woodworking.inbound_cargo = woodworking.input_inventory.clone();
+        woodworking.outbound_cargo = woodworking.output_inventory.clone();
+        woodworking.production_queue = vec![cat_protocol::ProductionQueueEntrySnapshot {
+            recipe_id: "planks_and_blocks_to_tools".to_owned(),
+            repeat: true,
+        }];
+        woodworking.available_recipes = vec!["planks_and_blocks_to_tools".to_owned()];
+        let text = building_inspector_text(&woodworking, colony);
+        assert!(text.contains("local input: planks 2.0, blocks 2.0"));
+        assert!(text.contains("local output: tools 1.0"));
+        assert!(text.contains("outbound cargo: tools 1.0"));
+        assert!(text.contains("queue: planks_and_blocks_to_tools*"));
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("woodworking-queue-session"),
+                &woodworking,
+                0,
+                StationQueueButton::Add,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                edit: ProductionQueueEdit::Add { recipe_id, repeat: true },
+                ..
+            }) if recipe_id == "planks_and_blocks_to_tools"
+        ));
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Tools),
+            resource_icon_path(HudRes::Tools)
+        );
         // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);
         assert!(den_text.contains("under construction 40%"));

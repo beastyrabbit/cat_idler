@@ -460,6 +460,15 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
          WHERE physicalStationRulesVersion < 2",
         [],
     )?;
+    // Woodworking becomes physical in station-rules v3, but C2.0 already made
+    // its queue editable and persisted under v2. Never repopulate an empty queue:
+    // it may be deliberate player intent. Fresh benches already receive defaults.
+    conn.execute(
+        "UPDATE buildings
+         SET physicalStationRulesVersion = 3
+         WHERE physicalStationRulesVersion < 3",
+        [],
+    )?;
     Ok(())
 }
 
@@ -1141,7 +1150,7 @@ fn save_building(
             productionQueue, productionPaused, productionQueueInitialized,
             physicalRefinerQueueInitialized, physicalStationRulesVersion,
             constructionCargo
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, 2, ?13)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, 3, ?13)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -2796,7 +2805,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_stone_prep_queue_initializes_once_and_v2_player_empty_stays_empty() {
+    fn legacy_stone_prep_queue_initializes_once_and_player_empty_survives_v3() {
         let conn = Connection::open_in_memory().expect("memory db");
         init_schema(&conn).expect("schema");
         conn.execute(
@@ -2824,15 +2833,15 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
             default_production_queue(BuildingType::StonePrep)
         );
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
 
         conn.execute(
             "UPDATE buildings SET productionQueue = '[]'
              WHERE id = 'legacy-stone-prep'",
             [],
         )
-        .expect("player clears Stone Prep queue under v2");
-        migrate_add_missing_columns(&conn).expect("idempotent v2 restart");
+        .expect("player clears Stone Prep queue under current rules");
+        migrate_add_missing_columns(&conn).expect("idempotent v3 restart");
         let (cleared, version): (String, i64) = conn
             .query_row(
                 "SELECT productionQueue, physicalStationRulesVersion
@@ -2841,8 +2850,65 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(cleared, "[]", "v2 empty queue remains player-owned");
-        assert_eq!(version, 2);
+        assert_eq!(cleared, "[]", "Stone Prep empty queue remains player-owned");
+        assert_eq!(version, 3);
+    }
+
+    #[test]
+    fn v2_woodworking_queue_intent_and_progress_survive_the_v3_boundary_exactly() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        init_schema(&conn).expect("schema");
+        conn.execute(
+            "INSERT INTO buildings (
+                id, colonyId, type, level, position, constructionProgress,
+                productionProgress, isComplete, productionQueue, productionPaused,
+                productionQueueInitialized, physicalRefinerQueueInitialized,
+                physicalStationRulesVersion
+             ) VALUES ('legacy-woodworking', 'colony-1', 'woodworking', 1, '{}',
+                 100, 417.5, 1, '[]', 1, 1, 1, 2)",
+            [],
+        )
+        .expect("station-rules v2 Woodworking row");
+
+        migrate_add_missing_columns(&conn).expect("Woodworking v3 boundary");
+        let (queue, version, progress, paused): (String, i64, f64, i64) = conn
+            .query_row(
+                "SELECT productionQueue, physicalStationRulesVersion, productionProgress,
+                        productionPaused
+                 FROM buildings WHERE id = 'legacy-woodworking'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(queue, "[]", "v2 player-empty queue is authoritative");
+        assert_eq!(version, 3);
+        assert_eq!(progress.to_bits(), 417.5_f64.to_bits());
+        assert_eq!(paused, 1);
+
+        let explicit_queue = vec![ProductionQueueEntry {
+            recipe_id: cat_sim::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID.to_owned(),
+            repeat: false,
+        }];
+        conn.execute(
+            "UPDATE buildings SET productionQueue = ?1
+             WHERE id = 'legacy-woodworking'",
+            [serde_json::to_string(&explicit_queue).unwrap()],
+        )
+        .expect("player authors a non-repeating Woodworking queue under v3");
+        migrate_add_missing_columns(&conn).expect("idempotent v3 restart");
+        let (persisted, version): (String, i64) = conn
+            .query_row(
+                "SELECT productionQueue, physicalStationRulesVersion
+                 FROM buildings WHERE id = 'legacy-woodworking'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<ProductionQueueEntry>>(&persisted).unwrap(),
+            explicit_queue
+        );
+        assert_eq!(version, 3);
     }
 
     #[test]
@@ -2936,7 +3002,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
             default_production_queue(BuildingType::WoodCutter)
         );
-        assert_eq!(initialized, 2);
+        assert_eq!(initialized, 3);
 
         conn.execute(
             "UPDATE buildings SET productionQueue = '[]' WHERE id = 'legacy-wood-cutter'",
@@ -3507,6 +3573,152 @@ mod tests {
                 .source_gather_spot
                 .as_deref(),
             Some(format!("station-out|{stone_prep_id}|{general_id}").as_str())
+        );
+    }
+
+    #[test]
+    fn physical_woodworking_twin_inputs_output_queue_and_cargo_resume_exactly() {
+        let conn = open_database(":memory:").expect("database");
+        let mut world = new_world(8_813);
+        let mut colony = found_colony(world.world_seed, "colony-1", 10_000, 8_813);
+        let building_id = "restart-woodworking";
+        colony.buildings.push(BuildingRuntime {
+            id: building_id.to_owned(),
+            building_type: BuildingType::Woodworking,
+            position: TilePos { x: 42, y: 18 },
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 417.5,
+            assigned_cat: Some(colony.cats[0].id.clone()),
+            production_queue: vec![ProductionQueueEntry {
+                recipe_id: cat_sim::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID
+                    .to_owned(),
+                repeat: false,
+            }],
+            production_paused: true,
+            ..BuildingRuntime::default()
+        });
+        let input_id = cat_sim::stockpiles::station_input_id(building_id);
+        let output_id = cat_sim::stockpiles::station_output_id(building_id);
+        let transit_id = cat_sim::stockpiles::station_transit_id(building_id);
+        let rect = ZoneRect {
+            x1: 42,
+            y1: 18,
+            x2: 44,
+            y2: 20,
+        };
+        let general = colony
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.is_general_storehouse())
+            .unwrap();
+        general.contents.planks -= 2.0;
+        general.contents.blocks -= 2.0;
+        colony.stockpiles.extend([
+            Stockpile {
+                id: input_id.clone(),
+                rect,
+                accepts: [
+                    cat_sim::stockpiles::ResourceKind::Planks,
+                    cat_sim::stockpiles::ResourceKind::Blocks,
+                ]
+                .into_iter()
+                .collect(),
+                contents: Resources {
+                    planks: 2.0,
+                    blocks: 1.0,
+                    ..Resources::default()
+                },
+            },
+            Stockpile {
+                id: transit_id.clone(),
+                rect,
+                accepts: [
+                    cat_sim::stockpiles::ResourceKind::Planks,
+                    cat_sim::stockpiles::ResourceKind::Blocks,
+                ]
+                .into_iter()
+                .collect(),
+                contents: Resources {
+                    blocks: 1.0,
+                    ..Resources::default()
+                },
+            },
+            Stockpile {
+                id: output_id.clone(),
+                rect,
+                accepts: [cat_sim::stockpiles::ResourceKind::Tools]
+                    .into_iter()
+                    .collect(),
+                contents: Resources {
+                    tools: 1.0,
+                    ..Resources::default()
+                },
+            },
+        ]);
+        colony.cats[0].carrying = Some(Carrying {
+            kind: cat_sim::entities::CarryingKind::Blocks,
+            amount: 1.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(format!("station-in|{building_id}|{transit_id}")),
+        });
+        colony.wood_craft_progress = f64::from_bits(0x4056_4000_0000_0000);
+        world.colonies.push(colony);
+
+        save_world(&conn, &world).expect("save physical Woodworking");
+        assert_eq!(
+            conn.query_row(
+                "SELECT physicalStationRulesVersion FROM buildings WHERE id = ?1",
+                [scoped_storage_id("colony-1", building_id)],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            3,
+            "ordinary saves must never downgrade the v3 no-seed boundary"
+        );
+        let restarted = load_world(&conn).expect("load").expect("world");
+        let colony = &restarted.colonies[0];
+        let building = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .unwrap();
+        assert_eq!(building.production_progress.to_bits(), 417.5_f64.to_bits());
+        assert!(building.production_paused);
+        assert_eq!(
+            building.production_queue,
+            [ProductionQueueEntry {
+                recipe_id: cat_sim::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID
+                    .to_owned(),
+                repeat: false,
+            }]
+        );
+        let contents = |id: &str| {
+            colony
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == id)
+                .unwrap()
+                .contents
+                .clone()
+        };
+        assert_eq!(contents(&input_id).planks, 2.0);
+        assert_eq!(contents(&input_id).blocks, 1.0);
+        assert_eq!(contents(&transit_id).blocks, 1.0);
+        assert_eq!(contents(&output_id).tools, 1.0);
+        assert_eq!(
+            colony.cats[0]
+                .carrying
+                .as_ref()
+                .unwrap()
+                .source_gather_spot
+                .as_deref(),
+            Some(format!("station-in|{building_id}|{transit_id}").as_str())
+        );
+        assert_eq!(
+            colony.wood_craft_progress.to_bits(),
+            f64::from_bits(0x4056_4000_0000_0000).to_bits(),
+            "legacy hidden timer is bit-frozen across restart"
         );
     }
 

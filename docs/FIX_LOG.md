@@ -9,9 +9,9 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Four maintained benches still bypass the physical station contract | Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Their C2.0 descriptor scaffold is live, and Wood Cutter plus Stone Prep now demonstrate the shared station-local conversion seam. Next give each remaining station local input/output/transit state and one-worker/one-selected-recipe advancement. Preserve every existing `BuildingType`, queue identity, and open-top visual identity. | in progress |
+| Three maintained benches still bypass the physical station contract | Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Their C2.0 descriptor scaffold is live, and Wood Cutter, Stone Prep, and Woodworking now demonstrate the shared station-local conversion seam. Next give each remaining station local input/output/transit state and one-worker/one-selected-recipe advancement. Preserve every existing `BuildingType`, queue identity, and open-top visual identity. | in progress |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
-| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Stone Prep, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
+| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Eleven maintained recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. Four physical queue recipes plus four aggregate textile/Smithy recipes enforce their rules-v1 entitlement before work; old/missing rules-v0 saves are grandfathered. The Wood Cutter, Stone Prep, and Woodworking baseline recipes are explicitly founding-available; their catalog studies are reserved for later recipes and do not block this early chain. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
@@ -21,6 +21,38 @@ and any changed Bevy visuals have been verified.
 | Wall art needs a stronger top-down treatment | The staged palisade, closed perimeter, single-gate cutover, collision, and visual campaign are verified, but the current wall selection does not meet the player's requested quality bar. Compare the tracked public candidates in `docs/sprite-review.html`, select a coherent top-down wall and gate set, and preserve exact autotiling, staged-work color, gate placement, and authoritative collision. Re-verify native and WASM framebuffers before replacing the current art. | queued (low priority) |
 
 ## Verified fixes
+
+## 2026-07-15 — Woodworking physically combines Planks and Blocks into scalar Tools
+
+**Problem:** Woodworking still spent colony-global Planks and Blocks through an invisible parallel
+timer. Its visible `planks_and_blocks_to_tools` queue, worker, and local inventories did not own
+the batch, so one selected recipe could not account for the two inputs or the resulting Tool.
+
+**Fix:** One assigned Craft worker now fetches exactly two Planks and then two Blocks from finite
+storage, waits until both loads are local, consumes them atomically in one selected
+600-game-second batch, leaves one whole scalar Tool in local output, and carries that whole unit to
+finite storage before aggregate credit. Queue repeat, one-shot, pause, and deliberately empty state
+are authoritative. Planks and Blocks independently preserve the four-unit construction reserve;
+low-comfort automation releases a worker that has only local inputs, while real cargo, positive
+progress, or local output retains the worker until conserved work finishes. Full Tool capacity
+prevents both early reservation and fallback staffing. The legacy `wood_craft_progress` field is
+persisted bit-for-bit but never advances. Station-rules v3 changes only the version marker: unlike
+the older C2.0/C2.2 migrations, it never seeds or rewrites a Woodworking queue.
+
+This bounded C2 slice deliberately produces the existing scalar Tool only. Finite Tool identity,
+condition authority, and compatibility-scalar migration remain P19.C3 work; the physical batch
+does not mint a duplicate `ItemKind::Tool`.
+
+**Evidence:** Conservation tests cover ordered two-input fetch, atomic consumption, whole-unit
+output/headroom, no early credit, pause/empty/nonrepeat queues, low-comfort release, full-capacity
+automation, death salvage, building-removal recovery, construction reserves, and stable complete
+routes at 1s/5s/60s cadence. SQLite tests preserve both local inputs, local output, transit cargo,
+queue/pause/progress, and the frozen legacy timer exactly; v2→v3 migration preserves an explicitly
+empty or authored queue. The signed HMAC guidance/restart campaign assigns a worker and edits the
+Woodworking queue itself. The accepted client-owned 1024x768 framebuffer
+`/tmp/physical-woodworking-c2-stable.png` shows the selected station's two local inputs, local and
+outbound whole Tool, active worker/progress, editable queue controls, and a distinct semantic Tool
+glyph on the shrine-adjacent carrier without inspector/minimap overlap.
 
 ## 2026-07-15 — Stone Prep is a conserved physical Stone-to-Blocks station
 
@@ -329,7 +361,7 @@ recipe entitlement, not permission to place another bench.
 each bench while retaining the exact 167 Building / 167 RecipeResource / 166 Upgrade split and the
 first durability payload. Deterministic signed personal/communal plans, exact scaffold payment,
 reservation/overlap and mutation-free denial, authenticated server HMAC, and SQLite restart tests
-cover placement without altering current aggregate production. The remaining five station-local
+cover placement without altering current aggregate production. The remaining three station-local
 queues and finite-equipment authority work stays open below.
 
 ## 2026-07-15 — Prosperity migrants physically enter and leave through the gate

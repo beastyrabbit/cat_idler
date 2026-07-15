@@ -2771,6 +2771,11 @@ mod tests {
                 cat_sim::types::BuildingType::StonePrep,
                 60,
             ),
+            (
+                "guidance-woodworking",
+                cat_sim::types::BuildingType::Woodworking,
+                64,
+            ),
         ] {
             world.colonies[0]
                 .buildings
@@ -2798,6 +2803,10 @@ mod tests {
             (
                 "guidance-stone-prep",
                 cat_sim::station_recipes::STONE_TO_BLOCKS_RECIPE_ID,
+            ),
+            (
+                "guidance-woodworking",
+                cat_sim::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
             ),
         ];
         let conn = Connection::open(&path).expect("open guidance database");
@@ -2873,13 +2882,13 @@ mod tests {
                 nickname: "Guide".to_owned(),
                 sig: signed.sig.clone(),
                 cat_id: cat_id.clone(),
-                building_id: Some("guidance-stone-prep".to_owned()),
+                building_id: Some("guidance-woodworking".to_owned()),
             },
         )
         .await;
         assert!(
             result.result.ok,
-            "signed Stone Prep assignment failed: {result:?}"
+            "signed Woodworking assignment failed: {result:?}"
         );
         for (index, (building_id, recipe_id)) in station_recipes.iter().enumerate() {
             let action = ClientAction::EditProductionQueue {
@@ -2948,7 +2957,7 @@ mod tests {
             assert_eq!(building.production_queue[0].recipe_id, *recipe_id);
             assert_eq!(building.production_queue[0].repeat, index >= 2);
             assert_eq!(building.production_paused, index < 2);
-            if *building_id == "guidance-stone-prep" {
+            if *building_id == "guidance-woodworking" {
                 assert_eq!(building.assigned_cat.as_deref(), Some(cat_id.as_str()));
             }
         }
@@ -2976,6 +2985,125 @@ mod tests {
         drop(restored);
         drop(restarted);
         fs::remove_file(path).expect("remove guidance database");
+    }
+
+    #[tokio::test]
+    async fn signed_hmac_player_guides_every_physical_woodworking_stage() {
+        let started_at = 1_000_000;
+        let secret = "guided-woodworking-secret";
+        let mut world = starter_world(started_at);
+        let colony = &mut world.colonies[0];
+        colony.resources.food = 500.0;
+        colony.resources.water = 500.0;
+        colony.resources.tools = 0.0;
+        cat_sim::world_tick::reconcile_colony_stockpiles(colony);
+        let woodworking_id = colony
+            .buildings
+            .iter()
+            .find(|building| building.building_type == cat_sim::types::BuildingType::Woodworking)
+            .expect("global founding has Woodworking")
+            .id
+            .clone();
+        let cat_id = colony.cats[0].id.clone();
+        let conn = Connection::open_in_memory().expect("guided Woodworking database");
+        persistence::init_schema(&conn).expect("guided Woodworking schema");
+        let state = build_state_from_world(world, conn, secret.to_owned(), false, started_at);
+        let signed = signed_session("guided-woodworking-session".to_owned(), secret);
+        let mut connection = ConnectionContext::new(
+            "guided-woodworking-socket".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        connection.identity = Some(signed.clone());
+        let signed_action = |edit| ClientAction::EditProductionQueue {
+            session_id: signed.session_id.clone(),
+            nickname: "Woodworker".to_owned(),
+            sig: signed.sig.clone(),
+            building_id: woodworking_id.clone(),
+            edit,
+        };
+        let removed = send_action(
+            &state,
+            &mut connection,
+            &signed_action(cat_protocol::ProductionQueueEdit::Remove { index: 0 }),
+        )
+        .await;
+        assert!(
+            removed.result.ok,
+            "signed queue removal failed: {removed:?}"
+        );
+        let queued = send_action(
+            &state,
+            &mut connection,
+            &signed_action(cat_protocol::ProductionQueueEdit::Add {
+                recipe_id: cat_sim::station_recipes::PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID
+                    .to_owned(),
+                repeat: false,
+            }),
+        )
+        .await;
+        assert!(queued.result.ok, "signed queue add failed: {queued:?}");
+        let assigned = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::AssignWorker {
+                session_id: signed.session_id.clone(),
+                nickname: "Woodworker".to_owned(),
+                sig: signed.sig.clone(),
+                cat_id,
+                building_id: Some(woodworking_id.clone()),
+            },
+        )
+        .await;
+        assert!(assigned.result.ok, "signed assignment failed: {assigned:?}");
+
+        let mut stages = [false; 7];
+        for second in 1..=1_200_i64 {
+            let mut world = state.world.lock().await;
+            let reports = world_tick(&mut world, started_at + second * 1_000);
+            assert_eq!(reports[0].reset_reason, None);
+            let colony = &world.colonies[0];
+            let building = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == woodworking_id)
+                .unwrap();
+            let inbound = cat_sim::world_tick::building_station_cargo(colony, building, "in");
+            let local_input =
+                cat_sim::world_tick::building_station_inventory(colony, building, false);
+            let local_output =
+                cat_sim::world_tick::building_station_inventory(colony, building, true);
+            let outbound = cat_sim::world_tick::building_station_cargo(colony, building, "out");
+            stages[0] |= inbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Planks && *amount == 2.0
+            });
+            stages[1] |= local_input.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Planks && *amount == 2.0
+            });
+            stages[2] |= inbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Blocks && *amount == 2.0
+            });
+            stages[3] |= local_input.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Blocks && *amount == 2.0
+            });
+            stages[4] |= local_output.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Tools && *amount == 1.0
+            });
+            stages[5] |= outbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Tools && *amount == 1.0
+            });
+            stages[6] |= colony.resources.tools >= 1.0;
+            if stages.iter().all(|seen| *seen) {
+                break;
+            }
+        }
+        let world = state.world.lock().await;
+        let colony = &world.colonies[0];
+        assert_eq!(stages, [true; 7], "signed route missed a physical stage");
+        assert_eq!(
+            colony.items.count_kind(cat_sim::items::ItemKind::Tool),
+            0,
+            "finite Tool creation remains the following C3 slice"
+        );
     }
 
     #[tokio::test]

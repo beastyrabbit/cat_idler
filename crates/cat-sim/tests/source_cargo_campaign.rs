@@ -6,6 +6,7 @@ use cat_sim::{
     entities::CarryingKind,
     station_recipes::STONE_TO_BLOCKS_RECIPE_ID,
     stockpiles::{station_input_id, station_output_id},
+    storage::BASE_CAPACITY,
     types::{BuildingType, JobKind, JobStatus},
     world_tick::{
         BuildingRuntime, TilePos, WorldState, default_production_queue, found_colony, new_world,
@@ -279,6 +280,11 @@ fn run_passive_forester_stone_prep(seed: u32) -> (WorldState, bool, bool, bool) 
     let population = world.colonies[0].cats.len() as f64;
     world.colonies[0].resources.food = population * 10.0;
     world.colonies[0].resources.water = population * 10.0;
+    // Keep this campaign Stone-specific. A full compatibility Tool bank makes
+    // physical Woodworking non-runnable, while an empty Blocks side gives the
+    // physical Stone Prep bench truthful demand.
+    world.colonies[0].resources.tools = BASE_CAPACITY.tools;
+    world.colonies[0].resources.blocks = 0.0;
     reconcile_colony_stockpiles(&mut world.colonies[0]);
     world.colonies[0]
         .upgrade_tree

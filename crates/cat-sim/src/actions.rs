@@ -9184,7 +9184,7 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_bench_snapshots_project_descriptor_queues_and_exact_entitlements() {
+    fn descriptor_bench_snapshots_project_queue_execution_and_exact_entitlements() {
         let mut world = world_with_one_colony();
         let colony = &mut world.colonies[0];
         colony.recipe_entitlement_rules_version =
@@ -9247,7 +9247,12 @@ mod tests {
             assert_eq!(
                 building.production_block_reason.as_deref(),
                 Some(
-                    if matches!(*id, "wood-cutter-descriptor" | "stone-prep-descriptor") {
+                    if matches!(
+                        *id,
+                        "wood-cutter-descriptor"
+                            | "stone-prep-descriptor"
+                            | "woodworking-descriptor"
+                    ) {
                         "no_worker"
                     } else {
                         "aggregate_timer_compatibility"
