@@ -181,7 +181,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         prerequisites: &[],
         unlocks: UpgradeUnlocks {
             buildings: None,
-            jobs: Some(&["research"]),
+            jobs: None,
             effects: None,
         },
     },
@@ -210,7 +210,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         prerequisites: &["research_hut"],
         unlocks: UpgradeUnlocks {
             buildings: None,
-            jobs: Some(&["fetch_water"]),
+            jobs: None,
             effects: Some(&[NodeEffect {
                 key: EffectKey::WaterCarryCapacity,
                 value: 1.0,
@@ -261,7 +261,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
                 BuildingType::Clothier.as_str(),
                 BuildingType::Tannery.as_str(),
             ]),
-            jobs: Some(&["craft_clothing"]),
+            jobs: None,
             effects: None,
         },
     },
@@ -332,7 +332,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         prerequisites: &["sawmill"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&[BuildingType::Smithy.as_str()]),
-            jobs: Some(&["forge_tools"]),
+            jobs: None,
             effects: None,
         },
     },
@@ -345,7 +345,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         prerequisites: &["basic_tools"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&[BuildingType::Barracks.as_str()]),
-            jobs: Some(&["train_warrior"]),
+            jobs: None,
             effects: None,
         },
     },
@@ -358,7 +358,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         prerequisites: &["den_insulation"],
         unlocks: UpgradeUnlocks {
             buildings: Some(&["school"]),
-            jobs: Some(&["teach"]),
+            jobs: None,
             effects: Some(&[NodeEffect {
                 key: EffectKey::ResearchRateMult,
                 value: 0.5,
@@ -419,7 +419,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         prerequisites: &["smithy"],
         unlocks: UpgradeUnlocks {
             buildings: None,
-            jobs: Some(&["forge_weapon"]),
+            jobs: None,
             effects: Some(&[NodeEffect {
                 key: EffectKey::CombatPowerMult,
                 value: 0.25,
@@ -435,7 +435,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         prerequisites: &["smithy"],
         unlocks: UpgradeUnlocks {
             buildings: None,
-            jobs: Some(&["forge_armor"]),
+            jobs: None,
             effects: Some(&[NodeEffect {
                 key: EffectKey::DefenseMult,
                 value: 0.25,
@@ -483,7 +483,7 @@ pub const UPGRADE_NODES: &[UpgradeNode] = &[
         prerequisites: &["barracks"],
         unlocks: UpgradeUnlocks {
             buildings: None,
-            jobs: Some(&["explore"]),
+            jobs: None,
             effects: Some(&[NodeEffect {
                 key: EffectKey::MoveSpeedMult,
                 value: 0.3,
@@ -682,6 +682,33 @@ pub fn building_placement_research(
             node_name: node.name.as_str(),
         }
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobResearchEntitlement {
+    Available,
+    Requires {
+        node_id: &'static str,
+        node_name: &'static str,
+    },
+}
+
+/// Resolve the catalog's sole research entitlement for a runtime job. Jobs with
+/// no `UnlockJob` payload are founding or building capabilities and remain
+/// available; an indexed payload requires ownership of its declaring study.
+#[must_use]
+pub fn job_research_entitlement(state: &UpgradeTreeState, job_id: &str) -> JobResearchEntitlement {
+    let Some(node) = research_catalog().job_unlock_study(job_id) else {
+        return JobResearchEntitlement::Available;
+    };
+    if is_owned(state, &node.id) {
+        JobResearchEntitlement::Available
+    } else {
+        JobResearchEntitlement::Requires {
+            node_id: node.id.as_str(),
+            node_name: node.name.as_str(),
+        }
+    }
 }
 
 #[must_use]
@@ -1130,12 +1157,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BuildingPlacementResearch, EffectKey, EffectKind, MOUNTAINEERING_NODE_ID,
-        PurchaseFailureReason, RAIL_NODE_ID, RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK,
-        RESEARCH_POINTS_PER_SECOND, SHIPPING_NODE_ID, UPGRADE_NODE_BY_ID, UPGRADE_NODES,
-        WEEK_SECONDS, accrue_research, building_placement_research, can_unlock, cat_auto_unlock,
-        cat_purchase, create_upgrade_tree_state, deserialize_upgrade_tree_state, effect_kind,
-        get_node, god_purchase, is_owned, neutral_effects, next_research_target,
+        BuildingPlacementResearch, EffectKey, EffectKind, JobResearchEntitlement,
+        MOUNTAINEERING_NODE_ID, PurchaseFailureReason, RAIL_NODE_ID,
+        RESEARCH_POINTS_PER_RESEARCHER_PER_WEEK, RESEARCH_POINTS_PER_SECOND, SHIPPING_NODE_ID,
+        UPGRADE_NODE_BY_ID, UPGRADE_NODES, WEEK_SECONDS, accrue_research,
+        building_placement_research, can_unlock, cat_auto_unlock, cat_purchase,
+        create_upgrade_tree_state, deserialize_upgrade_tree_state, effect_kind, get_node,
+        god_purchase, is_owned, job_research_entitlement, neutral_effects, next_research_target,
         points_per_tick_for, points_per_tick_for_default, prerequisites_met, resolve_effects,
         serialize_upgrade_tree_state, unlockable_nodes,
     };
@@ -1324,6 +1352,28 @@ mod tests {
         assert_eq!(
             building_placement_research(&milling, BuildingType::Mill.as_str()),
             BuildingPlacementResearch::Available
+        );
+    }
+
+    #[test]
+    fn catalog_job_rule_gates_only_logging_on_sawmill() {
+        let fresh = create_upgrade_tree_state();
+        assert_eq!(
+            job_research_entitlement(&fresh, JobKind::GatherLogs.as_str()),
+            JobResearchEntitlement::Requires {
+                node_id: "sawmill",
+                node_name: "Sawmill",
+            }
+        );
+        for founding_job in [JobKind::FetchWater, JobKind::Explore, JobKind::TrainWarrior] {
+            assert_eq!(
+                job_research_entitlement(&fresh, founding_job.as_str()),
+                JobResearchEntitlement::Available
+            );
+        }
+        assert_eq!(
+            job_research_entitlement(&state_with(&["sawmill"], 0.0), JobKind::GatherLogs.as_str()),
+            JobResearchEntitlement::Available
         );
     }
 
@@ -1534,7 +1584,13 @@ mod tests {
             BuildingPlacementResearch::Available
         );
         assert!(resolved.unlocked_buildings.contains("smithy"));
-        assert!(resolved.unlocked_jobs.contains("research"));
+        assert!(resolved.unlocked_jobs.is_empty());
+
+        let resolved = resolve_effects(["sawmill"]);
+        assert_eq!(
+            resolved.unlocked_jobs,
+            [JobKind::GatherLogs.as_str().to_owned()].into()
+        );
     }
 
     #[test]

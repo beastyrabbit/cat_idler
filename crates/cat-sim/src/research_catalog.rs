@@ -14,6 +14,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use crate::types::JobKind;
+
 pub const RESEARCH_NODE_COUNT: usize = 500;
 pub const APPROVED_BUILDING_IDS: &[&str] = &[
     "den",
@@ -210,6 +212,7 @@ pub struct ResearchCatalog {
     nodes: Vec<ResearchNode>,
     by_id: StableIndex,
     recipe_unlocks: StableIndex,
+    job_unlocks: StableIndex,
 }
 
 impl ResearchCatalog {
@@ -243,6 +246,16 @@ impl ResearchCatalog {
     pub fn recipe_unlock_study(&self, recipe_id: &str) -> Option<&ResearchNode> {
         self.recipe_unlocks
             .get(recipe_id)
+            .map(|index| &self.nodes[*index])
+    }
+
+    /// O(1) reverse lookup for the study whose typed payload unlocks `job_id`.
+    /// Validation guarantees every indexed ID is a real runtime [`JobKind`] and
+    /// that no second study competes for the same job entitlement.
+    #[must_use]
+    pub fn job_unlock_study(&self, job_id: &str) -> Option<&ResearchNode> {
+        self.job_unlocks
+            .get(job_id)
             .map(|index| &self.nodes[*index])
     }
 
@@ -545,6 +558,8 @@ fn validate_and_index(nodes: Vec<ResearchNode>) -> Result<ResearchCatalog, Strin
         StableIndex::with_capacity_and_hasher(nodes.len(), StableBuildHasher::default());
     let mut recipe_unlocks =
         StableIndex::with_capacity_and_hasher(nodes.len(), StableBuildHasher::default());
+    let mut job_unlocks =
+        StableIndex::with_capacity_and_hasher(nodes.len(), StableBuildHasher::default());
     let mut layouts = BTreeSet::new();
     for (index, node) in nodes.iter().enumerate() {
         validate_node(node)?;
@@ -558,10 +573,24 @@ fn validate_and_index(nodes: Vec<ResearchNode>) -> Result<ResearchCatalog, Strin
             ));
         }
         for payload in &node.payloads {
-            if let ResearchPayload::UnlockRecipe { recipe_id } = payload
-                && recipe_unlocks.insert(recipe_id.clone(), index).is_some()
-            {
-                return Err(format!("duplicate recipe unlock {recipe_id}"));
+            match payload {
+                ResearchPayload::UnlockRecipe { recipe_id } => {
+                    if recipe_unlocks.insert(recipe_id.clone(), index).is_some() {
+                        return Err(format!("duplicate recipe unlock {recipe_id}"));
+                    }
+                }
+                ResearchPayload::UnlockJob { job_id } => {
+                    if !JobKind::ALL.iter().any(|kind| kind.as_str() == job_id) {
+                        return Err(format!(
+                            "node {} targets unknown runtime job {job_id}",
+                            node.id
+                        ));
+                    }
+                    if job_unlocks.insert(job_id.clone(), index).is_some() {
+                        return Err(format!("duplicate job unlock {job_id}"));
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -573,6 +602,7 @@ fn validate_and_index(nodes: Vec<ResearchNode>) -> Result<ResearchCatalog, Strin
         nodes,
         by_id,
         recipe_unlocks,
+        job_unlocks,
     })
 }
 
@@ -616,6 +646,9 @@ fn validate_node(node: &ResearchNode) -> Result<(), String> {
                 ResearchPayload::BuildingAvailableAtFounding { .. }
                     | ResearchPayload::UnlockBuilding { .. }
                     | ResearchPayload::ModifyBuilding { .. }
+            ) || matches!(
+                payload,
+                ResearchPayload::Modify { effect_id, .. } if effect_id == "housingPerDen"
             )
         }),
         ResearchCategory::RecipeResource => node.payloads.iter().any(|payload| {
@@ -863,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn all_legacy_nodes_are_byte_faithful_in_identity_cost_edges_and_payload_intent() {
+    fn legacy_nodes_preserve_stable_identity_cost_edges_and_order() {
         let catalog = research_catalog();
         assert_eq!(
             UPGRADE_NODES.len(),
@@ -899,14 +932,6 @@ mod tests {
                     _ => None,
                 })
                 .collect();
-            let jobs: Vec<&str> = node
-                .payloads
-                .iter()
-                .filter_map(|payload| match payload {
-                    ResearchPayload::UnlockJob { job_id } => Some(job_id.as_str()),
-                    _ => None,
-                })
-                .collect();
             let effects: Vec<(&str, u64)> = node
                 .payloads
                 .iter()
@@ -918,7 +943,6 @@ mod tests {
                 })
                 .collect();
             assert_eq!(buildings, legacy.unlocks.buildings.unwrap_or_default());
-            assert_eq!(jobs, legacy.unlocks.jobs.unwrap_or_default());
             let legacy_effects: Vec<(&str, u64)> = legacy
                 .unlocks
                 .effects
@@ -937,6 +961,100 @@ mod tests {
             assert!(catalog.get(id).unwrap().payloads.iter().any(|payload| {
                 matches!(payload, ResearchPayload::UnlockCapability { capability_id } if capability_id == capability)
             }));
+        }
+    }
+
+    #[test]
+    fn catalog_job_entitlement_is_unique_runtime_logging_only() {
+        let catalog = research_catalog();
+        let job_payloads = catalog
+            .nodes()
+            .iter()
+            .flat_map(|node| {
+                node.payloads
+                    .iter()
+                    .filter_map(move |payload| match payload {
+                        ResearchPayload::UnlockJob { job_id } => {
+                            Some((node.id.as_str(), job_id.as_str()))
+                        }
+                        _ => None,
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(job_payloads, [("sawmill", "gather_logs")]);
+        assert_eq!(
+            catalog
+                .job_unlock_study(JobKind::GatherLogs.as_str())
+                .map(|node| node.name.as_str()),
+            Some("Sawmill")
+        );
+        for founding_job in [JobKind::FetchWater, JobKind::Explore, JobKind::TrainWarrior] {
+            assert!(catalog.job_unlock_study(founding_job.as_str()).is_none());
+        }
+    }
+
+    #[test]
+    fn catalog_rejects_duplicate_and_unknown_runtime_job_payloads() {
+        let mut duplicate = research_catalog().nodes().to_vec();
+        duplicate[1].payloads.push(ResearchPayload::UnlockJob {
+            job_id: JobKind::GatherLogs.as_str().to_owned(),
+        });
+        assert_eq!(
+            validate_and_index(duplicate).unwrap_err(),
+            "duplicate job unlock gather_logs"
+        );
+
+        let mut unknown = research_catalog().nodes().to_vec();
+        let sawmill = unknown
+            .iter_mut()
+            .find(|node| node.id == "sawmill")
+            .expect("sawmill node");
+        let ResearchPayload::UnlockJob { job_id } = sawmill
+            .payloads
+            .iter_mut()
+            .find(|payload| matches!(payload, ResearchPayload::UnlockJob { .. }))
+            .expect("logging payload")
+        else {
+            unreachable!();
+        };
+        *job_id = "forge_tools".to_owned();
+        assert_eq!(
+            validate_and_index(unknown).unwrap_err(),
+            "node sawmill targets unknown runtime job forge_tools"
+        );
+    }
+
+    #[test]
+    fn legacy_category_reconciliation_uses_only_live_payloads() {
+        let catalog = research_catalog();
+        for (node_id, category) in [
+            ("water_carriers", ResearchCategory::Upgrade),
+            ("textiles", ResearchCategory::RecipeResource),
+            ("den_insulation", ResearchCategory::Building),
+            ("weaponsmithing", ResearchCategory::RecipeResource),
+            ("armorsmithing", ResearchCategory::RecipeResource),
+        ] {
+            assert_eq!(
+                catalog.get(node_id).unwrap().category,
+                category,
+                "{node_id}"
+            );
+        }
+        assert!(catalog.get("den_insulation").unwrap().payloads.iter().any(
+            |payload| matches!(payload, ResearchPayload::Modify { effect_id, .. } if effect_id == "housingPerDen")
+        ));
+        for (node_id, recipe_id) in [
+            ("textiles", "fibre_to_cloth"),
+            ("textiles", "hide_to_leather"),
+            ("weaponsmithing", "smithy_weapon"),
+            ("armorsmithing", "smithy_armor"),
+        ] {
+            assert_eq!(
+                catalog
+                    .recipe_unlock_study(recipe_id)
+                    .map(|node| node.id.as_str()),
+                Some(node_id)
+            );
         }
     }
 

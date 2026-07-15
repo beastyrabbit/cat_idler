@@ -101,8 +101,9 @@ use crate::{
         UpgradeKey,
     },
     upgrade_tree::{
-        UpgradeTreeState, accrue_research, cat_auto_unlock, create_upgrade_tree_state, is_owned,
-        points_per_tick_for, resolve_effects,
+        JobResearchEntitlement, UpgradeTreeState, accrue_research, cat_auto_unlock,
+        create_upgrade_tree_state, is_owned, job_research_entitlement, points_per_tick_for,
+        resolve_effects,
     },
     village_area::{
         ExpandOptions, FenceSegment, GatePlacement as AreaGatePlacement, Side, expand_village,
@@ -501,6 +502,10 @@ pub const SAWMILL_RECIPE_ID: &str = "logs_to_lumber";
 pub const MILL_RECIPE_ID: &str = "grain_to_flour_and_food";
 pub const WORKSHOP_RECIPE_ID: &str = "materials_to_refined";
 pub const SMELTER_RECIPE_ID: &str = "ore_to_metal";
+pub const CLOTHIER_RECIPE_ID: &str = "fibre_to_cloth";
+pub const TANNERY_RECIPE_ID: &str = "hide_to_leather";
+pub const SMITHY_WEAPON_RECIPE_ID: &str = "smithy_weapon";
+pub const SMITHY_ARMOR_RECIPE_ID: &str = "smithy_armor";
 /// Fresh-colony ruleset: implemented station recipes require their catalog study.
 pub const CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION: u32 = 1;
 
@@ -533,6 +538,34 @@ pub struct ProductionRecipeAvailability {
     pub available: bool,
 }
 
+/// Catalog entitlement shared by editable queue recipes and aggregate production
+/// that deliberately has no queue surface (cloth/leather refinement and the two
+/// independent Smithy designs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CatalogRecipeEntitlement {
+    pub required_study_id: Option<&'static str>,
+    pub available: bool,
+}
+
+/// Resolve a physical recipe directly from the catalog reverse index. Rules-v0
+/// colonies are grandfathered exactly as the queue stations are; fresh rules-v1
+/// colonies require the study carrying that exact recipe payload.
+#[must_use]
+pub fn catalog_recipe_entitlement(
+    colony: &ColonyRuntime,
+    recipe_id: &str,
+) -> CatalogRecipeEntitlement {
+    let required_study_id = research_catalog()
+        .recipe_unlock_study(recipe_id)
+        .map(|node| node.id.as_str());
+    let available = colony.recipe_entitlement_rules_version == 0
+        || required_study_id.is_some_and(|study| is_owned(&colony.upgrade_tree, study));
+    CatalogRecipeEntitlement {
+        required_study_id,
+        available,
+    }
+}
+
 /// Resolve the one authoritative recipe entitlement view used by snapshots,
 /// signed queue edits, block reasons, and physical production. Requirement
 /// ownership comes from catalog payload data, never a parallel recipe→study map.
@@ -546,15 +579,11 @@ pub fn production_recipe_availability(
         .iter()
         .copied()
         .find(|implemented| *implemented == recipe_id)?;
-    let required_study_id = research_catalog()
-        .recipe_unlock_study(recipe_id)
-        .map(|node| node.id.as_str());
-    let available = colony.recipe_entitlement_rules_version == 0
-        || required_study_id.is_some_and(|study| is_owned(&colony.upgrade_tree, study));
+    let entitlement = catalog_recipe_entitlement(colony, recipe_id);
     Some(ProductionRecipeAvailability {
         recipe_id,
-        required_study_id,
-        available,
+        required_study_id: entitlement.required_study_id,
+        available: entitlement.available,
     })
 }
 
@@ -7404,6 +7433,11 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 );
             }
             BuildingType::Smithy => {
+                let weapon_design =
+                    catalog_recipe_entitlement(colony, SMITHY_WEAPON_RECIPE_ID).available;
+                let armor_design =
+                    catalog_recipe_entitlement(colony, SMITHY_ARMOR_RECIPE_ID).available;
+                let has_design = weapon_design || armor_design;
                 let worker = assigned_worker(colony, &building_id);
                 let metalwork_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Metalwork));
                 let skilled_elapsed =
@@ -7413,7 +7447,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     colony.buildings[building_index].production_progress,
                     skilled_elapsed,
                     SmithyOptions {
-                        has_worker: worker.is_some(),
+                        has_worker: worker.is_some() && has_design,
                         worker_is_fast: worker.is_some_and(|cat| {
                             cat.specialization == Some(CatSpecialization::Architect)
                         }),
@@ -7421,12 +7455,22 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         materials_available: spendable_materials,
                     },
                 );
-                if step.weapons_produced > 0.0 || step.armor_produced > 0.0 {
+                let weapons_produced = if weapon_design {
+                    step.weapons_produced
+                } else {
+                    0.0
+                };
+                let armor_produced = if armor_design {
+                    step.armor_produced
+                } else {
+                    0.0
+                };
+                if weapons_produced > 0.0 || armor_produced > 0.0 {
                     if productive_tools >= 1.0 {
                         wear_functional_items(
                             colony,
                             ItemKind::Tool,
-                            step.weapons_produced as u32,
+                            weapons_produced.max(armor_produced) as u32,
                             gate.processed_through,
                         );
                     }
@@ -7434,16 +7478,16 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         (colony.resources.refined - step.refined_used).max(0.0);
                     colony.resources.materials =
                         (colony.resources.materials - step.materials_used).max(0.0);
-                    colony.resources.weapons += step.weapons_produced;
-                    colony.resources.armor += step.armor_produced;
+                    colony.resources.weapons += weapons_produced;
+                    colony.resources.armor += armor_produced;
                     let quality = craft_quality_from_skill(metalwork_skill);
                     colony.add_crafted_item(
                         Item::new(ItemKind::Weapon, Material::Metal, quality),
-                        step.weapons_produced as u32,
+                        weapons_produced as u32,
                     );
                     colony.add_crafted_item(
                         Item::new(ItemKind::Armor, Material::Metal, quality),
-                        step.armor_produced as u32,
+                        armor_produced as u32,
                     );
                     // Route the forged gear to the nearest accepting stockpile to the smithy
                     // (P12.4a) — pile-only, `resources` unchanged, shrine fallback with no piles.
@@ -7451,35 +7495,26 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     route_output_to_nearest_pile(
                         colony,
                         ResourceKind::Weapons,
-                        step.weapons_produced,
+                        weapons_produced,
                         site,
                     );
-                    route_output_to_nearest_pile(
-                        colony,
-                        ResourceKind::Armor,
-                        step.armor_produced,
-                        site,
-                    );
+                    route_output_to_nearest_pile(colony, ResourceKind::Armor, armor_produced, site);
                     append_event(
                         colony,
                         gate.processed_through,
                         EventKind::Production,
                         format!(
                             "The smith forged {} weapon{} and {} armor at the smithy.",
-                            step.weapons_produced,
-                            if step.weapons_produced == 1.0 {
-                                ""
-                            } else {
-                                "s"
-                            },
-                            step.armor_produced,
+                            weapons_produced,
+                            if weapons_produced == 1.0 { "" } else { "s" },
+                            armor_produced,
                         ),
                     );
                     grant_building_skill(
                         colony,
                         &building_id,
                         Labor::Metalwork,
-                        (step.weapons_produced + step.armor_produced) * SKILL_GAIN_PER_JOB,
+                        (weapons_produced + armor_produced) * SKILL_GAIN_PER_JOB,
                     );
                 }
                 colony.buildings[building_index].production_progress = step.next_progress;
@@ -7498,7 +7533,7 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     colony.metal_forge_progress,
                     skilled_elapsed,
                     MetalForgeOptions {
-                        has_worker: forge_worker.is_some(),
+                        has_worker: forge_worker.is_some() && has_design,
                         worker_is_fast: forge_worker.is_some_and(|cat| {
                             cat.specialization == Some(CatSpecialization::Architect)
                         }),
@@ -7506,39 +7541,49 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                     },
                 );
                 colony.metal_forge_progress = forge_step.next_progress;
-                if forge_step.weapons_produced > 0.0 || forge_step.armor_produced > 0.0 {
+                let forge_weapons_produced = if weapon_design {
+                    forge_step.weapons_produced
+                } else {
+                    0.0
+                };
+                let forge_armor_produced = if armor_design {
+                    forge_step.armor_produced
+                } else {
+                    0.0
+                };
+                if forge_weapons_produced > 0.0 || forge_armor_produced > 0.0 {
                     if productive_tools >= 1.0 {
                         wear_functional_items(
                             colony,
                             ItemKind::Tool,
-                            forge_step.weapons_produced as u32,
+                            forge_weapons_produced.max(forge_armor_produced) as u32,
                             gate.processed_through,
                         );
                     }
                     colony.resources.metal =
                         (colony.resources.metal - forge_step.metal_used).max(0.0);
-                    colony.resources.weapons += forge_step.weapons_produced;
-                    colony.resources.armor += forge_step.armor_produced;
+                    colony.resources.weapons += forge_weapons_produced;
+                    colony.resources.armor += forge_armor_produced;
                     let quality = craft_quality_from_skill(forge_skill);
                     colony.add_crafted_item(
                         Item::new(ItemKind::Weapon, Material::Metal, quality),
-                        forge_step.weapons_produced as u32,
+                        forge_weapons_produced as u32,
                     );
                     colony.add_crafted_item(
                         Item::new(ItemKind::Armor, Material::Metal, quality),
-                        forge_step.armor_produced as u32,
+                        forge_armor_produced as u32,
                     );
                     let site = colony.buildings[building_index].position;
                     route_output_to_nearest_pile(
                         colony,
                         ResourceKind::Weapons,
-                        forge_step.weapons_produced,
+                        forge_weapons_produced,
                         site,
                     );
                     route_output_to_nearest_pile(
                         colony,
                         ResourceKind::Armor,
-                        forge_step.armor_produced,
+                        forge_armor_produced,
                         site,
                     );
                     append_event(
@@ -7547,21 +7592,20 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                         EventKind::Production,
                         format!(
                             "The smith worked banked metal into {} extra weapon{} and {} extra armor.",
-                            forge_step.weapons_produced,
-                            if forge_step.weapons_produced == 1.0 {
+                            forge_weapons_produced,
+                            if forge_weapons_produced == 1.0 {
                                 ""
                             } else {
                                 "s"
                             },
-                            forge_step.armor_produced,
+                            forge_armor_produced,
                         ),
                     );
                     grant_building_skill(
                         colony,
                         &building_id,
                         Labor::Metalwork,
-                        (forge_step.weapons_produced + forge_step.armor_produced)
-                            * SKILL_GAIN_PER_JOB,
+                        (forge_weapons_produced + forge_armor_produced) * SKILL_GAIN_PER_JOB,
                     );
                 }
             }
@@ -7727,11 +7771,13 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 // (`advance_workshop` is generic over which resource it refines).
                 let worker = assigned_worker(colony, &building_id);
                 let textile_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Textile));
+                let recipe_available =
+                    catalog_recipe_entitlement(colony, CLOTHIER_RECIPE_ID).available;
                 let step = advance_workshop(
                     colony.buildings[building_index].production_progress,
                     skilled_station_elapsed(crafting_elapsed, textile_skill),
                     WorkshopOptions {
-                        has_worker: worker.is_some(),
+                        has_worker: worker.is_some() && recipe_available,
                         worker_is_architect: worker.is_some_and(|cat| {
                             cat.specialization == Some(CatSpecialization::Architect)
                         }),
@@ -7816,11 +7862,13 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
                 // cadence as the clothier above.
                 let worker = assigned_worker(colony, &building_id);
                 let textile_skill = worker.map_or(0.0, |cat| cat.skill(Labor::Textile));
+                let recipe_available =
+                    catalog_recipe_entitlement(colony, TANNERY_RECIPE_ID).available;
                 let step = advance_workshop(
                     colony.buildings[building_index].production_progress,
                     skilled_station_elapsed(crafting_elapsed, textile_skill),
                     WorkshopOptions {
-                        has_worker: worker.is_some(),
+                        has_worker: worker.is_some() && recipe_available,
                         worker_is_architect: worker.is_some_and(|cat| {
                             cat.specialization == Some(CatSpecialization::Architect)
                         }),
@@ -7977,7 +8025,8 @@ fn dispatch_officer_resource_jobs(colony: &mut ColonyRuntime, now_ms: i64, world
         && has_sawmill
         && colony.resources.logs < 10.0
         && !logs_in_flight
-        && is_owned(&colony.upgrade_tree, "sawmill")
+        && job_research_entitlement(&colony.upgrade_tree, JobKind::GatherLogs.as_str())
+            == JobResearchEntitlement::Available
         && has_logging_site(colony, world_seed)
         && let Some(cat_id) = select_best_cat(colony, Some(CatSpecialization::Architect))
     {
@@ -25694,6 +25743,177 @@ mod tests {
             )
             .is_none()
         );
+
+        for (recipe_id, study_id) in [
+            (CLOTHIER_RECIPE_ID, "textiles"),
+            (TANNERY_RECIPE_ID, "textiles"),
+            (SMITHY_WEAPON_RECIPE_ID, "weaponsmithing"),
+            (SMITHY_ARMOR_RECIPE_ID, "armorsmithing"),
+        ] {
+            let mut colony = ColonyRuntime {
+                recipe_entitlement_rules_version: CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
+                ..ColonyRuntime::default()
+            };
+            assert_eq!(
+                catalog_recipe_entitlement(&colony, recipe_id),
+                CatalogRecipeEntitlement {
+                    required_study_id: Some(study_id),
+                    available: false,
+                }
+            );
+            colony.upgrade_tree.owned_node_ids.push(study_id.to_owned());
+            assert!(catalog_recipe_entitlement(&colony, recipe_id).available);
+        }
+
+        for building_type in [
+            BuildingType::Clothier,
+            BuildingType::Tannery,
+            BuildingType::Smithy,
+        ] {
+            assert!(available_production_recipes(building_type).is_empty());
+            assert!(default_production_queue(building_type).is_empty());
+        }
+    }
+
+    #[test]
+    fn fresh_textile_refiners_wait_for_textiles_without_progress_or_input_use() {
+        for (building_type, input_before, output_before) in [
+            (BuildingType::Clothier, 50.0, 0.0),
+            (BuildingType::Tannery, 50.0, 0.0),
+        ] {
+            let resources = match building_type {
+                BuildingType::Clothier => Resources {
+                    fibre: input_before,
+                    cloth: output_before,
+                    ..Resources::default()
+                },
+                BuildingType::Tannery => Resources {
+                    hide: input_before,
+                    leather: output_before,
+                    ..Resources::default()
+                },
+                _ => unreachable!(),
+            };
+            let mut colony = chain_colony(building_type, resources, true);
+            colony.recipe_entitlement_rules_version = CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
+            let before_resources = colony.resources.clone();
+            let before_progress = colony.buildings[0].production_progress;
+            phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+            assert_eq!(colony.resources, before_resources, "{building_type:?}");
+            assert_eq!(
+                colony.buildings[0].production_progress, before_progress,
+                "{building_type:?} advanced while its recipe was locked"
+            );
+
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .push("textiles".to_owned());
+            phase_23_production(&mut colony, production_gate(30, 60_000), 123);
+            match building_type {
+                BuildingType::Clothier => {
+                    assert_eq!(colony.resources.fibre, 45.0);
+                    assert_eq!(colony.resources.cloth, 1.0);
+                }
+                BuildingType::Tannery => {
+                    assert_eq!(colony.resources.hide, 45.0);
+                    assert_eq!(colony.resources.leather, 1.0);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn smithy_entitlement_cycle(rules_version: u32, studies: &[&str]) -> ColonyRuntime {
+        let mut colony = chain_colony(
+            BuildingType::Smithy,
+            Resources {
+                refined: 20.0,
+                materials: 30.0,
+                metal: 20.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        colony.recipe_entitlement_rules_version = rules_version;
+        colony.buildings[0].production_progress = 890.0;
+        colony.metal_forge_progress = 890.0;
+        colony.upgrade_tree.owned_node_ids =
+            studies.iter().map(|study| (*study).to_owned()).collect();
+        phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+        colony
+    }
+
+    #[test]
+    fn fresh_smithy_designs_are_independent_and_each_forge_arm_consumes_once() {
+        let locked = smithy_entitlement_cycle(CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION, &[]);
+        assert_eq!(locked.buildings[0].production_progress, 890.0);
+        assert_eq!(locked.metal_forge_progress, 890.0);
+        assert_eq!(locked.resources.refined, 20.0);
+        assert_eq!(locked.resources.materials, 30.0);
+        assert_eq!(locked.resources.metal, 20.0);
+        assert_eq!(locked.resources.weapons, 0.0);
+        assert_eq!(locked.resources.armor, 0.0);
+
+        let weapons = smithy_entitlement_cycle(
+            CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
+            &["weaponsmithing"],
+        );
+        assert_eq!(weapons.resources.refined, 18.0);
+        assert_eq!(weapons.resources.materials, 27.0);
+        assert_eq!(weapons.resources.metal, 18.0);
+        assert_eq!(weapons.resources.weapons, 2.0);
+        assert_eq!(weapons.resources.armor, 0.0);
+
+        let armor =
+            smithy_entitlement_cycle(CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION, &["armorsmithing"]);
+        assert_eq!(armor.resources.refined, 18.0);
+        assert_eq!(armor.resources.materials, 27.0);
+        assert_eq!(armor.resources.metal, 18.0);
+        assert_eq!(armor.resources.weapons, 0.0);
+        assert_eq!(armor.resources.armor, 2.0);
+
+        let both = smithy_entitlement_cycle(
+            CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION,
+            &["weaponsmithing", "armorsmithing"],
+        );
+        assert_eq!(both.resources.refined, 18.0);
+        assert_eq!(both.resources.materials, 27.0);
+        assert_eq!(both.resources.metal, 18.0);
+        assert_eq!(both.resources.weapons, 2.0);
+        assert_eq!(both.resources.armor, 2.0);
+    }
+
+    #[test]
+    fn rules_v0_grandfathers_textile_and_both_smithy_designs() {
+        for (building_type, resources) in [
+            (
+                BuildingType::Clothier,
+                Resources {
+                    fibre: 50.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                BuildingType::Tannery,
+                Resources {
+                    hide: 50.0,
+                    ..Resources::default()
+                },
+            ),
+        ] {
+            let mut colony = chain_colony(building_type, resources, true);
+            assert_eq!(colony.recipe_entitlement_rules_version, 0);
+            phase_23_production(&mut colony, production_gate(30, 30_000), 123);
+            assert!(colony.buildings[0].production_progress < 590.0);
+        }
+
+        let smithy = smithy_entitlement_cycle(0, &[]);
+        assert_eq!(smithy.resources.refined, 18.0);
+        assert_eq!(smithy.resources.materials, 27.0);
+        assert_eq!(smithy.resources.metal, 18.0);
+        assert_eq!(smithy.resources.weapons, 2.0);
+        assert_eq!(smithy.resources.armor, 2.0);
     }
 
     #[test]
@@ -27871,6 +28091,15 @@ mod tests {
             production_queue: crate::world_tick::default_production_queue(BuildingType::Sawmill),
             production_paused: false,
         });
+        colony
+            .officers
+            .insert(OfficerRole::Forester, "forester".to_owned());
+        dispatch_officer_resource_jobs(&mut colony, 999, seed);
+        assert!(
+            colony.jobs.is_empty(),
+            "a Forester must not bypass the catalog logging study"
+        );
+        colony.officers.remove(&OfficerRole::Forester);
         colony
             .upgrade_tree
             .owned_node_ids

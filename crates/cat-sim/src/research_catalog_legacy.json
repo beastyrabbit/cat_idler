@@ -11,8 +11,7 @@
       "layout": { "x": 0, "y": 0 },
       "leaderPriority": 100,
       "payloads": [
-        { "kind": "building_available_at_founding", "building_id": "research_hut" },
-        { "kind": "unlock_job", "job_id": "research" }
+        { "kind": "building_available_at_founding", "building_id": "research_hut" }
       ]
     },
     {
@@ -33,14 +32,13 @@
       "id": "water_carriers",
       "name": "Water Carriers",
       "description": "Woven gourds let a fetch-water trip haul far more per run.",
-      "category": "recipe_resource",
+      "category": "upgrade",
       "cost": 8.0,
       "prerequisites": ["research_hut"],
       "era": 1,
       "layout": { "x": 1, "y": 1 },
       "leaderPriority": 120,
       "payloads": [
-        { "kind": "unlock_job", "job_id": "fetch_water" },
         { "kind": "modify", "effect_id": "waterCarryCapacity", "operation": "add", "value": 1.0 }
       ]
     },
@@ -48,7 +46,7 @@
       "id": "den_insulation",
       "name": "Den Insulation",
       "description": "Moss-lined dens shelter another cat each without the chill.",
-      "category": "upgrade",
+      "category": "building",
       "cost": 8.0,
       "prerequisites": ["research_hut"],
       "era": 1,
@@ -76,7 +74,7 @@
       "id": "textiles",
       "name": "Textiles",
       "description": "Raise the clothier and tannery. Fibre and hunt hides become cloth, leather, and warm clothing.",
-      "category": "building",
+      "category": "recipe_resource",
       "cost": 12.0,
       "prerequisites": ["foraging_lore"],
       "era": 2,
@@ -85,7 +83,8 @@
       "payloads": [
         { "kind": "unlock_building", "building_id": "clothier" },
         { "kind": "unlock_building", "building_id": "tannery" },
-        { "kind": "unlock_job", "job_id": "craft_clothing" }
+        { "kind": "unlock_recipe", "recipe_id": "fibre_to_cloth" },
+        { "kind": "unlock_recipe", "recipe_id": "hide_to_leather" }
       ]
     },
     {
@@ -157,8 +156,7 @@
       "layout": { "x": 4, "y": 2 },
       "leaderPriority": 160,
       "payloads": [
-        { "kind": "unlock_building", "building_id": "smithy" },
-        { "kind": "unlock_job", "job_id": "forge_tools" }
+        { "kind": "unlock_building", "building_id": "smithy" }
       ]
     },
     {
@@ -172,8 +170,7 @@
       "layout": { "x": 2, "y": 3 },
       "leaderPriority": 170,
       "payloads": [
-        { "kind": "unlock_building", "building_id": "barracks" },
-        { "kind": "unlock_job", "job_id": "train_warrior" }
+        { "kind": "unlock_building", "building_id": "barracks" }
       ]
     },
     {
@@ -188,7 +185,6 @@
       "leaderPriority": 175,
       "payloads": [
         { "kind": "unlock_building", "building_id": "school" },
-        { "kind": "unlock_job", "job_id": "teach" },
         { "kind": "modify", "effect_id": "researchRateMult", "operation": "add", "value": 0.5 }
       ]
     },
@@ -232,7 +228,7 @@
       "layout": { "x": 5, "y": 4 },
       "leaderPriority": 200,
       "payloads": [
-        { "kind": "unlock_job", "job_id": "forge_weapon" },
+        { "kind": "unlock_recipe", "recipe_id": "smithy_weapon" },
         { "kind": "modify", "effect_id": "combatPowerMult", "operation": "add", "value": 0.25 }
       ]
     },
@@ -247,7 +243,7 @@
       "layout": { "x": 5, "y": 5 },
       "leaderPriority": 198,
       "payloads": [
-        { "kind": "unlock_job", "job_id": "forge_armor" },
+        { "kind": "unlock_recipe", "recipe_id": "smithy_armor" },
         { "kind": "modify", "effect_id": "defenseMult", "operation": "add", "value": 0.25 }
       ]
     },
@@ -290,7 +286,6 @@
       "layout": { "x": 5, "y": 8 },
       "leaderPriority": 195,
       "payloads": [
-        { "kind": "unlock_job", "job_id": "explore" },
         { "kind": "modify", "effect_id": "moveSpeedMult", "operation": "add", "value": 0.3 }
       ]
     },

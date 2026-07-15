@@ -404,8 +404,10 @@ fn request_job(
         return fail("Unknown job kind.");
     }
 
-    if kind == JobKind::GatherLogs && !upgrade_tree::is_owned(&colony.upgrade_tree, "sawmill") {
-        return fail("Logging must be researched first.");
+    if let upgrade_tree::JobResearchEntitlement::Requires { node_name, .. } =
+        upgrade_tree::job_research_entitlement(&colony.upgrade_tree, kind.as_str())
+    {
+        return fail(format!("Research {node_name} before requesting logging."));
     }
     if kind == JobKind::GatherLogs && !has_logging_site(colony, world_seed) {
         return fail("No explored forest is available for logging.");
@@ -4595,7 +4597,8 @@ mod tests {
     use crate::storage::GRANARY_BONUS;
     use crate::village_layout::VILLAGE_ANCHOR;
     use crate::world_tick::{
-        BuildingRuntime, TraderRuntime, found_colony, new_world, stockpile_placement_error,
+        BuildingRuntime, TraderRuntime, found_colony, found_global_colony, new_world,
+        stockpile_placement_error,
     };
 
     fn ctx() -> ActionCtx {
@@ -4747,6 +4750,67 @@ mod tests {
         assert!(guided.colonies[0].jobs.iter().any(|job| {
             job.kind == JobKind::BuildHouse && job_building_type(job) == Some(BuildingType::Mill)
         }));
+    }
+
+    #[test]
+    fn fresh_personal_and_communal_capabilities_do_not_inherit_false_job_gates() {
+        let signed_job = |kind| proto::ClientAction::RequestJob {
+            session_id: "sess_1".to_owned(),
+            nickname: "Founder".to_owned(),
+            sig: "server-verified".to_owned(),
+            kind,
+        };
+
+        for kind in [proto::JobKind::FetchWater, proto::JobKind::Explore] {
+            let mut world = world_with_one_colony();
+            world.colonies[0].kind = VillageKind::Personal;
+            world.colonies[0].owner_player_id = Some("player_1".to_owned());
+            let result = apply_action(&mut world, &signed_job(kind), &ctx());
+            assert!(result.ok, "fresh personal {kind:?} was gated: {result:?}");
+        }
+
+        let mut personal = world_with_one_colony();
+        personal.colonies[0].kind = VillageKind::Personal;
+        personal.colonies[0].owner_player_id = Some("player_1".to_owned());
+        personal.colonies[0].upgrade_tree.research_points = 5.0;
+        let research = apply_action(
+            &mut personal,
+            &proto::ClientAction::ResearchNode {
+                session_id: "sess_1".to_owned(),
+                nickname: "Founder".to_owned(),
+                sig: "server-verified".to_owned(),
+                node_id: "research_hut".to_owned(),
+            },
+            &ctx(),
+        );
+        assert!(
+            research.ok,
+            "manual founding research was gated: {research:?}"
+        );
+
+        let mut communal = WorldState {
+            world_seed: 20_240_703,
+            colonies: vec![found_global_colony(20_240_703, "c1", 1_000_000, 1234)],
+        };
+        communal.colonies[0].buildings.push(completed_building(
+            "communal-barracks",
+            BuildingType::Barracks,
+        ));
+        let training = apply_action(
+            &mut communal,
+            &signed_job(proto::JobKind::TrainWarrior),
+            &ctx(),
+        );
+        assert!(
+            training.ok,
+            "communal Barracks training was falsely research-gated: {training:?}"
+        );
+        assert!(
+            communal.colonies[0]
+                .jobs
+                .iter()
+                .any(|job| job.kind == JobKind::TrainWarrior)
+        );
     }
 
     #[test]
@@ -5161,12 +5225,14 @@ mod tests {
             sig: "server-verified".to_owned(),
             kind: proto::JobKind::GatherLogs,
         };
+        let before_locked = world.clone();
         let locked = apply_action(&mut world, &action, &ctx());
         assert!(!locked.ok);
         assert_eq!(
             locked.message.as_deref(),
-            Some("Logging must be researched first.")
+            Some("Research Sawmill before requesting logging.")
         );
+        assert_eq!(world, before_locked, "denial must be mutation-free");
 
         world.colonies[0]
             .upgrade_tree

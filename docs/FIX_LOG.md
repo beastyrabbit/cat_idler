@@ -13,14 +13,42 @@ and any changed Bevy visuals have been verified.
 | Six maintained benches still bypass the physical station contract | Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Give each station-local input/output/transit state, an ordered repeatable pausable recipe queue, and one-worker/one-selected-recipe advancement. Remove the legacy `basic_tools` placement check from the three P16 founding benches; future studies gate recipes rather than later copies of those stations. Preserve every existing `BuildingType` and its open-top visual identity. | queued |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
-| Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads now bind the maintained physical recipes: Grain Milling→`grain_to_flour_and_food`, Carpentry→`logs_to_lumber`, Metallurgy→`ore_to_metal`, and Trade Goods→`materials_to_refined`. Fresh rules-v1 villages require the exact study for snapshots, signed queue additions, block reasons, and physical station advance; old/missing rules-v0 saves retain their queues and are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no physical consumer. Add only physically sourced resource/recipe breadth. | in progress |
-| Research job unlocks do not gate jobs truthfully | Nine `UnlockJob` payloads are false or unread: the three real `JobKind` claims (Fetch Water, Explore, and Train Warrior) intentionally work before their studies, while six advertised IDs have no runtime `JobKind`. Only Sawmill→Gather Logs agrees with live placement/action behavior. Remove the false claims without taking away founding survival or manual work. | queued |
+| Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads bind the station-local Mill, Sawmill, Workshop, and Smelter queues. Four legacy studies now also own the maintained aggregate recipes: Textiles→Clothier fibre→cloth and Tannery hide→leather, Weaponsmithing→Smithy weapons, and Armorsmithing→Smithy armor. Fresh rules-v1 villages require each exact study before time, progress, or input consumption; old/missing rules-v0 saves are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains; rail and shipping have modifiers but no tracks, trains, vessels, or routes. | queued |
 
 ## Verified fixes
+
+## 2026-07-15 — Truthful catalog job and aggregate-recipe entitlements
+
+**Problem:** Nine catalog job payloads were false: three founding/building capabilities were
+already usable before their advertised studies, and six IDs were not runtime jobs at all. Only
+Sawmill→Gather Logs matched live behavior, but both the signed action and Forester automation
+duplicated that entitlement as hardcoded ownership checks. Textiles and the two Smithy design
+studies also lacked recipe payloads for aggregate production that already existed.
+
+**Fix:** Sawmill→Gather Logs is now the sole `UnlockJob`. A validated one-time catalog reverse
+index drives both signed logging and Forester automation; denial is mutation-free and names
+Sawmill. Fetch Water, Explore, manual research, and Barracks training remain founding/building
+capabilities. Water Carriers, Textiles, and Den Insulation were reclassified without changing
+stable identity, cost, prerequisites, order, or the live `housingPerDen` effect, preserving the
+exact 167 Building / 167 RecipeResource / 166 Upgrade split. Textiles owns the Clothier and
+Tannery aggregate recipes, while Weaponsmithing and Armorsmithing independently own the two
+Smithy outputs. Fresh rules-v1 production cannot advance or spend inputs before its exact study;
+rules-v0 saves remain grandfathered. These aggregate recipes do not appear in editable station
+queues.
+
+**Evidence:** Catalog uniqueness/runtime-ID/category and full 500-node purchase checks, signed
+logging denial/success, Forester non-bypass, founding personal/communal capability regressions,
+fresh-v1 versus rules-v0 Clothier/Tannery/Smithy neither/one/both cycles, both Smithy forge arms,
+SQLite restart, Leader daily-choice determinism, client-copy/no-queue-leak tests, guided and
+unattended campaigns, touched-crate gates, and strict Clippy cover the slice. The accepted
+own-framebuffers `/tmp/research-job-payload-truth-sawmill.png` and
+`/tmp/research-job-payload-truth-textiles.png` show the sole job line `Unlocks logging` and the
+human recipe names `Cloth weaving` and `Leather tanning`; the temporary capture hook and processes
+were removed.
 
 ## 2026-07-15 — Leader-owned daily research choice
 

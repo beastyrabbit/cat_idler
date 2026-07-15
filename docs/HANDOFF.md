@@ -42,9 +42,12 @@ Verified foundations include:
 - a complete 500-node research runtime and full-page searchable/filterable/pannable client ledger.
   Every study can be purchased with research points and persists; the living Leader may complete at
   most one affordable full-catalog node per rolling real-life day while research labor/building
-  automation and rituals remain Loremaster-owned. Four preparation studies now
-  gate the maintained physical recipes in fresh villages, with rules-v0 save grandfathering;
-  96 other recipe IDs and all 64 generated resource IDs remain incomplete. Research Hut is
+  automation and rituals remain Loremaster-owned. Four preparation studies gate the maintained
+  station-local queue recipes, while Textiles and the two Smithy design studies gate four
+  aggregate processor recipes; rules-v0 saves remain grandfathered. The other 96 generated
+  recipe IDs and all 64 generated resource IDs remain incomplete. Sawmill→Gather Logs is the
+  sole catalog job entitlement; founding water/scouting, manual research, and Barracks training
+  remain available without false job payloads. Research Hut is
   explicitly founding-placeable, `milling` is the sole Mill placement unlock, and generated Mill
   Foundations is durability only. The daily Leader choice shares one restart/reset/election-safe
   colony clock and never limits the player's direct research purchases;
@@ -148,9 +151,10 @@ so a correct scout route cannot conceal a missing founding dispatch.
    target-correct across clamp, physical routing, snapshot, trade, and persistence. Keep the other
    22 generated `*_stores` studies and the fixed 10-unit Mill/Sawmill/Workshop/Smelter local stores
    explicitly open until each has a real physical domain. Then turn the remaining registry-only
-   research payloads (96 generated-only recipes, 64 resources, nine false/unread job claims, and
-   25 worker-slot modifiers) into observable behavior without advertising IDs that have no runtime
-   object. Preserve the verified split: the Leader owns the daily strategic study choice, while
+   research payloads (96 generated-only recipes, 64 resources, and 25 worker-slot modifiers) into
+   observable behavior without advertising IDs that have no runtime object. Preserve the
+   catalog-derived Sawmill logging entitlement and the verified authority split: the Leader owns
+   the daily strategic study choice, while
    research labor/building automation and rituals remain Loremaster-owned.
 4. **Prove the whole game.** Rerun unattended true-live and long proxy campaigns after every
    balance slice, then run the guided matrix in `docs/IMPLEMENTATION_AUDIT.md` across native,

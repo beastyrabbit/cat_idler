@@ -1162,9 +1162,16 @@ fn payload_line(payload: &ResearchPayload) -> String {
         ResearchPayload::UnlockBuilding { building_id } => {
             format!("Unlock building: {}", title_case_identifier(building_id))
         }
-        ResearchPayload::UnlockRecipe { recipe_id } => format!("Recipe: {recipe_id}"),
+        ResearchPayload::UnlockRecipe { recipe_id } => {
+            format!("Unlock recipe: {}", recipe_display_name(recipe_id))
+        }
         ResearchPayload::UnlockResource { resource_id } => format!("Resource: {resource_id}"),
-        ResearchPayload::UnlockJob { job_id } => format!("Job: {job_id}"),
+        ResearchPayload::UnlockJob { job_id } if job_id == "gather_logs" => {
+            "Unlocks logging".to_owned()
+        }
+        ResearchPayload::UnlockJob { job_id } => {
+            format!("Unlock job: {}", title_case_identifier(job_id))
+        }
         ResearchPayload::ModifyBuilding {
             building_id,
             attribute,
@@ -1179,6 +1186,20 @@ fn payload_line(payload: &ResearchPayload) -> String {
         ResearchPayload::UnlockCapability { capability_id } => {
             format!("Capability: {capability_id}")
         }
+    }
+}
+
+fn recipe_display_name(recipe_id: &str) -> String {
+    match recipe_id {
+        "grain_to_flour_and_food" => "Grain milling".to_owned(),
+        "logs_to_lumber" => "Lumber cutting".to_owned(),
+        "materials_to_refined" => "Refined materials".to_owned(),
+        "ore_to_metal" => "Metal smelting".to_owned(),
+        "fibre_to_cloth" => "Cloth weaving".to_owned(),
+        "hide_to_leather" => "Leather tanning".to_owned(),
+        "smithy_weapon" => "Weapon forging".to_owned(),
+        "smithy_armor" => "Armor forging".to_owned(),
+        _ => title_case_identifier(recipe_id),
     }
 }
 
@@ -1477,6 +1498,56 @@ mod tests {
                 .iter()
                 .map(payload_line)
                 .all(|line| !line.starts_with("Unlock building:"))
+        );
+    }
+
+    #[test]
+    fn inspector_names_the_sole_real_job_and_new_physical_recipes_for_players() {
+        let sawmill = research_catalog().get("sawmill").unwrap();
+        assert_eq!(
+            sawmill
+                .payloads
+                .iter()
+                .filter(|payload| matches!(payload, ResearchPayload::UnlockJob { .. }))
+                .map(payload_line)
+                .collect::<Vec<_>>(),
+            ["Unlocks logging"]
+        );
+
+        for (node_id, expected) in [
+            (
+                "textiles",
+                [
+                    "Unlock recipe: Cloth weaving",
+                    "Unlock recipe: Leather tanning",
+                ]
+                .as_slice(),
+            ),
+            (
+                "weaponsmithing",
+                ["Unlock recipe: Weapon forging"].as_slice(),
+            ),
+            ("armorsmithing", ["Unlock recipe: Armor forging"].as_slice()),
+        ] {
+            let recipe_lines = research_catalog()
+                .get(node_id)
+                .unwrap()
+                .payloads
+                .iter()
+                .filter(|payload| matches!(payload, ResearchPayload::UnlockRecipe { .. }))
+                .map(payload_line)
+                .collect::<Vec<_>>();
+            assert_eq!(recipe_lines, expected, "{node_id}");
+        }
+
+        assert_eq!(
+            research_catalog()
+                .nodes()
+                .iter()
+                .flat_map(|node| node.payloads.iter())
+                .filter(|payload| matches!(payload, ResearchPayload::UnlockJob { .. }))
+                .count(),
+            1
         );
     }
 

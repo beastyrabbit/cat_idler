@@ -2248,6 +2248,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signed_logging_uses_the_catalog_sawmill_entitlement() {
+        let state = build_state(1_000_000);
+        let (mut connection, signed) = authenticated_connection(&state);
+        let request = ClientAction::RequestJob {
+            session_id: signed.session_id,
+            nickname: "Logger".to_owned(),
+            sig: signed.sig,
+            kind: cat_protocol::JobKind::GatherLogs,
+        };
+
+        let before_locked = state.world.lock().await.clone();
+        let locked = send_action(&state, &mut connection, &request).await;
+        assert!(!locked.result.ok);
+        assert_eq!(
+            locked.result.message.as_deref(),
+            Some("Research Sawmill before requesting logging.")
+        );
+        assert_eq!(
+            *state.world.lock().await,
+            before_locked,
+            "a signed denied request must not mutate the world"
+        );
+
+        {
+            let mut world = state.world.lock().await;
+            let seed = world.world_seed;
+            let tree = (-12..=12)
+                .flat_map(|chunk_y| (-12..=12).map(move |chunk_x| (chunk_x, chunk_y)))
+                .find_map(|(chunk_x, chunk_y)| {
+                    cat_sim::terrain_gen::generate_terrain_chunk(
+                        chunk_x,
+                        chunk_y,
+                        i64::from(seed),
+                        cat_sim::terrain_gen::WORLD_TERRAIN_OPTIONS,
+                    )
+                    .into_iter()
+                    .find(|tile| {
+                        matches!(
+                            tile.decoration,
+                            Some(cat_sim::terrain_gen::DecorationRole::Tree { .. })
+                        ) && tile.climate_biome.properties().resource
+                            == cat_sim::climate::ResourceHint::Wood
+                    })
+                    .map(|tile| cat_sim::world_tick::TilePos {
+                        x: tile.x,
+                        y: tile.y,
+                    })
+                })
+                .expect("bounded climate scan contains a logging tree");
+            let colony = &mut world.colonies[0];
+            colony
+                .upgrade_tree
+                .owned_node_ids
+                .push("sawmill".to_owned());
+            let mut logging_tile = colony
+                .world_tiles
+                .values()
+                .next()
+                .expect("founding world tile")
+                .clone();
+            logging_tile.pos = tree;
+            logging_tile.path_wear = 63;
+            logging_tile.overlay_feature = None;
+            colony.world_tiles.insert(tree, logging_tile);
+        }
+
+        let accepted = send_action(&state, &mut connection, &request).await;
+        assert!(accepted.result.ok, "{accepted:?}");
+        assert!(state.world.lock().await.colonies[0].jobs.iter().any(|job| {
+            job.kind == cat_sim::types::JobKind::GatherLogs
+                && job.requested_by == cat_sim::world_tick::JobRequester::Player
+        }));
+    }
+
+    #[tokio::test]
     async fn signed_labor_and_station_guidance_survives_database_restart() {
         let path = std::env::temp_dir().join(format!(
             "cat-server-guidance-restart-{}-{}.db",

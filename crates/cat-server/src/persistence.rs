@@ -3327,10 +3327,15 @@ mod tests {
         let conn = open_database(":memory:").expect("database");
         let mut world = new_world(42);
         let mut colony = found_colony(42, "entitlement", 1_000_000, 42);
-        colony
-            .upgrade_tree
-            .owned_node_ids
-            .push("carpentry_preparation".to_owned());
+        colony.upgrade_tree.owned_node_ids.extend(
+            [
+                "carpentry_preparation",
+                "textiles",
+                "weaponsmithing",
+                "armorsmithing",
+            ]
+            .map(str::to_owned),
+        );
         colony.last_leader_research_choice_at = Some(1_234_567);
         colony.buildings.push(BuildingRuntime {
             id: "persisted-sawmill".to_owned(),
@@ -3352,12 +3357,31 @@ mod tests {
             colony.recipe_entitlement_rules_version,
             cat_sim::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION
         );
-        assert!(
-            colony
-                .upgrade_tree
-                .owned_node_ids
-                .contains(&"carpentry_preparation".to_owned())
-        );
+        for study in [
+            "carpentry_preparation",
+            "textiles",
+            "weaponsmithing",
+            "armorsmithing",
+        ] {
+            assert!(
+                colony
+                    .upgrade_tree
+                    .owned_node_ids
+                    .iter()
+                    .any(|id| id == study)
+            );
+        }
+        for recipe_id in [
+            cat_sim::world_tick::CLOTHIER_RECIPE_ID,
+            cat_sim::world_tick::TANNERY_RECIPE_ID,
+            cat_sim::world_tick::SMITHY_WEAPON_RECIPE_ID,
+            cat_sim::world_tick::SMITHY_ARMOR_RECIPE_ID,
+        ] {
+            assert!(
+                cat_sim::world_tick::catalog_recipe_entitlement(colony, recipe_id).available,
+                "persisted study did not restore {recipe_id}"
+            );
+        }
         assert_eq!(colony.last_leader_research_choice_at, Some(1_234_567));
         assert_eq!(
             colony
@@ -3454,6 +3478,17 @@ mod tests {
         let colony = &loaded.colonies[0];
         assert_eq!(colony.recipe_entitlement_rules_version, 0);
         assert!(colony.upgrade_tree.owned_node_ids.is_empty());
+        for recipe_id in [
+            cat_sim::world_tick::CLOTHIER_RECIPE_ID,
+            cat_sim::world_tick::TANNERY_RECIPE_ID,
+            cat_sim::world_tick::SMITHY_WEAPON_RECIPE_ID,
+            cat_sim::world_tick::SMITHY_ARMOR_RECIPE_ID,
+        ] {
+            assert!(
+                cat_sim::world_tick::catalog_recipe_entitlement(colony, recipe_id).available,
+                "rules-v0 restart did not grandfather {recipe_id}"
+            );
+        }
         let sawmill = colony
             .buildings
             .iter()
