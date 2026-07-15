@@ -13,9 +13,27 @@ and any changed Bevy visuals have been verified.
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Bone now has a finite physical hunt source, storage/trade/persistence/HUD identity, and conserved final haul, but its crafting variants remain incomplete; Gem, clay, and sand still lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
-| Wall art needs a stronger top-down treatment | The staged palisade, closed perimeter, single-gate cutover, collision, and visual campaign are verified, but the current wall selection does not meet the player's requested quality bar. Compare the tracked public candidates in `docs/sprite-review.html`, select a coherent top-down wall and gate set, and preserve exact autotiling, staged-work color, gate placement, and authoritative collision. Re-verify native and WASM framebuffers before replacing the current art. | queued (low priority) |
 
 ## Verified fixes
+
+## 2026-07-15 — Palisades read as solid top-down fortress cells
+
+**Problem:** The former 16×4 side-view rail was stretched into a square wall cell. At play scale it
+looked like a thin root or stripe rather than a solid DF-style perimeter.
+
+**Fix:** Wall cells now use the tracked 16×16 top-down sharpened-timber tile from the public Kenney
+RTS Medieval Pixel sheet. Rotation, staged-work tint, authoritative segment topology, collision,
+and the distinct open south gate are unchanged. `docs/sprite-review.html` now compares the chosen
+solid timber cell with a lighter rail fence, a stone fortress alternative, and the open gate so
+future art choices can be reviewed without guessing filenames.
+
+**Evidence:** All 146 client tests and strict client Clippy pass. The accepted client-owned
+framebuffer `/tmp/topdown-wall-art.png` is a 1090×2105 RGB PNG (SHA-256
+`b9c939bf0287756276b80acd306895ef71d13ed6c0c1595a8d1f2f16e2879166`). It was captured against a
+booted authoritative server and visually inspected: the complete timber perimeter reads as
+upright solid stakes, corners join coherently, the south gate remains an obvious opening, and the
+wall does not cover cats, roads, buildings, exterior water, fog, or UI. Capture-only code and both
+processes were removed.
 
 ## 2026-07-15 — Authored roads require physical supplies, travel, and labor
 

@@ -547,6 +547,9 @@
         palisade: ROOT.infra + "palisade.png",
         gateClosed: ROOT.infra + "gate_closed.png",
         gateOpen: ROOT.infra + "gate_open.png",
+        fortressPalisade: ROOT.infra + "palisade_topdown.png",
+        splitRailFence: ROOT.review + "wall-split-rail.png",
+        stoneFortressWall: ROOT.review + "wall-stone.png",
         plant: ROOT.review + "plant-pot.png",
         leafy: ROOT.review + "plant-leafy.png",
         scroll: ROOT.review + "scroll.png",
@@ -704,9 +707,10 @@
         {
           id: "walls", name: "Walls and Gate", category: "Civic", current: A.palisade,
           candidates: [
-            sprite("walls-palisade", "Palisade run", "Keep the current wood wall segment.", A.palisade),
-            sprite("walls-gate-closed", "Closed south gate", "Use the dedicated closed gate when the village is sealed.", A.gateClosed),
-            sprite("walls-gate-open", "Open south gate", "Use the matching open gate during normal traffic.", A.gateOpen)
+            sprite("walls-fortress-palisade", "Top-down timber wall", "Recommended: a full square of sharpened timber reads as an occupied fortress cell at every rotation.", A.fortressPalisade),
+            sprite("walls-split-rail", "Open rail fence", "A lighter boundary with visible gaps; readable, but too permeable-looking for authoritative collision.", A.splitRailFence),
+            sprite("walls-stone", "Stone fortress wall", "A strong late-game alternative from the tracked Tiny Dungeon sheet.", A.stoneFortressWall),
+            sprite("walls-gate-open", "Open south gate", "The matching open passage remains visibly distinct from the solid timber cells.", A.gateOpen)
           ]
         },
         {

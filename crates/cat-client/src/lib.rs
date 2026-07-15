@@ -1141,6 +1141,8 @@ impl PropArt {
 }
 
 /// Infra sprites (village palisade + gate), loaded once at startup.
+const PALISADE_ASSET_PATH: &str = "public/images/game/infra/palisade_topdown.png";
+
 #[derive(Resource, Clone)]
 struct InfraArt {
     palisade: Handle<Image>,
@@ -1153,7 +1155,10 @@ struct InfraArt {
 impl InfraArt {
     fn load(assets: &AssetServer) -> Self {
         Self {
-            palisade: assets.load("public/images/game/infra/palisade.png"),
+            // A square, top-down run of sharpened timber from the tracked public RTS
+            // sheet. The former 16×4 side-view rail was stretched into a root-like
+            // stripe at the simulation's square wall-cell size.
+            palisade: assets.load(PALISADE_ASSET_PATH),
             gate: assets.load("public/images/game/infra/gate_open.png"),
             road_cross: assets.load("public/images/game/infra/road_cross.png"),
             road_h: assets.load("public/images/game/infra/road_straight_h.png"),
@@ -12385,6 +12390,14 @@ mod tests {
                 .iter()
                 .all(|image| image.starts_with(b"\x89PNG\r\n\x1a\n"))
         );
+    }
+
+    #[test]
+    fn fortress_wall_uses_the_square_top_down_public_sprite() {
+        let bytes = include_bytes!("../../../public/images/game/infra/palisade_topdown.png");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        assert!(PALISADE_ASSET_PATH.ends_with("infra/palisade_topdown.png"));
+        assert_ne!(PALISADE_ASSET_PATH, "public/images/game/infra/palisade.png");
     }
 
     #[test]
