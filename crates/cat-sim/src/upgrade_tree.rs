@@ -1418,6 +1418,23 @@ mod tests {
             }
         }
         assert_eq!(sources.get("research_hut"), Some(&("research_hut", true)));
+        let fresh = create_upgrade_tree_state();
+        for (building_id, node_id) in [
+            ("wood_cutter", "wood_cutter_foundations"),
+            ("stone_prep", "stone_prep_foundations"),
+            ("woodworking", "woodworking_foundations"),
+        ] {
+            assert_eq!(sources.get(building_id), Some(&(node_id, true)));
+            assert_eq!(
+                building_placement_research(&fresh, building_id),
+                BuildingPlacementResearch::Available
+            );
+            assert_eq!(
+                building_placement_research(&state_with(&["basic_tools"], 0.0), building_id),
+                BuildingPlacementResearch::Available,
+                "basic_tools ownership must not change {building_id} placement"
+            );
+        }
         assert_eq!(sources.get("mill"), Some(&("milling", false)));
     }
 

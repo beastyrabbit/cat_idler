@@ -1505,6 +1505,79 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn authenticated_personal_and_communal_founders_can_plan_all_three_benches() {
+        let bench_types = [
+            cat_protocol::BuildingType::WoodCutter,
+            cat_protocol::BuildingType::StonePrep,
+            cat_protocol::BuildingType::Woodworking,
+        ];
+
+        let communal_state = build_state(1_000_000);
+        let (mut communal_connection, communal_session) = authenticated_connection(&communal_state);
+        assert!(
+            !communal_state.world.lock().await.colonies[0]
+                .upgrade_tree
+                .owned_node_ids
+                .iter()
+                .any(|node| node == "basic_tools")
+        );
+        for building_type in bench_types {
+            let placed = send_action(
+                &communal_state,
+                &mut communal_connection,
+                &ClientAction::PlanBuilding {
+                    session_id: communal_session.session_id.clone(),
+                    nickname: "Communal Builder".to_owned(),
+                    sig: communal_session.sig.clone(),
+                    building_type,
+                    site: None,
+                },
+            )
+            .await;
+            assert!(
+                placed.result.ok,
+                "communal {building_type:?} placement denied: {placed:?}"
+            );
+        }
+
+        let secret = "personal-bench-secret";
+        let owner = signed_session("personal-builder".to_owned(), secret);
+        let mut world = starter_world(1_000_000);
+        let mut personal =
+            cat_sim::world_tick::found_colony(WORLD_SEED, "personal-benches", 1_000_000, 991);
+        personal.kind = VillageKind::Personal;
+        personal.owner_player_id = Some(owner.player_id.clone());
+        world.colonies.push(personal);
+        let conn = Connection::open_in_memory().expect("personal bench database");
+        persistence::init_schema(&conn).expect("personal bench schema");
+        let personal_state =
+            build_state_from_world(world, conn, secret.to_owned(), false, 1_000_000);
+        let mut personal_connection = ConnectionContext::new(
+            "personal-builder-socket".to_owned(),
+            "personal-benches".to_owned(),
+        );
+        personal_connection.identity = Some(owner.clone());
+        for building_type in bench_types {
+            let placed = send_action(
+                &personal_state,
+                &mut personal_connection,
+                &ClientAction::PlanBuilding {
+                    session_id: owner.session_id.clone(),
+                    nickname: "Personal Builder".to_owned(),
+                    sig: owner.sig.clone(),
+                    building_type,
+                    site: None,
+                },
+            )
+            .await;
+            assert!(
+                placed.result.ok,
+                "personal {building_type:?} placement denied: {placed:?}"
+            );
+        }
+    }
+
     async fn send_action(
         state: &AppState,
         connection: &mut ConnectionContext,

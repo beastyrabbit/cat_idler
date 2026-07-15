@@ -841,15 +841,6 @@ fn plan_building(
     {
         return fail(format!("Research {node_name} before construction."));
     }
-    let civic_node = match building_type {
-        BuildingType::WoodCutter | BuildingType::StonePrep | BuildingType::Woodworking => {
-            Some("basic_tools")
-        }
-        _ => None,
-    };
-    if civic_node.is_some_and(|node| !upgrade_tree::is_owned(&colony.upgrade_tree, node)) {
-        return fail("That building must be researched or granted by the gods first.");
-    }
     if active_or_queued_jobs(colony)
         .iter()
         .any(|job| job.kind == JobKind::BuildHouse && job_building_type(job) == Some(building_type))
@@ -4687,6 +4678,164 @@ mod tests {
             .push("milling".to_owned());
         let accepted = apply_action(&mut locked, &mill, &ctx());
         assert!(accepted.ok, "Milling did not unlock its mill: {accepted:?}");
+    }
+
+    #[test]
+    fn personal_and_communal_founders_can_place_all_three_benches_without_basic_tools() {
+        let benches = [
+            (proto::BuildingType::WoodCutter, BuildingType::WoodCutter),
+            (proto::BuildingType::StonePrep, BuildingType::StonePrep),
+            (proto::BuildingType::Woodworking, BuildingType::Woodworking),
+        ];
+
+        for communal in [false, true] {
+            for (protocol_type, sim_type) in benches {
+                let mut without_study = new_world(20_240_703);
+                let colony = if communal {
+                    found_global_colony(20_240_703, "c1", 1_000_000, 1234)
+                } else {
+                    let mut colony = found_colony(20_240_703, "c1", 1_000_000, 1234);
+                    colony.kind = VillageKind::Personal;
+                    colony.owner_player_id = Some("player_1".to_owned());
+                    colony
+                };
+                without_study.colonies.push(colony);
+                let mut deterministic_twin = without_study.clone();
+                let mut with_study = without_study.clone();
+                with_study.colonies[0]
+                    .upgrade_tree
+                    .owned_node_ids
+                    .push("basic_tools".to_owned());
+                let action = signed_plan(protocol_type);
+
+                let fresh_result = apply_action(&mut without_study, &action, &ctx());
+                let twin_result = apply_action(&mut deterministic_twin, &action, &ctx());
+                let studied_result = apply_action(&mut with_study, &action, &ctx());
+                assert!(
+                    fresh_result.ok,
+                    "fresh {} {sim_type:?} placement was gated: {fresh_result:?}",
+                    if communal { "communal" } else { "personal" }
+                );
+                assert_eq!(fresh_result, twin_result);
+                assert_eq!(without_study, deterministic_twin);
+                assert_eq!(fresh_result, studied_result);
+                assert_eq!(without_study.colonies[0].jobs, with_study.colonies[0].jobs);
+                assert_eq!(
+                    without_study.colonies[0].resources,
+                    with_study.colonies[0].resources
+                );
+                assert_eq!(
+                    without_study.colonies[0].buildings,
+                    with_study.colonies[0].buildings
+                );
+                assert!(without_study.colonies[0].jobs.iter().any(|job| {
+                    job.kind == JobKind::BuildHouse && job_building_type(job) == Some(sim_type)
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn founding_bench_spatial_denial_is_mutation_free_without_basic_tools() {
+        let action = proto::ClientAction::PlanBuilding {
+            session_id: "sess_1".to_owned(),
+            nickname: "Builder".to_owned(),
+            sig: "server-verified".to_owned(),
+            building_type: proto::BuildingType::Woodworking,
+            site: Some(proto::TilePoint {
+                x: VILLAGE_ANCHOR.x + 100_000,
+                y: VILLAGE_ANCHOR.y + 100_000,
+            }),
+        };
+        let mut world = world_with_one_colony();
+        assert!(!upgrade_tree::is_owned(
+            &world.colonies[0].upgrade_tree,
+            "basic_tools"
+        ));
+        let before = world.clone();
+
+        let denied = apply_action(&mut world, &action, &ctx());
+
+        assert!(!denied.ok);
+        assert_eq!(world, before);
+    }
+
+    #[test]
+    fn founding_bench_exact_scaffold_keeps_atomic_cost_and_occupancy_rules() {
+        let mut world = world_with_one_colony();
+        let colony = &mut world.colonies[0];
+        colony.resources.lumber = 40.0;
+        colony.resources.planks = 40.0;
+        colony.resources.blocks = 40.0;
+        colony
+            .officers
+            .insert(OfficerRole::Steward, colony.cats[0].id.clone());
+        let founding_index = colony
+            .buildings
+            .iter()
+            .position(|building| building.building_type == BuildingType::WoodCutter)
+            .expect("founding blueprint wood cutter");
+        let site = colony.buildings.remove(founding_index).position;
+        assert!(crate::world_tick::can_plan_building_at(
+            colony,
+            site,
+            world.world_seed,
+            BuildingType::WoodCutter,
+        ));
+        let exact_plan = |building_type| proto::ClientAction::PlanBuilding {
+            session_id: "sess_1".to_owned(),
+            nickname: "Builder".to_owned(),
+            sig: "server-verified".to_owned(),
+            building_type,
+            site: Some(proto::TilePoint {
+                x: site.x,
+                y: site.y,
+            }),
+        };
+        let before = world.colonies[0].clone();
+
+        let placed = apply_action(
+            &mut world,
+            &exact_plan(proto::BuildingType::WoodCutter),
+            &ctx(),
+        );
+        assert!(placed.ok, "exact founding bench denied: {placed:?}");
+        let paid = world.colonies[0].clone();
+        assert!(paid.resources.blocks < before.resources.blocks);
+        assert!(
+            paid.resources.lumber < before.resources.lumber
+                || paid.resources.planks < before.resources.planks
+        );
+        assert!(paid.buildings.iter().any(|building| {
+            building.building_type == BuildingType::WoodCutter
+                && building.position == site
+                && !building.is_complete
+        }));
+
+        let overlap = apply_action(
+            &mut world,
+            &exact_plan(proto::BuildingType::StonePrep),
+            &ctx(),
+        );
+        assert!(!overlap.ok);
+        assert_eq!(world.colonies[0], paid);
+
+        let mut unfunded = before.clone();
+        unfunded.resources.lumber = 0.0;
+        unfunded.resources.planks = 0.0;
+        unfunded.resources.blocks = 0.0;
+        let mut unfunded_world = WorldState {
+            world_seed: world.world_seed,
+            colonies: vec![unfunded],
+        };
+        let unfunded_before = unfunded_world.clone();
+        let denied = apply_action(
+            &mut unfunded_world,
+            &exact_plan(proto::BuildingType::WoodCutter),
+            &ctx(),
+        );
+        assert!(!denied.ok);
+        assert_eq!(unfunded_world, unfunded_before);
     }
 
     #[test]

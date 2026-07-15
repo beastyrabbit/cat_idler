@@ -10,7 +10,7 @@ and any changed Bevy visuals have been verified.
 | Finding | Required correction | State |
 | --- | --- | --- |
 | Canonical raw-resource taxonomy is not yet physical | P19 now distinguishes raw Logs and Stone, fine Planks, structural Lumber, dressed Blocks, and the stable generic Supplies/Crafted Supplies pair. Runtime still has no raw `stone` field: quarry work and the founding Stone Prep path use generic `materials`, while Ore and other quarry results can be credited without carried cargo. Add a defaulted Stone save/wire field and migrate only genuinely raw stone; do not reinterpret existing `materials` saves or rename their stable ID. Make every source result finite carried cargo. | queued |
-| Six maintained benches still bypass the physical station contract | Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Give each station-local input/output/transit state, an ordered repeatable pausable recipe queue, and one-worker/one-selected-recipe advancement. Remove the legacy `basic_tools` placement check from the three P16 founding benches; future studies gate recipes rather than later copies of those stations. Preserve every existing `BuildingType` and its open-top visual identity. | queued |
+| Six maintained benches still bypass the physical station contract | Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Give each station-local input/output/transit state, an ordered repeatable pausable recipe queue, and one-worker/one-selected-recipe advancement. The three P16 founding benches are now placement-available without `basic_tools`; future studies must gate recipes rather than later station copies. Preserve every existing `BuildingType` and its open-top visual identity. | queued |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads bind the station-local Mill, Sawmill, Workshop, and Smelter queues. Four legacy studies now also own the maintained aggregate recipes: Textiles→Clothier fibre→cloth and Tannery hide→leather, Weaponsmithing→Smithy weapons, and Armorsmithing→Smithy armor. Fresh rules-v1 villages require each exact study before time, progress, or input consumption; old/missing rules-v0 saves are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
@@ -20,6 +20,28 @@ and any changed Bevy visuals have been verified.
 | Fine-biome resources and transport are incomplete | Gem, bone, clay, and sand lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
 
 ## Verified fixes
+
+## 2026-07-15 — Founding benches no longer require Basic Tools for placement
+
+**Problem:** Wood Cutter, Stone Prep, and Woodworking are fixed P16 founding benches whose later
+copies remain placement-available, but signed construction had a second hard-coded `basic_tools`
+check after the catalog resolver. That study models hunt yield, not station placement, so a fresh
+personal or communal village could see each bench in its blueprint yet could not request another
+copy.
+
+**Fix:** The duplicate action-layer gate is removed. The three exact building-family records now
+declare `availableAtFounding` in catalog data, producing one non-purchase
+`BuildingAvailableAtFounding` marker alongside each first durability modifier. The marker changes
+neither study prerequisites, cost, order, category, modifier, nor daily Leader choice. Missing and
+owned `basic_tools` states therefore have identical placement behavior; future research remains a
+recipe entitlement, not permission to place another bench.
+
+**Evidence:** Catalog validation pins one founding source and no `UnlockBuilding` competitor for
+each bench while retaining the exact 167 Building / 167 RecipeResource / 166 Upgrade split and the
+first durability payload. Deterministic signed personal/communal plans, exact scaffold payment,
+reservation/overlap and mutation-free denial, authenticated server HMAC, and SQLite restart tests
+cover placement without altering current aggregate production. The remaining raw Stone, physical
+source cargo, six station-local queues, and finite-equipment authority work stays open below.
 
 ## 2026-07-15 — Truthful catalog job and aggregate-recipe entitlements
 

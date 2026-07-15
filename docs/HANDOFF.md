@@ -47,9 +47,10 @@ Verified foundations include:
   aggregate processor recipes; rules-v0 saves remain grandfathered. The other 96 generated
   recipe IDs and all 64 generated resource IDs remain incomplete. Sawmill→Gather Logs is the
   sole catalog job entitlement; founding water/scouting, manual research, and Barracks training
-  remain available without false job payloads. Research Hut is
-  explicitly founding-placeable, `milling` is the sole Mill placement unlock, and generated Mill
-  Foundations is durability only. The daily Leader choice shares one restart/reset/election-safe
+  remain available without false job payloads. Research Hut is explicitly founding-placeable;
+  Wood Cutter, Stone Prep, and Woodworking are data-declared placement-available without Basic
+  Tools; `milling` is the sole Mill placement unlock; and generated Mill Foundations is durability
+  only. The daily Leader choice shares one restart/reset/election-safe
   colony clock and never limits the player's direct research purchases;
 - specialist manual-to-officer ownership across Steward, Accountant, Forester, Farmer, Captain,
   Loremaster, and Cloth Leader: beyond the founding Leader's hunt/water/scout safety floor, a
@@ -110,11 +111,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    stable `materials`/`refined` wire and save IDs as Supplies/Crafted Supplies, every existing
    `BuildingType`, and the verified open-top station direction. Add a defaulted raw Stone resource
    without reinterpreting old Materials saves; make quarry/hunt byproducts real carried cargo; then
-   remove the legacy `basic_tools` placement check from P16's three placement-available founding
-   benches (future studies gate recipes, not extra copies of those stations), and
    convert Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy to station-local
    input/work/output routes with one worker advancing one selected ordered/repeatable/pausable
-   recipe. Migrate tools/weapons/armor toward finite item authority without double-counting the
+   recipe. Preserve the now-verified rule that the three P16 founding benches need no placement
+   study and that future studies gate recipes instead. Migrate tools/weapons/armor toward finite
+   item authority without double-counting the
    compatibility scalar fields.
 
    The finite founding storehouse and complete physical

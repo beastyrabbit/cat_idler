@@ -619,7 +619,8 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   research-point purchase and persistence; the living Leader selects at most one affordable node
   per rolling real-life day across the full
   catalog. Research Hut is explicitly available from founding; `milling` is the sole Mill
-  placement unlock, generated Mill Foundations is durability only, and one catalog-derived rule
+  placement unlock, generated Mill Foundations is durability only, Wood Cutter/Stone Prep/
+  Woodworking are data-declared placement-available without Basic Tools, and one catalog-derived rule
   drives placement denial text. Four station-local queue recipes plus four aggregate processor
   recipes have fresh-village entitlements; 96 generated recipes and 64 resources remain open.
   Sawmill→Gather Logs is the sole validated job entitlement and drives signed plus Forester work;
@@ -760,7 +761,7 @@ These cards record runtime work; reconciling the specs did not complete them.
 | Card | Status | Scope and acceptance |
 | --- | --- | --- |
 | P19.C1 — physical source taxonomy | todo | Add defaulted raw Stone without reinterpreting stable Materials saves. Quarry and hunt outputs, including Ore/Hide/Bone, must exist as finite carried cargo before aggregate credit. Prove migration, conservation, persistence, trade, HUD, and deterministic guided/unattended runs. |
-| P19.C2 — remaining physical stations | todo | Remove the legacy `basic_tools` placement check from P16's three placement-available founding benches; future studies gate their recipes, not later copies. Convert Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy to local input/output/transit state and ordered repeatable pausable queues. One cat advances one selected recipe; death, removal, full storage, restart, signed controls, and inspectors conserve and expose every unit. |
+| P19.C2 — remaining physical stations | in progress | The legacy `basic_tools` placement check is removed from P16's three placement-available founding benches, with unique catalog markers plus personal/communal signed and restart guardrails; future studies gate their recipes, not later copies. Still convert Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy to local input/output/transit state and ordered repeatable pausable queues. One cat advances one selected recipe; death, removal, full storage, restart, signed controls, and inspectors conserve and expose every unit. |
 | P19.C3 — finite functional equipment | todo | Complete material-backed tools/weapons/armor while retaining their stable scalar fields for old-save compatibility. Finite item units become the identity/condition authority with no duplicate counts across crafting, use, repair, storage, trade, protocol, persistence, or UI. |
 
 ### Also shipped alongside P12–P19 (not tagged to a phase in commit subjects)

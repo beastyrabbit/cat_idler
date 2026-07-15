@@ -2119,7 +2119,7 @@ mod tests {
     }
 
     #[test]
-    fn founding_hut_and_milling_placement_truth_survive_restart() {
+    fn founding_hut_benches_and_milling_placement_truth_survive_restart() {
         let conn = Connection::open_in_memory().expect("open sqlite");
         init_schema(&conn).expect("init schema");
         let mut world = new_world(20_260_715);
@@ -2159,6 +2159,19 @@ mod tests {
             &ctx,
         );
         assert!(hut.ok, "founding access disappeared on restart: {hut:?}");
+
+        for bench in [
+            cat_protocol::BuildingType::WoodCutter,
+            cat_protocol::BuildingType::StonePrep,
+            cat_protocol::BuildingType::Woodworking,
+        ] {
+            let mut bench_world = restarted.clone();
+            let placed = apply_action(&mut bench_world, &plan(bench), &ctx);
+            assert!(
+                placed.ok,
+                "founding {bench:?} access disappeared on restart: {placed:?}"
+            );
+        }
 
         let mill = apply_action(
             &mut restarted,

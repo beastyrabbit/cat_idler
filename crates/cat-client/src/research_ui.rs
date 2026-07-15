@@ -1500,6 +1500,35 @@ mod tests {
             .expect("research hut founding placement copy");
         assert_eq!(founding_line, "Available from founding: Research Hut");
 
+        for (node_id, expected_building) in [
+            ("wood_cutter_foundations", "Wood Cutter"),
+            ("stone_prep_foundations", "Stone Prep"),
+            ("woodworking_foundations", "Woodworking"),
+        ] {
+            let lines = research_catalog()
+                .get(node_id)
+                .unwrap()
+                .payloads
+                .iter()
+                .map(payload_line)
+                .collect::<Vec<_>>();
+            assert!(
+                lines.contains(&format!("Available from founding: {expected_building}")),
+                "{node_id}: {lines:?}"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("Durability Add 0.15")),
+                "the founding marker must not hide {node_id}'s purchased modifier"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| !line.starts_with("Unlock building:"))
+            );
+        }
+
         let milling = research_catalog().get("milling").unwrap();
         assert!(
             milling

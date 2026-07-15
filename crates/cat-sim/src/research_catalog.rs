@@ -316,6 +316,8 @@ struct BuildingFamily {
     display_name: String,
     count: usize,
     unlock_first: bool,
+    #[serde(default)]
+    available_at_founding: bool,
     root_prerequisites: Vec<String>,
     era_start: u8,
     cost_base: f64,
@@ -417,6 +419,12 @@ fn expand_building_family(
             .era_start
             .checked_add(era_offset)
             .ok_or_else(|| format!("building era overflow for {}", family.building_id))?;
+        if index == 0 && family.unlock_first && family.available_at_founding {
+            return Err(format!(
+                "{} cannot be both founding-available and research-unlocked",
+                family.building_id
+            ));
+        }
         let payload = if family.unlock_first && index == 0 {
             ResearchPayload::UnlockBuilding {
                 building_id: family.building_id.clone(),
@@ -429,6 +437,15 @@ fn expand_building_family(
                 value: stage.value,
             }
         };
+        let mut payloads = vec![payload];
+        if index == 0 && family.available_at_founding {
+            payloads.insert(
+                0,
+                ResearchPayload::BuildingAvailableAtFounding {
+                    building_id: family.building_id.clone(),
+                },
+            );
+        }
         nodes.push(ResearchNode {
             id,
             name: format!("{} {}", family.display_name, stage.name),
@@ -443,7 +460,7 @@ fn expand_building_family(
             },
             leader_priority: family.leader_priority_base
                 + u16::try_from(index).map_err(|_| "building priority overflow")?,
-            payloads: vec![payload],
+            payloads,
         });
     }
     Ok(nodes)
@@ -893,6 +910,80 @@ mod tests {
             .map(|node| node.id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(mill_unlockers, ["milling"]);
+    }
+
+    #[test]
+    fn the_three_blueprint_benches_have_unique_founding_placement_sources() {
+        let catalog = research_catalog();
+        let expected = [
+            (
+                "wood_cutter",
+                "wood_cutter_foundations",
+                &["sawmill"][..],
+                14.0_f64,
+            ),
+            (
+                "stone_prep",
+                "stone_prep_foundations",
+                &["masonry"][..],
+                16.0,
+            ),
+            (
+                "woodworking",
+                "woodworking_foundations",
+                &["sawmill", "basic_tools"][..],
+                15.0,
+            ),
+        ];
+
+        for (building_id, expected_node_id, prerequisites, cost) in expected {
+            let sources = catalog
+                .nodes()
+                .iter()
+                .flat_map(|node| {
+                    node.payloads
+                        .iter()
+                        .filter_map(move |payload| match payload {
+                            ResearchPayload::BuildingAvailableAtFounding {
+                                building_id: candidate,
+                            } if candidate == building_id => Some((node.id.as_str(), true)),
+                            ResearchPayload::UnlockBuilding {
+                                building_id: candidate,
+                            } if candidate == building_id => Some((node.id.as_str(), false)),
+                            _ => None,
+                        })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(sources, [(expected_node_id, true)], "{building_id}");
+
+            let first_study = catalog.get(expected_node_id).expect("first family study");
+            assert_eq!(first_study.category, ResearchCategory::Building);
+            assert_eq!(first_study.cost.to_bits(), cost.to_bits());
+            assert_eq!(
+                first_study
+                    .prerequisites
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                prerequisites
+            );
+            assert!(first_study.payloads.iter().any(|payload| matches!(
+                payload,
+                ResearchPayload::ModifyBuilding {
+                    building_id: target,
+                    attribute: BuildingAttribute::Durability,
+                    operation: EffectOperation::Add,
+                    value,
+                } if target == building_id && value.to_bits() == 0.15_f64.to_bits()
+            )));
+        }
+
+        assert_eq!(catalog.category_count(ResearchCategory::Building), 167);
+        assert_eq!(
+            catalog.category_count(ResearchCategory::RecipeResource),
+            167
+        );
+        assert_eq!(catalog.category_count(ResearchCategory::Upgrade), 166);
     }
 
     #[test]
