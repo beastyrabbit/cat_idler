@@ -12,7 +12,7 @@ pub struct UpgradeLevels {
     pub resilience: f64,
 }
 
-pub const BASE_JOB_SECONDS: [(JobKind, f64); 19] = [
+pub const BASE_JOB_SECONDS: [(JobKind, f64); 20] = [
     (JobKind::SupplyFood, 20.0),
     (JobKind::SupplyWater, 15.0),
     (JobKind::LeaderPlanHunt, 30.0 * 60.0),
@@ -22,6 +22,9 @@ pub const BASE_JOB_SECONDS: [(JobKind, f64); 19] = [
     (JobKind::Fish, 45.0 * 60.0),
     (JobKind::LeaderPlanHouse, 20.0 * 60.0 * 60.0),
     (JobKind::BuildHouse, 8.0 * 60.0 * 60.0),
+    // Physical road projects time each tile independently after its material
+    // arrives; this nominal one-tile duration exists for job/tool projections.
+    (JobKind::BuildRoad, 60.0),
     (JobKind::Ritual, 6.0 * 60.0 * 60.0),
     (JobKind::Quarry, 2.0 * 60.0 * 60.0),
     (JobKind::GatherLogs, 2.0 * 60.0 * 60.0),
@@ -102,9 +105,14 @@ pub fn get_duration_seconds(
         }
     }
 
-    if matches!(kind, JobKind::BuildHouse | JobKind::LeaderPlanHouse) {
+    if matches!(
+        kind,
+        JobKind::BuildHouse | JobKind::BuildRoad | JobKind::LeaderPlanHouse
+    ) {
         multiplier *= js_max(0.45, 1.0 - upgrades.build_mastery * 0.1);
-        if specialization == Some(CatSpecialization::Architect) && kind == JobKind::BuildHouse {
+        if specialization == Some(CatSpecialization::Architect)
+            && matches!(kind, JobKind::BuildHouse | JobKind::BuildRoad)
+        {
             multiplier *= 0.5;
         }
     }
@@ -224,6 +232,7 @@ mod tests {
             (JobKind::Fish, 2_700.0),
             (JobKind::LeaderPlanHouse, 72_000.0),
             (JobKind::BuildHouse, 28_800.0),
+            (JobKind::BuildRoad, 60.0),
             (JobKind::Ritual, 21_600.0),
             (JobKind::Quarry, 7_200.0),
             (JobKind::GatherLogs, 7_200.0),

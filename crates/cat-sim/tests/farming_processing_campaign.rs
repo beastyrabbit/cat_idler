@@ -10,7 +10,7 @@ use cat_sim::{
     terrain_gen::{
         DecorationRole, WORLD_TERRAIN_OPTIONS, derive_biome_decoration, generate_terrain_chunk,
     },
-    types::{BuildingType, TileType},
+    types::{BuildingType, JobKind, JobStatus, TileType},
     upgrade_tree,
     world_gen::tile_to_chunk,
     world_tick::{
@@ -204,6 +204,12 @@ fn try_pave_reserved_build_access(
     building_type: BuildingType,
     now_ms: i64,
 ) -> bool {
+    if world.colonies[0].jobs.iter().any(|job| {
+        job.kind == JobKind::BuildRoad
+            && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+    }) {
+        return false;
+    }
     let Some(site) = world.colonies[0]
         .jobs
         .iter()
@@ -287,7 +293,10 @@ fn try_pave_reserved_build_access(
             },
             now_ms,
         ) {
-            return true;
+            return !world.colonies[0].jobs.iter().any(|job| {
+                job.kind == JobKind::BuildRoad
+                    && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+            });
         }
     }
     false
@@ -981,7 +990,7 @@ fn run_signed_player_farm_smoke_from_preearned_research(seed: u32) -> WorldState
                     world.colonies[0]
                         .events
                         .iter()
-                        .any(|event| event.message.contains("A paved road was laid")),
+                        .any(|event| event.message.contains("A builder paved road tile")),
                     "the signed road action must emit its visible paved-road event"
                 );
             }

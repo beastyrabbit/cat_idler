@@ -246,10 +246,11 @@ so a correct scout route cannot conceal a missing founding dispatch.
    consumes a persisted stump/root stock into a visible sapling, and unobstructed growth restores
    the same deterministic tree after 24 game-hours. Preserve its mapped-terrain, occupancy,
    vacancy, persistence, and exact-site guardrails while extending the remaining ecology.
-   Authored stone-road placement is mechanically exact but still instant: one signed action paints
-   the whole validated path and removes aggregate Materials without a worker or cargo. Treat a
-   physical road-building route as a P2 consistency enhancement unless the maintained vision is
-   tightened to make road hauling a core acceptance condition.
+   Authored stone roads now use a durable physical job: one exact visible Material is reserved,
+   carried, and worked by a living Build worker per ordered tile before paving and debit. Signed
+   actions and Steward automation share that route; death/reassignment, source/spill recovery,
+   map-cell reservation, tool wear, cadence, and SQLite restart are verified. Preserve the exact
+   mapped-terrain, shrine-network attachment, disjoint stone/dirt surface, and movement rules.
 4. **Keep the verified semantic HUD complete while proving the whole game.** All 25 maintained
    resource mappings now use unique, truthful tracked Board Game/Fish glyphs under the semantic
    icon directory; Stone has a block glyph and Bone a fish-skeleton glyph. The exact 1024×768

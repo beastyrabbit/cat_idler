@@ -1120,6 +1120,7 @@ fn run_action_campaign() -> WorldState {
         .map(|(pos, _)| *pos)
         .expect("found an unpaved solid tile");
     world.colonies[0].resources.materials = 1_000.0;
+    reset_workers(&mut world);
     let materials_before = world.colonies[0].resources.materials;
     let endpoint = proto::TilePoint {
         x: road_pos.x,
@@ -1139,14 +1140,54 @@ fn run_action_campaign() -> WorldState {
         &ctx(8_000),
     );
     assert_eq!(
+        world.colonies[0].world_tiles[&road_pos].overlay_feature, None,
+        "the signed action queues labor instead of painting terrain"
+    );
+    assert_eq!(world.colonies[0].resources.materials, materials_before);
+    let tick_start = world.colonies[0].last_tick.max(8_000);
+    for second in 1..=300 {
+        let _ = cat_sim::world_tick::world_tick(&mut world, tick_start + second * 1_000);
+        if world.colonies[0].world_tiles[&road_pos]
+            .overlay_feature
+            .as_deref()
+            == Some("road_built")
+        {
+            break;
+        }
+    }
+    assert_eq!(
         world.colonies[0].world_tiles[&road_pos]
             .overlay_feature
             .as_deref(),
-        Some("road_built")
+        Some("road_built"),
+        "road={road_pos:?} jobs={:?} cats={:?}",
+        world.colonies[0]
+            .jobs
+            .iter()
+            .filter(|job| job.kind == JobKind::BuildRoad)
+            .collect::<Vec<_>>(),
+        world.colonies[0]
+            .cats
+            .iter()
+            .map(|cat| (
+                &cat.id,
+                cat.death_time,
+                cat.activity,
+                &cat.position,
+                &cat.destination,
+                &cat.carrying
+            ))
+            .collect::<Vec<_>>()
     );
-    assert_eq!(
-        world.colonies[0].resources.materials,
-        materials_before - 1.0
+    assert!(
+        world.colonies[0].resources.materials < materials_before,
+        "physical reconciliation and the finished tile debit the authored reserve"
+    );
+    assert!(
+        world.colonies[0]
+            .events
+            .iter()
+            .any(|event| event.message.contains("A builder paved road tile"))
     );
 
     // Barracks action and direct raid-defense click.

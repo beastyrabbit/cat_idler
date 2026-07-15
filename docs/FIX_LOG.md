@@ -15,10 +15,40 @@ and any changed Bevy visuals have been verified.
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
 | Fine-biome resources and transport are incomplete | Bone now has a finite physical hunt source, storage/trade/persistence/HUD identity, and conserved final haul, but its crafting variants remain incomplete; Gem, clay, and sand still lack complete physical sources/chains. Rail and Shipping now grant blueprint entitlements only: they deliberately do not alter ordinary walking pathfinding or speed. Build tracks, rolling stock, docks, vessels, boarding, and staffed routes before activating transport effects. | queued |
-| Authored road building is instant | `actions::build_road` validates a shrine-connected mapped path, paints every new tile immediately, and subtracts one aggregate Material per tile without a cat, cargo, or construction phase. Preserve the verified placement, surface, connectivity, and speed rules while adding a physical build route if roadwork is promoted to the full DF-style logistics contract. This is a P2 physical-consistency enhancement, not a blocker under the current P16 wording. | queued (P2) |
 | Wall art needs a stronger top-down treatment | The staged palisade, closed perimeter, single-gate cutover, collision, and visual campaign are verified, but the current wall selection does not meet the player's requested quality bar. Compare the tracked public candidates in `docs/sprite-review.html`, select a coherent top-down wall and gate set, and preserve exact autotiling, staged-work color, gate placement, and authoritative collision. Re-verify native and WASM framebuffers before replacing the current art. | queued (low priority) |
 
 ## Verified fixes
+
+## 2026-07-15 — Authored roads require physical supplies, travel, and labor
+
+**Problem:** A signed road action and the Steward's deliberate-road pass painted every selected
+tile immediately and removed aggregate Supplies without a worker, source stack, carried load, or
+on-site work. This bypassed the same physical contract used by scaffolds and processors.
+
+**Fix:** `BuildRoad` is now a durable job. It reserves one exact visible Material from a named
+pile per ordered tile, assigns a living Build worker, and keeps the aggregate committed against
+scalar trade. The builder walks to the source, carries one real unit to the site, and performs a
+skill/research/tool-adjusted one-minute base work stage before that single tile becomes stone road
+and the unit is consumed. Future road tiles reserve their map cells from buildings, farms, and
+stockpiles. Steward automation queues the identical job and never bypasses it. Death returns
+in-transit cargo to the exact freed source slot or a persisted visible spill, requeues the project,
+and recruits a replacement without duplication. A raced access road returns an unneeded unit.
+SQLite preserves ordered tiles, exact reservations, partial work, and assignment state.
+
+**Evidence:** The signed all-actions campaign observes action→queued labor→physical cargo→paved
+tile; the passive Steward test proves designation without instant painting or spending. Exact
+pickup/arrival/work/debit, death/reassignment, map reservation, one-second versus one-minute
+partition invariance, persistence/restart, and Build skill/tool provenance tests pass. Placement,
+shrine-network attachment, mapped-terrain, stone/dirt surface distinction, and movement-speed
+rules remain unchanged. The accepted client-owned framebuffer `/tmp/physical-road-labor.png` is a
+1090×2105 RGB PNG (SHA-256
+`2c66f3076e90302e7b26331106b29bb97c52963195044aa711841fbfce916eb0`). It was captured against an
+isolated booted server and visually inspected: the top-down village, stone/dirt road network,
+cats, open stations, reveal boundary, and road control render without black-screen clipping or
+world/UI overlap. The temporary capture hook and both processes were removed afterward. Final
+gates pass 1,262 simulation tests (one intentional instrumentation skip), 46 protocol tests, 97
+server tests, and 144 client tests; strict Clippy is green for all four crates, with formatting and
+diff checks clean.
 
 ## 2026-07-15 — Functional equipment has one finite physical authority
 

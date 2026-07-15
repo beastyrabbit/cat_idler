@@ -46,7 +46,8 @@ use crate::{
         inside_village_interior, is_farm_gather_spot_id, legal_farm_gather_spots,
         material_offering_metadata, migration_game_minute_at, occupied_farm_tiles,
         reconcile_colony_stockpiles, release_farm_worker, release_role_automation,
-        village_exterior_is_road_connected, visible_offering_materials, world_tick,
+        road_material_reservations, village_exterior_is_road_connected, visible_offering_materials,
+        world_tick,
     },
     zones,
 };
@@ -2582,38 +2583,48 @@ fn build_road(
                 .is_some_and(|tile| tile.overlay_feature.as_deref() != Some("road_built"))
                 && !crate::world_tick::tile_is_shrine_footprint(colony, pos)
         })
-        .count();
-    if colony.resources.materials < new_tiles as f64 {
+        .copied()
+        .collect::<Vec<_>>();
+    if new_tiles.is_empty() {
+        return ok();
+    }
+    if colony.jobs.iter().any(|job| {
+        matches!(job.status, JobStatus::Queued | JobStatus::Active)
+            && matches!(
+                &job.metadata,
+                JobMetadata::RoadConstruction { tiles, .. }
+                    if tiles.iter().any(|tile| new_tiles.contains(tile))
+            )
+    }) {
+        return fail("That route overlaps road work already in progress.");
+    }
+    let Some(reservations) = road_material_reservations(colony, &new_tiles) else {
         return fail(format!(
             "Not enough materials ({} needed, one per tile).",
-            new_tiles
+            new_tiles.len()
         ));
-    }
-
-    let mut paved = 0u32;
-    for pos in path {
-        if crate::world_tick::tile_is_shrine_footprint(colony, pos) {
-            continue;
-        }
-        let tile = colony
-            .world_tiles
-            .get_mut(&pos)
-            .expect("road path was prevalidated as mapped");
-        if tile.overlay_feature.as_deref() == Some("road_built") {
-            continue;
-        }
-        tile.overlay_feature = Some("road_built".to_owned());
-        tile.path_wear = 100;
-        paved += 1;
-    }
-    colony.resources.materials -= f64::from(paved);
-    colony.last_player_activity_at = Some(ctx.now_ms);
-    append_event(
+    };
+    let Some(builder) = select_best_cat_for_labor(
+        colony,
+        Some(CatSpecialization::Architect),
+        Some(Labor::Build),
+    ) else {
+        return fail("No available builder.");
+    };
+    queue_job(
         colony,
         ctx.now_ms,
-        EventKind::RoadBuilt,
-        format!("A paved road was laid ({paved} tiles)."),
+        JobKind::BuildRoad,
+        JobRequester::Player,
+        Some(builder),
+        JobMetadata::RoadConstruction {
+            tiles: new_tiles.clone(),
+            next_tile: 0,
+            reservations,
+            work_ms: 0,
+        },
     );
+    colony.last_player_activity_at = Some(ctx.now_ms);
     ok()
 }
 
@@ -4233,6 +4244,29 @@ fn queue_job(
     assigned_cat: Option<String>,
     metadata: JobMetadata,
 ) {
+    let job_id = format!("job-{}-{}", now_ms, colony.jobs.len() + 1);
+    let contributing_tool_id = matches!(
+        kind,
+        JobKind::BuildHouse
+            | JobKind::BuildRoad
+            | JobKind::Quarry
+            | JobKind::GatherLogs
+            | JobKind::Fish
+            | JobKind::HaulGatherSpot
+    )
+    .then(|| {
+        assigned_cat.as_deref().and_then(|cat_id| {
+            colony
+                .items
+                .equipped_id(cat_id, ItemKind::Tool)
+                .and_then(|id| colony.items.instance(id))
+                .filter(|instance| {
+                    instance.credited && !instance.is_broken() && instance.active_job_id.is_none()
+                })
+                .map(|instance| instance.id.clone())
+        })
+    })
+    .flatten();
     let (specialization, skill) = assigned_cat
         .as_ref()
         .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == *cat_id))
@@ -4252,13 +4286,20 @@ fn queue_job(
     let base_duration_ms = (duration_seconds * 1000.0) as i64;
     let duration_ms = if matches!(
         kind,
-        JobKind::BuildHouse | JobKind::Quarry | JobKind::GatherLogs | JobKind::HaulGatherSpot
+        JobKind::BuildHouse
+            | JobKind::BuildRoad
+            | JobKind::Quarry
+            | JobKind::GatherLogs
+            | JobKind::Fish
+            | JobKind::HaulGatherSpot
     ) {
         productive_duration_ms(
             base_duration_ms,
-            assigned_cat.as_deref().map_or(0.0, |cat_id| {
-                crate::world_tick::cat_usable_tool_stock(colony, cat_id)
-            }),
+            if contributing_tool_id.is_some() {
+                f64::from(crate::productivity::TOOL_PRODUCTIVITY_CAP)
+            } else {
+                0.0
+            },
         )
     } else {
         base_duration_ms
@@ -4280,7 +4321,7 @@ fn queue_job(
     }
 
     colony.jobs.push(JobRuntime {
-        id: format!("job-{}-{}", now_ms, colony.jobs.len() + 1),
+        id: job_id.clone(),
         kind,
         status: JobStatus::Queued,
         requested_by,
@@ -4295,6 +4336,10 @@ fn queue_job(
         completed_at: None,
         metadata,
     });
+    if let Some(tool_id) = contributing_tool_id {
+        let reserved = colony.items.reserve_for_job(&tool_id, &job_id);
+        debug_assert!(reserved, "preflighted exact job tool remains reservable");
+    }
     append_event(
         colony,
         now_ms,
@@ -4642,7 +4687,9 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         }
         JobKind::Fish => Some(TaskType::Fish),
         JobKind::SupplyWater | JobKind::FetchWater => Some(TaskType::FetchWater),
-        JobKind::LeaderPlanHouse | JobKind::BuildHouse | JobKind::Quarry => Some(TaskType::Build),
+        JobKind::LeaderPlanHouse | JobKind::BuildHouse | JobKind::BuildRoad | JobKind::Quarry => {
+            Some(TaskType::Build)
+        }
         JobKind::GatherLogs | JobKind::ReplantTree => Some(TaskType::Build),
         JobKind::ForageFibre => Some(TaskType::Hunt),
         JobKind::Ritual | JobKind::PerformOffering => Some(TaskType::Guard),
@@ -4946,6 +4993,7 @@ fn proto_to_sim_job_kind(kind: proto::JobKind) -> JobKind {
         proto::JobKind::HuntExpedition => JobKind::HuntExpedition,
         proto::JobKind::LeaderPlanHouse => JobKind::LeaderPlanHouse,
         proto::JobKind::BuildHouse => JobKind::BuildHouse,
+        proto::JobKind::BuildRoad => JobKind::BuildRoad,
         proto::JobKind::Ritual => JobKind::Ritual,
         proto::JobKind::Quarry => JobKind::Quarry,
         proto::JobKind::GatherLogs => JobKind::GatherLogs,
@@ -4970,6 +5018,7 @@ fn sim_to_proto_job_kind(kind: JobKind) -> proto::JobKind {
         JobKind::HuntExpedition => proto::JobKind::HuntExpedition,
         JobKind::LeaderPlanHouse => proto::JobKind::LeaderPlanHouse,
         JobKind::BuildHouse => proto::JobKind::BuildHouse,
+        JobKind::BuildRoad => proto::JobKind::BuildRoad,
         JobKind::Ritual => proto::JobKind::Ritual,
         JobKind::Quarry => proto::JobKind::Quarry,
         JobKind::GatherLogs => proto::JobKind::GatherLogs,

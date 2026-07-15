@@ -1741,6 +1741,18 @@ fn job_metadata_json(metadata: &JobMetadata) -> Value {
             "buildingId": building_id,
             "site": site.as_ref().map(tile_pos_json),
         }),
+        JobMetadata::RoadConstruction {
+            tiles,
+            next_tile,
+            reservations,
+            work_ms,
+        } => json!({
+            "kind": "roadConstruction",
+            "tiles": tiles.iter().map(tile_pos_json).collect::<Vec<_>>(),
+            "nextTile": next_tile,
+            "reservations": reservations,
+            "workMs": work_ms,
+        }),
         JobMetadata::Expansion {
             target,
             accepted,
@@ -1864,6 +1876,32 @@ fn parse_job_metadata(raw: Option<String>) -> rusqlite::Result<JobMetadata> {
                 .filter(|site| !site.is_null())
                 .map(parse_tile_pos_value)
                 .transpose()?,
+        }),
+        Some("roadConstruction") => Ok(JobMetadata::RoadConstruction {
+            tiles: value
+                .get("tiles")
+                .and_then(Value::as_array)
+                .map(|tiles| {
+                    tiles
+                        .iter()
+                        .map(parse_tile_pos_value)
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .transpose()?
+                .unwrap_or_default(),
+            next_tile: value.get("nextTile").and_then(Value::as_u64).unwrap_or(0) as usize,
+            reservations: serde_json::from_value(
+                value
+                    .get("reservations")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())),
+            )
+            .map_err(from_sql_json)?,
+            work_ms: value
+                .get("workMs")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                .max(0),
         }),
         Some("expansion") => Ok(JobMetadata::Expansion {
             target: parse_tile_pos_value(value.get("target").unwrap_or(&Value::Null))?,
@@ -5251,6 +5289,7 @@ mod tests {
         });
         world.colonies[0].cats[2].activity = CatActivity::Traveling;
         let mover_cat_id = world.colonies[0].cats[0].id.clone();
+        let road_builder_id = world.colonies[0].cats[2].id.clone();
         world.colonies[0].jobs.push(JobRuntime {
             id: "job-mover".to_owned(),
             kind: JobKind::HaulGatherSpot,
@@ -5444,6 +5483,26 @@ mod tests {
             metadata: JobMetadata::Site {
                 site: sapling_site,
                 accepted: false,
+            },
+            ..JobRuntime::default()
+        });
+        world.colonies[0].jobs.push(JobRuntime {
+            id: "job-road-restart".to_owned(),
+            kind: JobKind::BuildRoad,
+            status: JobStatus::Active,
+            requested_by: cat_sim::world_tick::JobRequester::Player,
+            assigned_cat: Some(road_builder_id),
+            duration_ms: 60_000,
+            created_at: 1_045_000,
+            metadata: JobMetadata::RoadConstruction {
+                tiles: vec![sapling_site],
+                next_tile: 0,
+                reservations: vec![cat_sim::world_tick::ConstructionCargoReservation {
+                    source_stockpile_id: "stockpile-a".to_owned(),
+                    kind: cat_sim::stockpiles::ResourceKind::Materials,
+                    amount: 1.0,
+                }],
+                work_ms: 23_000,
             },
             ..JobRuntime::default()
         });

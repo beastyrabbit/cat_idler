@@ -375,6 +375,16 @@ pub enum JobMetadata {
         building_id: Option<BuildingId>,
         site: Option<TilePos>,
     },
+    /// One ordered authored-road project. Supplies remain reserved in exact visible
+    /// source piles until the assigned builder picks up one unit for `tiles[next_tile]`.
+    /// A tile becomes paved only after that cargo reaches the site and `work_ms`
+    /// completes there.
+    RoadConstruction {
+        tiles: Vec<TilePos>,
+        next_tile: usize,
+        reservations: Vec<ConstructionCargoReservation>,
+        work_ms: i64,
+    },
     Expansion {
         target: TilePos,
         accepted: bool,
@@ -971,6 +981,7 @@ struct SpatialOccupancyContext {
     mountain_tiles: HashSet<TilePos>,
     prepared_farm_tiles: HashSet<TilePos>,
     paved_road_tiles: HashSet<TilePos>,
+    reserved_road_tiles: HashSet<TilePos>,
     mapped_tiles: HashSet<TilePos>,
     shrine_tiles: HashSet<TilePos>,
     gate: Option<TilePos>,
@@ -1067,6 +1078,19 @@ impl SpatialOccupancyContext {
                 (tile.overlay_feature.as_deref() == Some("road_built")).then_some(pos)
             })
             .collect();
+        let reserved_road_tiles = colony
+            .jobs
+            .iter()
+            .filter(|job| matches!(job.status, JobStatus::Queued | JobStatus::Active))
+            .filter_map(|job| match &job.metadata {
+                JobMetadata::RoadConstruction {
+                    tiles, next_tile, ..
+                } => Some(&tiles[(*next_tile).min(tiles.len())..]),
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect();
         let mapped_tiles = colony.world_tiles.keys().copied().collect();
         let shrine_tiles = shrine_footprint_tiles(colony);
         let gate = retained_area_gate(colony).map(|gate| TilePos {
@@ -1088,6 +1112,7 @@ impl SpatialOccupancyContext {
             mountain_tiles,
             prepared_farm_tiles,
             paved_road_tiles,
+            reserved_road_tiles,
             mapped_tiles,
             shrine_tiles,
             gate,
@@ -1217,6 +1242,7 @@ impl SpatialOccupancyContext {
             || self.mountain_tiles.contains(&tile)
             || self.is_perimeter(tile)
             || self.paved_road_tiles.contains(&tile)
+            || self.reserved_road_tiles.contains(&tile)
     }
 
     fn farm_tile_is_occupied(&self, tile: TilePos) -> bool {
@@ -1232,6 +1258,7 @@ impl SpatialOccupancyContext {
             || self.mountain_tiles.contains(&tile)
             // A boundary-connected farm deliberately replaces this wall segment.
             || self.paved_road_tiles.contains(&tile)
+            || self.reserved_road_tiles.contains(&tile)
     }
 
     fn placement_error_for_tiles(
@@ -1281,6 +1308,12 @@ impl SpatialOccupancyContext {
         if tiles
             .iter()
             .any(|tile| self.paved_road_tiles.contains(tile))
+        {
+            return Some(SpatialPlacementError::Road);
+        }
+        if tiles
+            .iter()
+            .any(|tile| self.reserved_road_tiles.contains(tile))
         {
             return Some(SpatialPlacementError::Road);
         }
@@ -3919,6 +3952,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
         phase_14_promote_queued_jobs_and_break_ground(colony, gate, world_seed);
         phase_15_assign_promoted_job_destinations(colony, gate, world_seed);
         phase_15b_physical_scaffold_inputs(colony, gate);
+        phase_15c_physical_road_work(colony, gate);
         phase_16_active_scaffold_progress(colony, gate);
         phase_17_legacy_emergency_hunt(colony, gate, policy);
         phase_17b_water_reserve_preemption(colony, gate);
@@ -4925,7 +4959,7 @@ pub(crate) fn construction_reserved_from_pile(
     pile_id: &str,
     kind: ResourceKind,
 ) -> f64 {
-    colony
+    let scaffold = colony
         .buildings
         .iter()
         .filter_map(|building| building.construction_cargo.as_ref())
@@ -4934,7 +4968,22 @@ pub(crate) fn construction_reserved_from_pile(
             reservation.source_stockpile_id == pile_id && reservation.kind == kind
         })
         .map(|reservation| reservation.amount)
-        .sum()
+        .sum::<f64>();
+    let roads = colony
+        .jobs
+        .iter()
+        .filter(|job| matches!(job.status, JobStatus::Queued | JobStatus::Active))
+        .filter_map(|job| match &job.metadata {
+            JobMetadata::RoadConstruction { reservations, .. } => Some(reservations),
+            _ => None,
+        })
+        .flat_map(|reservations| reservations.iter())
+        .filter(|reservation| {
+            reservation.source_stockpile_id == pile_id && reservation.kind == kind
+        })
+        .map(|reservation| reservation.amount)
+        .sum::<f64>();
+    scaffold + roads
 }
 
 fn construction_committed_amount(colony: &ColonyRuntime, kind: ResourceKind) -> f64 {
@@ -4972,7 +5021,22 @@ fn construction_committed_amount(colony: &ColonyRuntime, kind: ResourceKind) -> 
             .then(|| stockpiles::resource_amount(&pile.contents, kind))
         })
         .sum::<f64>();
-    live_contracts + orphan_local
+    let road_contracts = if kind == ResourceKind::Materials {
+        colony
+            .jobs
+            .iter()
+            .filter(|job| matches!(job.status, JobStatus::Queued | JobStatus::Active))
+            .filter_map(|job| match &job.metadata {
+                JobMetadata::RoadConstruction {
+                    tiles, next_tile, ..
+                } => Some(tiles.len().saturating_sub(*next_tile) as f64),
+                _ => None,
+            })
+            .sum::<f64>()
+    } else {
+        0.0
+    };
+    live_contracts + orphan_local + road_contracts
 }
 
 #[must_use]
@@ -5025,6 +5089,20 @@ fn reserve_kind_from_visible_piles(
         remaining -= reserved;
     }
     (remaining <= f64::EPSILON).then_some(reservations)
+}
+
+#[must_use]
+pub(crate) fn road_material_reservations(
+    colony: &ColonyRuntime,
+    tiles: &[TilePos],
+) -> Option<Vec<ConstructionCargoReservation>> {
+    let destination = tiles.first().copied().unwrap_or(colony.anchor);
+    reserve_kind_from_visible_piles(
+        colony,
+        ResourceKind::Materials,
+        tiles.len() as f64,
+        destination,
+    )
 }
 
 fn visible_unreserved_construction_total(colony: &ColonyRuntime, kind: ResourceKind) -> f64 {
@@ -5237,6 +5315,41 @@ fn phase_14_promote_queued_jobs_and_break_ground(
     let mut movement_seed = movement_seed(colony.test_rng_seed.unwrap_or(1));
 
     for job_index in queued_indices {
+        if colony.jobs[job_index].kind == JobKind::BuildRoad {
+            if colony.jobs[job_index].requested_by == JobRequester::Leader
+                && !has_officer(colony, OfficerRole::Steward)
+            {
+                continue;
+            }
+            let assigned_is_alive =
+                colony.jobs[job_index]
+                    .assigned_cat
+                    .as_deref()
+                    .is_some_and(|cat_id| {
+                        colony
+                            .cats
+                            .iter()
+                            .any(|cat| cat.id == cat_id && cat.death_time.is_none())
+                    });
+            if !assigned_is_alive {
+                colony.jobs[job_index].assigned_cat =
+                    select_best_cat(colony, Some(CatSpecialization::Architect));
+            }
+            let Some(cat_id) = colony.jobs[job_index].assigned_cat.clone() else {
+                continue;
+            };
+            let job = &mut colony.jobs[job_index];
+            job.status = JobStatus::Active;
+            job.started_at = None;
+            job.ends_at = None;
+            job.completed_at = None;
+            if let Some(cat) = colony.cats.iter_mut().find(|cat| cat.id == cat_id) {
+                cat.current_task = task_for_job(JobKind::BuildRoad);
+                cat.activity = CatActivity::Idle;
+                cat.destination = None;
+            }
+            continue;
+        }
         if colony.jobs[job_index].kind == JobKind::ExpandVillage {
             let assigned_is_alive =
                 colony.jobs[job_index]
@@ -6591,6 +6704,222 @@ fn phase_15b_physical_scaffold_inputs(colony: &mut ColonyRuntime, gate: TickGate
         });
         colony.cats[cat_index].current_task = task_for_job(JobKind::BuildHouse);
         send_cat_to(colony, cat_index, station_work_point(&building));
+    }
+}
+
+const ROAD_CARGO_PREFIX: &str = "road-in|";
+
+fn road_cargo_marker(job_id: &str, source_stockpile_id: &str) -> String {
+    format!("{ROAD_CARGO_PREFIX}{job_id}|{source_stockpile_id}")
+}
+
+fn parse_road_cargo(marker: Option<&str>) -> Option<(&str, &str)> {
+    marker?.strip_prefix(ROAD_CARGO_PREFIX)?.split_once('|')
+}
+
+fn refresh_road_reservations(colony: &mut ColonyRuntime, job_index: usize) -> bool {
+    let (tiles, next_tile, old_reservations) = match &mut colony.jobs[job_index].metadata {
+        JobMetadata::RoadConstruction {
+            tiles,
+            next_tile,
+            reservations,
+            ..
+        } => (tiles.clone(), *next_tile, std::mem::take(reservations)),
+        _ => return false,
+    };
+    let remaining_tiles = &tiles[next_tile.min(tiles.len())..];
+    let replacement = road_material_reservations(colony, remaining_tiles);
+    let success = replacement.is_some();
+    if let JobMetadata::RoadConstruction { reservations, .. } = &mut colony.jobs[job_index].metadata
+    {
+        *reservations = replacement.unwrap_or(old_reservations);
+    }
+    success
+}
+
+/// Phase 15c: road supplies are one real material unit per tile. The builder walks
+/// to the exact reserved pile, carries the unit to the ordered site, and only then
+/// converts one minute of hands-on work into a paved tile and a scalar debit.
+fn phase_15c_physical_road_work(colony: &mut ColonyRuntime, gate: TickGate) {
+    let job_indices = colony
+        .jobs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, job)| {
+            (job.kind == JobKind::BuildRoad
+                && job.status == JobStatus::Active
+                && matches!(job.metadata, JobMetadata::RoadConstruction { .. }))
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+
+    for job_index in job_indices {
+        let job_id = colony.jobs[job_index].id.clone();
+        let Some(cat_id) = colony.jobs[job_index].assigned_cat.clone() else {
+            continue;
+        };
+        let Some(cat_index) = colony
+            .cats
+            .iter()
+            .position(|cat| cat.id == cat_id && cat.death_time.is_none())
+        else {
+            continue;
+        };
+        let (tiles, next_tile, mut reservations, mut work_ms) =
+            match colony.jobs[job_index].metadata.clone() {
+                JobMetadata::RoadConstruction {
+                    tiles,
+                    next_tile,
+                    reservations,
+                    work_ms,
+                } => (tiles, next_tile, reservations, work_ms),
+                _ => continue,
+            };
+        let Some(target_tile) = tiles.get(next_tile).copied() else {
+            colony.jobs[job_index].started_at = Some(gate.processed_through);
+            colony.jobs[job_index].ends_at = Some(gate.processed_through);
+            continue;
+        };
+        let target = tile_pos_to_world(target_tile);
+        let tile_work_ms = colony.jobs[job_index].duration_ms.max(1_000);
+
+        if let Some(carrying) = colony.cats[cat_index].carrying.clone()
+            && let Some((cargo_job_id, source_id)) =
+                parse_road_cargo(carrying.source_gather_spot.as_deref())
+            && cargo_job_id == job_id
+        {
+            if !at_world_point(colony, cat_index, target) {
+                send_cat_to(colony, cat_index, target);
+                continue;
+            }
+            colony.cats[cat_index].activity = CatActivity::Working;
+            colony.cats[cat_index].destination = None;
+            work_ms = work_ms
+                .saturating_add(gate.elapsed_sec.saturating_mul(1_000))
+                .min(tile_work_ms);
+            if work_ms < tile_work_ms {
+                if let JobMetadata::RoadConstruction {
+                    work_ms: stored_work,
+                    ..
+                } = &mut colony.jobs[job_index].metadata
+                {
+                    *stored_work = work_ms;
+                }
+                continue;
+            }
+
+            let already_paved = colony
+                .world_tiles
+                .get(&target_tile)
+                .is_some_and(|tile| tile.overlay_feature.as_deref() == Some("road_built"));
+            if already_paved {
+                if let Some(source) = colony
+                    .stockpiles
+                    .iter_mut()
+                    .find(|pile| pile.id == source_id)
+                {
+                    stockpiles::add_resource(
+                        &mut source.contents,
+                        ResourceKind::Materials,
+                        carrying.amount,
+                    );
+                }
+            } else if let Some(tile) = colony.world_tiles.get_mut(&target_tile) {
+                tile.overlay_feature = Some("road_built".to_owned());
+                tile.path_wear = 100;
+                stockpiles::add_resource(
+                    &mut colony.resources,
+                    ResourceKind::Materials,
+                    -carrying.amount,
+                );
+                append_event(
+                    colony,
+                    gate.processed_through,
+                    EventKind::RoadBuilt,
+                    format!(
+                        "A builder paved road tile ({}, {}).",
+                        target_tile.x, target_tile.y
+                    ),
+                );
+            }
+            colony.cats[cat_index].carrying = None;
+            colony.cats[cat_index].gain_skill(Labor::Haul, HAUL_SKILL_GAIN);
+            colony.cats[cat_index].activity = CatActivity::Idle;
+            let next_tile = next_tile + 1;
+            colony.jobs[job_index].metadata = JobMetadata::RoadConstruction {
+                tiles: tiles.clone(),
+                next_tile,
+                reservations,
+                work_ms: 0,
+            };
+            if next_tile >= tiles.len() {
+                colony.jobs[job_index].started_at = Some(gate.processed_through);
+                colony.jobs[job_index].ends_at = Some(gate.processed_through);
+            }
+            continue;
+        }
+
+        if colony.cats[cat_index].carrying.is_some() {
+            colony.cats[cat_index].activity = CatActivity::Idle;
+            colony.cats[cat_index].destination = None;
+            continue;
+        }
+
+        let source =
+            reservations
+                .iter()
+                .enumerate()
+                .find_map(|(reservation_index, reservation)| {
+                    let source_index = colony
+                        .stockpiles
+                        .iter()
+                        .position(|pile| pile.id == reservation.source_stockpile_id)?;
+                    let available = stockpiles::resource_amount(
+                        &colony.stockpiles[source_index].contents,
+                        ResourceKind::Materials,
+                    );
+                    (reservation.amount >= 1.0 && available >= 1.0)
+                        .then_some((reservation_index, source_index))
+                });
+        let Some((reservation_index, source_index)) = source else {
+            if !refresh_road_reservations(colony, job_index) {
+                colony.cats[cat_index].activity = CatActivity::Idle;
+                colony.cats[cat_index].destination = None;
+            }
+            continue;
+        };
+        let (source_x, source_y) = colony.stockpiles[source_index].center();
+        let source_pos = WorldPos {
+            x: source_x,
+            y: source_y,
+        };
+        if !at_world_point(colony, cat_index, source_pos) {
+            send_cat_to(colony, cat_index, source_pos);
+            continue;
+        }
+
+        let source_id = colony.stockpiles[source_index].id.clone();
+        stockpiles::add_resource(
+            &mut colony.stockpiles[source_index].contents,
+            ResourceKind::Materials,
+            -1.0,
+        );
+        reservations[reservation_index].amount -= 1.0;
+        reservations.retain(|reservation| reservation.amount > f64::EPSILON);
+        colony.jobs[job_index].metadata = JobMetadata::RoadConstruction {
+            tiles,
+            next_tile,
+            reservations,
+            work_ms,
+        };
+        colony.cats[cat_index].carrying = Some(Carrying {
+            kind: CarryingKind::Materials,
+            amount: 1.0,
+            job_ended_at: gate.processed_through,
+            source_gather_spot: Some(road_cargo_marker(&job_id, &source_id)),
+        });
+        colony.cats[cat_index].current_task = task_for_job(JobKind::BuildRoad);
+        send_cat_to(colony, cat_index, target);
     }
 }
 
@@ -10787,6 +11116,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
         }
         match job.kind {
             JobKind::BuildHouse => complete_build(colony, job, gate),
+            JobKind::BuildRoad => complete_road_work(colony, job),
             JobKind::Ritual => complete_ritual(colony, job, gate),
             JobKind::TrainWarrior => complete_warrior_training(colony, job, gate),
             _ => {}
@@ -10796,6 +11126,7 @@ fn phase_30_due_completion_build_ritual_training_return_mark_done(
             job.kind,
             JobKind::HuntExpedition
                 | JobKind::BuildHouse
+                | JobKind::BuildRoad
                 | JobKind::Ritual
                 | JobKind::Quarry
                 | JobKind::GatherLogs
@@ -11332,7 +11663,9 @@ fn phase_33_movement_deposits_and_no_destination_wander(
             // store. Only phase 15b may move them into the exact scaffold input
             // ledger; the generic village deposit pass would otherwise credit the
             // aggregate/storehouse a second time and strand the scaffold forever.
-            if parse_construction_cargo(carrying.source_gather_spot.as_deref()).is_some() {
+            if parse_construction_cargo(carrying.source_gather_spot.as_deref()).is_some()
+                || parse_road_cargo(carrying.source_gather_spot.as_deref()).is_some()
+            {
                 continue;
             }
             let world_pos = position_to_world(colony.anchor, position);
@@ -12958,18 +13291,25 @@ fn dispatch_gather_haul_movers(colony: &mut ColonyRuntime, now_ms: i64) {
     }
 }
 
-/// Phase 35: pave deliberate road corridors once per minute while preserving the
-/// materials reserve.
+/// Phase 35: let a staffed Steward designate one worn corridor at a time. The
+/// ordinary physical road job owns all pickup, travel, work, debit, and recovery.
 fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate) {
     if !has_officer(colony, OfficerRole::Steward)
         || !gate.minute_rolled
-        || colony.resources.materials <= ROAD_MATERIALS_RESERVE
+        || construction_spendable_resource(colony, ResourceKind::Materials)
+            <= ROAD_MATERIALS_RESERVE
+        || colony.jobs.iter().any(|job| {
+            job.kind == JobKind::BuildRoad
+                && matches!(job.status, JobStatus::Queued | JobStatus::Active)
+        })
     {
         return;
     }
 
-    let max_tiles = ROAD_MAX_PAVE_PER_BATCH
-        .min((colony.resources.materials - ROAD_MATERIALS_RESERVE).floor() as i32);
+    let max_tiles = ROAD_MAX_PAVE_PER_BATCH.min(
+        (construction_spendable_resource(colony, ResourceKind::Materials) - ROAD_MATERIALS_RESERVE)
+            .floor() as i32,
+    );
     if max_tiles <= 0 {
         return;
     }
@@ -13001,33 +13341,35 @@ fn phase_35_deliberate_roads(colony: &mut ColonyRuntime, gate: TickGate) {
         return;
     }
 
-    let mut paved = 0usize;
-    for road in &corridor {
-        if colony.resources.materials <= ROAD_MATERIALS_RESERVE {
-            break;
-        }
-        if let Some(tile) = colony.world_tiles.get_mut(&TilePos {
+    let tiles = corridor
+        .into_iter()
+        .map(|road| TilePos {
             x: road.x,
             y: road.y,
-        }) {
-            tile.overlay_feature = Some("road_built".to_owned());
-            tile.path_wear = 100;
-            colony.resources.materials -= 1.0;
-            paved += 1;
-        }
-    }
-
-    if paved > 0 {
-        append_event(
-            colony,
-            gate.processed_through,
-            EventKind::RoadBuilt,
-            format!(
-                "The leader had a well-worn trail paved into a road ({paved} tile{}).",
-                if paved == 1 { "" } else { "s" }
-            ),
-        );
-    }
+        })
+        .collect::<Vec<_>>();
+    let Some(reservations) = road_material_reservations(colony, &tiles) else {
+        return;
+    };
+    let Some(builder) = select_best_cat_for_labor(
+        colony,
+        Some(CatSpecialization::Architect),
+        Some(Labor::Build),
+    ) else {
+        return;
+    };
+    queue_job(
+        colony,
+        gate.processed_through,
+        JobKind::BuildRoad,
+        Some(builder),
+        JobMetadata::RoadConstruction {
+            tiles,
+            next_tile: 0,
+            reservations,
+            work_ms: 0,
+        },
+    );
 }
 
 /// P14.4: tiles bordering `building`'s footprint but not part of it — the
@@ -16132,6 +16474,7 @@ fn queue_job_requested_by(
     let contributing_tool_id = matches!(
         kind,
         JobKind::BuildHouse
+            | JobKind::BuildRoad
             | JobKind::Quarry
             | JobKind::GatherLogs
             | JobKind::Fish
@@ -16170,6 +16513,7 @@ fn queue_job_requested_by(
     let duration_ms = if matches!(
         kind,
         JobKind::BuildHouse
+            | JobKind::BuildRoad
             | JobKind::Quarry
             | JobKind::GatherLogs
             | JobKind::Fish
@@ -16246,6 +16590,7 @@ fn task_for_job(kind: JobKind) -> Option<TaskType> {
         | JobKind::GatherLogs
         | JobKind::ReplantTree
         | JobKind::BuildHouse
+        | JobKind::BuildRoad
         | JobKind::LeaderPlanHouse => Some(TaskType::Build),
         JobKind::ForageFibre => Some(TaskType::Hunt),
         JobKind::Explore | JobKind::ExpandVillage => Some(TaskType::Explore),
@@ -18257,6 +18602,7 @@ fn job_has_destination_metadata(job: &JobRuntime) -> bool {
             ..
         } => true,
         JobMetadata::Construction { site: Some(_), .. } => job.kind == JobKind::BuildHouse,
+        JobMetadata::RoadConstruction { .. } => job.kind == JobKind::BuildRoad,
         _ => false,
     }
 }
@@ -20148,6 +20494,21 @@ fn complete_build(colony: &mut ColonyRuntime, job: &JobRuntime, gate: TickGate) 
         }
     }
 
+    let cat = &mut colony.cats[cat_index];
+    cat.role_xp.architect += 1.0;
+    cat.gain_skill(Labor::Build, SKILL_GAIN_PER_JOB);
+    cat.specialization = idle_engine::next_specialization(
+        CatSpecialization::Architect,
+        cat.role_xp.architect,
+        cat.specialization,
+    );
+    cat.stats.building = (cat.stats.building + 0.4).min(100.0);
+}
+
+fn complete_road_work(colony: &mut ColonyRuntime, job: &JobRuntime) {
+    let Some(cat_index) = assigned_alive_cat_index(colony, job) else {
+        return;
+    };
     let cat = &mut colony.cats[cat_index];
     cat.role_xp.architect += 1.0;
     cat.gain_skill(Labor::Build, SKILL_GAIN_PER_JOB);
@@ -23350,8 +23711,13 @@ fn cancel_cat_jobs(colony: &mut ColonyRuntime, cat_id: &str, now_ms: i64) {
             false
         };
         let staged_expansion_survives = colony.jobs[index].kind == JobKind::ExpandVillage;
+        let road_project_survives = colony.jobs[index].kind == JobKind::BuildRoad
+            && matches!(
+                colony.jobs[index].metadata,
+                JobMetadata::RoadConstruction { .. }
+            );
         let job = &mut colony.jobs[index];
-        if paid_scaffold_survives || staged_expansion_survives {
+        if paid_scaffold_survives || staged_expansion_survives || road_project_survives {
             // The refined materials and completed work belong to the scaffold,
             // not its builder. Release the dead cat and let phase 14 recruit a
             // replacement for only the unfinished portion.
@@ -23692,6 +24058,9 @@ fn salvage_carried_cargo(
     if spill_construction_cargo(colony, carrying, at) {
         return None;
     }
+    if salvage_road_cargo(colony, carrying, at) {
+        return None;
+    }
     if salvage_station_cargo_for_carrier(colony, carrying, at, Some(carrier_cat_id)) {
         return None;
     }
@@ -23702,6 +24071,69 @@ fn salvage_carried_cargo(
     let mut spilled = carrying.clone();
     spilled.amount = remaining;
     Some(spilled)
+}
+
+/// A road unit has already left its visible source but has not left the aggregate
+/// ledger. Death returns it to that exact freed slot, or exposes a one-tile spill if
+/// the source was administratively removed, then restores the durable reservation.
+fn salvage_road_cargo(colony: &mut ColonyRuntime, carrying: &Carrying, at: WorldPos) -> bool {
+    let Some((job_id, source_id)) = parse_road_cargo(carrying.source_gather_spot.as_deref()) else {
+        return false;
+    };
+    let Some(kind) = carrying_resource_kind(carrying.kind) else {
+        return true;
+    };
+    if kind != ResourceKind::Materials {
+        return true;
+    }
+    let destination_id = if let Some(source) = colony
+        .stockpiles
+        .iter_mut()
+        .find(|pile| pile.id == source_id)
+    {
+        stockpiles::add_resource(&mut source.contents, kind, carrying.amount);
+        source.id.clone()
+    } else {
+        let tile = world_pos_to_tile(at);
+        let base = format!("road-spill:{job_id}");
+        let mut id = base.clone();
+        let mut ordinal = 0_u32;
+        while colony.stockpiles.iter().any(|pile| pile.id == id) {
+            ordinal = ordinal.saturating_add(1);
+            id = format!("{base}:{ordinal}");
+        }
+        let mut spill = Stockpile {
+            id: id.clone(),
+            rect: ZoneRect {
+                x1: tile.x,
+                y1: tile.y,
+                x2: tile.x,
+                y2: tile.y,
+            },
+            accepts: [kind].into_iter().collect(),
+            contents: Resources::default(),
+        };
+        stockpiles::add_resource(&mut spill.contents, kind, carrying.amount);
+        colony.stockpiles.push(spill);
+        id
+    };
+    if let Some(job) = colony.jobs.iter_mut().find(|job| job.id == job_id)
+        && let JobMetadata::RoadConstruction { reservations, .. } = &mut job.metadata
+    {
+        if let Some(existing) = reservations
+            .iter_mut()
+            .find(|reservation| reservation.source_stockpile_id == destination_id)
+        {
+            existing.amount += carrying.amount;
+        } else {
+            reservations.push(ConstructionCargoReservation {
+                source_stockpile_id: destination_id,
+                kind,
+                amount: carrying.amount,
+            });
+        }
+    }
+    true
 }
 
 /// Put station cargo back into physical storage when its carrier dies. Input cargo was
@@ -27105,7 +27537,7 @@ mod tests {
     }
 
     #[test]
-    fn deliberate_roads_pick_corridor_and_keep_material_reserve() {
+    fn deliberate_roads_queue_physical_corridor_and_keep_material_reserve() {
         let mut world_tiles = BTreeMap::new();
         for x in 20..=27 {
             world_tiles.insert(pos(x, 6), tile(x, 6, 90, None));
@@ -27118,8 +27550,24 @@ mod tests {
                 cats: vec![adult_idle_cat("steward", "colony-1")],
                 resources: Resources {
                     materials: 38.0,
+                    food: 100.0,
+                    water: 100.0,
                     ..Resources::default()
                 },
+                stockpiles: vec![Stockpile {
+                    id: "road-materials".to_owned(),
+                    rect: ZoneRect {
+                        x1: 0,
+                        y1: 0,
+                        x2: 0,
+                        y2: 0,
+                    },
+                    accepts: [ResourceKind::Materials].into_iter().collect(),
+                    contents: Resources {
+                        materials: 38.0,
+                        ..Resources::default()
+                    },
+                }],
                 world_tiles,
                 buildings: vec![BuildingRuntime {
                     id: "steward-workshop".to_owned(),
@@ -27142,21 +27590,186 @@ mod tests {
             .officers
             .insert(OfficerRole::Steward, "steward".to_owned());
 
-        let reports = world_tick(&mut world, 60_000);
+        phase_35_deliberate_roads(
+            &mut world.colonies[0],
+            TickGate {
+                elapsed_sec: 60,
+                processed_through: 60_000,
+                minute_rolled: true,
+                previous_water: 0,
+            },
+        );
 
-        assert_eq!(reports[0].reset_reason, None);
         let colony = &world.colonies[0];
-        assert_eq!(colony.resources.materials, 32.0);
+        assert_eq!(colony.resources.materials, 38.0);
         for x in 20..=25 {
-            let paved = &colony.world_tiles[&pos(x, 6)];
-            assert_eq!(paved.overlay_feature.as_deref(), Some("road_built"));
-            assert_eq!(paved.path_wear, 100);
+            assert_eq!(colony.world_tiles[&pos(x, 6)].overlay_feature, None);
         }
+        let road_job = colony
+            .jobs
+            .iter()
+            .find(|job| job.kind == JobKind::BuildRoad)
+            .expect("Steward queued a physical road project");
+        assert_eq!(road_job.status, JobStatus::Queued);
+        assert!(matches!(
+            &road_job.metadata,
+            JobMetadata::RoadConstruction {
+                tiles,
+                next_tile: 0,
+                reservations,
+                work_ms: 0,
+            } if tiles.len() == 6
+                && reservations.iter().map(|entry| entry.amount).sum::<f64>() == 6.0
+        ));
+        assert!(colony.resources.materials >= ROAD_MATERIALS_RESERVE);
+    }
+
+    fn physical_road_fixture() -> (ColonyRuntime, TilePos) {
+        let target = pos(1, 0);
+        let mut colony = ColonyRuntime {
+            id: "road-colony".to_owned(),
+            anchor: pos(0, 0),
+            cats: vec![adult_idle_cat("builder", "road-colony")],
+            resources: Resources {
+                materials: 1.0,
+                ..Resources::default()
+            },
+            stockpiles: vec![Stockpile {
+                id: "road-source".to_owned(),
+                rect: ZoneRect {
+                    x1: 0,
+                    y1: 0,
+                    x2: 0,
+                    y2: 0,
+                },
+                accepts: [ResourceKind::Materials].into_iter().collect(),
+                contents: Resources {
+                    materials: 1.0,
+                    ..Resources::default()
+                },
+            }],
+            world_tiles: BTreeMap::from([(target, tile(target.x, target.y, 0, None))]),
+            ..ColonyRuntime::default()
+        };
+        colony.jobs.push(JobRuntime {
+            id: "physical-road".to_owned(),
+            kind: JobKind::BuildRoad,
+            status: JobStatus::Active,
+            requested_by: JobRequester::Player,
+            assigned_cat: Some("builder".to_owned()),
+            duration_ms: 60_000,
+            speed: 1.0,
+            yield_amount: 1.0,
+            click_count: 0,
+            created_at: 0,
+            started_at: None,
+            ends_at: None,
+            completed_at: None,
+            metadata: JobMetadata::RoadConstruction {
+                tiles: vec![target],
+                next_tile: 0,
+                reservations: vec![ConstructionCargoReservation {
+                    source_stockpile_id: "road-source".to_owned(),
+                    kind: ResourceKind::Materials,
+                    amount: 1.0,
+                }],
+                work_ms: 0,
+            },
+        });
+        (colony, target)
+    }
+
+    #[test]
+    fn road_tile_requires_exact_pickup_arrival_and_work_before_spending() {
+        let (mut colony, target) = physical_road_fixture();
+
+        phase_15c_physical_road_work(&mut colony, production_gate(1, 1_000));
+        assert_eq!(colony.resources.materials, 1.0, "pickup is not consumption");
+        assert_eq!(colony.stockpiles[0].contents.materials, 0.0);
+        assert_eq!(colony.world_tiles[&target].overlay_feature, None);
+        assert!(
+            parse_road_cargo(
+                colony.cats[0]
+                    .carrying
+                    .as_ref()
+                    .and_then(|cargo| cargo.source_gather_spot.as_deref())
+            )
+            .is_some()
+        );
+
+        colony.cats[0].position = position_from_world(tile_pos_to_world(target));
+        phase_15c_physical_road_work(&mut colony, production_gate(59, 60_000));
+        assert_eq!(colony.world_tiles[&target].overlay_feature, None);
+        assert_eq!(colony.resources.materials, 1.0);
+        phase_15c_physical_road_work(&mut colony, production_gate(1, 61_000));
         assert_eq!(
-            colony.world_tiles[&pos(26, 6)].overlay_feature.as_deref(),
+            colony.world_tiles[&target].overlay_feature.as_deref(),
+            Some("road_built")
+        );
+        assert_eq!(colony.resources.materials, 0.0);
+        phase_30_due_completion_build_ritual_training_return_mark_done(
+            &mut colony,
+            production_gate(1, 62_000),
+        );
+        assert_eq!(colony.jobs[0].status, JobStatus::Completed);
+        assert!(colony.cats[0].skill(Labor::Build) > 0.0);
+    }
+
+    #[test]
+    fn road_cargo_and_project_survive_builder_death_without_duplication() {
+        let (mut colony, _) = physical_road_fixture();
+        phase_15c_physical_road_work(&mut colony, production_gate(1, 1_000));
+        let carrying = colony.cats[0].carrying.take().expect("unit was picked up");
+        let at = position_to_world(colony.anchor, colony.cats[0].position);
+        assert_eq!(
+            salvage_carried_cargo(&mut colony, "builder", &carrying, at),
             None
         );
-        assert!(colony.resources.materials >= ROAD_MATERIALS_RESERVE);
+        colony.cats[0].death_time = Some(2_000);
+        cancel_cat_jobs(&mut colony, "builder", 2_000);
+
+        assert_eq!(colony.resources.materials, 1.0);
+        assert_eq!(colony.stockpiles[0].contents.materials, 1.0);
+        assert_eq!(colony.jobs[0].status, JobStatus::Queued);
+        assert_eq!(colony.jobs[0].assigned_cat, None);
+        assert!(matches!(
+            &colony.jobs[0].metadata,
+            JobMetadata::RoadConstruction { reservations, .. }
+                if reservations.len() == 1 && reservations[0].amount == 1.0
+        ));
+
+        colony
+            .cats
+            .push(adult_idle_cat("replacement", "road-colony"));
+        phase_14_promote_queued_jobs_and_break_ground(&mut colony, production_gate(1, 3_000), 1);
+        assert_eq!(colony.jobs[0].status, JobStatus::Active);
+        assert_eq!(colony.jobs[0].assigned_cat.as_deref(), Some("replacement"));
+    }
+
+    #[test]
+    fn road_work_is_partition_invariant_and_reserves_its_map_tile() {
+        let (mut base, target) = physical_road_fixture();
+        base.claimed_tiles.push(target);
+        assert_eq!(
+            placement_error_for_tiles(&base, &[target], 1, true),
+            Some(SpatialPlacementError::Road),
+            "a building, farm, or pile cannot race onto ordered road work"
+        );
+        phase_15c_physical_road_work(&mut base, production_gate(1, 1_000));
+        base.cats[0].position = position_from_world(tile_pos_to_world(target));
+
+        let mut whole = base.clone();
+        phase_15c_physical_road_work(&mut whole, production_gate(60, 61_000));
+
+        let mut split = base;
+        for second in 1..=60 {
+            phase_15c_physical_road_work(&mut split, production_gate(1, 1_000 + second * 1_000));
+        }
+        assert_eq!(whole, split);
+        assert_eq!(
+            whole.world_tiles[&target].overlay_feature.as_deref(),
+            Some("road_built")
+        );
     }
 
     #[test]

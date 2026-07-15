@@ -997,6 +997,9 @@ pub enum JobKind {
     HuntExpedition,
     LeaderPlanHouse,
     BuildHouse,
+    /// Physical authored-road work: fetch one unit of Supplies per tile, walk the
+    /// ordered route, and pave each tile only after on-site labor.
+    BuildRoad,
     Ritual,
     Quarry,
     /// Forest-site gathering job: fells and carries raw logs. This is the sole
