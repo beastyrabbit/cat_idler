@@ -614,6 +614,7 @@ fn project_snapshot(
             can_control: identity.is_some() && (entry.kind == VillageKind::Global || is_owner),
             is_owner,
         };
+        project_reported_stock(colony);
     }
 
     let controlled_ids = snapshot
@@ -682,6 +683,55 @@ fn project_snapshot(
         prioritize_colony(snapshot, &selected)
     } else {
         snapshot
+    }
+}
+
+/// Remove authoritative stock from the only snapshot shape allowed to cross a socket.
+/// The completed snapshot cache deliberately remains exact for trusted server work. A socket
+/// receives only the Accountant's aggregate and per-pile reports. Divine blessings are not
+/// physical stockpile goods, so their spendable balance remains exact. Equality attestations
+/// are cleared as well: even a boolean "still accurate" would reveal an unseen stock change.
+fn project_reported_stock(colony: &mut cat_protocol::ColonySnapshot) {
+    let blessings = colony.resources.blessings;
+    let Some(ledger) = colony.stock_ledger.as_mut() else {
+        // `cat-sim::build_snapshot` always emits a ledger. Keeping this legacy branch
+        // conservative prevents a future/foreign canonical snapshot from leaking via a
+        // missing report.
+        colony.resources = cat_protocol::ResourceAmounts {
+            blessings,
+            ..cat_protocol::ResourceAmounts::default()
+        };
+        colony.threat.weapons = 0.0;
+        colony.threat.armor = 0.0;
+        for pile in &mut colony.stockpiles {
+            pile.contents = pile
+                .report
+                .as_ref()
+                .map_or_else(cat_protocol::ResourceAmounts::default, |report| {
+                    report.reported
+                });
+            if let Some(report) = &mut pile.report {
+                report.accurate = false;
+            }
+        }
+        return;
+    };
+
+    colony.resources = ledger.reported;
+    colony.resources.blessings = blessings;
+    colony.threat.weapons = ledger.reported.weapons;
+    colony.threat.armor = ledger.reported.armor;
+    ledger.accurate = false;
+    for pile in &mut colony.stockpiles {
+        pile.contents = pile
+            .report
+            .as_ref()
+            .map_or_else(cat_protocol::ResourceAmounts::default, |report| {
+                report.reported
+            });
+        if let Some(report) = &mut pile.report {
+            report.accurate = false;
+        }
     }
 }
 
@@ -1276,6 +1326,277 @@ mod tests {
         let canonical = state.completed_snapshot.read().await;
         assert_eq!(canonical.colonies[0].id, STARTER_COLONY_ID);
         assert_eq!(canonical.online_count, 0);
+    }
+
+    #[test]
+    fn authenticated_owner_wire_never_bypasses_vacant_or_blocked_accountant_reports() {
+        use cat_sim::{
+            entities::Resources,
+            ledger::{AccountingPhase, AccountingRound, PileReport, StockLedger},
+            stockpiles::{ResourceKind as SimResourceKind, Stockpile},
+            zones::ZoneRect,
+        };
+
+        for blocked in [false, true] {
+            let signed =
+                signed_session(format!("accountant-wire-{blocked}"), "test-session-secret");
+            let mut world = new_world(WORLD_SEED);
+            let mut colony =
+                found_colony(WORLD_SEED, "private-books", 1_000_000, STARTER_COLONY_SEED);
+            colony.kind = VillageKind::Personal;
+            colony.owner_player_id = Some(signed.player_id.clone());
+
+            let pile = colony
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.is_general_storehouse())
+                .expect("founding storehouse");
+            pile.contents.food = 91_234.5;
+            pile.contents.water = 82_234.5;
+            pile.contents.weapons = 17_234.5;
+            pile.contents.armor = 18_234.5;
+            let pile_id = pile.id.clone();
+            colony.resources.food = 91_234.5;
+            colony.resources.water = 82_234.5;
+            colony.resources.weapons = 17_234.5;
+            colony.resources.armor = 18_234.5;
+            colony.resources.materials = 66_234.5;
+            colony.global_upgrade_points = 7.0;
+            colony.stockpiles.push(Stockpile {
+                id: "uncounted-cache".to_owned(),
+                rect: ZoneRect {
+                    x1: colony.anchor.x + 7,
+                    y1: colony.anchor.y,
+                    x2: colony.anchor.x + 7,
+                    y2: colony.anchor.y,
+                },
+                accepts: [SimResourceKind::Materials].into_iter().collect(),
+                contents: Resources {
+                    materials: 66_234.5,
+                    ..Resources::default()
+                },
+            });
+
+            let reported = Resources {
+                food: 13.0,
+                water: 12.0,
+                weapons: 3.0,
+                armor: 4.0,
+                ..Resources::default()
+            };
+            colony.stock_ledger = StockLedger {
+                reported: reported.clone(),
+                last_counted: 900_000,
+                pile_reports: [(
+                    pile_id.clone(),
+                    PileReport {
+                        reported,
+                        last_counted: 900_000,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                active_round: blocked.then(|| AccountingRound {
+                    worker_id: "bookkeeper".to_owned(),
+                    tent_id: "accounting-tent".to_owned(),
+                    phase: AccountingPhase::WaitingAtTent,
+                    unreachable_stockpile_ids: vec!["uncounted-cache".to_owned()],
+                    ..AccountingRound::default()
+                }),
+                ..StockLedger::default()
+            };
+            world.colonies.push(colony);
+
+            let canonical = build_snapshot(&world, 1_000_000, 1);
+            assert_eq!(canonical.colonies[0].resources.food, 91_234.5);
+            assert_eq!(canonical.colonies[0].stockpiles[0].contents.food, 91_234.5);
+            assert_eq!(
+                canonical.colonies[0]
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == "uncounted-cache")
+                    .expect("canonical uncounted pile")
+                    .contents
+                    .materials,
+                66_234.5
+            );
+
+            let projected = project_snapshot(
+                canonical.clone(),
+                &village_directory(&world),
+                Some(&signed),
+                "private-books",
+            );
+            let player = &projected.colonies[0];
+            assert!(player.capabilities.is_owner);
+            assert_eq!(player.resources.food, 13.0);
+            assert_eq!(player.resources.water, 12.0);
+            assert_eq!(player.resources.materials, 0.0);
+            assert_eq!(player.resources.blessings, 7.0);
+            assert_eq!(player.threat.weapons, 3.0);
+            assert_eq!(player.threat.armor, 4.0);
+            assert_eq!(player.stockpiles[0].contents.food, 13.0);
+            assert_eq!(player.stockpiles[0].contents.water, 12.0);
+            let uncounted = player
+                .stockpiles
+                .iter()
+                .find(|pile| pile.id == "uncounted-cache")
+                .expect("projected uncounted pile");
+            assert_eq!(uncounted.contents, cat_protocol::ResourceAmounts::default());
+            assert!(uncounted.report.is_none());
+
+            let json = serde_json::to_value(&projected).expect("owner websocket payload");
+            let owner = &json["colonies"][0];
+            assert!(owner["stockLedger"].get("accurate").is_none());
+            assert!(owner["stockpiles"][0]["report"].get("accurate").is_none());
+            let wire = serde_json::to_string(&json).expect("owner websocket JSON");
+            for sentinel in ["91234.5", "82234.5", "66234.5", "17234.5", "18234.5"] {
+                assert!(
+                    !wire.contains(sentinel),
+                    "authoritative sentinel {sentinel} crossed the player wire"
+                );
+            }
+            assert_eq!(canonical.colonies[0].resources.materials, 66_234.5);
+            assert_eq!(canonical.colonies[0].stockpiles[0].contents.food, 91_234.5);
+        }
+    }
+
+    #[tokio::test]
+    async fn every_owner_socket_emission_path_applies_the_accountant_projection() {
+        let secret = "guided-campaign-secret";
+        let signed = signed_session("accountant-paths".to_owned(), secret);
+        let private_id = "accountant-private";
+        let mut world = starter_world(1_000_000);
+        let mut private = found_colony(WORLD_SEED, private_id, 1_000_000, STARTER_COLONY_SEED + 1);
+        private.kind = VillageKind::Personal;
+        private.owner_player_id = Some(signed.player_id.clone());
+        private.global_upgrade_points = 7.0;
+        let cat_id = private.cats[0].id.clone();
+        private.resources.food = 91_234.5;
+        private.resources.weapons = 17_234.5;
+        let storehouse = private
+            .stockpiles
+            .iter_mut()
+            .find(|pile| pile.is_general_storehouse())
+            .expect("private storehouse");
+        storehouse.contents.food = 91_234.5;
+        storehouse.contents.weapons = 17_234.5;
+        world.colonies.push(private);
+
+        let state = build_test_state_from_world(world, 1_000_000);
+        let mut connection =
+            ConnectionContext::new("accountant-owner".to_owned(), private_id.to_owned());
+        connection.identity = Some(signed.clone());
+
+        let assert_safe_wire = |snapshot: &WorldSnapshot, phase: &str| {
+            let player = &snapshot.colonies[0];
+            assert_eq!(player.id, private_id, "{phase} selected village");
+            assert!(player.capabilities.is_owner, "{phase} owner capability");
+            assert_eq!(player.resources.food, 50.0, "{phase} aggregate report");
+            assert_eq!(player.resources.blessings, 7.0, "{phase} exact blessings");
+            assert_eq!(player.threat.weapons, 0.0, "{phase} defense duplicate");
+            assert_eq!(
+                player
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == cat_sim::stockpiles::GENERAL_STOREHOUSE_ID)
+                    .expect("wire storehouse")
+                    .contents
+                    .food,
+                50.0,
+                "{phase} pile report"
+            );
+            let json = serde_json::to_value(snapshot).expect("socket JSON");
+            let owner = &json["colonies"][0];
+            assert!(
+                owner["stockLedger"].get("accurate").is_none(),
+                "{phase} aggregate equality oracle"
+            );
+            for pile in owner["stockpiles"].as_array().expect("stockpiles") {
+                if let Some(report) = pile.get("report") {
+                    assert!(
+                        report.get("accurate").is_none(),
+                        "{phase} pile equality oracle"
+                    );
+                }
+            }
+            let wire = serde_json::to_string(&json).expect("socket text");
+            for sentinel in ["91234.5", "17234.5", "73456.25"] {
+                assert!(
+                    !wire.contains(sentinel),
+                    "{phase} leaked authoritative sentinel {sentinel}"
+                );
+            }
+        };
+
+        let initial = current_snapshot(&state, 1, &connection).await;
+        assert_safe_wire(&initial, "initial cache");
+        assert_eq!(
+            state.completed_snapshot.read().await.colonies[1]
+                .resources
+                .food,
+            91_234.5,
+            "trusted cache remains authoritative"
+        );
+
+        let mut tick_broadcast = state.snapshots.subscribe();
+        let tick_private_id = private_id.to_owned();
+        run_tick_once(state.clone(), 1, 1_001_000, move |world, _| {
+            let private = world
+                .colonies
+                .iter_mut()
+                .find(|colony| colony.id == tick_private_id)
+                .expect("tick private village");
+            private.resources.water = 73_456.25;
+            private
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.is_general_storehouse())
+                .expect("tick storehouse")
+                .contents
+                .water = 73_456.25;
+        })
+        .await
+        .expect("tick worker");
+        let canonical_tick = tick_broadcast.recv().await.expect("tick broadcast");
+        assert_eq!(canonical_tick.colonies[1].resources.water, 73_456.25);
+        let directory = state.village_directory.read().await;
+        let projected_tick = project_snapshot(
+            canonical_tick,
+            &directory,
+            connection.identity.as_ref(),
+            &connection.colony_id,
+        );
+        drop(directory);
+        assert_safe_wire(&projected_tick, "broadcast tick");
+
+        let result = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::SetCatLaborPreference {
+                session_id: signed.session_id.clone(),
+                nickname: "Bookkeeper".to_owned(),
+                sig: signed.sig.clone(),
+                cat_id,
+                labor: cat_protocol::Labor::Haul,
+                enabled: false,
+            },
+        )
+        .await;
+        assert!(result.result.ok, "signed action: {result:?}");
+
+        let mut reconnected =
+            ConnectionContext::new("accountant-reconnect".to_owned(), private_id.to_owned());
+        reconnected.identity = Some(signed);
+        let after_action = current_snapshot(&state, 1, &reconnected).await;
+        assert_safe_wire(&after_action, "post-action reconnect");
+        assert_eq!(
+            state.completed_snapshot.read().await.colonies[1]
+                .resources
+                .water,
+            73_456.25,
+            "post-action trusted cache remains authoritative"
+        );
     }
 
     #[test]

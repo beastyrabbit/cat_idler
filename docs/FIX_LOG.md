@@ -15,7 +15,6 @@ and any changed Bevy visuals have been verified.
 | Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
 | Research recipe/resource breadth remains incomplete | Four data-owned preparation payloads bind the station-local Mill, Sawmill, Workshop, and Smelter queues. Four legacy studies now also own the maintained aggregate recipes: Textiles→Clothier fibre→cloth and Tannery hide→leather, Weaponsmithing→Smithy weapons, and Armorsmithing→Smithy armor. Fresh rules-v1 villages require each exact study before time, progress, or input consumption; old/missing rules-v0 saves are grandfathered. The other 96 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
-| Owner snapshots bypass the Accountant's stale books | `build_colony_snapshot` places authoritative `colony.resources` in `ColonySnapshot.resources`, and every `StockpileSnapshot` carries exact `contents` plus an `accurate` comparison alongside its last-counted report. The maintained client displays the report, but an authenticated owner can read the exact WebSocket payload without any Accountant contact. Make the player-facing snapshot expose only reported totals/contents and non-oracular freshness; keep authoritative values server-side. Prove stale, blocked, vacant, restart, and signed-owner boundaries at the serialized wire. | queued |
 | Forester replanting is absent | `GAME_VISION.md` assigns felling, replanting, and lumber to the Forester. Completed logging permanently writes `overlay_feature = "stump"`, and the logging scan excludes stump tiles; no maintained phase turns one back into a tree. Add a finite, persisted Forester replant route with growth timing and terrain/occupancy safeguards, then prove depletion, regrowth, restart, vacancy/manual ownership, and long-run sustainability. | queued |
 | Eleven HUD resources lack semantic icons | P18 and `docs/assets/items_ui.md` promise Board Game/Fish glyphs copied into the tracked icon directory. `resource_icon_path` instead maps 11 of the 23 maintained resources to terrain, farm, prop, or furniture art (including water edge, wood floor, bed, scroll, stool, and basin). Copy/select one truthful semantic HUD icon per resource, retain distinct names/tints/values, and verify all 23 in the client's own framebuffer at supported bounds. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
@@ -25,6 +24,27 @@ and any changed Bevy visuals have been verified.
 | Authored road building is instant | `actions::build_road` validates a shrine-connected mapped path, paints every new tile immediately, and subtracts one aggregate Material per tile without a cat, cargo, or construction phase. Preserve the verified placement, surface, connectivity, and speed rules while adding a physical build route if roadwork is promoted to the full DF-style logistics contract. This is a P2 physical-consistency enhancement, not a blocker under the current P16 wording. | queued (P2) |
 
 ## Verified fixes
+
+## 2026-07-15 — Accountant reports are the player-wire inventory boundary
+
+**Problem:** The client displayed the Accountant's stale aggregate and per-pile reports, but the
+same owner WebSocket payload also carried authoritative colony resources, exact pile contents,
+and aggregate/per-pile `accurate` comparisons. Reading JSON bypassed every physical counting round.
+
+**Fix:** The server retains its exact completed snapshot cache, then applies one mandatory socket
+projection for initial connections, broadcast ticks, and post-action/reconnect snapshots. Physical
+`resources`, the duplicate threat weapon/armor totals, and every visible pile's `contents` now come
+from the last report; uncounted piles project zero contents. Equality attestations are cleared and
+omitted. Exact blessings remain visible because they are a non-stockpiled divine currency, not part
+of the Accountant's physical inventory remit. New offer/block metadata must not copy an exact
+resource total or reintroduce an equality oracle; whole-payload sentinel tests guard numeric leaks.
+
+**Evidence:** Authenticated personal-owner tests cover vacant and blocked books, a wholly uncounted
+pile, exact trusted-cache preservation, initial cached delivery, tick broadcast, signed post-action
+refresh, and reconnect. Unique authoritative sentinels are absent from the complete serialized JSON,
+not merely from the documented resource fields. Protocol compatibility defaults omitted accuracy
+fields to conservative `false`; signed Accountant restart/release coverage remains green. The full
+42 protocol, 76 server, and 130 client suites plus strict touched-crate Clippy and formatting pass.
 
 ## 2026-07-15 — Scaffold construction uses conserved physical inputs
 

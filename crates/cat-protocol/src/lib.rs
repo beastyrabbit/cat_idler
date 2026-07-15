@@ -116,6 +116,9 @@ pub struct ColonySnapshot {
     #[serde(default)]
     pub capabilities: VillageCapabilities,
     pub status: ColonyStatus,
+    /// Canonical snapshots may carry authoritative resources inside the trusted server, but
+    /// the player-facing socket projection replaces physical stock with the Accountant's last
+    /// report. Blessings remain exact because they are a non-stockpiled divine currency.
     pub resources: ResourceAmounts,
     pub storage: StorageSnapshot,
     pub leader: Option<LeaderSnapshot>,
@@ -293,7 +296,10 @@ pub struct StockLedgerSnapshot {
     pub reported: ResourceAmounts,
     /// Game-tick timestamp (ms) of the last recount.
     pub last_counted: i64,
-    /// Whether every reported total currently happens to match the authoritative economy.
+    /// Trusted/internal equality attestation retained for legacy snapshot compatibility.
+    /// Player-facing servers omit `false`, and must clear it before a snapshot crosses the
+    /// wire so report freshness cannot become an oracle for authoritative stock changes.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub accurate: bool,
     /// Physical work currently being performed by the Accounting Tent. Additive for older
     /// clients/snapshots.
@@ -330,6 +336,9 @@ pub struct AccountingRoundSnapshot {
 pub struct StockpileReportSnapshot {
     pub reported: ResourceAmounts,
     pub last_counted: i64,
+    /// Trusted/internal equality attestation. Player-facing projections always clear and
+    /// omit it; an absent value deserializes as `false` for older clients.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub accurate: bool,
 }
 
@@ -374,9 +383,9 @@ pub struct StockpileSnapshot {
     pub y2: i32,
     pub accepts: Vec<ResourceKind>,
     pub contents: ResourceAmounts,
-    /// Player-facing counted values. `contents` remains available for physical pile sprite
-    /// size/shape; numeric UI must use this report so exact simulation state cannot bypass the
-    /// Accountant. Absent only on legacy snapshots.
+    /// Player-facing counted values. The server replaces `contents` with this report (or
+    /// zero for an uncounted pile) in the socket projection, so neither numeric UI nor pile
+    /// sprite size/shape can bypass the Accountant. Absent only on legacy snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<StockpileReportSnapshot>,
     /// Present when this pile is a P16 gather spot: a temporary, single-resource drop
@@ -497,7 +506,7 @@ pub enum ColonyStatus {
     Dead,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResourceAmounts {
     pub food: f64,
@@ -2772,7 +2781,11 @@ mod tests {
             y2: 6,
             accepts: vec![ResourceKind::Food],
             contents,
-            report: None,
+            report: Some(StockpileReportSnapshot {
+                reported: contents,
+                last_counted: 1_700_000_030_000,
+                accurate: false,
+            }),
             gather_spot: None,
             steward_managed: Some(StewardManagedPileSnapshot {
                 station_id: "mill-a".to_owned(),
@@ -2797,6 +2810,11 @@ mod tests {
         assert_eq!(
             encoded["colonies"][0]["stockpiles"][0]["stewardManaged"]["stationId"],
             json!("mill-a")
+        );
+        assert!(
+            encoded["colonies"][0]["stockpiles"][0]["report"]
+                .get("accurate")
+                .is_none()
         );
         assert_eq!(
             encoded["colonies"][0]["activeStockpileHaul"]["phase"],
@@ -2840,6 +2858,27 @@ mod tests {
         assert_eq!(
             round.colonies[0].stock_ledger,
             snap.colonies[0].stock_ledger
+        );
+
+        let mut player_safe = snap;
+        player_safe.colonies[0]
+            .stock_ledger
+            .as_mut()
+            .expect("ledger")
+            .accurate = false;
+        let encoded = serde_json::to_value(&player_safe).expect("serialize player-safe ledger");
+        assert!(
+            encoded["colonies"][0]["stockLedger"]
+                .get("accurate")
+                .is_none()
+        );
+        let round: WorldSnapshot = serde_json::from_value(encoded).expect("default accuracy");
+        assert!(
+            !round.colonies[0]
+                .stock_ledger
+                .as_ref()
+                .expect("ledger")
+                .accurate
         );
     }
 

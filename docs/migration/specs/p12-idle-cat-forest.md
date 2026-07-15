@@ -87,6 +87,11 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
   for five game-seconds, and returns. Each visited pile refreshes independently; blocked piles
   remain stale. Persisted per-pile freshness lets the client show `~120 food`, `uncounted`, and
   current route/count progress without exposing authoritative totals.
+- **Player-wire boundary:** canonical server snapshots remain exact for simulation and persistence,
+  but every socket path projects `resources`, duplicate defense stock, and pile `contents` from the
+  reports (or zero when uncounted) and omits aggregate/per-pile equality attestations. Blessings are
+  intentionally exact because they are non-stockpiled divine currency. Resource-derived offer or
+  block metadata must not copy exact hidden totals or become an equality oracle.
 - **Actions:** `designateStockpile{rect, accepts}` / `removeStockpile`. **Renders** as visible
   piles (props already sliced: barrel/crate/sack/log_pile/stone_pile/ore_pile/gold_pile).
 - **Tests:** haul chooses nearest accepting pile; caps enforced; contents survive tick;
