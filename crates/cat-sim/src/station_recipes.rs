@@ -2,8 +2,9 @@
 //!
 //! The authoritative target contract is P19's canonical production table. This
 //! module describes recipe identity and resource domains only; `world_tick`
-//! deliberately keeps the six compatibility benches on their existing aggregate
-//! timers until their physical route slices land.
+//! deliberately keeps the five remaining compatibility benches on their existing
+//! aggregate timers until their physical route slices land. The Wood Cutter now
+//! follows its finite physical route.
 
 use crate::{stockpiles::ResourceKind, types::BuildingType};
 
@@ -27,6 +28,9 @@ pub struct StationRecipeDescriptor {
     pub building_type: BuildingType,
     pub input_resources: &'static [ResourceKind],
     pub output_resources: &'static [ResourceKind],
+    /// Baseline recipe of a founding-placeable bench. Catalog studies may own
+    /// later recipes without making this first survival chain unavailable.
+    pub founding_available: bool,
 }
 
 /// Complete recipe and local-store domain owned by one station type.
@@ -63,54 +67,63 @@ const MILL_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     building_type: BuildingType::Mill,
     input_resources: MILL_INPUTS,
     output_resources: MILL_OUTPUTS,
+    founding_available: false,
 }];
 const SAWMILL_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: SAWMILL_RECIPE_ID,
     building_type: BuildingType::Sawmill,
     input_resources: SAWMILL_INPUTS,
     output_resources: SAWMILL_OUTPUTS,
+    founding_available: false,
 }];
 const WORKSHOP_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: WORKSHOP_RECIPE_ID,
     building_type: BuildingType::Workshop,
     input_resources: WORKSHOP_INPUTS,
     output_resources: WORKSHOP_OUTPUTS,
+    founding_available: false,
 }];
 const SMELTER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: SMELTER_RECIPE_ID,
     building_type: BuildingType::Smelter,
     input_resources: SMELTER_INPUTS,
     output_resources: SMELTER_OUTPUTS,
+    founding_available: false,
 }];
 const WOOD_CUTTER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: LOGS_TO_PLANKS_RECIPE_ID,
     building_type: BuildingType::WoodCutter,
     input_resources: WOOD_CUTTER_INPUTS,
     output_resources: WOOD_CUTTER_OUTPUTS,
+    founding_available: true,
 }];
 const STONE_PREP_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: STONE_TO_BLOCKS_RECIPE_ID,
     building_type: BuildingType::StonePrep,
     input_resources: STONE_PREP_INPUTS,
     output_resources: STONE_PREP_OUTPUTS,
+    founding_available: true,
 }];
 const WOODWORKING_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
     building_type: BuildingType::Woodworking,
     input_resources: WOODWORKING_INPUTS,
     output_resources: WOODWORKING_OUTPUTS,
+    founding_available: true,
 }];
 const CLOTHIER_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: FIBRE_TO_CLOTH_RECIPE_ID,
     building_type: BuildingType::Clothier,
     input_resources: CLOTHIER_INPUTS,
     output_resources: CLOTHIER_OUTPUTS,
+    founding_available: false,
 }];
 const TANNERY_RECIPES: &[StationRecipeDescriptor] = &[StationRecipeDescriptor {
     id: HIDE_TO_LEATHER_RECIPE_ID,
     building_type: BuildingType::Tannery,
     input_resources: TANNERY_INPUTS,
     output_resources: TANNERY_OUTPUTS,
+    founding_available: false,
 }];
 const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
     StationRecipeDescriptor {
@@ -118,12 +131,14 @@ const SMITHY_RECIPES: &[StationRecipeDescriptor] = &[
         building_type: BuildingType::Smithy,
         input_resources: SMITHY_INPUTS,
         output_resources: &[ResourceKind::Weapons],
+        founding_available: false,
     },
     StationRecipeDescriptor {
         id: SMITHY_ARMOR_RECIPE_ID,
         building_type: BuildingType::Smithy,
         input_resources: SMITHY_INPUTS,
         output_resources: &[ResourceKind::Armor],
+        founding_available: false,
     },
 ];
 
@@ -156,7 +171,7 @@ mod tests {
     use crate::{stockpiles::ResourceKind, types::BuildingType};
 
     #[test]
-    fn six_compatibility_benches_have_stable_data_owned_recipes() {
+    fn production_benches_have_stable_data_owned_recipes() {
         let cases = [
             (
                 BuildingType::WoodCutter,
@@ -243,5 +258,32 @@ mod tests {
         }
         assert_eq!(ids.len(), 11);
         assert!(station_recipe_set(BuildingType::Den).is_none());
+    }
+
+    #[test]
+    fn exactly_the_three_founding_bench_baselines_are_available_without_study() {
+        let founding = [
+            LOGS_TO_PLANKS_RECIPE_ID,
+            STONE_TO_BLOCKS_RECIPE_ID,
+            PLANKS_AND_BLOCKS_TO_TOOLS_RECIPE_ID,
+        ];
+        let actual = [
+            BuildingType::Mill,
+            BuildingType::Sawmill,
+            BuildingType::Workshop,
+            BuildingType::Smelter,
+            BuildingType::WoodCutter,
+            BuildingType::StonePrep,
+            BuildingType::Woodworking,
+            BuildingType::Clothier,
+            BuildingType::Tannery,
+            BuildingType::Smithy,
+        ]
+        .into_iter()
+        .flat_map(|building| station_recipe_set(building).unwrap().recipes)
+        .filter(|recipe| recipe.founding_available)
+        .map(|recipe| recipe.id)
+        .collect::<Vec<_>>();
+        assert_eq!(actual, founding);
     }
 }

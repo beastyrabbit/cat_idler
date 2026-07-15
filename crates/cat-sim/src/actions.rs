@@ -9189,16 +9189,10 @@ mod tests {
         let colony = &mut world.colonies[0];
         colony.recipe_entitlement_rules_version =
             crate::world_tick::CURRENT_RECIPE_ENTITLEMENT_RULES_VERSION;
-        colony.upgrade_tree.owned_node_ids.extend(
-            [
-                "carpentry_staples",
-                "stonecraft_preparation",
-                "toolmaking_preparation",
-                "textiles",
-                "weaponsmithing",
-            ]
-            .map(str::to_owned),
-        );
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .extend(["textiles", "weaponsmithing"].map(str::to_owned));
         let cases = [
             (
                 "wood-cutter-descriptor",
@@ -9252,7 +9246,11 @@ mod tests {
             assert_eq!(&building.available_recipes, expected_available, "{id}");
             assert_eq!(
                 building.production_block_reason.as_deref(),
-                Some("aggregate_timer_compatibility"),
+                Some(if *id == "wood-cutter-descriptor" {
+                    "no_worker"
+                } else {
+                    "aggregate_timer_compatibility"
+                }),
                 "{id}"
             );
             assert_eq!(building.required_recipe_study, None, "{id}");
@@ -9324,6 +9322,121 @@ mod tests {
             smithy.production_block_reason.as_deref(),
             Some("aggregate_timer_compatibility")
         );
+    }
+
+    #[test]
+    fn signed_wood_cutter_queue_edits_and_snapshot_expose_physical_local_truth() {
+        let mut world = world_with_one_colony();
+        world.colonies[0].recipe_entitlement_rules_version = 0;
+        let worker_id = world.colonies[0].cats[0].id.clone();
+        let building_id = "physical-wood-cutter";
+        world.colonies[0].buildings.push(BuildingRuntime {
+            id: building_id.to_owned(),
+            building_type: BuildingType::WoodCutter,
+            position: TilePos { x: 18, y: 18 },
+            is_complete: true,
+            construction_progress: 100,
+            production_progress: 317.5,
+            assigned_cat: Some(worker_id),
+            production_queue: crate::world_tick::default_production_queue(BuildingType::WoodCutter),
+            ..BuildingRuntime::default()
+        });
+        let rect = crate::zones::ZoneRect {
+            x1: 18,
+            y1: 18,
+            x2: 20,
+            y2: 20,
+        };
+        let mut input = stockpiles::make_station_store(
+            stockpiles::station_input_id(building_id),
+            rect,
+            [stockpiles::ResourceKind::Logs],
+        );
+        input.contents.logs = 5.0;
+        let mut output = stockpiles::make_station_store(
+            stockpiles::station_output_id(building_id),
+            rect,
+            [stockpiles::ResourceKind::Planks],
+        );
+        output.contents.planks = 1.0;
+        world.colonies[0].stockpiles.extend([input, output]);
+
+        let edit = |edit| proto::ClientAction::EditProductionQueue {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "signed".to_owned(),
+            building_id: building_id.to_owned(),
+            edit,
+        };
+        assert!(
+            apply_action(
+                &mut world,
+                &edit(proto::ProductionQueueEdit::Add {
+                    recipe_id: crate::world_tick::WOOD_CUTTER_RECIPE_ID.to_owned(),
+                    repeat: false,
+                }),
+                &ctx(),
+            )
+            .ok
+        );
+        assert!(
+            apply_action(
+                &mut world,
+                &edit(proto::ProductionQueueEdit::Move {
+                    index: 1,
+                    direction: proto::QueueMoveDirection::Up,
+                }),
+                &ctx(),
+            )
+            .ok
+        );
+        assert!(
+            apply_action(
+                &mut world,
+                &edit(proto::ProductionQueueEdit::SetPaused { paused: true }),
+                &ctx(),
+            )
+            .ok
+        );
+
+        let snapshot = build_snapshot(&world, ctx().now_ms, 1);
+        let building = snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == building_id)
+            .expect("physical Wood Cutter snapshot");
+        assert_eq!(
+            building.available_recipes,
+            [crate::world_tick::WOOD_CUTTER_RECIPE_ID]
+        );
+        assert_eq!(
+            building
+                .production_queue
+                .iter()
+                .map(|entry| (entry.recipe_id.as_str(), entry.repeat))
+                .collect::<Vec<_>>(),
+            [
+                (crate::world_tick::WOOD_CUTTER_RECIPE_ID, false),
+                (crate::world_tick::WOOD_CUTTER_RECIPE_ID, true),
+            ]
+        );
+        assert!(building.production_paused);
+        assert_eq!(
+            building.input_inventory,
+            [proto::ResourceStackSnapshot {
+                kind: proto::ResourceKind::Logs,
+                amount: 5.0,
+            }]
+        );
+        assert_eq!(
+            building.output_inventory,
+            [proto::ResourceStackSnapshot {
+                kind: proto::ResourceKind::Planks,
+                amount: 1.0,
+            }]
+        );
+        assert_eq!(building.production_block_reason.as_deref(), Some("paused"));
+        assert_eq!(building.required_recipe_study, None);
     }
 
     #[test]

@@ -55,16 +55,18 @@ every workshop remains an open-top, function-readable map station.
   instances are the eventual condition/identity authority. New crafting must not create two
   independent inventories for one physical object.
 - One assigned cat advances one selected recipe. Woodworking, Smithy, Clothier, Tannery, and every
-  future bench must use the same ordered/repeatable/pausable queue contract as the four completed
+  future bench must use the same ordered/repeatable/pausable queue contract as the five completed
   physical processors.
 
 The C2.0 scaffold gives all eleven maintained station recipes stable data-owned descriptors,
 canonical input/output resource sets, deterministic default queues, and exact catalog-derived
-availability. The six remaining benches still execute their old aggregate/parallel timers and
-report `aggregate_timer_compatibility`; queue edits and pause state are persisted future intent,
-not physical execution yet. Rules-v0 metadata is grandfathered. This descriptor slice does not
-complete the station-local route requirement above or add the separate additive trade-craft timers
-to the selected queue.
+availability. C2.1 completes Wood Cutter's five-Logs-to-one-Plank physical route and makes its
+ordered/repeatable/pausable selected queue authoritative. This baseline recipe, Stone Prep's
+`stone_to_blocks`, and Woodworking's `planks_and_blocks_to_tools` are founding-available in fresh
+rules-v1 colonies; their studies gate later recipes. Rules-v0 saves remain grandfathered. The other five benches still execute
+their old aggregate/parallel timers and report `aggregate_timer_compatibility`; their queue edits
+remain persisted future intent until each follows the Wood Cutter's reusable local-input/work/
+local-output/delivery seam. Separate additive trade-craft timers are not selected queue recipes.
 
 ## Implemented finite-item condition contract
 

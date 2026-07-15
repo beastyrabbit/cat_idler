@@ -2761,6 +2761,11 @@ mod tests {
                 cat_sim::types::BuildingType::Smelter,
                 52,
             ),
+            (
+                "guidance-wood-cutter",
+                cat_sim::types::BuildingType::WoodCutter,
+                56,
+            ),
         ] {
             world.colonies[0]
                 .buildings
@@ -2781,6 +2786,10 @@ mod tests {
             ("guidance-mill", cat_sim::world_tick::MILL_RECIPE_ID),
             ("guidance-workshop", cat_sim::world_tick::WORKSHOP_RECIPE_ID),
             ("guidance-smelter", cat_sim::world_tick::SMELTER_RECIPE_ID),
+            (
+                "guidance-wood-cutter",
+                cat_sim::world_tick::WOOD_CUTTER_RECIPE_ID,
+            ),
         ];
         let conn = Connection::open(&path).expect("open guidance database");
         persistence::init_schema(&conn).expect("init guidance database");
@@ -2833,6 +2842,9 @@ mod tests {
             None,
             "many signed player purchases in one real day must not consume the Leader clock"
         );
+        // Model a second ordinary player burst after the research-tree shopping burst.
+        *state.rate_limiter.lock().await =
+            RateLimiter::new(ACTION_LIMIT_MAX, ACTION_LIMIT_WINDOW_MS);
 
         let preference = ClientAction::SetCatLaborPreference {
             session_id: signed.session_id.clone(),
@@ -2844,6 +2856,22 @@ mod tests {
         };
         let result = send_action(&state, &mut connection, &preference).await;
         assert!(result.result.ok, "signed preference failed: {result:?}");
+        let result = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::AssignWorker {
+                session_id: signed.session_id.clone(),
+                nickname: "Guide".to_owned(),
+                sig: signed.sig.clone(),
+                cat_id: cat_id.clone(),
+                building_id: Some("guidance-wood-cutter".to_owned()),
+            },
+        )
+        .await;
+        assert!(
+            result.result.ok,
+            "signed Wood Cutter assignment failed: {result:?}"
+        );
         for (index, (building_id, recipe_id)) in station_recipes.iter().enumerate() {
             let action = ClientAction::EditProductionQueue {
                 session_id: signed.session_id.clone(),
@@ -2911,6 +2939,9 @@ mod tests {
             assert_eq!(building.production_queue[0].recipe_id, *recipe_id);
             assert_eq!(building.production_queue[0].repeat, index >= 2);
             assert_eq!(building.production_paused, index < 2);
+            if *building_id == "guidance-wood-cutter" {
+                assert_eq!(building.assigned_cat.as_deref(), Some(cat_id.as_str()));
+            }
         }
         for study in [
             "carpentry_preparation",

@@ -1244,6 +1244,9 @@ const UI_GAP_TIGHT: f32 = 3.0;
 const UI_RADIUS: f32 = 6.0;
 const UI_BORDER_W: f32 = 2.5;
 const UI_BTN_H: f32 = 30.0;
+const MINIMAP_PANEL_WIDTH: f32 = 168.0 + 2.0 * UI_GAP + 2.0 * UI_BORDER_W;
+const BUILDING_INSPECTOR_WIDTH: f32 = 300.0;
+const RIGHT_PANEL_MARGIN: f32 = 10.0;
 /// Wide windows fit the toolbar in three button lines (one wrapped tool row and
 /// two action lines), including row gaps, frame padding, and screen margin.
 const WIDE_BOTTOM_BAR_FOOTPRINT: f32 = 3.0 * UI_BTN_H + 4.0 * UI_GAP + 2.0 * UI_BORDER_W + 10.0;
@@ -3070,8 +3073,11 @@ pub fn run() {
                     select_cat,
                     select_building,
                     close_inspectors_on_esc,
-                    update_building_inspector,
-                    update_station_queue_controls.after(update_building_inspector),
+                    (
+                        update_building_inspector,
+                        update_station_queue_controls.after(update_building_inspector),
+                        position_minimap_around_building_inspector.after(update_building_inspector),
+                    ),
                     handle_station_queue_buttons,
                     update_remove_panel,
                     handle_remove_button,
@@ -3155,6 +3161,27 @@ pub fn run() {
             ),
         )
         .run();
+}
+
+fn minimap_right_offset(building_selected: bool) -> f32 {
+    if building_selected {
+        RIGHT_PANEL_MARGIN + BUILDING_INSPECTOR_WIDTH + UI_GAP
+    } else {
+        RIGHT_PANEL_MARGIN
+    }
+}
+
+fn position_minimap_around_building_inspector(
+    selection: Res<BuildingSelection>,
+    mut minimap: Query<&mut Node, With<MinimapPanel>>,
+) {
+    if !selection.is_changed() {
+        return;
+    }
+    let Ok(mut node) = minimap.single_mut() else {
+        return;
+    };
+    node.right = Val::Px(minimap_right_offset(selection.selected.is_some()));
 }
 
 /// Configure the game window for either a native surface or the browser canvas.
@@ -3677,10 +3704,10 @@ fn setup(
     commands
         .spawn((
             Node {
-                right: Val::Px(10.0),
+                right: Val::Px(RIGHT_PANEL_MARGIN),
                 // Clear the two-row command bar at 768px-high windows.
                 bottom: Val::Px(BOTTOM_OVERLAY_CLEARANCE),
-                ..ui_panel_node(Val::Px(168.0 + 2.0 * UI_GAP + 2.0 * UI_BORDER_W))
+                ..ui_panel_node(Val::Px(MINIMAP_PANEL_WIDTH))
             },
             GlobalZIndex(70),
             ui_panel_frame(),
@@ -4234,9 +4261,9 @@ fn setup(
     commands
         .spawn((
             Node {
-                right: Val::Px(10.0),
+                right: Val::Px(RIGHT_PANEL_MARGIN),
                 top: Val::Px(52.0),
-                ..ui_panel_node(Val::Px(300.0))
+                ..ui_panel_node(Val::Px(BUILDING_INSPECTOR_WIDTH))
             },
             ui_panel_frame(),
             BuildingInspectorPanel,
@@ -11600,6 +11627,24 @@ mod tests {
         const { assert!(HUD_RESOURCE_PILL_HEIGHT <= 20.0) };
     }
 
+    #[test]
+    fn selected_building_moves_minimap_beside_inspector_at_1024_width() {
+        assert_eq!(minimap_right_offset(false), RIGHT_PANEL_MARGIN);
+        assert_eq!(
+            minimap_right_offset(true),
+            RIGHT_PANEL_MARGIN + BUILDING_INSPECTOR_WIDTH + UI_GAP
+        );
+        let viewport_width = 1024.0;
+        let inspector_left = viewport_width - RIGHT_PANEL_MARGIN - BUILDING_INSPECTOR_WIDTH;
+        let minimap_right = viewport_width - minimap_right_offset(true);
+        let minimap_left = minimap_right - MINIMAP_PANEL_WIDTH;
+        assert!(minimap_left >= 0.0);
+        assert!(
+            minimap_right + UI_GAP <= inspector_left,
+            "minimap {minimap_left}..{minimap_right} overlaps inspector from {inspector_left}"
+        );
+    }
+
     fn village_colony(id: &str, name: &str, population: u32, status: &str) -> ColonySnapshot {
         serde_json::from_value(serde_json::json!({
             "id": id,
@@ -14420,6 +14465,13 @@ mod tests {
             "flour and grain cargo must remain visually distinct"
         );
         for (building_type, recipe, input_kind, output_kind, carrying_kind) in [
+            (
+                BuildingType::WoodCutter,
+                "logs_to_planks",
+                ResourceKind::Logs,
+                ResourceKind::Planks,
+                CarryingKind::Planks,
+            ),
             (
                 BuildingType::Workshop,
                 "materials_to_refined",

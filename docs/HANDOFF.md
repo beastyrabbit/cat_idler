@@ -50,11 +50,11 @@ Verified foundations include:
   automation and rituals remain Loremaster-owned. Eleven maintained recipe IDs now have one
   data-owned station descriptor, canonical input/output resource domains, deterministic default
   queues, and exact catalog ownership metadata. Four preparation studies gate the physical
-  Mill/Sawmill/Workshop/Smelter queues, while Textiles and the two Smithy design studies enforce
-  four aggregate processor recipes. Carpentry Staples, Stonecraft Preparation, and Toolmaking
-  Preparation own the new Wood Cutter, Stone Prep, and Woodworking descriptor entries, but those
-  three aggregate compatibility timers deliberately remain behavior-unchanged until their physical
-  route slices land; rules-v0 metadata remains grandfathered. The other 93 generated recipe IDs and
+  Mill/Sawmill/Workshop/Smelter queues, while Textiles and the two Smithy design studies enforce four
+  aggregate processor recipes. The three founding-bench baseline recipes are explicitly available
+  without study; Carpentry, Stonecraft, and Toolmaking studies gate later recipes. Stone Prep and
+  Woodworking aggregate compatibility timers deliberately remain behavior-unchanged until their physical route slices land; rules-v0 metadata
+  remains grandfathered. The other 93 generated recipe IDs and
   all 64 generated resource IDs remain incomplete. Sawmill→Gather Logs is the
   sole catalog job entitlement; founding water/scouting, manual research, and Barracks training
   remain available without false job payloads. Research Hut is explicitly founding-placeable;
@@ -136,10 +136,10 @@ so a correct scout route cannot conceal a missing founding dispatch.
    Final gates pass 1,169 simulation, 43 protocol, 82 server, and 134 client tests plus strict
    Clippy for all four touched crates.
    All six now own stable recipe descriptors, canonical resource sets, deterministic default queues,
-   selected-recipe research/block metadata, and the generic persisted queue surface. Their snapshots
-   explicitly report `aggregate_timer_compatibility`; queue edits and pause state do not yet replace
-   the existing aggregate timers. Next convert Wood Cutter, Stone Prep, Woodworking, Clothier,
-   Tannery, and Smithy to station-local
+   selected-recipe research/block metadata, and the generic persisted queue surface. Wood Cutter is
+   the first C2 conversion: its Logs→Planks queue owns finite local input/output, physical transit,
+   selected ordered/repeatable/pausable work, and final-delivery credit. Next convert Stone Prep,
+   Woodworking, Clothier, Tannery, and Smithy to station-local
    input/work/output routes with one worker advancing one selected ordered/repeatable/pausable
    recipe. Preserve the now-verified rule that the three P16 founding benches need no placement
    study and that future studies gate recipes instead. Migrate tools/weapons/armor toward finite
@@ -150,12 +150,13 @@ so a correct scout route cannot conceal a missing founding dispatch.
    Keep paid-scaffold recovery and exact type-local escalation intact.
 
    The finite founding storehouse and complete physical
-   logs→Sawmill→lumber, grain→Mill→flour+food, Materials→Workshop→Refined, and
+   logs→Wood Cutter→planks, logs→Sawmill→lumber, grain→Mill→flour+food,
+   Materials→Workshop→Refined, and
    Ore→Smelter→Metal routes are verified, including station-local
    ledgers, transit reservation, delivery-before-credit, death conservation, restart persistence,
    real editable queues, and live inspectors.
    Exterior farming now follows the same physical truth through plot work, bounded baskets, local
-   handoff, and storage delivery. Steward-managed exact-resource piles now feed all four physical
+   handoff, and storage delivery. Steward-managed exact-resource piles now feed all five physical
    processors through conserved balancing trips without consuming the player's designation budget.
    Fresh player and Leader scaffolds use the same conserved source→transit→scaffold contract and
    do not begin timed work until the pinned bill arrives.
@@ -165,7 +166,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
    Keep future offer/block metadata from copying hidden exact totals or recreating an equality
    oracle. All 19
    maintained labor skills have truthful gain sources, bounded effects, persistence,
-   and inspector visibility. Signed per-cat preferences and all four physical processors' real
+   and inspector visibility. Signed per-cat preferences and all five physical processors' real
    editable queues are live; extend the generic queue control as additional physical recipes land.
    Preserve the verified tool productivity, type-local escalating costs, shrine faucets, and
    research pacing in balance campaigns. The physical offering decision threshold is 20 Supplies
@@ -210,7 +211,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
    extending physical logistics to the remaining workshops. Item durability now has a real
    wear/break/repair consumer. Food Storage, Water Bowl, and Smithy capacity studies are now
    target-correct across clamp, physical routing, snapshot, trade, and persistence. Keep the other
-   22 generated `*_stores` studies and the fixed 10-unit Mill/Sawmill/Workshop/Smelter local stores
+   22 generated `*_stores` studies and the fixed 10-unit Mill/Sawmill/Wood Cutter/Workshop/Smelter local stores
    explicitly open until each has a real physical domain. Then turn the remaining registry-only
    research payloads (93 generated-only recipes, 64 resources, and 25 worker-slot modifiers) into
    observable behavior without advertising IDs that have no runtime object. Preserve the

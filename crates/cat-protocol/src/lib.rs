@@ -1173,13 +1173,13 @@ pub struct BuildingSnapshot {
     pub production_output: Option<String>,
     /// Resource units physically in flight toward this building right now — the live sum
     /// of carried cargo whose haul destination resolves to this building's tile (see
-    /// `cat_sim::world_tick::building_inbound_haul`). Physical Mill/Sawmill input
+    /// `cat_sim::world_tick::building_inbound_haul`). Physical Mill/Sawmill/Wood Cutter input
     /// carriers target their station work point; ordinary cargo targets a stockpile.
     /// Additive; defaults to 0.0 for older snapshots.
     #[serde(default)]
     pub inbound_haul: f64,
     /// Resource units physically departing this building in carried cargo. Physical
-    /// Mill/Sawmill outputs remain uncredited until this cargo reaches storage.
+    /// Mill/Sawmill/Wood Cutter outputs remain uncredited until this cargo reaches storage.
     #[serde(default)]
     pub outbound_haul: f64,
     /// True station-local inputs already delivered to this building. These are not a

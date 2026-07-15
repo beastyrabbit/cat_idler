@@ -9,10 +9,10 @@ and any changed Bevy visuals have been verified.
 
 | Finding | Required correction | State |
 | --- | --- | --- |
-| Six maintained benches still bypass the physical station contract | Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Their C2.0 descriptor scaffold is live: stable recipe IDs, canonical resource domains, deterministic default queues, exact catalog availability, selected-recipe block reasons, rules-v0 grandfathering, and generic snapshot/persistence fields exist while `aggregate_timer_compatibility` truthfully marks the unchanged behavior. Next give each station local input/output/transit state and one-worker/one-selected-recipe advancement. Preserve every existing `BuildingType`, queue identity, and open-top visual identity. | in progress |
+| Five maintained benches still bypass the physical station contract | Stone Prep, Woodworking, Clothier, Tannery, and Smithy still consume colony-global aggregates and/or advance parallel hidden cycles. Their C2.0 descriptor scaffold is live, and Wood Cutter now demonstrates the shared station-local conversion seam. Next give each remaining station local input/output/transit state and one-worker/one-selected-recipe advancement. Preserve every existing `BuildingType`, queue identity, and open-top visual identity. | in progress |
 | Functional equipment has two incomplete authorities | Stable `tools`, `weapons`, and `armor` scalar fields coexist with finite weighted item units, while finished functional equipment recipes are incomplete. Keep the scalar IDs readable for old saves during migration, make finite item instances the eventual identity/condition authority, and prevent crafting, wearing, repair, trade, or stockpile projection from double-counting one object. | queued |
-| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
-| Research recipe/resource breadth remains incomplete | Eleven maintained recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. The four physical queue recipes plus four existing aggregate textile/Smithy recipes enforce their rules-v1 entitlement before work; old/missing rules-v0 saves are grandfathered. Carpentry Staples, Stonecraft Preparation, and Toolmaking Preparation own the new Wood Cutter, Stone Prep, and Woodworking descriptors, but those behavior-neutral queue entries do not yet gate their compatibility aggregate timers. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
+| Most building-capacity studies still have no physical storage domain | Food Storage, Water Bowl, and Smithy capacity studies are live and target-correct. The other 22 generated `*_stores` studies remain deterministic no-ops because those buildings do not own a modeled storage domain. Mill, Sawmill, Wood Cutter, Workshop, and Smelter station-local input/output stores also remain fixed at 10 rather than consuming capacity research. Model a real physical domain before activating each remaining study. | queued |
+| Research recipe/resource breadth remains incomplete | Eleven maintained recipe IDs now have data-owned station descriptors and exact catalog ownership metadata. Four physical queue recipes plus four aggregate textile/Smithy recipes enforce their rules-v1 entitlement before work; old/missing rules-v0 saves are grandfathered. The Wood Cutter, Stone Prep, and Woodworking baseline recipes are explicitly founding-available; their catalog studies are reserved for later recipes and do not block this early chain. The other 93 generated recipe IDs and all 64 generated resource IDs still have no authoritative consumer. Add only sourced resource/recipe breadth. | in progress |
 | Worker-slot studies have no staffing consumer | Twenty-five `worker_slots +1` effects resolve, but buildings, persistence, automation, protocol, and UI still support exactly one assigned cat. Implement real multi-worker ownership and physical work before presenting these studies as effective. | queued |
 | Shared terrain is duplicated per colony | Terrain, ecology, roads, wear, depletion, and fish are colony-owned, so two villages at the same coordinates do not inhabit one authoritative mutable world. Move canonical spatial state to world scope while keeping fog and learned contact private. | queued |
 | Inter-village trade is nonphysical | Contact summaries and atomic scalar barter exist, but cats do not meet, carry items, form caravans, or travel trade routes. Preserve knowledge-blind scouting and shrine-return discovery while adding physical exchange. | queued |
@@ -40,6 +40,39 @@ symbols rather than sharing a generic wood mark.
 paths, missing files, and non-PNG files. The client's own exact 1024×768 framebuffer at
 `/tmp/semantic-cargo-icons-1024.png` shows ten simultaneous truthful loads, including Food, Fish,
 Water, Stone, Logs, Lumber, Planks, Grain, Bone, and Metal, without fallback squares or clipping.
+
+## 2026-07-15 — Wood Cutter is a conserved physical Logs-to-Planks station
+
+**Problem:** The founding Wood Cutter minted Planks from the colony-wide Supplies pool through a
+hidden aggregate timer. Its visible `logs_to_planks` queue, local inventory fields, and
+queue did not control work, so the canonical production table and
+inspector could not tell the truth about any particular batch.
+
+**Fix:** One assigned Process worker now carries exactly five finite Logs from an accepting pile to
+the Wood Cutter input, performs one 600-game-second selected queue batch, leaves one Plank in local
+output, and physically delivers it before aggregate credit. Ordered repeat, one-shot, pause, empty,
+and locked queue states are authoritative. Full output storage suspends without loss; worker death
+and building removal leave every unit recoverable. The baseline recipe is founding-available in
+fresh rules-v1 colonies; Carpentry studies gate later recipes, not this early chain. A monotonic
+`physicalStationRulesVersion` migration seeds an empty pre-column C2.0 queue once. That legacy shape
+cannot distinguish default-empty from intentionally-empty future intent; after the version is set,
+a player-cleared queue stays empty across every restart.
+
+**Evidence:** Focused conservation tests cover no-early-credit, finite headroom, tool wear, truthful
+Process/Haul XP, one-worker continuity across fetch/work/output, and a stable full-route projection
+at 1s/5s/60s cadence. Queue controls, death/removal, SQLite restart, and signed HMAC assignment plus
+queue restoration are covered. A deterministic unattended founding run banks Planks under Forester
+automation. A separate signed player campaign chooses the worker and repeating recipe, orders a real
+tree harvest, observes the stump, Logs in paws and station input, local Planks, and final finite-store
+delivery. The client's own exact 1024×768 framebuffer at
+`/tmp/physical-wood-cutter-1024.png` shows the selected station's five local Logs, one local Plank,
+one outbound Plank, paused queue, all seven queue controls, a nonoverlapping minimap, and Whiskers
+visibly carrying the semantic Planks glyph after the connection toast clears.
+
+The final acceptance gate passed all 1,460 four-crate tests (one intentionally skipped), strict
+all-target Clippy for `cat-sim`, `cat-protocol`, `cat-server`, and `cat-client`, formatting, and
+diff hygiene. That gate also corrected adjacent legacy fixtures so Supplies can never silently
+fund the physical Wood Cutter in tests or production.
 
 ## 2026-07-15 — All 25 HUD resources use semantic tracked icons
 
@@ -266,7 +299,7 @@ recipe entitlement, not permission to place another bench.
 each bench while retaining the exact 167 Building / 167 RecipeResource / 166 Upgrade split and the
 first durability payload. Deterministic signed personal/communal plans, exact scaffold payment,
 reservation/overlap and mutation-free denial, authenticated server HMAC, and SQLite restart tests
-cover placement without altering current aggregate production. The remaining six station-local
+cover placement without altering current aggregate production. The remaining five station-local
 queues and finite-equipment authority work stays open below.
 
 ## 2026-07-15 — Prosperity migrants physically enter and leave through the gate

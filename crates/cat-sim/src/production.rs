@@ -86,14 +86,14 @@ pub fn fibre_forage_yield(alive_cat_count: f64, elapsed_sec: f64) -> f64 {
 // --- P12.4b raw-material refinement chains (P16 blueprint workshops) ---
 //
 // The wood-cutter and stone-prep shops share the refinement-workshop cadence
-// (5 raw materials → 1 refined unit / 600s), so both reuse [`advance_workshop`]
+// (5 raw units → 1 refined unit / 600s), so both reuse [`advance_workshop`]
 // at the tick site — crediting planks and blocks respectively instead of the
 // generic `refined` good. The woodworking shop is a two-input crafter
 // (planks + blocks → tools) and has its own [`advance_woodworking`] cycle,
 // mirroring the smithy's twin-input shape.
 
-/// Raw materials one wood-cutter cycle consumes (aliased to the workshop rate).
-pub const WOODCUTTER_MATERIALS_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
+/// Raw Logs one wood-cutter cycle consumes (aliased to the workshop rate).
+pub const WOODCUTTER_LOGS_PER_CYCLE: f64 = WORKSHOP_MATERIALS_PER_CYCLE;
 /// Planks one wood-cutter cycle produces.
 pub const WOODCUTTER_PLANKS_PER_CYCLE: f64 = WORKSHOP_REFINED_PER_CYCLE;
 /// Raw materials one stone-prep cycle consumes.
@@ -792,7 +792,7 @@ mod tests {
         assert_f64_bits(super::WOODWORKING_TOOLS_PER_CYCLE, 1.0, "tools per cycle");
         assert_f64_bits(super::WOODWORKING_CYCLE_SEC, 600.0, "cycle seconds");
         // The wood-cutter / stone-prep aliases inherit the refinement-workshop rate.
-        assert_f64_bits(super::WOODCUTTER_MATERIALS_PER_CYCLE, 5.0, "woodcutter in");
+        assert_f64_bits(super::WOODCUTTER_LOGS_PER_CYCLE, 5.0, "woodcutter in");
         assert_f64_bits(super::WOODCUTTER_PLANKS_PER_CYCLE, 1.0, "woodcutter out");
         assert_f64_bits(super::STONEPREP_STONE_PER_CYCLE, 5.0, "stoneprep in");
         assert_f64_bits(super::STONEPREP_BLOCKS_PER_CYCLE, 1.0, "stoneprep out");

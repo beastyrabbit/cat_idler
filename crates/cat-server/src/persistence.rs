@@ -182,6 +182,7 @@ pub fn init_schema(conn: &Connection) -> rusqlite::Result<()> {
             productionPaused INTEGER NOT NULL DEFAULT 0,
             productionQueueInitialized INTEGER NOT NULL DEFAULT 0,
             physicalRefinerQueueInitialized INTEGER NOT NULL DEFAULT 0,
+            physicalStationRulesVersion INTEGER NOT NULL DEFAULT 0,
             constructionCargo TEXT,
             -- Buildings are colony-scoped: type-derived ids (e.g. "shrine") are
             -- only unique within a colony, so the key is (colonyId, id).
@@ -341,6 +342,11 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
             "physicalRefinerQueueInitialized",
             "INTEGER NOT NULL DEFAULT 0",
         ),
+        (
+            "buildings",
+            "physicalStationRulesVersion",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
         ("buildings", "constructionCargo", "TEXT"),
     ];
     for (table, column, decl) in ADDITIONS {
@@ -408,6 +414,28 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
         "UPDATE buildings
          SET physicalRefinerQueueInitialized = 1
          WHERE physicalRefinerQueueInitialized = 0",
+        [],
+    )?;
+    // Wood Cutter became physical after the shared descriptor queue had already
+    // reached persisted saves. Seed its canonical repeating recipe exactly once;
+    // later player-cleared queues remain empty across every restart.
+    if column_exists(conn, "buildings", "type")? {
+        conn.execute(
+            "UPDATE buildings
+             SET productionQueue = ?1
+             WHERE type = 'wood_cutter'
+               AND physicalStationRulesVersion < 1
+               AND (productionQueue IS NULL OR productionQueue = '[]')",
+            [
+                serde_json::to_string(&default_production_queue(BuildingType::WoodCutter))
+                    .map_err(to_sql_json)?,
+            ],
+        )?;
+    }
+    conn.execute(
+        "UPDATE buildings
+         SET physicalStationRulesVersion = 1
+         WHERE physicalStationRulesVersion < 1",
         [],
     )?;
     Ok(())
@@ -1089,8 +1117,9 @@ fn save_building(
             id, colonyId, type, level, position, constructionProgress,
             productionProgress, isComplete, assignedCatId, automatedOfficerRole,
             productionQueue, productionPaused, productionQueueInitialized,
-            physicalRefinerQueueInitialized, constructionCargo
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, ?13)",
+            physicalRefinerQueueInitialized, physicalStationRulesVersion,
+            constructionCargo
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, 1, ?13)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -2805,6 +2834,58 @@ mod tests {
     }
 
     #[test]
+    fn legacy_wood_cutter_queue_initializes_once_and_player_empty_stays_empty() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        init_schema(&conn).expect("schema");
+        conn.execute(
+            "INSERT INTO buildings (
+                id, colonyId, type, level, position, constructionProgress,
+                productionProgress, isComplete, productionQueue, productionPaused,
+                productionQueueInitialized, physicalRefinerQueueInitialized,
+                physicalStationRulesVersion
+             ) VALUES ('legacy-wood-cutter', 'colony-1', 'wood_cutter', 1, '{}',
+                 100, 0, 1, '[]', 0, 1, 1, 0)",
+            [],
+        )
+        .expect("legacy Wood Cutter row");
+        conn.execute_batch("ALTER TABLE buildings DROP COLUMN physicalStationRulesVersion;")
+            .expect("simulate pre-physical-Wood-Cutter schema");
+
+        migrate_add_missing_columns(&conn).expect("one-time Wood Cutter queue migration");
+        let (queue, initialized): (String, i64) = conn
+            .query_row(
+                "SELECT productionQueue, physicalStationRulesVersion
+                 FROM buildings WHERE id = 'legacy-wood-cutter'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
+            default_production_queue(BuildingType::WoodCutter)
+        );
+        assert_eq!(initialized, 1);
+
+        conn.execute(
+            "UPDATE buildings SET productionQueue = '[]' WHERE id = 'legacy-wood-cutter'",
+            [],
+        )
+        .expect("player clears Wood Cutter queue");
+        migrate_add_missing_columns(&conn).expect("idempotent restart");
+        let cleared: String = conn
+            .query_row(
+                "SELECT productionQueue FROM buildings WHERE id = 'legacy-wood-cutter'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            cleared, "[]",
+            "initialized empty queue remains player-owned"
+        );
+    }
+
+    #[test]
     fn mill_local_inventories_and_both_haul_directions_resume_exactly_after_restart() {
         let conn = open_database(":memory:").expect("database");
         let mut world = new_world(6_414);
@@ -2953,6 +3034,7 @@ mod tests {
             .clone();
         let workshop_id = "restart-workshop";
         let smelter_id = "restart-smelter";
+        let wood_cutter_id = "restart-wood-cutter";
         colony.buildings.extend([
             BuildingRuntime {
                 id: workshop_id.to_owned(),
@@ -2983,6 +3065,21 @@ mod tests {
                 }],
                 ..BuildingRuntime::default()
             },
+            BuildingRuntime {
+                id: wood_cutter_id.to_owned(),
+                building_type: BuildingType::WoodCutter,
+                position: TilePos { x: 30, y: 18 },
+                is_complete: true,
+                construction_progress: 100,
+                production_progress: 271.75,
+                assigned_cat: Some(colony.cats[2].id.clone()),
+                production_queue: vec![ProductionQueueEntry {
+                    recipe_id: cat_sim::world_tick::WOOD_CUTTER_RECIPE_ID.to_owned(),
+                    repeat: false,
+                }],
+                production_paused: true,
+                ..BuildingRuntime::default()
+            },
         ]);
         let rect = ZoneRect {
             x1: 18,
@@ -2995,6 +3092,9 @@ mod tests {
         let workshop_transit = cat_sim::stockpiles::station_transit_id(workshop_id);
         let smelter_input = cat_sim::stockpiles::station_input_id(smelter_id);
         let smelter_output = cat_sim::stockpiles::station_output_id(smelter_id);
+        let wood_cutter_input = cat_sim::stockpiles::station_input_id(wood_cutter_id);
+        let wood_cutter_output = cat_sim::stockpiles::station_output_id(wood_cutter_id);
+        let wood_cutter_transit = cat_sim::stockpiles::station_transit_id(wood_cutter_id);
         let orphan_output = cat_sim::stockpiles::station_output_id("demolished-smelter");
         for (id, accepts, contents) in [
             (
@@ -3048,6 +3148,36 @@ mod tests {
                 },
             ),
             (
+                wood_cutter_input.clone(),
+                [cat_sim::stockpiles::ResourceKind::Logs]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    logs: 5.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                wood_cutter_output.clone(),
+                [cat_sim::stockpiles::ResourceKind::Planks]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    planks: 1.0,
+                    ..Resources::default()
+                },
+            ),
+            (
+                wood_cutter_transit.clone(),
+                [cat_sim::stockpiles::ResourceKind::Logs]
+                    .into_iter()
+                    .collect(),
+                Resources {
+                    logs: 2.0,
+                    ..Resources::default()
+                },
+            ),
+            (
                 orphan_output.clone(),
                 [cat_sim::stockpiles::ResourceKind::Metal]
                     .into_iter()
@@ -3076,6 +3206,12 @@ mod tests {
             amount: 1.0,
             job_ended_at: 10_000,
             source_gather_spot: Some(format!("station-out|{smelter_id}|{general_id}")),
+        });
+        colony.cats[2].carrying = Some(Carrying {
+            kind: CarryingKind::Logs,
+            amount: 2.0,
+            job_ended_at: 10_000,
+            source_gather_spot: Some(format!("station-in|{wood_cutter_id}|{wood_cutter_transit}")),
         });
         world.colonies.push(colony);
 
@@ -3107,6 +3243,21 @@ mod tests {
                 smelter_output.as_str(),
                 cat_sim::stockpiles::ResourceKind::Metal,
                 1.0,
+            ),
+            (
+                wood_cutter_input.as_str(),
+                cat_sim::stockpiles::ResourceKind::Logs,
+                5.0,
+            ),
+            (
+                wood_cutter_output.as_str(),
+                cat_sim::stockpiles::ResourceKind::Planks,
+                1.0,
+            ),
+            (
+                wood_cutter_transit.as_str(),
+                cat_sim::stockpiles::ResourceKind::Logs,
+                2.0,
             ),
             (
                 orphan_output.as_str(),
@@ -3151,6 +3302,20 @@ mod tests {
                 repeat: true,
             }]
         );
+        let wood_cutter = colony
+            .buildings
+            .iter()
+            .find(|building| building.id == wood_cutter_id)
+            .unwrap();
+        assert_eq!(wood_cutter.production_progress, 271.75);
+        assert_eq!(
+            wood_cutter.production_queue,
+            vec![ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::WOOD_CUTTER_RECIPE_ID.to_owned(),
+                repeat: false,
+            }]
+        );
+        assert!(wood_cutter.production_paused);
         assert_eq!(
             colony.cats[0]
                 .carrying
@@ -3168,6 +3333,15 @@ mod tests {
                 .source_gather_spot
                 .as_deref(),
             Some(format!("station-out|{smelter_id}|{general_id}").as_str())
+        );
+        assert_eq!(
+            colony.cats[2]
+                .carrying
+                .as_ref()
+                .unwrap()
+                .source_gather_spot
+                .as_deref(),
+            Some(format!("station-in|{wood_cutter_id}|{wood_cutter_transit}").as_str())
         );
     }
 
@@ -3570,6 +3744,7 @@ mod tests {
             ("buildings", "automatedOfficerRole"),
             ("buildings", "productionQueueInitialized"),
             ("buildings", "physicalRefinerQueueInitialized"),
+            ("buildings", "physicalStationRulesVersion"),
         ] {
             assert!(!column_exists(&conn, table, column).unwrap());
         }
@@ -3603,6 +3778,7 @@ mod tests {
             ("buildings", "automatedOfficerRole"),
             ("buildings", "productionQueueInitialized"),
             ("buildings", "physicalRefinerQueueInitialized"),
+            ("buildings", "physicalStationRulesVersion"),
         ] {
             assert!(
                 column_exists(&conn, table, column).unwrap(),
