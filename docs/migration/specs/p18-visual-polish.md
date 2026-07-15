@@ -44,4 +44,4 @@ panels**, ornate borders, **icon-driven** readouts, clear tabbed menus, banners/
 
 ## Also here (from P15)
 - **Better wall asset** (palisade could read nicer) and a cleaner top-down cat search may be
-  folded into future asset polish; the current P&W sheet remains the selected runtime art.
+  folded into future asset polish; the current cat sheet remains the selected runtime art.

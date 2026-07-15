@@ -100,8 +100,8 @@ Two-tier inspector, driven by the cursor:
 ## Assets
 - **Better wall asset** — the palisade could read better; source a nicer fence/wall (Roguelike/
   Tiny Town).
-- **Cleaner top-down 2D cat?** Current `cat-sheet` is near-top-down P&W. A future art-polish
-  pass may evaluate alternatives, but P&W remains the selected runtime sheet.
+- **Cleaner top-down 2D cat?** The current `cat-sheet` is near-top-down. A future art-polish
+  pass may evaluate alternatives, but it remains the selected runtime sheet.
 
 ## Existing foundations (verify before extending)
 - Cat movement, chunked-infinite terrain, authoritative multi-colony state, and term elections
