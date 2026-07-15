@@ -2558,6 +2558,35 @@ mod tests {
         )
         .await;
         assert!(released.result.ok, "signed release failed: {released:?}");
+        {
+            let mut live = restarted.world.lock().await;
+            let stale_reported = live.colonies[0].stock_ledger.reported.clone();
+            let stale_last_counted = live.colonies[0].stock_ledger.last_counted;
+            live.colonies[0].resources.food -= 1.0;
+            live.colonies[0]
+                .stockpiles
+                .iter_mut()
+                .find(|pile| pile.is_general_storehouse())
+                .expect("founding general storehouse")
+                .contents
+                .food -= 1.0;
+
+            // This crosses the former 30-second unstaffed recount boundary. The signed
+            // release must leave the office genuinely vacant: no authoritative stock may
+            // leak into the reports without another physical pile visit.
+            let _ = cat_sim::world_tick::world_tick(&mut live, 1_033_000);
+            assert_eq!(live.colonies[0].stock_ledger.reported, stale_reported);
+            assert_eq!(
+                live.colonies[0].stock_ledger.last_counted,
+                stale_last_counted
+            );
+            assert!(live.colonies[0].stock_ledger.active_round.is_none());
+            assert!(
+                !live.colonies[0]
+                    .stock_ledger
+                    .is_accurate(&live.colonies[0].resources)
+            );
+        }
         drop(restarted);
         fs::remove_file(path).expect("remove accountant database");
     }

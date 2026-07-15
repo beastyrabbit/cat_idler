@@ -8870,9 +8870,8 @@ fn hud_treasury_line(items: &[ItemStackSnapshot]) -> String {
     format!("Treasury: {}g", treasury_total(items))
 }
 
-/// Compact HUD summary of the Accountant's reported stock ledger. When a staffed
-/// Accounting Tent keeps it exact the totals show plainly; otherwise they lag
-/// reality and are marked stale (with a `~` prefix + a hint to build the tent).
+/// Compact HUD summary of the Accountant's reported stock ledger. Reports become exact
+/// only after physical pile counts; until then they are marked stale with a `~` prefix.
 fn ledger_hud_text(ledger: &StockLedgerSnapshot) -> String {
     let r = &ledger.reported;
     let totals = if ledger.accurate {

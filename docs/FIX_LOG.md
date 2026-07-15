@@ -199,11 +199,21 @@ returns. Only the visited pile's report changes; blocked piles remain stale, top
 replanned, and cancellation never changes physical inventory. Active routes and reports persist
 through SQLite restart. Existing aggregate-only saves migrate additively.
 
+**Vacancy correction (2026-07-15):** The first physical-round slice retained a hidden
+30-game-second fallback that copied authoritative colony resources into every report whenever no
+tent worker was assigned. That contradicted both the manual-before-officer design and the physical
+bookkeeper contract. The fallback is removed: an unbuilt tent, a vacant Accountant office, or a
+completed but unassigned tent may remain stale indefinitely. Founding and extinction recovery still
+seed one exact baseline, and aggregate-only legacy JSON attributes its already-persisted historical
+total to the founding general storehouse once without sampling current pile contents.
+
 **Player visibility:** Resource HUD, Goods ledger, stockpile text, and inspectors use reported
 values and mark stale estimates with `~` or `uncounted`. The Accounting Tent inspector shows the
 active physical phase, target, reachable progress, and count dwell.
 
-**Evidence:** Unit, determinism, protocol compatibility, signed server action, persistence/restart,
-and client display tests pass across `cat-sim`, `cat-protocol`, `cat-server`, and `cat-client`.
-The booted client/server own-framebuffer at 1920×1080 was inspected and accepted with an active
-counting round and visibly stale HUD/ledger estimates.
+**Evidence:** Unit, determinism, protocol compatibility, signed assign/release server action,
+persistence/restart, one-shot and hourly 24-game-hour vacancy partitions, and client display tests
+pass across `cat-sim`, `cat-protocol`, `cat-server`, and `cat-client`. The booted client/server
+own-framebuffer at 1920×1080 was inspected and accepted with an active counting round and visibly
+stale HUD/ledger estimates; the 2026-07-15 recapture verifies the corrected indefinitely stale
+vacancy behavior.

@@ -1,9 +1,9 @@
 //! Physical colony stock accounting (P12.4a).
 //!
 //! [`crate::entities::Resources`] remains the authoritative economy.  This module stores
-//! only what the village has *reported*: an unattended colony receives an occasional slow
-//! background recount, while a staffed Accounting Tent updates one visible pile only after
-//! its bookkeeper has walked there and completed a count.
+//! only what the village has *reported*. A staffed Accounting Tent updates one visible pile
+//! only after its bookkeeper has walked there and completed a count; an unstaffed village's
+//! books remain stale rather than learning authoritative stock through a no-input shortcut.
 
 use std::collections::BTreeMap;
 
@@ -14,8 +14,8 @@ use crate::{
     stockpiles::{ResourceKind, Stockpile},
 };
 
-/// How long (ms of game time) an *unstaffed* ledger may go before its background recount.
-pub const UNSTAFFED_RECOUNT_INTERVAL_MS: i64 = 30_000;
+/// Idle time at the tent between staffed physical counting rounds.
+pub const ACCOUNTING_ROUND_INTERVAL_MS: i64 = 30_000;
 
 /// Persisted work required while standing at one pile.
 pub const PILE_COUNT_DWELL_MS: i64 = 5_000;
@@ -206,31 +206,9 @@ fn visible_piles(piles: &[Stockpile]) -> impl Iterator<Item = &Stockpile> {
     piles.iter().filter(|pile| !pile.is_station_local())
 }
 
-/// Preserve the explicitly designed slow no-input fallback. A staffed tent suppresses the
-/// background recount: its only fast updates come from physical pile visits.
-pub fn refresh_ledger(
-    ledger: &mut StockLedger,
-    resources: &Resources,
-    piles: &[Stockpile],
-    staffed: bool,
-    now_ms: i64,
-) -> bool {
-    ledger.migrate_pile_reports(piles);
-    let interval_elapsed =
-        now_ms.saturating_sub(ledger.last_counted) >= UNSTAFFED_RECOUNT_INTERVAL_MS;
-    if !staffed && interval_elapsed {
-        ledger.reported = resources.clone();
-        ledger.last_counted = now_ms;
-        ledger.replace_pile_reports(piles, now_ms);
-        true
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{StockLedger, UNSTAFFED_RECOUNT_INTERVAL_MS, refresh_ledger};
+    use super::StockLedger;
     use crate::{
         entities::Resources,
         stockpiles::{GENERAL_STOREHOUSE_ID, ResourceKind, Stockpile},
@@ -260,13 +238,17 @@ mod tests {
     }
 
     #[test]
-    fn staffed_tent_does_not_instantly_recount() {
+    fn existing_physical_reports_do_not_resample_current_contents_during_migration() {
         let piles = [pile(GENERAL_STOREHOUSE_ID, 175.0)];
         let mut ledger = StockLedger::counted_with_piles(&stock(100.0), &piles, 1_000);
-        let truth = stock(175.0);
 
-        assert!(!refresh_ledger(&mut ledger, &truth, &piles, true, 40_000));
+        ledger.migrate_pile_reports(&piles);
         assert_eq!(ledger.reported, stock(100.0));
+        assert_eq!(
+            ledger.pile_reports[GENERAL_STOREHOUSE_ID].reported,
+            stock(175.0),
+            "the existing report is retained byte-for-byte"
+        );
     }
 
     #[test]
@@ -298,25 +280,27 @@ mod tests {
     }
 
     #[test]
-    fn unstaffed_ledger_lags_then_background_recounts_every_pile() {
-        let piles = [pile("a", 175.0)];
+    fn legacy_migration_attributes_the_historical_report_once_without_resampling_truth() {
+        let mut piles = [pile(GENERAL_STOREHOUSE_ID, 175.0), pile("other", 25.0)];
         let mut ledger = StockLedger::counted(&stock(100.0), 1_000);
-        assert!(!refresh_ledger(
-            &mut ledger,
-            &stock(175.0),
-            &piles,
-            false,
-            6_000
-        ));
-        assert!(refresh_ledger(
-            &mut ledger,
-            &stock(175.0),
-            &piles,
-            false,
-            1_000 + UNSTAFFED_RECOUNT_INTERVAL_MS
-        ));
-        assert_eq!(ledger.reported.food, 175.0);
-        assert_eq!(ledger.pile_reports["a"].reported.food, 175.0);
+
+        ledger.migrate_pile_reports(&piles);
+        assert_eq!(ledger.reported.food, 100.0);
+        assert_eq!(
+            ledger.pile_reports[GENERAL_STOREHOUSE_ID].reported.food,
+            100.0
+        );
+        assert_eq!(ledger.pile_reports["other"].reported.food, 0.0);
+
+        piles[0].contents.food = 250.0;
+        piles[1].contents.food = 50.0;
+        ledger.migrate_pile_reports(&piles);
+        assert_eq!(ledger.reported.food, 100.0);
+        assert_eq!(
+            ledger.pile_reports[GENERAL_STOREHOUSE_ID].reported.food, 100.0,
+            "a repeated migration must not sample current unvisited contents"
+        );
+        assert_eq!(ledger.pile_reports["other"].reported.food, 0.0);
     }
 
     #[test]

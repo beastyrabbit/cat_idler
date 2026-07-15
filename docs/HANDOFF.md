@@ -84,7 +84,9 @@ Verified foundations include:
   counts each pile for five game-seconds, and returns to the tent. Per-pile and aggregate reports
   remain stale until that contact, blocked piles stay stale for a later round, and in-progress
   routes survive SQLite restart. The HUD, stockpile inspector, and Accounting Tent inspector expose
-  stale estimates and current round progress without leaking authoritative inventory totals.
+  stale estimates and current round progress without leaking authoritative inventory totals. No
+  tent, a vacant Accountant office, or an unassigned completed tent remains stale indefinitely;
+  there is no periodic authoritative fallback.
 
 The founding/housing integration replaced the archived five-cat loop and passed its full
 simulation, protocol, server, client, persistence, guided-action, determinism, and framebuffer
@@ -121,8 +123,8 @@ so a correct scout route cannot conceal a missing founding dispatch.
    handoff, and storage delivery. Steward-managed exact-resource piles now feed all four physical
    processors through conserved balancing trips without consuming the player's designation budget.
    Apply that contract to the remaining sources and workshops, then complete recipe/material
-   breadth. Physical Accountant rounds now keep reports truthful one visited pile at a
-   time. All 19 maintained labor skills have truthful gain sources, bounded effects, persistence,
+   breadth. Physical Accountant rounds now keep reports truthful one visited pile at a time, and
+   vacancy never performs a hidden recount. All 19 maintained labor skills have truthful gain sources, bounded effects, persistence,
    and inspector visibility. Signed per-cat preferences and all four physical processors' real
    editable queues are live; extend the generic queue control as additional physical recipes land.
    Preserve the verified tool productivity, type-local escalating costs, shrine faucets, and

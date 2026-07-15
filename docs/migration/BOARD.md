@@ -585,7 +585,8 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
 - **P12.4a/b workshop chains + Accountant direction** — workshop crafting covers
   planks/blocks/tools, exterior catnip/grain/herb plots, logging, Mill grain→flour→food, Sawmill
   logs→lumber, fibre/hide→cloth/leather, and ore→metal. A staffed Accounting Tent keeps the
-  aggregate ledger from physical per-pile reports; tools give a bounded
+  aggregate ledger from physical per-pile reports; vacant/unbuilt/unassigned accounting remains
+  stale indefinitely with no authoritative background recount; tools give a bounded
   construction/crafting/quarrying/hauling bonus and repeated building costs escalate per type.
   Mill, Sawmill, Workshop, and Smelter workers now path stockpile→station→stockpile with persisted
   local input/output, real editable queues, and no aggregate output credit before delivery.

@@ -39,8 +39,8 @@ use crate::{
         match_cats_to_slots_with_officers, officer_role_for,
     },
     ledger::{
-        AccountingPhase, AccountingRound, PILE_COUNT_DWELL_MS, StewardManagedPile, StockLedger,
-        UNSTAFFED_RECOUNT_INTERVAL_MS, refresh_ledger,
+        ACCOUNTING_ROUND_INTERVAL_MS, AccountingPhase, AccountingRound, PILE_COUNT_DWELL_MS,
+        StewardManagedPile, StockLedger,
     },
     life_sim::{
         BREEDING_ESTABLISHMENT_GAME_HOURS, ColonyBreedingState, GESTATION_GAME_HOURS, can_work,
@@ -255,8 +255,8 @@ pub struct ColonyRuntime {
     /// This survives removing/re-designating a fishing spot, so the player
     /// cannot refill a depleted habitat by repainting its bank.
     pub fish_habitats: BTreeMap<TilePos, stockpiles::FishPopulation>,
-    /// Reported stock ledger (P12.4a). A lagging *view* of `resources`; a staffed Accounting
-    /// Tent keeps it exact each tick, otherwise it recounts on an interval. Never affects the
+    /// Reported stock ledger (P12.4a). A lagging *view* of `resources`; only completed
+    /// physical pile counts refresh it after the exact founding report. Never affects the
     /// true `resources`.
     pub stock_ledger: StockLedger,
     /// DF-scale finite item ledger (P19). Distinct `(kind, material, quality)` stacks
@@ -7903,8 +7903,8 @@ fn phase_23_production(colony: &mut ColonyRuntime, gate: TickGate, world_seed: u
     recover_orphaned_station_stores(colony, gate);
 
     // P12.4a physical accounting. A manual or officer-staffed tent sends its worker on a
-    // durable tent → pile(s) → tent round. Without one, retain the deliberately slow
-    // background recount. Neither path mutates authoritative resources or pile contents.
+    // durable tent → pile(s) → tent round. Without one, the books remain stale. Neither
+    // path mutates authoritative resources or pile contents.
     advance_accounting_round(colony, gate, world_seed);
 }
 
@@ -8056,24 +8056,8 @@ fn advance_accounting_round(colony: &mut ColonyRuntime, gate: TickGate, world_se
     colony.stock_ledger.migrate_pile_reports(&colony.stockpiles);
     let Some((tent, worker_id)) = staffed_accounting_tent(colony) else {
         cancel_invalid_accounting_round(colony);
-        refresh_ledger(
-            &mut colony.stock_ledger,
-            &colony.resources,
-            &colony.stockpiles,
-            false,
-            gate.processed_through,
-        );
         return;
     };
-
-    // A staffed tent never receives the background whole-colony shortcut.
-    refresh_ledger(
-        &mut colony.stock_ledger,
-        &colony.resources,
-        &colony.stockpiles,
-        true,
-        gate.processed_through,
-    );
 
     let tent_point = station_work_point(&tent);
     let previous_round = colony.stock_ledger.active_round.take();
@@ -8179,7 +8163,7 @@ fn advance_accounting_round(colony: &mut ColonyRuntime, gate: TickGate, world_se
                     .dwell_elapsed_ms
                     .saturating_add(gate.elapsed_sec.saturating_mul(1_000));
                 if round.topology_signature != current_signature
-                    || round.dwell_elapsed_ms >= UNSTAFFED_RECOUNT_INTERVAL_MS
+                    || round.dwell_elapsed_ms >= ACCOUNTING_ROUND_INTERVAL_MS
                 {
                     plan_accounting_round(colony, &mut round, tent_point, world_seed);
                     point_accountant_at_current_target(
@@ -30915,8 +30899,9 @@ mod tests {
     }
 
     fn accounting_colony(reported_food: f64, staffed: bool, last_counted: i64) -> ColonyRuntime {
-        // Staffed: a completed tent worked by a living cat. Unstaffed: no bookkeeping tent at
-        // all (a built-but-idle tent would just be auto-staffed by an idle cat each tick).
+        // Staffed: a completed tent manually assigned to a living cat. Unstaffed: no
+        // bookkeeping tent at all. Individual tests may clear the manual assignment while
+        // keeping the completed tent to exercise an Accountant-vacant office.
         let (buildings, cats) = if staffed {
             (
                 vec![BuildingRuntime {
@@ -30969,8 +30954,9 @@ mod tests {
     }
 
     #[test]
-    fn staffed_accounting_tent_counts_only_after_physical_travel_and_dwell() {
+    fn manual_accountant_with_vacant_office_counts_only_after_physical_travel_and_dwell() {
         let mut colony = accounting_colony(5.0, true, 1_000);
+        assert!(!colony.officers.contains_key(&OfficerRole::Accountant));
         let truth = colony.resources.clone();
 
         phase_23_production(&mut colony, production_gate(1, 5_000), 123);
@@ -31070,6 +31056,23 @@ mod tests {
         ));
         colony.stock_ledger =
             StockLedger::counted_with_piles(&colony.resources, &colony.stockpiles, 1_000);
+        colony
+            .stock_ledger
+            .pile_reports
+            .get_mut(stockpiles::GENERAL_STOREHOUSE_ID)
+            .expect("general report")
+            .reported
+            .food = 5.0;
+        colony
+            .stock_ledger
+            .pile_reports
+            .get_mut("blocked")
+            .expect("blocked report")
+            .reported
+            .food = 9.0;
+        colony.stock_ledger.reported.food = 14.0;
+        let resources_before = colony.resources.clone();
+        let piles_before = colony.stockpiles.clone();
         let tent_point = station_work_point(&colony.buildings[0]);
         colony.cats[0].position = position_from_world(tent_point);
         phase_23_production(&mut colony, production_gate(1, 2_000), 123);
@@ -31086,6 +31089,36 @@ mod tests {
             colony.stock_ledger.pile_reports["blocked"].last_counted,
             1_000
         );
+
+        for now in (3_000..=30_000).step_by(1_000) {
+            if let Some(destination) = colony.cats[0].destination.take() {
+                colony.cats[0].position = destination;
+            }
+            advance_accounting_round(&mut colony, production_gate(1, now), 123);
+            if colony.stock_ledger.pile_reports[stockpiles::GENERAL_STOREHOUSE_ID].last_counted
+                > 1_000
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            colony.stock_ledger.pile_reports[stockpiles::GENERAL_STOREHOUSE_ID]
+                .reported
+                .food,
+            piles_before
+                .iter()
+                .find(|pile| pile.id == stockpiles::GENERAL_STOREHOUSE_ID)
+                .expect("general pile")
+                .contents
+                .food,
+            "the physically visited reachable pile is fresh"
+        );
+        assert_eq!(
+            colony.stock_ledger.pile_reports["blocked"].reported.food, 9.0,
+            "the inaccessible pile remains at its historical report"
+        );
+        assert_eq!(colony.resources, resources_before);
+        assert_eq!(colony.stockpiles, piles_before);
 
         colony.stock_ledger.active_round = Some(AccountingRound {
             worker_id: "book".to_owned(),
@@ -31144,25 +31177,70 @@ mod tests {
     }
 
     #[test]
-    fn unstaffed_ledger_lags_within_interval_then_recounts() {
-        let mut colony = accounting_colony(50.0, false, 1_000);
+    fn vacant_or_unstaffed_accounting_never_recounts_across_cadence_partitions() {
+        fn run(partitions: &[i64], leave_unstaffed_tent: bool) -> ColonyRuntime {
+            let mut colony = accounting_colony(50.0, leave_unstaffed_tent, 1_000);
+            if leave_unstaffed_tent {
+                colony.buildings[0].assigned_cat = None;
+                assert_eq!(colony.buildings[0].construction_progress, 100);
+                assert!(!colony.officers.contains_key(&OfficerRole::Accountant));
+                assert!(assigned_worker(&colony, &colony.buildings[0].id).is_none());
+            }
+            let resources_before = colony.resources.clone();
+            let piles_before = colony.stockpiles.clone();
+            let mut now = 1_000;
+            for &elapsed_sec in partitions {
+                now += elapsed_sec * 1_000;
+                phase_23_production(&mut colony, production_gate(elapsed_sec, now), 123);
+            }
+            assert_eq!(colony.stock_ledger.reported.food, 50.0, "stays stale");
+            assert_eq!(colony.stock_ledger.last_counted, 1_000);
+            assert!(colony.stock_ledger.active_round.is_none());
+            assert_eq!(colony.resources, resources_before, "resources untouched");
+            assert_eq!(colony.stockpiles, piles_before, "piles untouched");
+            colony
+        }
 
-        // Within the recount interval: reported stays stale, resources untouched.
-        phase_23_production(&mut colony, production_gate(1, 1_000 + 5_000), 123);
-        assert_eq!(colony.stock_ledger.reported.food, 50.0, "still lagging");
-        assert_eq!(colony.stock_ledger.last_counted, 1_000);
-        assert_eq!(colony.resources.food, 200.0, "resources untouched");
+        let one_tick = run(&[24 * 60 * 60], false);
+        let hourly = run(&[60 * 60; 24], false);
+        assert_eq!(one_tick.stock_ledger, hourly.stock_ledger);
 
-        // Past the interval: recount to the exact current stock.
-        phase_23_production(
-            &mut colony,
-            production_gate(1, 1_000 + crate::ledger::UNSTAFFED_RECOUNT_INTERVAL_MS),
-            123,
-        );
-        assert_eq!(colony.stock_ledger.reported.food, 200.0, "recounted");
+        let tent_one_tick = run(&[24 * 60 * 60], true);
+        let tent_hourly = run(&[60 * 60; 24], true);
+        assert_eq!(tent_one_tick.stock_ledger, tent_hourly.stock_ledger);
+    }
+
+    #[test]
+    fn aggregate_only_and_missing_pre_pile_report_ledgers_seed_without_sampling_current_stock() {
+        let mut legacy = accounting_colony(50.0, false, 1_000);
+        advance_accounting_round(&mut legacy, production_gate(86_400, 86_401_000), 123);
+        assert_eq!(legacy.stock_ledger.reported.food, 50.0);
         assert_eq!(
-            colony.stock_ledger.last_counted,
-            1_000 + crate::ledger::UNSTAFFED_RECOUNT_INTERVAL_MS
+            legacy.stock_ledger.pile_reports[stockpiles::GENERAL_STOREHOUSE_ID]
+                .reported
+                .food,
+            50.0
+        );
+
+        legacy.resources.food = 250.0;
+        legacy.stockpiles[0].contents.food = 250.0;
+        advance_accounting_round(&mut legacy, production_gate(86_400, 172_801_000), 123);
+        assert_eq!(legacy.stock_ledger.reported.food, 50.0);
+        assert_eq!(
+            legacy.stock_ledger.pile_reports[stockpiles::GENERAL_STOREHOUSE_ID]
+                .reported
+                .food,
+            50.0,
+            "migration is not a hidden recount"
+        );
+
+        let mut missing = accounting_colony(50.0, false, 1_000);
+        missing.stock_ledger = StockLedger::default();
+        advance_accounting_round(&mut missing, production_gate(86_400, 86_401_000), 123);
+        assert_eq!(missing.stock_ledger.reported, Resources::default());
+        assert_eq!(
+            missing.stock_ledger.pile_reports[stockpiles::GENERAL_STOREHOUSE_ID].reported,
+            Resources::default()
         );
     }
 
