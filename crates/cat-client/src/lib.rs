@@ -10916,7 +10916,7 @@ fn carrying_color(kind: CarryingKind) -> Color {
     resource_icon_tint(carrying_hud_res(kind))
 }
 
-const CARRYING_KINDS: [CarryingKind; 20] = [
+const CARRYING_KINDS: [CarryingKind; 21] = [
     CarryingKind::Food,
     CarryingKind::Fish,
     CarryingKind::Blessings,
@@ -10934,6 +10934,7 @@ const CARRYING_KINDS: [CarryingKind; 20] = [
     CarryingKind::Flour,
     CarryingKind::Herbs,
     CarryingKind::Hide,
+    CarryingKind::Leather,
     CarryingKind::Bone,
     CarryingKind::Ore,
     CarryingKind::Metal,
@@ -10961,6 +10962,7 @@ fn carrying_hud_res(kind: CarryingKind) -> HudRes {
         CarryingKind::Flour => HudRes::Flour,
         CarryingKind::Herbs => HudRes::Herbs,
         CarryingKind::Hide => HudRes::Hide,
+        CarryingKind::Leather => HudRes::Leather,
         CarryingKind::Bone => HudRes::Bone,
         CarryingKind::Ore => HudRes::Ore,
         CarryingKind::Metal => HudRes::Metal,
@@ -12684,7 +12686,7 @@ mod tests {
     #[test]
     fn every_cargo_kind_uses_a_unique_tracked_semantic_png() {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        assert_eq!(CARRYING_KINDS.len(), 20, "wire cargo cardinality changed");
+        assert_eq!(CARRYING_KINDS.len(), 21, "wire cargo cardinality changed");
         let paths = CARRYING_KINDS
             .into_iter()
             .map(carrying_icon_path)
@@ -14588,6 +14590,91 @@ mod tests {
         assert_eq!(
             carrying_icon_path(CarryingKind::Tools),
             resource_icon_path(HudRes::Tools)
+        );
+        let mut tannery = workshop.clone();
+        // Keep the fixture id aligned with Moss's assignment so this proves the
+        // selected Tannery's worker and progress, not only its resource labels.
+        tannery.id = "b1".to_owned();
+        tannery.building_type = BuildingType::Tannery;
+        tannery.production_output = Some("Leather".to_owned());
+        tannery.input_inventory = vec![ResourceStackSnapshot {
+            kind: ResourceKind::Hide,
+            amount: 5.0,
+        }];
+        tannery.output_inventory = vec![ResourceStackSnapshot {
+            kind: ResourceKind::Leather,
+            amount: 1.0,
+        }];
+        tannery.inbound_cargo = tannery.input_inventory.clone();
+        tannery.outbound_cargo = tannery.output_inventory.clone();
+        tannery.production_queue = vec![cat_protocol::ProductionQueueEntrySnapshot {
+            recipe_id: "hide_to_leather".to_owned(),
+            repeat: true,
+        }];
+        tannery.available_recipes = vec!["hide_to_leather".to_owned()];
+        let text = building_inspector_text(&tannery, colony);
+        assert!(text.contains("Moss"));
+        assert!(text.contains("staffed: 1/1"));
+        assert!(text.contains("making Leather"));
+        assert!(text.contains("40%"));
+        assert!(text.contains("local input: hide 5.0"));
+        assert!(text.contains("local output: leather 1.0"));
+        assert!(text.contains("outbound cargo: leather 1.0"));
+        assert!(text.contains("queue: hide_to_leather*"));
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("tannery-queue-session"),
+                &tannery,
+                0,
+                StationQueueButton::Add,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                edit: ProductionQueueEdit::Add { recipe_id, repeat: true },
+                ..
+            }) if recipe_id == "hide_to_leather"
+        ));
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("tannery-queue-session"),
+                &tannery,
+                0,
+                StationQueueButton::ToggleRepeat,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                edit: ProductionQueueEdit::SetRepeat {
+                    index: 0,
+                    repeat: false,
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("tannery-queue-session"),
+                &tannery,
+                0,
+                StationQueueButton::TogglePause,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                edit: ProductionQueueEdit::SetPaused { paused: true },
+                ..
+            })
+        ));
+        assert!(matches!(
+            station_queue_action(
+                &signed_session("tannery-queue-session"),
+                &tannery,
+                0,
+                StationQueueButton::Remove,
+            ),
+            Some(ClientAction::EditProductionQueue {
+                edit: ProductionQueueEdit::Remove { index: 0 },
+                ..
+            })
+        ));
+        assert_eq!(
+            carrying_icon_path(CarryingKind::Leather),
+            resource_icon_path(HudRes::Leather)
         );
         // A den (staff_cap 0) under construction shows neither staffing nor output.
         let den_text = building_inspector_text(den, colony);

@@ -852,6 +852,7 @@ pub enum CarryingKind {
     Flour,
     Herbs,
     Hide,
+    Leather,
     Bone,
     Ore,
     Metal,
@@ -3301,6 +3302,8 @@ mod tests {
         for (kind, literal) in [
             (CarryingKind::Refined, "refined"),
             (CarryingKind::Bone, "bone"),
+            (CarryingKind::Hide, "hide"),
+            (CarryingKind::Leather, "leather"),
             (CarryingKind::Ore, "ore"),
             (CarryingKind::Metal, "metal"),
         ] {

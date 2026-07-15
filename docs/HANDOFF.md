@@ -50,10 +50,10 @@ Verified foundations include:
   automation and rituals remain Loremaster-owned. Eleven maintained recipe IDs now have one
   data-owned station descriptor, canonical input/output resource domains, deterministic default
   queues, and exact catalog ownership metadata. Four preparation studies gate the physical
-  Mill/Sawmill/Workshop/Smelter queues, while Textiles and the two Smithy design studies enforce four
-  aggregate processor recipes. The three founding-bench baseline recipes are explicitly available
+  Mill/Sawmill/Workshop/Smelter queues; Textiles gates physical Tannery plus aggregate Clothier,
+  while the two Smithy design studies enforce the two aggregate Smithy outputs. The three founding-bench baseline recipes are explicitly available
   without study; Carpentry, Stonecraft, and Toolmaking studies gate later recipes. Stone Prep and
-  Clothier, Tannery, and Smithy aggregate compatibility timers deliberately remain
+  Tannery now use physical station-local queues; Clothier and Smithy aggregate compatibility timers deliberately remain
   behavior-unchanged until their physical route slices land; rules-v0 metadata
   remains grandfathered. The other 93 generated recipe IDs and
   all 64 generated resource IDs remain incomplete. Sawmill→Gather Logs is the
@@ -143,9 +143,13 @@ so a correct scout route cannot conceal a missing founding dispatch.
    five Stone move through local input, one 600-second selected batch creates one local Block, and
    one outbound haul credits finite storage. Woodworking is the third: two Planks and two Blocks
    arrive sequentially, one Craft worker consumes both atomically in a selected 600-second batch,
-   and one whole scalar Tool reaches finite storage only through an outbound haul. Its hidden
+   and one whole scalar Tool reaches finite storage only through an outbound haul. Tannery is the
+   fourth conversion: five physically hunted Hide move through inbound and local storage, one
+   Textile worker advances the selected 600-second batch, and one Leather moves through local
+   output and an outbound carrier before aggregate credit. Its legacy parallel leather/clothing
+   timer is frozen. The hidden
    `wood_craft_progress` timer is frozen and rules-v3 persistence preserves player-authored queue
-   intent without seeding. Next convert Clothier, Tannery, and Smithy to station-local
+   intent without seeding; rules-v4 does the same for Tannery. Next convert Clothier and Smithy to station-local
    input/work/output routes with one worker advancing one selected ordered/repeatable/pausable
    recipe. Finite Tool identity remains the following C3 slice; Woodworking does not create a
    parallel finite item. Preserve the now-verified rule that the three P16 founding benches need no placement
@@ -163,7 +167,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
    ledgers, transit reservation, delivery-before-credit, death conservation, restart persistence,
    real editable queues, and live inspectors.
    Exterior farming now follows the same physical truth through plot work, bounded baskets, local
-   handoff, and storage delivery. Steward-managed exact-resource piles now feed all seven physical
+   handoff, and storage delivery. Steward-managed exact-resource piles now feed all eight physical
    processors through conserved balancing trips without consuming the player's designation budget.
    Fresh player and Leader scaffolds use the same conserved source→transit→scaffold contract and
    do not begin timed work until the pinned bill arrives.
@@ -173,7 +177,7 @@ so a correct scout route cannot conceal a missing founding dispatch.
    Keep future offer/block metadata from copying hidden exact totals or recreating an equality
    oracle. All 19
    maintained labor skills have truthful gain sources, bounded effects, persistence,
-   and inspector visibility. Signed per-cat preferences and all seven physical processors' real
+   and inspector visibility. Signed per-cat preferences and all eight physical processors' real
    editable queues are live; extend the generic queue control as additional physical recipes land.
    Preserve the verified tool productivity, type-local escalating costs, shrine faucets, and
    research pacing in balance campaigns. The physical offering decision threshold is 20 Supplies

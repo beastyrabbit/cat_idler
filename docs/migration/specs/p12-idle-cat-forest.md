@@ -3,7 +3,7 @@
 > **Living target spec.** Specialist manual-to-officer ownership (with a bounded founding Leader
 > hunt/water/scout safety floor), 19-labor skills, seeded spatial storehouses, physical Accountant
 > rounds, physical farm labor, and complete physical Mill, Sawmill, Wood Cutter, Stone Prep,
-> Woodworking, Workshop, and Smelter routes are verified. Broader
+> Woodworking, Workshop, Smelter, and Tannery routes are verified. Broader
 > physical station routes and recipes remain partial. Current evidence and exact follow-ups live in
 > [`docs/IMPLEMENTATION_AUDIT.md`](../../IMPLEMENTATION_AUDIT.md).
 
@@ -113,14 +113,16 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
 - **Tests:** each chain converts inputs→outputs at the right rate only when staffed + inputs
   present; escalating cost math; unlock gating; determinism.
 
-**Verified physical subset:** Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop, and
-Smelter no longer convert aggregate colony counters in place. Each reserves visible finite stock,
+**Verified physical subset:** Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Workshop,
+Smelter, and Tannery no longer convert aggregate colony counters in place. Each reserves visible finite stock,
 carries input to a station-local
 store, works there under its durable ordered/repeatable/pausable queue, places output in a
 station-local store, and carries it to compatible finite storage before aggregate credit. Their
 snapshot/inspector state includes the worker, progress, queue, local inventory, transit cargo, and
 block reason. Woodworking's founding recipe is the two-input case: two Planks and two Blocks arrive
-sequentially and are consumed atomically into one whole scalar Tool. Apply this contract to the
+sequentially and are consumed atomically into one whole scalar Tool. Tannery likewise carries five
+Hide into local input, performs one selected 600-second Textile batch, and carries one Leather out
+before credit. Apply this contract to the
 remaining production stations rather than reopening these completed routes; finite Tool identity
 and condition authority remain P19.C3.
 

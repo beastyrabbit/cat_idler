@@ -469,6 +469,15 @@ fn migrate_add_missing_columns(conn: &Connection) -> rusqlite::Result<()> {
          WHERE physicalStationRulesVersion < 3",
         [],
     )?;
+    // Tannery becomes physical in station-rules v4. C2.0 already made its
+    // queue player-editable and durable, so this boundary is version-only:
+    // never seed, reorder, resume, or otherwise rewrite authored queue state.
+    conn.execute(
+        "UPDATE buildings
+         SET physicalStationRulesVersion = 4
+         WHERE physicalStationRulesVersion < 4",
+        [],
+    )?;
     Ok(())
 }
 
@@ -1150,7 +1159,7 @@ fn save_building(
             productionQueue, productionPaused, productionQueueInitialized,
             physicalRefinerQueueInitialized, physicalStationRulesVersion,
             constructionCargo
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, 3, ?13)",
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, 1, 4, ?13)",
         params![
             scoped_storage_id(colony_id, &building.id),
             colony_id,
@@ -2833,7 +2842,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
             default_production_queue(BuildingType::StonePrep)
         );
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
 
         conn.execute(
             "UPDATE buildings SET productionQueue = '[]'
@@ -2851,7 +2860,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cleared, "[]", "Stone Prep empty queue remains player-owned");
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -2881,7 +2890,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(queue, "[]", "v2 player-empty queue is authoritative");
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         assert_eq!(progress.to_bits(), 417.5_f64.to_bits());
         assert_eq!(paused, 1);
 
@@ -2908,7 +2917,68 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&persisted).unwrap(),
             explicit_queue
         );
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
+    }
+
+    #[test]
+    fn v3_tannery_authored_state_survives_the_v4_boundary_exactly() {
+        let conn = Connection::open_in_memory().expect("memory db");
+        init_schema(&conn).expect("schema");
+        let queue = vec![
+            ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::TANNERY_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
+            ProductionQueueEntry {
+                recipe_id: cat_sim::world_tick::TANNERY_RECIPE_ID.to_owned(),
+                repeat: true,
+            },
+        ];
+        conn.execute(
+            "INSERT INTO buildings (
+                id, colonyId, type, level, position, constructionProgress,
+                productionProgress, isComplete, productionQueue, productionPaused,
+                productionQueueInitialized, physicalRefinerQueueInitialized,
+                physicalStationRulesVersion
+             ) VALUES ('legacy-tannery', 'colony-1', 'tannery', 1, '{}',
+                 100, 417.5, 1, ?1, 1, 1, 1, 3)",
+            [serde_json::to_string(&queue).unwrap()],
+        )
+        .expect("station-rules v3 Tannery row");
+
+        migrate_add_missing_columns(&conn).expect("Tannery v4 boundary");
+        let (stored, version, progress, paused): (String, i64, f64, i64) = conn
+            .query_row(
+                "SELECT productionQueue, physicalStationRulesVersion, productionProgress,
+                        productionPaused FROM buildings WHERE id = 'legacy-tannery'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<ProductionQueueEntry>>(&stored).unwrap(),
+            queue
+        );
+        assert_eq!(version, 4);
+        assert_eq!(progress.to_bits(), 417.5_f64.to_bits());
+        assert_eq!(paused, 1);
+
+        conn.execute(
+            "UPDATE buildings SET productionQueue = '[]' WHERE id = 'legacy-tannery'",
+            [],
+        )
+        .unwrap();
+        migrate_add_missing_columns(&conn).expect("idempotent v4 restart");
+        let (stored, version): (String, i64) = conn
+            .query_row(
+                "SELECT productionQueue, physicalStationRulesVersion
+                 FROM buildings WHERE id = 'legacy-tannery'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored, "[]");
+        assert_eq!(version, 4);
     }
 
     #[test]
@@ -3002,7 +3072,7 @@ mod tests {
             serde_json::from_str::<Vec<ProductionQueueEntry>>(&queue).unwrap(),
             default_production_queue(BuildingType::WoodCutter)
         );
-        assert_eq!(initialized, 3);
+        assert_eq!(initialized, 4);
 
         conn.execute(
             "UPDATE buildings SET productionQueue = '[]' WHERE id = 'legacy-wood-cutter'",
@@ -3673,8 +3743,8 @@ mod tests {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
-            3,
-            "ordinary saves must never downgrade the v3 no-seed boundary"
+            4,
+            "ordinary saves must persist the current v4 no-seed boundary"
         );
         let restarted = load_world(&conn).expect("load").expect("world");
         let colony = &restarted.colonies[0];

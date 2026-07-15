@@ -4804,6 +4804,7 @@ fn sim_to_proto_carrying_kind(kind: entities::CarryingKind) -> proto::CarryingKi
         entities::CarryingKind::Flour => proto::CarryingKind::Flour,
         entities::CarryingKind::Herbs => proto::CarryingKind::Herbs,
         entities::CarryingKind::Hide => proto::CarryingKind::Hide,
+        entities::CarryingKind::Leather => proto::CarryingKind::Leather,
         entities::CarryingKind::Bone => proto::CarryingKind::Bone,
         entities::CarryingKind::Ore => proto::CarryingKind::Ore,
         entities::CarryingKind::Metal => proto::CarryingKind::Metal,
@@ -9252,6 +9253,7 @@ mod tests {
                         "wood-cutter-descriptor"
                             | "stone-prep-descriptor"
                             | "woodworking-descriptor"
+                            | "tannery-descriptor"
                     ) {
                         "no_worker"
                     } else {

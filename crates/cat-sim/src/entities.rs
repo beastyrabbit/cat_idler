@@ -86,6 +86,9 @@ pub enum CarryingKind {
     /// Raw hide carried home alongside a hunt's food.
     #[serde(rename = "hide")]
     Hide,
+    /// Finished leather moving from a Tannery to physical storage.
+    #[serde(rename = "leather")]
+    Leather,
     /// Raw bone carried home alongside a hunt's food and hide.
     #[serde(rename = "bone")]
     Bone,

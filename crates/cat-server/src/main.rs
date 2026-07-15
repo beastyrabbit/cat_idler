@@ -3107,6 +3107,297 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signed_hmac_hunt_and_tannery_route_survives_restart_to_delivered_leather() {
+        // `send_action` timestamps authenticated jobs from the server clock, so
+        // drive the deterministic tick horizon from the same epoch.
+        let started_at = now_ms();
+        let secret = "guided-tannery-secret";
+        let path = std::env::temp_dir().join(format!(
+            "cat-server-tannery-route-{}-{}.db",
+            std::process::id(),
+            NEXT_DATABASE_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_file(&path);
+        let mut world = starter_world(started_at);
+        let colony = &mut world.colonies[0];
+        colony.resources.food = 100.0;
+        colony.resources.water = 100.0;
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .push("textiles".to_owned());
+        let anchor = colony.anchor;
+        let tannery_id = "signed-guided-tannery".to_owned();
+        // A new founding intentionally has no Tannery. This completed bench is an
+        // established-colony fixture; its input still comes only from the real Hunt.
+        colony.buildings.push(cat_sim::world_tick::BuildingRuntime {
+            id: tannery_id.clone(),
+            building_type: cat_sim::types::BuildingType::Tannery,
+            position: cat_sim::world_tick::TilePos {
+                x: anchor.x + 6,
+                y: anchor.y + 6,
+            },
+            is_complete: true,
+            construction_progress: 100,
+            production_queue: cat_sim::world_tick::default_production_queue(
+                cat_sim::types::BuildingType::Tannery,
+            ),
+            ..cat_sim::world_tick::BuildingRuntime::default()
+        });
+        cat_sim::world_tick::reconcile_colony_stockpiles(colony);
+        let cat_id = colony.cats.last().unwrap().id.clone();
+        let conn = Connection::open(&path).expect("guided Tannery database");
+        persistence::init_schema(&conn).expect("guided Tannery schema");
+        let state = build_state_from_world(world, conn, secret.to_owned(), true, started_at);
+        let signed = signed_session("guided-tannery-session".to_owned(), secret);
+        let mut connection = ConnectionContext::new(
+            "guided-tannery-socket".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        connection.identity = Some(signed.clone());
+        let accelerated = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::SetTestAcceleration {
+                preset: cat_protocol::AccelerationPreset::Hyper,
+            },
+        )
+        .await;
+        assert!(
+            accelerated.result.ok,
+            "bounded route acceleration: {accelerated:?}"
+        );
+        let queue_action = |edit| ClientAction::EditProductionQueue {
+            session_id: signed.session_id.clone(),
+            nickname: "Tanner".to_owned(),
+            sig: signed.sig.clone(),
+            building_id: tannery_id.clone(),
+            edit,
+        };
+        for edit in [
+            cat_protocol::ProductionQueueEdit::Remove { index: 0 },
+            cat_protocol::ProductionQueueEdit::Add {
+                recipe_id: cat_sim::station_recipes::HIDE_TO_LEATHER_RECIPE_ID.to_owned(),
+                repeat: false,
+            },
+            cat_protocol::ProductionQueueEdit::SetPaused { paused: true },
+        ] {
+            let result = send_action(&state, &mut connection, &queue_action(edit)).await;
+            assert!(result.result.ok, "signed Tannery queue: {result:?}");
+        }
+        let assigned = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::AssignWorker {
+                session_id: signed.session_id.clone(),
+                nickname: "Tanner".to_owned(),
+                sig: signed.sig.clone(),
+                cat_id,
+                building_id: Some(tannery_id.clone()),
+            },
+        )
+        .await;
+        assert!(
+            assigned.result.ok,
+            "signed Tannery assignment: {assigned:?}"
+        );
+        let hunted = send_action(
+            &state,
+            &mut connection,
+            &ClientAction::RequestJob {
+                session_id: signed.session_id.clone(),
+                nickname: "Tanner".to_owned(),
+                sig: signed.sig.clone(),
+                kind: cat_protocol::JobKind::HuntExpedition,
+            },
+        )
+        .await;
+        assert!(hunted.result.ok, "signed Hunt: {hunted:?}");
+        let hunt_job_id = {
+            let world = state.world.lock().await;
+            world.colonies[0]
+                .jobs
+                .iter()
+                .find(|job| {
+                    job.kind == cat_sim::types::JobKind::HuntExpedition
+                        && job.requested_by == cat_sim::world_tick::JobRequester::Player
+                })
+                .expect("signed action created a player-requested Hunt")
+                .id
+                .clone()
+        };
+
+        let mut now = started_at;
+        let mut saw_hunt_hide = false;
+        let mut saw_delivered_hide = false;
+        for second in 1..=2_400_i64 {
+            now = started_at + second * 1_000;
+            let mut world = state.world.lock().await;
+            let reports = world_tick(&mut world, now);
+            assert_eq!(reports[0].reset_reason, None);
+            let colony = &world.colonies[0];
+            let player_hunter = colony
+                .jobs
+                .iter()
+                .find(|job| job.id == hunt_job_id)
+                .and_then(|job| job.assigned_cat.as_deref());
+            saw_hunt_hide |= player_hunter.is_some_and(|cat_id| {
+                colony.cats.iter().any(|cat| {
+                    cat.id == cat_id
+                        && cat.carrying.as_ref().is_some_and(|cargo| {
+                            cargo.kind == cat_sim::entities::CarryingKind::Hide
+                                && !cargo
+                                    .source_gather_spot
+                                    .as_deref()
+                                    .is_some_and(|marker| marker.starts_with("station-in|"))
+                        })
+                })
+            });
+            saw_delivered_hide |= colony.resources.hide > 0.0;
+            let player_hunt_completed = colony.jobs.iter().any(|job| {
+                job.id == hunt_job_id
+                    && job.requested_by == cat_sim::world_tick::JobRequester::Player
+                    && job.status == cat_sim::types::JobStatus::Completed
+            });
+            if saw_hunt_hide && saw_delivered_hide && player_hunt_completed {
+                break;
+            }
+        }
+        let delivered_hide = {
+            let world = state.world.lock().await;
+            let colony = &world.colonies[0];
+            let job = colony
+                .jobs
+                .iter()
+                .find(|job| job.id == hunt_job_id)
+                .expect("player Hunt remains persisted");
+            let hunter = job
+                .assigned_cat
+                .as_deref()
+                .and_then(|cat_id| colony.cats.iter().find(|cat| cat.id == cat_id));
+            assert!(
+                saw_hunt_hide && saw_delivered_hide,
+                "player Hunt route stalled: saw_hunt_hide={saw_hunt_hide}, saw_delivered_hide={saw_delivered_hide}, job={job:?}, hunter={hunter:?}, colony_hide={}, local_hide={}",
+                colony.resources.hide,
+                colony
+                    .stockpiles
+                    .iter()
+                    .find(|pile| pile.id == cat_sim::stockpiles::station_input_id(&tannery_id))
+                    .map_or(0.0, |pile| pile.contents.hide),
+            );
+            assert!(world.colonies[0].jobs.iter().any(|job| {
+                job.id == hunt_job_id
+                    && job.requested_by == cat_sim::world_tick::JobRequester::Player
+                    && job.status == cat_sim::types::JobStatus::Completed
+            }));
+            colony.resources.hide
+        };
+        save_current_world(&state)
+            .await
+            .expect("persist delivered Hunt Hide");
+        drop(state);
+
+        let conn = Connection::open(&path).expect("reopen Tannery route database");
+        persistence::init_schema(&conn).expect("migrate Tannery route database");
+        let restarted = build_state_from_connection(now, conn, secret.to_owned())
+            .expect("restart delivered Hunt Hide");
+        {
+            let world = restarted.world.lock().await;
+            let colony = &world.colonies[0];
+            let tannery = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == tannery_id)
+                .expect("restored authored Tannery");
+            assert!(tannery.production_paused);
+            assert_eq!(tannery.production_progress, 0.0);
+            assert_eq!(tannery.production_queue.len(), 1);
+            assert_eq!(
+                tannery.production_queue[0].recipe_id,
+                cat_sim::station_recipes::HIDE_TO_LEATHER_RECIPE_ID
+            );
+            assert!(!tannery.production_queue[0].repeat);
+            assert_eq!(colony.resources.hide, delivered_hide);
+            assert_eq!(colony.resources.leather, 0.0);
+            assert!(
+                cat_sim::world_tick::building_station_inventory(colony, tannery, false).is_empty()
+            );
+            assert!(
+                cat_sim::world_tick::building_station_inventory(colony, tannery, true).is_empty()
+            );
+            assert!(cat_sim::world_tick::building_station_cargo(colony, tannery, "in").is_empty());
+            assert!(cat_sim::world_tick::building_station_cargo(colony, tannery, "out").is_empty());
+        }
+        let mut reconnected = ConnectionContext::new(
+            "guided-tannery-reconnected".to_owned(),
+            STARTER_COLONY_ID.to_owned(),
+        );
+        let presence = send_action(
+            &restarted,
+            &mut reconnected,
+            &ClientAction::Presence {
+                session_id: signed.session_id.clone(),
+                nickname: "Tanner".to_owned(),
+                sig: Some(signed.sig.clone()),
+            },
+        )
+        .await;
+        assert!(presence.result.ok, "Tannery bearer reconnect: {presence:?}");
+        assert_eq!(
+            presence.fields.get("playerId"),
+            Some(&signed.player_id),
+            "restart must rebind the same stable player identity"
+        );
+        let resumed = send_action(
+            &restarted,
+            &mut reconnected,
+            &queue_action(cat_protocol::ProductionQueueEdit::SetPaused { paused: false }),
+        )
+        .await;
+        assert!(resumed.result.ok, "signed Tannery resume: {resumed:?}");
+        let mut stages = [false; 5];
+        for second in 1..=1_800_i64 {
+            let mut world = restarted.world.lock().await;
+            let reports = world_tick(&mut world, now + second * 1_000);
+            assert_eq!(reports[0].reset_reason, None);
+            let colony = &world.colonies[0];
+            let building = colony
+                .buildings
+                .iter()
+                .find(|building| building.id == tannery_id)
+                .expect("restarted Tannery");
+            let inbound = cat_sim::world_tick::building_station_cargo(colony, building, "in");
+            let local_input =
+                cat_sim::world_tick::building_station_inventory(colony, building, false);
+            let local_output =
+                cat_sim::world_tick::building_station_inventory(colony, building, true);
+            let outbound = cat_sim::world_tick::building_station_cargo(colony, building, "out");
+            stages[0] |= inbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Hide && *amount >= 5.0
+            });
+            stages[1] |= local_input.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Hide && *amount >= 5.0
+            });
+            stages[2] |= local_output.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Leather && *amount >= 1.0
+            });
+            stages[3] |= outbound.iter().any(|(kind, amount)| {
+                *kind == cat_sim::stockpiles::ResourceKind::Leather && *amount >= 1.0
+            });
+            stages[4] |= colony.resources.leather >= 1.0;
+            if stages.iter().all(|seen| *seen) {
+                break;
+            }
+        }
+        let world = restarted.world.lock().await;
+        assert_eq!(stages, [true; 5], "restart missed a physical Tannery stage");
+        assert_eq!(world.colonies[0].resources.leather, 1.0);
+        drop(world);
+        drop(restarted);
+        fs::remove_file(path).expect("remove Tannery route database");
+    }
+
+    #[tokio::test]
     async fn signed_trader_buy_sell_depletes_exact_finite_stock_across_restart() {
         let path = std::env::temp_dir().join(format!(
             "cat-server-trader-restart-{}-{}.db",
