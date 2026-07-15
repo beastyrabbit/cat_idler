@@ -65,7 +65,7 @@ cloth bolts, workbench, plank stack, hand-saw, log-end bundle). Roguelike Base c
 
 | File | Source | Craft indicator / verdict |
 |---|---|---|
-| `wood_cutter.png` | TT wood hut + drawn log-end bundle + TT axe `127` | Log pile + axe → **lumber/felling**. Reads clearly. |
+| `wood_cutter.png` | TT wood hut + drawn log-end bundle + TT axe `127` | Log pile + axe → **hand-cut planks**. Reads clearly and remains distinct from the Sawmill's structural Lumber. |
 | `stone_prep.png` | TT stone hut (arch `78`) + drawn cut-stone blocks + TT pickaxe `115` | Stone blocks + pick → **stone-cutting**. Reads clearly. |
 | `woodworking.png` | TT wood hut + drawn workbench + drawn plank-stack + drawn saw | Bench + planks + saw → **carpentry**. Distinct from the raw wood-cutter. |
 | `smithy.png` | TT stone hut (roof vent `51`) + Roguelike forge-fire `(54,8)` **in the doorway** + drawn anvil + TT hammer `128` | Glowing forge in the door + anvil + hammer → **unmistakable smithy**. Strongest reader. |

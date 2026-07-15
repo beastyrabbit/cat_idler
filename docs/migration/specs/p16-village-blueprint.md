@@ -34,13 +34,15 @@ A fixed starting blueprint:
   **5 permanent beds**.
 - **Wood-cutting workshop** (3×3): logs → **planks**.
 - **Stone-prep workshop** (3×3): raw stone → **prepped stone / blocks**.
-- **Woodworking workshop** (3×3): planks + stone → **tools** (axe, shovel, fishing rod, …) + weapons.
+- **Woodworking workshop** (3×3): planks + blocks → early wooden **tools** (axe, shovel, fishing
+  rod, …) and later wood goods. Weapons belong to the Smithy chain.
 - **Finite general storehouse** pre-filled at a personal founding with **50 food, 100 water,
   16 herbs, 60 general materials, 10 planks, and 10 blocks**. The larger communal blueprint
   receives twice that runway. Logs, lumber, grain, flour, fibre, hide, cloth, leather, ore,
   metal, fish, tools, weapons, armor, catnip, refined goods, and blessings begin at zero and
   must enter through their real chains.
-- **New house cost**: X planks + X stone (was materials — now the plank/stone chain gates growth).
+- **New house cost**: X processed timber (Lumber preferred, Planks accepted) + X Blocks. Raw Stone
+  must be dressed first, so the timber/stone chain still gates growth.
 
 Population rules attached to this blueprint:
 - A fresh run has no spare beds. Pregnancy begins only after 36 game-hours, only when food/water
@@ -63,9 +65,13 @@ Population rules attached to this blueprint:
 New resource types + chains:
 - **logs/wood** → wood-cutting workshop → **planks**
 - **raw stone** → stone-prep workshop → **prepped stone / blocks**
-- **planks + prepped stone** → woodworking workshop → **tools** (axe/shovel/fishing-rod) + weapons
-- Buildings consume planks + stone (house = X planks + X stone). Tools presumably boost the
-  relevant labor later (axe→woodcutting, rod→fishing, shovel→digging/farming).
+- **planks + blocks** → woodworking workshop → **wooden tools**; later recipes turn Planks into
+  wood goods. Weapons and armor require the Smelter→Metal→Smithy chain.
+- Sawmills turn Logs into structural **Lumber**, distinct from fine Planks. Buildings consume
+  Lumber or Planks plus Blocks. Tools boost the relevant labor (axe→woodcutting, rod→fishing,
+  shovel→digging/farming).
+- P19's canonical production table owns the exact research, officer, route, and save-compatibility
+  contract. These three open starter benches remain part of the fixed founding blueprint.
 
 ## Roads & movement speed
 - **Stone roads**: player/leader-**built**, dark-grey, **175%** move speed. Stone ground itself
@@ -102,8 +108,9 @@ New resource types + chains:
 2. **Default village blueprint** (sim founding): fixed shrine+roads+gate-south+3 Dens+3 workshops
    +pre-filled general stockpile+15 cats. Replaces organic founding. (After keep-cats-busy lands —
    both touch world_tick founding/director.)
-3. **Resource chains** (P12.4b): logs→planks, stone→blocks, →tools/weapons; house cost = planks+stone.
-   Big Resources-struct expansion — the focused card I deferred.
+3. **Resource chains** (P12.4b/P19): Logs→Planks, Stone→Blocks, and Planks+Blocks→wooden Tools;
+   houses consume processed timber+Blocks. Metal weapons/armor belong to the Smelter→Smithy chain.
+   This remains runtime work under the canonical P19 production cards.
 4. **Roads + movement speed**: built stone roads (175%) + auto dirt roads (105%) + surface speeds
    (stone 100% / grass 75%); render dark-grey stone vs worn dirt. (Extends roads.rs + pathfinding
    cost model + snapshot road tiles + client render.)

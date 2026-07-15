@@ -14,6 +14,48 @@ User (2026-07-10): give the game a DF-like breadth of resources/items, but **cat
 ("humanoid cats", "warrior cats") — similar amount. Like DF, **craft an item from multiple
 materials** (a wooden mug OR a stone mug). And add **traders that come by and let you trade**.
 
+## Canonical production contract
+
+This section is the authority for resource names and production chains. P12 remains authoritative
+for manual-to-officer ownership and physical station logistics; P16 remains authoritative for the
+founding blueprint. The table describes the target, not the current completion state. Stable
+serialized resource and building IDs stay intact while the remaining routes are implemented, and
+every workshop remains an open-top, function-readable map station.
+
+| Source or station | Input → output | Research | Labor / automation | Required physical route |
+| --- | --- | --- | --- | --- |
+| Logging site | tree → Logs | `sawmill` unlocks Gather Logs | Woodcut / Forester; manual while vacant | Reach an observed tree, fell it, and carry Logs to a gather spot or finite pile |
+| Wood Cutter | Logs → Planks | available from founding; future studies gate recipes, not placement | Process / Forester | Pile → local input → work → local output → finite pile |
+| Sawmill | Logs → Lumber | building `sawmill`; study `carpentry_preparation` | Process / Forester | Same station-local carry/work/delivery contract |
+| Quarry | rock → Stone; mountain veins can also yield Ore or Gem | `mountaineering` for mountain outputs | Quarry / Forester | Each resulting material is carried; job completion never credits an invisible byproduct |
+| Stone Prep | Stone → Blocks | available from founding; future studies gate recipes, not placement | Process / Forester | Same station-local carry/work/delivery contract |
+| Woodworking | Planks + Blocks → wooden Tools; Planks → wood goods | available from founding; future Toolmaking/Carpentry studies gate recipes | Craft / Forester | One selected queue recipe per worker; no parallel hidden craft timer |
+| Construction | Lumber or Planks + Blocks → scaffold/building | building-specific study | Build / Leader direction or manual order | Finite stock is carried to the scaffold before on-site progress |
+| Farms and forage | plots/sites → Grain, Herbs, Catnip, Fibre | crop/source-specific studies | Farm/Forage / Farmer | Harvest basket → gather spot → finite pile |
+| Mill | Grain → Flour; Flour → Food | building `milling`; current combined study `grain_milling_preparation` | Mill / Farmer | Split the current combined cycle into two explicit queue recipes through the physical Mill route |
+| Hunt | prey → Food plus Hide/Bone | hunting/source studies | Hunt / Farmer, with the Leader safety floor | Every byproduct returns as physical cargo |
+| Clothier | Fibre → Cloth; Cloth → clothing | building `textiles`; Textile Work recipes | Textile / Cloth Leader | Same station-local carry/work/delivery contract |
+| Tannery | Hide → Leather; Leather → clothing/light armor | building `textiles`; Leatherworking recipes | Textile / Cloth Leader | Same station-local carry/work/delivery contract |
+| Smelter | Ore → Metal bars | building `smelting`; study `metallurgy_preparation` | Metalwork / Captain | Same station-local carry/work/delivery contract |
+| Smithy | Metal → metal Tools, Weapons, or Armor | building `smithy`; separate Toolmaking, Weaponsmithing, and Armorsmithing recipes | Metalwork / Captain | One selected queue recipe per worker through local stores |
+| Workshop | Supplies → Crafted Supplies | `basic_tools`; study `trade_goods_preparation` | Process / Steward | Preserve the current physical `materials_to_refined` route |
+| Variant goods | Planks/Blocks/Cloth/Leather/Metal → material-specific items | matching craft-family recipe | Owning station's labor/officer | Stable finite item units remain local until hauled |
+
+### Stable taxonomy and save compatibility
+
+- **Logs** are raw timber. **Planks** are fine boards for tools, furniture, and early building;
+  **Lumber** is structural timber. Construction accepts both and prefers Lumber when available.
+- Add **Stone** as a defaulted raw resource when its physical quarry route lands. **Blocks** remain
+  dressed stone. Existing `materials` must not be silently reinterpreted as Stone.
+- Keep the stable `materials` and `refined` wire/save IDs. Player-facing copy may call them
+  **Supplies** and **Crafted Supplies** so their generic bulk Workshop chain is unambiguous.
+- Keep the stable `tools`, `weapons`, and `armor` resource fields during migration, but finite item
+  instances are the eventual condition/identity authority. New crafting must not create two
+  independent inventories for one physical object.
+- One assigned cat advances one selected recipe. Woodworking, Smithy, Clothier, Tannery, and every
+  future bench must use the same ordered/repeatable/pausable queue contract as the four completed
+  physical processors.
+
 ## Implemented finite-item condition contract
 
 Each unit has a stable ID, material, kind, quality, value, physical weight, and current/maximum
@@ -29,11 +71,11 @@ clay, broader metal variants, finished functional equipment chains, and physical
 logistics for the remaining workshops are still product work.
 
 ## Resource / item taxonomy (DF breadth, cat-flavoured)
-Three tiers (extends P16's logs/planks/stone/blocks and P12.4b chains):
-- **Raw materials**: logs/wood, stone, **ore→metal**, gems (mountain), plant **fibre**,
+Three tiers (reconciles P16's founding benches with P12's Sawmill chain):
+- **Raw materials**: logs/wood, stone, ore, gems (mountain), plant **fibre**,
   herbs/**catnip**, food (prey/**fish**/grain), **hide + bone** (from hunts), clay/sand.
-- **Intermediate** (from workshops): planks, stone blocks, **metal bars**, cloth, thread, leather,
-  flour. (Wood-cut / stone-prep / smelter / clothier / mill / tannery.)
+- **Intermediate** (from workshops): planks, structural lumber, stone blocks, **metal bars**, cloth,
+  thread, leather, flour, and the stable bulk Supplies/Crafted Supplies pair.
 - **Finished goods** (crafted, cat-themed): **mugs, bowls, furniture** (beds/chairs/tables for the
   cats' dens), **tools** (axe/shovel/pick/fishing-rod), **weapons + armor** (warrior-cat claws/
   blades/mail), **clothing**, **decorations/trinkets**, toys. DF-ish breadth, not overwhelming.

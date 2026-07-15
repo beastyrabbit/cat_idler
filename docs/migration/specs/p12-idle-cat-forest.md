@@ -94,11 +94,15 @@ workshop↔stockpile↔workshop (extends trips/shrine, which today only credit a
 
 ## P12.4 — More workshops + production chains + role-buildings
 **Goal:** the craft/haul graph. Each is a workshop cats walk to; role-buildings gate officers.
-- **Buildings (extend `buildings.type`):** `mill` (grain→flour), `clothier` (fibre→cloth→armour),
-  `sawmill` (logs→lumber), `accounting_tent` (Accountant), plus role-buildings for each officer.
-- **Chains:** catnip/grain → Mill → flour → food; fibre → Clothier → cloth → armour; logs →
-  Sawmill → lumber → construction; ore → Smithy (exists) → tools/weapons. Each = a
-  `production.rs`-style staffed cycle moving items between stockpiles.
+- **Buildings (extend `buildings.type`):** `mill` (grain→flour→food), `clothier`
+  (fibre→cloth→clothing), `tannery` (hide→leather), `sawmill` (logs→lumber), `smelter`
+  (ore→metal), `smithy` (metal equipment), `accounting_tent` (Accountant), plus role-buildings for
+  each officer.
+- **Chains:** grain → Mill → flour → food; fibre → Clothier → cloth → clothing; hide → Tannery →
+  leather; logs → Sawmill → structural lumber; ore → Smelter → metal → Smithy → tools/weapons/armor.
+  Catnip and herbs remain farm/ritual goods rather than Mill inputs. P19's canonical contract owns
+  the exact raw/intermediate names and reconciles the founding Wood Cutter/Stone Prep/Woodworking
+  benches with these later stations. Each cycle moves real goods between physical places.
 - **Cost:** role-buildings + workshops gated behind upgrade-tree nodes with **escalating**
   resource costs (build → unlock role → automate → free paws → build next).
 - **Tests:** each chain converts inputs→outputs at the right rate only when staffed + inputs

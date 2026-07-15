@@ -88,9 +88,11 @@ specialized per role); unfilled roles stay manual.
 - **Farms are in the overworld outside the walled settlement interior**: designate farm
   plots and **see the tiles being farmed** (DF farm plots). Grow **catnip**, **grain**,
   herbs, etc. Trees, stone/deposits, and fields do not occupy the village interior.
-- **Processing chains**: grain → **Mill** → flour → food; fibre → **Clothier** → cloth → armour;
-  ore → **Smithy** → tools/weapons; wood → **Sawmill** → lumber → construction. Each step is a
-  workshop cats walk to and haul between.
+- **Processing chains**: grain → **Mill** → flour → food; fibre → **Clothier** → cloth/clothing;
+  hide → **Tannery** → leather; ore → **Smelter** → metal → **Smithy** → tools/weapons/armor;
+  logs → **Wood Cutter** → fine planks or **Sawmill** → structural lumber. Stone is dressed into
+  blocks before construction. Each step is an open-top workshop cats walk to and haul between;
+  one worker advances one selected recipe rather than several invisible parallel cycles.
 - Everything is lightly cat-flavoured (catnip, mouse-farms, naps) but there's a deep to-do list.
 
 ### Visible stockpiles

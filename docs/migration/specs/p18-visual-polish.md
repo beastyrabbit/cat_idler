@@ -20,7 +20,7 @@ table + blocks, weaver = loom, mill = millstone/sails, still = barrels. Ours are
   a building base (Tiny Town / Roguelike) + a distinct craft indicator per type:
   - **wood-cutting** (logs→planks): saw / axe + a log pile / sawhorse.
   - **stone-prep** (stone→blocks): stone blocks + chisel/pick + a cutting table.
-  - **woodworking** (→tools/weapons): workbench + tools (hammer/saw) + planks.
+  - **woodworking** (→wooden tools/wood goods): workbench + tools (hammer/saw) + planks.
   - **smithy**: anvil + forge fire (keep/improve the current forge). **mill**: windmill/millstone.
   - **clothier**: loom / striped cloth. Keep them a cohesive 3×3 footprint (P16).
 - Verify by montage; each must read as its craft. If a composite looks bad, note it.

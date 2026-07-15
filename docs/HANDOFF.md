@@ -100,7 +100,19 @@ so a correct scout route cannot conceal a missing founding dispatch.
 
 ## NEXT STEPS (maintained backlog, in rough priority order)
 
-1. **Finish the physical economy.** The finite founding storehouse and complete physical
+1. **Finish the canonical physical economy.** P19 now owns the resource taxonomy and production
+   table; P12 owns manual/officer logistics and P16 owns the fixed founding benches. Preserve the
+   stable `materials`/`refined` wire and save IDs as Supplies/Crafted Supplies, every existing
+   `BuildingType`, and the verified open-top station direction. Add a defaulted raw Stone resource
+   without reinterpreting old Materials saves; make quarry/hunt byproducts real carried cargo; then
+   remove the legacy `basic_tools` placement check from P16's three placement-available founding
+   benches (future studies gate recipes, not extra copies of those stations), and
+   convert Wood Cutter, Stone Prep, Woodworking, Clothier, Tannery, and Smithy to station-local
+   input/work/output routes with one worker advancing one selected ordered/repeatable/pausable
+   recipe. Migrate tools/weapons/armor toward finite item authority without double-counting the
+   compatibility scalar fields.
+
+   The finite founding storehouse and complete physical
    logs→Sawmill→lumber, grain→Mill→flour+food, Materials→Workshop→Refined, and
    Ore→Smelter→Metal routes are verified, including station-local
    ledgers, transit reservation, delivery-before-credit, death conservation, restart persistence,
@@ -108,9 +120,8 @@ so a correct scout route cannot conceal a missing founding dispatch.
    Exterior farming now follows the same physical truth through plot work, bounded baskets, local
    handoff, and storage delivery. Steward-managed exact-resource piles now feed all four physical
    processors through conserved balancing trips without consuming the player's designation budget.
-   Apply that contract to every remaining workshop, make the
-   remaining production chains carry and deliver their inputs and outputs, and complete
-   recipes/materials. Physical Accountant rounds now keep reports truthful one visited pile at a
+   Apply that contract to the remaining sources and workshops, then complete recipe/material
+   breadth. Physical Accountant rounds now keep reports truthful one visited pile at a
    time. All 19 maintained labor skills have truthful gain sources, bounded effects, persistence,
    and inspector visibility. Signed per-cat preferences and all four physical processors' real
    editable queues are live; extend the generic queue control as additional physical recipes land.
