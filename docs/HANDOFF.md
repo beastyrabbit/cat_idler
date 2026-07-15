@@ -44,7 +44,9 @@ Verified foundations include:
   only on physical shrine return, including restart-safe in-flight notebooks and responsive
   controls at 1024×768 through 1920×1080. Optimized browser and signed fresh-native campaigns both
   prove permanent growth from the exact 289-tile founding baseline;
-- a complete 500-node research runtime and full-page searchable/filterable/pannable client ledger.
+- a truthful 487-node (“about 500”) research runtime and full-page
+  searchable/filterable/pannable client ledger. Thirteen generated capacity studies with no
+  physical container are deliberately absent, and old ownership receives an exact one-time refund.
   Every study can be purchased with research points and persists; the living Leader may complete at
   most one affordable full-catalog node per rolling real-life day while research labor/building
   automation and rituals remain Loremaster-owned. Eleven maintained runtime recipe IDs now have one

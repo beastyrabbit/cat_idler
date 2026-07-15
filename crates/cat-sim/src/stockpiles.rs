@@ -287,6 +287,19 @@ impl Stockpile {
         self.id.starts_with(STATION_TRANSIT_PREFIX)
     }
 
+    /// Building id encoded by a persisted processor-local input, output, or transit
+    /// store. Construction escrow deliberately uses a different capacity contract.
+    #[must_use]
+    pub fn station_building_id(&self) -> Option<&str> {
+        [
+            STATION_INPUT_PREFIX,
+            STATION_OUTPUT_PREFIX,
+            STATION_TRANSIT_PREFIX,
+        ]
+        .into_iter()
+        .find_map(|prefix| self.id.strip_prefix(prefix))
+    }
+
     #[must_use]
     pub fn is_construction_input(&self) -> bool {
         self.id.starts_with(CONSTRUCTION_INPUT_PREFIX)

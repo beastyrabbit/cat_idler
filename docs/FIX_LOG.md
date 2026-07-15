@@ -539,7 +539,7 @@ advance or spend inputs before its exact study; rules-v0 saves remain grandfathe
 editable queue persists selected intent but does not replace its aggregate timers until the next
 physical-station slice.
 
-**Evidence:** Catalog uniqueness/runtime-ID/category and full 500-node purchase checks, signed
+**Evidence:** Catalog uniqueness/runtime-ID/category and the then-full 500-node purchase checks, signed
 logging denial/success, Forester non-bypass, founding personal/communal capability regressions,
 fresh-v1 versus rules-v0 Clothier/Tannery/Smithy neither/one/both cycles, both Smithy forge arms,
 SQLite restart, Leader daily-choice determinism, client-copy/no-queue-leak tests, guided and
@@ -631,7 +631,7 @@ source-less fresh expedition excess that genuinely cannot fit is explicitly aban
 living worker released, while farm/gather/station cargo and death spills remain conserved.
 
 **Evidence:** The capacity-only runtime resolver is bit-identical to full effect resolution across
-all 500 catalog prefixes. Target-isolation, legacy shrine/designated migration, exact physical
+the catalog. Target-isolation, legacy shrine/designated migration, exact physical
 headroom, signed purchase/trade, adversarial no-route trade, persistence, fresh-overflow
 termination, physical-cargo conservation, deterministic twins, and the untouched no-cheat guided
 farm→Mill campaign pass. Remaining scope is the 22 unsupported `*_stores` targets and the fixed
@@ -639,6 +639,34 @@ farm→Mill campaign pass. Remaining scope is the 22 unsupported `*_stores` targ
 shows researched Food/Fish capacity at 680 (baseline 600 plus the targeted 80) while Water remains
 independently 200. The final sim/server gate passes 1,130 tests with one explicit skip, plus strict
 Clippy, formatting, and diff checks.
+
+## 2026-07-15 — Truthful processor-local capacity research
+
+**Problem:** Nine physical processor families persisted real station input, output, and transit
+stores, but every compartment stayed fixed at 10 units even after its targeted `stores` study.
+Thirteen more generated `stores` studies belonged to buildings with no routed physical container,
+so players could spend research points on capacity that did not exist.
+
+**Fix:** Workshop, Mill, Sawmill, Wood Cutter, Stone Prep, Woodworking, Smelter, Tannery, and
+Clothier now resolve one target-specific per-resource station capacity. Their `stores` study raises
+all three owning compartments from 10 to 12, and the same authority controls input delivery,
+finished-output production clamps, recovery headroom, snapshots, and the selected-building
+inspector. General storage and trade headroom remain unchanged. The thirteen containerless
+studies are omitted from the purchasable graph instead of becoming fake global warehouses; the
+result is a truthful 487-study graph, still within the vision's “about 500” target. Existing saves
+that paid for one of the retired inert studies remove the unknown ownership and refund its exact
+historical point cost once, using removal itself as the restart-safe migration marker.
+
+**Evidence:** An exhaustive catalog guardrail permits exactly twelve capacity payloads—the three
+existing storehouse domains plus these nine station domains—and rejects every former inert target.
+All nine upgraded/control and unrelated-target pairs cover input and output headroom. A passive
+900-second deterministic processor twin stays within its 12-unit compartments and delivers real
+output. A signed `mill_stores` purchase survives the same research/stockpile JSON used by SQLite,
+changes wire-visible local capacity, and leaves global storage/trade capacity bit-identical; the
+client inspector renders both local ledgers as `amount / 12.0 per resource`. An inspected
+client-owned framebuffer showed both capacity rows in the live selected-building panel without
+clipping or overlap. Final gates pass 1,264 sim tests (one explicit skip), 46 protocol tests, and
+144 client tests, plus strict Clippy, formatting, and diff checks.
 
 ## 2026-07-15 — Physical Workshop and Smelter refining
 

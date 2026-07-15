@@ -50,7 +50,7 @@ impl StorageResearchEffects {
 
 /// Resolve only the five scalar values consumed by storage capacity. Routing asks for
 /// these values frequently; constructing every unrelated unlock set and building
-/// modifier map would make physical hauling cost grow with the 500-node catalog.
+/// modifier map would make physical hauling cost grow with the entire research catalog.
 #[must_use]
 pub fn resolve_storage_research_effects<I, S>(owned_node_ids: I) -> StorageResearchEffects
 where
@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_building_capacity_research_is_isolated_and_deterministic() {
+    fn non_storehouse_capacity_research_is_isolated_and_deterministic() {
         let buildings = [
             building(BuildingType::FoodStorage, 100.0, Some(2.0)),
             building(BuildingType::WaterBowl, 100.0, Some(1.0)),
@@ -687,11 +687,11 @@ mod tests {
             &physical,
             &resolve_effects([] as [&str; 0]),
         );
-        let unsupported = resolve_effects(["den_stores", "workshop_stores"]);
-        let left = authoritative_storage_capacities(&buildings, &physical, &unsupported);
-        let right = authoritative_storage_capacities(&buildings, &physical, &unsupported);
+        let station_only = resolve_effects(["den_stores", "workshop_stores"]);
+        let left = authoritative_storage_capacities(&buildings, &physical, &station_only);
+        let right = authoritative_storage_capacities(&buildings, &physical, &station_only);
 
-        assert_caps_bits(left, baseline, "unsupported target isolation");
+        assert_caps_bits(left, baseline, "station target isolation");
         assert_caps_bits(right, left, "deterministic twin");
     }
 

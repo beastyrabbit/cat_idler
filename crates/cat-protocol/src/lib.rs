@@ -1267,10 +1267,18 @@ pub struct BuildingSnapshot {
     /// projection of colony totals.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_inventory: Vec<ResourceStackSnapshot>,
+    /// Per-resource capacity of the station's physical input working reserve.
+    /// Zero for buildings without a processor-local store.
+    #[serde(default)]
+    pub input_capacity: f64,
     /// Finished goods still at the station awaiting a physical outbound haul. They are
     /// deliberately absent from colony aggregate resources until deposited.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_inventory: Vec<ResourceStackSnapshot>,
+    /// Per-resource capacity of the station's physical finished-output reserve.
+    /// Zero for buildings without a processor-local store.
+    #[serde(default)]
+    pub output_capacity: f64,
     /// Durable recipes in deterministic execution order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub production_queue: Vec<ProductionQueueEntrySnapshot>,
@@ -3301,6 +3309,8 @@ mod tests {
             production_output: Some("refined".to_string()),
             inbound_haul: 0.0,
             outbound_haul: 0.0,
+            input_capacity: 12.0,
+            output_capacity: 12.0,
             ..BuildingSnapshot::default()
         };
 
@@ -3321,6 +3331,8 @@ mod tests {
                 "productionOutput": "refined",
                 "inboundHaul": 0.0,
                 "outboundHaul": 0.0,
+                "inputCapacity": 12.0,
+                "outputCapacity": 12.0,
             })
         );
 
@@ -3349,6 +3361,8 @@ mod tests {
         assert_eq!(decoded.production_progress, 0.0);
         assert_eq!(decoded.production_output, None);
         assert_eq!(decoded.inbound_haul, 0.0);
+        assert_eq!(decoded.input_capacity, 0.0);
+        assert_eq!(decoded.output_capacity, 0.0);
         assert!(decoded.available_recipes.is_empty());
         assert_eq!(decoded.required_recipe_study, None);
         assert!(decoded.construction_required.is_empty());

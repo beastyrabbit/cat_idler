@@ -3891,6 +3891,7 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
     let mut reports = Vec::with_capacity(indices.len());
     for index in indices {
         let colony = &mut state.colonies[index];
+        migrate_retired_inert_capacity_studies(colony);
         migrate_finite_equipment_authority(colony);
         let Some(gate) = phase_1_colony_selection_and_elapsed_time_gate(colony, now_ms) else {
             reports.push(TickReport {
@@ -4006,6 +4007,37 @@ pub fn world_tick(state: &mut WorldState, now_ms: i64) -> Vec<TickReport> {
     reconcile_village_discoveries(state);
 
     reports
+}
+
+/// Remove pre-fix ownership of generated capacity studies that never had a physical
+/// consumer, refunding their exact historical point cost once. The removed id itself
+/// is the migration marker, so repeated ticks and restarts are idempotent.
+fn migrate_retired_inert_capacity_studies(colony: &mut ColonyRuntime) {
+    const RETIRED: &[(&str, f64)] = &[
+        ("den_stores", 14.0),
+        ("beds_stores", 15.0),
+        ("herb_garden_stores", 16.0),
+        ("nursery_stores", 19.0),
+        ("elder_corner_stores", 19.0),
+        ("walls_stores", 22.0),
+        ("mouse_farm_stores", 17.0),
+        ("shrine_stores", 21.0),
+        ("field_stores", 17.0),
+        ("research_hut_stores", 12.0),
+        ("school_stores", 18.0),
+        ("barracks_stores", 20.0),
+        ("accounting_tent_stores", 24.0),
+    ];
+    for (retired_id, refund) in RETIRED {
+        let before = colony.upgrade_tree.owned_node_ids.len();
+        colony
+            .upgrade_tree
+            .owned_node_ids
+            .retain(|owned| owned != retired_id);
+        if colony.upgrade_tree.owned_node_ids.len() != before {
+            colony.upgrade_tree.research_points += refund;
+        }
+    }
 }
 
 /// Commit mutual village contact from knowledge delivered to a shrine during
@@ -15664,8 +15696,38 @@ pub(crate) fn storage_caps(colony: &ColonyRuntime) -> StorageCapacities {
 }
 
 fn stockpile_headroom(colony: &ColonyRuntime, index: usize, kind: ResourceKind) -> f64 {
+    if let Some(capacity) = station_local_capacity_for_pile(colony, &colony.stockpiles[index]) {
+        if !colony.stockpiles[index].accepts.contains(&kind) {
+            return 0.0;
+        }
+        return (capacity - stockpiles::resource_amount(&colony.stockpiles[index].contents, kind))
+            .max(0.0);
+    }
     let caps = storage_caps(colony);
     stockpiles::headroom_for(&colony.stockpiles[index], kind, &caps)
+}
+
+fn station_local_capacity_for_pile(colony: &ColonyRuntime, pile: &Stockpile) -> Option<f64> {
+    let building_id = pile.station_building_id()?;
+    let building = colony
+        .buildings
+        .iter()
+        .find(|building| building.id == building_id)?;
+    Some(building_station_capacity(colony, building))
+}
+
+/// Per-resource physical working-reserve capacity shared by a processor's local
+/// input, output, and in-flight transit compartments.
+pub(crate) fn building_station_capacity(colony: &ColonyRuntime, building: &BuildingRuntime) -> f64 {
+    if !is_physical_station(building.building_type) {
+        return 0.0;
+    }
+    let effects = resolve_effects(colony.upgrade_tree.owned_node_ids.iter());
+    let multiplier = effects
+        .building(building.building_type.as_str())
+        .capacity_mult
+        .max(0.0);
+    stockpiles::STATION_LOCAL_CAPACITY * multiplier
 }
 
 fn deposit_stockpile_index(
@@ -21506,8 +21568,8 @@ fn begin_station_input_haul(
     let input_headroom = colony
         .stockpiles
         .iter()
-        .find(|pile| pile.id == input_id)
-        .map_or(0.0, |pile| pile.headroom(kind));
+        .position(|pile| pile.id == input_id)
+        .map_or(0.0, |index| stockpile_headroom(colony, index, kind));
     let requested = amount.min(input_headroom);
     let Some(source_index) = nearest_source_pile(
         colony,
@@ -21661,12 +21723,7 @@ fn advance_physical_mill(
     );
     let output_flour = station_inventory_amount(colony, &building.id, true, ResourceKind::Flour);
     let output_food = station_inventory_amount(colony, &building.id, true, ResourceKind::Food);
-    let output_capacity = colony
-        .stockpiles
-        .iter()
-        .find(|pile| pile.id == output_id)
-        .and_then(Stockpile::capacity)
-        .unwrap_or(0.0);
+    let output_capacity = building_station_capacity(colony, &building);
     // Mill flour is one local working stock split across input and output ledgers.
     // Counting both against one cap preserves `advance_mill`'s rule that baking
     // releases room which a later grind in the same accelerated step may reuse.
@@ -21822,12 +21879,7 @@ fn advance_physical_sawmill(
         production_elapsed,
         colony.cats[cat_index].skill(Labor::Process),
     );
-    let output_headroom = colony
-        .stockpiles
-        .iter()
-        .find(|pile| pile.id == output_id)
-        .and_then(Stockpile::capacity)
-        .map_or(0.0, |capacity| (capacity - output_amount).max(0.0));
+    let output_headroom = (building_station_capacity(colony, &building) - output_amount).max(0.0);
     let step = advance_sawmill(
         building.production_progress,
         skilled_elapsed,
@@ -21971,12 +22023,7 @@ fn advance_physical_refiner(
     }
     colony.cats[cat_index].activity = CatActivity::Working;
     let output_amount = station_inventory_amount(colony, &building.id, true, recipe.output_kind);
-    let output_headroom = colony
-        .stockpiles
-        .iter()
-        .find(|pile| pile.id == output_id)
-        .and_then(Stockpile::capacity)
-        .map_or(0.0, |capacity| (capacity - output_amount).max(0.0));
+    let output_headroom = (building_station_capacity(colony, &building) - output_amount).max(0.0);
     // Consume raw elapsed time one admitted batch at a time. A completed batch
     // grants skill before the next one starts, so one large tick and equivalent
     // cadence-partitioned ticks use exactly the same rate curve.
@@ -22211,12 +22258,8 @@ fn advance_physical_woodworking(
     }
     colony.cats[cat_index].activity = CatActivity::Working;
     let output_amount = station_inventory_amount(colony, &building.id, true, recipe.output_kind);
-    let output_headroom = colony
-        .stockpiles
-        .iter()
-        .find(|pile| pile.id == output_id)
-        .and_then(Stockpile::capacity)
-        .map_or(0.0, |capacity| (capacity - output_amount).max(0.0))
+    let output_headroom = (building_station_capacity(colony, &building) - output_amount)
+        .max(0.0)
         .floor();
     let architect_rate =
         if colony.cats[cat_index].specialization == Some(CatSpecialization::Architect) {
@@ -23380,8 +23423,8 @@ fn credit_carrying(colony: &mut ColonyRuntime, carrying: &Carrying, deposit_at: 
             let input_headroom = colony
                 .stockpiles
                 .iter()
-                .find(|pile| pile.id == input_id)
-                .map_or(0.0, |pile| pile.headroom(kind));
+                .position(|pile| pile.id == input_id)
+                .map_or(0.0, |index| stockpile_headroom(colony, index, kind));
             let input_exists = colony
                 .buildings
                 .iter()
@@ -23748,8 +23791,8 @@ fn salvage_station_cargo_for_carrier(
     let input_headroom = colony
         .stockpiles
         .iter()
-        .find(|pile| pile.id == input_id)
-        .map_or(0.0, |pile| pile.headroom(kind));
+        .position(|pile| pile.id == input_id)
+        .map_or(0.0, |index| stockpile_headroom(colony, index, kind));
     let building_exists = colony
         .buildings
         .iter()
@@ -30556,6 +30599,188 @@ mod tests {
             .expect("seeded storehouse")
             .center();
         colony.cats[0].position = position_from_world(WorldPos { x, y });
+    }
+
+    #[test]
+    fn station_store_studies_expand_only_the_targeted_physical_working_reserve() {
+        for (building_type, study_id, input_kind, unrelated_type) in [
+            (
+                BuildingType::Workshop,
+                "workshop_stores",
+                ResourceKind::Materials,
+                BuildingType::Mill,
+            ),
+            (
+                BuildingType::Mill,
+                "mill_stores",
+                ResourceKind::Grain,
+                BuildingType::Sawmill,
+            ),
+            (
+                BuildingType::Sawmill,
+                "sawmill_stores",
+                ResourceKind::Logs,
+                BuildingType::Workshop,
+            ),
+            (
+                BuildingType::WoodCutter,
+                "wood_cutter_stores",
+                ResourceKind::Logs,
+                BuildingType::StonePrep,
+            ),
+            (
+                BuildingType::StonePrep,
+                "stone_prep_stores",
+                ResourceKind::Stone,
+                BuildingType::Woodworking,
+            ),
+            (
+                BuildingType::Woodworking,
+                "woodworking_stores",
+                ResourceKind::Planks,
+                BuildingType::Clothier,
+            ),
+            (
+                BuildingType::Smelter,
+                "smelter_stores",
+                ResourceKind::Ore,
+                BuildingType::Tannery,
+            ),
+            (
+                BuildingType::Tannery,
+                "tannery_stores",
+                ResourceKind::Hide,
+                BuildingType::Clothier,
+            ),
+            (
+                BuildingType::Clothier,
+                "clothier_stores",
+                ResourceKind::Fibre,
+                BuildingType::Smelter,
+            ),
+        ] {
+            let mut colony = chain_colony(building_type, Resources::default(), true);
+            ensure_station_stores(&mut colony, 0);
+            let input_id = stockpiles::station_input_id("chain-1");
+            let input_index = colony
+                .stockpiles
+                .iter()
+                .position(|pile| pile.id == input_id)
+                .expect("station input");
+            assert_eq!(stockpile_headroom(&colony, input_index, input_kind), 10.0);
+
+            colony.upgrade_tree.owned_node_ids.push(study_id.to_owned());
+            assert_eq!(
+                stockpile_headroom(&colony, input_index, input_kind),
+                12.0,
+                "{building_type:?} input capacity"
+            );
+            let output_id = stockpiles::station_output_id("chain-1");
+            let output_index = colony
+                .stockpiles
+                .iter()
+                .position(|pile| pile.id == output_id)
+                .expect("station output");
+            let output_kind = station_resource_sets(building_type)
+                .expect("physical station")
+                .1[0];
+            assert_eq!(
+                stockpile_headroom(&colony, output_index, output_kind),
+                12.0,
+                "{building_type:?} output capacity"
+            );
+
+            colony.buildings.push(BuildingRuntime {
+                id: "unrelated-1".to_owned(),
+                building_type: unrelated_type,
+                position: TilePos { x: 22, y: 22 },
+                is_complete: true,
+                construction_progress: 100,
+                production_queue: default_production_queue(unrelated_type),
+                ..BuildingRuntime::default()
+            });
+            ensure_station_stores(&mut colony, 1);
+            let unrelated_input = colony
+                .stockpiles
+                .iter()
+                .position(|pile| pile.id == stockpiles::station_input_id("unrelated-1"))
+                .expect("unrelated station input");
+            let unrelated_kind = station_resource_sets(unrelated_type)
+                .expect("physical unrelated station")
+                .0[0];
+            assert_eq!(
+                stockpile_headroom(&colony, unrelated_input, unrelated_kind),
+                10.0,
+                "{study_id} leaked into {unrelated_type:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_inert_capacity_ownership_is_removed_and_refunded_once() {
+        let mut colony = chain_colony(BuildingType::Den, Resources::default(), false);
+        colony.upgrade_tree.research_points = 3.0;
+        colony.upgrade_tree.owned_node_ids.extend([
+            "den_foundations".to_owned(),
+            "den_stores".to_owned(),
+            "field_stores".to_owned(),
+        ]);
+
+        migrate_retired_inert_capacity_studies(&mut colony);
+        assert_eq!(colony.upgrade_tree.research_points, 34.0);
+        assert_eq!(colony.upgrade_tree.owned_node_ids, ["den_foundations"]);
+        let once = colony.clone();
+        migrate_retired_inert_capacity_studies(&mut colony);
+        assert_eq!(colony, once, "retired-study refund repeated");
+    }
+
+    #[test]
+    fn passive_station_capacity_campaign_is_bounded_and_deterministic() {
+        let mut baseline = chain_colony(
+            BuildingType::Sawmill,
+            Resources {
+                logs: 80.0,
+                food: 80.0,
+                water: 80.0,
+                ..Resources::default()
+            },
+            true,
+        );
+        baseline.recipe_entitlement_rules_version = 0;
+        baseline
+            .upgrade_tree
+            .owned_node_ids
+            .push("sawmill_stores".to_owned());
+        place_chain_worker_at_seeded_store(&mut baseline);
+        let mut twin = baseline.clone();
+
+        for second in 1..=900 {
+            for colony in [&mut baseline, &mut twin] {
+                phase_23_production(colony, production_gate(1, second * 1_000), 8821);
+                deliver_all_station_cargo_to_current_targets(colony);
+            }
+        }
+
+        assert_eq!(baseline, twin, "passive cadence twin diverged");
+        let capacity = building_station_capacity(&baseline, &baseline.buildings[0]);
+        assert_eq!(capacity, 12.0);
+        for pile in baseline
+            .stockpiles
+            .iter()
+            .filter(|pile| pile.station_building_id() == Some(baseline.buildings[0].id.as_str()))
+        {
+            for kind in &pile.accepts {
+                assert!(
+                    stockpiles::resource_amount(&pile.contents, *kind) <= capacity + f64::EPSILON,
+                    "{} overfilled {kind:?}",
+                    pile.id
+                );
+            }
+        }
+        assert!(
+            baseline.resources.lumber > 0.0,
+            "passive processor campaign never delivered output"
+        );
     }
 
     fn add_completed_field_floor(colony: &mut ColonyRuntime) {

@@ -3871,7 +3871,17 @@ fn events_snapshot(colony: &ColonyRuntime) -> Vec<proto::EventSnapshot> {
 fn research_snapshot(colony: &ColonyRuntime) -> proto::ResearchSnapshot {
     let next_target = upgrade_tree::next_research_target(&colony.upgrade_tree);
     proto::ResearchSnapshot {
-        owned_node_ids: colony.upgrade_tree.owned_node_ids.clone(),
+        owned_node_ids: colony
+            .upgrade_tree
+            .owned_node_ids
+            .iter()
+            .filter(|id| {
+                crate::research_catalog::research_catalog()
+                    .get(id)
+                    .is_some()
+            })
+            .cloned()
+            .collect(),
         research_points: colony.upgrade_tree.research_points,
         researcher_count: 0,
         blessings: colony.global_upgrade_points,
@@ -4110,6 +4120,7 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                     amount,
                 })
                 .collect(),
+                input_capacity: crate::world_tick::building_station_capacity(colony, building),
                 output_inventory: crate::world_tick::building_station_inventory(
                     colony, building, true,
                 )
@@ -4119,6 +4130,7 @@ fn buildings_snapshot(colony: &ColonyRuntime) -> Vec<proto::BuildingSnapshot> {
                     amount,
                 })
                 .collect(),
+                output_capacity: crate::world_tick::building_station_capacity(colony, building),
                 production_queue: crate::world_tick::building_production_queue(building)
                     .into_iter()
                     .map(|entry| proto::ProductionQueueEntrySnapshot {
@@ -6852,6 +6864,86 @@ mod tests {
             before.food + 19.0,
             "accepted goods must occupy real pile headroom"
         );
+    }
+
+    #[test]
+    fn signed_station_capacity_purchase_survives_persistence_without_global_trade_headroom() {
+        let mut world = world_with_one_colony();
+        let mill_id = "guided-capacity-mill";
+        world.colonies[0]
+            .buildings
+            .push(completed_building(mill_id, BuildingType::Mill));
+        let mill_rect = crate::zones::ZoneRect {
+            x1: 20,
+            y1: 20,
+            x2: 22,
+            y2: 22,
+        };
+        world.colonies[0].stockpiles.extend([
+            stockpiles::make_station_store(
+                stockpiles::station_input_id(mill_id),
+                mill_rect,
+                [
+                    stockpiles::ResourceKind::Grain,
+                    stockpiles::ResourceKind::Flour,
+                ],
+            ),
+            stockpiles::make_station_store(
+                stockpiles::station_output_id(mill_id),
+                mill_rect,
+                [
+                    stockpiles::ResourceKind::Flour,
+                    stockpiles::ResourceKind::Food,
+                ],
+            ),
+        ]);
+        world.colonies[0].upgrade_tree.owned_node_ids.extend([
+            "irrigation".to_owned(),
+            "masonry".to_owned(),
+            "mill_foundations".to_owned(),
+        ]);
+        world.colonies[0].upgrade_tree.research_points = 100.0;
+
+        let storage_before = build_snapshot(&world, 1_000_000, 1).colonies[0]
+            .storage
+            .capacities;
+        let purchase = proto::ClientAction::ResearchNode {
+            session_id: "sess_1".to_owned(),
+            nickname: "Player".to_owned(),
+            sig: "server-verified".to_owned(),
+            node_id: "mill_stores".to_owned(),
+        };
+        assert!(apply_action(&mut world, &purchase, &ctx()).ok);
+        let snapshot = build_snapshot(&world, 1_000_000, 1);
+        let mill = snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == mill_id)
+            .expect("guided Mill snapshot");
+        assert_eq!(mill.input_capacity, 12.0);
+        assert_eq!(mill.output_capacity, 12.0);
+        assert_eq!(snapshot.colonies[0].storage.capacities, storage_before);
+
+        // SQLite persists these two physical authorities independently: research
+        // ownership determines the capacity, and the station compartments retain cargo.
+        let research_json = serde_json::to_string(&world.colonies[0].upgrade_tree)
+            .expect("persist capacity ownership");
+        let stockpiles_json = serde_json::to_string(&world.colonies[0].stockpiles)
+            .expect("persist physical station stores");
+        let mut restored = world.clone();
+        restored.colonies[0].upgrade_tree =
+            serde_json::from_str(&research_json).expect("restore capacity ownership");
+        restored.colonies[0].stockpiles =
+            serde_json::from_str(&stockpiles_json).expect("restore station stores");
+        let restored_snapshot = build_snapshot(&restored, 1_000_000, 1);
+        let restored_mill = restored_snapshot.colonies[0]
+            .buildings
+            .iter()
+            .find(|building| building.id == mill_id)
+            .expect("restored Mill snapshot");
+        assert_eq!(restored_mill.input_capacity, 12.0);
+        assert_eq!(restored_mill.output_capacity, 12.0);
+        assert_eq!(restored, world, "signed campaign persistence twin");
     }
 
     #[test]
@@ -10054,6 +10146,10 @@ mod tests {
     fn signed_wood_cutter_queue_edits_and_snapshot_expose_physical_local_truth() {
         let mut world = world_with_one_colony();
         world.colonies[0].recipe_entitlement_rules_version = 0;
+        world.colonies[0]
+            .upgrade_tree
+            .owned_node_ids
+            .push("wood_cutter_stores".to_owned());
         let worker_id = world.colonies[0].cats[0].id.clone();
         let building_id = "physical-wood-cutter";
         world.colonies[0].buildings.push(BuildingRuntime {
@@ -10161,6 +10257,8 @@ mod tests {
                 amount: 1.0,
             }]
         );
+        assert_eq!(building.input_capacity, 12.0);
+        assert_eq!(building.output_capacity, 12.0);
         assert_eq!(building.production_block_reason.as_deref(), Some("paused"));
         assert_eq!(building.required_recipe_study, None);
     }

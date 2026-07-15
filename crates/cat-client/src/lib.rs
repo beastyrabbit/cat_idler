@@ -10864,26 +10864,36 @@ fn building_inspector_text(building: &BuildingSnapshot, colony: &ColonySnapshot)
             resource_stacks_text(&building.inbound_cargo)
         ));
     }
-    if !building.input_inventory.is_empty() {
+    if building.input_capacity > 0.0 {
         out.push_str(&format!(
-            "\nlocal input: {}",
-            building
-                .input_inventory
-                .iter()
-                .map(|stack| format!("{} {:.1}", resource_kind_name(stack.kind), stack.amount))
-                .collect::<Vec<_>>()
-                .join(", ")
+            "\nlocal input: {} / {:.1} per resource",
+            if building.input_inventory.is_empty() {
+                "none".to_owned()
+            } else {
+                building
+                    .input_inventory
+                    .iter()
+                    .map(|stack| format!("{} {:.1}", resource_kind_name(stack.kind), stack.amount))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            building.input_capacity,
         ));
     }
-    if !building.output_inventory.is_empty() {
+    if building.output_capacity > 0.0 {
         out.push_str(&format!(
-            "\nlocal output: {}",
-            building
-                .output_inventory
-                .iter()
-                .map(|stack| format!("{} {:.1}", resource_kind_name(stack.kind), stack.amount))
-                .collect::<Vec<_>>()
-                .join(", ")
+            "\nlocal output: {} / {:.1} per resource",
+            if building.output_inventory.is_empty() {
+                "none".to_owned()
+            } else {
+                building
+                    .output_inventory
+                    .iter()
+                    .map(|stack| format!("{} {:.1}", resource_kind_name(stack.kind), stack.amount))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+            building.output_capacity,
         ));
     }
     if !building.production_queue.is_empty() {
@@ -15569,7 +15579,7 @@ mod tests {
                 "threat":{"pressure":0,"band":"calm","raidActive":false,"warriors":0,"weapons":0,"armor":0},
                 "raiders":[],
                 "buildings":[
-                    {"id":"b1","type":"sawmill","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0},"footprint":{"width":3,"height":2},"staffCount":1,"staffCap":1,"productionProgress":0.4,"productionOutput":"lumber","inboundHaul":5.0,"outboundHaul":2.0,"inputInventory":[{"kind":"logs","amount":5.0}],"outputInventory":[{"kind":"lumber","amount":2.0}],"productionQueue":["logs_to_lumber"],"availableRecipes":["logs_to_lumber"],"productionBlockReason":"output_in_transit","workerTravel":"hauling output to storage","inboundCargo":[{"kind":"logs","amount":5.0}],"outboundCargo":[{"kind":"lumber","amount":2.0}]},
+                    {"id":"b1","type":"sawmill","level":2,"constructionProgress":100.0,"worldPosition":{"x":7,"y":6},"position":{"x":1,"y":0},"footprint":{"width":3,"height":2},"staffCount":1,"staffCap":1,"productionProgress":0.4,"productionOutput":"lumber","inboundHaul":5.0,"outboundHaul":2.0,"inputInventory":[{"kind":"logs","amount":5.0}],"inputCapacity":12.0,"outputInventory":[{"kind":"lumber","amount":2.0}],"outputCapacity":12.0,"productionQueue":["logs_to_lumber"],"availableRecipes":["logs_to_lumber"],"productionBlockReason":"output_in_transit","workerTravel":"hauling output to storage","inboundCargo":[{"kind":"logs","amount":5.0}],"outboundCargo":[{"kind":"lumber","amount":2.0}]},
                     {"id":"b2","type":"den","level":1,"constructionProgress":40.0,"worldPosition":{"x":5,"y":6},"position":{"x":-1,"y":0},"footprint":{"width":2,"height":2}}
                 ],
                 "claimedTiles":[],"villageGate":null,"villageRadius":4,"anchor":{"x":6,"y":6}
@@ -15593,6 +15603,8 @@ mod tests {
         assert!(ws.contains("inbound cargo: logs 5.0"));
         assert!(ws.contains("local input: logs 5.0"));
         assert!(ws.contains("local output: lumber 2.0"));
+        assert!(ws.contains("local input: logs 5.0 / 12.0 per resource"));
+        assert!(ws.contains("local output: lumber 2.0 / 12.0 per resource"));
         assert!(ws.contains("queue: logs_to_lumber"));
         assert!(ws.contains("blocked: output in transit"));
         assert!(ws.contains("worker: hauling output to storage"));

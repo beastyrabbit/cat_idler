@@ -2,7 +2,7 @@
 //!
 //! The 24 legacy nodes from `upgrade_tree.rs` are owned records in an embedded
 //! data file. Compact, named family templates deterministically expand the rest
-//! of the 500-node graph. This module is deliberately additive: it performs no
+//! of the roughly 500-node graph. This module is deliberately additive: it performs no
 //! research ticks and grants no unlocks until later integration slices consume
 //! its typed payloads.
 
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::JobKind;
 
-pub const RESEARCH_NODE_COUNT: usize = 500;
+pub const RESEARCH_NODE_COUNT: usize = 487;
 pub const APPROVED_BUILDING_IDS: &[&str] = &[
     "den",
     "food_storage",
@@ -241,7 +241,7 @@ impl ResearchCatalog {
     }
 
     /// O(1) reverse lookup for the study whose typed payload unlocks `recipe_id`.
-    /// Built once with the catalog, so production hot loops never scan 500 nodes.
+    /// Built once with the catalog, so production hot loops never scan the entire graph.
     #[must_use]
     pub fn recipe_unlock_study(&self, recipe_id: &str) -> Option<&ResearchNode> {
         self.recipe_unlocks
@@ -323,6 +323,11 @@ struct BuildingFamily {
     cost_base: f64,
     layout_x: i32,
     leader_priority_base: u16,
+    /// Whether this runtime building owns a real, routed physical capacity domain.
+    /// Families without one omit the generic `stores` stage entirely rather than
+    /// charging research points for an inert modifier.
+    #[serde(default)]
+    physical_capacity: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -407,11 +412,14 @@ fn expand_building_family(
     }
     let mut nodes: Vec<ResearchNode> = Vec::with_capacity(family.count);
     for (index, stage) in stages.iter().take(family.count).enumerate() {
+        if stage.attribute == BuildingAttribute::Capacity && !family.physical_capacity {
+            continue;
+        }
         let id = format!("{}_{}", family.building_id, stage.id);
-        let prerequisites = if index == 0 {
+        let prerequisites = if nodes.is_empty() {
             family.root_prerequisites.clone()
         } else {
-            vec![nodes[index - 1].id.clone()]
+            vec![nodes.last().expect("non-empty family").id.clone()]
         };
         let era_offset = u8::try_from(index / 2)
             .map_err(|_| format!("building era overflow for {}", family.building_id))?;
@@ -698,8 +706,13 @@ fn validate_categories(nodes: &[ResearchNode]) -> Result<(), String> {
         .iter()
         .filter(|node| node.category == ResearchCategory::RecipeResource)
         .count();
-    if buildings * 3 < nodes.len() || recipes * 3 < nodes.len() {
-        return Err("building and recipe/resource categories must each fill one third".to_owned());
+    // Building families deliberately omit a generic `stores` stage when their runtime
+    // building owns no physical capacity domain. Keep that truth gap explicit instead
+    // of padding the catalog with thirteen inert purchases.
+    if buildings != 154 || recipes != 167 {
+        return Err(format!(
+            "unexpected truthful category counts: {buildings} building, {recipes} recipe/resource"
+        ));
     }
     Ok(())
 }
@@ -809,8 +822,8 @@ mod tests {
     #[test]
     fn embedded_catalog_expands_to_the_exact_design_size_and_ratios() {
         let catalog = research_catalog();
-        assert_eq!(catalog.nodes().len(), 500);
-        assert_eq!(catalog.category_count(ResearchCategory::Building), 167);
+        assert_eq!(catalog.nodes().len(), RESEARCH_NODE_COUNT);
+        assert_eq!(catalog.category_count(ResearchCategory::Building), 154);
         assert_eq!(
             catalog.category_count(ResearchCategory::RecipeResource),
             167
@@ -830,10 +843,10 @@ mod tests {
         assert_eq!(ids.get(22), Some(&"shipping"));
         assert_eq!(ids.get(23), Some(&"milling"));
         assert_eq!(ids.get(24), Some(&"den_foundations"));
-        assert_eq!(ids.get(181), Some(&"sawmill_crews"));
-        assert_eq!(ids.get(182), Some(&"hunting_sources"));
-        assert_eq!(ids.get(345), Some(&"expedition_supplies_masterwork"));
-        assert_eq!(ids.get(346), Some(&"logistics_basics"));
+        assert_eq!(ids.get(168), Some(&"sawmill_crews"));
+        assert_eq!(ids.get(169), Some(&"hunting_sources"));
+        assert_eq!(ids.get(332), Some(&"expedition_supplies_masterwork"));
+        assert_eq!(ids.get(333), Some(&"logistics_basics"));
         assert_eq!(ids.last(), Some(&"resilience_mastery"));
         for (index, node) in catalog.nodes().iter().enumerate() {
             assert!(std::ptr::eq(
@@ -862,6 +875,62 @@ mod tests {
             }
         }
         validate_topology(catalog.nodes(), &catalog.by_id).expect("acyclic reachable graph");
+    }
+
+    #[test]
+    fn every_building_capacity_study_names_a_real_physical_store() {
+        let actual = research_catalog()
+            .nodes()
+            .iter()
+            .flat_map(|node| {
+                node.payloads
+                    .iter()
+                    .filter_map(move |payload| match payload {
+                        ResearchPayload::ModifyBuilding {
+                            building_id,
+                            attribute: BuildingAttribute::Capacity,
+                            ..
+                        } => Some((node.id.as_str(), building_id.as_str())),
+                        _ => None,
+                    })
+            })
+            .collect::<Vec<_>>();
+        let expected = [
+            ("food_storage_stores", "food_storage"),
+            ("water_bowl_stores", "water_bowl"),
+            ("workshop_stores", "workshop"),
+            ("smithy_stores", "smithy"),
+            ("wood_cutter_stores", "wood_cutter"),
+            ("stone_prep_stores", "stone_prep"),
+            ("woodworking_stores", "woodworking"),
+            ("clothier_stores", "clothier"),
+            ("tannery_stores", "tannery"),
+            ("smelter_stores", "smelter"),
+            ("mill_stores", "mill"),
+            ("sawmill_stores", "sawmill"),
+        ];
+
+        assert_eq!(actual, expected);
+        for retired in [
+            "den_stores",
+            "beds_stores",
+            "herb_garden_stores",
+            "nursery_stores",
+            "elder_corner_stores",
+            "walls_stores",
+            "mouse_farm_stores",
+            "shrine_stores",
+            "field_stores",
+            "research_hut_stores",
+            "school_stores",
+            "barracks_stores",
+            "accounting_tent_stores",
+        ] {
+            assert!(
+                research_catalog().get(retired).is_none(),
+                "{retired} must not charge points for a container that does not exist"
+            );
+        }
     }
 
     #[test]
@@ -978,7 +1047,7 @@ mod tests {
             )));
         }
 
-        assert_eq!(catalog.category_count(ResearchCategory::Building), 167);
+        assert_eq!(catalog.category_count(ResearchCategory::Building), 154);
         assert_eq!(
             catalog.category_count(ResearchCategory::RecipeResource),
             167

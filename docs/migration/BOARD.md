@@ -580,7 +580,13 @@ for exact commit hashes/messages, and the corresponding spec doc for the origina
   Blocks; communal villages receive exactly twice that mix; all other maintained scalar resources
   start at zero. All ten maintained processors and exterior-farm routes use this model. Food Storage, Water Bowl, and Smithy research
   now expands only its owned physical domains through one clamp/routing/snapshot/trade authority.
-  The other 22 generated capacity studies and 10-unit station-local stores remain explicitly open.
+  Processor-local capacity is now target-correct too: Workshop, Mill, Sawmill, Wood Cutter,
+  Stone Prep, Woodworking, Smelter, Tannery, and Clothier `stores` studies expand their owning
+  persisted input/output/transit reserve from 10 to 12 units per accepted resource. The wire and
+  selected-building inspector expose that physical limit. Thirteen generic `stores` studies for
+  buildings with no routed container were removed rather than sold as inert/global bonuses;
+  the truthful graph contains 487 studies and an exhaustive guardrail names every remaining
+  capacity payload's physical consumer.
 - **P12.4a/b workshop chains + Accountant direction** — workshop crafting covers
   planks/blocks/tools, exterior catnip/grain/herb plots, logging, Mill grain→flour→food, Sawmill
   logs→lumber, fibre/hide→cloth/leather, and ore→metal. A staffed Accounting Tent keeps the

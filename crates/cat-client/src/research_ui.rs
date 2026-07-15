@@ -8,7 +8,7 @@ use bevy::{
 };
 use cat_protocol::ResearchSnapshot;
 use cat_sim::{
-    research_catalog::{ResearchCategory, ResearchPayload, research_catalog},
+    research_catalog::{RESEARCH_NODE_COUNT, ResearchCategory, ResearchPayload, research_catalog},
     upgrade_tree::UPGRADE_NODES,
 };
 use std::collections::{HashMap, HashSet};
@@ -419,7 +419,7 @@ fn ledger_button(label: impl Into<String>) -> impl Bundle {
     )
 }
 
-/// Spawn all 500 catalog cards and every dependency connector exactly once.
+/// Spawn every catalog card and dependency connector exactly once.
 pub(super) fn spawn_research_ui(commands: &mut Commands) {
     let model = ResearchUiModel::from_catalog();
     let catalog = research_catalog();
@@ -527,7 +527,11 @@ pub(super) fn spawn_research_ui(commands: &mut Commands) {
                                 margin: UiRect::left(Val::Px(8.0)),
                                 ..default()
                             },
-                            ui_text("500 nodes", FS_SMALL, UI_TITLE_INK),
+                            ui_text(
+                                format!("{RESEARCH_NODE_COUNT} nodes"),
+                                FS_SMALL,
+                                UI_TITLE_INK,
+                            ),
                             MatchCountText,
                         ));
                         row.spawn((
@@ -1090,7 +1094,7 @@ pub(super) fn update_research_filter(
         };
     }
     if let Ok(mut text) = count.single_mut() {
-        text.0 = format!("{} / 500 nodes", matches.len());
+        text.0 = format!("{} / {RESEARCH_NODE_COUNT} nodes", matches.len());
     }
     ui.filter_dirty = false;
 }
@@ -1429,10 +1433,10 @@ mod tests {
     }
 
     #[test]
-    fn model_represents_exactly_500_cards_and_every_dependency_connector() {
+    fn model_represents_every_catalog_card_and_dependency_connector() {
         let model = ResearchUiModel::from_catalog();
         assert_eq!(model.entries.len(), RESEARCH_NODE_COUNT);
-        assert_eq!(model.entries.len(), 500);
+        assert_eq!(model.entries.len(), RESEARCH_NODE_COUNT);
         assert_eq!(
             model.connectors.len(),
             research_catalog()
@@ -1445,7 +1449,7 @@ mod tests {
             model.category_count(ResearchCategory::Building),
             research_catalog().category_count(ResearchCategory::Building)
         );
-        assert_eq!(model.category_count(ResearchCategory::Building), 167);
+        assert_eq!(model.category_count(ResearchCategory::Building), 154);
         assert_eq!(model.category_count(ResearchCategory::RecipeResource), 167);
         assert_eq!(model.category_count(ResearchCategory::Upgrade), 166);
     }
